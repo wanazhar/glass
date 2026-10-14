@@ -16,7 +16,7 @@ const RECIPES: &[(&str, &str)] = &[
     ),
     (
         "context",
-        "Use state items for durable task notes before compaction. gc context and gc requests inspect loaded sources and request diagnostics. Completed tools remain context: do not replay mutations after a failed provider response. Use the documented checkpoint/compaction commands only when available.",
+        "Use state.todo for phased checklists: batch init/add/update operations, use returned task IDs, mark blockers with reasons, and read todo:{} after context loss. Completion is progress, not verification. Use state items for durable task notes before compaction. gc context and gc requests inspect loaded sources and request diagnostics. Completed tools remain context: do not replay mutations after a failed provider response. Use the documented checkpoint/compaction commands only when available.",
     ),
     (
         "learning",

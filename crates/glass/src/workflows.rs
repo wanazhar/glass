@@ -31,7 +31,8 @@ fn plan_path(session: &Session) -> PathBuf {
 pub fn plan(
     keys: &KeyReader,
     cfg: &config::Config,
-    current: &Session,
+    current: &mut Session,
+    state: &mut tools::State,
     factory: crate::warmer::ProviderFactory,
     task: &str,
 ) -> Result<Option<String>, String> {
@@ -61,7 +62,7 @@ pub fn plan(
         let reasoning = cfg.reasoning_budget;
         let instructions = crate::trust::gated(cfg, &crate::agents_md::load(&cfg.workspace), false);
         let planning_prompt = cfg.system_prompt.clone();
-        let request = task.clone();
+        let request = format!("{task}\n\nReturn a plan grouped under Markdown phase headings, with each actionable step as - [ ] task. Do not execute the plan.");
         let factory_for_worker = factory.clone();
         let result = modal::task(keys, "Inspecting and planning", move |cancel, status| {
             let p = factory_for_worker()?;
@@ -137,8 +138,9 @@ pub fn plan(
         match modal::choose(keys, "Plan review", &saved.task, &actions) {
             Some(0) => modal::info(keys, "Proposed plan", &saved.proposal),
             Some(1) => {
+                crate::todo::apply_user(state,current,serde_json::json!([{"op":"init","items":crate::todo::plan_items(&saved.proposal,&saved.task)}]))?;
                 return Ok(Some(format!(
-                    "Implement this approved plan for the task: {}\n\n{}\n\nKeep progress visible using state notes. Verify the implementation and report the actual checks performed.",
+                    "Implement this approved plan for the task: {}\n\n{}\n\nThe approved plan is already in the native checklist. Update state.todo by returned task IDs as work progresses. Verify the implementation and report the actual checks performed.",
                     saved.task, saved.proposal
                 )));
             }
@@ -151,7 +153,7 @@ pub fn plan(
                 if task.trim().is_empty() {
                     continue;
                 }
-                return plan(keys, cfg, current, factory, &task);
+                return plan(keys, cfg, current, state, factory, &task);
             }
             _ => return Ok(None),
         }

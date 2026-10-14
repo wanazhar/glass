@@ -123,3 +123,10 @@ and modification dates. See [Extending](extending.md).
   diagnostics, policies, browser checks, and artifacts.
 - [Workbench commands](reference/workbench.md): quoted context, portable handoffs,
   job input, PR publication, advisor cadence, schedules, and optional clients.
+
+## Execution checklist
+
+Approved plans populate the native session checklist before execution. Use `/todo`
+to inspect phases, progress, blockers, assigned agents and workspace evidence.
+Checklist completion does not prove a check passed. See the
+[checklist reference](reference/checklist.md) for state operations and continuation.

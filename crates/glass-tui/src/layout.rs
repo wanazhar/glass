@@ -176,7 +176,8 @@ impl Layout {
         if card.expanded {
             rows.pop(); // trailing card spacer
             rows.pop(); // empty preview placeholder
-            rows.extend(wrap_width(&crate::markdown::sanitize(&card.output), card_width).into_iter().map(Line::from));
+            if card.output.starts_with("## Tasks ") { rows.extend(crate::markdown::lines(&card.output,card_width)); }
+            else {rows.extend(wrap_width(&crate::markdown::sanitize(&card.output), card_width).into_iter().map(Line::from));}
         }
         if card.truncated { rows.push(Line::from(Span::styled("Inline output truncated", role_style(Role::Meta)))); }
         if card.spill.is_some() { rows.push(Line::from(Span::styled("Full output available · /details", role_style(Role::Tool)))); }

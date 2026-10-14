@@ -55,6 +55,14 @@ pub fn lines(
             .add_modifier(Modifier::BOLD),
     ))];
     let body_width = width.saturating_sub(2).max(1);
+    if name=="state" && output.starts_with("## Tasks ") && !failed {
+        let preview=output.split("\n\nrevision:").next().unwrap_or(output);
+        let content=markdown::lines(preview,body_width);
+        let count=if compact{2}else{8};
+        rows.extend(content.iter().take(count).cloned());
+        if content.len()>count {rows.push(line("  ","… /todo for full checklist",Tone::Muted,width));}
+        return rows;
+    }
     if !compact && !command.is_empty() {
         let clipped = text::clip(&markdown::sanitize(command), body_width * 3);
         let prefix = if matches!(name, "read" | "edit" | "write" | "view_image" | "web_fetch" | "web_search" | "browser_verify") { "◆" } else { "$" };

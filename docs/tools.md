@@ -7,7 +7,10 @@
 `read`, `edit`, and `write` expose the bounded native file engine directly.
 Reads return line numbers and revisions; changes require those revisions and support
 previews and syntax checks. `bash` handles search, pipelines, builds, tests and
-processes. `state` preserves task notes and discovers deeper workflows on demand.
+processes. `state` preserves task notes, manages the native execution checklist,
+and discovers deeper workflows on demand. See the [checklist reference](reference/checklist.md)
+for batched operations, stable IDs, blockers and durable receipts. `/todo` opens
+the shared task modal; no extension is required.
 
 The CLI and tool interfaces share implementation, confinement and file semantics.
 Schemas stay compact; performance checks cover startup, input, redraw and history.

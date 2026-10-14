@@ -27,11 +27,11 @@ pub const BUNDLES: &[Bundle] = &[
     },
     Bundle {
         name: "todo",
-        description: "Task checklist",
+        description: "Legacy todo compatibility adapter",
         interpreter: "python3",
         file: "todo.py",
         source: include_str!("../../../extensions/todo/todo.py"),
-        access: "Maintains its task list in memory. Contributes prompt text and tools.",
+        access: "Forwards legacy todo actions to the durable native state.todo checklist. No separate list is maintained; native checklists need no extension.",
     },
     Bundle {
         name: "hashline",

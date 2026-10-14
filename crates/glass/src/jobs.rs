@@ -408,6 +408,11 @@ fn registry() -> &'static Mutex<BTreeMap<String, Jobs>> {
 fn owner_key(workspace: &Path, owner: &str) -> String {
     format!("{}\0{owner}", crate::concurrency::canonical_key(workspace))
 }
+pub fn has_running(workspace:&Path,owner:&str)->bool {
+    let Ok(mut registry)=registry().lock()else{return true;};
+    let Some(jobs)=registry.get_mut(&owner_key(workspace,owner))else{return false;};
+    jobs.refresh();jobs.jobs.values().any(|job|job.exit.is_none())
+}
 pub fn attention(workspace:&Path,owner:&str)->Vec<Value> {
     let Ok(mut registry)=registry().lock() else{return Vec::new();};
     let Some(jobs)=registry.get_mut(&owner_key(workspace,owner)) else{return Vec::new();};

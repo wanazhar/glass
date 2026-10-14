@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
-"""glass todo extension — plan tracking, as t3 codes ships it.
+"""Compatibility adapter for GC's native, durable state.todo checklist.
 
-The model keeps its plan in a todo list it manages itself: add
-items as it breaks a task down, check them off as it finishes
-them. The list lives in this process for the session, so it
-costs nothing to keep and disappears when the session ends.
-
-The tool always returns the whole list, so the model sees the
-current state after every change without a separate read.
+Legacy 1-based indices are resolved against a revision-guarded native read.
+The extension keeps no task state of its own.
 """
 
 import json
@@ -15,56 +10,42 @@ import sys
 
 PROTOCOL = 1
 
-# Each item is [description, done]. Order is insertion order,
-# so the list reads as the plan was made.
-todos = []
-
-
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
 
 
-def render():
-    if not todos:
-        return "(no todos)"
-    lines = []
-    for i, (desc, done) in enumerate(todos, 1):
-        mark = "x" if done else " "
-        lines.append(f"{i}. [{mark}] {desc}")
-    pending = sum(1 for _, d in todos if not d)
-    return "\n".join(lines) + f"\n{pending} pending, {len(todos) - pending} done"
+def host(args):
+    send({"type": "call_tool", "call_id": "todo-native", "name": "state", "arguments": json.dumps(args)})
+    for line in sys.stdin:
+        reply = json.loads(line)
+        if reply.get("type") == "call_tool_result" and reply.get("call_id") == "todo-native":
+            return str(reply.get("body") or "")
+    raise RuntimeError("Native checklist writer unavailable")
 
 
 def handle(args):
     action = (args.get("action") or "list").strip().lower()
     if action == "add":
-        item = (args.get("item") or "").strip()
-        if not item:
-            return "todo: add needs an item"
-        todos.append([item, False])
-        return "added:\n" + render()
-    if action == "check":
-        return _mark(args, True)
-    if action == "uncheck":
-        return _mark(args, False)
-    if action == "remove":
-        idx = args.get("index")
-        if not isinstance(idx, int) or not (1 <= idx <= len(todos)):
-            return f"todo: index must be 1..{len(todos)}"
-        removed = todos.pop(idx - 1)[0]
-        return f"removed: {removed}\n" + render()
+        return host({"todo": {"ops": [{"op": "add", "items": [{"title": args.get("item", "")}]}]}})
+    snapshot = host({"todo": {}})
+    if snapshot.startswith("error:"):
+        return snapshot
+    value = json.loads(snapshot)
+    tasks = value["tasks"]
     if action == "list":
-        return render()
-    return f"todo: unknown action `{action}` (add, check, uncheck, remove, list)"
-
-
-def _mark(args, done):
-    idx = args.get("index")
-    if not isinstance(idx, int) or not (1 <= idx <= len(todos)):
-        return f"todo: index must be 1..{len(todos)}"
-    todos[idx - 1][1] = done
-    return render()
+        return snapshot
+    index = args.get("index")
+    if isinstance(index, bool) or not isinstance(index, int) or not 1 <= index <= len(tasks):
+        return f"error: todo index must be 1..{len(tasks)}"
+    task = tasks[index - 1]
+    if action == "remove":
+        op = {"op": "remove", "id": task["id"]}
+    elif action in ("check", "uncheck"):
+        op = {"op": "update", "id": task["id"], "status": "completed" if action == "check" else "pending"}
+    else:
+        return f"error: unknown todo action {action}"
+    return host({"todo": {"ops": [op]}, "expected": value["revision"]})
 
 
 for line in sys.stdin:
@@ -83,13 +64,13 @@ for line in sys.stdin:
             "id": rid,
             "protocol": PROTOCOL,
             "name": "todo",
-            "version": "1.0.0",
+            "version": "1.1.0",
             "system_prompt": (
-                "A `todo` tool tracks the plan. For any task with more than "
+                "The compatibility `todo` tool uses native state.todo storage. Prefer batching with state.todo. For any task with more than "
                 "two steps, break it into todos with action `add`, then check "
                 "them off (`check`) as each finishes. The tool returns the "
-                "whole list after every change, so read that, not a separate "
-                "call. Keep items small enough that each is one turn of work, "
+                "changed tasks after every change; list reads the full list. "
+                "Keep items small enough to track concrete work, "
                 "and add new ones when the plan changes."
             ),
             "tools": [
@@ -98,7 +79,7 @@ for line in sys.stdin:
                     "description": (
                         "Manage the plan. Actions: add (needs `item`), "
                         "check/uncheck/remove (need 1-based `index`), list. "
-                        "Always returns the full current list."
+                        "Writes return changed tasks; list reads the full native checklist."
                     ),
                     "schema": {
                         "type": "object",
@@ -133,7 +114,7 @@ for line in sys.stdin:
             try:
                 send({"id": rid, "output": handle(args)})
             except Exception as e:  # noqa: BLE001
-                send({"id": rid, "output": f"todo: {e}"})
+                send({"id": rid, "output": f"error: todo: {e}"})
         else:
             send({"id": rid, "output": f"todo: unknown tool {name}"})
         continue

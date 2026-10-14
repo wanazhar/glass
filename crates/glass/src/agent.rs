@@ -174,6 +174,7 @@ pub struct Agent<'a> {
     pub provider: &'a dyn Provider,
     pub session: &'a mut Session,
     pub state: &'a mut State,
+    checklist_error: Option<String>,
     pub mods: &'a [Box<dyn Mod_>],
     /// External extensions. Separate from `mods` because they are child
     /// processes on a pipe rather than in-process trait objects.
@@ -290,11 +291,14 @@ impl<'a> Agent<'a> {
         extensions: &'a mut ext::Registry,
         workspace: &'a Path,
     ) -> Self {
+        session.validate_writes();
+        let todo_error = session.write_error().map(str::to_string).or_else(||state.load_todo_once(session).err());
         extensions.bind_session_path(session.path.clone());
         Self {
             provider,
             session,
             state,
+            checklist_error: todo_error,
             mods,
             extensions,
             workspace,
@@ -493,6 +497,7 @@ impl<'a> Agent<'a> {
         &mut self,
         mut pump: impl FnMut(&mut Option<String>),
     ) -> Result<TurnOutput, provider::Error> {
+        if let Some(error) = &self.checklist_error { return Err(provider::Error::Config(error.clone())); }
         self.session.validate_writes();
         if let Some(error) = self.session.write_error() {
             return Err(provider::Error::Config(format!(
@@ -875,6 +880,7 @@ impl<'a> Agent<'a> {
         &mut self,
         mut pump: impl FnMut(&mut Option<String>),
     ) -> Result<(TurnOutput, Stop), provider::Error> {
+        if let Some(error) = &self.checklist_error { return Err(provider::Error::Config(error.clone())); }
         self.session.validate_writes();
         if let Some(error) = self.session.write_error() {
             return Err(provider::Error::Config(format!(
@@ -926,6 +932,8 @@ impl<'a> Agent<'a> {
         self.loop_window.clear();
         let mut repairs = 0;
         let mut repair_tools = None;
+        let mut checklist_continuations = 0;
+        let mut checklist_revision = None;
         for round in 0..self.max_tool_rounds {
             crate::team::record_notices(self.session).map_err(provider::Error::Config)?;
             let mut pressure_retries = 0;
@@ -1036,6 +1044,20 @@ impl<'a> Agent<'a> {
             }
 
             if !out.wants_tools() {
+                let revision = self.state.todo.revision();
+                if !self.read_only && self.state.todo.can_continue(&out.text)
+                    && !crate::jobs::has_running(self.workspace,&self.session.id)
+                    && !crate::team::get(&self.session.id).is_some_and(|hub|hub.snapshot().iter().any(|a|a.status=="working")) {
+                    if checklist_continuations < 2 && checklist_revision.as_ref()!=Some(&revision) {
+                        checklist_continuations += 1;
+                        checklist_revision = Some(revision);
+                        let notice = "Checklist continuation · unfinished actionable tasks remain; continuing without replaying completed tools.";
+                        self.emit(Progress::ProviderNotice(notice));
+                        self.session.append_checked(&[Record::System(format!("{notice} Update the existing checklist IDs, do remaining work, and report actual verification. If waiting for the user or another agent, block that task with a reason. {}", self.state.todo.context().unwrap_or_default()))]).map_err(|e|provider::Error::Config(e.to_string()))?;
+                        continue;
+                    }
+                    self.emit(Progress::ProviderNotice("Checklist continuation paused · no progress or continuation allowance reached; inspect /todo. Pending tasks are preserved."));
+                }
                 self.schedule_warm();
                 return Ok((last, Stop::Finished));
             }
@@ -1666,10 +1688,7 @@ impl<'a> Agent<'a> {
                         arguments,
                     };
                     let mut output = state.apply(&nested).body;
-                    if previous.items() != state.items()
-                        && let Err(error) = session.append_checked(&[Record::State(state.items().to_vec())])
-                    {
-                        *state = previous;
+                    if let Err(error) = state.persist(session, previous) {
                         output = format!("error: nested state was rolled back: {error}");
                     }
                     let _ = reply.send(output);
@@ -1797,14 +1816,7 @@ impl<'a> Agent<'a> {
     }
 
     fn persist_state_change(&mut self, before: State) -> Result<(), String> {
-        if before.items() == self.state.items() {
-            return Ok(());
-        }
-        if let Err(error) = self.session.append_checked(&[Record::State(self.state.items().to_vec())]) {
-            *self.state = before;
-            return Err(format!("error: state update was not persisted and was rolled back: {error}"));
-        }
-        Ok(())
+        self.state.persist(self.session, before)
     }
 
     /// Refuse a write to a file the model has not read.
@@ -1981,7 +1993,7 @@ impl<'a> Agent<'a> {
                 outcome = crate::checkpoint_tools::run(call, self.session, &mut noop);
             }
         } else if call.name == "state" {
-            let namespaces = ["guidance", "neuralnets", "capabilities", "items"].iter().filter(|key| call.arg_raw(key).is_some()).count();
+            let namespaces = ["guidance", "neuralnets", "capabilities", "items", "todo"].iter().filter(|key| call.arg_raw(key).is_some()).count();
             if namespaces > 1 {
                 outcome = tools::Outcome::err("Use one state namespace per call");
             } else if let Some(raw) = call.arg_raw("guidance") {

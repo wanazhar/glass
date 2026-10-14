@@ -24,6 +24,7 @@
 | `/status` | connection, model, and session status |
 | `/clear` | start a fresh session in this terminal |
 | `/extensions` | discover, inspect, enable, or disable extensions |
+| `/todo` | inspect the native checklist; edit when idle, read during a turn |
 | `/plan` | inspect the project and review a plan before execution |
 | `/init` | draft AGENTS.md for this repository in a read-only run |
 | `/git` | review changes, stage files or hunks, confirm a commit |

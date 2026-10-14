@@ -13,6 +13,7 @@ External project observations have not been revalidated by this editorial update
 - [Feature consolidation audit](feature-consolidation-audit.md)
 - [Inline conversation scrolling](inline-scroll.md)
 - [Live turn UI](live-turn-ui.md)
+- [Native execution checklist](native-checklist.md)
 - [Direct native file tools](native-file-tools.md)
 - [Native files, diagnostics, and owned jobs](native-files-jobs.md)
 - [Neuralnets and model guidance protocol](neuralnets.md)
@@ -132,3 +133,5 @@ External project observations have not been revalidated by this editorial update
 
 - [Workbench guide](../workbench.md): retained entry point for links written
   before user guides and detailed references were separated.
+
+- [Native checklist verification](reviews/native-checklist-001.md)

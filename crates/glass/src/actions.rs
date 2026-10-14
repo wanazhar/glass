@@ -16,7 +16,7 @@ pub fn group(name: &str) -> Group {
         | "thinking" | "review" | "turns" | "diff" | "git" | "pr" | "code-review" | "advisor"
         | "checkpoint" | "checkpoints" | "undo" | "restore" | "activity" | "attention"
         | "agents" | "jobs" | "job" | "bg" | "loop" | "send" | "queue" | "queue-run" | "plan"
-        | "constraints" | "retry" | "recovery" | "diagnostics" | "tasks" => Group::Work,
+        | "constraints" | "todo" | "retry" | "recovery" | "diagnostics" | "tasks" => Group::Work,
         _ => Group::Settings,
     }
 }
@@ -34,7 +34,7 @@ pub fn canonical(name: &str) -> &str {
 pub fn available_during_turn(name: &str) -> bool {
     matches!(
         canonical(name),
-        "queue" | "agents" | "outputs" | "thinking" | "help" | "work"
+        "queue" | "agents" | "outputs" | "thinking" | "help" | "work" | "todo"
     )
 }
 pub fn effect(name: &str) -> &'static str {
@@ -73,6 +73,7 @@ const BUILTIN: &[(&str, &str, &str, bool)] = &[
         false,
     ),
     ("help", "", "Show help", false),
+    ("todo", "", "Inspect and manage the session checklist", false),
     (
         "neuralnets",
         "",

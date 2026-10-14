@@ -49,7 +49,7 @@ impl Reader {
         let loaded_spills = HashMap::new();
         let mut transcript =
             Transcript::new(render_entries(&entries, &HashSet::new(), &loaded_spills));
-        let content = Transcript::content_rect(rect);
+        let content = Transcript::content_rect(reasoning_area(rect, title));
         transcript.set_width(content.width);
         transcript.follow_tail(content.height);
         if page_up {
@@ -74,6 +74,9 @@ impl Reader {
 
     fn area(&self) -> Rect {
         viewport(self.fullscreen)
+    }
+    fn layout_area(&self) -> Rect {
+        reasoning_area(self.area(), &self.title)
     }
     pub fn searching(&self) -> bool {
         self.search.is_some()
@@ -114,7 +117,7 @@ impl Reader {
     }
 
     pub fn event(&mut self, event: &Event, composer_has_draft: bool) -> io::Result<Action> {
-        let area = Transcript::content_rect(self.area());
+        let area = Transcript::content_rect(self.layout_area());
         let draw;
         match event {
             Event::Resize(_, _) => {
@@ -292,7 +295,14 @@ impl Reader {
         stdout.write_all(b"\x1b[?2026h")?;
         stdout.flush()?;
         let result = self.terminal.draw(|frame| {
-            self.transcript.draw(frame, &[], &self.title);
+            if self.title == "Provider reasoning" {
+                use glass_tui::ratatui::{style::{Color, Style}, widgets::Block};
+                let area = frame.area();
+                frame.render_widget(Block::default().style(Style::default().bg(Color::Reset).fg(Color::Gray)), area);
+                self.transcript.draw_in(frame, &[], "Reasoning · Esc back", reasoning_area(area, &self.title));
+            } else {
+                self.transcript.draw(frame, &[], &self.title);
+            }
         });
         if !self.fullscreen {
             crate::surface::restore_composer_cursor();
@@ -307,7 +317,7 @@ impl Reader {
     }
 
     fn visible_tool_card_index(&self) -> Option<usize> {
-        let area = Transcript::content_rect(self.area());
+        let area = Transcript::content_rect(self.layout_area());
         let first = self.transcript.layout.entry_at_line(self.transcript.scroll);
         if self
             .entries
@@ -390,7 +400,7 @@ impl Reader {
         if navigate {
             self.match_count = self.transcript.search(query);
             self.transcript
-                .search_next(false, Transcript::content_rect(self.area()).height);
+                .search_next(false, Transcript::content_rect(self.layout_area()).height);
         } else {
             self.match_count = self.transcript.refresh_search(query);
         }
@@ -438,6 +448,12 @@ fn render_entries(
             entry
         })
         .collect()
+}
+
+fn reasoning_area(area: Rect, title: &str) -> Rect {
+    if title == "Provider reasoning" && area.width >= 30 && area.height >= 10 {
+        area.inner(glass_tui::ratatui::layout::Margin::new(2, 1))
+    } else { area }
 }
 
 fn viewport(fullscreen: bool) -> Rect {

@@ -327,7 +327,10 @@ impl Transcript {
 
     /// Draw one frame. Only `height` lines are ever constructed.
     pub fn draw(&mut self, frame: &mut Frame, mods: &[Box<dyn Mod_>], session_label: &str) {
-        let area = frame.area();
+        self.draw_in(frame, mods, session_label, frame.area());
+    }
+
+    pub fn draw_in(&mut self, frame: &mut Frame, mods: &[Box<dyn Mod_>], session_label: &str, area: Rect) {
         let chunks = RLayout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(0), Constraint::Length(1)])
@@ -347,7 +350,7 @@ impl Transcript {
         let items = self.layout.visible(self.scroll, content);
 
         let session_label = if area.width < 40 {
-            if session_label == "Provider reasoning" {
+            if session_label == "Provider reasoning" || session_label.starts_with("Reasoning") {
                 "Reasoning"
             } else {
                 "Log"

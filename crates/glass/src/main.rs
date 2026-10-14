@@ -3953,6 +3953,7 @@ fn drain_input(
         }
         // Interrupt must work before overlays consume editing keys.
         if matches!(&ev, Event::Key(k) if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c')) {
+            painter.live.borrow_mut().close().ok();
             palette.close();
             surface::overlay(false).ok();
             editor.clear();
@@ -4047,6 +4048,10 @@ fn drain_input(
         let resized = painter.refresh_geometry(true);
         if resized {
             surface::composer(editor, true, true);
+        }
+        if painter.live.borrow_mut().event(&ev) {
+            dirty = true;
+            continue;
         }
         if painter.reader_active() {
             match painter.reader_event(&ev, !editor.text().is_empty()) {
@@ -4443,6 +4448,7 @@ impl Painter {
     }
 
     fn refresh_geometry(&self, reader_allowed: bool) -> bool {
+        if self.live.borrow().active() { return false; }
         let current = term_size();
         if self.last_size.get() == current {
             return false;
@@ -4684,6 +4690,10 @@ impl Painter {
     }
 
     fn sync_reader(&self) {
+        // A fullscreen live view owns these cells until it closes.
+        if self.live.borrow().active() { self.reader_dirty.set(true); return; }
+        if surface::reader_invalidated()
+            && let Some(reader) = self.reader.borrow_mut().as_mut() { reader.restore_after_overlay().ok(); }
         let entries = self.live.borrow().snapshot();
         if let Some(reader) = self.reader.borrow_mut().as_mut()
             && reader.update(entries).is_ok()

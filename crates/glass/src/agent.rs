@@ -276,6 +276,26 @@ impl<'a> Agent<'a> {
                 .and_then(|raw| serde_json::from_str(&raw).ok())
                 .map(|v| crate::jobs::label(&v))
         });
+        let command = command.map(|label| {
+            let outside = call.arg_str("path").is_some_and(|path| {
+                let mut normalized = std::path::PathBuf::new();
+                for component in self.workspace.join(path).components() {
+                    match component {
+                        std::path::Component::ParentDir => { normalized.pop(); },
+                        std::path::Component::CurDir => {},
+                        other => normalized.push(other.as_os_str()),
+                    }
+                }
+                !normalized.starts_with(self.workspace)
+            });
+            let system_write = call.name == "bash" && call.arg_str("command").is_some_and(|command| {
+                verify::written_paths(&command, self.workspace).iter().any(|path|
+                    ["/proc", "/sys", "/dev"].iter().any(|root| path.starts_with(root)))
+            });
+            if system_write { format!("[system control write · check impact] {label}") }
+            else if outside { format!("[outside workspace · {}] {label}", crate::sandbox::permission_profile_label()) }
+            else { label }
+        });
         self.emit(Progress::ToolStart {
             call_id: &call.id,
             name: &call.name,
@@ -1833,6 +1853,15 @@ impl<'a> Agent<'a> {
             let command=call.arg_str("command")?;
             verify::written_paths(&command,&tools::bash_cwd(call, self.workspace).ok()?)
         };
+        // Kernel/device control writes are commands, not document replacement.
+        // Shell policy still authorizes them; unrestricted mode must not demand
+        // a native text read of a write-only kernel interface.
+        let targets = targets.into_iter().filter(|path| {
+            !(call.name == "bash"
+                && crate::sandbox::permission_profile_label() == "unrestricted"
+                && crate::sandbox::policy() == crate::sandbox::Policy::Off
+                && ["/proc", "/sys", "/dev"].iter().any(|root| path.starts_with(root)))
+        }).collect::<Vec<_>>();
         let blocked = self.reads.blocked(&targets);
         if blocked.is_empty() {
             return None;
@@ -2541,6 +2570,21 @@ for line in sys.stdin:
             assert!(agent.read_before_write_refusal(&root_write).is_some());
         }
         drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn kernel_control_commands_do_not_require_a_document_read_in_unrestricted_mode() {
+        let dir = std::env::temp_dir().join(format!("gc-kernel-guard-{}", std::process::id()));
+        let mut session = Session::create(&dir).unwrap();
+        let mut state = State::new();
+        let mods = Vec::new();
+        let mut extensions = Registry::load(&[], &dir, "mock");
+        let agent = Agent::new(&MockTurnProvider, &mut session, &mut state, &mods, &mut extensions, &dir);
+        let call = ToolCall { id:"control".into(), name:"bash".into(), arguments:serde_json::json!({"command":"echo 3 > /proc/sys/vm/drop_caches"}).to_string() };
+        assert!(agent.read_before_write_refusal(&call).is_none());
+        // Deliberately never execute this system-control command.
+        drop(agent); drop(session);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

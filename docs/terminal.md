@@ -177,3 +177,10 @@ waits. `program_status = "off"` disables reports. Headless output omits them.
 Reports use a session title or error excerpt and exclude prompts and model output.
 Terminals that do not support the sequence may ignore it. No detection handshake
 is required. This protocol is separate from turn notifications.
+
+The live reasoning reader owns the screen while open. The conversation reader
+pauses drawing beneath it and restores its content when the reasoning view
+closes. Wide terminals use a padded reasoning area; narrow terminals retain the
+available reading width. Scrolling and search use the same area as rendering.
+Ctrl+C closes the reasoning reader before cancelling current work and returning
+to the composer.

@@ -17,5 +17,5 @@ with tempfile.TemporaryDirectory() as d:
    t.send('\x1b');t.wait('Settings');t.send('\x1b');t.wait('Esc close');assert '/settings' in t.vt.text(),t.vt.text()
    t.send('\x1b');t.read(.3);assert 'Esc close' not in t.vt.text(),t.vt.text()
    t.send('saved draft\x10');t.wait('Esc close');t.send('settings');t.read(.2);t.send('\r');t.wait('Settings');t.send('\x1b');t.wait('Esc close');t.send('\x1b');t.read(.3);assert 'saved draft' in t.vt.text(),t.vt.text()
-   t.send('\x03');t.read(.2);t.send('\x04');t.finish();print(size,'nested theme → settings → palette → composer PASS')
+   t.send('\x03');t.read(.2);t.send('\x04');t.wait('Exit glass-core?');t.send('\r');t.finish();print(size,'nested theme → settings → palette → composer PASS')
   finally:t.close()

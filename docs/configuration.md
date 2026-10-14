@@ -162,6 +162,8 @@ tool calls also trigger cooldown and bounded recovery. Structured stream errors
 retain their HTTP status; explicit upstream 5xx rejections can recover too. Completed tools and the
 request context remain unchanged. Five attempts are allowed before reporting a
 persistent refusal; ambiguous transport failures are not automatically replayed.
+Quota and billing refusals do not trigger automatic retries or learned delays.
+Cancelling a request also interrupts retry waits before another attempt is sent.
 
 Kilo documents a [200-request hourly limit per IP for free models](https://kilo.ai/docs/gateway/usage-and-billing).
 Other applications on the same IP consume that allowance too. Request pacing

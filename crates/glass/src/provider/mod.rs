@@ -227,14 +227,23 @@ pub fn stream_with_retry<'a>(
 ) -> Result<Box<dyn Iterator<Item = Event> + 'a>, Error> {
     let mut attempt = 0u8;
     loop {
+        if cancellable::is_cancelled() {
+            return Err(Error::Transport("provider request cancelled".into()));
+        }
         match provider.stream(req) {
             Ok(stream) => return Ok(stream),
             Err(e) if is_transient(&e) && attempt + 1 < attempts => {
                 attempt += 1;
                 let delay = delays.get((attempt - 1) as usize).copied().unwrap_or(0);
                 on_retry(attempt, delay, &e.to_string());
-                if delay > 0 {
-                    std::thread::sleep(std::time::Duration::from_secs(delay));
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(delay);
+                loop {
+                    if cancellable::is_cancelled() {
+                        return Err(Error::Transport("provider retry cancelled".into()));
+                    }
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() { break; }
+                    std::thread::sleep(remaining.min(std::time::Duration::from_millis(25)));
                 }
             }
             Err(e) => return Err(e),
@@ -242,10 +251,27 @@ pub fn stream_with_retry<'a>(
     }
 }
 
+/// Preserve structured quota classifications even when the human message is vague.
+fn http_error_message(body: &str) -> String {
+    let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
+    let message = parsed.as_ref().and_then(|v| v["error"]["message"].as_str().or_else(|| v["message"].as_str()))
+        .map(str::to_owned).unwrap_or_else(|| body.chars().take(400).collect());
+    if let Some(value) = parsed {
+        for object in [&value["error"], &value] {
+            for field in ["code", "type"] {
+                if let Some(code) = object[field].as_str().filter(|code| pacing::quota_limited(code)) {
+                    return format!("{code}: {message}");
+                }
+            }
+        }
+    }
+    message
+}
+
 /// Whether policy permits automatic retries before a stream is obtained.
 pub(crate) fn is_transient(e: &Error) -> bool {
     match e {
-        Error::Status(code, _) => *code == 429 || *code >= 500,
+        Error::Status(code, message) => (*code == 429 && !pacing::quota_limited(message)) || *code >= 500,
         // Transport errors do not prove that a generation was never accepted.
         Error::Transport(_) => false,
         Error::Config(_) => false,
@@ -607,6 +633,32 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_a_retry_does_not_wait_or_send_again() {
+        use std::sync::{Arc, atomic::{AtomicBool, AtomicU8, Ordering}};
+        let calls = Arc::new(AtomicU8::new(0));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let p = Flaky { calls: calls.clone(), fail: 1, code: 429 };
+        let start = std::time::Instant::now();
+        cancellable::scoped(cancelled.clone(), || {
+            let result = stream_with_retry(&p, &flaky_req(), 3, &[10], |_, _, _| cancelled.store(true, Ordering::Release));
+            assert!(matches!(result, Err(Error::Transport(message)) if message.contains("cancelled")));
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn already_cancelled_requests_do_not_send() {
+        use std::sync::{Arc, atomic::{AtomicBool, AtomicU8, Ordering}};
+        let calls = Arc::new(AtomicU8::new(0));
+        let p = Flaky { calls: calls.clone(), fail: 0, code: 429 };
+        cancellable::scoped(Arc::new(AtomicBool::new(true)), || {
+            assert!(stream_with_retry(&p, &flaky_req(), 3, &[0], |_, _, _| {}).is_err());
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn a_server_error_is_transient() {
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
         let p = Flaky {
@@ -636,6 +688,24 @@ mod tests {
             1,
             "no retry on a 4xx"
         );
+    }
+
+    #[test]
+    fn quota_refusals_are_not_transient_and_keep_their_classification() {
+        for detail in ["insufficient_quota", "quota exceeded", "credits exhausted", "billing required", "usage limit reached"] {
+            assert!(!is_transient(&Error::Status(429, detail.into())));
+        }
+        for field in ["code", "type"] {
+            for code in ["insufficient_quota", "quota_exceeded", "usage_limit_reached"] {
+                let value = serde_json::json!({field:code, "message":"Provider returned error"});
+                for body in [value.to_string(), serde_json::json!({"error":value}).to_string()] {
+                    let message = http_error_message(&body);
+                    assert!(message.contains(code));
+                    assert!(!is_transient(&Error::Status(429, message)));
+                }
+            }
+        }
+        assert!(is_transient(&Error::Status(429, "too many requests".into())));
     }
 
     #[test]

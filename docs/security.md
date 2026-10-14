@@ -30,6 +30,9 @@ refuse execution if their required confinement cannot be installed. Session
 approvals are held in memory and cleared when changing conversations. Headless,
 delegated, and extension host-tool calls do not inherit an interactive exception.
 
+The read-only profile permits reads and writes to `/dev/null`, whose output is
+discarded. Workspace and outside-file writes remain denied.
+
 Read [Confinement details](security-confinement.md) before relying on a profile or
 capability declaration. It documents pinned paths, platform support, credential
 filtering, and protocols that network rules do not cover.

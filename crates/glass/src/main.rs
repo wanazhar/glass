@@ -3798,7 +3798,7 @@ fn repl(
                     }
                 }
                 Err(e) => {
-                    painter.notice(&mut surface::BodyWriter, "\x1b[31m", &format!("error: {e}"));
+                    painter.notice(&mut surface::BodyWriter, &glass_tui::theme::ansi(glass_tui::theme::Tone::Error), &format!("error: {e}"));
                     last_error = Some(e.to_string());
                 }
             }
@@ -4797,6 +4797,8 @@ impl Painter {
             phase.clone()
         } else if phase == "Provider reasoning" {
             "Reasoning".into()
+        } else if phase == "Provider cooldown" && self.width.get() < 32 {
+            "Cooldown".into()
         } else if self.width.get() < 32 {
             glass_tui::text::clip(&phase, 22)
         } else {

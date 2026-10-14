@@ -202,11 +202,11 @@ impl Live {
                 );
             }
             Progress::ProviderNotice(text) => {
-                self.phase = "Provider fallback";
-                self.provider_detail = Some(format!(
-                    "{} · /status /model",
-                    sanitize_provider_detail(text)
-                ));
+                let cooldown = text.starts_with("Provider cooldown");
+                self.phase = if cooldown { "Provider cooldown" } else { "Provider fallback" };
+                self.provider_detail = Some(if cooldown {
+                    sanitize_provider_detail(text.strip_prefix("Provider cooldown · ").unwrap_or(text))
+                } else { format!("{} · /status /model", sanitize_provider_detail(text)) });
                 self.append_entry(
                     Role::System,
                     format!("Provider notice: {}", sanitize_provider_detail(text)),
@@ -519,6 +519,15 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn cooldown_is_waiting_not_provider_fallback() {
+        let mut live = Live::new();
+        live.progress(&Progress::ProviderNotice("Provider cooldown · 2.0s · waiting"));
+        assert_eq!(live.phase(), "Provider cooldown");
+        assert_eq!(live.provider_detail(), Some("2.0s · waiting"));
+        live.finish();
+        assert_eq!(live.phase(), "Turn finished");
+    }
     #[test]
     fn live_view_wheel_deltas_only_scroll_for_wheel_events() {
         assert_eq!(wheel_lines(MouseEventKind::ScrollUp), Some(-3));

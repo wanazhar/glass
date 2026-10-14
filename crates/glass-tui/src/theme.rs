@@ -216,6 +216,11 @@ impl<W: Write> Write for TerminalWriter<W> {
         self.inner.write_all(&out)?;
         Ok(bytes.len())
     }
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> io::Result<()> {
+        // Keep SGR and its text together when the destination restores cursor
+        // attributes after each write (the primary transcript surface).
+        self.write_all(format!("{args}").as_bytes())
+    }
     fn flush(&mut self) -> io::Result<()> {
         self.inner.write_all(&self.pending)?;
         self.pending.clear();
@@ -226,6 +231,18 @@ impl<W: Write> Write for TerminalWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn formatted_style_and_text_are_one_surface_write() {
+        #[derive(Default)] struct Sink(Vec<Vec<u8>>);
+        impl Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> { self.0.push(bytes.to_vec()); Ok(bytes.len()) }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let mut writer = TerminalWriter { inner: Sink::default(), pending: Vec::new(), neutral: false };
+        let color="\x1b[31m"; let text="styled notice";
+        writeln!(writer,"{color}{text}\x1b[0m").unwrap();
+        assert_eq!(writer.inner.0, vec![b"\x1b[31mstyled notice\x1b[0m\n".to_vec()]);
+    }
     #[test]
     fn original_palette_indices_remain_compatible() {
         assert_eq!(&NAMES[..3], &["Aurora", "Amber", "Monochrome"]);

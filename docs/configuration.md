@@ -135,7 +135,7 @@ Further requests in a tight burst have a minimum 200 ms spacing. Ordinary model
 turns usually take longer than this and incur no additional wait. File tools,
 commands, and local previews do not use this gate.
 
-HTTP 429 and 503 responses increase request spacing from 2 seconds up to 60 seconds.
+HTTP 429 and 5xx responses increase request spacing from 2 seconds up to 60 seconds.
 Eight successful responses halve that spacing. Five idle minutes clear learned
 spacing once any server cooldown has expired. GC honors `Retry-After` seconds
 or HTTP dates, and exhausted OpenAI request-limit reset headers, with a maximum
@@ -144,7 +144,8 @@ be cancelled. Credentials are hashed for the in-memory account key and are never
 written by the pacer. Small private records under the data directory share timing
 and cooldowns across processes; each request holds the account lock only while
 reading or updating that record. Explicit stream throttles before answer text or
-tool calls also trigger cooldown and bounded recovery. Completed tools and the
+tool calls also trigger cooldown and bounded recovery. Structured stream errors
+retain their HTTP status; explicit upstream 5xx rejections can recover too. Completed tools and the
 request context remain unchanged. Five attempts are allowed before reporting a
 persistent refusal; ambiguous transport failures are not automatically replayed.
 

@@ -8,11 +8,17 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
     def log_message(self,*_):pass
     def do_POST(self):
         s=self.server; s.bodies.append(json.loads(self.rfile.read(int(self.headers['Content-Length'])))); s.starts.append(time.monotonic()); n=len(s.starts)
+        if s.mode=='http-overload' and n==1:
+            self.send_response(502);self.end_headers();self.wfile.write(b'{"error":{"message":"Provider returned error"}}');return
         if s.mode=='recover' and n==3:
             self.send_response(429);self.send_header('Retry-After','0.1');self.end_headers();self.wfile.write(b'{"error":{"message":"too many requests"}}');return
         self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
         if s.mode=='recover' and n==1: event={'choices':[{'delta':{'tool_calls':[{'index':0,'id':'once','function':{'name':'bash','arguments':json.dumps({'command':'printf x >> once.txt'})}}]}}]}
         elif s.mode=='recover' and n==2:event={'error':{'type':'rate_limit_error','message':'Provider returned error'}}
+        elif s.mode=='overload' and n==1:event={'error':{'code':502,'message':'Provider returned error'}}
+        elif s.mode=='status-only' and n==1:event={'error':{'status':'502'}}
+        elif s.mode=='auth':event={'error':{'code':401,'message':'invalid API key'}}
+        elif s.mode=='quota':event={'error':{'code':429,'message':'insufficient_quota'}}
         elif s.mode=='fail':event={'error':{'message':'fixture explicit failure'}}
         else:event={'choices':[{'delta':{'content':'PRESSURE_RECOVERED'}}]}
         self.wfile.write(('data: '+json.dumps(event)+'\n\ndata: [DONE]\n\n').encode())
@@ -35,6 +41,31 @@ with tempfile.TemporaryDirectory(prefix='gc-provider-pressure-') as tmp:
     assert server.starts[-1]-previous>=3.9,server.starts
     print('PASS SSE + HTTP throttle recovery, tools once, unchanged retry context, shared process spacing')
     for file in (root/'data/glass-core/provider-pacing').glob('*.json'):assert file.stat().st_mode & 0o777==0o600
+    server.mode='overload';server.starts=[];server.bodies=[]
+    env['XDG_DATA_HOME']=str(root/'overload-data')
+    p=run('recover gateway rejection')
+    assert p.returncode==0 and 'PRESSURE_RECOVERED' in p.stdout,p.stdout+p.stderr
+    assert len(server.starts)==2 and server.starts[1]-server.starts[0]>=1.9,server.starts
+    assert server.bodies[0]['messages']==server.bodies[1]['messages']
+    print('PASS explicit SSE 502 recovery without changing context')
+    server.mode='status-only';server.starts=[];server.bodies=[]
+    env['XDG_DATA_HOME']=str(root/'status-only-data')
+    p=run('recover code-only gateway rejection')
+    assert p.returncode==0 and 'PRESSURE_RECOVERED' in p.stdout,p.stdout+p.stderr
+    assert len(server.starts)==2 and server.starts[1]-server.starts[0]>=1.9,server.starts
+    print('PASS message-free SSE status 502 recovery')
+    server.mode='http-overload';server.starts=[];server.bodies=[]
+    env['XDG_DATA_HOME']=str(root/'http-overload-data')
+    p=run('recover HTTP gateway rejection')
+    assert p.returncode==0 and 'PRESSURE_RECOVERED' in p.stdout,p.stdout+p.stderr
+    assert len(server.starts)==2 and server.starts[1]-server.starts[0]>=1.9,server.starts
+    print('PASS HTTP 502 learns cooldown')
+    for mode in ('auth','quota'):
+        server.mode=mode;server.starts=[];server.bodies=[]
+        env['XDG_DATA_HOME']=str(root/(mode+'-data'))
+        p=run('reject nonretryable provider error')
+        assert p.returncode!=0 and len(server.starts)==1,(mode,server.starts,p.stdout+p.stderr)
+        print('PASS no automatic replay:',mode)
     server.mode='fail'
     # Use a fresh data directory to isolate rendering from the learned cooldown.
     env['XDG_DATA_HOME']=str(root/'render-data');os.environ['GLASS_CORE_TEST_BINARY']=str(BIN)

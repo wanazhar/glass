@@ -368,8 +368,8 @@ mod tests {
         let got = seen.lock().unwrap().clone();
         assert!(!got.is_empty(), "the subagent must have made a request");
         assert!(
-            got.iter().all(|s| s == parent),
-            "every request must carry the inherited raw base prompt, got: {got:?}"
+            got.iter().all(|s| s == &crate::guidance::model_context(parent.into())),
+            "every request must preserve the inherited prefix with one shared workflow protocol, got: {got:?}"
         );
         let _ = std::fs::remove_dir_all(&scratch);
     }

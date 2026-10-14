@@ -11,6 +11,7 @@ pub(super) struct State {
     pub(super) last: Option<Instant>,
     pub(super) previous: Option<Instant>,
     pub(super) cooldown: Option<Instant>,
+    pub(super) server_cooldown: Option<Instant>,
     pub(super) gap: Duration,
     pub(super) healthy: u8,
 }
@@ -25,7 +26,7 @@ fn key(endpoint: &str, credential: &str) -> [u8; 32] {
     digest.update(credential.as_bytes());
     digest.finish().as_ref().try_into().expect("SHA256 size")
 }
-pub(super) fn acquire(endpoint: &str, credential: &str) -> Result<[u8; 32], Error> {
+pub(super) fn acquire(endpoint: &str, credential: &str, adaptive: bool) -> Result<[u8; 32], Error> {
     let key = key(endpoint, credential);
     let mut notified = false;
     loop {
@@ -43,6 +44,7 @@ pub(super) fn acquire(endpoint: &str, credential: &str) -> Result<[u8; 32], Erro
                     s.last
                         .is_some_and(|t| t.elapsed() < Duration::from_secs(600))
                         || s.cooldown.is_some_and(|t| t > Instant::now())
+                        || s.server_cooldown.is_some_and(|t| t > Instant::now())
                 });
             }
             if all.len() >= 128 && !all.contains_key(&key) {
@@ -63,16 +65,17 @@ pub(super) fn acquire(endpoint: &str, credential: &str) -> Result<[u8; 32], Erro
             let burst = state
                 .previous
                 .is_some_and(|t| now.duration_since(t) < Duration::from_secs(1));
-            let gap = state.gap.max(if burst {
+            let gap = if adaptive { state.gap.max(if burst {
                 Duration::from_millis(200)
             } else {
                 Duration::ZERO
-            });
+            }) } else { Duration::ZERO };
             let ready = state
                 .last
                 .map(|t| t + gap)
                 .into_iter()
-                .chain(state.cooldown)
+                .chain(if adaptive { state.cooldown } else { None })
+                .chain(state.server_cooldown)
                 .max()
                 .unwrap_or(now);
             if ready <= now {
@@ -167,12 +170,9 @@ pub(super) fn observe(key: [u8; 32], status: u16, header: impl Fn(&str) -> Optio
             }
         }
     }
-    if let Some(delay) = reset {
-        state.cooldown = Some(
-            state
-                .cooldown
-                .unwrap_or_else(Instant::now)
-                .max(Instant::now() + delay),
+    if let Some(delay) = retry.into_iter().chain(reset).max() {
+        state.server_cooldown = Some(
+            state.server_cooldown.unwrap_or_else(Instant::now).max(Instant::now() + delay),
         );
     }
     if let Some(shared) = &mut shared { let _ = shared.save(state); }
@@ -211,7 +211,7 @@ mod tests {
     fn idle_accounts_recover_the_fast_path() {
         let k=key("idle-pacing-test", "");
         states().lock().unwrap().insert(k, State { last: Some(Instant::now()-Duration::from_secs(600)), gap: Duration::from_secs(60), ..State::default() });
-        acquire("idle-pacing-test", "").unwrap();
+        acquire("idle-pacing-test", "", true).unwrap();
         assert_eq!(states().lock().unwrap()[&k].gap, Duration::ZERO);
     }
     #[test]
@@ -246,8 +246,24 @@ pub(crate) fn with_notice<T>(notice: impl Fn(String) + 'static, f: impl FnOnce()
         observe(k, 429, |name| (name == "retry-after").then(|| "2".into()));
         assert!(states().lock().unwrap()[&k].cooldown.unwrap().duration_since(Instant::now()) > Duration::from_millis(1900));
     }
+    #[test] fn disabling_adaptation_skips_learned_pressure() {
+        let k = key("off-pressure", "");
+        observe(k, 429, |_| None);
+        let start = Instant::now();
+        acquire("off-pressure", "", false).unwrap();
+        assert!(start.elapsed() < Duration::from_millis(100));
+        assert!(states().lock().unwrap()[&k].cooldown.is_some());
+    }
+    #[test] fn disabling_adaptation_preserves_server_deadline() {
+        let k = key("off-server", "");
+        observe(k, 429, |name| (name == "retry-after").then(|| "0.12".into()));
+        let start = Instant::now();
+        acquire("off-server", "", false).unwrap();
+        assert!(start.elapsed() >= Duration::from_millis(100));
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
     #[test] fn cancelled_gate_does_not_send() {
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        super::super::cancellable::scoped(flag, || assert!(acquire("cancel-test", "").is_err()));
+        super::super::cancellable::scoped(flag, || assert!(acquire("cancel-test", "", true).is_err()));
     }
 }

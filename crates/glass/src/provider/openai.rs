@@ -16,6 +16,7 @@ const DEFAULT_WINDOW: u32 = 128_000;
 
 pub struct OpenAiCompat {
     pub base_url: String,
+    pub adaptive_pacing: bool,
     pub api_key: Option<String>,
     pub model: String,
     /// Wire flavour. `/chat/completions` is universal; `/responses` is the
@@ -37,6 +38,7 @@ impl OpenAiCompat {
     ) -> Self {
         Self {
             base_url: base_url.into(),
+            adaptive_pacing: true,
             api_key,
             model: model.into(),
             flavour: Flavour::ChatCompletions,
@@ -241,7 +243,7 @@ impl Provider for OpenAiCompat {
             rb = rb.header("authorization", format!("Bearer {k}"));
         }
         let pacing_key =
-            super::pacing::acquire(&self.base_url, self.api_key.as_deref().unwrap_or(""))?;
+            super::pacing::acquire(&self.base_url, self.api_key.as_deref().unwrap_or(""), self.adaptive_pacing)?;
         let resp = rb.send_json(&body).map_err(map_transport)?;
         let status = resp.status().as_u16();
         super::pacing::observe(pacing_key, status, |name| {

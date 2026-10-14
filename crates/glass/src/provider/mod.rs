@@ -285,19 +285,22 @@ pub fn build(
     base_url: &str,
     api_key: Option<String>,
     model: &str,
+    adaptive_pacing: bool,
 ) -> Result<Box<dyn Provider>, Error> {
     crate::policy::provider(kind, base_url).map_err(Error::Config)?;
     validate_endpoint(base_url)?;
     match kind {
-        "anthropic" => Ok(Box::new(Anthropic::new(
-            base_url,
-            api_key.unwrap_or_default(),
-            model,
-        ))),
-        "openai" => Ok(Box::new(OpenAiCompat::new(base_url, api_key, model))),
-        "openai-responses" => Ok(Box::new(
-            OpenAiCompat::new(base_url, api_key, model).with_flavour(Flavour::Responses),
-        )),
+        "anthropic" => {
+            let mut provider = Anthropic::new(base_url, api_key.unwrap_or_default(), model);
+            provider.adaptive_pacing = adaptive_pacing;
+            Ok(Box::new(provider))
+        }
+        "openai" | "openai-responses" => {
+            let mut provider = OpenAiCompat::new(base_url, api_key, model);
+            provider.adaptive_pacing = adaptive_pacing;
+            if kind == "openai-responses" { provider = provider.with_flavour(Flavour::Responses); }
+            Ok(Box::new(provider))
+        }
         other => Err(Error::Config(format!("unknown provider `{other}`"))),
     }
 }
@@ -508,7 +511,7 @@ mod tests {
 
     #[test]
     fn unknown_provider_is_a_config_error() {
-        match build("mystery", "https://x", None, "m") {
+        match build("mystery", "https://x", None, "m", true) {
             Err(Error::Config(m)) => assert!(m.contains("mystery")),
             Err(other) => panic!("wrong error: {other:?}"),
             Ok(_) => panic!("expected a config error"),
@@ -518,19 +521,19 @@ mod tests {
     #[test]
     fn provider_dispatch_covers_all_three_flavours() {
         assert_eq!(
-            build("anthropic", "https://example.invalid", None, "m")
+            build("anthropic", "https://example.invalid", None, "m", true)
                 .unwrap()
                 .id(),
             "anthropic"
         );
         assert_eq!(
-            build("openai", "https://example.invalid", None, "m")
+            build("openai", "https://example.invalid", None, "m", true)
                 .unwrap()
                 .id(),
             "openai"
         );
         assert_eq!(
-            build("openai-responses", "https://example.invalid", None, "m")
+            build("openai-responses", "https://example.invalid", None, "m", true)
                 .unwrap()
                 .id(),
             "openai"

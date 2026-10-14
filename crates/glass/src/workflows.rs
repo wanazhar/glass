@@ -203,6 +203,7 @@ fn ephemeral_factory(cfg: &config::Config) -> Result<crate::warmer::ProviderFact
             &cfg.base_url,
             auth::resolve(&cfg)?,
             &cfg.model,
+            cfg.adaptive_pacing,
         )
         .map_err(|e| e.to_string())?;
         let audit = Session::create(&config::data_dir().join("init")).map_err(|e| e.to_string())?;
@@ -388,7 +389,7 @@ pub fn diagnostics(
     let p = if let Some(factory) = factory {
         factory()?
     } else {
-        let inner = provider::build(&cfg.provider, &cfg.base_url, key, &cfg.model)
+        let inner = provider::build(&cfg.provider, &cfg.base_url, key, &cfg.model, cfg.adaptive_pacing)
             .map_err(|e| e.to_string())?;
         let audit =
             Session::create(&config::data_dir().join("diagnostics")).map_err(|e| e.to_string())?;

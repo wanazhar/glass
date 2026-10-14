@@ -1359,11 +1359,9 @@ mod landlock {
         } else {
             Vec::new()
         };
-        let dev_null = if writable.is_empty() {
-            None
-        } else {
-            Some(pin_dev_null(&roots)?)
-        };
+        // The null device is not persistent workspace state. Read-only
+        // commands such as git status open it with read/write access.
+        let dev_null = Some(pin_dev_null(&roots)?);
         build_pinned(writable, readable, dev_null, strict, ports, abi, &mut notes)
     }
 
@@ -1726,9 +1724,7 @@ mod mac {
                 dir.display()
             ));
         }
-        if !read_only {
-            p.push_str("(allow file-write* (literal \"/dev/null\"))\n");
-        }
+        p.push_str("(allow file-write* (literal \"/dev/null\"))\n");
         if strict {
             p.push_str("(deny file-read*)\n");
             p.push_str(&format!(
@@ -1829,17 +1825,19 @@ mod tests {
             PathBuf::from("/lib64"),
             PathBuf::from("/etc"),
         ];
+        assert!(Command::new("git").args(["init", "--quiet"]).arg(&workspace).status().unwrap().success());
         let (fd, _) = landlock::build(&workspace, &[], &readable, true, Some(&[])).unwrap();
         let mut child = Command::new("/bin/sh");
+        // Keep the fixture independent of intentionally unreadable user config.
+        child.env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").env("XDG_CONFIG_HOME", &workspace);
         child.arg("-c").arg(format!(
-            "printf no > '{}'; printf no > '{}'",
-            inside.display(),
-            outside.display()
+            "printf ok > /dev/null || exit 91; git -C '{}' status --short > /dev/null || exit 92; (printf no > '{}') && exit 93; (printf no > '{}') && exit 94; exit 0",
+            workspace.display(), inside.display(), outside.display()
         ));
         unsafe {
             child.pre_exec(move || landlock::enter(fd));
         }
-        let _ = child.status().unwrap();
+        assert!(child.status().unwrap().success(), "read-only git and /dev/null must work while persistent writes stay denied");
         assert!(!inside.exists(), "read-only must deny workspace writes");
         assert!(!outside.exists(), "read-only must deny outside writes");
         let _ = std::fs::remove_dir_all(dir);

@@ -40,14 +40,23 @@ struct Target {
 }
 impl Target {
     fn new(root: &Path, path: &str) -> Result<Self, String> {
-        let root = root.canonicalize().map_err(error)?;
-        let path = Path::new(path);
-        let path = if path.is_absolute() {
-            path.strip_prefix(&root)
-                .map_err(|_| "path escapes workspace")?
-        } else {
-            path
-        };
+        let workspace = root.canonicalize().map_err(error)?;
+        let requested = Path::new(path);
+        let unrestricted = crate::sandbox::permission_profile_label() == "unrestricted"
+            && crate::sandbox::policy() == crate::sandbox::Policy::Off;
+        let absolute = if requested.is_absolute() { requested.to_path_buf() } else { workspace.join(requested) };
+        // Normalize lexically, then retain descriptor-relative NOFOLLOW traversal.
+        let mut normalized = std::path::PathBuf::new();
+        for component in absolute.components() {
+            match component {
+                Component::ParentDir => { normalized.pop(); },
+                Component::CurDir => {},
+                other => normalized.push(other.as_os_str()),
+            }
+        }
+        let root = if unrestricted { Path::new("/").to_path_buf() } else { workspace.clone() };
+        let path = normalized.strip_prefix(&root)
+            .map_err(|_| "permission profile confines native files to the workspace; choose an allowed path or ask the user to change permissions")?;
         let parts = path
             .components()
             .filter(|p| !matches!(p, Component::CurDir))
@@ -67,7 +76,7 @@ impl Target {
         Ok(Self {
             dir,
             name: c(parts.last().unwrap().as_os_str())?,
-            label: path.display().to_string(),
+            label: normalized.strip_prefix(&workspace).unwrap_or(&normalized).display().to_string(),
         })
     }
     fn read(&self) -> Result<Option<(Vec<u8>, std::fs::Metadata)>, String> {
@@ -261,6 +270,11 @@ fn execute_cancellable(
     }
     if !matches!(action, "read" | "check" | "edit" | "write" | "view_image") {
         return Err("action must be read, edit, write, or check".into());
+    }
+    if let Some(reason) = crate::sandbox::refusal() { return Err(reason.to_string()); }
+    if matches!(action, "edit" | "write") && v["preview"] != true
+        && crate::sandbox::permission_profile_label() == "read-only" {
+        return Err("Read-only permission profile blocks file mutations; preview:true remains available".into());
     }
     let target = Target::new(root, required(v, "path")?)?;
     let mutation = matches!(action, "edit" | "write");
@@ -626,7 +640,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
     if args.is_empty() || args[0] == "--help" {
         crate::cli::text(
             "Files",
-            "Usage:\n  gc file [--json] image PATH | read PATH [OFFSET LIMIT] [--byte-offset N --expected SHA256] | check PATH | edit|write < JSON\n\nEdit request:\n {\"path\":\"a.rs\",\"expected\":\"SHA256 from read\",\"edits\":[{\"start\":2,\"end\":3,\"text\":\"replacement\"}]}\nExact edit: {\"old\":\"unique text\",\"new\":\"replacement\"}; insertion: end=start-1.\n\nWrite request:\n {\"path\":\"a.rs\",\"expected\":null,\"text\":\"new file\"} (null=create-only). Optional validate:true requires a passing supported syntax check. preview:true validates and returns a proposed result without writing.\n\nSafety:\nText operations: UTF-8 regular files only, 8 MiB maximum; image prepares PNG/JPEG/GIF/WebP with bounded dimensions and a private JPEG artifact; workspace-relative paths; no symlinks. JSON results are bounded; revisions cover the entire file. Truncated reads include next_read with a byte cursor and expected revision. Byte continuation requires --expected; restart a line read when stale. Atomic replacement preserves mode bits, not ownership or extended attributes; locks coordinate GC writers, not arbitrary external writers.",
+            "Usage:\n  gc file [--json] image PATH | read PATH [OFFSET LIMIT] [--byte-offset N --expected SHA256] | check PATH | edit|write < JSON\n\nEdit request:\n {\"path\":\"a.rs\",\"expected\":\"SHA256 from read\",\"edits\":[{\"start\":2,\"end\":3,\"text\":\"replacement\"}]}\nExact edit: {\"old\":\"unique text\",\"new\":\"replacement\"}; insertion: end=start-1.\n\nWrite request:\n {\"path\":\"a.rs\",\"expected\":null,\"text\":\"new file\"} (null=create-only). Optional validate:true requires a passing supported syntax check. preview:true validates and returns a proposed result without writing.\n\nSafety:\nText operations: UTF-8 regular files only, 8 MiB maximum; image prepares PNG/JPEG/GIF/WebP with bounded dimensions and a private JPEG artifact; Paths follow the active permission profile: unrestricted permits absolute outside-workspace paths; restrictive profiles confine native files. No symlinks. JSON results are bounded; revisions cover the entire file. Truncated reads include next_read with a byte cursor and expected revision. Byte continuation requires --expected; restart a line read when stale. Atomic replacement preserves mode bits, not ownership or extended attributes; locks coordinate GC writers, not arbitrary external writers.",
         );
         return Ok(());
     }
@@ -680,6 +694,11 @@ pub fn command(args: &[String]) -> Result<(), String> {
         }
         serde_json::from_slice(&bytes).map_err(error)?
     };
+    let mut cfg = crate::config::load(&crate::config::default_path()).map_err(error)?;
+    crate::profiles::apply_active(&mut cfg)?;
+    let requirements = crate::requirements::load(&crate::config::config_dir())?;
+    crate::requirements::apply(&requirements, &mut cfg);
+    for warning in crate::sandbox::init(&cfg) { eprintln!("glass-core: {warning}"); }
     let out = execute(&std::env::current_dir().map_err(error)?, &action, &v)?;
     if json_output {
         crate::emit_json(out.clone());
@@ -725,10 +744,10 @@ pub fn schemas() -> Vec<(String, String, String)> {
         {"type":"object","additionalProperties":false,"required":["start","end","text"],"properties":{"start":{"type":"integer","minimum":1},"end":{"type":"integer","minimum":0},"text":{"type":"string"}}}
     ]}});
     vec![
-        ("view_image".into(), "Inspect a workspace PNG, JPEG, GIF or WebP as an image, including browser screenshots. Returns source, dimensions and a reusable image reference; image pixels reach vision-capable models. No symlinks; input max 8 MiB, 32 million pixels; bounded resize and metadata removal.".into(), json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string"}}}).to_string()),
-        ("read".into(),"Read a workspace UTF-8 file with line numbers and whole-file revision. Defaults: offset=1, limit=200. Follow next_read for truncated output; byte_offset requires expected. No symlinks; max 8 MiB.".into(),read.to_string()),
+        ("view_image".into(), "Inspect a PNG, JPEG, GIF or WebP as an image, including browser screenshots. Returns source, dimensions and a reusable image reference; image pixels reach vision-capable models. No symlinks; input max 8 MiB, 32 million pixels; bounded resize and metadata removal.".into(), json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string"}}}).to_string()),
+        ("read".into(),"Read a UTF-8 file allowed by the active permission profile with line numbers and whole-file revision. Defaults: offset=1, limit=200. Follow next_read for truncated output; byte_offset requires expected. No symlinks; max 8 MiB.".into(),read.to_string()),
         ("edit".into(),"Edit a previously read file using its expected revision. edits use unique old/new text or original 1-based start/end/text ranges (insert: end=start-1). Atomic; preview returns a diff without writing; validate requires supported syntax checks.".into(),mutation.to_string()),
-        ("write".into(),"Atomically write a workspace UTF-8 file. expected:null creates only; replacing requires a prior read revision. preview returns a diff without writing; validate requires supported syntax checks. No symlinks; max 8 MiB.".into(),write.to_string())
+        ("write".into(),"Atomically write a UTF-8 file allowed by the active permission profile. expected:null creates only; replacing requires a prior read revision. preview returns a diff without writing; validate requires supported syntax checks. No symlinks; max 8 MiB.".into(),write.to_string())
     ]
 }
 
@@ -998,6 +1017,18 @@ mod tests {
             "one\r\nTWO\nTHREE\r\nFOUR\n"
         );
     }
+    #[test]
+    fn unrestricted_reads_and_revision_guarded_writes_outside_workspace() {
+        let workspace = dir();
+        let external = dir();
+        write(&external, "outside", "original");
+        let path = external.0.join("outside").display().to_string();
+        let read = execute(&workspace.0, "read", &json!({"path":path})).unwrap();
+        assert_eq!(read["revision"], revision(b"original"));
+        execute(&workspace.0, "write", &json!({"path":path,"expected":revision(b"original"),"text":"changed"})).unwrap();
+        assert_eq!(std::fs::read_to_string(external.0.join("outside")).unwrap(), "changed");
+    }
+
     #[test]
     fn symlinks_hardlinks_and_binary_rejected() {
         use std::os::unix::fs::symlink;

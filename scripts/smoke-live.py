@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix='gc-live-pty-') as tmp:
             t = Terminal(root, env, size)
             try:
                 t.idle(); t.send('live fixture\r'); t.wait('Reasoning')
-                t.send('draft'); t.visible('draft'); t.send('\x14'); t.visible('Reasoning' if size[0]<=40 else 'Provider reasonin')
+                t.send('draft'); t.visible('draft'); t.send('\x02'); t.collect(.15); t.send('\x14'); t.visible('Reasoning')
                 Endpoint.gate.set(); t.collect(.4)
                 assert 'Publicsummarylast.' in compact(t.vt.text()), t.vt.text()
                 t.send('\x1b[H'); t.collect(.15)
@@ -89,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix='gc-live-pty-') as tmp:
             t.idle();t.send('unsupported fixture\r');t.wait('running');t.send('\x14');t.visible('Reasoning');t.collect(.1)
             t.send('\x1b[H');t.collect(.1)
             assert 'No provider' in t.vt.text(), t.vt.text()
-            t.send('\x03');t.wait('Cancelled');t.collect(.2)
+            t.send('\x03');t.wait('interrupt');t.collect(1.2)
             assert '❯' in t.vt.text() and 'Provider reasoning' not in t.vt.text(), t.vt.text()
         finally:t.close()
     finally:Endpoint.gate.set();server.shutdown()

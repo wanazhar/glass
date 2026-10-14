@@ -198,3 +198,19 @@ Enable `browser` and use `browser_verify` to capture a page, then pass its retur
 screenshot path to `view_image`. Browser capture accepts screenshots up to 8 MiB;
 native preparation reduces them to the model input bound. See
 [Browser verification](../extensions/browser/README.md).
+
+### Native file scope
+
+The unrestricted permission profile with shell sandboxing off permits native
+file tools to use absolute paths or relative paths outside the workspace.
+Revision checks, bounded reads, regular-file requirements and symlink refusal
+still apply. Restrictive profiles retain the native workspace boundary;
+read-only also blocks mutations. Standalone `gc file` loads the active profile
+and administrator requirements before executing an operation.
+
+Outside-workspace native calls are labelled in live tool activity. Writes to
+kernel and device controls under `/proc`, `/sys` and `/dev` are labelled as system
+control writes. In unrestricted mode, bash does not require a document read
+before such a control write. Ordinary file replacement still requires reading
+the file. This exception does not bypass shell policy, OS permissions or
+restrictive profiles.

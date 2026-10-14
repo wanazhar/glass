@@ -11,7 +11,7 @@ pub(crate) use cancellable::scoped as with_request_cancel;
 mod openai;
 mod pacing;
 mod pacing_shared;
-pub(crate) use pacing::{with_notice as with_pacing_notice, rate_limited};
+pub(crate) use pacing::{with_notice as with_pacing_notice, rate_limited, stream_status};
 
 pub use anthropic::Anthropic;
 pub use chain::Chain;

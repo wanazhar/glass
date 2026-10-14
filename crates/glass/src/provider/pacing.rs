@@ -147,7 +147,7 @@ pub(super) fn observe(key: [u8; 32], status: u16, header: impl Fn(&str) -> Optio
     let mut all = states().lock().unwrap_or_else(|e| e.into_inner());
     let state = all.entry(key).or_default();
     if let Some(shared) = &shared { shared.load(state); }
-    if status == 429 || status == 503 {
+    if status == 429 || status >= 500 {
         state.gap = (state.gap.max(Duration::from_secs(1)) * 2).min(Duration::from_secs(60));
         state.healthy = 0;
         let delay = retry.unwrap_or(state.gap).max(state.gap);
@@ -177,6 +177,12 @@ pub(super) fn observe(key: [u8; 32], status: u16, header: impl Fn(&str) -> Optio
     }
     if let Some(shared) = &mut shared { let _ = shared.save(state); }
 }
+/// Status tags originate only from a structured provider error frame.
+pub(crate) fn stream_status(message: &str) -> Option<u16> {
+    let status = message.strip_prefix("provider rejected stream (HTTP ")?.split_once("):")?.0.parse::<u16>().ok()?;
+    (400..600).contains(&status).then_some(status)
+}
+
 /// Only explicit throttling is safe to retry; quota and billing failures are not.
 pub(crate) fn rate_limited(message: &str) -> bool {
     let text = message.to_ascii_lowercase();

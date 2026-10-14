@@ -820,8 +820,10 @@ impl<'a> Agent<'a> {
                 }
                 Event::Error(e) => {
                     let e = crate::live::sanitize_provider_detail(&e);
-                    if out.text.trim().is_empty() && out.tool_calls.is_empty() && provider::rate_limited(&e) {
-                        return Err(provider::Error::Status(429, format!("stream rejection: {e}")));
+                    if out.text.trim().is_empty() && out.tool_calls.is_empty() {
+                        let status = provider::stream_status(&e).filter(|status| *status != 429 || provider::rate_limited(&e))
+                            .or_else(|| provider::rate_limited(&e).then_some(429));
+                        if let Some(status) = status { return Err(provider::Error::Status(status, format!("stream rejection: {e}"))); }
                     }
                     if !out.text.is_empty() {
                         self.session.append(Record::Assistant(out.text.clone()));
@@ -929,10 +931,10 @@ impl<'a> Agent<'a> {
             let mut pressure_retries = 0;
             let out = loop { let result = match self.turn(&mut pump) {
                 Ok(out) => out,
-                Err(provider::Error::Status(429, ref detail))
-                    if detail.starts_with("stream rejection:") && pressure_retries + 1 < provider::RETRY_ATTEMPTS => {
+                Err(provider::Error::Status(status, ref detail))
+                    if (status == 429 || status >= 500) && detail.starts_with("stream rejection:") && pressure_retries + 1 < provider::RETRY_ATTEMPTS => {
                     pressure_retries += 1;
-                    self.emit(Progress::ProviderNotice("Provider cooldown · rate-limited stream rejected; preserving completed tools and retrying after cooldown."));
+                    self.emit(Progress::ProviderNotice("Provider cooldown · provider rejected stream; preserving completed tools and retrying after cooldown."));
                     continue;
                 }
                 // A refusal that names an overflow can be recovered once: the

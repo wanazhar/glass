@@ -270,8 +270,11 @@ impl Provider for OpenAiCompat {
         stream.acc.delta_keys = "none".into();
         Ok(Box::new(stream.map(move |event| {
             {
-                if let Event::Error(ref message) = event
-                    && super::pacing::rate_limited(message) { super::pacing::observe(pacing_key, 429, |_| None); }
+                if let Event::Error(ref message) = event {
+                    let status = super::pacing::stream_status(message);
+                    if super::pacing::rate_limited(message) { super::pacing::observe(pacing_key, 429, |_| None); }
+                    else if status.is_some_and(|status| status >= 500) { super::pacing::observe(pacing_key, 503, |_| None); }
+                }
                 super::redact_event(event, key.as_deref())
             }
         })))
@@ -476,8 +479,17 @@ impl<R: Read> StreamEvents<R> {
                 || error["code"].as_str().is_some_and(|c| c == "429" || super::pacing::rate_limited(c))
                 || error["status"].as_u64() == Some(429)
                 || error["type"].as_str().is_some_and(super::pacing::rate_limited);
-            if let Some(message) = error.get("message").and_then(Value::as_str).or_else(|| error.as_str()).or(throttled.then_some("provider temporarily throttled requests")) {
-                self.fail(if throttled { format!("rate limit: {message}") } else { message.to_string() });
+            let status = ["code", "status"].iter().find_map(|name| {
+                error[*name].as_u64().and_then(|n| u16::try_from(n).ok())
+                    .or_else(|| error[*name].as_str().and_then(|code| code.parse::<u16>().ok()))
+                    .filter(|status| (400..600).contains(status))
+            });
+            if let Some(message) = error.get("message").and_then(Value::as_str).or_else(|| error.as_str())
+                .or(throttled.then_some("provider temporarily throttled requests"))
+                .or(status.map(|_| "provider rejected request")) {
+                self.fail(if throttled { format!("provider rejected stream (HTTP 429): rate limit: {message}") }
+                    else if let Some(status) = status.filter(|status| (400..600).contains(status)) { format!("provider rejected stream (HTTP {status}): {message}") }
+                    else { message.to_string() });
                 return;
             }
         }

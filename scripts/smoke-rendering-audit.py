@@ -29,6 +29,7 @@ ARCHITECTURE='''flowchart TD
 '''
 CASES=[
  ('simple','flowchart TD\nA[RootReady] --> B[EndReady]',True,True),
+ ('branches','flowchart TD\nA[RootReady] --> B{Is it mermaid?}\nB -->|yes| C[Output diagram]\nB -->|no| D[Convert to mermaid]\nD --> C\nC --> E[Done]',True,True),
  ('screenshot',ARCHITECTURE,True,True),
  ('live-kilo',(Path(__file__).parent/'fixtures/mermaid-architecture-kilo.mmd').read_text().replace('glass-core binary','RootReady').replace('ModAPI["glass-mod-api','ModAPI["RootReady glass-mod-api'),True,True),
  ('cycle','flowchart TD\nRootReady --> Other\nOther --> RootReady',True,True),
@@ -129,4 +130,4 @@ if __name__ == '__main__':
  for size in [(80,30),(40,24),(20,8)]:
   for case in CASES:run(*case,size)
   run('markdown',MARKDOWN,True,True,size,markdown=True)
- print('PASS: 42 release PTY rendering cases; streamed/replayed diagrams, screenshot syntax, all five supported families, explicit source fallback, Markdown, exact logs and drafts')
+ print('PASS: 45 release PTY rendering cases; streamed/replayed diagrams, screenshot syntax, all five supported families, explicit source fallback, Markdown, exact logs and drafts')

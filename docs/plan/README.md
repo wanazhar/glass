@@ -149,6 +149,8 @@ External project observations have not been revalidated by this editorial update
 
 - [Live Kilo architecture rendering — 2026-10-15](reviews/live-architecture-rendering-2026-10-15.md)
 
+- [Flowchart branch layout — 2026-10-15](reviews/flowchart-branch-layout-2026-10-15.md)
+
 ## Previous guide locations
 
 - [Workbench guide](../workbench.md): retained entry point for links written

@@ -144,7 +144,8 @@ within the available width. Enabled Mermaid diagrams preserve surrounding prose
 and other blocks. Native Mermaid rendering is enabled by default; set
 `mermaid = false` to show source. Flowcharts support comments, node labels,
 class suffixes, nested groups, chained connections, and solid, dotted, and thick
-arrows. Wide, grouped, or cyclic flowcharts use boxed components with outgoing arrows
+arrows. Simple solid chains use centered boxes joined by vertical arrows. Branching,
+grouped, or cyclic flowcharts use boxed components with outgoing arrows
 attached to their source; group paths appear above the components. HTML label
 breaks become separate lines in each box. Very narrow views below 16 content
 cells use compact references. Sequence

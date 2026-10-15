@@ -31,6 +31,22 @@ cargo build --release --package glass-core --bin glass-core
 Run the command from the project you want to work on. Git is optional for chat
 and tool execution; Git-based checkpoints and change review require a repository.
 
+## Choose an execution mode
+
+Running `gc` uses saved settings. With no configured override, the default is
+`unrestricted` with sandboxing off.
+
+```sh
+gc --restricted  # Workspace confinement with explicit approval requests
+gc --yolo        # No local sandbox or permission prompts
+```
+
+Administrator requirements and explicit policy denials apply in both modes.
+Approval dialogs pause the turn and show the requested operation before execution.
+Models can also ask questions with choices or a written answer. Question answers
+do not grant execution rights. See [Approvals and user questions](reference/interaction.md)
+for exact scopes, platform limits, and headless behavior.
+
 ## Provider onboarding
 
 Open `/login` to connect a provider or account, then `/model` to select a model.

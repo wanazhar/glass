@@ -7,10 +7,9 @@
 ```
 crates/glass-mod-api   the in-process hook surface, zero dependencies
 crates/glass-tui       terminal rendering, input, virtualized transcript
-crates/glass           loop, providers, tools, session, compaction, config,
-                       extension protocol, AGENTS.md, concurrency, read guard,
-                       post-write verification, /btw, provider onboarding,
-                       account auth, command modals, budgets, checkpoints, jobs
+crates/glass           agent loop, providers, native tools, session storage,
+                       context, configuration, permissions, extension host
+packages/extension-sdk TypeScript extension types, runtime, and examples
 extensions/            reference protocol, optional integrations and CLI helpers
 ```
 

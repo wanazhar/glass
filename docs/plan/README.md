@@ -27,7 +27,7 @@ External project observations have not been revalidated by this editorial update
 
 ## Tasks
 
-- [Acp](tasks/acp-001.md)
+- [ACP](tasks/acp-001.md)
 - [Auto verify](tasks/auto-verify-001.md)
 - [Chat readability](tasks/chat-readability-001.md)
 - [Chat scroll spacing](tasks/chat-scroll-spacing-001.md)
@@ -42,17 +42,17 @@ External project observations have not been revalidated by this editorial update
 - [Index](tasks/index-001.md)
 - [Init](tasks/init-001.md)
 - [Inline scroll](tasks/inline-scroll-001.md)
-- [Live turn ui](tasks/live-turn-ui-001.md)
+- [Live turn UI](tasks/live-turn-ui-001.md)
 - [Loops](tasks/loops-001.md)
-- [Lsp](tasks/lsp-001.md)
+- [LSP](tasks/lsp-001.md)
 - [LSP diagnostic deltas and stale-checked code actions](tasks/lsp-deltas-001.md)
-- [Mcp bridge](tasks/mcp-bridge-001.md)
-- [Mcp http regressions](tasks/mcp-http-regressions-001.md)
-- [Mcp v2](tasks/mcp-v2-001.md)
+- [MCP bridge](tasks/mcp-bridge-001.md)
+- [MCP HTTP regressions](tasks/mcp-http-regressions-001.md)
+- [MCP v2](tasks/mcp-v2-001.md)
 - [Memory](tasks/memory-001.md)
 - [Model fallback](tasks/model-fallback-001.md)
 - [Notifications](tasks/notifications-001.md)
-- [Oct8 regressions](tasks/oct8-regressions-001.md)
+- [October 8 regressions](tasks/oct8-regressions-001.md)
 - [Oracle](tasks/oracle-001.md)
 - [Pi shipping](tasks/pi-shipping-001.md)
 - [Plugins](tasks/plugins-001.md)
@@ -61,8 +61,8 @@ External project observations have not been revalidated by this editorial update
 - [Failure recovery inspector](tasks/recovery-inspector-001.md)
 - [Roadmap workflow completion sweep](tasks/roadmap-completion-002.md)
 - [Full roadmap delivery ledger](tasks/roadmap-delivery.md)
-- [Round3 ports](tasks/round3-ports-001.md)
-- [Round3 regressions](tasks/round3-regressions-001.md)
+- [Round 3 ports](tasks/round3-ports-001.md)
+- [Round 3 regressions](tasks/round3-regressions-001.md)
 - [Sandbox](tasks/sandbox-001.md)
 - [Sandbox egress](tasks/sandbox-egress-001.md)
 - [Serve attach](tasks/serve-attach-001.md)
@@ -92,6 +92,8 @@ External project observations have not been revalidated by this editorial update
 
 ## Reviews
 
+- [Documentation audit — 2026-10-15](reviews/documentation-2026-10-15.md)
+
 - [Model-managed teammate limits — 2026-10-10](reviews/agent-core-limits-001.md)
 - [Review: chat-readability-001](reviews/chat-readability-001-01.md)
 - [Review: chat-scroll-spacing-001](reviews/chat-scroll-spacing-001-01.md)
@@ -103,6 +105,9 @@ External project observations have not been revalidated by this editorial update
 - [Review: inline-scroll-001](reviews/inline-scroll-001-01.md)
 - [Review: live-turn-ui-001](reviews/live-turn-ui-001-01.md)
 - [Integrated roadmap implementation review](reviews/merged-roadmap-2026-10-11.md)
+- [Native checklist verification](reviews/native-checklist-001.md)
+- [Scoped approvals and native questions](reviews/interaction-001.md)
+- [Reasoning reader and unrestricted file access](reviews/reasoning-access-001.md)
 - [Native files and owned jobs verification](reviews/native-files-jobs-001-01.md)
 - [Native output and structured tool blocks](reviews/native-output-blocks-001-01.md)
 - [Oct 8 shipping ports independent review](reviews/oct8-regressions-001-01.md)
@@ -112,8 +117,8 @@ External project observations have not been revalidated by this editorial update
 - [Review: reader-redraw-001](reviews/reader-redraw-001-01.md)
 - [Release binary: 15 edge-case suites and live Kilo task](reviews/release-edge-15-001-01.md)
 - [Original roadmap acceptance map](reviews/roadmap-completion-2026-10-11.md)
-- [Round3 ports](reviews/round3-ports-001-01.md)
-- [Round3 regressions](reviews/round3-regressions-001-01.md)
+- [Round 3 ports](reviews/round3-ports-001-01.md)
+- [Round 3 regressions](reviews/round3-regressions-001-01.md)
 - [Scroll redraw and return-to-tail verification](reviews/scroll-redraw-001-01.md)
 - [Scroll submission and Chat Completions steering](reviews/scroll-submit-steer-001-01.md)
 - [Conversation scrollbar range](reviews/scrollbar-range-001-01.md)
@@ -133,5 +138,3 @@ External project observations have not been revalidated by this editorial update
 
 - [Workbench guide](../workbench.md): retained entry point for links written
   before user guides and detailed references were separated.
-
-- [Native checklist verification](reviews/native-checklist-001.md)

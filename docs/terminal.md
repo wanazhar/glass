@@ -4,14 +4,14 @@
 
 ## Keys
 
-| key | |
-|---|---|
+| Key or command | Action |
+| --- | --- |
 | `ctrl-g` | live transcript: scroll, collapse, follow; works during tools |
 | `ctrl-t` | live provider reasoning or public summary |
 | `esc` in a viewer | close it and restore the draft and main view |
 | `/` on an empty prompt or `ctrl-p` | command palette |
 | `ctrl-c` | interrupt |
-| `ctrl-d` | quit |
+| `ctrl-d` | open exit confirmation; Enter exits, Esc stays |
 | `up` / `down` | prompt history (line motion in a multi-line draft) |
 | `enter` | steer the running turn |
 | `alt-enter` | queue for after the turn |
@@ -47,7 +47,8 @@ does not undo the completed sign-in.
 Use `up`/`down` to choose, and press `enter` to select. Commands
 open selectors or input fields inside a modal. `/model` chooses a provider or
 account and then fetches its available models; `/help` and `/keys` are searchable. `tab`
-completes a command for editing inside the palette; `esc` closes the modal. A draft opened with
+completes a command for editing inside the palette. `esc` returns one menu level
+or closes the top-level palette. A draft opened with
 `ctrl-p` is restored when you cancel. Loaded extensions' slash commands appear
 alongside the built-ins.
 
@@ -56,6 +57,18 @@ nested alternate screens. `/outputs`, `/responses`, and `/details` share one out
 
 Ordinary typing uses the terminal's cursor and flushes
 every frame, keeping the first and last typed characters visible immediately.
+
+## Questions and approval dialogs
+
+Models can ask questions with choices, multiple selections, or a custom written
+answer. Every question offers **Write an answer…**. F2 opens the full question
+when the preview is too short. Cancelling a question stops the current turn.
+
+Approval dialogs show the exact requested operation and justification. Press
+**a** to allow once, or **d**, Enter, or Esc to deny. The turn waits without
+another provider request while either dialog is open. Answers to ordinary
+questions never grant permissions. See
+[Approvals and user questions](reference/interaction.md).
 
 ## Appearance and output
 
@@ -74,14 +87,18 @@ Tool cards separate outcome, duration, command, and a bounded output preview.
 active work shows an animated glyph and elapsed time. `/tools` changes card
 presentation without removing recorded output.
 
-`/animation` previews Dot, MiniDot, Pulse, and Spark. Charm's Dot animation is the
-default: eight fixed-width frames, updated at the existing activity cadence
+`/animation` previews Dot, MiniDot, Pulse, Spark, Bounce, Orbit, Grow, and Blink.
+Charm's Dot animation is the default: eight fixed-width frames, updated at the existing activity cadence
 (target 100 ms). The chooser makes no model requests. A saved workspace profile
 retains the selected animation; without one, the selection lasts for the session.
 
+Ctrl+D opens an exit confirmation. Enter exits; Esc returns with the draft and
+menu state preserved. Confirming during a turn cancels the request before exit.
+Conversation history remains saved; unsent drafts are discarded.
+
 `/theme` offers Aurora, Amber, Monochrome, Orchid, and Ocean. Input, Markdown,
 modals, and status share the selected palette. Active-work motion uses the existing
-input loop, capped at eight redraws per second. Completed text stays still.
+input loop with a target interval of 100 ms. Completed text stays still.
 `NO_COLOR=1` removes colors while preserving activity indicators.
 
 `/mods` and `/extensions` manage their distinct integration types. Saved workspace
@@ -108,8 +125,13 @@ The composer remains separate from the transcript.
 
 Ctrl+G opens the transcript while idle or busy. Ctrl+T opens reasoning text or
 public summaries exposed by the provider. Providers that expose neither show an
-empty-state explanation. Ctrl+C can cancel active work from a viewer. Closing the
-view restores the draft and replays any privately spooled main output once.
+empty-state explanation. During an active turn, Ctrl+C cancels work even when a
+reader is open, and closes the reader. Closing a view normally restores the
+draft and replays any privately spooled main output once.
+
+The live reasoning reader owns drawing and navigation while open. The underlying
+conversation does not repaint beneath it. Wider terminals use a padded reading
+area; narrow terminals use the available width.
 
 Small terminals use shorter labels and fewer decorative rows. Commands and usage
 wrap within their regions. Unicode width handling accounts for wide characters
@@ -177,10 +199,3 @@ waits. `program_status = "off"` disables reports. Headless output omits them.
 Reports use a session title or error excerpt and exclude prompts and model output.
 Terminals that do not support the sequence may ignore it. No detection handshake
 is required. This protocol is separate from turn notifications.
-
-The live reasoning reader owns the screen while open. The conversation reader
-pauses drawing beneath it and restores its content when the reasoning view
-closes. Wide terminals use a padded reasoning area; narrow terminals retain the
-available reading width. Scrolling and search use the same area as rendering.
-Ctrl+C closes the reasoning reader before cancelling current work and returning
-to the composer.

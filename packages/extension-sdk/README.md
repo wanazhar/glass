@@ -1,7 +1,7 @@
 # TypeScript extension SDK
 
 A typed client for glass-core's existing subprocess protocol. Runtime dependencies
-are limited to Node's standard library. GC does not embed Node or a JavaScript engine.
+are limited to Node's standard library. glass-core does not embed Node or a JavaScript engine.
 
 ## Build and run the starter
 
@@ -13,13 +13,13 @@ npm run build
 ```
 
 Enable the compiled starter in `~/.config/glass-core/config.toml`. Use an absolute
-path because GC starts extensions in the current workspace:
+path because glass-core starts extensions in the current workspace:
 
 ```toml
 extensions = ["node /absolute/path/to/glass-core/extensions/typescript/dist/index.js"]
 ```
 
-Start a new GC session and open `/ts-demo` to see the native preview and diagnostics.
+Start a new glass-core session and open `/ts-demo` to see the native preview and diagnostics.
 The model can call `ts_preview` to preview a proposed text replacement. It does not
 write files or make a model request.
 
@@ -71,7 +71,7 @@ await runExtension({
 Validate model arguments in handlers. JSON parsing and an object check happen in
 the SDK; a TypeScript annotation does not enforce your JSON Schema at runtime.
 `stringArgument` checks a required string. Throw `ToolError(code, message)` for an
-actionable failure. Ordinary exceptions also produce an error result, allowing GC
+actionable failure. Ordinary exceptions also produce an error result, allowing glass-core
 to report the failure without leaving the host waiting for a reply.
 
 Use `serial` for tools that mutate shared state. Use `keyed` only when its host
@@ -89,7 +89,7 @@ The imported module exports an `execute: Handler`. It is loaded on the first too
 call and retained for later calls. A failed import can be retried. There is one
 persistent process per configured extension, not a new Node process per call.
 
-GC starts that process to discover the manifest. Lazy loading defers the tool
+glass-core starts that process to discover the manifest. Lazy loading defers the tool
 implementation and its dependencies, not the handshake process. Disabled
 extensions start no process. The SDK has no per-token hooks or polling timer.
 Keep handshake imports and prompt contributions small; tool schemas still consume
@@ -101,10 +101,10 @@ A handler's context exposes:
 
 | Member | Use |
 | --- | --- |
-| `workspace`, `model` | Values supplied by GC's handshake |
+| `workspace`, `model` | Values supplied by glass-core's handshake |
 | `callId`, `lineage` | Originating tool call and host-owned ancestry |
 | `signal` | Shutdown and transport cancellation |
-| `callTool(name, arguments)` | Request `bash` or `state` under GC's applicable policy |
+| `callTool(name, arguments)` | Request `bash` or `state` under glass-core's applicable policy |
 | `appendCustom(kind, data)` | Queue a namespaced session entry |
 | `readCustom(kind)` | Read namespaced session entries |
 | `log(message)` | Write a diagnostic to stderr |
@@ -117,14 +117,14 @@ The current host bridge permits `bash` and `state`. It does not recursively call
 extension tools or expose every model tool. The SDK types reflect that contract.
 
 Host replies are correlated by call ID. Pending calls have timeouts and a maximum
-count of 16. A custom-entry append acknowledges a queued record; GC persists it
+count of 16. A custom-entry append acknowledges a queued record; glass-core persists it
 when the callback completes. An interrupted callback may lose that queued entry.
 
 Do not write logs to stdout: it belongs to the protocol. Use `context.log` or
-`console.error`. Use `signal` for cooperative cleanup. GC currently cancels a
+`console.error`. Use `signal` for cooperative cleanup. glass-core currently cancels a
 running extension by stopping its process; the SDK cannot promise to reuse a
-process after cancellation. It aborts pending work on shutdown, EOF, output-pipe failure or SIGTERM and
-calls `dispose` for cleanup when the process can exit normally. SIGKILL cannot run
+process after cancellation. It aborts pending work on shutdown, EOF, output-pipe
+failure or SIGTERM and calls `dispose` for cleanup when the process can exit normally. SIGKILL cannot run
 cleanup. Await nested host calls before returning your tool result.
 
 ## Native previews and diagnostics
@@ -149,14 +149,14 @@ return {
 };
 ```
 
-The SDK serializes these fields as Markdown. GC's native output inspector renders
+The SDK serializes these fields as Markdown. glass-core's native output inspector renders
 code blocks and diagnostic tables; narrow terminals use its existing wrapping.
 Inline tool cards retain bounded previews. Open `/outputs` for full inspection.
 Extension slash commands open the native Markdown viewer. The SDK does not run a
 compiler or manufacture diagnostics: the handler supplies findings from its own
 checks. A preview does not apply a file edit.
 
-The wire protocol remains version 1. A reply is capped at 4 MiB, matching GC's
+The wire protocol remains version 1. A reply is capped at 4 MiB, matching glass-core's
 host cap; return a bounded summary and a file reference for larger results. Host
 input and queued callbacks are also bounded. These limits protect transport memory,
 not the extension's own allocations.
@@ -167,7 +167,7 @@ Typed hooks cover authorization, result rewriting, turn completion, seeded sessi
 state, and cleanup. Defining `authorize` sets `authorization_required: true`;
 exceptions return a denial. Do not use optional authorization as a security gate.
 
-The SDK is not a sandbox. The extension process has the access allowed by GC's
+The SDK is not a sandbox. The extension process has the access allowed by glass-core's
 extension configuration and OS isolation. See [Permissions](../../docs/security.md)
 and the [extension contract](../../docs/extending.md) before enabling third-party code.
 

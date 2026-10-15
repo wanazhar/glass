@@ -53,6 +53,12 @@ Common optional fields:
 | `log_fsync`, `live_flush_ms` | Session durability and partial-output persistence |
 | `mermaid`, `hyperlinks` | Optional diagram and terminal-link presentation |
 
+The default permission profile is `unrestricted`, with `sandbox = "off"`. Saved
+profiles and administrator requirements can override it. Leading launch flags
+`--restricted` and `--yolo` select a mode for interactive startup, `run`, or
+`resume`; they do not rewrite saved settings. See
+[Approvals and user questions](reference/interaction.md) for their exact behavior.
+
 For security fields and their platform limits, see [Permissions](security.md).
 
 ## Model fallback
@@ -170,19 +176,5 @@ Other applications on the same IP consume that allowance too. Request pacing
 cannot increase an upstream quota; it coordinates GC requests and handles
 transient pressure without replaying completed tools.
 
-In selection menus, F1 or Right opens the full entry in a scrollable reader.
-Larger menus also show a wrapped selection preview. The slash command palette
-uses F1 for complete command details. Escape returns from details to the menu.
-
-### Activity animations and exit confirmation
-
-Use `/animation` to preview Dot, MiniDot, Pulse, Spark, Bounce, Orbit, Grow, or
-Blink. Arrow keys move through the live previews; Enter applies the selection.
-The picker scrolls on small terminals. An active workspace profile retains the
-selected animation. Each frame occupies one terminal cell and uses the existing
-100 ms activity timer.
-
-Ctrl-D opens an exit confirmation. Enter exits; Escape returns to GC with the
-composer and menu state preserved. During an active turn, confirming cancels the
-current request before exit. Saved conversation history remains available;
-unsent drafts are discarded on confirmed exit.
+For selection menus, activity animations, and exit confirmation, see the
+[Terminal interface](terminal.md).

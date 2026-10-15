@@ -31,9 +31,24 @@ Use `state` with `{"guidance":{"action":"catalogue"}}` to list CLI entries, huma
 
 Configured extension tools are discovered with `{"capabilities":{"search":"QUERY"}}`. When deferred discovery is enabled, activate returned names with `{"capabilities":{"activate":["NAME"]}}`. Use the resulting advertised schema. Recipes do not promise that an integration is installed. CLI entries use `"$GC_BIN" <command> --help` for exact syntax. Slash commands and launch flags are labelled separately from CLI entries; they are not model tool calls.
 
+## Human decisions and permissions
+
+Interactive agents receive the `ask_user_question` schema and a permission-context
+message explaining when to ask a consequential question. The tool accepts choices,
+multiple selections, and custom written answers. Questions pause the tool batch;
+the model processes the answer before requesting further operations.
+
+The permission context also names the active profile and sandbox. An exception
+requires `permission = "require_escalated"` and a justification on the actual
+`bash`, `edit`, or `write` call. Question answers are never permission grants.
+Headless and delegated agents receive no connected-human tool and must report
+blockers rather than assume an answer. See
+[Approvals and user questions](interaction.md) for the complete contract.
+
 ## Resume, cost and performance
 
-The versioned workflow suffix is added to the effective system prompt, including prompts restored from compaction. Identical suffixes are not duplicated. Read-only planning retains its restricted prompt and does not receive execution instructions. The suffix is bounded to 1,200 bytes; detailed recipes remain outside the initial prompt. It adds input tokens, but no network lookup or extra request. A software upgrade changes the prompt prefix once; requests within that version use the same suffix.
+The versioned workflow suffix is added to the effective system prompt, including prompts restored from compaction. Identical suffixes are not duplicated. Read-only planning retains its restricted prompt and does not receive execution instructions. The workflow suffix is bounded to 1,200 bytes; permission context is appended
+separately. Detailed recipes remain outside the initial prompt. It adds input tokens, but no network lookup or extra request. A software upgrade changes the prompt prefix once; requests within that version use the same suffix.
 
 Catalogue discovery returns all entries instead of silently cutting off after 24. Runtime progress reminders inspect the in-memory current turn, not the session file or the network.
 

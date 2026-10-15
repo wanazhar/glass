@@ -122,26 +122,7 @@ pub fn lines(
             rows.push(line(
                 if shown == 0 { "└ " } else { "  " },
                 row,
-                if failed
-                    || (native_file
-                        && (raw.starts_with("- ")
-                            || raw.starts_with("error ")
-                            || raw.starts_with("[diagnostics error")))
-                {
-                    Tone::Error
-                } else if native_file
-                    && (raw.starts_with("+ ") || raw.starts_with("[diagnostics ok"))
-                {
-                    Tone::Success
-                } else if visual && (raw.starts_with("[web ") || raw.starts_with("[image ") || raw.starts_with("[browser ")) {
-                    Tone::Accent
-                } else if visual && (raw.trim_start().starts_with("http://") || raw.trim_start().starts_with("https://")) {
-                    Tone::Secondary
-                } else if native_file && raw.starts_with("[file ") {
-                    Tone::Accent
-                } else {
-                    Tone::Muted
-                },
+                output_tone(raw, failed, native_file, visual),
                 width,
             ));
             shown += 1;
@@ -167,6 +148,25 @@ pub fn lines(
     rows.push(Line::default());
     rows
 }
+/// Keep detailed and compact tool output colors consistent.
+pub(crate) fn output_tone(raw: &str, failed: bool, native_file: bool, visual: bool) -> Tone {
+    if failed || (native_file && (raw.starts_with("- ") || raw.starts_with("error ")
+        || raw.starts_with("[diagnostics error"))) {
+        Tone::Error
+    } else if native_file && (raw.starts_with("+ ") || raw.starts_with("[diagnostics ok")) {
+        Tone::Success
+    } else if visual && (raw.starts_with("[web ") || raw.starts_with("[image ")
+        || raw.starts_with("[browser ")) {
+        Tone::Accent
+    } else if visual && (raw.trim_start().starts_with("http://") || raw.trim_start().starts_with("https://")) {
+        Tone::Secondary
+    } else if native_file && raw.starts_with("[file ") {
+        Tone::Accent
+    } else {
+        Tone::Muted
+    }
+}
+
 fn line(prefix: &str, body: &str, tone: Tone, width: usize) -> Line<'static> {
     let prefix = text::clip(prefix, width.saturating_sub(1));
     let remaining = width.saturating_sub(text::width(&prefix));

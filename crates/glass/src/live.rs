@@ -275,6 +275,10 @@ impl Live {
         let entries = self.view_entries(thinking);
         let result = (|| {
             let mut reader = match self.parked_views[usize::from(thinking)].take() {
+                Some(mut reader) if thinking => {
+                    reader.reopen_latest(entries, self.phase == "Provider reasoning")?;
+                    reader
+                }
                 Some(mut reader) => {
                     reader.restore_after_overlay()?;
                     reader.update(entries)?;
@@ -289,6 +293,9 @@ impl Live {
                     },
                 )?,
             };
+            if thinking {
+                reader.set_reasoning_streaming(self.phase == "Provider reasoning")?;
+            }
             reader.hide_cursor();
             self.view = Some((reader, thinking));
             self.dirty = false;
@@ -340,7 +347,9 @@ impl Live {
         }
         let thinking = self.view.as_ref().unwrap().1;
         let rows = self.view_entries(thinking);
-        self.view.as_mut().unwrap().0.update(rows)?;
+        let reader = &mut self.view.as_mut().unwrap().0;
+        if thinking { reader.set_reasoning_streaming(self.phase == "Provider reasoning")?; }
+        reader.update(rows)?;
         self.dirty = false;
         Ok(())
     }

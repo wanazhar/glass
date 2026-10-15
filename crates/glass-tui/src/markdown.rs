@@ -249,7 +249,7 @@ pub struct Presentation {
 }
 impl Presentation {
     pub fn line(&mut self, raw: &str, width: usize, complete: bool) -> Vec<Line<'static>> {
-        self.render(raw, width, complete, Cursor::default())
+        self.render(raw, width.max(1), complete, Cursor::default())
             .into_iter()
             .map(|row| row.line)
             .collect()
@@ -317,12 +317,13 @@ impl Presentation {
             let mut rows = Vec::new();
             let mut content = String::new();
             let mut used = 0;
-            let limit = width.saturating_sub(2).max(1);
+            let prefix = crate::text::clip("│ ", width.saturating_sub(1));
+            let limit = width.saturating_sub(crate::text::width(&prefix)).max(1);
             for (index, c) in chars.iter().enumerate().skip(cursor.character) {
                 let cells = crate::text::char_width(*c);
                 if used + cells > limit && used > 0 {
                     rows.push(Row {
-                        line: code_line(std::mem::take(&mut content)),
+                        line: code_line(std::mem::take(&mut content), &prefix),
                         end: Cursor {
                             word: 0,
                             character: index,
@@ -336,13 +337,22 @@ impl Presentation {
                 }
             }
             rows.push(Row {
-                line: code_line(content),
+                line: code_line(content, &prefix),
                 end: Cursor {
                     word: 0,
                     character: chars.len(),
                 },
             });
             return rows;
+        }
+        // Structural rules use the same bounded reading column as all blocks.
+        let rule = trimmed.chars().filter(|c| !c.is_whitespace());
+        let rule_marker = rule.clone().next();
+        if rule.clone().take(3).count() == 3 && rule_marker.is_some_and(|c| matches!(c, '-' | '*' | '_'))
+            && rule.clone().all(|c| Some(c) == rule_marker) {
+            if !complete { return vec![]; }
+            return vec![Row { line: Line::from(Span::styled("─".repeat(width), border_style())),
+                end: Cursor { word: 1, character: 0 } }];
         }
         let heading = trimmed.chars().take_while(|c| *c == '#').count();
         if (1..=6).contains(&heading) && trimmed[heading..].starts_with(' ') {
@@ -415,15 +425,31 @@ pub fn lines(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut table = None;
     let mut source = text.lines().peekable();
     let mut rows = Vec::new();
-    // Mermaid blocks render as diagrams when the host enabled it; when the
-    // parse or layout fails the block falls through and renders as
-    // ordinary fenced code (never a halfway drawing).
-    if mermaid_enabled()
-        && let Some(rendered) = mermaid_diagram(text, width)
-    {
-        return rendered;
-    }
     while let Some(line) = source.next() {
+        // Render only this diagram block; surrounding prose and later blocks remain visible.
+        if presentation.fence.is_none() && mermaid_enabled() {
+            let trimmed = line.trim();
+            let marker = trimmed.chars().next().unwrap_or(' ');
+            let count = trimmed.chars().take_while(|c| *c == marker).count();
+            if matches!(marker, '`' | '~') && count >= 3 && trimmed[count..].trim() == "mermaid" {
+                let mut next = source.clone();
+                let mut block = format!("{line}\n");
+                let mut closed = false;
+                for body in next.by_ref().take(256) {
+                    block.push_str(body); block.push('\n');
+                    let end = body.trim();
+                    if end.len() >= count && end.chars().all(|c| c == marker) { closed = true; break; }
+                    if block.len() > 128 * 1024 { break; }
+                }
+                if closed && let Some(diagram) = mermaid_diagram(&block, width) {
+                    rows.extend(diagram);
+                    table = None;
+                    presentation.previous_blank = false;
+                    source = next;
+                    continue;
+                }
+            }
+        }
         if let Some(active) = table.as_mut() {
             if let Some(rendered) = crate::table::Table::row(active, line, width) {
                 rows.extend(rendered);
@@ -437,8 +463,8 @@ pub fn lines(text: &str, width: usize) -> Vec<Line<'static>> {
                 .peek()
                 .is_some_and(|next| crate::table::separator(next, headers.len()))
         {
-            source.next();
-            let active = crate::table::Table::new(headers);
+            let separator = source.next().unwrap();
+            let active = crate::table::Table::new(headers, separator);
             rows.extend(active.header(width));
             table = Some(active);
             continue;
@@ -586,7 +612,7 @@ impl Stream {
                 if let Some(header) = self.table_header.take() {
                     let headers = crate::table::cells(&header).unwrap();
                     if crate::table::separator(&self.pending, headers.len()) {
-                        let table = crate::table::Table::new(headers);
+                        let table = crate::table::Table::new(headers, &self.pending);
                         write_block(io, table.header(column), margin);
                         self.table = Some(table);
                         return;
@@ -690,10 +716,10 @@ fn stable_inline(text: &str) -> &str {
         .find(|(_, c)| c.is_whitespace())
         .map_or("", |(index, c)| &text[..index + c.len_utf8()])
 }
-fn code_line(body: String) -> Line<'static> {
+fn code_line(body: String, prefix: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled(
-            "│ ",
+            prefix.to_owned(),
             Style::new().fg(crate::theme::color(crate::theme::Tone::Muted)),
         ),
         Span::styled(
@@ -744,6 +770,15 @@ pub fn write_ansi(io: &mut impl std::io::Write, line: &Line<'_>) {
 mod tests {
     use super::*;
     #[test]
+    fn blocks_remain_bounded_at_tiny_widths() {
+        let source = "# Heading 界\n\n> Quoted **text**\n\n---\n\n- [x] Checked\n  1234. Nested list\n\n```rust\nlet 界 = 123456;\n```\n";
+        for width in 1..=100 {
+            for row in lines(source, width) {
+                assert!(crate::text::width(&row.to_string()) <= width, "width {width}: {row}");
+            }
+        }
+    }
+    #[test]
     fn styled_row_is_one_terminal_write() {
         struct Sink { writes: usize, bytes: Vec<u8> }
         impl std::io::Write for Sink {
@@ -764,9 +799,9 @@ mod tests {
 
     #[test]
     fn native_blocks_match_streaming_at_phone_and_desktop_widths() {
-        let source = "# Results\n\n\n| Change | Status |\n| --- | --- |\n| `src/lib.rs` | **Done** |\n| 界 Unicode | ready to ship |\n\n- [x] Built\n  - Nested detail\n- [ ] Review\n\n```rust\nlet x = 1;\n```\nFinal text";
-        for width in [20usize, 40, 90] {
-            let margin = if width >= 24 { 2 } else { 1 };
+        let source = "# Results\n\n> Quoted **detail**\n\n---\n\n\n| Change | Status |\n| --- | --- |\n| `src/lib.rs` | **Done** |\n| 界 Unicode | ready to ship |\n\n- [x] Built\n  - Nested detail\n- [ ] Review\n\n```rust\nlet x = 1;\n```\nFinal text";
+        for width in [10usize, 20, 27, 28, 39, 40, 41, 65, 90] {
+            let margin = if width >= 24 { 2 } else if width >= 10 { 1 } else { 0 };
             let expected = lines(source, width - margin * 2)
                 .iter()
                 .map(|r| r.to_string())
@@ -799,7 +834,7 @@ mod tests {
                     .all(|r| crate::text::width(r) <= width - margin * 2)
             );
             assert!(actual.iter().any(|r| r.contains("✓ Built")));
-            assert!(actual.iter().any(|r| r.contains("◦ Nested")));
+            if width >= 20 { assert!(actual.iter().any(|r| r.contains("◦ Nested"))); }
         }
     }
     #[test]
@@ -1011,9 +1046,10 @@ mod tests {
         set_mermaid_renderer(Box::new(|_body, width| {
             (width >= 12).then(|| vec!["[Start] ─ go ─▶ [End]".to_string()])
         }));
-        let on = lines(DIAGRAM, 60);
+        let on = lines(&format!("Before diagram\n\n{DIAGRAM}Between diagrams\n\n{DIAGRAM}After diagram"), 60);
         let text: String = on.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
-        assert!(text.contains("─ go ─▶"), "{text}");
+        assert_eq!(text.matches("─ go ─▶").count(), 2, "{text}");
+        for marker in ["Before diagram", "Between diagrams", "After diagram"] { assert!(text.contains(marker), "{text}"); }
         // The header and footer frame remain, and the raw source does not.
         assert!(!text.contains("flowchart TD"), "{text}");
     }

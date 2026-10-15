@@ -63,6 +63,11 @@ with tempfile.TemporaryDirectory(prefix='gc-live-pty-') as tmp:
                 assert not list((root/'data/glass-core/ui').glob('*.tmp')), 'Viewer created a disk spool'
                 t.send('\x1b[H'); t.collect(.15)
                 assert 'Publicsummaryfirst.' in compact(t.vt.text()), t.vt.text()
+                assert 'Endlatest' in compact(t.vt.text()), t.vt.text()
+                # A parked reasoning reader must reopen at the latest lines.
+                t.send('\x14'); t.collect(.1); t.send('\x14'); t.collect(.15)
+                assert 'Publicsummarylast.' in compact(t.vt.text()), t.vt.text()
+                Path(f'/tmp/gc-reasoning-latest-{size[0]}x{size[1]}.txt').write_text(t.vt.text())
                 t.send('\x1b[F'); t.collect(.15)
                 assert 'Publicsummarylast.' in compact(t.vt.text()), t.vt.text()
                 t.send('\x07'); t.visible('following')

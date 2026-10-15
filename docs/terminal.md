@@ -74,7 +74,9 @@ questions never grant permissions. See
 
 The renderer supports colored headings, emphasis, inline code, nested lists,
 task checks, code blocks, and a bounded Markdown table format. Wide tables use
-columns; narrow tables use labeled fields. Unsupported markup remains readable
+columns with aligned cells and continuous dividers; narrow tables use labeled
+fields. Standard Markdown alignment markers control left, centered, and right
+alignment. Horizontal rules share the reading column. Unsupported markup remains readable
 source text. Prose wraps within a reading column capped at 88 cells.
 
 Streaming renders completed display segments and keeps the last row provisional.
@@ -113,8 +115,9 @@ separate regions; resizing repaints the owned surface. Modals do not open nested
 alternate screens.
 
 Inline chat, the fullscreen transcript, and provider reasoning use a shared reader
-controller. Search, scroll position, follow state, tool selection, and expansion
-survive view switches. The rendered viewport cache is capped at 1 MiB; durable
+controller. Conversation search, scroll position, follow state, tool selection, and expansion
+survive view switches. Reasoning opens at its latest lines on every invocation,
+clearing any earlier reasoning search. The rendered viewport cache is capped at 1 MiB; durable
 records remain in the private log.
 
 PageUp or Ctrl+B moves toward older content. PageDown moves toward newer content;
@@ -131,7 +134,14 @@ draft and repaints the bounded main-output cache.
 
 The live reasoning reader owns drawing and navigation while open. The underlying
 conversation does not repaint beneath it. Wider terminals use a padded reading
-area; narrow terminals use the available width.
+area; narrow terminals use the available width. A live indicator marks incoming
+reasoning. New text follows the latest lines until you scroll up; End resumes
+following. Closing and reopening reasoning returns to the latest text.
+
+Detailed tool output retains the preview's semantic colors, including added and
+removed file lines and diagnostics. Long tool titles and output notices stay
+within the available width. Enabled Mermaid diagrams preserve surrounding prose
+and other blocks; unsupported diagrams remain fenced source.
 
 Small terminals use shorter labels and fewer decorative rows. Commands and usage
 wrap within their regions. Unicode width handling accounts for wide characters

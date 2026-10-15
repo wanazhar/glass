@@ -5,7 +5,7 @@ from pathlib import Path
 from pty_vt import Terminal
 
 EARLY='# Changes\n\n\n| File | Status |\n| --- | --- |\n| `src/lib.rs` | **READYROW** |\n'
-TAIL='| 界 Unicode | reviewed |\n\n## Verification\n\n- [x] Build complete\n  - Nested detail\n- [ ] Review pending\n\n```rust\nlet result = 42;\n```\n\nBLOCKDONE'
+TAIL='| 界 Unicode | reviewed |\n\n> A **readable** quoted note.\n\n---\n\n## Verification\n\n- [x] Build complete\n  - Nested detail\n- [ ] Review pending\n\n```rust\nlet result = 42;\n```\n\nBLOCKDONE'
 SOURCE=EARLY+TAIL
 class Provider(http.server.BaseHTTPRequestHandler):
     gate=threading.Event()
@@ -23,7 +23,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b'data: [DONE]\n\n'); self.wfile.flush()
         except (BrokenPipeError,ConnectionResetError): pass
 
-for size in [(90,30),(40,24),(20,8)]:
+for size in [(90,30),(65,30),(41,24),(40,24),(39,24),(20,8)]:
     with tempfile.TemporaryDirectory(prefix='gc-blocks-') as tmp:
         root=Path(tmp); cfg=root/'config/glass-core'; cfg.mkdir(parents=True)
         data=root/'data/glass-core'; data.mkdir(parents=True)
@@ -36,8 +36,12 @@ for size in [(90,30),(40,24),(20,8)]:
             t.idle();t.send('show structured output\r');t.visible('READYROW')
             assert not Provider.gate.is_set(), 'table must stream before response completion'
             view=t.vt.text()
-            if size[0]==90: assert ' │ ' in view,view
-            elif size[0]==40: assert 'src/lib.rs' in view and 'Status' in view,view
+            Path(f"/tmp/gc-output-table-{size[0]}x{size[1]}.txt").write_text(view)
+            if size[0]>=65:
+                assert ' │ ' in view,view
+                divider=next(row.strip() for row in view.splitlines() if '┼' in row)
+                assert divider.startswith('─') and divider.endswith('─') and divider.count('┼')==1,view
+            elif size[0]>=39: assert 'src/lib.rs' in view and 'Status' in view,view
             else: assert 'Status' in view,view
             Provider.gate.set()
             until=time.monotonic()+8
@@ -58,4 +62,4 @@ for size in [(90,30),(40,24),(20,8)]:
             assert 'draft' in t.vt.text(),t.vt.text()
         finally:
             Provider.gate.set();t.close();server.shutdown();server.server_close()
-print('PASS: pretty native tables, live row delivery, narrow stacked fields, code frames, source preservation, reader search and resize at 90x30/40x24/20x8')
+print('PASS: pretty native tables, live row delivery, narrow stacked fields, code frames, source preservation, reader search and resize at 90/65/41/40/39/20-column viewports')

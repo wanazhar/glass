@@ -171,16 +171,30 @@ impl Layout {
         let mut rows = crate::tool_output::lines(name, &card.command, failed,
             card.elapsed_ms.unwrap_or(0) as f32 / 1000.0, if card.expanded { "" } else { &card.output }, card_width, false);
         if card.status == "running" {
-            rows[0] = Line::from(Span::styled(format!("{} {name} running · {:.1}s", crate::theme::frame(0), card.elapsed_ms.unwrap_or(0) as f32 / 1000.0), role_style(Role::User)));
+            rows[0] = Line::from(Span::styled(crate::text::clip(&format!("{} {name} running · {:.1}s", crate::theme::frame(0), card.elapsed_ms.unwrap_or(0) as f32 / 1000.0), card_width), role_style(Role::User)));
         }
         if card.expanded {
             rows.pop(); // trailing card spacer
             rows.pop(); // empty preview placeholder
             if card.output.starts_with("## Tasks ") { rows.extend(crate::markdown::lines(&card.output,card_width)); }
-            else {rows.extend(wrap_width(&crate::markdown::sanitize(&card.output), card_width).into_iter().map(Line::from));}
+            else {
+                let native_file = card.output.lines().take(2).any(|s| s.starts_with("[file "));
+                let visual = matches!(name, "view_image" | "web_fetch" | "web_search" | "browser_verify");
+                for raw in card.output.lines() {
+                    let style = ratatui::style::Style::new().fg(crate::theme::color(
+                        crate::tool_output::output_tone(raw, failed, native_file, visual)));
+                    rows.extend(wrap_width(&crate::markdown::sanitize(raw), card_width)
+                        .into_iter().map(|row| Line::from(Span::styled(row, style))));
+                }
+            }
         }
-        if card.truncated { rows.push(Line::from(Span::styled("Inline output truncated", role_style(Role::Meta)))); }
-        if card.spill.is_some() { rows.push(Line::from(Span::styled("Full output available · /details", role_style(Role::Tool)))); }
+        for (show, text, role) in [(card.truncated, "Inline output truncated", Role::Meta),
+            (card.spill.is_some(), "Full output available · /details", Role::Tool)] {
+            if show {
+                rows.extend(crate::text::wrap_words(text, card_width).into_iter()
+                    .map(|row| Line::from(Span::styled(row, role_style(role)))));
+            }
+        }
         for row in &mut rows { row.spans.insert(0,Span::raw(" ".repeat(margin as usize))); }
         if idx > 0 { rows.insert(0, Line::default()); }
         rows
@@ -363,6 +377,30 @@ fn role_style(role: Role) -> ratatui::style::Style {
 mod tests {
     use super::*;
 
+    #[test]
+    fn detailed_tool_output_keeps_preview_colors_and_bounds_running_titles() {
+        use crate::theme::{color, Tone};
+        let card = crate::ToolCard { expanded: true, call_id: "file".into(),
+            command: "edit src/main.rs".into(), output: "[file src/main.rs]\n- removed\n+ added".into(),
+            status: "exit 0".into(), elapsed_ms: Some(100), spill: None, truncated: false };
+        let mut layout = Layout::new(vec![(String::new(), Role::Tool, 0)]);
+        layout.set_cards(HashMap::from([(0, card.clone())]));
+        let rows = layout.lines(0, "", Role::Tool, 40);
+        for (text, tone) in [("- removed", Tone::Error), ("+ added", Tone::Success)] {
+            let row = rows.iter().find(|row| row.to_string().contains(text)).unwrap();
+            assert!(row.spans.iter().any(|span| span.content.contains(text) && span.style.fg == Some(color(tone))));
+        }
+        let mut running = card;
+        running.command = "very_long_extension_tool_name_with_no_spaces".repeat(3);
+        running.status = "running".into();
+        running.truncated = true;
+        running.spill = Some("fixture-only".into());
+        layout.set_cards(HashMap::from([(0, running)]));
+        for width in 1..=80 {
+            assert!(layout.lines(0, "", Role::Tool, width).iter()
+                .all(|row| crate::text::width(&row.to_string()) <= usize::from(width)));
+        }
+    }
     #[test]
     fn tool_cards_use_bounded_colored_renderer_until_explicit_expansion() {
         let mut layout = Layout::new(vec![("legacy plain text".into(), Role::Bash, 1)]);

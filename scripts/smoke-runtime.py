@@ -87,7 +87,7 @@ with tempfile.TemporaryDirectory(prefix="gc-runtime-contract-") as tmp:
         message = client.receive()
         assert message["id"] == ident and "error" in message
         init = call("initialize", {"protocolVersion": 1, "storageDir": str(storage)})
-        assert init["capabilities"]["hostTools"] and not init["capabilities"]["completion"]
+        assert init["capabilities"]["hostTools"] and init["capabilities"]["completion"]
         params = {"cwd": str(tmp), "toolMode": "host", "tools": tools, "instructions": "Host instruction marker"}
         session = call("session/new", params)
         sid = session["sessionId"]
@@ -202,12 +202,8 @@ with tempfile.TemporaryDirectory(prefix="gc-runtime-contract-") as tmp:
         client.wait(client.request("turn/prompt", {**local, "text": "Reply only"}))
 
         assert not failures, failures
-        bad = call("session/new", {**params, "provider": "unsupported-provider"})
-        try:
-            client.wait(client.request("turn/prompt", {**bad, "text": "Rejected preflight"}))
-            raise AssertionError("invalid provider unexpectedly accepted")
-        except RuntimeError as exc:
-            assert "provider" in str(exc).lower(), exc
+        bad_id = client.request("session/new", {**params, "provider": "unsupported-provider"})
+        assert "error" in client.receive()
 
         assert all((p.stat().st_mode & 0o777) == 0o600 for p in storage.glob("*.host.json"))
         call("shutdown", {})

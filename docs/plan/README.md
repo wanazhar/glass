@@ -6,6 +6,10 @@ These records preserve source observations, implementation scope, and verificati
 at their recorded checkpoint. Consult the current guides for supported behavior.
 External project observations have not been revalidated by this editorial update.
 
+## Latest delivery
+
+- [Pre-integration runtime delivery](reviews/preintegration-runtime-2026-10-15.md)
+
 ## Design and contracts
 
 - [Chat readability](chat-readability.md)

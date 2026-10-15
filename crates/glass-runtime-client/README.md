@@ -44,3 +44,27 @@ The [protocol reference](../../docs/reference/runtime.md) defines messages,
 ownership, limits, persistence, and error handling. The
 [Python reference host](../../examples/runtime_host.py) demonstrates a complete
 conversation without requiring a GUI or terminal framework.
+
+## Typed host operations
+
+The `protocol` module provides SessionOptions, ToolDefinition, TurnInput,
+ContextBlock, ImageInput, ToolResult, RuntimeEvent, ToolRequest, and RpcError.
+`recv_typed_timeout` separates events, tool requests, and correlated responses.
+Unknown event names remain strings so additive capabilities do not break hosts.
+
+Convenience methods cover initialization, sessions, typed prompts and steering,
+follow-ups, cancellation, incremental entries, structured results, progress,
+cancellation acknowledgements, reconciliation, models, and isolated completion.
+The raw request interface remains available for other controls.
+
+Stable entry IDs identify append-only journal byte positions. Use the returned
+cursor for incremental reads. Session manifests retain execution ownership;
+resume_session requires an expected ToolMode and does not need the original
+creation parameters.
+
+To run the actual subprocess client test after building GC:
+
+```sh
+GLASS_CORE_TEST_BINARY="$PWD/target/release/glass-core" \
+  cargo test -p glass-runtime-client --test runtime -- --ignored
+```

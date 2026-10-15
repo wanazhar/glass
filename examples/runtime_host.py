@@ -54,8 +54,8 @@ class RuntimeClient:
         return value
 
     def result(self, ident, text, is_error=False):
-        self.send({"jsonrpc": "2.0", "id": ident,
-                   "result": {"text": text, "isError": is_error}})
+        result = text if isinstance(text, dict) else {"text": text, "isError": is_error}
+        self.send({"jsonrpc": "2.0", "id": ident, "result": result})
 
     def wait(self, ident, tool=None, event=None, timeout=60):
         """Use request/receive directly for concurrent controls or UI polling."""

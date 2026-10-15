@@ -1,7 +1,7 @@
 # Opt-in command and extension confinement
 
-All settings are opt-in. Omitted settings preserve the unrestricted shell and
-legacy extension startup behavior.
+Confinement is opt-in. Without saved overrides or administrator requirements,
+GC uses an unrestricted shell and leaves extension isolation off.
 
 ```toml
 permission_profile = "workspace-edit" # unrestricted | restricted / workspace-edit | read-only
@@ -11,18 +11,31 @@ extension_isolation = "strict"       # off | strict
 `workspace-edit` uses the host kernel to permit child writes only under the
 workspace and temporary directories. Its shell network ports default to none,
 unless explicitly configured. Native regular-file reads can reach outside the
-workspace; outside mutations require a paused, explicit approval. `read-only` uses a read/execute allowlist
-and grants no child filesystem write rights. Both `bash` and background jobs
+workspace; outside mutations require a paused, explicit approval. `read-only`
+uses a read/execute allowlist and grants no child filesystem write rights. Both
+`bash` and background jobs
 use the same initialized OS ruleset. If an explicitly selected profile cannot
 be installed, the host refuses those commands rather than running them bare.
-The existing `sandbox` setting remains separate and keeps its old default.
+The separate `sandbox` setting defaults to `off`. Selecting `workspace-edit`
+activates workspace confinement even when that setting is omitted.
+On macOS, this backend does not restrict outbound networking. On Linux, TCP
+destination-port confinement requires Landlock ABI 4; other network protocols
+are not covered.
+
 On Linux, each base-profile path is opened with symlink resolution disabled
 from a pinned root, and Landlock receives those open descriptors. Workspace
 rules stay attached to the originally pinned workspace directory if its name
 is later replaced. Missing optional cache or runtime directories are skipped;
 an existing path that cannot be safely pinned makes an opt-in profile refuse.
 
-`sandbox::SessionApprovals` is the host integration hook for exact command
+## Approval scope
+
+Model-requested approvals belong to one exact tool call and expire when it
+finishes. They apply to `bash`, `edit`, and `write`; questions never grant access.
+See [Approvals and user questions](reference/interaction.md) for the dialog and
+headless rules.
+
+The separate `sandbox::SessionApprovals` host hook supports manual exact-command
 approvals. An approval lasts only for that in-memory session and matches the
 whole command string. The UI must request an interactive decision before
 recording it; `decision(command, true)` returns a headless refusal until the
@@ -36,6 +49,8 @@ grant. Headless, delegated and extension host-tool calls do not inherit it.
 Exceptions use the session workspace as their working directory; changing the
 tool's `cwd` requires using the normal confined policy instead. `/bg` accepts
 the same explicit session grants, and changing conversations clears them.
+
+## Extension isolation
 
 Strict extension isolation reads `<entrypoint>.capabilities.json` before it
 starts the extension. Entry points, declared paths, and descriptor content

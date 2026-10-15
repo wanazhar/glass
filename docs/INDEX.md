@@ -23,8 +23,12 @@ through `gc help` and `gc COMMAND --help`.
 
 ## Detailed references
 
-- [Session checklist](reference/checklist.md): phased tasks, state operations, persistence, and continuation.
-
+- [Session checklist](reference/checklist.md): phased tasks, state operations,
+  persistence, and continuation.
+- [Model guidance](reference/model-guidance.md): workflow selection, checklist
+  instructions, and discovery.
+- [Approvals and user questions](reference/interaction.md): paused decisions,
+  execution modes, and native questions.
 - [Workspace](reference/workspace.md): tasks, roles, worker limits, request metadata,
   findings, policy explanations, and artifacts.
 - [Workbench](reference/workbench.md): quoted context, portable handoffs, job input,
@@ -43,6 +47,3 @@ through `gc help` and `gc COMMAND --help`.
 
 Historical records retain their original scope, test counts, and evidence. They
 are not the current user reference. See a topic guide first when behavior differs.
-
-- [Model guidance](reference/model-guidance.md): workflow selection, checklist instructions and discovery.
-- [Approvals and user questions](reference/interaction.md): paused decisions, execution modes and native questions.

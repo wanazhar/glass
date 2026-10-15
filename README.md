@@ -65,7 +65,8 @@ Type `/` or press **Ctrl+P** to search actions. The three main destinations are
 | Review permissions and integrations | `/security` or `/extensions` |
 
 **Ctrl+G** opens the transcript. **Ctrl+T** opens reasoning or summaries exposed by
-the provider. **Esc** closes a view and restores your draft. During a turn,
+the provider. **Esc** returns to the previous menu or closes the top-level view and restores your
+draft. During a turn,
 **Enter** submits steering and **Alt+Enter** queues a follow-up.
 
 ## Use it beyond the terminal
@@ -84,7 +85,9 @@ same runtime to other interfaces. See [Automation](docs/automation.md).
 
 ## Extend the workflow
 
-The core exposes six tools: `read`, `edit`, `write`, `view_image`, `bash`, and `state`.
+The core exposes `read`, `edit`, `write`, `view_image`, `bash`, and `state`.
+Interactive models also receive `ask_user_question`, with choices, multiple
+selections, and a custom answer field. Text-only models omit `view_image`.
 Agents can inspect screenshots and project images without reading binary files as text.
 Native checklists keep phased progress and blockers visible, survive resume and
 compaction, and open in `/todo` without an extension.
@@ -98,8 +101,10 @@ See [Project knowledge](docs/knowledge.md) and [Extending glass-core](docs/exten
 
 ## Permissions
 
-The default permission profile is unrestricted. Configure confinement for the
-work you intend to allow; review extensions before enabling them. Global policy,
+The default profile is unrestricted, with sandboxing off. Start with
+`gc --restricted` for workspace confinement and explicit approval requests, or
+`gc --yolo` for unrestricted execution. Questions and approval dialogs pause the
+turn until you respond. Review extensions before enabling them. Global policy,
 permission profiles, command approvals, and extension isolation have distinct
 roles. [Permissions and security](docs/security.md) explains their boundaries.
 

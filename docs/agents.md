@@ -55,7 +55,9 @@ and [lifecycle audit](plan/execution-lifecycle-audit.md) for setup ownership.
 The optional `subagent` extension accepts one to eight independent tasks. Up to
 four run concurrently in a batch, and reports return in request order. Each task
 gets a fresh session/state and either the applicable base prompt or a saved persona.
-Writing tasks have the five core tools; read-only tasks have inspection tools.
+Writing tasks receive the native tools available to their configured model;
+read-only tasks receive inspection tools. Delegated tasks have no interactive
+question or approval channel.
 Parent conversation history is not copied automatically.
 
 ```toml

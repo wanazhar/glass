@@ -16,7 +16,8 @@ Security controls have separate owners:
 | Administrator requirements | Required settings above user, project, and runtime choices |
 | Project trust | Consent for loading repository instructions |
 | Permission profile | Base filesystem confinement for supported child processes |
-| Session command approval | An explicit exception for one exact command in the current session |
+| Tool-call approval | A human decision allowing one exact `bash`, `edit`, or `write` call |
+| Session command approval | A manually configured exact-command exception for the current session |
 | Sandbox policy | Additional configured execution and network restrictions |
 | Extension isolation | Validated capabilities applied before extension startup |
 
@@ -25,10 +26,13 @@ explain COMMAND` evaluates configured rules without executing the command. Shell
 rules match command text, not a complete shell syntax tree; use OS confinement
 for filesystem and network boundaries.
 
-`workspace-edit` and `read-only` are opt-in permission profiles. Explicit profiles
-refuse execution if their required confinement cannot be installed. Session
-approvals are held in memory and cleared when changing conversations. Headless,
-delegated, and extension host-tool calls do not inherit an interactive exception.
+`workspace-edit` (also named `restricted`) and `read-only` are opt-in permission
+profiles. Explicit profiles refuse execution if their required confinement cannot
+be installed. Model-requested exceptions pause the turn and require a human
+decision for each call; see [Approvals and user questions](reference/interaction.md).
+Manual session command approvals are held in memory and cleared when changing
+conversations. Headless, delegated, and extension host-tool calls do not inherit
+an interactive exception.
 
 The read-only profile permits reads and writes to `/dev/null`, whose output is
 discarded. Workspace and outside-file writes remain denied.
@@ -67,6 +71,3 @@ capability declarations before launching executable code.
 New session logs and spills are private on Unix. Existing files retain their
 permissions. Output redaction is best-effort and may leave original data in spill
 files. Review diagnostics and exports before sharing them.
-
-Read [Approvals and user questions](reference/interaction.md) for restricted and
-unrestricted launch modes, paused exact-call approvals and headless behavior.

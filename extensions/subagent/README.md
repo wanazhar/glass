@@ -1,8 +1,9 @@
 # Subagent extension
 
 Delegate one to eight independent tasks through one tool call. Each task receives
-a fresh session and state. Writing tasks use the five core tools; read-only tasks
-use inspection tools. Parent conversation history is not copied automatically.
+a fresh session and state. Writing tasks receive the native tools available to their configured model;
+read-only tasks receive inspection tools. Delegated tasks have no interactive
+question or approval channel. Parent conversation history is not copied automatically.
 
 ## Execution
 

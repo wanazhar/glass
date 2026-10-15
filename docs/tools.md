@@ -14,6 +14,10 @@ the shared task modal; no extension is required.
 
 The CLI and tool interfaces share implementation, confinement and file semantics.
 Schemas stay compact; performance checks cover startup, input, redraw and history.
+Interactive agents also receive `ask_user_question` for decisions that require
+user input. It supports choices, multiple selections, and custom written answers.
+See [Approvals and user questions](reference/interaction.md) for availability and
+turn-pausing behavior.
 
 ## Execution checks
 
@@ -123,7 +127,9 @@ shutdown, then sends KILL and reaps the child. No detached persistence is promis
 programs that deliberately escape their process group are outside job ownership.
 After stop or shell exit, capture drains for at most 100 ms before closing its pipes,
 so a detached writer cannot keep the UI waiting indefinitely.
-Shell permissions and explicit command approvals still apply.
+Execution policy applies to all operations. In confined interactive sessions,
+models can request a one-call exception on `bash`, `edit`, or `write`; the
+requested operation waits for the human decision. See [Approvals and user questions](reference/interaction.md).
 
 ## Tool call repair
 
@@ -156,7 +162,7 @@ network request. Escape/Ctrl+C and follow-up prompts remain responsive.
 
 Background commands run in the configured workspace while the agent remains
 available. `/jobs` shows IDs, process status, command, and log path; `/job <id>`
-prints the last 60KB of output. `/job <id> stop` stops the command's process group.
+prints the last 60 KB of output. `/job <id> stop` stops the command's process group.
 Live jobs are stopped on normal terminal exit. Logs stay under session data in
 `jobs/<session>/` for inspection. Jobs belong to the running terminal process and
 are not reattached on resume.
@@ -204,13 +210,14 @@ native preparation reduces them to the model input bound. See
 The unrestricted permission profile with shell sandboxing off permits native
 file tools to use absolute paths or relative paths outside the workspace.
 Revision checks, bounded reads, regular-file requirements and symlink refusal
-still apply. Restricted workspace-edit profiles permit outside reads while confining mutations;
-read-only and strict profiles retain narrower reads and block unapproved mutations. Standalone `gc file` loads the active profile
-and administrator requirements before executing an operation.
+still apply. Workspace-edit profiles permit outside reads while confining
+mutations; read-only and strict profiles retain narrower reads and block
+unapproved mutations. Standalone `gc file` loads the active profile and
+administrator requirements before executing an operation.
 
 Outside-workspace native calls are labelled in live tool activity. Writes to
 kernel and device controls under `/proc`, `/sys` and `/dev` are labelled as system
-control writes. In unrestricted mode, bash does not require a document read
-before such a control write. Ordinary file replacement still requires reading
-the file. This exception does not bypass shell policy, OS permissions or
-restrictive profiles.
+control writes. Bash does not require a document read before such a control
+write when unrestricted with sandboxing off, or when the exact command has an
+explicit approval. Ordinary file replacement still requires reading the file.
+This exception does not bypass shell policy or OS permissions.

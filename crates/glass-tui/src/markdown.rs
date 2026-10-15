@@ -531,7 +531,7 @@ fn mermaid_diagram(text: &str, width: usize) -> Option<Vec<Line<'static>>> {
             }
         };
         for line in drawn {
-            let heading = matches!(line.as_str(), "Nodes" | "Connections" | "Participants" | "Messages") || line.starts_with("Group · ");
+            let heading = matches!(line.as_str(), "Nodes" | "Connections" | "Participants" | "Messages") || line.starts_with("Group · ") || line.starts_with("╭─ [");
             let tone = if heading { crate::theme::Tone::Accent }
                 else if line.contains("──▶") || line.contains("┄┄▶") || line.contains("━━▶") { crate::theme::Tone::Secondary }
                 else { crate::theme::Tone::Body };

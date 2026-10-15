@@ -30,6 +30,7 @@ ARCHITECTURE='''flowchart TD
 CASES=[
  ('simple','flowchart TD\nA[RootReady] --> B[EndReady]',True,True),
  ('screenshot',ARCHITECTURE,True,True),
+ ('live-kilo',(Path(__file__).parent/'fixtures/mermaid-architecture-kilo.mmd').read_text().replace('glass-core binary','RootReady').replace('ModAPI["glass-mod-api','ModAPI["RootReady glass-mod-api'),True,True),
  ('cycle','flowchart TD\nRootReady --> Other\nOther --> RootReady',True,True),
  ('chain','graph LR\nA[RootReady] --> B --> C & D\nD ==> E',True,True),
  ('quoted','flowchart TD\nA["RootReady --> ; %% :::"]:::entry\nA --> B["界 &quot;EndReady&quot;"]',True,True),
@@ -102,6 +103,7 @@ def run(name,body,enabled,native,size,markdown=False):
     if native:
      assert raw not in rendered,(name,size,rendered)
      assert '<br' not in rendered and 'classDef' not in rendered,(name,size,rendered)
+     if name=='live-kilo':assert '╭─ [ModAPI]' in rendered,(name,size,rendered)
     elif enabled:
      assert 'Diagramsource' in ''.join(rendered.split()),(name,size,rendered)
    assert not server.gate.is_set(),'native block must arrive before final response text'
@@ -127,4 +129,4 @@ if __name__ == '__main__':
  for size in [(80,30),(40,24),(20,8)]:
   for case in CASES:run(*case,size)
   run('markdown',MARKDOWN,True,True,size,markdown=True)
- print('PASS: 39 release PTY rendering cases; streamed/replayed diagrams, screenshot syntax, all five supported families, explicit source fallback, Markdown, exact logs and drafts')
+ print('PASS: 42 release PTY rendering cases; streamed/replayed diagrams, screenshot syntax, all five supported families, explicit source fallback, Markdown, exact logs and drafts')

@@ -147,6 +147,8 @@ External project observations have not been revalidated by this editorial update
 
 - [Native rendering audit — 2026-10-15](reviews/rendering-audit-2026-10-15.md)
 
+- [Live Kilo architecture rendering — 2026-10-15](reviews/live-architecture-rendering-2026-10-15.md)
+
 ## Previous guide locations
 
 - [Workbench guide](../workbench.md): retained entry point for links written

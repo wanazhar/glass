@@ -1,0 +1,10 @@
+[package]
+name = "glass-runtime-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bounded subprocess client for the glass-core host runtime."
+
+[dependencies]
+serde_json = "1"

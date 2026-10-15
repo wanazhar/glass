@@ -390,6 +390,13 @@ name = "glass-mod-api"
 version = "0.1.0"
 
 [[package]]
+name = "glass-runtime-client"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "glass-tui"
 version = "0.1.0"
 dependencies = [

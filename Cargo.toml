@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/glass-mod-api", "crates/glass-tui", "crates/glass"]
+members = ["crates/glass-mod-api", "crates/glass-runtime-client", "crates/glass-tui", "crates/glass"]
 
 [workspace.package]
 version = "0.1.0"

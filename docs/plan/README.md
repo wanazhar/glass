@@ -137,6 +137,8 @@ External project observations have not been revalidated by this editorial update
 - [Independent review: visual-polish-001](reviews/visual-polish-001-01.md)
 - [Workflow delivery verification — 2026-10-10](reviews/workflow-next-20-001.md)
 
+- [Host runtime delivery — 2026-10-15](reviews/host-runtime-2026-10-15.md)
+
 ## Previous guide locations
 
 - [Workbench guide](../workbench.md): retained entry point for links written

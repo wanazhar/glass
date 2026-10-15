@@ -599,6 +599,12 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
             "Inspect recorded activity from a hosted session. Omitting the ID selects the newest session.",
             "gc logs SESSION_ID",
         ),
+        "runtime" => (
+            "gc runtime",
+            "Serve the host-neutral runtime over stdio. Initialize protocolVersion 1, create a session, then submit turns. Host mode supplies all tools and permissions. See docs/reference/runtime.md.",
+            "gc runtime
+python3 examples/runtime_host.py --storage /tmp/gc-host-demo 'Read README.md'",
+        ),
         "acp" => (
             "gc acp",
             "Serve the Agent Client Protocol over stdio. Stdout is reserved for protocol messages.",

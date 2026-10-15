@@ -4,6 +4,7 @@
 //! `glass-mod-api`; everything the model can call is in `provider::builtin_tools`.
 
 mod acp;
+mod runtime;
 mod actions;
 mod addons;
 mod advisor;
@@ -951,6 +952,10 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     if args.first().is_some_and(|a| a == "send") {
         return inbox::command(&cfg, &args[1..]);
+    }
+    if args.first().is_some_and(|a| a == "runtime") {
+        if args.len()!=1 { return Err("usage: gc runtime (configuration is supplied through initialize and session/new)".into()); }
+        return runtime::serve(cfg);
     }
     if args.first().is_some_and(|a| a == "acp") {
         return acp::serve(cfg);

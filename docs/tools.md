@@ -39,6 +39,12 @@ policy around the model's requests:
 These checks do not establish that an agent's change is correct. Inspect the diff
 and run the project's relevant checks before accepting it.
 
+Foreground shell results retain 16 KiB inline per stream and up to 4 MiB of
+overflow. Excess output is drained, with discarded bytes and a final tail
+reported explicitly. Completed overflow is stored once in content-addressed
+blobs. See [Runtime storage](reference/storage.md) for capture and retention
+bounds. Explicit file redirection is required for complete larger logs.
+
 ## Native file tools
 
 Prefer `read` for file inspection, `edit` for surgical changes, and `write` for new

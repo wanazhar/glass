@@ -187,7 +187,7 @@ fn wrap_spans(
         let cells: usize = word
             .iter()
             .skip(skip)
-            .map(|(c, _)| crate::text::width(&c.to_string()))
+            .map(|(c, _)| crate::text::char_width(*c))
             .sum();
         if has_word && used + 1 + cells > width {
             rows.push(Row {
@@ -207,7 +207,7 @@ fn wrap_spans(
             used += 1;
         }
         for (character, (c, style)) in word.iter().enumerate().skip(skip) {
-            let cells = crate::text::width(&c.to_string());
+            let cells = crate::text::char_width(*c);
             if used + cells > width {
                 rows.push(Row {
                     line: Line::from(std::mem::take(&mut row))
@@ -319,7 +319,7 @@ impl Presentation {
             let mut used = 0;
             let limit = width.saturating_sub(2).max(1);
             for (index, c) in chars.iter().enumerate().skip(cursor.character) {
-                let cells = crate::text::width(&c.to_string());
+                let cells = crate::text::char_width(*c);
                 if used + cells > limit && used > 0 {
                     rows.push(Row {
                         line: code_line(std::mem::take(&mut content)),

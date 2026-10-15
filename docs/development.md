@@ -28,18 +28,21 @@ Optional integrations are loaded when configured or explicitly requested. No
 background model polling is required for local browsing, recaps, or knowledge
 inspection. Tool count alone does not predict task latency or token cost.
 
-The most recent recorded offline gate, on Linux aarch64 (2026-10-13), measured:
+The latest recorded comparison on Linux aarch64 (2026-10-15) used three
+alternating runs of the previous and updated release binaries. Representative
+updated timings were:
 
-| Measurement | Worst median |
+| Measurement | Median of reported values |
 | --- | ---: |
-| Process launch to interactive prompt | 6.70 ms |
-| Typed key becoming visible | 0.952 ms |
-| Visible redraw | 0.361 ms |
-| Reader frame with 12,000 stored records | 123.83 ms |
+| Process launch to interactive prompt | 5.85 ms |
+| Typed key becoming visible | 0.131 ms |
+| Visible redraw | 0.334 ms |
+| Reader frame with 12,000 stored records | 102.51 ms |
 
-These are local fixture results from the consolidation checkpoint. They exclude
-provider latency and do not establish cross-machine performance or coding success.
-The [checkpoint record](plan/feature-consolidation-audit.md) describes verification.
+These are local fixture results. They exclude provider latency and do not
+establish cross-machine performance or coding success. The
+[comparison record](plan/reviews/runtime-footprint-2026-10-15.md) includes the
+baseline, file timings, binary size, request overhead, and measured tradeoffs.
 
 To measure the current release build:
 
@@ -51,6 +54,10 @@ python3 scripts/check-native-performance.py
 ```
 
 Run measurements after compiler and other test load has stopped.
+The release profile uses size optimization with full LTO, one code generation
+unit, stripped symbols, and aborting panics. Compare runtime measurements when
+changing these settings. [Runtime storage](reference/storage.md) explains the
+footprint fixture and default disk writes.
 
 ## Tests
 

@@ -5,13 +5,15 @@
 //! Writes are atomic (`tmp` then rename) and deduplicated: writing the same
 //! content twice stores it once and both callers get the same address.
 //!
-//! Garbage control: `sweep(&data_dir)` deletes blobs no session record
-//! references (`gc blobs sweep [--json]`). Running sessions are skipped by
-//! mtime; in-flight blobs have no reference yet, so they win the race by
-//! remaining unreadable rather than being deleted mid-write.
+//! Garbage control: `sweep(&data_dir)` scans foreground and managed-worker logs
+//! on demand (`gc blobs sweep [--json]`). Recent blobs are retained to protect
+//! the gap between storing output and appending its referencing record.
 
 use ring::digest::{Context, SHA256};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
+#[cfg(test)]
+use std::io::Write;
+#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::{Path, PathBuf};
 
@@ -50,11 +52,35 @@ fn put(content: &[u8]) -> std::io::Result<(String, PathBuf)> {
     put_reader(content)
 }
 
-/// Hash and store a spill without loading the entire log into memory.
-pub fn put_file(path: &Path) -> std::io::Result<(String, PathBuf)> {
-    put_reader(std::fs::File::open(path)?)
+/// Consume a completed private spill without copying its bytes a second time.
+/// The caller retains the original path if hashing or the same-filesystem move fails.
+pub fn adopt_file(path: &Path) -> std::io::Result<(String, PathBuf)> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    if !file.metadata()?.is_file() { return Err(std::io::Error::other("Spill is not a regular file")); }
+    let mut digest = Context::new(&SHA256);
+    let mut buffer = [0u8; 32 * 1024];
+    loop {
+        let size = match file.read(&mut buffer) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if size == 0 { break; }
+        digest.update(&buffer[..size]);
+    }
+    let hex = encode_hex(digest.finish().as_ref());
+    let dir = dir();
+    std::fs::create_dir_all(&dir)?;
+    let stored = dir.join(&hex);
+    // Refresh the grace window before publishing the new reference. Replacing
+    // the destination atomically also repairs a corrupt existing digest path;
+    // concurrent identical stores still leave exactly one correct file.
+    file.set_modified(std::time::SystemTime::now())?;
+    if path != stored { std::fs::rename(path, &stored)?; }
+    Ok((reference(&hex), stored))
 }
 
+#[cfg(test)]
 fn put_reader(mut reader: impl Read) -> std::io::Result<(String, PathBuf)> {
     use std::os::unix::fs::OpenOptionsExt;
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -122,39 +148,56 @@ pub struct SweepReport {
 const RECENT_SECS: u64 = 300;
 
 fn referenced_hexes(data_dir: &Path) -> Result<std::collections::HashSet<String>, String> {
-    let mut refs = std::collections::HashSet::new();
-    let entries = std::fs::read_dir(data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.extension().is_none_or(|x| x != "jsonl") {
-            continue;
-        }
-        // Read raw bytes and scan for `"blob:<64 hex>"`: record encodings
-        // differ (`spill` on bash records, `out` on tool results), and a
-        // plain byte scan is the one form that survives every encoding
-        // change. A blob name can't collide with ordinary text because it
-        // is a full 64-hex digest behind the scheme prefix.
-        let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let text = String::from_utf8_lossy(&bytes);
-        let mut from = 0usize;
-        while let Some(at) = text[from..].find("blob:") {
-            let at = from + at;
-            // Scan form: the candidate hex is exactly the 64 bytes after
-            // the prefix and must end at a non-hex boundary or end of text,
-            // so a longer run of hex digits (a concatenation, not a
-            // reference) is never accepted. `hex_of` expects the whole
-            // remaining string to be the reference and is used by readers
-            // that already hold a delimited field value.
-            let rest = &text[at..];
-            let hexrun = rest.get(5..69).unwrap_or("");
-            if hexrun.len() == 64
-                && hexrun.chars().all(|c| c.is_ascii_hexdigit())
-                && rest[69..].chars().next().is_none_or(|c| !c.is_ascii_hexdigit())
-            {
-                refs.insert(hexrun.to_ascii_lowercase());
+    fn scan(bytes: &[u8], eof: bool, refs: &mut std::collections::HashSet<String>) {
+        for (at, prefix) in bytes.windows(5).enumerate() {
+            if prefix != b"blob:" { continue; }
+            let end = at + 69;
+            if end > bytes.len() || (end == bytes.len() && !eof) { continue; }
+            let hex = &bytes[at + 5..end];
+            if hex.iter().all(u8::is_ascii_hexdigit)
+                && bytes.get(end).is_none_or(|byte| !byte.is_ascii_hexdigit()) {
+                refs.insert(String::from_utf8_lossy(hex).to_ascii_lowercase());
             }
-            from = at + 5;
+        }
+    }
+    let mut refs = std::collections::HashSet::new();
+    let mut pending = vec![(data_dir.to_path_buf(), 0usize)];
+    let mut visited = 0usize;
+    while let Some((directory, depth)) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            visited += 1;
+            if visited > 100_000 { return Err("Blob reference scan exceeds 100000 entries; nothing removed".into()); }
+            let path = entry.path();
+            let kind = entry.file_type().map_err(|e| e.to_string())?;
+            if kind.is_symlink() && (depth > 0 || entry.file_name() == "agents" || entry.file_name() == "subagents") {
+                return Err("Symlink in managed session storage; nothing removed".into());
+            }
+            if kind.is_dir() {
+                let name = entry.file_name();
+                if (depth == 0 && name != "agents" && name != "subagents") || name == "worktrees" { continue; }
+                if depth >= 16 { return Err("Blob reference scan exceeds 16 directory levels; nothing removed".into()); }
+                pending.push((path, depth + 1));
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "jsonl") { continue; }
+            if !kind.is_file() { return Err("Non-regular session log; nothing removed".into()); }
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new().read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&path).map_err(|e|e.to_string())?;
+            if !file.metadata().map_err(|e|e.to_string())?.is_file() {return Err("Non-regular session log; nothing removed".into());}
+            let mut buffer = [0u8; 32 * 1024];
+            let mut carry = Vec::new();
+            loop {
+                let size = match file.read(&mut buffer) {
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    result => result.map_err(|e|e.to_string())?,
+                };
+                carry.extend_from_slice(&buffer[..size]);
+                scan(&carry, size == 0, &mut refs);
+                if size == 0 { break; }
+                if carry.len() > 69 { carry.drain(..carry.len() - 69); }
+            }
         }
     }
     Ok(refs)
@@ -238,6 +281,38 @@ mod sweep_tests {
     }
 
     #[test]
+    fn sweep_preserves_nested_worker_references_across_read_boundaries() {
+        let base = sweep_dir("nested");
+        let name = "d".repeat(64);
+        let blob = base.join("blobs").join(&name);
+        std::fs::write(&blob, b"worker output").unwrap();
+        age(&blob, 1000);
+        let sessions = base.join("agents/owner/sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let text = format!("{}blob:{name}\"", " ".repeat(32 * 1024 - 20));
+        std::fs::write(sessions.join("worker.jsonl"), text).unwrap();
+        let report = sweep(&base).unwrap();
+        assert_eq!(report.kept_referenced, 1);
+        assert_eq!(report.removed, 0);
+        assert!(blob.exists());
+        let extra = "e".repeat(64);
+        std::fs::create_dir_all(base.join("subagents")).unwrap();
+        std::fs::write(base.join("subagents/child.jsonl"), format!("blob:{extra}")).unwrap();
+        assert!(referenced_hexes(&base).unwrap().contains(&extra));
+    }
+
+    #[test]
+    fn sweep_refuses_symlinked_logs_before_deleting_blobs() {
+        let base = sweep_dir("symlink");
+        let blob = base.join("blobs").join("f".repeat(64));
+        std::fs::write(&blob, b"protected").unwrap();
+        age(&blob, 1000);
+        std::os::unix::fs::symlink("missing", base.join("worker.jsonl")).unwrap();
+        assert!(sweep(&base).is_err());
+        assert!(blob.exists());
+    }
+
+    #[test]
     fn sweep_removes_unreferenced_keeps_referenced_and_recent() {
         let base = sweep_dir("basic");
         let dir = base.join("blobs");
@@ -295,6 +370,30 @@ mod sweep_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adopted_spills_move_once_and_deduplicate() {
+        use std::os::unix::fs::MetadataExt;
+        let base = std::env::temp_dir().join(format!("gc-adopt-{}-{}", std::process::id(), crate::partial::now()));
+        std::fs::create_dir_all(&base).unwrap();
+        let first = base.join("first.log");
+        let second = base.join("second.log");
+        let body = format!("Unique adoption fixture: {}", base.display());
+        std::fs::write(&first, &body).unwrap();
+        std::fs::write(&second, &body).unwrap();
+        let before = std::fs::metadata(&first).unwrap();
+        let (reference, stored) = adopt_file(&first).unwrap();
+        assert!(!first.exists());
+        assert_eq!(std::fs::metadata(&stored).unwrap().ino(), before.ino());
+        assert_eq!(get(&reference, 0, None).unwrap(), body.as_bytes());
+        // A preexisting digest path must not silently replace verified output
+        // with corrupt bytes merely because its filename looks correct.
+        std::fs::write(&stored, b"corrupt existing blob").unwrap();
+        assert_eq!(adopt_file(&second).unwrap(), (reference.clone(), stored));
+        assert_eq!(get(&reference, 0, None).unwrap(), body.as_bytes());
+        assert!(!second.exists());
+        std::fs::remove_dir(&base).unwrap();
+    }
 
     #[test]
     fn put_is_deduplicated_and_roundtrips() {

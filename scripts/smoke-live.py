@@ -60,6 +60,7 @@ with tempfile.TemporaryDirectory(prefix='gc-live-pty-') as tmp:
                 t.send('draft'); t.visible('draft'); t.send('\x02'); t.collect(.15); t.send('\x14'); t.visible('Reasoning')
                 Endpoint.gate.set(); t.collect(.4)
                 assert 'Publicsummarylast.' in compact(t.vt.text()), t.vt.text()
+                assert not list((root/'data/glass-core/ui').glob('*.tmp')), 'Viewer created a disk spool'
                 t.send('\x1b[H'); t.collect(.15)
                 assert 'Publicsummaryfirst.' in compact(t.vt.text()), t.vt.text()
                 t.send('\x1b[F'); t.collect(.15)
@@ -76,6 +77,7 @@ with tempfile.TemporaryDirectory(prefix='gc-live-pty-') as tmp:
                 if 'FINAL-LIVE-END' not in t.seen: t.wait('FINAL-LIVE-END')
                 t.collect(.2)
                 assert 'draft' in t.vt.text(), t.vt.text()
+                assert not list((root/'data/glass-core/ui').glob('*.tmp')), 'Viewer left a disk spool'
                 logs = sorted((root/'data/glass-core').glob('*.jsonl'), key=lambda p:p.stat().st_mtime_ns)
                 records = [json.loads(line) for line in logs[-1].read_text().splitlines()]
                 assert len([r for r in records if r.get('k') == 'assistant' and 'FINAL-LIVE-END' in r.get('t','')]) == 1

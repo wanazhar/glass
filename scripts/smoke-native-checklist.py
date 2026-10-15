@@ -22,11 +22,11 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
         self.server.bodies.append(body)
         systems = '\n'.join(str(m.get('content', '')) for m in body.get('messages', []) if m.get('role') == 'system')
         if 'You are planning a coding task.' in systems:
-            assert '[GC workflow protocol 2]' not in systems, systems
+            assert '[GC workflow protocol 3]' not in systems, systems
         else:
-            assert systems.count('[GC workflow protocol 2]') == 1, systems
+            assert systems.count('[GC workflow protocol 3]') == 1, systems
             assert 'create state.todo before substantive work' in systems, systems
-            assert 'Availability comes from advertised schemas' in systems, systems
+            assert 'Use advertised schemas' in systems, systems
 
         results = [message for message in body.get('messages', []) if message.get('role') == 'tool']
         mode = self.server.mode

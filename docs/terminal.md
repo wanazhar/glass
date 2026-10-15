@@ -127,7 +127,7 @@ Ctrl+G opens the transcript while idle or busy. Ctrl+T opens reasoning text or
 public summaries exposed by the provider. Providers that expose neither show an
 empty-state explanation. During an active turn, Ctrl+C cancels work even when a
 reader is open, and closes the reader. Closing a view normally restores the
-draft and replays any privately spooled main output once.
+draft and repaints the bounded main-output cache.
 
 The live reasoning reader owns drawing and navigation while open. The underlying
 conversation does not repaint beneath it. Wider terminals use a padded reading

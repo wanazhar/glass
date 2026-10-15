@@ -92,6 +92,8 @@ External project observations have not been revalidated by this editorial update
 
 ## Reviews
 
+- [Runtime footprint and performance — 2026-10-15](reviews/runtime-footprint-2026-10-15.md)
+
 - [Documentation audit — 2026-10-15](reviews/documentation-2026-10-15.md)
 
 - [Model-managed teammate limits — 2026-10-10](reviews/agent-core-limits-001.md)

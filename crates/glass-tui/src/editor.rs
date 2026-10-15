@@ -429,7 +429,7 @@ fn wrap(text: &str, width: usize) -> Vec<&str> {
         let mut start = 0;
         let mut cells = 0;
         for (i, c) in line.char_indices() {
-            let n = crate::text::width(&c.to_string());
+            let n = crate::text::char_width(c);
             if cells + n > width {
                 lines.push(&line[start..i]);
                 start = i;
@@ -478,7 +478,7 @@ fn cursor_position(buf: &str, cursor: usize, width: usize) -> (u16, u16) {
         } else {
             // Wrap before placing, so a full row followed
             // by a newline advances one row, not two.
-            let cells = crate::text::width(&c.to_string());
+            let cells = crate::text::char_width(c);
             if col + cells > width || col == width {
                 row += 1;
                 col = 0;

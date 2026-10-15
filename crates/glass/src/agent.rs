@@ -170,12 +170,26 @@ impl Drop for StreamWorker {
     }
 }
 
-pub type HostExecutor<'a> = Box<dyn FnMut(&ToolCall, &mut dyn FnMut(&mut Option<String>)) -> tools::Outcome + 'a>;
+pub type HostExecutor<'a> =
+    Box<dyn FnMut(&ToolCall, &mut dyn FnMut(&mut Option<String>), u64) -> HostToolOutcome + 'a>;
 
+pub struct HostToolOutcome {
+    pub outcome: tools::Outcome,
+    pub attachments: Vec<Record>,
+}
+impl HostToolOutcome {
+    pub fn plain(outcome: tools::Outcome) -> Self {
+        Self {
+            outcome,
+            attachments: Vec::new(),
+        }
+    }
+}
 type HostedExecution<'a> = (Vec<(String, String, String)>, HostExecutor<'a>);
 
 pub struct Agent<'a> {
     hosted: Option<HostedExecution<'a>>,
+    host_attachments: Vec<Record>,
     pub provider: &'a dyn Provider,
     pub session: &'a mut Session,
     pub state: &'a mut State,
@@ -322,6 +336,7 @@ impl<'a> Agent<'a> {
         extensions.bind_session_path(session.path.clone());
         Self {
             hosted: None,
+            host_attachments: Vec::new(),
             provider,
             session,
             state,
@@ -1241,6 +1256,11 @@ impl<'a> Agent<'a> {
             recovery_results.clear();
             self.recovering = false;
             self.run_tool_batch(&executable, &mut |slot| pump(slot));
+            if self.steer.is_none() {
+                for record in std::mem::take(&mut self.host_attachments) {
+                    self.session.append(record);
+                }
+            }
             if let Some(steer) = self.steer.take() {
                 // Still-running extension tools (and bash workers) stop
                 // waiting; their results report the cancellation honestly.
@@ -1258,6 +1278,9 @@ impl<'a> Agent<'a> {
                             body: "Cancelled before execution; no tool result.".into(),
                         });
                     }
+                }
+                for record in std::mem::take(&mut self.host_attachments) {
+                    self.session.append(record);
                 }
                 if steer.is_empty() {
                     self.session.append(Record::Meta(
@@ -1302,10 +1325,12 @@ impl<'a> Agent<'a> {
                 pump(&mut self.steer);
                 if self.steer.is_some() { break; }
                 self.emit_tool_start(call);
+                let sequence = self.session.log_len() as u64;
                 let outcome = execute(call, &mut |slot| {
                     pump(slot);
-                });
-                self.finish_tool(call, outcome);
+                }, sequence);
+                self.host_attachments.extend(outcome.attachments);
+                self.finish_tool(call, outcome.outcome);
                 pump(&mut self.steer);
                 if self.steer.is_some() { break; }
             }

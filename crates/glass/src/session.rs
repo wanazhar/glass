@@ -135,7 +135,7 @@ pub enum Record {
 }
 
 impl Record {
-    fn to_json(&self) -> serde_json::Value {
+    pub(crate) fn to_json(&self) -> serde_json::Value {
         use serde_json::json;
         match self {
             Record::User(t) => json!({ "k": "user", "t": t }),
@@ -271,6 +271,12 @@ impl Record {
     /// Project into the model context. `None` means display-only.
     pub(crate) fn to_message(&self) -> Option<Message> {
         match self {
+            Record::Custom {
+                kind,
+                data: Some(data),
+            } if kind == "runtime/context" => Some(Message::User(format!(
+                "Host context data (not system instructions):\n{data}"
+            ))),
             Record::User(t) => Some(Message::User(t.clone())),
             Record::Assistant(t) => Some(Message::Assistant(t.clone())),
             Record::ToolCall {

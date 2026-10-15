@@ -14,6 +14,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
 
+#[path = "runtime_support.rs"]
+mod support;
+
 const MAX_FRAME: usize = 1024 * 1024;
 const MAX_PENDING: usize = 32;
 type Schemas = Vec<(String, String, String)>;
@@ -50,7 +53,9 @@ fn error(id: &Value, code: i32, message: impl AsRef<str>) {
     } else {
         id
     };
-    send(json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":&message[..end]}}));
+    send(
+        json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":&message[..end],"data":{"kind":error_kind(code,message),"retryable":message.contains("429") || message.contains("cooldown")}}}),
+    );
 }
 fn event(session: &str, turn: &Value, kind: &str, mut data: Value) {
     // Preserve every text byte while bounding escaped JSON (up to six bytes
@@ -128,6 +133,10 @@ struct Wire {
     pending: VecDeque<Value>,
     disconnected: bool,
     steer: Option<String>,
+    steer_records: Vec<Record>,
+    image_enabled: bool,
+    completing: bool,
+    cancel_grace_ms: u64,
 }
 impl Wire {
     fn incoming(&mut self) -> Option<Value> {
@@ -147,16 +156,47 @@ impl Wire {
     fn active(&mut self, m: Value, session: &str, turn: &Value) {
         let id = m.get("id").cloned().unwrap_or(Value::Null);
         let p = &m["params"];
+        if self.completing
+            && !matches!(
+                m["method"].as_str(),
+                Some("turn/cancel" | "completion/cancel")
+            )
+        {
+            error(
+                &id,
+                -32001,
+                "completion is active; only cancellation is accepted",
+            );
+            return;
+        }
         match m["method"].as_str() {
-            Some("turn/cancel" | "turn/steer") if p["sessionId"].as_str() == Some(session) => {
+            Some("turn/cancel" | "turn/steer" | "completion/cancel")
+                if p["sessionId"].as_str() == Some(session) =>
+            {
                 if p.get("turnId").is_some_and(|v| v != turn) {
                     error(&id, -32602, "turnId does not identify the active turn");
                     return;
                 }
-                let text = if m["method"] == "turn/cancel" {
-                    Ok("")
+                let text: Result<String, String> = if m["method"] != "turn/steer" {
+                    Ok(String::new())
                 } else {
-                    string(p, "text")
+                    match support::input(p, self.image_enabled) {
+                        Ok(mut records) => {
+                            let text = match records.remove(0) {
+                                Record::User(text) => text,
+                                _ => unreachable!(),
+                            };
+                            // The pending correction owns its attached data.
+                            if self.steer.is_none() {
+                                self.steer_records = records;
+                            }
+                            Ok(text)
+                        }
+                        Err(e) => {
+                            error(&id, -32602, e);
+                            return;
+                        }
+                    }
                 };
                 match text {
                     Ok(text) => {
@@ -167,7 +207,7 @@ impl Wire {
                                 "a correction or cancellation is already pending",
                             );
                         } else {
-                            self.steer = Some(text.to_owned());
+                            self.steer = Some(text);
                             reply(
                                 &id,
                                 json!({"accepted":true,"applies":"before_next_request_or_tool"}),
@@ -207,61 +247,172 @@ impl Wire {
         call: &glass_mod_api::ToolCall,
         session: &str,
         turn: &Value,
-    ) -> tools::Outcome {
-        let request = format!("host:{session}:{}:{}", turn, call.id);
+        sequence: u64,
+    ) -> crate::agent::HostToolOutcome {
+        use crate::agent::HostToolOutcome;
+        let request = format!("host:{session}:{sequence}:{}", call.id);
+        let plain = |message: &str| HostToolOutcome::plain(tools::Outcome::err(message));
         if call.id.len() > 256 {
-            return tools::Outcome::err("Provider tool call ID exceeds 256 bytes");
+            return plain("Provider tool call ID exceeds 256 bytes");
         }
-        if !send(json!({"jsonrpc":"2.0","id":request,"method":"tool/execute",
-            "params":{"sessionId":session,"turnId":turn,"callId":call.id,"name":call.name,
-                "arguments":serde_json::from_str::<Value>(&call.arguments).unwrap_or(Value::Null)}}))
-        {
-            return tools::Outcome::err("Host tool request exceeds 1 MiB; not dispatched");
+        if !send(
+            json!({"jsonrpc":"2.0","id":request,"method":"tool/execute","params":{
+            "sessionId":session,"turnId":turn,"callId":call.id,"name":call.name,
+            "arguments":serde_json::from_str::<Value>(&call.arguments).unwrap_or(Value::Null)}}),
+        ) {
+            return plain("Host tool request exceeds 1 MiB; not dispatched");
         }
-        loop {
-            if self.disconnected || self.steer.is_some() {
+        let mut deadline = None;
+        let mut progress_bytes = 0usize;
+        let mut progress_updates = 0usize;
+        let mut progress_limited = false;
+        let mut execution_status = "unknown";
+        let mut output = loop {
+            if self.disconnected {
+                break plain(
+                    "Host disconnected; tool effects are unknown. Reconcile before repeating mutations.",
+                );
+        }
+            if self.steer.is_some() && deadline.is_none() {
                 event(
                     session,
                     turn,
                     "tool_cancel",
-                    json!({"callId":call.id,"requestId":request}),
+                    json!({"callId":call.id,"requestId":request,"acknowledgementRequired":true}),
                 );
-                return tools::Outcome::err(
-                    "Host tool interrupted; execution status must be reconciled by the host",
+                deadline = Some(
+                    std::time::Instant::now()
+                        + std::time::Duration::from_millis(self.cancel_grace_ms),
+                );
+            }
+            if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+                break plain(
+                    "Host tool interruption was not acknowledged; effects are unknown. Reconcile before repeating mutations.",
                 );
             }
             match self.rx.recv_timeout(std::time::Duration::from_millis(10)) {
                 Ok(Ok(m)) if m.get("method").is_none() && m["id"] == request => {
                     if m.get("result").is_some() == m.get("error").is_some() {
-                        return tools::Outcome::err(
-                            "Host response requires exactly one of result or error",
+                        break plain(
+                            "Host response requires exactly one of result or error; execution status is unknown",
                         );
                     }
-                    let result = &m["result"];
                     if let Some(e) = m.get("error") {
-                        return tools::Outcome::err(format!("Host execution failed: {e}"));
+                        execution_status = "failed";
+                        break plain(&format!("Host execution failed: {e}"));
                     }
-                    if result.get("isError").is_some_and(|v| !v.is_boolean()) {
-                        return tools::Outcome::err("Host isError must be a boolean");
-                    }
-                    let Some(body) = result["text"].as_str() else {
-                        return tools::Outcome::err("Host tool result requires text");
+                    match support::tool_result(&m["result"], self.image_enabled) {
+                        Ok(result) => {
+                            execution_status = if result.outcome.exit_code == Some(0) {
+                                "completed"
+                            } else {
+                                "failed"
                     };
-                    if body.len() > 512 * 1024 {
-                        return tools::Outcome::err("Host tool result exceeds 512 KiB");
+                            break result;
+                        }
+                        Err(e) => break plain(&format!("{e}; execution status is unknown")),
                     }
-                    return if result["isError"].as_bool().unwrap_or(false) {
-                        tools::Outcome::err(body)
+                }
+                Ok(Ok(m))
+                    if m["method"] == "tool/progress" && m["params"]["requestId"] == request =>
+                {
+                    let id = m.get("id");
+                    if m["params"]["sessionId"].as_str() != Some(session) {
+                        if let Some(id) = id {
+                            error(id, -32602, "sessionId mismatch");
+                        }
+                        continue;
+                    }
+                    if let Some(text) = m["params"]["text"].as_str().filter(|text| !text.is_empty())
+                    {
+                        if progress_updates >= 1024
+                            || text.len() > 64 * 1024
+                            || progress_bytes.saturating_add(text.len()) > 512 * 1024
+                        {
+                            if !progress_limited {
+                                event(
+                                    session,
+                                    turn,
+                                    "tool_progress",
+                                    json!({"callId":call.id,"requestId":request,"truncated":true}),
+                                );
+                                progress_limited = true;
+                            }
+                            if let Some(id) = id {
+                                error(id, -32002, "tool progress limit reached");
+                    }
                     } else {
-                        tools::Outcome::ok(body.into())
+                            progress_bytes += text.len();
+                            progress_updates += 1;
+                            event(
+                                session,
+                                turn,
+                                "tool_progress",
+                                json!({"callId":call.id,"requestId":request,"text":text}),
+                            );
+                            if let Some(id) = id {
+                                reply(id, json!({"accepted":true}));
+                            }
+                        }
+                    } else if let Some(id) = id {
+                        error(id, -32602, "progress requires text");
+                    }
+                }
+                Ok(Ok(m))
+                    if m["method"] == "tool/cancelled" && m["params"]["requestId"] == request =>
+                {
+                    let id = m.get("id").cloned().unwrap_or(Value::Null);
+                    if deadline.is_none() || m["params"]["sessionId"].as_str() != Some(session) {
+                        error(&id, -32602, "no matching cancellation is pending");
+                        continue;
+                    }
+                    let status = m["params"]["executionStatus"].as_str().unwrap_or("");
+                    if !matches!(status, "cancelled" | "completed" | "unknown") {
+                        error(&id, -32602, "invalid cancellation status");
+                        continue;
+                    }
+                    execution_status = match status {
+                        "cancelled" => "cancelled",
+                        "completed" => "completed",
+                        _ => "unknown",
                     };
+                    reply(&id, json!({"recorded":true,"executionStatus":status}));
+                    event(
+                        session,
+                        turn,
+                        "tool_cancel_ack",
+                        json!({"callId":call.id,"requestId":request,"executionStatus":status}),
+                    );
+                    break plain(if status == "cancelled" {
+                        "Host confirmed cancellation."
+                    } else if status == "completed" {
+                        "Host reports tool already completed; result unavailable. Do not repeat its effects."
+                    } else {
+                        "Host could not determine tool effects. Reconcile before repeating mutations."
+                    });
                 }
                 Ok(Ok(m)) => self.active(m, session, turn),
                 Ok(Err(e)) => error(&Value::Null, -32700, e),
                 Err(mpsc::RecvTimeoutError::Disconnected) => self.disconnected = true,
                 Err(_) => {}
             }
-        }
+        };
+        output.attachments.push(Record::Custom {
+            kind: "runtime/tool_metadata".into(),
+            data: Some(
+                json!({
+            "requestId":request,"callId":call.id,"turnId":turn,"name":call.name,
+            "executionStatus":execution_status,"isError":output.outcome.exit_code!=Some(0)})
+                .to_string(),
+            ),
+        });
+        event(
+            session,
+            turn,
+            "tool_status",
+            json!({"requestId":request,"callId":call.id,"executionStatus":execution_status}),
+        );
+        output
     }
 }
 struct Conversation {
@@ -270,17 +421,39 @@ struct Conversation {
     state: tools::State,
     tools: Option<Schemas>,
     instructions: String,
+    stats_cache: Option<(u64, Value)>,
 }
 fn metadata(
     p: &Value,
     cfg: &config::Config,
 ) -> Result<(config::Config, Option<Schemas>, String), String> {
     let mut cfg = cfg.clone();
+    if let Some(id) = p.get("connection").and_then(Value::as_str) {
+        let store = crate::auth::load()?;
+        let selected = store
+            .connections
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or("unknown connection")?;
+        crate::auth::configure(&mut cfg, selected);
+    }
     let cwd = PathBuf::from(string(p, "cwd")?);
     if !cwd.is_absolute() || !cwd.is_dir() {
         return Err("cwd must be an existing absolute directory".into());
     }
     cfg.workspace = cwd.canonicalize().map_err(|e| e.to_string())?;
+    if let Some(image) = p.get("imageInput") {
+        cfg.image_input = image.as_bool().ok_or("imageInput must be boolean")?;
+    }
+    if let Some(tokens) = p.get("maxTokens") {
+        cfg.max_tokens = u32::try_from(
+            tokens
+                .as_u64()
+                .filter(|n| *n > 0 && *n <= 128_000)
+                .ok_or("maxTokens must be 1..128000")?,
+        )
+        .map_err(|e| e.to_string())?;
+    }
     if let Some(model) = p.get("model") {
         cfg.model = model
             .as_str()
@@ -336,6 +509,27 @@ fn metadata(
             };
         }
     }
+    if !matches!(
+        cfg.provider.as_str(),
+        "anthropic" | "openai" | "openai-responses"
+    ) {
+        return Err("unsupported provider transport".into());
+    }
+    crate::provider::validate_endpoint(&cfg.base_url).map_err(|e| e.to_string())?;
+    if let Some(reasoning) = cfg.reasoning_budget {
+        if reasoning > cfg.max_tokens {
+            return Err("reasoningBudget cannot exceed maxTokens".into());
+        }
+        if cfg.provider == "anthropic"
+            && reasoning > 0
+            && (reasoning < 1024 || reasoning >= cfg.max_tokens)
+        {
+            return Err(
+                "Anthropic reasoningBudget must be zero or at least 1024 and below maxTokens"
+                    .into(),
+            );
+        }
+    }
     let instructions=p.get("instructions").map(|v|v.as_str().ok_or("instructions must be a string")).transpose()?.unwrap_or(
         if host_tools.is_some() {"You are a coding agent. Use only the supplied tools. The host owns permissions and user interactions."}else{&cfg.system_prompt}).to_owned();
     Ok((cfg, host_tools, instructions))
@@ -382,6 +576,10 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
         pending: VecDeque::new(),
         disconnected: false,
         steer: None,
+        steer_records: Vec::new(),
+        image_enabled: true,
+        completing: false,
+        cancel_grace_ms: 250,
     }));
     let mut root: Option<PathBuf> = None;
     let mut conversations = BTreeMap::<String, Conversation>::new();
@@ -430,6 +628,13 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 continue;
             }
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            if let Some(ms) = p.get("cancelGraceMs") {
+                let Some(ms) = ms.as_u64().filter(|n| *n <= 5000) else {
+                    error(&id, -32602, "cancelGraceMs must be 0..5000");
+                    continue;
+                };
+                wire.borrow_mut().cancel_grace_ms = ms;
+            }
             root = Some(dir.canonicalize().map_err(|e| e.to_string())?);
             reply(
                 &id,
@@ -437,7 +642,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 "capabilities":{"hostTools":true,"localTools":true,"steering":true,"followUp":true,"cancel":true,
                     "resume":true,"fork":true,"rewind":"context_only","compact":true,"sessionConfigure":true,
                     "hostInteractions":"host tools may implement questions and approvals","concurrentTurns":false,
-                    "imagePrompt":false,"completion":false},
+                    "imagePrompt":true,"completion":true,"typedContext":true,"structuredResults":true,"toolProgress":true,"toolCancellationAck":true,"incrementalEntries":true,"modelDiscovery":true,"authenticationReadiness":true,"structuredEntries":true,"sessionNames":true,"statistics":true,"lineage":true,"completionCancellation":true,"safeResumeById":true,"toolReconciliation":true},
                 "limits":{"frameBytes":MAX_FRAME,"toolResultBytes":512*1024,"queuedFollowUps":MAX_PENDING},
                 "storageDir":root}),
             );
@@ -456,36 +661,67 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 if conversations.len() >= 32 {
                     return Err("close an idle session before opening another".into());
                 }
-                let (settings, host_tools, instructions) = metadata(p, &cfg)?;
-                let (session, manifest) = if method == "session/resume" {
+                let (session, mut manifest, settings, host_tools, instructions) = if method
+                    == "session/resume"
+                {
                     let sid = string(p, "sessionId")?;
-                    if !valid_id(sid) {
-                        return Err("invalid sessionId".into());
+                    let manifest = support::read_manifest(dir, sid)?;
+                    let expected = p
+                        .get("expectedToolMode")
+                        .or_else(|| p.get("toolMode"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("host");
+                    let actual = manifest
+                        .get("toolMode")
+                        .and_then(Value::as_str)
+                        .unwrap_or("host");
+                    if expected != actual {
+                        return Err("stored tool ownership differs from expectedToolMode".into());
                     }
-                    let manifest: Value = serde_json::from_slice(
-                        &std::fs::read(dir.join(format!("{sid}.host.json")))
-                            .map_err(|e| e.to_string())?,
-                    )
-                    .map_err(|e| e.to_string())?;
-                    if manifest != *p {
-                        return Err("resume requires the original cwd, tools, instructions, and model settings; use session/configure after resume".into());
+                    for (key, value) in p.as_object().ok_or("params must be an object")? {
+                        if !matches!(key.as_str(), "sessionId" | "expectedToolMode")
+                            && manifest.get(key) != Some(value)
+                        {
+                            return Err(format!("resume configuration mismatch: {key}"));
                     }
+                    }
+                    let (settings, tools, instructions) = metadata(&manifest, &cfg)?;
                     (
                         Session::open(dir, sid).map_err(|e| e.to_string())?,
                         manifest,
+                        settings,
+                        tools,
+                        instructions,
                     )
                 } else {
+                    let (settings, tools, instructions) = metadata(p, &cfg)?;
                     let session = Session::create(dir).map_err(|e| e.to_string())?;
-                    let mut manifest = p.clone();
-                    manifest["sessionId"] = json!(session.id);
-                    (session, manifest)
+                    (session, p.clone(), settings, tools, instructions)
                 };
                 let sid = session.id.clone();
-                crate::auth::secure_write(
-                    &dir.join(format!("{sid}.host.json")),
-                    &serde_json::to_vec(&manifest).map_err(|e| e.to_string())?,
-                )
-                .map_err(|e| e.to_string())?;
+                manifest["sessionId"] = json!(sid);
+                manifest["cwd"] = json!(settings.workspace);
+                manifest["toolMode"] = json!(if host_tools.is_some() {
+                    "host"
+                } else {
+                    "local"
+                });
+                manifest["provider"] = json!(settings.provider);
+                manifest["baseUrl"] = json!(settings.base_url);
+                manifest["model"] = json!(settings.model);
+                manifest["imageInput"] = json!(settings.image_input);
+                manifest["maxTokens"] = json!(settings.max_tokens);
+                manifest["instructions"] = json!(instructions);
+                if let Some(reasoning) = settings.reasoning_budget {
+                    manifest["reasoningBudget"] = json!(reasoning);
+                }
+                if let Some(env) = &settings.api_key_env {
+                    manifest["apiKeyEnv"] = json!(env);
+                }
+                if settings.connection.is_some() {
+                    manifest["connection"] = json!(settings.connection);
+                }
+                support::save_manifest(dir, &sid, &manifest)?;
                 conversations.insert(
                     sid.clone(),
                     Conversation {
@@ -494,21 +730,23 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                         state: tools::State::new(),
                         tools: host_tools,
                         instructions,
+                        stats_cache: None,
                     },
                 );
                 Ok(json!({"sessionId":sid}))
             }
-            "session/list" => {
-                let mut list = Vec::new();
-                for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
-                    let entry = entry.map_err(|e| e.to_string())?;
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    if let Some(sid) = name.strip_suffix(".host.json") {
-                        list.push(json!({"sessionId":sid,"open":conversations.contains_key(sid)}));
-                    }
+            "session/list" | "session/tree" => support::list(dir, p, &conversations),
+            "auth/status" | "models/list" => {
+                let selected = if let Some(sid) = p.get("sessionId").and_then(Value::as_str) {
+                    &conversations.get(sid).ok_or("unknown open session")?.cfg
+                } else {
+                    &cfg
+                };
+                if method == "auth/status" {
+                    auth_status(selected)
+                } else {
+                    model_list(selected, p)
                 }
-                list.sort_by(|a, b| a["sessionId"].as_str().cmp(&b["sessionId"].as_str()));
-                Ok(json!({"sessions":list}))
             }
             "session/close" => {
                 let sid = string(p, "sessionId")?;
@@ -519,6 +757,15 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 if !matches!(
                     method,
                     "session/inspect"
+                        | "session/entries"
+                        | "session/entry"
+                        | "session/stats"
+                        | "session/name"
+                        | "session/describe"
+                        | "session/validate"
+                        | "session/interruptedTools"
+                        | "tool/reconcile"
+                        | "completion/request"
                         | "session/configure"
                         | "session/fork"
                         | "session/rewind"
@@ -532,6 +779,64 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 let sid = string(p, "sessionId")?;
                 let c = conversations.get_mut(sid).ok_or("unknown open session")?;
                 match method {
+                    "session/entries" => support::entries(&c.session, p),
+                    "session/entry" => support::entry(&c.session, p),
+                    "session/stats" => {
+                        let size = std::fs::metadata(&c.session.path)
+                            .map_err(|e| e.to_string())?
+                            .len();
+                        if let Some((stamp, value)) = &c.stats_cache
+                            && *stamp == size {
+                                return Ok(value.clone());
+                            }
+                        let value = support::stats(&c.session)?;
+                        c.stats_cache = Some((size, value.clone()));
+                        Ok(value)
+                    }
+                    "session/interruptedTools" => support::interrupted(&c.session),
+                    "session/describe" => Ok(support::read_manifest(dir, sid)?),
+                    "session/validate" => {
+                        let provider = provider(&c.cfg, &c.session)?;
+                        Ok(
+                            json!({"configured":true,"model":provider.model(),"contextWindow":provider.context_window(),
+                            "imageInput":c.cfg.image_input,"reasoning":reasoning_capability(&c.cfg.model),"providerReachable":null}),
+                        )
+                    }
+                    "session/name" => {
+                        let name = string(p, "name")?;
+                        if name.len() > 256 || name.chars().any(char::is_control) {
+                            return Err(
+                                "name must be at most 256 bytes without control characters".into(),
+                            );
+                        }
+                        let mut manifest = support::read_manifest(dir, sid)?;
+                        manifest["name"] = json!(name);
+                        support::save_manifest(dir, sid, &manifest)?;
+                        Ok(json!({"name":name}))
+                    }
+                    "tool/reconcile" => {
+                        let request = string(p, "requestId")?;
+                        let pending = support::tool_state(&c.session, request)?;
+                        if !pending.is_some_and(|tool| tool["executionStatus"] == "unknown") {
+                            return Err("requestId is not an unresolved host operation".into());
+                        }
+                        let status = string(p, "executionStatus")?;
+                        if !matches!(status, "completed" | "cancelled" | "failed" | "unknown") {
+                            return Err("invalid reconciliation status".into());
+                        }
+                        let summary = p.get("text").and_then(Value::as_str).unwrap_or("");
+                        if summary.len() > 16 * 1024 {
+                            return Err("reconciliation summary exceeds 16 KiB".into());
+                        }
+                        let data =
+                            json!({"requestId":request,"executionStatus":status,"summary":summary});
+                        c.session.append_checked(&[
+                            Record::Custom{kind:"runtime/tool_reconciliation".into(),data:Some(data.to_string())},
+                            Record::Custom{kind:"runtime/context".into(),data:Some(json!([{"type":"json","value":{"hostToolReconciliation":data}}]).to_string())}
+                        ]).map_err(|e|e.to_string())?;
+                        Ok(json!({"recorded":true,"requestId":request}))
+                    }
+                    "completion/request" => completion(c, &wire, &id, p),
                     "session/inspect" => {
                         let records = c.session.history_records();
                         let offset = p.get("cursor").and_then(Value::as_u64).unwrap_or(0) as usize;
@@ -562,16 +867,26 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                                         | "baseUrl"
                                         | "connection"
                                         | "apiKeyEnv"
+                                        | "imageInput"
+                                        | "maxTokens"
                                 )
                             })
                         }) {
                             return Err("session/configure cannot change tools, ownership, or workspace; create a new session".into());
                         }
-                        let mut manifest: Value = serde_json::from_slice(
-                            &std::fs::read(dir.join(format!("{sid}.host.json")))
-                                .map_err(|e| e.to_string())?,
-                        )
-                        .map_err(|e| e.to_string())?;
+                        let mut manifest = support::read_manifest(dir, sid)?;
+                        if let Some(connection) = p.get("connection").and_then(Value::as_str) {
+                            let store = crate::auth::load()?;
+                            let account = store
+                                .connections
+                                .iter()
+                                .find(|c| c.id == connection)
+                                .ok_or("unknown connection")?;
+                            manifest["provider"] = json!(account.provider);
+                            manifest["baseUrl"] = json!(account.base_url);
+                            manifest["model"] = json!(account.model);
+                            manifest["apiKeyEnv"] = json!(account.api_key_env);
+                        }
                         for key in [
                             "model",
                             "reasoningBudget",
@@ -580,6 +895,8 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                             "baseUrl",
                             "connection",
                             "apiKeyEnv",
+                            "imageInput",
+                            "maxTokens",
                         ] {
                             if let Some(v) = p.get(key) {
                                 manifest[key] = v.clone();
@@ -608,12 +925,9 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                             .session
                             .branch(dir, through as usize)
                             .map_err(|e| e.to_string())?;
-                        let mut manifest: Value = serde_json::from_slice(
-                            &std::fs::read(dir.join(format!("{sid}.host.json")))
-                                .map_err(|e| e.to_string())?,
-                        )
-                        .map_err(|e| e.to_string())?;
+                        let mut manifest = support::read_manifest(dir, sid)?;
                         manifest["sessionId"] = json!(fork.id);
+                        manifest["parent"] = json!({"sessionId":sid,"throughTurn":through});
                         crate::auth::secure_write(
                             &dir.join(format!("{}.host.json", fork.id)),
                             &serde_json::to_vec(&manifest).map_err(|e| e.to_string())?,
@@ -622,11 +936,8 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                         Ok(json!({"sessionId":fork.id,"open":false}))
                     }
                     "turn/prompt" | "turn/followUp" => {
-                        let text = string(p, "text")?;
-                        c.session
-                            .append_checked(&[Record::User(text.into())])
-                            .map_err(|e| e.to_string())?;
-                        run(c, &wire, &id)?;
+                        let records = support::input(p, c.cfg.image_input)?;
+                        run(c, &wire, &id, records)?;
                         Ok(json!({"sessionId":sid,"settled":true}))
                     }
                     "session/rewind" => {
@@ -704,7 +1015,12 @@ fn record(r: &Record) -> Value {
     }
     json!({"role":format!("{role:?}").to_lowercase(),"text":&text[..end],"truncated":end<text.len(),"bytes":text.len()})
 }
-fn run(c: &mut Conversation, wire: &Rc<RefCell<Wire>>, turn: &Value) -> Result<(), String> {
+fn run(
+    c: &mut Conversation,
+    wire: &Rc<RefCell<Wire>>,
+    turn: &Value,
+    records: Vec<Record>,
+) -> Result<(), String> {
     let factory: crate::warmer::ProviderFactory = {
         let settings = c.cfg.clone();
         let path = c.session.path.with_extension("cost.json");
@@ -715,6 +1031,15 @@ fn run(c: &mut Conversation, wire: &Rc<RefCell<Wire>>, turn: &Value) -> Result<(
         })
     };
     let provider = factory()?;
+    c.session
+        .append_checked(&records)
+        .map_err(|e| e.to_string())?;
+    {
+        let mut io = wire.borrow_mut();
+        io.image_enabled = c.cfg.image_input;
+        io.completing = false;
+        io.steer_records.clear();
+    }
     let mut extensions = ext::Registry::load(&[], &c.cfg.workspace, &c.cfg.model);
     let sid = c.session.id.clone();
     let statuses = Rc::new(RefCell::new(BTreeMap::<String, bool>::new()));
@@ -743,11 +1068,11 @@ fn run(c: &mut Conversation, wire: &Rc<RefCell<Wire>>, turn: &Value) -> Result<(
         let session = sid.clone();
         agent = agent.with_host_tools(
             tools.clone(),
-            Box::new(move |call, _pump| {
-                let result = io.borrow_mut().tool(call, &session, turn);
+            Box::new(move |call, _pump, sequence| {
+                let result = io.borrow_mut().tool(call, &session, turn, sequence);
                 status
                     .borrow_mut()
-                    .insert(call.id.clone(), result.exit_code != Some(0));
+                    .insert(call.id.clone(), result.outcome.exit_code != Some(0));
                 result
             }),
         );
@@ -759,10 +1084,18 @@ fn run(c: &mut Conversation, wire: &Rc<RefCell<Wire>>, turn: &Value) -> Result<(
         let outcome = agent.run_turn(|slot| wire.borrow_mut().pump(slot, &sid, turn));
         match outcome {
             Ok((out, Stop::Steered)) => {
+                let records = std::mem::take(&mut wire.borrow_mut().steer_records);
+                agent
+                    .session
+                    .append_checked(&records)
+                    .map_err(|e| e.to_string())?;
                 if wire.borrow().disconnected {
                     break;
                 }
                 if let Some(usage) = out.usage {
+                    agent.session.append_checked(&[Record::Custom{kind:"runtime/usage".into(),data:Some(json!({
+                        "input":usage.input,"output":usage.output,"cacheRead":usage.cache_read,"cacheWrite":usage.cache_write
+                    }).to_string())}]).map_err(|e|e.to_string())?;
                     event(
                         &sid,
                         turn,
@@ -774,6 +1107,9 @@ fn run(c: &mut Conversation, wire: &Rc<RefCell<Wire>>, turn: &Value) -> Result<(
             }
             Ok((out, stop)) => {
                 if let Some(usage) = out.usage {
+                    agent.session.append_checked(&[Record::Custom{kind:"runtime/usage".into(),data:Some(json!({
+                        "input":usage.input,"output":usage.output,"cacheRead":usage.cache_read,"cacheWrite":usage.cache_write
+                    }).to_string())}]).map_err(|e|e.to_string())?;
                     event(
                         &sid,
                         turn,
@@ -801,6 +1137,270 @@ fn run(c: &mut Conversation, wire: &Rc<RefCell<Wire>>, turn: &Value) -> Result<(
         }
     }
     Ok(())
+}
+
+fn error_kind(code: i32, message: &str) -> &'static str {
+    match code {
+        -32700 | -32600 => "protocol",
+        -32601 => "unsupported_method",
+        -32602 => "invalid_input",
+        -32001 => "busy",
+        -32002 => "limit",
+        _ if message.contains("credential")
+            || message.contains("Not connected")
+            || message.contains("Authentication") =>
+        {
+            "authentication"
+        }
+        _ if message.contains("provider")
+            || message.contains("transport")
+            || message.contains("http ") =>
+        {
+            "provider"
+        }
+        _ => "operation",
+    }
+}
+fn reasoning_capability(model: &str) -> Value {
+    let m = model.to_ascii_lowercase();
+    let support = if ["gpt-5", "o1", "o3", "o4"]
+        .iter()
+        .any(|prefix| m.starts_with(prefix))
+    {
+        "effort_hint"
+    } else if ["glm", "qwen3", "deepseek"]
+        .iter()
+        .any(|part| m.contains(part))
+    {
+        "budget_hint"
+    } else {
+        "unknown"
+    };
+    json!({"control":support,"providerEnforcement":"not_verified"})
+}
+fn auth_status(cfg: &config::Config) -> Result<Value, String> {
+    let refresh = crate::auth::needs_refresh(cfg);
+    let credential = if refresh {
+        false
+    } else {
+        crate::auth::resolve(cfg).is_ok()
+    };
+    Ok(
+        json!({"credentialReady":credential,"requiresRefresh":refresh,"providerReachable":null,
+        "provider":cfg.provider,"model":cfg.model,"connection":cfg.connection,
+        "source":if cfg.connection.is_some(){"saved_connection"}else if cfg.api_key_env.is_some(){"environment"}else{"unauthenticated_endpoint"}}),
+    )
+}
+fn model_list(cfg: &config::Config, p: &Value) -> Result<Value, String> {
+    type CatalogCache = std::sync::Mutex<Vec<(String, std::time::Instant, Value)>>;
+    static CACHE: std::sync::OnceLock<CatalogCache> = std::sync::OnceLock::new();
+    let cache_key = crate::hashing::sha256(
+        format!(
+            "{}:{}:{:?}:{:?}",
+            cfg.provider, cfg.base_url, cfg.connection, cfg.api_key_env
+        )
+        .as_bytes(),
+    );
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    if !p["refresh"].as_bool().unwrap_or(false)
+        && let Ok(cache) = cache.lock()
+            && let Some((_, _, data)) = cache.iter().find(|(k, at, _)| {
+                *k == cache_key && at.elapsed() < std::time::Duration::from_secs(60)
+            }) {
+                return model_page(data, p, true);
+            }
+    let key = crate::auth::resolve(cfg)?;
+    let url = format!(
+        "{}/{}",
+        cfg.base_url.trim_end_matches('/'),
+        if cfg.provider == "anthropic" {
+            "v1/models"
+        } else {
+            "models"
+        }
+    );
+    let mut req = crate::auth::http().get(url);
+    if cfg.provider == "anthropic" {
+        req = req.header("anthropic-version", "2023-06-01");
+    }
+    if let Some(key) = key {
+        req = if cfg.provider == "anthropic" {
+            req.header("x-api-key", key)
+        } else {
+            req.header("authorization", format!("Bearer {key}"))
+        };
+    }
+    let mut response = req
+        .call()
+        .map_err(|_| "model discovery failed; inspect authentication and endpoint")?;
+    let mut bytes = Vec::new();
+    response
+        .body_mut()
+        .as_reader()
+        .take(2 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "model catalog could not be read")?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err("model catalog exceeds 2 MiB".into());
+    }
+    let data: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid model catalog")?;
+    let models=crate::onboarding::parse_models(&data).into_iter().take(2048).map(|m|json!({
+        "id":m.id,"label":m.label,"reasoning":reasoning_capability(&m.id),"vision":null,"toolCalling":null
+    })).collect::<Vec<_>>();
+    let catalog = json!(models);
+    if let Ok(mut cache) = cache.lock() {
+        cache.retain(|(k, _, _)| *k != cache_key);
+        if cache.len() >= 4 {
+            cache.remove(0);
+        }
+        cache.push((cache_key, std::time::Instant::now(), catalog.clone()));
+    }
+    model_page(&catalog, p, false)
+}
+fn model_page(catalog: &Value, p: &Value, cached: bool) -> Result<Value, String> {
+    let models = catalog.as_array().ok_or("invalid cached catalog")?;
+    let cursor = p.get("cursor").and_then(Value::as_u64).unwrap_or(0) as usize;
+    if cursor > models.len() {
+        return Err("model cursor exceeds catalog".into());
+    }
+    let end = cursor
+        .saturating_add(
+            p.get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(50)
+                .clamp(1, 100) as usize,
+        )
+        .min(models.len());
+    Ok(
+        json!({"models":&models[cursor..end],"nextCursor":if end<models.len(){Some(end)}else{None},
+        "source":"provider","cached":cached,"capabilitiesVerified":false}),
+    )
+}
+fn completion(
+    c: &Conversation,
+    wire: &Rc<RefCell<Wire>>,
+    id: &Value,
+    p: &Value,
+) -> Result<Value, String> {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let prefix = p.get("prefix").and_then(Value::as_str).unwrap_or("");
+    let suffix = p.get("suffix").and_then(Value::as_str).unwrap_or("");
+    if prefix.len() + suffix.len() > 128 * 1024 {
+        return Err("completion context exceeds 128 KiB".into());
+    }
+    let max_tokens = p.get("maxTokens").and_then(Value::as_u64).unwrap_or(1024);
+    if !(1..=4096).contains(&max_tokens) {
+        return Err("completion maxTokens must be 1..4096".into());
+    }
+    // Admission checks happen before completion_start, and never append history.
+    let _admission = provider(&c.cfg, &c.session)?;
+    let settings = c.cfg.clone();
+    let path = c.session.path.with_extension("cost.json");
+    let ledger = crate::budget::load(&path, settings.cost_limit);
+    let path = Arc::new(std::sync::Mutex::new(path));
+    let messages = vec![glass_mod_api::Message::User(format!(
+        "Insert source text between the following prefix and suffix. Return only the insertion.\n<prefix>\n{prefix}\n</prefix>\n<suffix>\n{suffix}\n</suffix>"
+    ))];
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+    let (tx, rx) = mpsc::sync_channel(64);
+    std::thread::spawn(move || {
+        let result = crate::provider::with_request_cancel(
+            worker_cancel.clone(),
+            || -> Result<(), String> {
+                let provider = crate::make_provider(&settings, ledger, path, None)?;
+                let request = crate::provider::Request {
+                    model: &settings.model,
+                    system: "Return only inserted source text. No tools, explanation, or Markdown fences.",
+                    messages: &messages,
+                    tools: &[],
+                    max_tokens: max_tokens as u32,
+                    reasoning: Some(0),
+                };
+                for event in provider.stream(&request).map_err(|e| e.to_string())? {
+                    if worker_cancel.load(Ordering::Acquire) {
+                        break;
+                    }
+                    if tx.send(Ok(event)).is_err() {
+                        return Ok(());
+                    }
+                }
+                Ok(())
+            },
+        );
+        if let Err(error) = result {
+            let _ = tx.send(Err(error));
+        }
+    });
+    wire.borrow_mut().completing = true;
+    event(&c.session.id, id, "completion_start", json!({}));
+    let mut text = String::new();
+    let mut usage = None;
+    let mut done = false;
+    let mut failure = None;
+    let mut interrupted = None;
+    loop {
+        wire.borrow_mut().pump(&mut interrupted, &c.session.id, id);
+        if interrupted.is_some() {
+            cancel.store(true, Ordering::Release);
+            break;
+        }
+        match rx.recv_timeout(std::time::Duration::from_millis(10)) {
+            Ok(Ok(crate::provider::Event::Text(chunk))) => {
+                if text.len() + chunk.len() > 64 * 1024 {
+                    failure = Some("completion output exceeds 64 KiB".into());
+                    cancel.store(true, Ordering::Release);
+                    break;
+                }
+                text.push_str(&chunk);
+                event(&c.session.id, id, "completion_text", json!({"text":chunk}));
+            }
+            Ok(Ok(crate::provider::Event::Usage(u))) => {
+                usage = Some(
+                    json!({"input":u.input,"output":u.output,"cacheRead":u.cache_read,"cacheWrite":u.cache_write}),
+                )
+            }
+            Ok(Ok(crate::provider::Event::Done)) => {
+                done = true;
+                break;
+            }
+            Ok(Ok(crate::provider::Event::Error(e))) | Ok(Err(e)) => {
+                failure = Some(e);
+                break;
+            }
+            Ok(Ok(crate::provider::Event::ToolCall { .. })) => {
+                failure = Some("completion provider attempted a tool call; not executed".into());
+                break;
+            }
+            Ok(Ok(_)) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(_) => {}
+        }
+    }
+    cancel.store(true, Ordering::Release);
+    wire.borrow_mut().completing = false;
+    let reason = if interrupted.is_some() {
+        "cancelled"
+    } else if failure.is_some() || !done || text.trim().is_empty() {
+        "failed"
+    } else {
+        "completed"
+    };
+    event(
+        &c.session.id,
+        id,
+        "completion_settled",
+        json!({"reason":reason}),
+    );
+    if reason == "failed" {
+        return Err(crate::live::sanitize_provider_detail(
+            &failure.unwrap_or("completion ended without insertion".into()),
+        ));
+    }
+    Ok(json!({"text":text,"stopReason":reason,"usage":usage}))
 }
 
 #[cfg(test)]

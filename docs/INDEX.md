@@ -24,7 +24,8 @@ through `gc help` and `gc COMMAND --help`.
 ## Detailed references
 
 - [Host runtime protocol](reference/runtime.md): drive GC from an editor or agent
-  environment with host-owned tools, controls, and structured events.
+  environment with host-owned tools, controls, structured events, typed clients,
+  incremental sessions, and isolated completion.
 
 - [Session checklist](reference/checklist.md): phased tasks, state operations,
   persistence, and continuation.

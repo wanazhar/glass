@@ -1,10 +1,17 @@
 {
   "name": "glass-core-extension-workspace",
   "private": true,
-  "workspaces": ["packages/extension-sdk", "extensions/typescript"],
+  "workspaces": [
+    "packages/extension-sdk",
+    "extensions/typescript",
+    "packages/runtime-client"
+  ],
   "scripts": {
-    "build": "npm run build --workspace @glass-core/extension-sdk && npm run build --workspace @glass-core/typescript-starter",
+    "build": "npm run build --workspace @glass-core/extension-sdk && npm run build --workspace @glass-core/typescript-starter && npm run build --workspace @glass-core/runtime-client",
     "test": "npm run build && node --test packages/extension-sdk/test/*.test.mjs"
   },
-  "devDependencies": {"typescript": "^5.9.3", "@types/node": "^24.0.0"}
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^24.0.0"
+  }
 }

@@ -124,6 +124,7 @@ python3 scripts/smoke-web.py
 python3 scripts/smoke-mcp.py
 python3 scripts/smoke-acp.py
 python3 scripts/smoke-runtime.py
+python3 scripts/conformance-runtime.py
 python3 scripts/smoke-serve.py
 python3 scripts/smoke-upgrade.py
 ```

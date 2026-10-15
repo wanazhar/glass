@@ -153,3 +153,100 @@ mod tests {
         assert!(read_frame(&mut &vec![b' '; MAX_FRAME_BYTES + 1][..]).is_err());
     }
 }
+
+pub mod protocol;
+pub use protocol::{Incoming, SessionOptions, ToolDefinition, ToolMode, ToolResult, TurnInput};
+
+impl RuntimeClient {
+    pub fn initialize(&mut self, storage: impl AsRef<Path>) -> io::Result<String> {
+        self.request(
+            "initialize",
+            json!({"protocolVersion":PROTOCOL_VERSION,"storageDir":storage.as_ref()}),
+        )
+    }
+    pub fn new_session(&mut self, options: &SessionOptions) -> io::Result<String> {
+        self.request("session/new", serde_json::to_value(options)?)
+    }
+    pub fn resume_session(&mut self, session: &str, expected: ToolMode) -> io::Result<String> {
+        self.request(
+            "session/resume",
+            json!({"sessionId":session,"expectedToolMode":expected}),
+        )
+    }
+    pub fn prompt(&mut self, session: &str, input: &TurnInput) -> io::Result<String> {
+        let mut params = serde_json::to_value(input)?;
+        params["sessionId"] = json!(session);
+        self.request("turn/prompt", params)
+    }
+    pub fn entries(&mut self, session: &str, cursor: u64, limit: u32) -> io::Result<String> {
+        self.request(
+            "session/entries",
+            json!({"sessionId":session,"cursor":cursor,"limit":limit}),
+        )
+    }
+    pub fn structured_result(&mut self, id: Value, result: &ToolResult) -> io::Result<()> {
+        self.send(json!({"jsonrpc":"2.0","id":id,"result":result}))
+    }
+    pub fn progress(&mut self, session: &str, request: Value, text: &str) -> io::Result<()> {
+        self.send(json!({"jsonrpc":"2.0","method":"tool/progress","params":{"sessionId":session,"requestId":request,"text":text}}))
+    }
+    pub fn acknowledge_cancel(
+        &mut self,
+        session: &str,
+        request: Value,
+        status: &str,
+    ) -> io::Result<String> {
+        self.request(
+            "tool/cancelled",
+            json!({"sessionId":session,"requestId":request,"executionStatus":status}),
+        )
+    }
+    pub fn recv_typed_timeout(&self, timeout: Duration) -> io::Result<Option<Incoming>> {
+        self.recv_timeout(timeout)?
+            .map(|v| Incoming::parse(v).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)))
+            .transpose()
+    }
+}
+
+impl RuntimeClient {
+    pub fn steer(&mut self, session: &str, input: &TurnInput) -> io::Result<String> {
+        let mut p = serde_json::to_value(input)?;
+        p["sessionId"] = json!(session);
+        self.request("turn/steer", p)
+    }
+    pub fn follow_up(&mut self, session: &str, input: &TurnInput) -> io::Result<String> {
+        let mut p = serde_json::to_value(input)?;
+        p["sessionId"] = json!(session);
+        self.request("turn/followUp", p)
+    }
+    pub fn cancel(&mut self, session: &str, turn: Value) -> io::Result<String> {
+        self.request("turn/cancel", json!({"sessionId":session,"turnId":turn}))
+    }
+    pub fn complete(
+        &mut self,
+        session: &str,
+        prefix: &str,
+        suffix: &str,
+        max_tokens: u32,
+    ) -> io::Result<String> {
+        self.request(
+            "completion/request",
+            json!({"sessionId":session,"prefix":prefix,"suffix":suffix,"maxTokens":max_tokens}),
+        )
+    }
+    pub fn models(&mut self, session: &str, cursor: u32) -> io::Result<String> {
+        self.request("models/list", json!({"sessionId":session,"cursor":cursor}))
+    }
+    pub fn reconcile(
+        &mut self,
+        session: &str,
+        request: Value,
+        status: &str,
+        text: &str,
+    ) -> io::Result<String> {
+        self.request(
+            "tool/reconcile",
+            json!({"sessionId":session,"requestId":request,"executionStatus":status,"text":text}),
+        )
+    }
+}

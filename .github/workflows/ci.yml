@@ -79,6 +79,9 @@ jobs:
           python3 scripts/smoke-elicitation-pty.py
           python3 scripts/smoke-acp.py
           python3 scripts/smoke-runtime.py
+          python3 scripts/conformance-runtime.py
+          cargo test -p glass-runtime-client --test runtime -- --ignored
+          npm run test --workspace @glass-core/runtime-client
           python3 scripts/smoke-serve.py
           python3 scripts/smoke-verify.py
           python3 scripts/smoke-memory.py

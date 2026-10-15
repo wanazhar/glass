@@ -83,7 +83,11 @@ Headless runs save resumable sessions. JSON results go to stdout; diagnostics go
 to stderr. Optional ACP, served sessions, and companion integrations connect the
 same runtime to other interfaces. With `gc runtime`, your editor or agent
 environment can supply its own tools and UI while GC runs the model loop.
-See [Automation](docs/automation.md) and the [host protocol](docs/reference/runtime.md).
+Use the [Rust client](crates/glass-runtime-client/README.md),
+[TypeScript client](packages/runtime-client/README.md), or any JSON-RPC host.
+The [host protocol](docs/reference/runtime.md) covers structured sessions, images,
+progress, cancellation, and isolated completion. See [Automation](docs/automation.md)
+for other headless interfaces.
 
 ## Extend the workflow
 

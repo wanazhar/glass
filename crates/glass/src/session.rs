@@ -627,7 +627,7 @@ pub struct Session {
     #[allow(dead_code)]
     pub path: PathBuf,
     file: Option<File>,
-    _writer_lock: Option<File>,
+    _writer_lock: Option<WriterLock>,
     raw_index: RefCell<Vec<Record>>,
     raw_stamp: RefCell<FileStamp>,
     /// Everything recorded this process, in order.
@@ -652,6 +652,14 @@ pub struct Session {
     /// Number of user turns replayed or started, used by jump-to-turn.
     #[allow(dead_code)]
     pub turn: usize,
+}
+
+// An inherited/duplicated descriptor shares flock ownership. Release the
+// lock explicitly when the owning session closes, rather than waiting for
+// every transient fork descriptor to close after exec.
+struct WriterLock(File);
+impl Drop for WriterLock {
+    fn drop(&mut self) { let _ = fs2::FileExt::unlock(&self.0); }
 }
 
 fn acquire_writer_lock(path: &Path) -> std::io::Result<File> {
@@ -785,7 +793,7 @@ impl Session {
             id,
             path,
             file: Some(file),
-            _writer_lock: Some(writer_lock),
+            _writer_lock: Some(WriterLock(writer_lock)),
             raw_index: RefCell::new(Vec::new()),
             raw_stamp: RefCell::new((0, std::time::UNIX_EPOCH, 0, 0, 0, 0)),
             records: Vec::new(),
@@ -905,7 +913,7 @@ impl Session {
             id,
             path,
             file: Some(file),
-            _writer_lock: Some(writer_lock),
+            _writer_lock: Some(WriterLock(writer_lock)),
             raw_index: RefCell::new(raw_index),
             raw_stamp: RefCell::new(raw_stamp),
             records,
@@ -2237,6 +2245,21 @@ mod tests {
         session.append(Record::Assistant("must not land".into()));
         assert!(session.write_error().is_some());
         assert_eq!(fs::read_to_string(&session.path).unwrap().lines().count(), 1);
+    }
+
+    #[test]
+    fn closing_session_releases_lock_even_with_a_duplicated_descriptor() {
+        let dir=std::env::temp_dir().join(format!("gc-lock-duplicate-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session=Session::create(&dir).unwrap();
+        let inherited=session._writer_lock.as_ref().unwrap().0.try_clone().unwrap();
+        let id=session.id.clone();
+        drop(session);
+        let reopened=Session::open(&dir,&id).unwrap();
+        drop(inherited);
+        assert!(acquire_writer_lock(&reopened.path).is_err());
+        drop(reopened);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

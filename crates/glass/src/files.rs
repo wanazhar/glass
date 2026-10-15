@@ -116,7 +116,7 @@ impl Target {
         if meta.len() > MAX_FILE as u64 {
             return Err("file exceeds the 8 MiB safety bound".into());
         }
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(meta.len() as usize + 1);
         (&file)
             .take((MAX_FILE + 1) as u64)
             .read_to_end(&mut bytes)
@@ -199,11 +199,7 @@ impl Target {
     }
 }
 pub(crate) fn revision(bytes: &[u8]) -> String {
-    ring::digest::digest(&ring::digest::SHA256, bytes)
-        .as_ref()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    crate::hashing::sha256(bytes)
 }
 fn text(bytes: &[u8]) -> Result<&str, String> {
     if bytes.contains(&0) {
@@ -411,8 +407,9 @@ fn execute_cancellable(
     let expected = v
         .get("expected")
         .ok_or("expected is required: use the read revision, or null for create-only")?;
+    let base_revision = existing.as_ref().map(|_| revision(bytes));
     if existing.is_some() {
-        if expected.as_str() != Some(revision(bytes).as_str()) {
+        if expected.as_str() != base_revision.as_deref() {
             return Err("stale revision; nothing written, re-read the file".into());
         }
     } else if !expected.is_null() {
@@ -613,7 +610,7 @@ fn execute_cancellable(
         )?;
     }
     Ok(
-        json!({"kind":"file_change","path":target.label,"operation":action,"status":if dry_run {"proposed"} else if changed {"applied"} else {"unchanged"},"applied":!dry_run && changed,"created":created,"base_revision":existing.as_ref().map(|_| revision(bytes)),"revision":revision(result.as_bytes()),"bytes":result.len(),"changed":changed,"preview":diff,"diagnostics":diagnostics}),
+        json!({"kind":"file_change","path":target.label,"operation":action,"status":if dry_run {"proposed"} else if changed {"applied"} else {"unchanged"},"applied":!dry_run && changed,"created":created,"base_revision":base_revision,"revision":if changed { revision(result.as_bytes()) } else { base_revision.clone().unwrap_or_else(||revision(result.as_bytes())) },"bytes":result.len(),"changed":changed,"preview":diff,"diagnostics":diagnostics}),
     )
 }
 pub(crate) fn snapshot_text(root: &Path, path: &str) -> Result<Option<String>, String> {
@@ -790,7 +787,7 @@ pub fn tool_cancellable(
     if let Some(object)=value.as_object_mut() {object.remove("permission");object.remove("justification");}
     match execute_cancellable(root, &call.name, &value, cancel) {
         Ok(value) => {
-            let mut body = display(&value);
+            let mut body = display_inner(&value, false);
             if let Some(next) = value.get("next_read").filter(|v| !v.is_null()) {
                 body.push_str(&format!("\nnext_read: {next}"));
             }
@@ -802,6 +799,9 @@ pub fn tool_cancellable(
 
 /// Shared readable rendering for CLI and native model results.
 pub fn display(out: &Value) -> String {
+    display_inner(out, true)
+}
+fn display_inner(out: &Value, cli_continuation: bool) -> String {
     match out["kind"].as_str() {
         Some("image_view") => crate::images::display(out),
         Some("file_read") => format!(
@@ -811,7 +811,7 @@ pub fn display(out: &Value) -> String {
             out["shown"],
             out["total_lines"],
             out["text"].as_str().unwrap(),
-            if out["truncated"] == true {
+            if cli_continuation && out["truncated"] == true {
                 format!(
                     "\n[partial read; continue with file read PATH --byte-offset {} --expected {}]\n",
                     out["end_byte_offset"],
@@ -904,6 +904,21 @@ mod tests {
     }
     fn read(d: &Dir, name: &str) -> Value {
         execute(&d.0, "read", &json!({"path":name})).unwrap()
+    }
+
+    #[test]
+    fn native_partial_reads_keep_one_tool_continuation_and_cli_keeps_its_hint() {
+        let d = dir();
+        write(&d, "a", &"one line\n".repeat(300));
+        let value = read(&d, "a");
+        assert!(display(&value).contains("continue with file read"));
+        let call = glass_mod_api::ToolCall { id:"read".into(), name:"read".into(), arguments:r#"{"path":"a"}"#.into() };
+        let output = tool(&call, &d.0);
+        assert!(!output.body.contains("continue with file read"));
+        assert_eq!(output.body.matches("next_read:").count(), 1);
+        let next:Value = serde_json::from_str(output.body.split("next_read: ").nth(1).unwrap()).unwrap();
+        assert!(execute(&d.0, "read", &next).is_ok());
+        assert_eq!(output.body.matches(value["revision"].as_str().unwrap()).count(), 2);
     }
     #[test]
     fn batch_ranges_and_exact_edits() {

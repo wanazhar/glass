@@ -179,3 +179,10 @@ Fallback chains size context conservatively: the smallest reachable context wind
 A model checkpoint keeps exploration visible until the model explicitly rewinds it. Rewind hides that region from future context and retains the supplied report; raw history and files remain intact. Open checkpoints also survive compaction and resume. Context-edit commands report a write error if their change cannot be saved.
 
 Pumped provider response waits check cancellation between short socket waits while retaining the original request deadline. A quiet stream does not cause another HTTP request. Cancelling closes an established response reader promptly; DNS, connection setup, and request writes still follow their transport deadlines.
+
+## Prompt recall limits
+
+Prompt recall keeps a bounded convenience journal, separate from saved
+conversations. Large pasted prompts remain in the conversation log even when
+they are omitted from recall. See [Runtime storage](reference/storage.md#prompt-recall)
+for byte limits, batched retention, and concurrent-writer behavior.

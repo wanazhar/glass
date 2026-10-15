@@ -16,7 +16,7 @@ impl Shared {
             std::fs::create_dir_all(&dir)?;
             if std::fs::symlink_metadata(&dir)?.file_type().is_symlink() { return Err(std::io::Error::other("pacing directory must not be a symlink")); }
             #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?; }
-            let name: String = key.iter().map(|byte|format!("{byte:02x}")).collect();
+            let name: String = crate::hashing::hex(&key);
             let path = dir.join(format!("{name}.json"));
             if !path.exists() {
                 let mut count=0;

@@ -105,11 +105,7 @@ fn validate_finding(finding: &Finding) -> Result<(), String> {
 }
 
 pub fn hash(bytes: &[u8]) -> String {
-    ring::digest::digest(&ring::digest::SHA256, bytes)
-        .as_ref()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    crate::hashing::sha256(bytes)
 }
 fn directory(root: &Path) -> Result<PathBuf, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;

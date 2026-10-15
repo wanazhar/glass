@@ -87,7 +87,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        assert [t["function"]["name"] for t in body["tools"]] == ["bash", "state", "read", "edit", "write"]
+        assert [t["function"]["name"] for t in body["tools"]] == ["bash", "state", "view_image", "read", "edit", "write", "ask_user_question"]
         latest = max(i for i, m in enumerate(body["messages"]) if m["role"] == "user")
         results = [m["content"] for m in body["messages"][latest + 1:] if m["role"] == "tool"]
         n = len(results)
@@ -149,4 +149,4 @@ for size in [(80, 30), (40, 24), (20, 8)]:
             terminal.close()
             server.shutdown()
             server.server_close()
-print("PASS: release PTYs 80x30/40x24/20x8, durable clear, rejected cwd, edit preview, follow-up and five-tool surface")
+print("PASS: release PTYs 80x30/40x24/20x8, durable clear, rejected cwd, edit preview, follow-up and seven-tool surface")

@@ -20,7 +20,7 @@ options = parser.parse_args()
 binary = Path(os.environ.get('GLASS_CORE_TEST_BINARY', 'target/release/glass-core')).resolve()
 report = {'binary_bytes': binary.stat().st_size}
 
-for scenario in ('hello', 'verbose'):
+for scenario in ('hello', 'verbose', 'native_partial'):
     requests = []
 
     class Endpoint(http.server.BaseHTTPRequestHandler):
@@ -39,6 +39,9 @@ for scenario in ('hello', 'verbose'):
                     'name': 'bash', 'arguments': json.dumps({
                         'command': "head -c 6000000 /dev/zero | tr '\\000' x; printf GC_FINAL_TAIL"
                     })}}]}
+            elif scenario == 'native_partial' and len(requests) == 1:
+                delta = {'tool_calls': [{'index': 0, 'id': 'read', 'function': {
+                    'name': 'read', 'arguments': json.dumps({'path': 'sample.txt', 'limit': 1})}}]}
             else:
                 delta = {'content': 'FOOTPRINT_DONE'}
             event = {'choices': [{'delta': delta}]}
@@ -51,6 +54,8 @@ for scenario in ('hello', 'verbose'):
     try:
         with tempfile.TemporaryDirectory(prefix='gc-footprint-') as tmp:
             root = Path(tmp)
+            if scenario == 'native_partial':
+                (root / 'sample.txt').write_text('first\nsecond\nthird\n')
             config = root / 'config/glass-core'
             config.mkdir(parents=True)
             (config / 'config.toml').write_text(
@@ -83,13 +88,17 @@ for scenario in ('hello', 'verbose'):
                 assert system_bytes < 2100, item
                 if scenario == 'hello':
                     assert item['automatic_storage_bytes'] < 100_000, item
-                else:
+                elif scenario == 'verbose':
                     assert item['tool_result_bytes'] < 20_000, item
                     assert 'GC_FINAL_TAIL' in results[0], results[0][-300:]
                     assert 'bytes discarded' in results[0], results[0][-300:]
                     assert max(files.values()) <= 4 * 1024 * 1024, item
                     assert item['automatic_storage_bytes'] < 5 * 1024 * 1024, item
                     assert not any(name.startswith('glass-core/output/') for name in files), item
+                else:
+                    assert results[0].count('next_read:') == 1, results
+                    assert 'continue with file read' not in results[0], results
+                    assert item['automatic_storage_bytes'] < 100_000, item
     finally:
         server.shutdown()
         server.server_close()

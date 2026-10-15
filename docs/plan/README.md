@@ -93,6 +93,7 @@ External project observations have not been revalidated by this editorial update
 ## Reviews
 
 - [Runtime footprint and performance — 2026-10-15](reviews/runtime-footprint-2026-10-15.md)
+- [Runtime footprint, round 2 — 2026-10-15](reviews/runtime-footprint-round2-2026-10-15.md)
 
 - [Documentation audit — 2026-10-15](reviews/documentation-2026-10-15.md)
 

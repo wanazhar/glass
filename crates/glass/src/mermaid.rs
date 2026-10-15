@@ -94,7 +94,9 @@ pub fn parse(body: &str) -> Option<Flowchart> {
             if line.is_empty() || line.starts_with("%%") { continue; }
             if let Some(label) = line.strip_prefix("subgraph ") {
                 if groups.len() >= 8 || chart.groups.len() >= MAX_NODES { return None; }
-                let (id, display) = if let Some((id, tail)) = take_flow_node(label) {
+                let (id, display) = if label.starts_with('"') && label.ends_with('"') && label.len() >= 2 {
+                    (format!("group_{}",chart.groups.len()), clean_label(label))
+                } else if let Some((id, tail)) = take_flow_node(label) {
                     if tail.trim().is_empty() {
                         flow_node_parts(id)?
                     } else {
@@ -515,6 +517,7 @@ pub fn render(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
     render_compact(chart,width)
 }
 fn render_compact(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
+    if width >= 16 { return render_boxed(chart, width); }
     let width = width.min(88);
     if width < 8 { return None; }
     let mut rows = Vec::new();
@@ -537,6 +540,67 @@ fn render_compact(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
     for edge in &chart.edges { append(format!("[{}] {} [{}]{}",edge.from,edge.style.arrow(),edge.to,edge.label.as_ref().map(|label|format!(" · {label}")).unwrap_or_default()))?; }
     Some(rows)
 }
+// A compact architecture diagram, not separate node and edge inventories.
+// Every outgoing edge stays adjacent to its source component. Cycles use
+// explicit target references, so layout never needs recursive graph traversal.
+fn render_boxed(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
+    let width = width.min(64);
+    let inner = width.checked_sub(4)?;
+    let mut rows = Vec::new();
+    let mut last_group = String::new();
+    for node in &chart.nodes {
+        let mut memberships = Vec::new();
+        for (index, group) in chart.groups.iter().enumerate() {
+            if !group.nodes.contains(&node.id) { continue; }
+            let mut path = vec![group.label.as_str()];
+            let mut parent = group.parent;
+            while let Some(at) = parent {
+                if at >= index { return None; }
+                path.push(chart.groups[at].label.as_str());
+                parent = chart.groups[at].parent;
+            }
+            path.reverse();
+            memberships.push(path.join(" / "));
+        }
+        let group = memberships.join(" · ");
+        if group != last_group {
+            if !group.is_empty() {
+                rows.extend(glass_tui::text::wrap_words(&format!("Group · {group}"),width));
+            } else if !last_group.is_empty() {
+                rows.push("Components".into());
+            }
+            last_group = group;
+        }
+        let title = format!("╭─ [{}] ",node.id);
+        if glass_tui::text::width(&title) < width {
+            rows.push(format!("{title}{}╮","─".repeat(width-glass_tui::text::width(&title)-1)));
+        } else {
+            rows.push(format!("╭{}╮","─".repeat(width-2)));
+            for line in glass_tui::text::wrap_words(&format!("[{}]",node.id),inner) {
+                rows.push(format!("│ {line}{} │"," ".repeat(inner-glass_tui::text::width(&line))));
+            }
+        }
+        for line in node.label.split(" / ").flat_map(|part|glass_tui::text::wrap_words(part,inner)) {
+            rows.push(format!("│ {line}{} │"," ".repeat(inner-glass_tui::text::width(&line))));
+        }
+        rows.push(format!("╰{}╯","─".repeat(width-2)));
+        let edges: Vec<_> = chart.edges.iter().filter(|edge|edge.from==node.id).collect();
+        for (index,edge) in edges.iter().enumerate() {
+            let last = index+1==edges.len();
+            let connector = if last { "  ╰" } else { "  ├" };
+            let text = format!("{} [{}]{}",edge.style.arrow(),edge.to,
+                edge.label.as_ref().map(|label|format!(" · {label}")).unwrap_or_default());
+            for (part,line) in glass_tui::text::wrap_words(&text,width-3).into_iter().enumerate() {
+                let prefix = if part==0 { connector } else if last { "   " } else { "  │" };
+                rows.push(format!("{prefix}{line}"));
+            }
+        }
+        rows.push(String::new());
+        if rows.len()>2048 { return None; }
+    }
+    Some(rows)
+}
+
 fn render_wide(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
     let width = width.clamp(1, 88);
     if width < 12 {
@@ -1177,6 +1241,27 @@ flowchart TD
     classDef entry fill:#333,stroke:#888;
     class Core core
 "#;
+    #[test]
+    fn quoted_group_titles_render() {
+        let chart=parse("flowchart TD\nsubgraph \"Input layer\"\nA --> B\nend").unwrap();
+        assert!(render(&chart,40).unwrap().join(" ").contains("Input layer"));
+    }
+    #[test]
+    fn actual_kilo_architecture_has_boxed_components_and_complete_edges() {
+        let source=include_str!("../../../scripts/fixtures/mermaid-architecture-kilo.mmd");
+        let chart=parse(source).unwrap();
+        for width in [16,18,20,34,40,60,88] {
+            let rows=render(&chart,width).unwrap();
+            assert!(rows.iter().all(|row|glass_tui::text::width(row)<=width),"width {width}");
+            assert_eq!(rows.iter().filter(|row|row.starts_with('╭')).count(),chart.nodes.len());
+            assert_eq!(rows.iter().map(|row|row.matches("──▶").count()).sum::<usize>(),chart.edges.len());
+            assert!(!rows.iter().any(|row|row=="Nodes"||row=="Connections"));
+            let text=rows.join(" ");
+            assert!(text.contains("Rust crates"));
+            assert!(!text.contains("<br"));
+        }
+    }
+
     #[test]
     fn existing_nodes_join_subgraphs_and_edge_styles_survive() {
         let chart = parse("flowchart TD\nA[External]\nsubgraph G\nA -.-> B ==> C\nend").unwrap();

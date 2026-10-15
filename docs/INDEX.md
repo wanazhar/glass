@@ -33,6 +33,8 @@ through `gc help` and `gc COMMAND --help`.
   findings, policy explanations, and artifacts.
 - [Workbench](reference/workbench.md): quoted context, portable handoffs, job input,
   PR publication, advisor cadence, schedules, and optional clients.
+- [Storage and request overhead](reference/storage.md): automatic writes, capture
+  limits, retention, and footprint measurements.
 - [Confinement](security-confinement.md): enforced filesystem/network boundaries
   and platform requirements.
 - [Extension directory](../extensions/README.md): component-specific configuration

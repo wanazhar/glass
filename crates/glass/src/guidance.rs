@@ -3,16 +3,39 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 /// Stable suffix: also upgrades resumed sessions whose compaction saved an older prompt.
 /// Detailed recipes stay on demand; no filesystem or provider request is needed here.
-const MODEL_PROTOCOL: &str = "[GC workflow protocol 2]
-For multi-step implementation, investigation or multiple deliverables, create state.todo before substantive work. Skip checklists for greetings and simple answers. Read existing todo:{} before resuming; reuse open tasks. Batch meaningful progress updates using returned IDs; keep the current task in_progress, record blockers, and reconcile all tasks before the final report. Never mark unverified work verified or continue past a user decision.
-Choose workflows proactively: files/structure for code; background for long commands; agents for useful delegation; learning for durable lessons; workspace for coordination/evidence; research for web/images; integrations for language/debug services; sessions for history/handoffs; recovery for failures. Discover exact recipes with state {guidance:{action:read,topic}} and configured tools with state {capabilities:{search:query}}. Availability comes from advertised schemas and CLI status, not this index. Use quoted \"$GC_BIN\" <command> --help for exact CLI inputs; slash menus, login and approvals are human controls. Respect tool permissions and user constraints.";
+const MODEL_PROTOCOL: &str = "[GC workflow protocol 3]
+For multi-step work create state.todo before substantive work; skip simple conversation.
+Resume todo:{} using existing IDs. Batch progress, keep the current task in_progress,
+record blockers and reconcile before the final report. Completed does not mean verified.
+Discover workflows with state {guidance:{action:search,query}} then {guidance:{action:read,topic}}.
+Topics: checklist, files, background, agents, context, learning, workspace, research,
+integrations, sessions, delivery, extensions, recovery, ui. Use advertised schemas;
+find configured tools with state {capabilities:{search:query}}. CLI syntax: quoted
+\"$GC_BIN\" <command> --help. Slash menus and login are human controls.";
 
-pub fn model_context(mut system: String) -> String {
-    if !system.contains(MODEL_PROTOCOL) {
-        system.push_str("\n\n");
-        system.push_str(MODEL_PROTOCOL);
+/// Replace a generated paragraph without accumulating old versions after resume.
+/// Only paragraph-aligned markers are recognized; surrounding instructions stay intact.
+pub(crate) fn replace_generated(mut system: String, marker: &str, replacement: &str) -> String {
+    let needle = format!("\n\n{marker}");
+    if let Some(at) = system.find(&needle) {
+        let start = at + 2;
+        let end = system[start..].find("\n\n").map_or(system.len(), |end| start + end);
+        if &system[start..end] == replacement && !system[end..].contains(&needle) {
+            return system;
+        }
     }
+    while let Some(at) = system.find(&needle) {
+        let start = at + 2;
+        let end = system[start..].find("\n\n").map_or(system.len(), |end| start + end);
+        system.replace_range(at..end, "");
+    }
+    system.push_str("\n\n");
+    system.push_str(replacement);
     system
+}
+
+pub fn model_context(system: String) -> String {
+    replace_generated(system, "[GC workflow protocol ", MODEL_PROTOCOL)
 }
 
 /// Nudge only on an existing tool-loop boundary: no extra model call or timer.
@@ -180,10 +203,22 @@ mod tests {
         let upgraded = model_context(old.clone());
         assert!(upgraded.starts_with(&old));
         assert_eq!(model_context(upgraded.clone()), upgraded);
-        assert!(MODEL_PROTOCOL.len() <= 1200);
+        assert!(MODEL_PROTOCOL.len() <= 800);
         for topic in ["checklist", "research", "integrations", "sessions", "delivery"] {
             assert!(request(&json!({"action":"read","topic":topic})).is_ok());
         }
+    }
+
+    #[test]
+    fn replaces_old_generated_sections_without_losing_instructions() {
+        let old = "Custom instructions\n\n[GC workflow protocol 2]\nOld generated guidance\n\nProject facts";
+        let upgraded = model_context(old.into());
+        assert!(upgraded.starts_with("Custom instructions\n\nProject facts"));
+        assert!(!upgraded.contains("Old generated guidance"));
+        assert_eq!(upgraded.matches("[GC workflow protocol ").count(), 1);
+        assert_eq!(model_context(upgraded.clone()), upgraded);
+        let inline = "Keep the inline text [GC workflow protocol 2] verbatim.";
+        assert!(model_context(inline.into()).starts_with(inline));
     }
 
     #[test]

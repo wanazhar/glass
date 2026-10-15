@@ -1,7 +1,10 @@
 //! Terminal cell widths; never split a UTF-8 character or emit control codes.
 use unicode_width::UnicodeWidthChar;
+pub fn char_width(c: char) -> usize {
+    c.width().unwrap_or(0)
+}
 pub fn width(s: &str) -> usize {
-    s.chars().map(|c| c.width().unwrap_or(0)).sum()
+    s.chars().map(char_width).sum()
 }
 pub fn clip(s: &str, limit: usize) -> String {
     let mut used = 0;

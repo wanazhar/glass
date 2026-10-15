@@ -4,29 +4,14 @@ use glass_tui::{
     Editor,
     theme::{self, Tone},
 };
-use std::{
-    cell::RefCell,
-    fs::File,
-    io::{self, Read, Seek, SeekFrom, Write},
-    path::PathBuf,
-};
+use std::{cell::RefCell, io::{self, Write}};
 thread_local! { static PRIMARY: RefCell<Option<Surface>> = const { RefCell::new(None) }; }
-struct Pending {
-    file: File,
-    path: PathBuf,
-}
-impl Drop for Pending {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
 struct Surface {
     width: u16,
     height: u16,
     x: usize,
     y: usize,
     overlay: bool,
-    pending: Option<Pending>,
     status: String,
     todo: crate::todo::Board,
     status_color: String,
@@ -127,41 +112,9 @@ impl Surface {
     }
     fn emit(&mut self, text: &str) -> io::Result<()> {
         if self.overlay {
-            if self.pending.is_none() {
-                use std::fs::OpenOptions;
-                let dir = crate::config::data_dir().join("ui");
-                std::fs::create_dir_all(&dir)?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-                }
-                let path = dir.join(format!(
-                    "{}-{}.tmp",
-                    std::process::id(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos()
-                ));
-                let mut options = OpenOptions::new();
-                options.read(true).write(true).create_new(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.mode(0o600);
-                }
-                self.pending = Some(Pending {
-                    file: options.open(&path)?,
-                    path,
-                });
-            }
-            let file = &mut self.pending.as_mut().unwrap().file;
-            // Framed chunks bound replay memory and preserve complete UTF-8/CSI tokens.
-            for chunk in frames(text) {
-                file.write_all(&(chunk.len() as u32).to_le_bytes())?;
-                file.write_all(chunk.as_bytes())?;
-            }
+            // The ordinary body cache already retains the same bounded tail used
+            // for repaint. Keep it current without drawing or spooling to disk.
+            self.remember(text);
             return Ok(());
         }
         self.geometry()?;
@@ -216,7 +169,7 @@ impl Surface {
                 self.x = 0;
                 self.y = (self.y + 1).min(self.bottom());
             } else if !c.is_control() {
-                let cells = glass_tui::text::width(&c.to_string());
+                let cells = glass_tui::text::char_width(c);
                 if self.x + cells > usize::from(self.width) {
                     self.x = 0;
                     self.y = (self.y + 1).min(self.bottom());
@@ -230,26 +183,6 @@ impl Surface {
         if !active {
             self.geometry()?;
             write!(io::stdout(), "\x1b[1;{}r", self.bottom())?;
-            if let Some(mut pending) = self.pending.take() {
-                pending.file.flush()?;
-                pending.file.seek(SeekFrom::Start(0))?;
-                loop {
-                    let mut length = [0; 4];
-                    match pending.file.read_exact(&mut length) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-                        Err(e) => return Err(e),
-                    }
-                    let length = u32::from_le_bytes(length) as usize;
-                    if length > 16384 {
-                        return Err(io::Error::other("invalid UI spool frame"));
-                    }
-                    let mut bytes = vec![0; length];
-                    pending.file.read_exact(&mut bytes)?;
-                    let text = std::str::from_utf8(&bytes).map_err(io::Error::other)?;
-                    self.remember(text);
-                }
-            }
             self.repaint()?;
         }
         Ok(())
@@ -264,7 +197,6 @@ pub fn enter() -> io::Result<Guard> {
         x: 0,
         y: 1,
         overlay: false,
-        pending: None,
         status: String::new(),
         todo: crate::todo::Board::default(),
         status_color: theme::ansi(Tone::Accent),
@@ -567,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn spool_frames_bound_long_unicode_and_keep_escape_tokens() {
+    fn cached_frames_bound_long_unicode_and_keep_escape_tokens() {
         let source = format!(
             "{}\x1b[38;5;252m{}\x1b[0m",
             "🙂".repeat(5000),

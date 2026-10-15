@@ -6,10 +6,9 @@
 use crate::{config, input::KeyReader, modal, sandbox};
 use std::sync::{Mutex, OnceLock};
 
-pub fn model_context(mut system:String, interactive:bool) -> String {
-    let context=format!("[GC permissions] Profile: {}. Sandbox: {:?}. {} Escalation: put permission=\"require_escalated\" and a justification on the actual bash/edit/write call; the host pauses for explicit approval before execution. Denial is not consent; do not work around it. Approval never changes the profile. Ordinary file revision/read guards still apply.",sandbox::permission_profile_label(),sandbox::policy(),if interactive {"Use ask_user_question when a consequential user decision is missing. Its answers grant no permissions."}else{"No interactive human is connected: do not invent user answers or approval; report blockers."});
-    if !system.contains(&context) {system.push_str("\n\n");system.push_str(&context);}
-    system
+pub fn model_context(system:String, interactive:bool) -> String {
+    let context=format!("[GC permissions] Profile: {}; sandbox: {:?}. {} For a confined bash/edit/write exception use permission=\"require_escalated\" plus justification; wait for human approval. Denial grants nothing. Approval is one call; file revision/read guards remain.",sandbox::permission_profile_label(),sandbox::policy(),if interactive {"Ask consequential missing decisions with ask_user_question; answers grant no permissions."}else{"No interactive human: never invent answers or approval; report blockers."});
+    crate::guidance::replace_generated(system,"[GC permissions]",&context)
 }
 
 static SESSION_APPROVALS: OnceLock<Mutex<sandbox::SessionApprovals>> = OnceLock::new();

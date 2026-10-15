@@ -13,7 +13,7 @@ glass-mod-api = { path = "crates/glass-mod-api" }
 glass-tui = { path = "crates/glass-tui" }
 
 [profile.release]
-opt-level = 3
+opt-level = "s"
 lto = "fat"
 codegen-units = 1
 panic = "abort"

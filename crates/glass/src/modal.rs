@@ -323,7 +323,7 @@ fn skip_columns(text: &str, columns: usize) -> String {
     let mut skipped = 0usize;
     let mut start = 0usize;
     for (index, ch) in text.char_indices() {
-        let width = glass_tui::text::width(&ch.to_string());
+        let width = glass_tui::text::char_width(ch);
         if skipped + width > columns {
             start = index;
             break;
@@ -544,7 +544,7 @@ pub fn validated_field(
         let tail = shown
             .chars()
             .skip_while(|c| {
-                let w = glass_tui::text::width(&c.to_string());
+                let w = glass_tui::text::char_width(*c);
                 let skip_char = used + w <= skip;
                 used += w;
                 skip_char

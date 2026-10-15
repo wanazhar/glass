@@ -333,11 +333,8 @@ pub fn refresh_context(mut system: String, current: Option<&str>) -> String {
     // Upgrade only the exact retired built-in guidance, never generic approval
     // language supplied by a user or an unrelated permission policy.
     const RETIRED: &str = "Use {neuralnets:{action:search,query}} for project learning; propose reusable corrections\nor verified lessons with action:propose,kind,text. Human review is required. Never save";
-    let base = crate::config::BASE_SYSTEM_PROMPT;
-    if let Some(start) = base.find("Use {neuralnets:")
-        && let Some(end) = base[start..].find("\nsecrets or raw transcripts") {
-        system = system.replace(RETIRED, &base[start..start + end]);
-    }
+    const CURRENT: &str = "Use state.neuralnets action:search to recall learning; action:save,kind,text saves verified lessons. Never save";
+    system = system.replace(RETIRED, CURRENT);
     for (open, close) in [
         (
             "<project_memory path=\"local-reviewed-facts\">",

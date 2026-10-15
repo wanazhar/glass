@@ -336,13 +336,11 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
     let mut tools = vec![
         (
             "bash".to_string(),
-            "Run shell commands for search (rg, fd), pipelines, builds, tests and version control. \
-             Prefer read/edit/write for file inspection and changes; use shell file operations \
-             when native restrictions do not fit. Set `timeout_ms` for long commands; \
-             the default is 120000. Optional job object controls owned background jobs: \
-             action=start (with command), poll (id, offset), input (id, text, eof), stop (id), list. \
-             Job controls return immediately; poll incrementally using next_offset."
-                .to_string(),
+            "Search, pipelines, builds, tests and processes. Prefer read/edit/write for files. \
+             timeout_ms defaults to 120000. Inline output: 16 KiB/stream; overflow: 4 MiB/stream; \
+             larger output reports discarded bytes and its final tail. Redirect explicitly for complete large logs. \
+             job action: start(command), poll(id,offset), input(id,text,eof), stop(id), list. \
+             Jobs return immediately; poll with next_offset.".to_string(),
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -359,15 +357,12 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
         ),
         (
             "state".to_string(),
-            "Record durable working state so it survives context compaction. Call this \
-             BEFORE context fills up, and after any milestone on a long task: list the \
-             specific facts, file paths, and next steps you would need to resume cold. \
-             Call `state` with no arguments to read back what is currently recorded. \
-             For multi-step work, create and maintain todo before substantive work; skip simple conversation. Use todo.ops for atomic checklist batches: init/add items (title,phase), update by returned ID (status,blocker,owner), remove/clear/configure. Read todo:{} for tasks/revision. Mark progress honestly; completed is not verified. \
-             When a write might be retried, send `request_id`: a repeat of an id \
-             already applied returns that receipt instead of writing again, and \
-             reusing an id for different notes is rejected."
-                .to_string(),
+            "Durable notes and native checklist. {} reads notes; items replaces them ([] clears). \
+             Save facts, paths and next steps before compaction. Multi-step work uses todo.ops: \
+             init/add items(title,phase), update by ID(status,blocker,owner), remove/clear/configure. \
+             todo:{} reads tasks/revision. Batch real progress; completed is not verified. \
+             request_id makes note writes idempotent: same ID/payload returns its receipt; \
+             changed payload fails. Discover recipes with guidance and configured tools with capabilities.".to_string(),
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -377,7 +372,7 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
                         "items": { "type": "string" }
                     },
                     "expected":{"type":"string","description":"Optional state revision from revision:true read"},
-                    "request_id":{"type":"string","description":"Optional idempotency key naming this write. A repeat of a known id returns its recorded receipt and does not write again; the same id with different notes fails."},
+                    "request_id":{"type":"string","description":"Idempotency key: same ID/payload reuses receipt; changed payload fails."},
                     "revision":{"type":"boolean"},
                     "todo":crate::todo::schema(),
                     "guidance":{"type":"object","additionalProperties":false,"properties":{"action":{"type":"string","enum":["search","catalogue","read"]},"query":{"type":"string"},"topic":{"type":"string"}}},

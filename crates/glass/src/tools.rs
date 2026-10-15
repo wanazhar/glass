@@ -18,13 +18,15 @@ unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
 }
 
-/// Hard ceiling on captured output, per command.
+/// Inline output ceiling per stream; overflow has a separate disk bound.
 ///
 /// Tool output dominates context growth. An uncaptured `cat` of a large file
 /// can add more tokens than the entire conversation, so truncation is not an
 /// optimisation here, it is the difference between a session that survives and
 /// one that needs compaction every few turns.
-pub const MAX_OUTPUT_BYTES: usize = 60_000;
+pub const MAX_OUTPUT_BYTES: usize = 16 * 1024;
+const MAX_SPILL_BYTES: usize = 4 * 1024 * 1024;
+const DROPPED_TAIL_BYTES: usize = 2048;
 
 /// Default and maximum command timeout.
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -269,8 +271,8 @@ pub fn bash_owned(
         && unsafe { kill(-(child.id() as i32), SIGKILL) } == 0;
 
     capture_done.store(true, Ordering::Release);
-    let (out, out_spill) = out_buf.join().unwrap_or_else(|_| (String::new(), None));
-    let (err, err_spill) = err_buf.join().unwrap_or_else(|_| (String::new(), None));
+    let (out, out_spill, out_cut) = out_buf.join().unwrap_or_else(|_| (String::new(), None, true));
+    let (err, err_spill, err_cut) = err_buf.join().unwrap_or_else(|_| (String::new(), None, true));
 
     let mut body = String::new();
     if !out.is_empty() {
@@ -296,7 +298,7 @@ pub fn bash_owned(
     let spill = out_spill.or(err_spill);
     if let Some(p) = &spill {
         body.push_str(&format!(
-            "\n[output truncated at {MAX_OUTPUT_BYTES} bytes; full output saved to {} — \
+            "\n[output truncated at {MAX_OUTPUT_BYTES} bytes; overflow saved to {} — \
              read it with `head`, `tail`, or `rg`]\n",
             p.display()
         ));
@@ -339,7 +341,7 @@ pub fn bash_owned(
     crate::fs_scan::invalidate_all();
 
     Outcome {
-        truncated: spill.is_some() || capture_cutoff.load(Ordering::Acquire) != 0,
+        truncated: out_cut || err_cut || capture_cutoff.load(Ordering::Acquire) != 0,
         body: prefix,
         exit_code: code,
         spill,
@@ -383,21 +385,16 @@ fn kill_group(child: &mut Child) {
     }
 }
 
-/// Read a stream, keeping the first [`MAX_OUTPUT_BYTES`] inline and spilling the
-/// rest to a temp file.
-///
-/// Truncating without a spill throws away the part a build log or a search
-/// sweep actually ends with, which is the part that says what went wrong. With
-/// a spill the model can always recover the tail with `tail` or `rg` instead of
-/// re-running the command. Temp files are the OS's to reap, so a crashed session
-/// leaves nothing behind that needs cleaning up.
+/// Keep bounded inline text and overflow; drain excess so writers cannot block.
+/// If overflow exceeds the disk bound, disclose the loss and retain a small tail.
+/// Completed spills move into content-addressed storage without a second copy.
 fn read_capped(
     r: &mut Option<impl Read + AsRawFd>,
     done: &std::sync::atomic::AtomicBool,
     cutoff: &std::sync::atomic::AtomicU8,
-) -> (String, Option<PathBuf>) {
+) -> (String, Option<PathBuf>, bool) {
     let Some(reader) = r.as_mut() else {
-        return (String::new(), None);
+        return (String::new(), None, false);
     };
 
     // Nonblocking capture keeps escaped descendants from holding joins open.
@@ -406,12 +403,17 @@ fn read_capped(
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
         cutoff.fetch_max(2, Ordering::AcqRel);
-        return (format!("[output capture setup failed: {}]", std::io::Error::last_os_error()), None);
+        return (format!("[output capture setup failed: {}]", std::io::Error::last_os_error()), None, true);
     }
     let mut drain_deadline = None;
     let mut head: Vec<u8> = Vec::new();
     let mut spill: Option<(std::fs::File, PathBuf)> = None;
     let mut chunk = [0u8; 8192];
+    let mut written = 0usize;
+    let mut discarded = 0u64;
+    let mut tail = Vec::new();
+    let mut overflowed = false;
+    let mut storage_failed = false;
 
     loop {
         if done.load(Ordering::Acquire) {
@@ -443,9 +445,28 @@ fn read_capped(
         }
         // This chunk straddles the cap: fill the inline budget, spill the rest.
         head.extend_from_slice(&chunk[..room]);
-        spill = spill.or_else(open_spill);
-        if let Some((f, _)) = spill.as_mut() {
-            let _ = f.write_all(&chunk[room..]);
+        overflowed = true;
+        if spill.is_none() && !storage_failed {
+            spill = open_spill();
+            storage_failed = spill.is_none();
+        }
+        let extra = &chunk[room..n];
+        let keep = if storage_failed { 0 } else { extra.len().min(MAX_SPILL_BYTES.saturating_sub(written)) };
+        if keep > 0 && let Some((file, _)) = spill.as_mut() {
+            if file.write_all(&extra[..keep]).is_ok() {
+                written += keep;
+            } else {
+                storage_failed = true;
+            }
+        }
+        let lost = if storage_failed { extra } else { &extra[keep..] };
+        discarded = discarded.saturating_add(lost.len() as u64);
+        if !lost.is_empty() {
+            let start = lost.len().saturating_sub(DROPPED_TAIL_BYTES);
+            tail.extend_from_slice(&lost[start..]);
+            if tail.len() > DROPPED_TAIL_BYTES {
+                tail.drain(..tail.len() - DROPPED_TAIL_BYTES);
+            }
         }
     }
 
@@ -454,22 +475,23 @@ fn read_capped(
         p
     });
 
-    // Content addressing (task six-wave-d-001, blob-artifacts): once the
-    // spill exists, its bytes also land in the content-addressed blob store
-    // and the recorded path becomes the `blob:<sha256>` reference. The
-    // spill file stays as the materialized copy for this session; a later
-    // session or handoff re-reads by content through the reference.
     if let Some(p) = path.take() {
-        path = match crate::blobs::put_file(&p).ok() {
-            Some((reference, _)) => {
-                record_blob(reference, &p);
-                Some(p)
+        path = match crate::blobs::adopt_file(&p).ok() {
+            Some((reference, stored)) => {
+                record_blob(reference, &stored);
+                Some(stored)
             }
             None => Some(p),
         };
     }
+    let mut text = String::from_utf8_lossy(&head).into_owned();
+    if discarded > 0 {
+        let reason = if storage_failed { "overflow storage failed" } else { "4 MiB overflow limit reached" };
+        text.push_str(&format!("\n[{reason}; {discarded} bytes discarded; final {} bytes follow]\n", tail.len()));
+        text.push_str(&String::from_utf8_lossy(&tail));
+    }
+    (text, path, overflowed)
 
-    (String::from_utf8_lossy(&head).into_owned(), path)
 }
 
 /// Side channel from a spill write to its blob reference: one entry per
@@ -498,8 +520,8 @@ fn spill_dir() -> PathBuf {
 
 /// Open a spill file, returning it with the path we will report to the model.
 ///
-/// Returns `None` when the temp dir is unusable, which degrades to plain
-/// truncation rather than failing the command.
+/// Returns `None` when storage is unavailable. Capture reports discarded bytes
+/// and keeps draining instead of failing or blocking the command.
 fn open_spill() -> Option<(std::fs::File, PathBuf)> {
     let dir = spill_dir();
     std::fs::create_dir_all(&dir).ok()?;
@@ -1139,6 +1161,34 @@ mod tests {
         assert!(out.body.contains("done"), "{}", out.body);
         assert!(out.body.contains("capture incomplete"), "{}", out.body);
         assert!(out.truncated);
+    }
+
+    #[test]
+    fn short_overflow_has_no_buffer_padding_or_duplicate_file() {
+        use std::os::unix::net::UnixStream;
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        let data = vec![b'z'; MAX_OUTPUT_BYTES + 17];
+        let sent = data.clone();
+        let task = std::thread::spawn(move || writer.write_all(&sent).unwrap());
+        let (text, path, truncated) = read_capped(&mut Some(reader), &std::sync::atomic::AtomicBool::new(false), &std::sync::atomic::AtomicU8::new(0));
+        task.join().unwrap();
+        assert!(truncated);
+        assert_eq!(text.as_bytes(), &data[..MAX_OUTPUT_BYTES]);
+        let path = path.unwrap();
+        assert_eq!(path.parent().unwrap(), crate::blobs::dir());
+        assert_eq!(std::fs::read(&path).unwrap(), &data[MAX_OUTPUT_BYTES..]);
+    }
+
+    #[test]
+    fn excessive_output_is_drained_bounded_and_keeps_final_tail() {
+        let out = bash(&call(r#"{"command":"seq 1 1000000; printf GC_FINAL_TAIL"}"#), std::path::Path::new("."));
+        assert_eq!(out.exit_code, Some(0));
+        assert!(out.truncated, "{}", out.body);
+        assert!(out.body.contains("4 MiB overflow limit reached"));
+        assert!(out.body.contains("bytes discarded"));
+        assert!(out.body.contains("GC_FINAL_TAIL"));
+        assert!(out.body.len() < MAX_OUTPUT_BYTES + DROPPED_TAIL_BYTES + 1024);
+        assert_eq!(std::fs::metadata(out.spill.unwrap()).unwrap().len(), MAX_SPILL_BYTES as u64);
     }
 
     #[test]

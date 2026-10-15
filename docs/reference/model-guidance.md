@@ -47,8 +47,10 @@ blockers rather than assume an answer. See
 
 ## Resume, cost and performance
 
-The versioned workflow suffix is added to the effective system prompt, including prompts restored from compaction. Identical suffixes are not duplicated. Read-only planning retains its restricted prompt and does not receive execution instructions. The workflow suffix is bounded to 1,200 bytes; permission context is appended
-separately. Detailed recipes remain outside the initial prompt. It adds input tokens, but no network lookup or extra request. A software upgrade changes the prompt prefix once; requests within that version use the same suffix.
+The versioned workflow suffix is added to the effective system prompt, including prompts restored from compaction. Identical suffixes are not duplicated. Read-only planning retains its restricted prompt and does not receive execution instructions. The workflow suffix is bounded to 800 bytes; permission context is appended
+separately. Detailed recipes remain outside the initial prompt. It adds input tokens, but no network lookup or extra request. A software upgrade changes the prompt prefix once; requests within that version
+use the same suffix. Older generated workflow and permission paragraphs are
+replaced on resume so successive upgrades do not accumulate instructions.
 
 Catalogue discovery returns all entries instead of silently cutting off after 24. Runtime progress reminders inspect the in-memory current turn, not the session file or the network.
 

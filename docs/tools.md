@@ -51,7 +51,9 @@ Prefer `read` for file inspection, `edit` for surgical changes, and `write` for 
 files or deliberate replacement. Existing-file changes require a previous read and
 its whole-file `expected` revision. `expected:null` is create-only. `preview:true`
 shows a proposed diff without writing; `validate:true` requires a passing supported
-syntax check. Reads are bounded and return continuation instructions when truncated.
+syntax check. Reads are bounded and return continuation instructions when truncated. Native
+results provide one `next_read` argument object; CLI text provides a command hint
+instead. JSON results retain the complete continuation metadata.
 Native calls keep input responsive and remain ordered with adjacent shell calls.
 Planning mode remains inspect-only; read-only permissions block native mutations.
 

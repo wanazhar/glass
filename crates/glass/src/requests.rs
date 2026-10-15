@@ -21,42 +21,33 @@ pub struct Snapshot {
     estimated_tokens: u32,
 }
 fn hash(bytes: &[u8]) -> String {
-    ring::digest::digest(&ring::digest::SHA256, bytes)
-        .as_ref()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    crate::hashing::sha256(bytes)
 }
 fn message_hash(m: &glass_mod_api::Message) -> String {
     use glass_mod_api::Message;
     let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
-    let (tag, fields): (&str, Vec<&str>) = match m {
-        Message::User(t) => ("user", vec![t]),
-        Message::Assistant(t) => ("assistant", vec![t]),
-        Message::System(t) => ("system", vec![t]),
+    let (tag, fields, count): (&str, [&str; 3], usize) = match m {
+        Message::User(t) => ("user", [t, "", ""], 1),
+        Message::Assistant(t) => ("assistant", [t, "", ""], 1),
+        Message::System(t) => ("system", [t, "", ""], 1),
         Message::ToolCall {
             id,
             name,
             arguments,
-        } => ("call", vec![id, name, arguments]),
+        } => ("call", [id, name, arguments], 3),
         Message::ToolResult {
             call_id,
             name,
             body,
-        } => ("result", vec![call_id, name, body]),
-        Message::Image { media_type, data } => ("image", vec![media_type, data]),
+        } => ("result", [call_id, name, body], 3),
+        Message::Image { media_type, data } => ("image", [media_type, data, ""], 2),
     };
     digest.update(tag.as_bytes());
-    for field in fields {
+    for field in fields.into_iter().take(count) {
         digest.update(&(field.len() as u64).to_le_bytes());
         digest.update(field.as_bytes());
     }
-    digest
-        .finish()
-        .as_ref()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    crate::hashing::hex(digest.finish().as_ref())
 }
 impl Snapshot {
     pub fn capture(req: &Request<'_>) -> Self {
@@ -216,7 +207,7 @@ impl Drop for Trace {
         let report = serde_json::json!({"kind":self.workflow,"raw_record_at_request":self.raw_record,"cost_usd":self.rate.zip(self.usage).map(|(rate,usage)|rate.cost(&usage)),"model_requested":self.snapshot.model,"model_served":self.serving_model,"elapsed_ms":self.started.elapsed().as_millis(),"first_event_ms":self.first_event,
             "text_bytes":self.text_bytes,"reasoning_bytes":self.reasoning_bytes,"tool_calls":self.calls,"transport_retries":self.retries,"outcome":self.outcome,
             "usage":usage,"context_delta":self.delta,"prefix_fingerprint":self.snapshot.prefix,
-            "cache_note":"Fingerprint describes the requested model/system/tools, not the provider cache key. Zero/absent usage cannot establish why caching missed. Provider response identity and finish reason are in /context when exposed. Cache warmer requests have kind=cache_warmer and consume provider usage; unknown pricing is not zero cost."});
+            "cache_note":"Prefix fingerprint is not a provider cache key. Missing usage cannot establish cache behavior."});
         let result = (|| -> Result<(), String> {
             append(&self.path.with_extension("requests.jsonl"), &report)?;
             if self.background || self.workflow=="compaction" {
@@ -391,6 +382,31 @@ pub fn usage_summary(session: &Session) -> Result<serde_json::Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn allocation_changes_preserve_legacy_message_fingerprints() {
+        use glass_mod_api::Message;
+        let samples = [Message::User("界".into()), Message::Assistant("answer".into()),
+            Message::System("instructions".into()),
+            Message::ToolCall {id:"".into(),name:"read".into(),arguments:"{}".into()},
+            Message::ToolResult {call_id:"1".into(),name:"read".into(),body:"".into()},
+            Message::Image {media_type:"image/png".into(),data:"YQ==".into()}];
+        for message in samples {
+            let (tag, fields):(&str,Vec<&str>) = match &message {
+                Message::User(text)=>("user",vec![text]),
+                Message::Assistant(text)=>("assistant",vec![text]),
+                Message::System(text)=>("system",vec![text]),
+                Message::ToolCall{id,name,arguments}=>("call",vec![id,name,arguments]),
+                Message::ToolResult{call_id,name,body}=>("result",vec![call_id,name,body]),
+                Message::Image{media_type,data}=>("image",vec![media_type,data]),
+            };
+            let mut digest=ring::digest::Context::new(&ring::digest::SHA256);
+            digest.update(tag.as_bytes());
+            for field in fields {digest.update(&(field.len() as u64).to_le_bytes());digest.update(field.as_bytes());}
+            let previous:String=digest.finish().as_ref().iter().map(|byte|format!("{byte:02x}")).collect();
+            assert_eq!(message_hash(&message),previous);
+        }
+    }
+
     #[test]
     fn byte_tail_skips_partial_unicode_and_reports_byte_truncation() {
         let path = std::env::temp_dir().join(format!("gc-tail-unicode-{}.jsonl", std::process::id()));

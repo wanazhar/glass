@@ -17,7 +17,7 @@ Those files come from explicit development, installation, or model commands.
 | Foreground shell overflow | When a stream exceeds 16 KiB of inline output | At most 4 MiB per stream; moved into content-addressed blobs without a duplicate file |
 | Background job output | When a job is started | At most 4 MiB per job; retained logs are not reattached on restart |
 | Prepared model images | When an image is explicitly attached or viewed | At most 1 MiB encoded per prepared image; content-addressed artifacts remain on disk |
-| Prompt history | After interactive prompt submission | Last 200 entries; this is an entry bound, not a total byte quota |
+| Prompt history | After eligible interactive prompt submission | Up to 200 visible entries; journal capped at 1 MiB, with 64 KiB encoded entries and batched compaction |
 | Neuralnets and reviewed facts | When learning or facts are saved | Combined native store capped at 1,088 KiB; automatic retrieval has smaller bounds |
 | Provider pacing records | At request starts and cooldown changes | Small per-endpoint/account timing records; no credential values |
 | Checkpoints, worker sessions, and workflow artifacts | When the corresponding workflow is used | Retained according to that workflow; can include project snapshots |
@@ -35,6 +35,21 @@ The partial sidecar uses atomic replacement and syncing for crash recovery.
 `live_flush_ms = 0` disables it. This reduces writes but gives up in-flight
 partial recovery. `log_fsync = "always"` increases session-log durability and
 write cost; the default is `"off"`. Neither setting removes saved conversations.
+
+## Prompt recall
+
+Prompt history is a convenience index, separate from the conversation log. Reads
+inspect at most its last 1 MiB. The index skips prompts whose encoded entry would
+exceed 64 KiB; it does not truncate them into a different prompt. Full submitted
+text remains in the conversation log. Adjacent identical prompts are not saved
+twice.
+
+The physical journal may retain up to 232 entries between compactions, while the
+interface exposes at most the newest 200 within the byte limit. Eligible updates
+compact older journals that exceed these bounds. A nonblocking lock coordinates
+current-version writers; a busy writer skips recall saving rather than delaying
+the conversation. Symlinks, hard links, and non-regular journal files are refused.
+Recall is best-effort and does not replace durable conversation history.
 
 ## Shell capture limits
 
@@ -90,5 +105,10 @@ python3 scripts/check-runtime-footprint.py --bounded
 
 The footprint fixture uses a local provider and disposable directories. It
 reports binary bytes, system/schema bytes, request sizes, tool-result bytes, and
-automatic storage for a greeting and a verbose command. These are controlled
+automatic storage for a greeting, a verbose command, and a partial native read. These are controlled
 measurements, not a prediction of live-model token use or provider latency.
+
+`python3 scripts/check-history-footprint.py --bounded` exercises a full recall
+journal through 40 local-provider PTY turns. On Linux it reports process write
+traffic, including diagnostics, terminal output, and network writes. It does not
+measure history writes in isolation.

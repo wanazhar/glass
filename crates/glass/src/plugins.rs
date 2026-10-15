@@ -317,7 +317,7 @@ fn streamed_plugin_hash_preserves_receipt_format() {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    crate::hashing::hex(bytes)
 }
 
 /// Kept for the existing list drift field; now cryptographic and content based.

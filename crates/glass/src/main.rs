@@ -38,6 +38,7 @@ mod guidance;
 mod hardening;
 mod help;
 mod history;
+mod hashing;
 mod history_inspector;
 mod hooks_shell;
 mod inbox;

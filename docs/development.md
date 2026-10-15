@@ -28,7 +28,7 @@ Optional integrations are loaded when configured or explicitly requested. No
 background model polling is required for local browsing, recaps, or knowledge
 inspection. Tool count alone does not predict task latency or token cost.
 
-The latest recorded comparison on Linux aarch64 (2026-10-15) used three
+The first recorded comparison on Linux aarch64 (2026-10-15) used three
 alternating runs of the previous and updated release binaries. Representative
 updated timings were:
 
@@ -43,6 +43,9 @@ These are local fixture results. They exclude provider latency and do not
 establish cross-machine performance or coding success. The
 [comparison record](plan/reviews/runtime-footprint-2026-10-15.md) includes the
 baseline, file timings, binary size, request overhead, and measured tradeoffs.
+
+A [second optimization round](plan/reviews/runtime-footprint-round2-2026-10-15.md)
+measures bounded prompt recall, diagnostic writes, and native read payloads.
 
 To measure the current release build:
 

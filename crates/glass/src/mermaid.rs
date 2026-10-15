@@ -20,7 +20,7 @@
 //! Unsupported or overflowing input in any family goes to the
 //! fenced-source fallback — never a halfway drawing.
 //!
-//! Layout: simple flowcharts use ranked lanes; groups, cycles and wide graphs
+//! Layout: simple chains use connected boxes; groups, cycles and wide graphs
 //! use compact node/connection lists. Sequence diagrams use lifelines when
 //! they fit and a participant/message list otherwise. Malformed or oversized
 //! input returns `None` and the caller renders the original source.
@@ -54,11 +54,10 @@ struct Edge {
 
 #[derive(Debug, Default)]
 pub struct Flowchart {
-    /// Parsed and kept for future layout work; the current single-row
-    /// per-rank renderer draws ribs identically for TD and LR, and honest
-    /// capacity outweighs pretending otherwise.
+    /// Original direction is retained; narrow terminal layouts use vertical flow.
     #[allow(dead_code)]
     direction: Direction,
+    chain_layout: bool,
     nodes: Vec<Node>,
     edges: Vec<Edge>,
     groups: Vec<Group>,
@@ -86,7 +85,7 @@ pub fn parse(body: &str) -> Option<Flowchart> {
     if body.len() > 128 * 1024 { return None; }
     let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("%%"));
     let direction = parse_header(lines.next()?.trim_end_matches(';').trim())?;
-    let mut chart = Flowchart { direction, ..Flowchart::default() };
+    let mut chart = Flowchart { direction, chain_layout: true, ..Flowchart::default() };
     let mut groups = Vec::new();
     for line in lines {
         for statement in split_statements(line)? {
@@ -513,7 +512,6 @@ fn node_of(raw: &str, chart: &mut Flowchart) -> Option<String> {
 /// Render at the given column width. `None` means the diagram cannot fit
 /// under the caps and the caller falls back to the fenced source.
 pub fn render(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
-    if chart.groups.is_empty() && let Some(rows) = render_wide(chart,width) { return Some(rows); }
     render_compact(chart,width)
 }
 fn render_compact(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
@@ -548,6 +546,8 @@ fn render_boxed(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
     let inner = width.checked_sub(4)?;
     let mut rows = Vec::new();
     let mut last_group = String::new();
+    let linear = chart.chain_layout && chart.groups.is_empty() && chart.nodes.iter().all(|node|!node.label.is_empty()) && chart.edges.iter().all(|edge|edge.style==EdgeStyle::Solid) && chart.edges.len()+1==chart.nodes.len()
+        && chart.nodes.windows(2).all(|pair| chart.edges.iter().any(|e|e.from==pair[0].id&&e.to==pair[1].id));
     for node in &chart.nodes {
         let mut memberships = Vec::new();
         for (index, group) in chart.groups.iter().enumerate() {
@@ -571,137 +571,52 @@ fn render_boxed(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
             }
             last_group = group;
         }
-        let title = format!("╭─ [{}] ",node.id);
-        if glass_tui::text::width(&title) < width {
+        let title_name=if chart.chain_layout {&node.id} else {&node.label};
+        let title = format!("╭─ [{title_name}] ");
+        if linear {
+            rows.push(format!("╭{}╮","─".repeat(width-2)));
+        } else if glass_tui::text::width(&title) < width {
             rows.push(format!("{title}{}╮","─".repeat(width-glass_tui::text::width(&title)-1)));
         } else {
             rows.push(format!("╭{}╮","─".repeat(width-2)));
-            for line in glass_tui::text::wrap_words(&format!("[{}]",node.id),inner) {
+            for line in glass_tui::text::wrap_words(&format!("[{title_name}]"),inner) {
                 rows.push(format!("│ {line}{} │"," ".repeat(inner-glass_tui::text::width(&line))));
             }
         }
         for line in node.label.split(" / ").flat_map(|part|glass_tui::text::wrap_words(part,inner)) {
-            rows.push(format!("│ {line}{} │"," ".repeat(inner-glass_tui::text::width(&line))));
+            let spare=inner-glass_tui::text::width(&line);
+            let left=if linear {spare/2} else {0};
+            rows.push(format!("│ {}{line}{} │"," ".repeat(left)," ".repeat(spare-left)));
         }
         rows.push(format!("╰{}╯","─".repeat(width-2)));
         let edges: Vec<_> = chart.edges.iter().filter(|edge|edge.from==node.id).collect();
         for (index,edge) in edges.iter().enumerate() {
+            if linear {
+                let center=" ".repeat(width/2);
+                rows.push(format!("{center}│"));
+                if let Some(label)=&edge.label {
+                    for line in glass_tui::text::wrap_words(label,width-2) {
+                        let padding=(width-glass_tui::text::width(&line))/2;
+                        rows.push(format!("{}{line}"," ".repeat(padding)));
+                    }
+                }
+                rows.push(format!("{center}▼"));
+                continue;
+            }
             let last = index+1==edges.len();
             let connector = if last { "  ╰" } else { "  ├" };
-            let text = format!("{} [{}]{}",edge.style.arrow(),edge.to,
-                edge.label.as_ref().map(|label|format!(" · {label}")).unwrap_or_default());
+            let target=chart.nodes.iter().find(|target|target.id==edge.to)?;
+            let text = match &edge.label {
+                Some(label)=>format!("{} {label} {} [{}]",edge.style.stem(),edge.style.arrow(),target.label),
+                None=>format!("{} [{}]",edge.style.arrow(),target.label),
+            };
             for (part,line) in glass_tui::text::wrap_words(&text,width-3).into_iter().enumerate() {
                 let prefix = if part==0 { connector } else if last { "   " } else { "  │" };
                 rows.push(format!("{prefix}{line}"));
             }
         }
-        rows.push(String::new());
+        if !linear { rows.push(String::new()); }
         if rows.len()>2048 { return None; }
-    }
-    Some(rows)
-}
-
-fn render_wide(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
-    let width = width.clamp(1, 88);
-    if width < 12 {
-        return None;
-    }
-    // Rank per node: rank 0 for sources, one past the highest inbound
-    // rank. Single-pass leaves a node at a stale low rank when its source
-    // is ranked later in the edge list (a chain drawn tail-edge-first
-    // collapsed three ranks into two and stole the final's arrow). Fixed
-    // with a bounded pass that propagates source+1 into targets until no
-    // rank moves; acyclic input (a cycle is a fallback case via the drawn
-    // check below, not a hang: a full round with no change stops early and
-    // the total rounds are capped by node count).
-    let mut rank: Vec<(String, usize)> = Vec::new();
-    for node in &chart.nodes {
-        rank.push((node.id.clone(), 0));
-    }
-    for _ in 0..=chart.nodes.len() {
-        let mut changed = false;
-        for edge in &chart.edges {
-            let source = rank
-                .iter()
-                .find(|(id, _)| *id == edge.from)
-                .map_or(0, |(_, r)| *r);
-            let target_rank = source + 1;
-            if rank
-                .iter()
-                .find(|(id, _)| *id == edge.to)
-                .is_some_and(|(_, r)| *r < target_rank)
-            {
-                merge_rank(&mut rank, &edge.to, target_rank);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    let mut rows: Vec<String> = Vec::new();
-    // Simple horizontal layout: one line per rank, nodes joined with arrows
-    // pointing to their targets. Cap total lines to keep redraw bounded.
-    let ranks = rank.iter().map(|(_, r)| *r).max().unwrap_or(0) + 1;
-    if ranks > 16 {
-        return None;
-    }
-    for r in 0..ranks {
-        let nodes: Vec<&Node> = chart
-            .nodes
-            .iter()
-            .filter(|n| rank.iter().any(|(id, rank)| *id == n.id && *rank == r))
-            .collect();
-        if nodes.is_empty() {
-            continue;
-        }
-        // Every node in the rank renders on one row joined with a plain
-        // separator, each followed by its own edges. The old layout drew
-        // only the first node's edges and stubbed the others with a fake
-        // `── edge` marker; the drawn-check then failed for state machines
-        // that fan several sources into one target, honestly falling back
-        // when it should have drawn. One row per rank, all nodes real.
-        let mut row = String::new();
-        for node in nodes {
-            let shape = format!("[{}]", node.label);
-            if !row.is_empty() {
-                row.push_str("   ");
-            }
-            if glass_tui::text::width(&row) + glass_tui::text::width(&shape) > width.saturating_sub(1) {
-                // Too wide for the column: fall back to source.
-                return None;
-            }
-            row.push_str(&shape);
-            let out: Vec<&Edge> = chart
-                .edges
-                .iter()
-                .filter(|e| e.from == node.id)
-                .collect();
-            for edge in out {
-                let target = chart.nodes.iter().find(|n| n.id == edge.to)?;
-                let suffix = match &edge.label {
-                    Some(l) => format!(" {} {} {} [{}]", edge.style.stem(), l, edge.style.arrow(), target.label),
-                    None => format!(" {} [{}]", edge.style.arrow(), target.label),
-                };
-                if glass_tui::text::width(&row) + glass_tui::text::width(&suffix) <= width.saturating_sub(1) {
-                    row.push_str(&suffix);
-                } else {
-                    // continues on the next row referencing the same node
-                    break;
-                }
-            }
-        }
-        rows.push(row);
-    }
-    // Edge labels only drawn for edges whose target row already has the node
-    // (visible above). Any edge not drawn on its row must be listed — or the
-    // fallback triggers. Bounded single pass:
-    let drawn: usize = rows
-        .iter()
-        .map(|row| ["──▶", "┄┄▶", "━━▶"].iter().map(|arrow| row.matches(arrow).count()).sum::<usize>())
-        .sum();
-    if drawn < chart.edges.len() {
-        return None;
     }
     Some(rows)
 }
@@ -839,14 +754,6 @@ fn parse_er_relation(line: &str) -> Option<(String, String, String)> {
     let source = class_ident(from)?;
     let target = class_ident(to)?;
     Some((source, target, label.to_string()))
-}
-
-fn merge_rank(rank: &mut Vec<(String, usize)>, id: &str, new_rank: usize) {
-    match rank.iter_mut().find(|(existing, _)| existing == id) {
-        Some((_, rank)) if *rank < new_rank => *rank = new_rank,
-        Some(_) => {}
-        None => rank.push((id.to_string(), new_rank)),
-    }
 }
 
 // ---- Sequence diagrams (follow-up: the second family) ----
@@ -1241,6 +1148,21 @@ flowchart TD
     classDef entry fill:#333,stroke:#888;
     class Core core
 "#;
+    const BRANCH_SCREENSHOT: &str = "flowchart TD\nA[Start] --> B{Is it mermaid?}\nB -->|yes| C[Output diagram]\nB -->|no| D[Convert to mermaid]\nD --> C\nC --> E[Done]";
+    #[test]
+    fn branches_are_not_serialized_into_a_false_chain() {
+        let chart=parse(BRANCH_SCREENSHOT).unwrap();
+        for width in [20,40,65,88] {
+            let rows=render(&chart,width).unwrap();
+            assert_eq!(rows.iter().filter(|row|row.starts_with('╭')).count(),5);
+            assert!(rows.iter().all(|row|row.matches("──▶").count()<=1));
+            assert!(rows.iter().all(|row|glass_tui::text::width(row)<=width));
+            let text=rows.join(" ");
+            assert!(text.contains("yes") && text.contains("no"));
+            assert_eq!(rows.iter().map(|row|row.matches("──▶").count()).sum::<usize>(),5);
+        }
+    }
+
     #[test]
     fn quoted_group_titles_render() {
         let chart=parse("flowchart TD\nsubgraph \"Input layer\"\nA --> B\nend").unwrap();
@@ -1370,7 +1292,7 @@ flowchart TD
         let chart = parse("flowchart TD\n A[Start] -->|go| B[End]").unwrap();
         let rows = render(&chart, 60).unwrap();
         assert!(
-            rows.iter().any(|r| r.contains("[Start]") && r.contains("── go ──▶ [End]")),
+            rows.iter().any(|r| r.trim()=="go") && rows.iter().any(|r|r.trim()=="▼") && rows.iter().filter(|r|r.starts_with('╭')).count()==2,
             "edge row: {rows:?}"
         );
     }

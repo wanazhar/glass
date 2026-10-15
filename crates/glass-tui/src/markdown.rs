@@ -513,10 +513,9 @@ fn mermaid_diagram(text: &str, width: usize) -> Option<Vec<Line<'static>>> {
         if !language.trim().eq_ignore_ascii_case("mermaid") {
             continue;
         }
-        let muted = Style::new().fg(crate::theme::color(crate::theme::Tone::Muted));
         let mut rows = vec![Line::from(Span::styled(
-            crate::text::clip("╭─ mermaid", width),
-            muted,
+            crate::text::clip("◇ Mermaid", width),
+            Style::new().fg(crate::theme::color(crate::theme::Tone::Accent)).add_modifier(Modifier::BOLD),
         ))];
         let drawn = match renderer(&body, width) {
             Ok(drawn) => drawn,
@@ -531,17 +530,14 @@ fn mermaid_diagram(text: &str, width: usize) -> Option<Vec<Line<'static>>> {
             }
         };
         for line in drawn {
-            let heading = matches!(line.as_str(), "Nodes" | "Connections" | "Participants" | "Messages") || line.starts_with("Group · ") || line.starts_with("╭─ [");
+            let heading = matches!(line.as_str(), "Nodes" | "Connections" | "Participants" | "Messages") || line.starts_with("Group · ") || line.starts_with('╭');
             let tone = if heading { crate::theme::Tone::Accent }
-                else if line.contains("──▶") || line.contains("┄┄▶") || line.contains("━━▶") { crate::theme::Tone::Secondary }
+                else if line.contains("──▶") || line.contains("┄┄▶") || line.contains("━━▶") || line.trim()=="▼" || line.trim()=="│" { crate::theme::Tone::Secondary }
                 else { crate::theme::Tone::Body };
             let style = Style::new().fg(crate::theme::color(tone));
             rows.push(Line::from(Span::styled(line, if heading { style.add_modifier(Modifier::BOLD) } else { style })));
         }
-        rows.push(Line::from(Span::styled(
-            format!("╰{}", "─".repeat(width.saturating_sub(1).min(30))),
-            muted,
-        )));
+        rows.push(Line::default());
         return Some(rows);
     }
     None

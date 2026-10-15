@@ -201,6 +201,7 @@ pub struct Agent<'a> {
     /// Interactive user-input channel, borrowed from the existing terminal reader.
     /// Headless/ACP agents leave this unset and never advertise elicitation support.
     input_keys: Option<&'a crate::input::KeyReader>,
+    approved_calls: std::collections::HashMap<String, String>,
     /// Cached system-prompt contribution from extensions.
     ext_prompt: String,
     /// Size of the cacheable prefix, recomputed each request.
@@ -331,6 +332,7 @@ impl<'a> Agent<'a> {
             project_instructions: None,
             on_progress: None,
             input_keys: None,
+            approved_calls: std::collections::HashMap::new(),
             ext_prompt: String::new(),
             prefix_bytes: 0,
             steer: None,
@@ -380,10 +382,13 @@ impl<'a> Agent<'a> {
     }
     fn tool_set(&self) -> Vec<(String, String, String)> {
         if self.read_only {
-            crate::inspect::schema()
+            let mut tools=crate::inspect::schema();
+            if self.input_keys.is_some() {tools.push(crate::questions::schema());}
+            tools
         } else {
             let mut tools = provider::collect_tools(self.mods);
             if !self.image_input { tools.retain(|(name, _, _)| name != "view_image"); }
+            if self.input_keys.is_some() { tools.push(crate::questions::schema()); }
             if self.checkpoint_tools {
                 tools.extend(crate::provider::checkpoint_tool_schemas());
             }
@@ -477,15 +482,45 @@ impl<'a> Agent<'a> {
     }
 
     fn command_approvals(&self, call: &ToolCall) -> crate::sandbox::SessionApprovals {
-        // Headless and delegated agents never inherit the interactive parent
-        // session's exceptions. Snapshot explicit grants before worker dispatch.
-        if self.input_keys.is_some() {
-            call.arg_str("command")
-                .and_then(|command| crate::permissions::approvals_for_command(&command).ok())
-                .unwrap_or_default()
-        } else {
-            crate::sandbox::SessionApprovals::default()
+        let mut approvals = if self.input_keys.is_some() {
+            call.arg_str("command").and_then(|command|crate::permissions::approvals_for_command(&command).ok()).unwrap_or_default()
+        } else { crate::sandbox::SessionApprovals::default() };
+        if let Some(command)=call.arg_str("command")
+            && self.approved_calls.get(&call.id)==Some(&command) { approvals.approve_exact(&command); }
+        approvals
+    }
+
+    fn approval_refusal(&mut self, call:&ToolCall) -> Option<String> {
+        match call.arg_str("permission").as_deref() {
+            None | Some("use_default") => return None,
+            Some("require_escalated") => {},
+            _ => return Some("Unknown permission request; nothing executed".into()),
         }
+        if !matches!(call.name.as_str(),"bash"|"edit"|"write") {return Some("Only bash, edit and write support elevation; nothing executed".into());}
+        if self.read_only {return Some("Plan mode cannot request execution rights".into());}
+        if crate::sandbox::permission_profile_label()=="unrestricted" && crate::sandbox::policy()==crate::sandbox::Policy::Off {return None;}
+        let Some(keys)=self.input_keys else {return Some("Approval required: no interactive human is connected; nothing executed".into());};
+        if call.arguments.len()>65536 {return Some("Operation exceeds the 64 KiB approval review bound; split it into smaller explicit operations".into());}
+        let requirements=match crate::requirements::load(&crate::config::config_dir()) {Ok(r)=>r,Err(e)=>return Some(e)};
+        if requirements.sandbox.is_some_and(|policy|policy!=crate::sandbox::Policy::Off) {return Some("Administrator sandbox requirements forbid elevation".into());}
+        let Some(operation)=call.arg_str("command").or_else(||call.arg_str("path")) else {return Some("Elevation requires an exact command or path; nothing executed".into());};
+        if call.name=="bash" && call.arg_str("cwd").is_some_and(|cwd|cwd!="."&&std::path::Path::new(&cwd)!=self.workspace) {return Some("Elevated commands must use the session workspace cwd".into());}
+        let reason=call.arg_str("justification").filter(|s|!s.trim().is_empty()&&s.len()<=2048);
+        let Some(reason)=reason else {return Some("An elevation request needs a justification (1–2048 bytes)".into());};
+        if let Err(error)=crate::policy::shell(call.arg_str("command").as_deref().unwrap_or("")) {return Some(error);}
+        if let Err(error)=self.session.append_checked(&[Record::Meta(format!("Approval pending: {} · {}",call.name,operation))]) {return Some(format!("Cannot record approval request: {error}; nothing executed"));}
+        // Render the full operation and its decision together; compact choice
+        // menus hide their note, which is not sufficient approval disclosure.
+        let payload=match serde_json::from_str::<serde_json::Value>(&call.arguments).and_then(|value|serde_json::to_string_pretty(&value)) {Ok(payload)=>payload,Err(error)=>return Some(error.to_string())};
+        let review=format!("**Paused · ↑↓/PgUp/PgDn scroll**\n**a allow once · d/Esc deny**\n\n{reason}\n\n## Exact {} operation\n```json\n{payload}\n```\n\nThis one operation runs outside the configured sandbox. Denial grants nothing; the configured profile remains unchanged.",call.name);
+        let chosen=crate::modal::rich_actions(keys,"Approval required",&review,&[('a',"Allow once"),('d',"Deny")]);
+        if chosen!=Some('a') {
+            self.session.append(Record::Meta(format!("Approval denied: {}",call.id)));
+            return Some("User denied this operation. Do not repeat or work around the denial; choose an allowed approach or explain the blocker.".into());
+        }
+        if let Err(error)=self.session.append_checked(&[Record::Meta(format!("Approval granted once: {}",call.id))]) {return Some(format!("Cannot record approval decision: {error}; nothing executed"));}
+        self.approved_calls.insert(call.id.clone(),operation);
+        None
     }
 
     pub fn with_prompt(
@@ -1248,6 +1283,17 @@ impl<'a> Agent<'a> {
     /// transcript it would have seen one call at a time. A `bash` call still
     /// runs on a worker thread so the UI stays live and a steer can land.
     fn run_tool_batch(&mut self, calls: &[ToolCall], pump: &mut impl FnMut(&mut Option<String>)) {
+        // Tool-call arrays do not establish dependencies. A question gates
+        // the whole batch, including mutations listed before the question.
+        if let Some(index)=calls.iter().position(|call|call.name=="ask_user_question") {
+            let question=&calls[index];
+            self.loop_guard(question);
+            self.run_tool_pumped_or_inline(question,pump);
+            for (other_index,call) in calls.iter().enumerate() {
+                if other_index!=index {self.finish_tool(call,tools::Outcome::err("Not executed: process the user's question answer before proposing further tools"));}
+            }
+            return;
+        }
         if self.read_only {
             for call in calls {
                 pump(&mut self.steer);
@@ -1269,7 +1315,7 @@ impl<'a> Agent<'a> {
             return;
         }
 
-        if calls.iter().any(|call|crate::files::is_tool(&call.name))
+        if calls.iter().any(|call|crate::files::is_tool(&call.name) || call.name=="ask_user_question" || call.arg_raw("permission").is_some())
             || !self.mods.is_empty()
             || !self.extensions.is_empty()
             || calls
@@ -1277,9 +1323,7 @@ impl<'a> Agent<'a> {
                 .any(|c| c.name == "bash" && self.read_before_write_refusal(c).is_some())
         {
             for call in calls {
-                if self.steer.is_some() {
-                    break;
-                }
+                if self.steer.is_some() { break; }
                 self.loop_guard(call);
                 self.run_tool_pumped_or_inline(call, pump);
             }
@@ -1411,6 +1455,20 @@ impl<'a> Agent<'a> {
         call: &ToolCall,
         pump: &mut impl FnMut(&mut Option<String>),
     ) {
+        if call.arg_raw("permission").is_some() || call.name=="ask_user_question" {
+            pump(&mut self.steer);
+            if self.steer.is_some() {self.finish_tool(call,tools::Outcome::err("Skipped before interaction because the user interrupted or steered the task"));return;}
+        }
+        if let Some(reason)=self.approval_refusal(call) { self.finish_tool(call,tools::Outcome::err(reason)); return; }
+        if call.name=="ask_user_question" {
+            self.emit_tool_start(call);
+            let outcome=serde_json::from_str(&call.arguments).map_err(|e|e.to_string()).and_then(|value|crate::questions::run(&value,self.input_keys));
+            match outcome {
+                Ok(value)=>{if value["status"]=="cancelled" {self.steer=Some(String::new());} self.finish_tool(call,tools::Outcome::ok(value.to_string()));},
+                Err(error)=>self.finish_tool(call,tools::Outcome::err(error)),
+            }
+            return;
+        }
         if call.name == "view_image" && !self.image_input {
             self.finish_tool(call, tools::Outcome::err("Image input is disabled for this model"));
         } else if crate::files::is_tool(&call.name) {
@@ -1440,11 +1498,12 @@ impl<'a> Agent<'a> {
         }
         if let Some(reason)=self.authorization_refusal(call) {return self.finish_tool(call,tools::Outcome::err(reason));}
         if let Some(reason)=self.read_before_write_refusal(call) {return self.finish_tool(call,tools::Outcome::err(reason));}
+        let granted=call.arg_str("path").is_some_and(|path|self.approved_calls.get(&call.id)==Some(&path));
         let workspace=self.workspace.to_path_buf();let worker=call.clone();
         let (tx,rx)=std::sync::mpsc::channel();
         let cancel=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancel=cancel.clone();
-        std::thread::spawn(move || {let _=tx.send(crate::files::tool_cancellable(&worker,&workspace,&worker_cancel));});
+        std::thread::spawn(move || {let _=tx.send(crate::files::tool_cancellable_approved(&worker,&workspace,&worker_cancel,granted));});
         let outcome=loop {
             match rx.recv_timeout(std::time::Duration::from_millis(10)) {
                 Ok(result)=>break result,
@@ -1854,12 +1913,13 @@ impl<'a> Agent<'a> {
             verify::written_paths(&command,&tools::bash_cwd(call, self.workspace).ok()?)
         };
         // Kernel/device control writes are commands, not document replacement.
-        // Shell policy still authorizes them; unrestricted mode must not demand
+        // Shell policy still authorizes them; unrestricted or explicitly approved calls must not demand
         // a native text read of a write-only kernel interface.
+        let control_access = (crate::sandbox::permission_profile_label() == "unrestricted"
+            && crate::sandbox::policy() == crate::sandbox::Policy::Off)
+            || call.arg_str("command").is_some_and(|command|self.command_approvals(call).permits_exact(&command));
         let targets = targets.into_iter().filter(|path| {
-            !(call.name == "bash"
-                && crate::sandbox::permission_profile_label() == "unrestricted"
-                && crate::sandbox::policy() == crate::sandbox::Policy::Off
+            !(call.name == "bash" && control_access
                 && ["/proc", "/sys", "/dev"].iter().any(|root| path.starts_with(root)))
         }).collect::<Vec<_>>();
         let blocked = self.reads.blocked(&targets);
@@ -2101,6 +2161,7 @@ impl<'a> Agent<'a> {
     /// Record a tool result and notify mods. The single path every tool
     /// outcome takes, including the ones blocked by a guard.
     fn finish_tool(&mut self, call: &ToolCall, outcome: tools::Outcome) {
+        self.approved_calls.remove(&call.id);
         if let Some(live) = self.live.as_mut() {
             live.tool_done();
         }
@@ -2166,7 +2227,7 @@ impl<'a> Agent<'a> {
         }
         let system = latest_system_checkpoint(&self.session.history_records())
             .unwrap_or_else(|| self.system_prompt());
-        crate::guidance::model_context(crate::neuralnets::refresh_context(system, self.project_instructions.as_deref()))
+        crate::permissions::model_context(crate::guidance::model_context(crate::neuralnets::refresh_context(system, self.project_instructions.as_deref())),self.input_keys.is_some())
     }
 
     /// Assemble the system prompt: base, then mod contributions, then skills.
@@ -2571,6 +2632,36 @@ for line in sys.stdin:
         }
         drop(session);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os="linux")]
+    fn approved_kernel_controls_keep_ordinary_file_guards_and_expire() {
+        const CHILD:&str="GC_TEST_APPROVED_CONTROL_GUARD";
+        if std::env::var_os(CHILD).is_none() {
+            assert!(std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","agent::tests::approved_kernel_controls_keep_ordinary_file_guards_and_expire","--test-threads=1"]).env(CHILD,"1").status().unwrap().success());
+            return;
+        }
+        if !std::path::Path::new("/proc/sys/vm/drop_caches").is_file() {return;}
+        let dir=std::env::temp_dir().join(format!("gc-approved-control-{}",std::process::id()));
+        let mut session=Session::create(&dir).unwrap();
+        let cfg=crate::config::Config {workspace:dir.clone(),permission_profile:crate::sandbox::PermissionProfile::WorkspaceEdit,..Default::default()};
+        crate::sandbox::init(&cfg);
+        let mut state=State::new();let mods=Vec::new();let mut extensions=Registry::load(&[],&dir,"mock");
+        let mut agent=Agent::new(&MockTurnProvider,&mut session,&mut state,&mods,&mut extensions,&dir);
+        let command="echo 3 > /proc/sys/vm/drop_caches";
+        let call=ToolCall{id:"approved-control".into(),name:"bash".into(),arguments:serde_json::json!({"command":command}).to_string()};
+        assert!(agent.read_before_write_refusal(&call).is_some());
+        agent.approved_calls.insert(call.id.clone(),command.into());
+        assert!(agent.read_before_write_refusal(&call).is_none());
+        std::fs::write(dir.join("ordinary"),"retain me").unwrap();
+        let ordinary=ToolCall{id:"ordinary".into(),name:"bash".into(),arguments:serde_json::json!({"command":"echo replacement > ordinary"}).to_string()};
+        agent.approved_calls.insert(ordinary.id.clone(),"echo replacement > ordinary".into());
+        assert!(agent.read_before_write_refusal(&ordinary).is_some());
+        agent.finish_tool(&call,tools::Outcome::err("Guard-only fixture; command never executed"));
+        assert!(agent.read_before_write_refusal(&call).is_some());
+        assert_eq!(std::fs::read_to_string(dir.join("ordinary")).unwrap(),"retain me");
+        drop(agent);drop(session);std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

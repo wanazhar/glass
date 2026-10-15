@@ -140,6 +140,8 @@ const KEYS: &[Item] = &[
     ("Ctrl+D", "Quit."),
 ];
 const RUN: &[Item] = &[
+    ("--restricted", "Launch with workspace edits, network disabled by default and explicit approvals."),
+    ("--yolo / --unrestricted", "Launch without local sandbox or approval prompts; administrator rules still apply."),
     ("--trust", "Allow this workspace’s AGENTS.md for the run."),
     ("--json", "Return structured JSON for scripts."),
     ("--output-schema FILE", "Validate the final JSON answer; allow one format correction."),

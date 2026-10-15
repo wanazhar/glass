@@ -67,3 +67,6 @@ capability declarations before launching executable code.
 New session logs and spills are private on Unix. Existing files retain their
 permissions. Output redaction is best-effort and may leave original data in spill
 files. Review diagnostics and exports before sharing them.
+
+Read [Approvals and user questions](reference/interaction.md) for restricted and
+unrestricted launch modes, paused exact-call approvals and headless behavior.

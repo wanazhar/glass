@@ -4,12 +4,14 @@ All settings are opt-in. Omitted settings preserve the unrestricted shell and
 legacy extension startup behavior.
 
 ```toml
-permission_profile = "workspace-edit" # unrestricted | workspace-edit | read-only
+permission_profile = "workspace-edit" # unrestricted | restricted / workspace-edit | read-only
 extension_isolation = "strict"       # off | strict
 ```
 
 `workspace-edit` uses the host kernel to permit child writes only under the
-workspace and temporary directories. `read-only` uses a read/execute allowlist
+workspace and temporary directories. Its shell network ports default to none,
+unless explicitly configured. Native regular-file reads can reach outside the
+workspace; outside mutations require a paused, explicit approval. `read-only` uses a read/execute allowlist
 and grants no child filesystem write rights. Both `bash` and background jobs
 use the same initialized OS ruleset. If an explicitly selected profile cannot
 be installed, the host refuses those commands rather than running them bare.

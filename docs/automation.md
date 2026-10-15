@@ -32,6 +32,13 @@ callback URL in `/login`; API keys can also be configured through environment
 variables. There is no credential import from another harness. A finished turn is the model's
 completion signal; callers should still check their own build or test results.
 
+## Host-controlled runtime
+
+Use `gc runtime` when your application owns tool execution, permissions, questions,
+and presentation. The [runtime protocol](reference/runtime.md) defines versioned
+JSON-RPC messages, exclusive host tools, sessions, steering, and streamed events.
+A reusable Rust client and a standard-library Python reference host are included.
+
 ## Editor integration (ACP)
 
 `gc acp` serves Agent Client Protocol v1 over stdio. Supported editors can create

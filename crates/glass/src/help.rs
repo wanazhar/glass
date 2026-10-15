@@ -115,6 +115,7 @@ const INTEGRATE: &[Item] = &[
         "gc attach [--socket PATH]",
         "Attach a terminal to a hosted session.",
     ),
+    ("gc runtime", "Host-neutral JSON-RPC runtime over stdio."),
     ("gc acp", "Serve the Agent Client Protocol over stdio."),
 ];
 const KEYS: &[Item] = &[

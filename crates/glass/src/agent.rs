@@ -170,7 +170,12 @@ impl Drop for StreamWorker {
     }
 }
 
+pub type HostExecutor<'a> = Box<dyn FnMut(&ToolCall, &mut dyn FnMut(&mut Option<String>)) -> tools::Outcome + 'a>;
+
+type HostedExecution<'a> = (Vec<(String, String, String)>, HostExecutor<'a>);
+
 pub struct Agent<'a> {
+    hosted: Option<HostedExecution<'a>>,
     pub provider: &'a dyn Provider,
     pub session: &'a mut Session,
     pub state: &'a mut State,
@@ -316,6 +321,7 @@ impl<'a> Agent<'a> {
         let todo_error = session.write_error().map(str::to_string).or_else(||state.load_todo_once(session).err());
         extensions.bind_session_path(session.path.clone());
         Self {
+            hosted: None,
             provider,
             session,
             state,
@@ -380,7 +386,15 @@ impl<'a> Agent<'a> {
         self.pre_tool_hook = hook;
         self
     }
+    /// Exclusive host execution: no built-ins, extensions, or local tool guards.
+    /// The host owns authorization and every side effect.
+    pub fn with_host_tools(mut self, tools: Vec<(String, String, String)>, execute: HostExecutor<'a>) -> Self {
+        self.hosted = Some((tools, execute));
+        self
+    }
+
     fn tool_set(&self) -> Vec<(String, String, String)> {
+        if let Some((tools, _)) = &self.hosted { return tools.clone(); }
         if self.read_only {
             let mut tools=crate::inspect::schema();
             if self.input_keys.is_some() {tools.push(crate::questions::schema());}
@@ -579,7 +593,7 @@ impl<'a> Agent<'a> {
         // prefix, so changing it mid-session would turn every later turn
         // into a cache miss. A change is noted once, in the transcript, and
         // applies to the next session.
-        let (declared, diff) = if self.read_only {
+        let (declared, diff) = if self.read_only || self.hosted.is_some() {
             (Vec::new(), crate::ext::FreezeDiff::default())
         } else {
             self.extensions.declared_tools()
@@ -1283,6 +1297,21 @@ impl<'a> Agent<'a> {
     /// transcript it would have seen one call at a time. A `bash` call still
     /// runs on a worker thread so the UI stays live and a steer can land.
     fn run_tool_batch(&mut self, calls: &[ToolCall], pump: &mut impl FnMut(&mut Option<String>)) {
+        if let Some((schemas, mut execute)) = self.hosted.take() {
+            for call in calls {
+                pump(&mut self.steer);
+                if self.steer.is_some() { break; }
+                self.emit_tool_start(call);
+                let outcome = execute(call, &mut |slot| {
+                    pump(slot);
+                });
+                self.finish_tool(call, outcome);
+                pump(&mut self.steer);
+                if self.steer.is_some() { break; }
+            }
+            self.hosted = Some((schemas, execute));
+            return;
+        }
         // Tool-call arrays do not establish dependencies. A question gates
         // the whole batch, including mutations listed before the question.
         if let Some(index)=calls.iter().position(|call|call.name=="ask_user_question") {
@@ -2222,6 +2251,7 @@ impl<'a> Agent<'a> {
     /// history keeps the prompt it was made under, until the next
     /// compaction re-captures the current one.
     fn effective_system(&self) -> String {
+        if self.hosted.is_some() { return self.system_prompt(); }
         if self.read_only {
             return self.system_prompt();
         }

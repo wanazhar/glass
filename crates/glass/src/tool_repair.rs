@@ -42,7 +42,7 @@ pub fn validate(call: &ToolCall, tools: &[(String, Value)]) -> Result<(), String
 
 // Validate the shape of supported schema keywords; unsupported extension
 // constraints remain explicitly outside this lightweight validator.
-fn schema_shape(schema: &Value, depth: usize) -> Result<(), String> {
+pub(crate) fn schema_shape(schema: &Value, depth: usize) -> Result<(), String> {
     let invalid = || "advertised tool schema is invalid; fix the tool definition".to_string();
     if depth > 32 {
         return Err(invalid());

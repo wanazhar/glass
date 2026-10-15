@@ -55,7 +55,8 @@ pub fn code_blocks(text: &str) -> Vec<(String, String)> {
 pub fn sanitize(text: &str) -> String {
     let mut clean = String::with_capacity(text.len());
     for c in text.chars() {
-        if matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{206f}') {
+        if matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{206f}')
+        {
             // Show direction overrides explicitly: filenames and tool output
             // must not silently reorder their displayed neighbors.
             clean.extend(c.escape_unicode());
@@ -66,75 +67,171 @@ pub fn sanitize(text: &str) -> String {
     clean
 }
 
-fn numbered_item(text: &str) -> Option<(&str,&str)> {
-    let at = text.find(['.',')'])?;
+fn numbered_item(text: &str) -> Option<(&str, &str)> {
+    let at = text.find(['.', ')'])?;
     let number = &text[..at];
-    if number.is_empty() || number.len()>9 || !number.chars().all(|c|c.is_ascii_digit()) { return None; }
-    Some((number,text[at+1..].strip_prefix(' ')?))
+    if number.is_empty() || number.len() > 9 || !number.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some((number, text[at + 1..].strip_prefix(' ')?))
 }
 
-fn inline(text: &str) -> Vec<Span<'static>> { inline_depth(text,0) }
+fn inline(text: &str) -> Vec<Span<'static>> {
+    inline_depth(text, 0)
+}
 fn inline_depth(text: &str, depth: usize) -> Vec<Span<'static>> {
-    if depth >= 16 { return vec![Span::raw(text.to_owned())]; }
+    if depth >= 16 {
+        return vec![Span::raw(text.to_owned())];
+    }
     let mut spans = Vec::new();
     let mut rest = text;
-    while let Some(start) = rest.find(['`','*','_','~','[','!','\\']) {
-        if start > 0 { spans.push(Span::raw(rest[..start].to_owned())); }
+    while let Some(start) = rest.find(['`', '*', '_', '~', '[', '!', '\\', '$']) {
+        if start > 0 {
+            spans.push(Span::raw(rest[..start].to_owned()));
+        }
         let tail = &rest[start..];
+        let math_delimiters = if tail.starts_with("\\(") {
+            Some(("\\(", "\\)"))
+        } else if tail.starts_with("\\[") {
+            Some(("\\[", "\\]"))
+        } else if tail.starts_with("$$") {
+            Some(("$$", "$$"))
+        } else if tail.starts_with('$') {
+            Some(("$", "$"))
+        } else {
+            None
+        };
+        if let Some((open, close)) = math_delimiters
+            && let Some(end) = tail[open.len()..].find(close)
+        {
+            let body = &tail[open.len()..open.len() + end];
+            let body = if open == "$$" || open == "\\[" {
+                body.trim()
+            } else {
+                body
+            };
+            if !body.starts_with(char::is_whitespace) && !body.ends_with(char::is_whitespace) {
+                let consumed=open.len()+end+close.len();
+                match crate::math::render(body) {
+                    Ok(rendered)=>spans.push(Span::styled(rendered,Style::new().fg(crate::theme::color(crate::theme::Tone::Secondary)))),
+                    Err(_)=>spans.push(Span::raw(tail[..consumed].to_owned())),
+                }
+                rest=&tail[consumed..];continue;
+            }
+        }
         if let Some(escaped) = tail.strip_prefix('\\')
-            && let Some(c) = escaped.chars().next().filter(|c|c.is_ascii_punctuation()) {
-            spans.push(Span::raw(c.to_string())); rest = &escaped[c.len_utf8()..]; continue;
+            && let Some(c) = escaped.chars().next().filter(|c| c.is_ascii_punctuation())
+        {
+            spans.push(Span::raw(c.to_string()));
+            rest = &escaped[c.len_utf8()..];
+            continue;
         }
         let image = tail.starts_with("![");
         let link = if image { &tail[1..] } else { tail };
         if let Some(label) = link.strip_prefix('[')
-            && let Some((label,destination)) = label.split_once("](")
+            && let Some((label, destination)) = label.split_once("](")
             && !label.contains('[')
-            && let Some(end) = destination.find(')') {
+            && let Some(end) = destination.find(')')
+        {
             let url = &destination[..end];
             if !url.is_empty() {
-                if image { spans.push(Span::styled("▧ ",Style::new().fg(crate::theme::color(crate::theme::Tone::Accent)))); }
-                spans.extend(inline_depth(label,depth+1).into_iter().map(|mut span| {
-                    span.style = span.style.fg(crate::theme::color(crate::theme::Tone::Accent)); span
+                if image {
+                    spans.push(Span::styled(
+                        "▧ ",
+                        Style::new().fg(crate::theme::color(crate::theme::Tone::Accent)),
+                    ));
+                }
+                spans.extend(inline_depth(label, depth + 1).into_iter().map(|mut span| {
+                    span.style = span
+                        .style
+                        .fg(crate::theme::color(crate::theme::Tone::Accent));
+                    span
                 }));
-                if url != label { spans.push(Span::styled(format!(" ({url})"),Style::new().fg(crate::theme::color(crate::theme::Tone::Muted)))); }
+                if url != label {
+                    spans.push(Span::styled(
+                        format!(" ({url})"),
+                        Style::new().fg(crate::theme::color(crate::theme::Tone::Muted)),
+                    ));
+                }
                 let consumed = usize::from(image) + 1 + label.len() + 2 + end + 1;
-                rest = &tail[consumed..]; continue;
+                rest = &tail[consumed..];
+                continue;
             }
         }
-        let previous = text[..text.len()-rest.len()+start].chars().next_back();
-        let underscore_in_word = tail.starts_with('_') && previous.is_some_and(char::is_alphanumeric);
+        let previous = text[..text.len() - rest.len() + start].chars().next_back();
+        let underscore_in_word =
+            tail.starts_with('_') && previous.is_some_and(char::is_alphanumeric);
         let marker = if tail.starts_with('`') {
-            let count = tail.chars().take_while(|c|*c=='`').count(); &tail[..count]
-        } else if tail.starts_with("***") { "***" }
-        else if tail.starts_with("___") && !underscore_in_word { "___" }
-        else if tail.starts_with("**") { "**" }
-        else if tail.starts_with("__") && !underscore_in_word { "__" }
-        else if tail.starts_with("~~") { "~~" }
-        else if tail.starts_with('*') { "*" }
-        else if tail.starts_with('_') && !underscore_in_word { "_" }
-        else { "" };
-        if !marker.is_empty() && let Some(end) = tail[marker.len()..].find(marker) {
-            let body = &tail[marker.len()..marker.len()+end];
-            let remaining = &tail[marker.len()*2+end..];
-            if !body.is_empty() && (marker.starts_with('`') || (!body.starts_with(char::is_whitespace) && !body.ends_with(char::is_whitespace)))
-                && (!marker.starts_with('_') || remaining.chars().next().is_none_or(|c|!c.is_alphanumeric())) {
+            let count = tail.chars().take_while(|c| *c == '`').count();
+            &tail[..count]
+        } else if tail.starts_with("***") {
+            "***"
+        } else if tail.starts_with("___") && !underscore_in_word {
+            "___"
+        } else if tail.starts_with("**") {
+            "**"
+        } else if tail.starts_with("__") && !underscore_in_word {
+            "__"
+        } else if tail.starts_with("~~") {
+            "~~"
+        } else if tail.starts_with('*') {
+            "*"
+        } else if tail.starts_with('_') && !underscore_in_word {
+            "_"
+        } else {
+            ""
+        };
+        if !marker.is_empty()
+            && let Some(end) = tail[marker.len()..].find(marker)
+        {
+            let body = &tail[marker.len()..marker.len() + end];
+            let remaining = &tail[marker.len() * 2 + end..];
+            if !body.is_empty()
+                && (marker.starts_with('`')
+                    || (!body.starts_with(char::is_whitespace)
+                        && !body.ends_with(char::is_whitespace)))
+                && (!marker.starts_with('_')
+                    || remaining
+                        .chars()
+                        .next()
+                        .is_none_or(|c| !c.is_alphanumeric()))
+            {
                 let style = match marker {
-                    "***" | "___" => Style::new().fg(crate::theme::color(crate::theme::Tone::Secondary)).add_modifier(Modifier::BOLD | Modifier::ITALIC),
-                    "**" | "__" => Style::new().fg(crate::theme::color(crate::theme::Tone::Secondary)).add_modifier(Modifier::BOLD),
-                    "~~" => Style::new().fg(crate::theme::color(crate::theme::Tone::Muted)).add_modifier(Modifier::CROSSED_OUT),
-                    "*" | "_" => Style::new().fg(crate::theme::color(crate::theme::Tone::Secondary)).add_modifier(Modifier::ITALIC),
-                    _ => Style::new().fg(crate::theme::color(crate::theme::Tone::Success)).bg(crate::theme::color(crate::theme::Tone::Surface)),
+                    "***" | "___" => Style::new()
+                        .fg(crate::theme::color(crate::theme::Tone::Secondary))
+                        .add_modifier(Modifier::BOLD | Modifier::ITALIC),
+                    "**" | "__" => Style::new()
+                        .fg(crate::theme::color(crate::theme::Tone::Secondary))
+                        .add_modifier(Modifier::BOLD),
+                    "~~" => Style::new()
+                        .fg(crate::theme::color(crate::theme::Tone::Muted))
+                        .add_modifier(Modifier::CROSSED_OUT),
+                    "*" | "_" => Style::new()
+                        .fg(crate::theme::color(crate::theme::Tone::Secondary))
+                        .add_modifier(Modifier::ITALIC),
+                    _ => Style::new()
+                        .fg(crate::theme::color(crate::theme::Tone::Success))
+                        .bg(crate::theme::color(crate::theme::Tone::Surface)),
                 };
-                if marker.starts_with('`') { spans.push(Span::styled(body.to_owned(),style)); }
-                else { spans.extend(inline_depth(body,depth+1).into_iter().map(|mut span| {span.style=span.style.patch(style);span})); }
-                rest = remaining; continue;
+                if marker.starts_with('`') {
+                    spans.push(Span::styled(body.to_owned(), style));
+                } else {
+                    spans.extend(inline_depth(body, depth + 1).into_iter().map(|mut span| {
+                        span.style = span.style.patch(style);
+                        span
+                    }));
+                }
+                rest = remaining;
+                continue;
             }
         }
         let c = tail.chars().next().unwrap();
-        spans.push(Span::raw(c.to_string())); rest = &tail[c.len_utf8()..];
+        spans.push(Span::raw(c.to_string()));
+        rest = &tail[c.len_utf8()..];
     }
-    if !rest.is_empty() { spans.push(Span::raw(rest.to_owned())); }
+    if !rest.is_empty() {
+        spans.push(Span::raw(rest.to_owned()));
+    }
     spans
 }
 
@@ -162,7 +259,10 @@ fn wrap_spans(
     let mut word = Vec::new();
     for span in spans {
         for c in span.content.chars() {
-            if c.is_whitespace() && !(c == ' ' && span.style.bg == Some(crate::theme::color(crate::theme::Tone::Surface))) {
+            if c.is_whitespace()
+                && !(c == ' '
+                    && span.style.bg == Some(crate::theme::color(crate::theme::Tone::Surface)))
+            {
                 if !word.is_empty() {
                     words.push(std::mem::take(&mut word));
                 }
@@ -257,6 +357,8 @@ fn wrap_spans(
 
 #[derive(Default)]
 pub struct Presentation {
+    language: String,
+    syntax: crate::syntax::State,
     fence: Option<(char, usize)>,
     continuation: Option<String>,
     previous_blank: bool,
@@ -292,9 +394,17 @@ impl Presentation {
                 }
                 self.fence = Some((marker.unwrap(), count));
                 let label = trimmed[count..].trim();
+                self.language = label.to_owned();
+                self.syntax = crate::syntax::State::default();
                 let label = if label.eq_ignore_ascii_case("mermaid") {
-                    if mermaid_enabled() { "mermaid · source" } else { "mermaid · source (disabled)" }
-                } else { label };
+                    if mermaid_enabled() {
+                        "mermaid · source"
+                    } else {
+                        "mermaid · source (disabled)"
+                    }
+                } else {
+                    label
+                };
                 return vec![Row {
                     line: Line::from(Span::styled(
                         crate::text::clip(
@@ -319,7 +429,7 @@ impl Presentation {
                 self.fence = None;
                 return vec![Row {
                     line: Line::from(Span::styled(
-                        format!("╰{}", "─".repeat(width.saturating_sub(1).min(30))),
+                        format!("╰{}", "─".repeat(width.saturating_sub(1))),
                         Style::new().fg(crate::theme::color(crate::theme::Tone::Muted)),
                     )),
                     end: Cursor {
@@ -330,13 +440,21 @@ impl Presentation {
             }
         }
         if self.fence.is_some() {
-            let chars: Vec<char> = clean.replace('\t', "    ").chars().collect();
+            let expanded = clean.replace('\t', "    ");
+            let (highlighted, next) = crate::syntax::line(&expanded, &self.language, &self.syntax);
+            if complete {
+                self.syntax = next;
+            }
+            let chars: Vec<_> = highlighted
+                .iter()
+                .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
+                .collect();
             let mut rows = Vec::new();
-            let mut content = String::new();
+            let mut content = Vec::new();
             let mut used = 0;
             let prefix = crate::text::clip("│ ", width.saturating_sub(1));
             let limit = width.saturating_sub(crate::text::width(&prefix)).max(1);
-            for (index, c) in chars.iter().enumerate().skip(cursor.character) {
+            for (index, (c, style)) in chars.iter().enumerate().skip(cursor.character) {
                 let cells = crate::text::char_width(*c);
                 if used + cells > limit && used > 0 {
                     rows.push(Row {
@@ -349,7 +467,7 @@ impl Presentation {
                     used = 0;
                 }
                 if cells <= limit {
-                    content.push(*c);
+                    content.push((*c, *style));
                     used += cells;
                 }
             }
@@ -365,11 +483,20 @@ impl Presentation {
         // Structural rules use the same bounded reading column as all blocks.
         let rule = trimmed.chars().filter(|c| !c.is_whitespace());
         let rule_marker = rule.clone().next();
-        if rule.clone().take(3).count() == 3 && rule_marker.is_some_and(|c| matches!(c, '-' | '*' | '_'))
-            && rule.clone().all(|c| Some(c) == rule_marker) {
-            if !complete { return vec![]; }
-            return vec![Row { line: Line::from(Span::styled("─".repeat(width), border_style())),
-                end: Cursor { word: 1, character: 0 } }];
+        if rule.clone().take(3).count() == 3
+            && rule_marker.is_some_and(|c| matches!(c, '-' | '*' | '_'))
+            && rule.clone().all(|c| Some(c) == rule_marker)
+        {
+            if !complete {
+                return vec![];
+            }
+            return vec![Row {
+                line: Line::from(Span::styled("─".repeat(width), border_style())),
+                end: Cursor {
+                    word: 1,
+                    character: 0,
+                },
+            }];
         }
         let heading = trimmed.chars().take_while(|c| *c == '#').count();
         if (1..=6).contains(&heading) && trimmed[heading..].starts_with(' ') {
@@ -413,24 +540,44 @@ impl Presentation {
                 )
             }
         } else if trimmed.starts_with('>') {
-            let mut content = trimmed; let mut depth = 0;
+            let mut content = trimmed;
+            let mut depth = 0;
             while let Some(after) = content.strip_prefix('>') {
-                depth += 1; content = after.strip_prefix(' ').unwrap_or(after);
+                depth += 1;
+                content = after.strip_prefix(' ').unwrap_or(after);
             }
             let prefix = format!("{indent}{}", "│ ".repeat(depth.min(8)));
-            (content,prefix.clone(),prefix)
-        } else if let Some((number,content)) = numbered_item(trimmed) {
-            (content,format!("{indent}{number}. ")," ".repeat(indent.len()+number.len()+2))
+            (content, prefix.clone(), prefix)
+        } else if let Some((number, content)) = numbered_item(trimmed) {
+            (
+                content,
+                format!("{indent}{number}. "),
+                " ".repeat(indent.len() + number.len() + 2),
+            )
         } else {
             (
                 trimmed,
-                self.continuation.clone().unwrap_or_else(||indent.clone()),
+                self.continuation.clone().unwrap_or_else(|| indent.clone()),
                 self.continuation.clone().unwrap_or(indent),
             )
         };
-        let tone = [("○ `T",crate::theme::Tone::Muted),("◆ `T",crate::theme::Tone::Accent),("✓ `T",crate::theme::Tone::Success),("! `T",crate::theme::Tone::Warning),("– `T",crate::theme::Tone::Muted)].into_iter().find_map(|(prefix,tone)|trimmed.starts_with(prefix).then_some(tone));
-        let mut rows=wrap_spans(inline(content), width, &first, &hanging, cursor);
-        if let Some(tone)=tone {for row in &mut rows {for span in &mut row.line.spans {span.style=span.style.fg(crate::theme::color(tone));}}}
+        let tone = [
+            ("○ `T", crate::theme::Tone::Muted),
+            ("◆ `T", crate::theme::Tone::Accent),
+            ("✓ `T", crate::theme::Tone::Success),
+            ("! `T", crate::theme::Tone::Warning),
+            ("– `T", crate::theme::Tone::Muted),
+        ]
+        .into_iter()
+        .find_map(|(prefix, tone)| trimmed.starts_with(prefix).then_some(tone));
+        let mut rows = wrap_spans(inline(content), width, &first, &hanging, cursor);
+        if let Some(tone) = tone {
+            for row in &mut rows {
+                for span in &mut row.line.spans {
+                    span.style = span.style.fg(crate::theme::color(tone));
+                }
+            }
+        }
         rows
     }
 }
@@ -439,14 +586,78 @@ const DIAGRAM_BYTES: usize = 128 * 1024;
 const DIAGRAM_LINES: usize = 256;
 fn diagram_open(line: &str) -> Option<(char, usize)> {
     let line = line.trim();
+    if line == "$$" {
+        return Some(('$', 2));
+    }
+    if line == "\\[" {
+        return Some(('[', 1));
+    }
     let marker = line.chars().next()?;
-    if !matches!(marker, '`' | '~') { return None; }
+    if !matches!(marker, '`' | '~') {
+        return None;
+    }
     let count = line.chars().take_while(|c| *c == marker).count();
-    (count >= 3 && line[count..].trim().eq_ignore_ascii_case("mermaid")).then_some((marker,count))
+    (count >= 3
+        && matches!(
+            line[count..].trim().to_ascii_lowercase().as_str(),
+            "mermaid" | "math" | "latex" | "tex"
+        ))
+    .then_some((marker, count))
 }
 fn diagram_close(line: &str, marker: char, count: usize) -> bool {
     let line = line.trim();
+    if marker == '$' {
+        return line == "$$";
+    }
+    if marker == '[' {
+        return line == "\\]";
+    }
     line.len() >= count && line.chars().all(|c| c == marker)
+}
+
+fn native_block_enabled(line: &str) -> bool {
+    let label = line.trim().trim_start_matches(['`', '~']).trim();
+    !label.eq_ignore_ascii_case("mermaid") || mermaid_enabled()
+}
+fn math_block(body: &str, source: &str, width: usize) -> Vec<Line<'static>> {
+    let color = Style::new().fg(crate::theme::color(crate::theme::Tone::Secondary));
+    match crate::math::render(body) {
+        Ok(text) => {
+            let mut rows = vec![Line::from(Span::styled(
+                crate::text::clip("∑ Math", width),
+                color.add_modifier(Modifier::BOLD),
+            ))];
+            for line in text.lines() {
+                rows.extend(
+                    crate::text::wrap_words(line, width)
+                        .into_iter()
+                        .map(|line| Line::from(Span::styled(line, color))),
+                );
+            }
+            rows
+        }
+        Err(reason) => {
+            let mut rows = Vec::new();
+            for line in source.lines() {
+                rows.extend(
+                    crate::text::wrap_words(&sanitize(line), width)
+                        .into_iter()
+                        .map(|line| Line::from(Span::styled(line, color))),
+                );
+            }
+            rows.extend(
+                crate::text::wrap_words(&format!("Math source · {reason}"), width)
+                    .into_iter()
+                    .map(|line| {
+                        Line::from(Span::styled(
+                            line,
+                            Style::new().fg(crate::theme::color(crate::theme::Tone::Muted)),
+                        ))
+                    }),
+            );
+            rows
+        }
+    }
 }
 
 pub fn lines(text: &str, width: usize) -> Vec<Line<'static>> {
@@ -457,16 +668,24 @@ pub fn lines(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
     while let Some(line) = source.next() {
         // Render only this diagram block; surrounding prose and later blocks remain visible.
-        if presentation.fence.is_none() && mermaid_enabled()
+        if presentation.fence.is_none()
+            && native_block_enabled(line)
             && line.len() < DIAGRAM_BYTES
-            && let Some((marker, count)) = diagram_open(line) {
+            && let Some((marker, count)) = diagram_open(line)
+        {
             let mut next = source.clone();
             let mut block = format!("{line}\n");
             let mut closed = false;
             for body in next.by_ref().take(DIAGRAM_LINES - 1) {
-                if block.len() + body.len() + 1 > DIAGRAM_BYTES { break; }
-                block.push_str(body); block.push('\n');
-                if diagram_close(body,marker,count) { closed = true; break; }
+                if block.len() + body.len() + 1 > DIAGRAM_BYTES {
+                    break;
+                }
+                block.push_str(body);
+                block.push('\n');
+                if diagram_close(body, marker, count) {
+                    closed = true;
+                    break;
+                }
             }
             if closed && let Some(diagram) = mermaid_diagram(&block, width) {
                 rows.extend(diagram);
@@ -504,38 +723,82 @@ pub fn lines(text: &str, width: usize) -> Vec<Line<'static>> {
 /// `None` when there is no enabled, renderable mermaid block (including
 /// unsupported kinds and overflow) so the caller keeps the fast path.
 fn mermaid_diagram(text: &str, width: usize) -> Option<Vec<Line<'static>>> {
-    // A lib crate cannot reach the host's parser: the host registers a
-    // renderer at startup (`set_mermaid_renderer`). Unregistered = every
-    // block stays code, byte-identical to the disabled build.
-    let guard = MERMAID_RENDERER.lock().ok()?;
-    let renderer = guard.as_ref()?;
+    if matches!(text.lines().next()?.trim(), "$$" | "\\[") {
+        let body = text
+            .lines()
+            .skip(1)
+            .take(text.lines().count().saturating_sub(2))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Some(math_block(&body, text, width));
+    }
     for (language, body) in code_blocks(text) {
+        if matches!(
+            language.trim().to_ascii_lowercase().as_str(),
+            "math" | "latex" | "tex"
+        ) {
+            return Some(math_block(&body, text, width));
+        }
         if !language.trim().eq_ignore_ascii_case("mermaid") {
             continue;
         }
+        let guard = MERMAID_RENDERER.lock().ok()?;
+        let renderer = guard.as_ref()?;
         let mut rows = vec![Line::from(Span::styled(
             crate::text::clip("◇ Mermaid", width),
-            Style::new().fg(crate::theme::color(crate::theme::Tone::Accent)).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(crate::theme::color(crate::theme::Tone::Accent))
+                .add_modifier(Modifier::BOLD),
         ))];
         let drawn = match renderer(&body, width) {
             Ok(drawn) => drawn,
             Err(reason) => {
                 let mut presentation = Presentation::default();
                 let mut rows = Vec::new();
-                for line in text.lines() { rows.extend(presentation.line(line, width, true)); }
+                for line in text.lines() {
+                    rows.extend(presentation.line(line, width, true));
+                }
                 let note = format!("Diagram source · {}", sanitize(&reason));
-                rows.extend(crate::text::wrap_words(&note, width).into_iter().map(|line|
-                    Line::from(Span::styled(line, Style::new().fg(crate::theme::color(crate::theme::Tone::Muted))))));
+                rows.extend(
+                    crate::text::wrap_words(&note, width)
+                        .into_iter()
+                        .map(|line| {
+                            Line::from(Span::styled(
+                                line,
+                                Style::new().fg(crate::theme::color(crate::theme::Tone::Muted)),
+                            ))
+                        }),
+                );
                 return Some(rows);
             }
         };
         for line in drawn {
-            let heading = matches!(line.as_str(), "Nodes" | "Connections" | "Participants" | "Messages") || line.starts_with("Group · ") || line.starts_with('╭');
-            let tone = if heading { crate::theme::Tone::Accent }
-                else if line.contains("──▶") || line.contains("┄┄▶") || line.contains("━━▶") || line.trim()=="▼" || line.trim()=="│" { crate::theme::Tone::Secondary }
-                else { crate::theme::Tone::Body };
+            let heading = matches!(
+                line.as_str(),
+                "Nodes" | "Connections" | "Participants" | "Messages"
+            ) || line.starts_with("Group · ")
+                || line.starts_with('╭');
+            let tone = if heading {
+                crate::theme::Tone::Accent
+            } else if line.contains("──▶")
+                || line.contains("┄┄▶")
+                || line.contains("━━▶")
+                || line.trim() == "▼"
+                || line.trim() == "│"
+            {
+                crate::theme::Tone::Secondary
+            } else {
+                crate::theme::Tone::Body
+            };
             let style = Style::new().fg(crate::theme::color(tone));
-            rows.push(Line::from(Span::styled(line, if heading { style.add_modifier(Modifier::BOLD) } else { style })));
+            rows.push(Line::from(Span::styled(
+                line,
+                if heading {
+                    style.add_modifier(Modifier::BOLD)
+                } else {
+                    style
+                },
+            )));
         }
         rows.push(Line::default());
         return Some(rows);
@@ -543,18 +806,21 @@ fn mermaid_diagram(text: &str, width: usize) -> Option<Vec<Line<'static>>> {
     None
 }
 
-static MERMAID_RENDERER: std::sync::Mutex<Option<MermaidRendererResultFn>> = std::sync::Mutex::new(None);
+static MERMAID_RENDERER: std::sync::Mutex<Option<MermaidRendererResultFn>> =
+    std::sync::Mutex::new(None);
 /// Host-provided mermaid renderer: parses the fence body and lays it out
 /// under the given column, or `None` for anything it will not draw.
 pub type MermaidRendererFn = Box<dyn Fn(&str, usize) -> Option<Vec<String>> + Send + Sync>;
 /// Extended renderer with a user-readable reason when source must be shown.
-pub type MermaidRendererResultFn = Box<dyn Fn(&str, usize) -> Result<Vec<String>, String> + Send + Sync>;
+pub type MermaidRendererResultFn =
+    Box<dyn Fn(&str, usize) -> Result<Vec<String>, String> + Send + Sync>;
 
 /// Host-side registration of the mermaid renderer implementation. The host
 /// returns `None` for anything it will not draw (parse failure, overflow).
 pub fn set_mermaid_renderer(f: MermaidRendererFn) {
-    set_mermaid_renderer_detailed(Box::new(move |body,width|
-        f(body,width).ok_or_else(||"unsupported diagram syntax or layout".into())));
+    set_mermaid_renderer_detailed(Box::new(move |body, width| {
+        f(body, width).ok_or_else(|| "unsupported diagram syntax or layout".into())
+    }));
 }
 pub fn set_mermaid_renderer_detailed(f: MermaidRendererResultFn) {
     *MERMAID_RENDERER.lock().unwrap() = Some(f);
@@ -591,8 +857,19 @@ impl Stream {
                 self.pending.push(c);
                 if (self.pending.len() >= 4096 && c.is_whitespace()) || self.pending.len() >= 8192 {
                     if let Some(diagram) = self.diagram.take() {
-                        let margin = if width >= 24 { 2 } else if width >= 10 { 1 } else { 0 };
-                        self.diagram_source(io,&diagram.source,width.saturating_sub(margin*2).clamp(1,88),margin);
+                        let margin = if width >= 24 {
+                            2
+                        } else if width >= 10 {
+                            1
+                        } else {
+                            0
+                        };
+                        self.diagram_source(
+                            io,
+                            &diagram.source,
+                            width.saturating_sub(margin * 2).clamp(1, 88),
+                            margin,
+                        );
                     }
                     // Bound unfinished lines and parsing work. This rollover may
                     // end a display row early; raw logs and copying are untouched.
@@ -638,15 +915,29 @@ impl Stream {
             write_block(io, self.presentation.line(&header, column, true), margin);
         }
         if let Some(diagram) = self.diagram.take() {
-            let margin = if width >= 24 { 2 } else if width >= 10 { 1 } else { 0 };
-            let column = width.saturating_sub(margin * 2).clamp(1,88);
+            let margin = if width >= 24 {
+                2
+            } else if width >= 10 {
+                1
+            } else {
+                0
+            };
+            let column = width.saturating_sub(margin * 2).clamp(1, 88);
             self.diagram_source(io, &diagram.source, column, margin);
         }
         self.table = None;
         self.presentation = Presentation::default();
     }
-    fn diagram_source(&mut self, io: &mut impl std::io::Write, source: &str, column: usize, margin: usize) {
-        for line in source.lines() { write_block(io,self.presentation.line(line,column,true),margin); }
+    fn diagram_source(
+        &mut self,
+        io: &mut impl std::io::Write,
+        source: &str,
+        column: usize,
+        margin: usize,
+    ) {
+        for line in source.lines() {
+            write_block(io, self.presentation.line(line, column, true), margin);
+        }
     }
     fn render(&mut self, io: &mut impl std::io::Write, width: usize, complete: bool) {
         let margin = if width >= 24 {
@@ -658,32 +949,52 @@ impl Stream {
         };
         let column = width.saturating_sub(margin * 2).clamp(1, 88);
         if let Some(mut diagram) = self.diagram.take() {
-            if !complete { self.diagram = Some(diagram); return; }
-            if diagram.lines >= DIAGRAM_LINES || diagram.source.len() + self.pending.len() + 1 > DIAGRAM_BYTES {
+            if !complete {
+                self.diagram = Some(diagram);
+                return;
+            }
+            if diagram.lines >= DIAGRAM_LINES
+                || diagram.source.len() + self.pending.len() + 1 > DIAGRAM_BYTES
+            {
                 self.diagram_source(io, &diagram.source, column, margin);
                 // Continue this line through the ordinary code path after the cap.
             } else {
-                diagram.source.push_str(&self.pending); diagram.source.push('\n'); diagram.lines += 1;
+                diagram.source.push_str(&self.pending);
+                diagram.source.push('\n');
+                diagram.lines += 1;
                 if diagram_close(&self.pending, diagram.marker, diagram.count) {
-                    if let Some(rows) = mermaid_diagram(&diagram.source,column) { write_block(io,rows,margin); }
-                    else { self.diagram_source(io,&diagram.source,column,margin); }
+                    if let Some(rows) = mermaid_diagram(&diagram.source, column) {
+                        write_block(io, rows, margin);
+                    } else {
+                        self.diagram_source(io, &diagram.source, column, margin);
+                    }
                     self.presentation.previous_blank = false;
-                } else { self.diagram = Some(diagram); }
+                } else {
+                    self.diagram = Some(diagram);
+                }
                 return;
             }
         }
-        if self.presentation.fence.is_none() && complete && mermaid_enabled()
+        if self.presentation.fence.is_none()
+            && complete
+            && native_block_enabled(&self.pending)
             && self.pending.len() < DIAGRAM_BYTES
-            && let Some((marker,count)) = diagram_open(&self.pending) {
+            && let Some((marker, count)) = diagram_open(&self.pending)
+        {
             if self.visible {
-                let _ = write!(io,"\r\x1b[2K");
+                let _ = write!(io, "\r\x1b[2K");
                 self.visible = false;
             }
             if let Some(header) = self.table_header.take() {
-                write_block(io,self.presentation.line(&header,column,true),margin);
+                write_block(io, self.presentation.line(&header, column, true), margin);
             }
             self.table = None;
-            self.diagram = Some(PendingDiagram { source: format!("{}\n",self.pending),marker,count,lines:1 });
+            self.diagram = Some(PendingDiagram {
+                source: format!("{}\n", self.pending),
+                marker,
+                count,
+                lines: 1,
+            });
             return;
         }
         if self.presentation.fence.is_none() {
@@ -716,8 +1027,10 @@ impl Stream {
                 return;
             }
         }
-        let safe = if complete || self.presentation.fence.is_some() {
+        let safe = if complete {
             self.pending.as_str()
+        } else if self.presentation.fence.is_some() {
+            crate::syntax::stable_prefix(&self.pending)
         } else {
             stable_inline(&self.pending)
         };
@@ -769,59 +1082,126 @@ pub(crate) fn indented_cell_lines(text: &str, width: usize) -> Vec<Line<'static>
     .collect()
 }
 fn stable_inline(text: &str) -> &str {
-    if text.len() > 4096 { return text; }
+    if text.len() > 4096 {
+        return text;
+    }
     let mut stable_end = 0;
     let trimmed = text.trim_start();
-    let (mut remaining,mut offset) = if let Some(content) = trimmed.strip_prefix("* ") {
-        (content,text.len()-trimmed.len()+2)
-    } else { (text,0) };
-    while let Some(start) = remaining.find(['`','*','_','~','[']) {
+    let (mut remaining, mut offset) = if let Some(content) = trimmed.strip_prefix("* ") {
+        (content, text.len() - trimmed.len() + 2)
+    } else {
+        (text, 0)
+    };
+    while let Some(start) = remaining.find(['`', '*', '_', '~', '[', '$', '\\']) {
         let tail = &remaining[start..];
-        let previous = text[..offset+start].chars().next_back();
+        let delimiters = if tail.starts_with("\\(") {
+            Some(("\\(", "\\)"))
+        } else if tail.starts_with("\\[") {
+            Some(("\\[", "\\]"))
+        } else if tail.starts_with("$$") {
+            Some(("$$", "$$"))
+        } else if tail.starts_with('$') {
+            Some(("$", "$"))
+        } else {
+            None
+        };
+        if let Some((open, close)) = delimiters {
+            let Some(end) = tail[open.len()..].find(close) else {
+                return &text[..offset + start];
+            };
+            let consumed = open.len() + end + close.len();
+            offset += start + consumed;
+            stable_end = offset;
+            remaining = &tail[consumed..];
+            continue;
+        }
+        if tail.starts_with('\\') {
+            let consumed = tail[1..].chars().next().map_or(1, |c| 1 + c.len_utf8());
+            offset += start + consumed;
+            remaining = &tail[consumed..];
+            continue;
+        }
+        let previous = text[..offset + start].chars().next_back();
         if tail.starts_with('_') && previous.is_some_and(char::is_alphanumeric)
-            || tail.starts_with('~') && !tail.starts_with("~~") {
-            offset += start+1; remaining = &tail[1..]; continue;
+            || tail.starts_with('~') && !tail.starts_with("~~")
+        {
+            offset += start + 1;
+            remaining = &tail[1..];
+            continue;
         }
         if let Some(label) = tail.strip_prefix('[') {
-            let Some(end) = label.find(']') else { return &text[..offset+start]; };
-            let after = &label[end+1..];
-            if after.is_empty() { return &text[..offset+start]; }
+            let Some(end) = label.find(']') else {
+                return &text[..offset + start];
+            };
+            let after = &label[end + 1..];
+            if after.is_empty() {
+                return &text[..offset + start];
+            }
             let consumed = if let Some(url) = after.strip_prefix('(') {
-                let Some(close) = url.find(')') else { return &text[..offset+start]; };
-                1+end+1+1+close+1
-            } else { 1+end+1 };
-            offset += start+consumed; stable_end = offset; remaining = &tail[consumed..]; continue;
+                let Some(close) = url.find(')') else {
+                    return &text[..offset + start];
+                };
+                1 + end + 1 + 1 + close + 1
+            } else {
+                1 + end + 1
+            };
+            offset += start + consumed;
+            stable_end = offset;
+            remaining = &tail[consumed..];
+            continue;
         }
-        let marker = if tail.starts_with('`') { &tail[..tail.chars().take_while(|c|*c=='`').count()] }
-            else if tail.starts_with("***") { "***" } else if tail.starts_with("___") { "___" }
-            else if tail.starts_with("**") { "**" } else if tail.starts_with("__") { "__" }
-            else if tail.starts_with("~~") { "~~" } else { &tail[..1] };
+        let marker = if tail.starts_with('`') {
+            &tail[..tail.chars().take_while(|c| *c == '`').count()]
+        } else if tail.starts_with("***") {
+            "***"
+        } else if tail.starts_with("___") {
+            "___"
+        } else if tail.starts_with("**") {
+            "**"
+        } else if tail.starts_with("__") {
+            "__"
+        } else if tail.starts_with("~~") {
+            "~~"
+        } else {
+            &tail[..1]
+        };
         if let Some(end) = tail[marker.len()..].find(marker) {
-            let consumed = start+marker.len()*2+end;
-            offset += consumed; stable_end = offset; remaining = &remaining[consumed..];
-        } else { return &text[..offset+start]; }
+            let consumed = start + marker.len() * 2 + end;
+            offset += consumed;
+            stable_end = offset;
+            remaining = &remaining[consumed..];
+        } else {
+            return &text[..offset + start];
+        }
     }
-    let whitespace = text.char_indices().rev().find(|(_,c)|c.is_whitespace()).map_or(0,|(at,c)|at+c.len_utf8());
+    let whitespace = text
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(0, |(at, c)| at + c.len_utf8());
     &text[..whitespace.max(stable_end)]
 }
-fn code_line(body: String, prefix: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            prefix.to_owned(),
-            Style::new().fg(crate::theme::color(crate::theme::Tone::Muted)),
-        ),
-        Span::styled(
-            body,
-            Style::new().fg(crate::theme::color(crate::theme::Tone::Success)),
-        ),
-    ])
+fn code_line(body: Vec<(char, Style)>, prefix: &str) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        prefix.to_owned(),
+        Style::new().fg(crate::theme::color(crate::theme::Tone::Muted)),
+    )];
+    for (c, style) in body {
+        if spans.last().is_some_and(|span| span.style == style) {
+            spans.last_mut().unwrap().content.to_mut().push(c);
+        } else {
+            spans.push(Span::styled(c.to_string(), style));
+        }
+    }
+    Line::from(spans)
 }
 /// Emit styles chosen by our renderer; never serialize provider control bytes.
 pub fn write_ansi(io: &mut impl std::io::Write, line: &Line<'_>) {
     use std::io::Write as _;
     // A terminal surface may save/restore attributes around each write. Keep
     // SGR and its text in one write so styles survive cursor restoration.
-    let mut row = Vec::with_capacity(line.spans.iter().map(|s| s.content.len()).sum::<usize>() + 96);
+    let mut row =
+        Vec::with_capacity(line.spans.iter().map(|s| s.content.len()).sum::<usize>() + 96);
     let io_row = &mut row;
     let mut active = None;
     for span in &line.spans {
@@ -859,16 +1239,44 @@ mod tests {
     use super::*;
     #[test]
     fn common_inline_markup_is_styled_without_hiding_destinations() {
-        let spans=inline("__bold__ _italic_ ~~old~~ ***both*** [Guide](https://example.test) ![Preview](image.png) snake_case ``a `tick` b``");
-        let text=spans.iter().map(|s|s.content.as_ref()).collect::<String>();
-        for marker in ["bold","italic","old","both","Guide","https://example.test","Preview","image.png","snake_case","a `tick` b"] { assert!(text.contains(marker),"{text}"); }
-        for (text,modifier) in [("bold",Modifier::BOLD),("italic",Modifier::ITALIC),("old",Modifier::CROSSED_OUT),("both",Modifier::BOLD|Modifier::ITALIC)] {
-            assert!(spans.iter().any(|span|span.content==text && span.style.add_modifier.contains(modifier)),"{text}");
+        let spans = inline(
+            "__bold__ _italic_ ~~old~~ ***both*** [Guide](https://example.test) ![Preview](image.png) snake_case ``a `tick` b``",
+        );
+        let text = spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        for marker in [
+            "bold",
+            "italic",
+            "old",
+            "both",
+            "Guide",
+            "https://example.test",
+            "Preview",
+            "image.png",
+            "snake_case",
+            "a `tick` b",
+        ] {
+            assert!(text.contains(marker), "{text}");
+        }
+        for (text, modifier) in [
+            ("bold", Modifier::BOLD),
+            ("italic", Modifier::ITALIC),
+            ("old", Modifier::CROSSED_OUT),
+            ("both", Modifier::BOLD | Modifier::ITALIC),
+        ] {
+            assert!(
+                spans
+                    .iter()
+                    .any(|span| span.content == text && span.style.add_modifier.contains(modifier)),
+                "{text}"
+            );
         }
     }
     #[test]
     fn inline_code_preserves_spaces() {
-        let rendered = lines("Use `a  b` here", 80).iter().map(ToString::to_string).collect::<String>();
+        let rendered = lines("Use `a  b` here", 80)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<String>();
         assert!(rendered.contains("a  b"), "{rendered}");
     }
     #[test]
@@ -876,34 +1284,76 @@ mod tests {
         let source = "# Heading 界\n\n> Quoted **text**\n\n---\n\n- [x] Checked\n  1234. Nested list\n\n```rust\nlet 界 = 123456;\n```\n";
         for width in 1..=100 {
             for row in lines(source, width) {
-                assert!(crate::text::width(&row.to_string()) <= width, "width {width}: {row}");
+                assert!(
+                    crate::text::width(&row.to_string()) <= width,
+                    "width {width}: {row}"
+                );
             }
         }
     }
     #[test]
     fn styled_row_is_one_terminal_write() {
-        struct Sink { writes: usize, bytes: Vec<u8> }
+        struct Sink {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
         impl std::io::Write for Sink {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
                 self.writes += 1;
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
-        let mut sink=Sink {writes:0, bytes:Vec::new()};
-        let line=Line::from(vec![Span::styled("command",Style::new().fg(Color::Indexed(183))),Span::raw(" output")]);
-        write_ansi(&mut sink,&line);
-        assert_eq!(sink.writes,1,"SGR and text must share the cursor save/restore scope");
-        let text=String::from_utf8(sink.bytes).unwrap();
+        let mut sink = Sink {
+            writes: 0,
+            bytes: Vec::new(),
+        };
+        let line = Line::from(vec![
+            Span::styled("command", Style::new().fg(Color::Indexed(183))),
+            Span::raw(" output"),
+        ]);
+        write_ansi(&mut sink, &line);
+        assert_eq!(
+            sink.writes, 1,
+            "SGR and text must share the cursor save/restore scope"
+        );
+        let text = String::from_utf8(sink.bytes).unwrap();
         assert!(text.contains("command") && text.contains(" output"));
     }
 
     #[test]
+    fn unsupported_inline_math_keeps_delimiters_and_source(){
+        for source in [r"\(\unknown_{x}\)",r"$\unknown_{x}$",r"$$\input{x}$$"]{
+            assert_eq!(inline(source).iter().map(|span|span.content.as_ref()).collect::<String>(),source);
+        }
+    }
+    #[test]
+    fn syntax_and_math_stream_match_replay() {
+        let source="```python\ndef fib(n): # readable\n    return \"text\" + 12\n```\nInline $E=mc^2$ and \\(\\alpha_i\\).\n\n$$\n\\frac{a}{b} \\leq \\infty\n$$\n\n```latex\n\\sqrt{x+1}\n```\nDone";
+        for width in [20usize,39,65,90] {
+            let margin=if width>=24{2}else{1};
+            let expected=lines(source,width-margin*2).iter().map(|r|r.to_string().trim_end().to_owned()).filter(|r|!r.is_empty()).collect::<Vec<_>>();
+            let mut stream=Stream::default();let mut output=Vec::new();
+            for c in source.chars(){stream.write(&mut output,&c.to_string(),width);}stream.flush(&mut output,width);
+            let actual=project(&output).iter().map(|r|r.trim_end().strip_prefix(&" ".repeat(margin)).unwrap_or(r.trim_end()).to_owned()).filter(|r|!r.is_empty()).collect::<Vec<_>>();
+            assert_eq!(actual,expected,"width {width}");
+            assert!(actual.iter().any(|r|r.contains("mc²")));assert!(actual.iter().any(|r|r.contains("a⁄b")));
+        }
+    }
+    #[test]
     fn native_blocks_match_streaming_at_phone_and_desktop_widths() {
         let source = "# Results\n\n[Guide](https://example.test/path) ![Preview](image.png) __bold__ _italic_ ~~old~~ ***both*** snake_case ``a  `tick`  b`` \n\n> Quoted **detail**\n> > Nested quote\n\n1) First numbered item\n    Indented continuation\n\n---\n\n\n| Change | Status |\n| --- | --- |\n| `src/lib.rs` | **Done** |\n| 界 Unicode | ready to ship |\n\n- [x] Built\n  - Nested detail\n- [ ] Review\n\n```rust\nlet x = 1;\n```\nFinal text";
         for width in [10usize, 20, 27, 28, 39, 40, 41, 65, 90] {
-            let margin = if width >= 24 { 2 } else if width >= 10 { 1 } else { 0 };
+            let margin = if width >= 24 {
+                2
+            } else if width >= 10 {
+                1
+            } else {
+                0
+            };
             let expected = lines(source, width - margin * 2)
                 .iter()
                 .map(|r| r.to_string())
@@ -936,7 +1386,9 @@ mod tests {
                     .all(|r| crate::text::width(r) <= width - margin * 2)
             );
             assert!(actual.iter().any(|r| r.contains("✓ Built")));
-            if width >= 20 { assert!(actual.iter().any(|r| r.contains("◦ Nested"))); }
+            if width >= 20 {
+                assert!(actual.iter().any(|r| r.contains("◦ Nested")));
+            }
         }
     }
     #[test]
@@ -1093,10 +1545,16 @@ mod tests {
     }
     #[test]
     fn bidi_formatting_is_visible_without_removing_natural_unicode() {
-        assert_eq!(sanitize("safe\u{202e}txt\u{2069}"), "safe\\u{202e}txt\\u{2069}");
+        assert_eq!(
+            sanitize("safe\u{202e}txt\u{2069}"),
+            "safe\\u{202e}txt\\u{2069}"
+        );
         let natural = "مرحبا 👩\u{200d}💻 café\n\t";
         assert_eq!(sanitize(natural), natural);
-        for c in ['\u{061c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}'] {
+        for c in [
+            '\u{061c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}',
+            '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ] {
             assert!(!sanitize(&c.to_string()).contains(c));
         }
     }
@@ -1129,71 +1587,134 @@ mod tests {
 
     #[test]
     fn mermaid_off_renders_the_fenced_source() {
-        let _guard=DIAGRAM_TEST.lock().unwrap();
+        let _guard = DIAGRAM_TEST.lock().unwrap();
         // Global state from sibling tests leaks in: reset both gates.
         enable_mermaid(false);
         set_mermaid_renderer_detailed(Box::new(|_, _| Err("unsupported diagram".into())));
         let off = lines(DIAGRAM, 60);
         // When never registered, the block is ordinary code: byte-identical
         // to the disabled build. Assert on the plain joined text.
-        let text: String = off.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let text: String = off
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(text.contains("flowchart TD"), "{text}");
         assert!(!text.contains("─▶"), "{text}");
     }
 
     #[test]
     fn mermaid_enabled_renders_its_diagram() {
-        let _guard=DIAGRAM_TEST.lock().unwrap();
+        let _guard = DIAGRAM_TEST.lock().unwrap();
         enable_mermaid(true);
         // A stand-in renderer: the real one lives in the glass binary and
         // cannot be reached from this lib test. Same contract — parse, lay
         // out, None on refusal.
         set_mermaid_renderer_detailed(Box::new(|_body, width| {
-            if width >= 12 { Ok(vec!["[Start] ─ go ─▶ [End]".to_string()]) } else { Err("viewport too narrow".into()) }
+            if width >= 12 {
+                Ok(vec!["[Start] ─ go ─▶ [End]".to_string()])
+            } else {
+                Err("viewport too narrow".into())
+            }
         }));
-        let on = lines(&format!("Before diagram\n\n{DIAGRAM}Between diagrams\n\n{DIAGRAM}After diagram"), 60);
-        let text: String = on.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let on = lines(
+            &format!("Before diagram\n\n{DIAGRAM}Between diagrams\n\n{DIAGRAM}After diagram"),
+            60,
+        );
+        let text: String = on
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_eq!(text.matches("─ go ─▶").count(), 2, "{text}");
-        for marker in ["Before diagram", "Between diagrams", "After diagram"] { assert!(text.contains(marker), "{text}"); }
-        let source=format!("Before diagram\n\n{DIAGRAM}After diagram");
-        let mut stream=Stream::default(); let mut output=Vec::new();
-        for c in source.chars() { stream.write(&mut output,&c.to_string(),64); }
-        stream.flush(&mut output,64);
-        let text=project(&output).join("\n");
-        assert!(text.contains("─ go ─▶") && !text.contains("flowchart TD"),"{text}");
+        for marker in ["Before diagram", "Between diagrams", "After diagram"] {
+            assert!(text.contains(marker), "{text}");
+        }
+        let source = format!("Before diagram\n\n{DIAGRAM}After diagram");
+        let mut stream = Stream::default();
+        let mut output = Vec::new();
+        for c in source.chars() {
+            stream.write(&mut output, &c.to_string(), 64);
+        }
+        stream.flush(&mut output, 64);
+        let text = project(&output).join("\n");
+        assert!(
+            text.contains("─ go ─▶") && !text.contains("flowchart TD"),
+            "{text}"
+        );
         assert!(text.contains("Before diagram") && text.contains("After diagram"));
         // Unsupported syntax gets an explicit source reason, in both presentation paths.
-        set_mermaid_renderer_detailed(Box::new(|_,_|Err("unsupported diagram type: pie".into())));
-        let source="Before\n```mermaid\npie\n \"A\" : 1\n```\nAfter";
-        let expected=lines(source,60).into_iter().map(|r|r.to_string()).collect::<Vec<_>>();
-        let mut stream=Stream::default();let mut output=Vec::new();
-        for c in source.chars(){stream.write(&mut output,&c.to_string(),64);}
-        stream.flush(&mut output,64);
-        let actual=project(&output).into_iter().map(|r|r.trim_end().strip_prefix("  ").unwrap_or(r.trim_end()).to_owned()).filter(|r|!r.is_empty()).collect::<Vec<_>>();
-        let expected=expected.into_iter().map(|r|r.trim_end().to_owned()).filter(|r|!r.is_empty()).collect::<Vec<_>>();
-        assert_eq!(actual,expected);
+        set_mermaid_renderer_detailed(Box::new(|_, _| Err("unsupported diagram type: pie".into())));
+        let source = "Before\n```mermaid\npie\n \"A\" : 1\n```\nAfter";
+        let expected = lines(source, 60)
+            .into_iter()
+            .map(|r| r.to_string())
+            .collect::<Vec<_>>();
+        let mut stream = Stream::default();
+        let mut output = Vec::new();
+        for c in source.chars() {
+            stream.write(&mut output, &c.to_string(), 64);
+        }
+        stream.flush(&mut output, 64);
+        let actual = project(&output)
+            .into_iter()
+            .map(|r| {
+                r.trim_end()
+                    .strip_prefix("  ")
+                    .unwrap_or(r.trim_end())
+                    .to_owned()
+            })
+            .filter(|r| !r.is_empty())
+            .collect::<Vec<_>>();
+        let expected = expected
+            .into_iter()
+            .map(|r| r.trim_end().to_owned())
+            .filter(|r| !r.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
         assert!(actual.join(" ").contains("unsupported diagram type: pie"));
         // Incomplete and oversized blocks remain source; their buffers stay bounded.
-        let mut stream=Stream::default();let mut output=Vec::new();
-        stream.write(&mut output,"```mermaid\nflowchart TD\nA --> B",64);
-        stream.flush(&mut output,64);
+        let mut stream = Stream::default();
+        let mut output = Vec::new();
+        stream.write(&mut output, "```mermaid\nflowchart TD\nA --> B", 64);
+        stream.flush(&mut output, 64);
         assert!(project(&output).join(" ").contains("A --> B"));
-        let mut stream=Stream::default();let mut output=Vec::new();
-        stream.write(&mut output,&format!("```mermaid\n{}\n```\nTAIL", "A --> B\n".repeat(DIAGRAM_LINES+1)),64);
-        stream.flush(&mut output,64);
+        let mut stream = Stream::default();
+        let mut output = Vec::new();
+        stream.write(
+            &mut output,
+            &format!(
+                "```mermaid\n{}\n```\nTAIL",
+                "A --> B\n".repeat(DIAGRAM_LINES + 1)
+            ),
+            64,
+        );
+        stream.flush(&mut output, 64);
         assert!(stream.diagram.is_none());
         assert!(project(&output).join(" ").contains("TAIL"));
         enable_mermaid(false);
     }
 }
 
-#[cfg(test)] mod checklist_tests {
-    #[test] fn checklist_status_colors_are_shared_by_stream_and_replay(){
-        for (mark,tone) in [("○",crate::theme::Tone::Muted),("◆",crate::theme::Tone::Accent),("✓",crate::theme::Tone::Success),("!",crate::theme::Tone::Warning)] {
-            let text=format!("{mark} `T1` Native task — status");
-            let rows=super::lines(&text,40);
+#[cfg(test)]
+mod checklist_tests {
+    #[test]
+    fn checklist_status_colors_are_shared_by_stream_and_replay() {
+        for (mark, tone) in [
+            ("○", crate::theme::Tone::Muted),
+            ("◆", crate::theme::Tone::Accent),
+            ("✓", crate::theme::Tone::Success),
+            ("!", crate::theme::Tone::Warning),
+        ] {
+            let text = format!("{mark} `T1` Native task — status");
+            let rows = super::lines(&text, 40);
             assert!(!rows.is_empty());
-            assert!(rows.iter().flat_map(|row|row.spans.iter()).filter(|span|!span.content.trim().is_empty()).all(|span|span.style.fg==Some(crate::theme::color(tone))));
+            assert!(
+                rows.iter()
+                    .flat_map(|row| row.spans.iter())
+                    .filter(|span| !span.content.trim().is_empty())
+                    .all(|span| span.style.fg == Some(crate::theme::color(tone)))
+            );
         }
     }
 }

@@ -116,6 +116,7 @@ const INTEGRATE: &[Item] = &[
         "Attach a terminal to a hosted session.",
     ),
     ("gc runtime", "Host-neutral JSON-RPC runtime over stdio."),
+    ("gc durable", "Runtime alias with optional checkpointed task APIs."),
     ("gc acp", "Serve the Agent Client Protocol over stdio."),
 ];
 const KEYS: &[Item] = &[
@@ -138,7 +139,7 @@ const KEYS: &[Item] = &[
     ("Ctrl+X", "Edit your draft in VISUAL or EDITOR."),
     ("Tab", "Search project file paths."),
     ("Alt+Enter", "Insert a newline."),
-    ("Ctrl+D", "Quit."),
+    ("Ctrl+D", "Confirm exit; Enter quits and Esc stays."),
 ];
 const RUN: &[Item] = &[
     ("--restricted", "Launch with workspace edits, network disabled by default and explicit approvals."),

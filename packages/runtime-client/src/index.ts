@@ -20,6 +20,8 @@ export interface RuntimeEvent{sessionId:string;turnId:string|number;type:string;
 export interface Entry{entryId:string;cursor:number;record:{k:string;[key:string]:Json};truncatedFields:{field:string;bytes:number}[]}
 export interface EntryPage{entries:Entry[];cursor:number;hasMore:boolean;journalBytes:number}
 export interface CompletionResult{text:string;stopReason:'completed'|'cancelled';usage:Json}
+export interface DurableTask{id:string;conversation:string;kind:string;version:number;status:'pending'|'running'|'waiting'|'completing'|'completed'|'failed'|'aborted';revision:number;checkpoint:Json;outcome:Json;abortRequested:boolean;createdSequence:number;inputDigest:string}
+export interface DurablePage{sequence:number;items:Json[];cursor:string;hasMore:boolean}
 export class RuntimeError extends Error{
   constructor(message:string,public readonly code:number,public readonly data:Json=null){super(message);this.name='RuntimeError'}
 }
@@ -111,6 +113,14 @@ export class RuntimeClient extends EventEmitter{
   cancel(sessionId:string,turnId?:string|number){return this.request('turn/cancel',{sessionId,...(turnId===undefined?{}:{turnId})})}
   entries(sessionId:string,cursor=0,limit=25){return this.request<EntryPage>('session/entries',{sessionId,cursor,limit})}
   complete(sessionId:string,prefix:string,suffix:string,maxTokens=1024){return this.request<CompletionResult>('completion/request',{sessionId,prefix,suffix,maxTokens})}
+  durableCreate(options:SessionOptions){return this.request<{conversationId:string;sequence:number}>('durable/create',options)}
+  durableSubmit(conversationId:string,requestId:string,input:TurnInput){return this.request<{submission:DurableTask;duplicate:boolean}>('durable/submit',{conversationId,requestId,input})}
+  durableRun(taskId?:string){return this.request('durable/run',taskId===undefined?{}:{taskId})}
+  durableInspect(conversationId?:string,cursor='',limit=25){return this.request<DurablePage>('durable/inspect',{conversationId,cursor,limit})}
+  durableChanges(cursor=0,limit=25){return this.request('durable/changes',{cursor,limit})}
+  durableCommit(expectedSequence:number,operations:Json[]){return this.request<{sequence:number}>('durable/commit',{expectedSequence,operations})}
+  durableAbort(taskId:string,includeBackground=false){return this.request('durable/abort',{taskId,includeBackground})}
+  durableTask(taskId:string){return this.request<{task:DurableTask|null}>('durable/task',{taskId})}
   toolResult(requestId:string,result:ToolResult){return this.send({jsonrpc:'2.0',id:requestId,result})}
   progress(sessionId:string,requestId:string,text:string){return this.send({jsonrpc:'2.0',method:'tool/progress',params:{sessionId,requestId,text}})}
   acknowledgeCancel(sessionId:string,requestId:string,executionStatus:'cancelled'|'completed'|'unknown'){

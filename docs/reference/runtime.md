@@ -391,3 +391,10 @@ It exercises a real coding task, host-owned tools and approvals, a custom user
 answer, progress, structured context/results, tests, session resume, steering,
 cancellation, and completion. Model-specific vision behavior requires a
 vision-capable provider trial; offline conformance verifies the image protocol.
+
+## Optional durable execution
+
+The [native durable API](durable.md) adds atomic documents and checkpointed tasks
+to this transport. `gc durable` is an alias for `gc runtime`; durable storage opens
+lazily on the first durable request. Existing session methods keep their storage
+and execution behavior.

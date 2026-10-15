@@ -14,6 +14,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
 
+#[path = "durable_runtime.rs"]
+mod durable_host;
 #[path = "runtime_support.rs"]
 mod support;
 
@@ -137,6 +139,8 @@ struct Wire {
     image_enabled: bool,
     completing: bool,
     cancel_grace_ms: u64,
+    durable: Option<Rc<RefCell<crate::durable::Store>>>,
+    durable_task: Option<String>,
 }
 impl Wire {
     fn incoming(&mut self) -> Option<Value> {
@@ -168,6 +172,36 @@ impl Wire {
                 "completion is active; only cancellation is accepted",
             );
             return;
+        }
+        if let Some(store) = &self.durable {
+            let result = match m["method"].as_str() {
+                Some("durable/changes") => Some(store.borrow().changes(
+                    p["cursor"].as_u64().unwrap_or(0),
+                    p["limit"].as_u64().unwrap_or(25) as usize,
+                )),
+                Some("durable/taskGraph") => Some(Ok(store.borrow().task_graph())),
+                Some("durable/abort") => Some((|| {
+                    let task = string(p, "taskId")?;
+                    let mut store = store.borrow_mut();
+                    let seq = store.state.sequence;
+                    store.commit(
+                        seq,
+                        vec![crate::durable::Op::Abort {
+                            id: task.into(),
+                            include_background: p["includeBackground"].as_bool().unwrap_or(false),
+                        }],
+                    )?;
+                    Ok(json!({"accepted":true}))
+                })()),
+                _ => None,
+            };
+            if let Some(result) = result {
+                match result {
+                    Ok(value) => reply(&id, value),
+                    Err(message) => error(&id, -32602, message),
+                }
+                return;
+            }
         }
         match m["method"].as_str() {
             Some("turn/cancel" | "turn/steer" | "completion/cancel")
@@ -236,7 +270,19 @@ impl Wire {
         while let Some(m) = self.incoming() {
             self.active(m, session, turn);
         }
-        if self.disconnected {
+        let durable_cancel = self.durable.as_ref().is_some_and(|store| {
+            store.borrow().is_poisoned()
+                || self.durable_task.as_ref().is_some_and(|id| {
+                    store
+                        .borrow()
+                        .state
+                        .tasks
+                        .get(id)
+                        .is_some_and(|task| task.abort_requested)
+                })
+        });
+        if self.disconnected || durable_cancel {
+            self.steer=None;
             *slot = Some(String::new());
         } else if let Some(text) = self.steer.take() {
             *slot = Some(text);
@@ -272,8 +318,13 @@ impl Wire {
                 break plain(
                     "Host disconnected; tool effects are unknown. Reconcile before repeating mutations.",
                 );
-        }
-            if self.steer.is_some() && deadline.is_none() {
+            }
+            let durable_abort=self.durable.as_ref().is_some_and(|shared|{
+                let store=shared.borrow();store.is_poisoned()||self.durable_task.as_ref().is_some_and(|id|store.state.tasks.get(id).is_some_and(|task|task.abort_requested))
+            });
+            if durable_abort {self.steer=Some(String::new());}
+            let tool_abort=self.durable.as_ref().is_some_and(|shared|shared.borrow().state.tasks.values().any(|task|task.kind=="gc.tool"&&task.owner==self.durable_task&&task.input["callId"].as_str()==Some(&call.id)&&task.abort_requested));
+            if (self.steer.is_some()||tool_abort) && deadline.is_none() {
                 event(
                     session,
                     turn,
@@ -307,7 +358,7 @@ impl Wire {
                                 "completed"
                             } else {
                                 "failed"
-                    };
+                            };
                             break result;
                         }
                         Err(e) => break plain(&format!("{e}; execution status is unknown")),
@@ -340,8 +391,8 @@ impl Wire {
                             }
                             if let Some(id) = id {
                                 error(id, -32002, "tool progress limit reached");
-                    }
-                    } else {
+                            }
+                        } else {
                             progress_bytes += text.len();
                             progress_updates += 1;
                             event(
@@ -422,6 +473,7 @@ struct Conversation {
     tools: Option<Schemas>,
     instructions: String,
     stats_cache: Option<(u64, Value)>,
+    durable: Option<durable_host::Context>,
 }
 fn metadata(
     p: &Value,
@@ -580,9 +632,12 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
         image_enabled: true,
         completing: false,
         cancel_grace_ms: 250,
+        durable: None,
+        durable_task: None,
     }));
     let mut root: Option<PathBuf> = None;
     let mut conversations = BTreeMap::<String, Conversation>::new();
+    let mut durable: Option<durable_host::Host> = None;
     loop {
         let queued = wire.borrow_mut().pending.pop_front();
         let m = match queued {
@@ -639,7 +694,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
             reply(
                 &id,
                 json!({"protocolVersion":1,"runtime":{"name":"glass-core","version":env!("CARGO_PKG_VERSION")},
-                "capabilities":{"hostTools":true,"localTools":true,"steering":true,"followUp":true,"cancel":true,
+                "capabilities":{"durable":true,"hostTools":true,"localTools":true,"steering":true,"followUp":true,"cancel":true,
                     "resume":true,"fork":true,"rewind":"context_only","compact":true,"sessionConfigure":true,
                     "hostInteractions":"host tools may implement questions and approvals","concurrentTurns":false,
                     "imagePrompt":true,"completion":true,"typedContext":true,"structuredResults":true,"toolProgress":true,"toolCancellationAck":true,"incrementalEntries":true,"modelDiscovery":true,"authenticationReadiness":true,"structuredEntries":true,"sessionNames":true,"statistics":true,"lineage":true,"completionCancellation":true,"safeResumeById":true,"toolReconciliation":true},
@@ -657,6 +712,15 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
             break;
         }
         let result: Result<Value, String> = (|| match method {
+            method if method.starts_with("durable/") => {
+                if durable.is_none() {
+                    durable = Some(durable_host::Host::open(dir, cfg.log_fsync == "always")?);
+                }
+                durable
+                    .as_mut()
+                    .unwrap()
+                    .handle(method, p, dir, &cfg, &wire, &id)
+            }
             "session/new" | "session/resume" => {
                 if conversations.len() >= 32 {
                     return Err("close an idle session before opening another".into());
@@ -683,7 +747,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                             && manifest.get(key) != Some(value)
                         {
                             return Err(format!("resume configuration mismatch: {key}"));
-                    }
+                        }
                     }
                     let (settings, tools, instructions) = metadata(&manifest, &cfg)?;
                     (
@@ -731,6 +795,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                         tools: host_tools,
                         instructions,
                         stats_cache: None,
+                        durable: None,
                     },
                 );
                 Ok(json!({"sessionId":sid}))
@@ -786,9 +851,10 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                             .map_err(|e| e.to_string())?
                             .len();
                         if let Some((stamp, value)) = &c.stats_cache
-                            && *stamp == size {
-                                return Ok(value.clone());
-                            }
+                            && *stamp == size
+                        {
+                            return Ok(value.clone());
+                        }
                         let value = support::stats(&c.session)?;
                         c.stats_cache = Some((size, value.clone()));
                         Ok(value)
@@ -1038,29 +1104,33 @@ fn run(
         let mut io = wire.borrow_mut();
         io.image_enabled = c.cfg.image_input;
         io.completing = false;
+        io.steer=None;
         io.steer_records.clear();
     }
     let mut extensions = ext::Registry::load(&[], &c.cfg.workspace, &c.cfg.model);
     let sid = c.session.id.clone();
     let statuses = Rc::new(RefCell::new(BTreeMap::<String, bool>::new()));
     let emit_status = statuses.clone();
+    let durable = c.durable.as_ref();
     let mut agent=Agent::new(provider.as_ref(),&mut c.session,&mut c.state,&[],&mut extensions,&c.cfg.workspace)
         .with_image_input(c.cfg.image_input)
         .with_prompt(c.instructions.clone(),None,None)
         .with_stream_factory(factory)
         .with_limits(c.cfg.max_tokens,c.cfg.reasoning_budget,usize::MAX)
-        .with_progress(|progress|match progress{
-            Progress::Text(text)=>event(&sid,turn,"text",json!({"text":text})),
-            Progress::Reasoning(text)=>event(&sid,turn,"reasoning",json!({"text":text})),
-            Progress::ToolStart{call_id,name,command}=>event(&sid,turn,"tool_start",json!({"callId":call_id,"name":name,"title":command})),
-            Progress::ToolEnd{call_id,output,..}=>event(&sid,turn,"tool_end",json!({"callId":call_id,"text":output,
-                "isError":emit_status.borrow_mut().remove(call_id).unwrap_or_else(||output.starts_with("error:") || output.starts_with("[exit ") && !output.starts_with("[exit 0]"))})),
-            Progress::Waiting=>event(&sid,turn,"waiting",json!({})),
-            Progress::Compacted{kept,dropped}=>event(&sid,turn,"compacted",json!({"kept":kept,"dropped":dropped})),
-            Progress::Steered(text)=>event(&sid,turn,"steered",json!({"text":text})),
-            Progress::ProviderFailure(text)=>event(&sid,turn,"error",json!({"message":text})),
-            Progress::ProviderNotice(text)=>event(&sid,turn,"notice",json!({"text":text})),
-            _=>{},
+        .with_progress(|progress|{
+            let publish=|kind:&str,data:Value|{if durable.is_none_or(|context|context.publish(kind,data.clone(),turn)){event(&sid,turn,kind,data);}};
+            match progress{
+                Progress::Text(text)=>publish("text",json!({"text":text})),
+                Progress::Reasoning(text)=>publish("reasoning",json!({"text":text})),
+                Progress::ToolStart{call_id,name,command}=>publish("tool_start",json!({"callId":call_id,"name":name,"title":command})),
+                Progress::ToolEnd{call_id,output,..}=>publish("tool_end",json!({"callId":call_id,"text":output,"isError":emit_status.borrow_mut().remove(call_id).unwrap_or_else(||output.starts_with("error:")||output.starts_with("[exit ")&&!output.starts_with("[exit 0]"))})),
+                Progress::Waiting=>publish("waiting",json!({})),
+                Progress::Compacted{kept,dropped}=>publish("compacted",json!({"kept":kept,"dropped":dropped})),
+                Progress::Steered(text)=>publish("steered",json!({"text":text})),
+                Progress::ProviderFailure(text)=>publish("error",json!({"message":text})),
+                Progress::ProviderNotice(text)=>publish("notice",json!({"text":text})),
+                _=>{},
+            }
         });
     if let Some(tools) = &c.tools {
         let io = wire.clone();
@@ -1117,6 +1187,19 @@ fn run(
                         json!({"input":usage.input,"cacheRead":usage.cache_read,"cacheWrite":usage.cache_write,"output":usage.output}),
                     );
                 }
+                if let Some(context) = durable {
+                    context.finish(
+                        if wire.borrow().disconnected {
+                            "interrupted"
+                        } else if stop == Stop::Cancelled {
+                            "cancelled"
+                        } else {
+                            "completed"
+                        },
+                        None,
+                        turn,
+                    )?;
+                }
                 event(
                     &sid,
                     turn,
@@ -1126,6 +1209,9 @@ fn run(
                 break;
             }
             Err(e) => {
+                if let Some(context) = durable {
+                    context.finish("failed", Some(&e.to_string()), turn)?;
+                }
                 event(
                     &sid,
                     turn,
@@ -1204,11 +1290,12 @@ fn model_list(cfg: &config::Config, p: &Value) -> Result<Value, String> {
     let cache = CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()));
     if !p["refresh"].as_bool().unwrap_or(false)
         && let Ok(cache) = cache.lock()
-            && let Some((_, _, data)) = cache.iter().find(|(k, at, _)| {
-                *k == cache_key && at.elapsed() < std::time::Duration::from_secs(60)
-            }) {
-                return model_page(data, p, true);
-            }
+        && let Some((_, _, data)) = cache
+            .iter()
+            .find(|(k, at, _)| *k == cache_key && at.elapsed() < std::time::Duration::from_secs(60))
+    {
+        return model_page(data, p, true);
+    }
     let key = crate::auth::resolve(cfg)?;
     let url = format!(
         "{}/{}",

@@ -150,3 +150,11 @@ the Program Status Protocol spec at superlogical.com/rex/docs/build/program-stat
 No access to pi's issue tracker beyond references in code comments. Version
 drift is possible; the durable package explicitly ships no compatibility
 promise.
+
+## Native implementation follow-up — 2026-10-15
+
+The earlier decision to skip documents and a task graph is superseded by the
+[native durable runtime](../docs/reference/durable.md). The new implementation
+uses Rust and GC's existing execution engine. See that reference for atomic
+commits, recovery, ownership, migrations, and observation, including explicit
+storage bounds and differences from Pi's TypeScript/platform APIs.

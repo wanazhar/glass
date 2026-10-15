@@ -21,6 +21,7 @@ pub struct Anthropic {
     pub adaptive_pacing: bool,
     pub api_key: String,
     pub model: String,
+    session_identity: Option<String>,
 }
 
 /// Anthropic's cache lookback window, in content blocks.
@@ -105,6 +106,7 @@ impl Anthropic {
             adaptive_pacing: true,
             api_key: api_key.into(),
             model: model.into(),
+            session_identity: None,
         }
     }
 
@@ -255,6 +257,9 @@ impl Anthropic {
 }
 
 impl Provider for Anthropic {
+    fn set_session_identity(&mut self, identity: Option<&str>) {
+        self.session_identity = identity.map(str::to_owned);
+    }
     fn model(&self) -> &str {
         &self.model
     }
@@ -269,19 +274,31 @@ impl Provider for Anthropic {
     fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
         let body = self.build_body(req);
 
-        let pacing_key = super::pacing::acquire(&self.base_url, &self.api_key, self.adaptive_pacing)?;
-        let resp = http_agent()
+        let pacing_key =
+            super::pacing::acquire(&self.base_url, &self.api_key, self.adaptive_pacing)?;
+        let mut request = http_agent()
             .post(format!(
                 "{}/v1/messages",
                 self.base_url.trim_end_matches('/')
             ))
             .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .send_json(&body)
-            .map_err(map_transport)?;
+            .header("anthropic-version", "2023-06-01");
+        if let Some(identity) = &self.session_identity {
+            request = request.header("x-session-affinity", identity);
+        }
+        let resp = request.send_json(&body).map_err(map_transport)?;
         let status = resp.status().as_u16();
-        let pacing_headers = ["retry-after", "x-ratelimit-remaining-requests", "x-ratelimit-reset-requests"]
-            .map(|name| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned));
+        let pacing_headers = [
+            "retry-after",
+            "x-ratelimit-remaining-requests",
+            "x-ratelimit-reset-requests",
+        ]
+        .map(|name| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        });
         let header = |name: &str| match name {
             "retry-after" => pacing_headers[0].clone(),
             "x-ratelimit-remaining-requests" => pacing_headers[1].clone(),
@@ -290,12 +307,18 @@ impl Provider for Anthropic {
         };
         // A quota refusal is not pressure. Keep its server deadlines, but do
         // not teach the pacer to slow healthy future requests.
-        if status != 429 { super::pacing::observe(pacing_key, status, header); }
+        if status != 429 {
+            super::pacing::observe(pacing_key, status, header);
+        }
         let mut reader = resp.into_body().into_reader();
         if !(200..300).contains(&status) {
             let text = read_lossy(&mut reader).unwrap_or_default();
             if status == 429 {
-                let observed = if super::pacing::quota_limited(&extract_error(&text)) { 400 } else { status };
+                let observed = if super::pacing::quota_limited(&extract_error(&text)) {
+                    400
+                } else {
+                    status
+                };
                 super::pacing::observe(pacing_key, observed, header);
             }
             return Err(Error::Status(
@@ -309,15 +332,17 @@ impl Provider for Anthropic {
         }
 
         let key = self.api_key.clone();
-        Ok(Box::new(
-            StreamEvents::new(reader).map(move |event| {
-                if let Event::Error(ref message) = event {
-                    if super::pacing::rate_limited(message) { super::pacing::observe(pacing_key, 429, |_| None); }
-                    else if super::pacing::stream_status(message).is_some_and(|status| status >= 500) { super::pacing::observe(pacing_key, 503, |_| None); }
+        Ok(Box::new(StreamEvents::new(reader).map(move |event| {
+            if let Event::Error(ref message) = event {
+                if super::pacing::rate_limited(message) {
+                    super::pacing::observe(pacing_key, 429, |_| None);
+                } else if super::pacing::stream_status(message).is_some_and(|status| status >= 500)
+                {
+                    super::pacing::observe(pacing_key, 503, |_| None);
                 }
-                super::redact_event(event, Some(&key))
-            }),
-        ))
+            }
+            super::redact_event(event, Some(&key))
+        })))
     }
 }
 
@@ -491,8 +516,16 @@ impl<R: Read> StreamEvents<R> {
             }
             "error" => {
                 let text = extract_error(&v.to_string());
-                let text = if v["error"]["type"].as_str().is_some_and(super::pacing::rate_limited) { format!("rate limit: {text}") }
-                    else if v["error"]["type"].as_str() == Some("overloaded_error") { format!("provider rejected stream (HTTP 503): {text}") } else { text };
+                let text = if v["error"]["type"]
+                    .as_str()
+                    .is_some_and(super::pacing::rate_limited)
+                {
+                    format!("rate limit: {text}")
+                } else if v["error"]["type"].as_str() == Some("overloaded_error") {
+                    format!("provider rejected stream (HTTP 503): {text}")
+                } else {
+                    text
+                };
                 self.outbox
                     .push_back(Event::Error(format!("provider error event: {text}")));
             }

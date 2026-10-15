@@ -76,3 +76,9 @@ durable submission table and is future work.
   repaired with a stderr notice and the log parses line by line afterwards.
 - `scripts/smoke-serve.py`: incremental reattach with a cursor, reset for a
   stale cursor, duplicate `request_id` runs once.
+
+### Native substrate follow-up
+
+The later [durable execution contract](../durable-and-output.md) supersedes the
+submission-table and task-graph omissions in this historical task. Current host
+APIs and limits are documented in [native durable runtime](../../reference/durable.md).

@@ -299,7 +299,11 @@ impl Record {
                 body: body.clone(),
             }),
             Record::System(t) => Some(Message::System(t.clone())),
-            Record::Checkpoint { label, rewind_summary: Some(report), .. } => Some(Message::System(format!(
+            Record::Checkpoint {
+                label,
+                rewind_summary: Some(report),
+                ..
+            } => Some(Message::System(format!(
                 "Checkpoint `{label}` rewound; retained report:\n{report}"
             ))),
             Record::Image { media_type, data } => Some(Message::Image {
@@ -363,7 +367,10 @@ impl Record {
             // A state receipt rides as a namespaced custom entry so it stays
             // display-only, but it is the harness's own record of an applied
             // mutation, not an extension's.
-            Record::Custom { kind, data: Some(data) } if kind == state_receipts::RECEIPT_KIND => {
+            Record::Custom {
+                kind,
+                data: Some(data),
+            } if kind == state_receipts::RECEIPT_KIND => {
                 match serde_json::from_str::<serde_json::Value>(data)
                     .ok()
                     .as_ref()
@@ -384,9 +391,7 @@ impl Record {
             } => match rewind_summary {
                 Some(report) => (
                     Role::Meta,
-                    format!(
-                        "[checkpoint `{label}` rewound · retained report]\n{report}"
-                    ),
+                    format!("[checkpoint `{label}` rewound · retained report]\n{report}"),
                 ),
                 None => (Role::Meta, format!("[checkpoint `{label}` marked]")),
             },
@@ -626,6 +631,8 @@ pub fn configure_fsync(on: bool) {
     LOG_FSYNC.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+pub(crate) type CommitObserver = dyn Fn(&[Record]) -> std::io::Result<()>;
+
 pub struct Session {
     pub id: String,
     /// Kept so `resume` can report where a session lives and so a future
@@ -655,6 +662,7 @@ pub struct Session {
     /// moved past is dropped rather than paired with an unrelated write.
     state_revision: RefCell<String>,
     write_error: Option<String>,
+    commit_observer: Option<std::rc::Rc<CommitObserver>>,
     /// Number of user turns replayed or started, used by jump-to-turn.
     #[allow(dead_code)]
     pub turn: usize,
@@ -665,15 +673,23 @@ pub struct Session {
 // every transient fork descriptor to close after exec.
 struct WriterLock(File);
 impl Drop for WriterLock {
-    fn drop(&mut self) { let _ = fs2::FileExt::unlock(&self.0); }
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
 }
 
 fn acquire_writer_lock(path: &Path) -> std::io::Result<File> {
     let canonical = if path.exists() {
         path.canonicalize()?
     } else {
-        let parent = path.parent().ok_or_else(|| std::io::Error::other("session path has no parent"))?.canonicalize()?;
-        parent.join(path.file_name().ok_or_else(|| std::io::Error::other("session path has no filename"))?)
+        let parent = path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("session path has no parent"))?
+            .canonicalize()?;
+        parent.join(
+            path.file_name()
+                .ok_or_else(|| std::io::Error::other("session path has no filename"))?,
+        )
     };
     let lock_path = canonical.with_extension("writer.lock");
     let file = OpenOptions::new()
@@ -711,7 +727,9 @@ fn read_snapshot(path: &Path) -> std::io::Result<(Vec<Record>, FileStamp)> {
         let before = file_stamp(&fs::metadata(path)?);
         let records = Session::raw_records(path)?;
         let after = file_stamp(&fs::metadata(path)?);
-        if before == after { return Ok((records, after)); }
+        if before == after {
+            return Ok((records, after));
+        }
     }
 }
 
@@ -729,14 +747,25 @@ impl Session {
         bytes.push(b'\n');
         let mut file = OpenOptions::new().read(true).append(true).open(path)?;
         let start = file.metadata()?.len();
-        let result = file.write_all(&bytes).and_then(|()| file.flush()).and_then(|()| {
-            if LOG_FSYNC.load(std::sync::atomic::Ordering::Relaxed) { file.sync_data() } else { Ok(()) }
-        });
+        let result = file
+            .write_all(&bytes)
+            .and_then(|()| file.flush())
+            .and_then(|()| {
+                if LOG_FSYNC.load(std::sync::atomic::Ordering::Relaxed) {
+                    file.sync_data()
+                } else {
+                    Ok(())
+                }
+            });
         if let Err(error) = result {
             let rollback = file.set_len(start).and_then(|()| file.sync_data());
             return Err(if let Err(rollback_error) = rollback {
-                std::io::Error::other(format!("custom append failed ({error}); rollback failed ({rollback_error})"))
-            } else { error });
+                std::io::Error::other(format!(
+                    "custom append failed ({error}); rollback failed ({rollback_error})"
+                ))
+            } else {
+                error
+            });
         }
         Ok(())
     }
@@ -756,9 +785,16 @@ impl Session {
 
     /// Open a read-only snapshot without repair, locking, or recovery writes.
     pub fn open_readonly(dir: &Path, target: &str) -> std::io::Result<Self> {
-        let path = if target.ends_with(".jsonl") { PathBuf::from(target) } else { dir.join(format!("{target}.jsonl")) };
+        let path = if target.ends_with(".jsonl") {
+            PathBuf::from(target)
+        } else {
+            dir.join(format!("{target}.jsonl"))
+        };
         let (raw, raw_stamp) = read_snapshot(&path)?;
-        let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| target.to_string());
+        let id = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| target.to_string());
         let log_len = raw.len();
         let raw_index = raw.clone();
         let revision = last_state_revision(&raw);
@@ -777,6 +813,7 @@ impl Session {
             log_len,
             state_revision: RefCell::new(revision),
             write_error: None,
+            commit_observer: None,
         })
     }
 
@@ -807,6 +844,7 @@ impl Session {
             log_len: 0,
             state_revision: RefCell::new(revision),
             write_error: None,
+            commit_observer: None,
         })
     }
 
@@ -818,7 +856,12 @@ impl Session {
     /// the constructors rather than from `main.rs`, which this change set does
     /// not own, and it is ambient on purpose: a `State` never gets a session
     /// handle, and inventing one would be a wider change than the receipts.
-    fn publish_context(id: &str, durable_writer: bool, revision: &str, receipts: Vec<state_receipts::Receipt>) {
+    fn publish_context(
+        id: &str,
+        durable_writer: bool,
+        revision: &str,
+        receipts: Vec<state_receipts::Receipt>,
+    ) {
         state_receipts::publish(state_receipts::SessionContext {
             session: id.to_string(),
             durable_writer,
@@ -927,6 +970,7 @@ impl Session {
             log_len,
             state_revision: RefCell::new(revision),
             write_error: None,
+            commit_observer: None,
         };
         for repair in repairs {
             session.append(repair);
@@ -1003,7 +1047,7 @@ impl Session {
             "branched from {} through turn {through}; workspace files unchanged",
             self.id
         )));
-        crate::navigation::lineage(&fork,&self.id,through).map_err(std::io::Error::other)?;
+        crate::navigation::lineage(&fork, &self.id, through).map_err(std::io::Error::other)?;
         let fork_id = fork.id.clone();
         drop(fork);
         Self::open(dir, &fork_id)
@@ -1031,16 +1075,39 @@ impl Session {
         self.log_len
     }
 
-    pub fn write_error(&self) -> Option<&str> { self.write_error.as_deref() }
+    pub(crate) fn observe_commits(&mut self, observer: std::rc::Rc<CommitObserver>) {
+        self.commit_observer = Some(observer);
+    }
 
-    pub(crate) fn validate_writes(&mut self) { self.sync_external_index(); }
+    pub fn write_error(&self) -> Option<&str> {
+        self.write_error.as_deref()
+    }
+
+    pub(crate) fn validate_writes(&mut self) {
+        self.sync_external_index();
+    }
 
     pub fn append(&mut self, record: Record) {
-        if self.write_error.is_some() { return; }
+        if self.commit_observer.is_some() {
+            let _ = self.append_checked(&[record]);
+            return;
+        }
+        if self.write_error.is_some() {
+            return;
+        }
         self.sync_external_index();
-        if self.write_error.is_some() { return; }
-        let Some(start) = self.file.as_ref().and_then(|file| file.metadata().ok()).map(|m| m.len()) else {
-            self.write_error = Some("cannot inspect session log before append; writes and effects are disabled".into());
+        if self.write_error.is_some() {
+            return;
+        }
+        let Some(start) = self
+            .file
+            .as_ref()
+            .and_then(|file| file.metadata().ok())
+            .map(|m| m.len())
+        else {
+            self.write_error = Some(
+                "cannot inspect session log before append; writes and effects are disabled".into(),
+            );
             return;
         };
         let records = self.with_state_receipts(std::slice::from_ref(&record));
@@ -1048,7 +1115,8 @@ impl Session {
         let encoded = records
             .iter()
             .try_for_each(|record| -> std::io::Result<()> {
-                serde_json::to_writer(&mut bytes, &record.to_json()).map_err(std::io::Error::other)?;
+                serde_json::to_writer(&mut bytes, &record.to_json())
+                    .map_err(std::io::Error::other)?;
                 bytes.push(b'\n');
                 Ok(())
             });
@@ -1115,16 +1183,25 @@ impl Session {
     /// Append a recovery group and report write failures so its sidecar can
     /// remain available for another resume attempt.
     pub(crate) fn append_checked(&mut self, records: &[Record]) -> std::io::Result<()> {
-        if let Some(error) = &self.write_error { return Err(std::io::Error::other(error.clone())); }
+        if let Some(error) = &self.write_error {
+            return Err(std::io::Error::other(error.clone()));
+        }
         self.sync_external_index();
-        if let Some(error) = &self.write_error { return Err(std::io::Error::other(error.clone())); }
+        if let Some(error) = &self.write_error {
+            return Err(std::io::Error::other(error.clone()));
+        }
         let records = self.with_state_receipts(records);
         let mut bytes = Vec::new();
         for record in &records {
             serde_json::to_writer(&mut bytes, &record.to_json()).map_err(std::io::Error::other)?;
             bytes.push(b'\n');
         }
-        let Some(start) = self.file.as_ref().and_then(|file| file.metadata().ok()).map(|m| m.len()) else {
+        let Some(start) = self
+            .file
+            .as_ref()
+            .and_then(|file| file.metadata().ok())
+            .map(|m| m.len())
+        else {
             let error = std::io::Error::other("cannot inspect session log before append");
             self.write_error = Some(error.to_string());
             return Err(error);
@@ -1134,10 +1211,23 @@ impl Session {
             self.write_error = Some(error.to_string());
             return Err(error);
         }
+        if let Some(observer) = &self.commit_observer
+            && let Err(error) = observer(&records)
+        {
+            self.write_error = Some(format!("authoritative commit failed: {error}"));
+            return Err(error);
+        }
         let file = self.file.as_mut().expect("checked session file");
-        let result = file.write_all(&bytes).and_then(|()| file.flush()).and_then(|()| {
-            if LOG_FSYNC.load(std::sync::atomic::Ordering::Relaxed) { file.sync_data() } else { Ok(()) }
-        });
+        let result = file
+            .write_all(&bytes)
+            .and_then(|()| file.flush())
+            .and_then(|()| {
+                if LOG_FSYNC.load(std::sync::atomic::Ordering::Relaxed) {
+                    file.sync_data()
+                } else {
+                    Ok(())
+                }
+            });
         if let Err(error) = result {
             self.rollback_failed_write(start, &error);
             return Err(error);
@@ -1151,9 +1241,15 @@ impl Session {
     }
 
     fn rollback_failed_write(&mut self, start: u64, error: &std::io::Error) {
-        let rollback = self.file.as_mut().map(|file| file.set_len(start).and_then(|()| file.sync_data())).unwrap_or_else(|| Err(std::io::Error::other("session file closed")));
+        let rollback = self
+            .file
+            .as_mut()
+            .map(|file| file.set_len(start).and_then(|()| file.sync_data()))
+            .unwrap_or_else(|| Err(std::io::Error::other("session file closed")));
         let message = if let Err(rollback_error) = rollback {
-            format!("session append failed ({error}) and rollback failed ({rollback_error}); writes and effects are disabled")
+            format!(
+                "session append failed ({error}) and rollback failed ({rollback_error}); writes and effects are disabled"
+            )
         } else {
             format!("session append failed: {error}")
         };
@@ -1171,16 +1267,22 @@ impl Session {
     /// (for example an extension custom entry) before advancing local indexes.
     fn sync_external_index(&mut self) {
         let Ok(metadata) = fs::metadata(&self.path) else {
-            self.write_error = Some("session log path is unavailable; writes and effects are disabled".into());
+            self.write_error =
+                Some("session log path is unavailable; writes and effects are disabled".into());
             return;
         };
         let stamp = file_stamp(&metadata);
-        if stamp == *self.raw_stamp.borrow() { return; }
+        if stamp == *self.raw_stamp.borrow() {
+            return;
+        }
         if let Ok(text) = fs::read_to_string(&self.path)
-            && text.lines().any(|line| !line.trim().is_empty() && serde_json::from_str::<serde_json::Value>(line).is_err()) {
-                self.write_error = Some("session log has an incomplete external append; writes and effects are disabled until resume repair".into());
-                return;
-            }
+            && text.lines().any(|line| {
+                !line.trim().is_empty() && serde_json::from_str::<serde_json::Value>(line).is_err()
+            })
+        {
+            self.write_error = Some("session log has an incomplete external append; writes and effects are disabled until resume repair".into());
+            return;
+        }
         if let Ok(records) = Self::raw_records(&self.path) {
             let old_len = self.raw_index.borrow().len();
             if records.len() < old_len || !records.starts_with(&self.raw_index.borrow()) {
@@ -1188,7 +1290,9 @@ impl Session {
                 return;
             }
             let unseen: Vec<Record> = records.iter().skip(old_len).cloned().collect();
-            if unseen.iter().any(|record| !matches!(record, Record::Custom { .. } | Record::ServeRequest { .. })) {
+            if unseen.iter().any(|record| {
+                !matches!(record, Record::Custom { .. } | Record::ServeRequest { .. })
+            }) {
                 self.write_error = Some("unexpected external session records changed turn or context indexes; writes and effects are disabled".into());
                 return;
             }
@@ -1198,7 +1302,10 @@ impl Session {
             self.records.extend(unseen);
             *self.raw_stamp.borrow_mut() = stamp;
         } else {
-            self.write_error = Some("cannot reread externally changed session log; writes and effects are disabled".into());
+            self.write_error = Some(
+                "cannot reread externally changed session log; writes and effects are disabled"
+                    .into(),
+            );
         }
     }
 
@@ -1248,7 +1355,10 @@ impl Session {
                     })
                 });
                 if edit_invalidates_summary {
-                    self.project_messages(&bounded_edited_context(&apply_checkpoint_projection(raw), &edits))
+                    self.project_messages(&bounded_edited_context(
+                        &apply_checkpoint_projection(raw),
+                        &edits,
+                    ))
                 } else {
                     let edited = apply_edits(&raw, &edits);
                     let (projected, _) = apply_projection(edited);
@@ -1262,23 +1372,38 @@ impl Session {
     fn project_messages(&self, records: &[Record]) -> Vec<Message> {
         // Legacy image records stay in the transcript. The attachment sidecar
         // decides which of those snapshots may enter a future request.
-        if !self.path.with_extension("meta.json").exists() { return crate::compact::project(records); }
+        if !self.path.with_extension("meta.json").exists() {
+            return crate::compact::project(records);
+        }
         let meta = crate::polish::metadata(self);
-        let active: std::collections::HashSet<&str> = meta.attachments.iter().filter_map(|a| a.data.as_deref()).collect();
+        let active: std::collections::HashSet<&str> = meta
+            .attachments
+            .iter()
+            .filter_map(|a| a.data.as_deref())
+            .collect();
         let mut messages = crate::compact::project_filtered(records, Some(&active));
         // Compaction may summarize the original image turn. Active snapshots
         // remain attachments, just as text snapshots do, until explicitly removed.
         let mut restored_bytes = 0usize;
         for attachment in &meta.attachments {
             if let (Some(data), Some(media_type)) = (&attachment.data, &attachment.media_type)
-                && !messages.iter().any(|m| matches!(m, Message::Image {data: sent, ..} if sent == data)) {
+                && !messages
+                    .iter()
+                    .any(|m| matches!(m, Message::Image {data: sent, ..} if sent == data))
+            {
                 restored_bytes = restored_bytes.saturating_add(data.len() * 3 / 4);
                 if restored_bytes > 2_097_152 || !crate::images::valid_snapshot(media_type, data) {
                     messages.push(Message::User("An image attachment snapshot is invalid or exceeds its bound; remove it in /context and attach the source again.".into()));
                     continue;
                 }
-                messages.push(Message::User(format!("Active image attachment: {}", attachment.path.display())));
-                messages.push(Message::Image {media_type:media_type.clone(), data:data.clone()});
+                messages.push(Message::User(format!(
+                    "Active image attachment: {}",
+                    attachment.path.display()
+                )));
+                messages.push(Message::Image {
+                    media_type: media_type.clone(),
+                    data: data.clone(),
+                });
             }
         }
         messages
@@ -1335,7 +1460,8 @@ impl Session {
                     turn,
                     mode: "hide".into(),
                     text: None,
-                }]).map_err(|e| format!("context edit was not saved: {e}"))?;
+                }])
+                .map_err(|e| format!("context edit was not saved: {e}"))?;
                 Ok(format!(
                     "turn {turn} hidden from future context \
                      (raw history and files unchanged; /unforget {turn} restores it)"
@@ -1347,7 +1473,8 @@ impl Session {
                     turn,
                     mode: "restore".into(),
                     text: None,
-                }]).map_err(|e| format!("context edit was not saved: {e}"))?;
+                }])
+                .map_err(|e| format!("context edit was not saved: {e}"))?;
                 Ok(format!("turn {turn} restored to future context"))
             }
             "rewrite" => {
@@ -1366,7 +1493,8 @@ impl Session {
                     turn,
                     mode: "replace".into(),
                     text: Some(replacement.to_string()),
-                }]).map_err(|e| format!("context edit was not saved: {e}"))?;
+                }])
+                .map_err(|e| format!("context edit was not saved: {e}"))?;
                 Ok(format!(
                     "turn {turn}'s message rewritten for future context \
                      (the transcript keeps the original)"
@@ -1581,7 +1709,9 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
                     .entry((turn, epoch, call_id.clone()))
                     .or_default() += 1;
             }
-            Record::Bash { call_id: Some(id), .. } => {
+            Record::Bash {
+                call_id: Some(id), ..
+            } => {
                 *bash_counts.entry((turn, epoch, id.clone())).or_default() += 1;
             }
             Record::Bash { .. } => {
@@ -1600,16 +1730,24 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
             Record::ToolCall { id, name, .. } if name == "bash" => {
                 let key = (*turn, *epoch, id.clone());
                 if call_counts.get(&key) == Some(&1) {
-                    pending_bash.entry((*turn, *epoch)).or_default().push_back(key);
+                    pending_bash
+                        .entry((*turn, *epoch))
+                        .or_default()
+                        .push_back(key);
                 }
             }
-            Record::Bash { call_id: Some(id), .. } => {
+            Record::Bash {
+                call_id: Some(id), ..
+            } => {
                 if let Some(queue) = pending_bash.get_mut(&(*turn, *epoch)) {
                     queue.retain(|key| key.2 != *id);
                 }
             }
             Record::Bash { call_id: None, .. } => {
-                if let Some(key) = pending_bash.get_mut(&(*turn, *epoch)).and_then(VecDeque::pop_front) {
+                if let Some(key) = pending_bash
+                    .get_mut(&(*turn, *epoch))
+                    .and_then(VecDeque::pop_front)
+                {
                     legacy_bash_calls.insert(record_index, key.clone());
                     *bash_counts.entry(key).or_default() += 1;
                 }
@@ -1648,8 +1786,13 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
 
     let mut entries = Vec::new();
     for (record_index, (record, (turn, epoch))) in records.iter().zip(scopes).enumerate() {
-        if matches!(record, Record::Custom { kind, .. } if kind==crate::todo::KIND) { continue; }
-        if matches!(record, Record::Custom { kind, .. } if matches!(kind.as_str(), "queue/delivery" | "constraints/delivery" | "session/branch" | "turn/checkpoint")) { continue; }
+        if matches!(record, Record::Custom { kind, .. } if kind==crate::todo::KIND) {
+            continue;
+        }
+        if matches!(record, Record::Custom { kind, .. } if matches!(kind.as_str(), "queue/delivery" | "constraints/delivery" | "session/branch" | "turn/checkpoint"))
+        {
+            continue;
+        }
         let key = |id: &str| (turn, epoch, id.to_owned());
         let entry = match record {
             Record::ToolCall {
@@ -1664,7 +1807,9 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
                 let body = results.get(&call_key).map(|(_, body)| *body);
                 let heading = readable_tool_call(name, arguments);
                 let output = body.unwrap_or("").to_string();
-                let status = body.map(glass_tui::tool_output::status).unwrap_or_else(|| "interrupted".into());
+                let status = body
+                    .map(glass_tui::tool_output::status)
+                    .unwrap_or_else(|| "interrupted".into());
                 let card = glass_tui::ToolCard {
                     expanded: false,
                     call_id: id.clone(),
@@ -1675,7 +1820,11 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
                     spill: None,
                     truncated: false,
                 };
-                (glass_tui::Role::Tool, tool_card_text(&card, false), Some(card))
+                (
+                    glass_tui::Role::Tool,
+                    tool_card_text(&card, false),
+                    Some(card),
+                )
             }
             Record::Bash {
                 call_id,
@@ -1685,19 +1834,34 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
                 truncated,
                 spill,
             } => {
-                let status = exit_code.map_or_else(|| "signal".into(), |code| format!("exit {code}"));
+                let status =
+                    exit_code.map_or_else(|| "signal".into(), |code| format!("exit {code}"));
                 let card = glass_tui::ToolCard {
                     expanded: false,
-                    call_id: call_id.clone().or_else(|| legacy_bash_calls.get(&record_index).map(|key| key.2.clone()))
+                    call_id: call_id
+                        .clone()
+                        .or_else(|| {
+                            legacy_bash_calls
+                                .get(&record_index)
+                                .map(|key| key.2.clone())
+                        })
                         .unwrap_or_else(|| format!("legacy-bash-record-{record_index}")),
                     command: command.clone(),
                     output: output.clone(),
-                    status: if *truncated { format!("{status} · truncated") } else { status },
+                    status: if *truncated {
+                        format!("{status} · truncated")
+                    } else {
+                        status
+                    },
                     elapsed_ms: None,
                     spill: spill.clone(),
                     truncated: *truncated,
                 };
-                (glass_tui::Role::Bash, tool_card_text(&card, false), Some(card))
+                (
+                    glass_tui::Role::Bash,
+                    tool_card_text(&card, false),
+                    Some(card),
+                )
             }
             Record::ToolResult {
                 call_id,
@@ -1710,7 +1874,11 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
                 {
                     continue;
                 }
-                (glass_tui::Role::Tool, format!("{name} result\n{}", readable_output(body)), None)
+                (
+                    glass_tui::Role::Tool,
+                    format!("{name} result\n{}", readable_output(body)),
+                    None,
+                )
             }
             Record::Reasoning(_) => continue,
             other => {
@@ -1743,8 +1911,10 @@ pub(crate) fn tool_card_text(card: &glass_tui::ToolCard, expanded: bool) -> Stri
             let mut preview = card.output.lines().take(4).collect::<Vec<_>>().join("\n");
             if preview.len() > 360 {
                 let mut end = 360;
-            while !preview.is_char_boundary(end) { end -= 1; }
-            preview.truncate(end);
+                while !preview.is_char_boundary(end) {
+                    end -= 1;
+                }
+                preview.truncate(end);
                 preview.push('…');
             }
             text.push_str(&preview);
@@ -1766,12 +1936,17 @@ pub(crate) fn tool_card_text(card: &glass_tui::ToolCard, expanded: bool) -> Stri
 
 #[test]
 fn tool_card_preview_truncates_at_unicode_boundary() {
-    let card=glass_tui::ToolCard {
-                    expanded: false,
-        call_id:"unicode".into(), command:"printf".into(), output:format!("{}😀tail","a".repeat(359)),
-        status:"exit 0".into(), elapsed_ms:None, spill:None, truncated:false,
+    let card = glass_tui::ToolCard {
+        expanded: false,
+        call_id: "unicode".into(),
+        command: "printf".into(),
+        output: format!("{}😀tail", "a".repeat(359)),
+        status: "exit 0".into(),
+        elapsed_ms: None,
+        spill: None,
+        truncated: false,
     };
-    let text=tool_card_text(&card,false);
+    let text = tool_card_text(&card, false);
     assert!(text.contains("expand full output"));
     assert!(!text.contains("tail"));
 }
@@ -1791,11 +1966,15 @@ fn dedupe_keeps_first_duplicate_marker_and_drops_second_range_same_file() {
     assert_eq!(
         dedupe_citation_markers(&text2),
         format!("{m1}\nand"),
-        "later marker for the same file drops; prose lines never");
+        "later marker for the same file drops; prose lines never"
+    );
     // Different files keep both.
     let a = "@/w/a.txt#L1-L2#abcd1234";
     let b = "@/w/b.txt#L1-L2#abcd1234";
-    assert_eq!(dedupe_citation_markers(&format!("{a}\n{b}")), format!("{a}\n{b}"));
+    assert_eq!(
+        dedupe_citation_markers(&format!("{a}\n{b}")),
+        format!("{a}\n{b}")
+    );
     // Non-marker prose with @ and code lines pass through untouched.
     let prose = "email me @bob about @file:L1#nothex\nlet x = 1;";
     assert_eq!(dedupe_citation_markers(prose), prose);
@@ -1804,10 +1983,18 @@ fn dedupe_keeps_first_duplicate_marker_and_drops_second_range_same_file() {
 #[test]
 fn citation_marker_parses_exactly_the_documented_shape() {
     assert!(citation_marker_of_test("@/w/src.txt#L10-L24#abcd1234"));
-    assert!(!citation_marker_of_test("see @/w/src.txt#L10-L24#abcd1234 below"));
-    assert!(!citation_marker_of_test("@/w/src.txt#L10-L24#abc"), "8 hex required");
+    assert!(!citation_marker_of_test(
+        "see @/w/src.txt#L10-L24#abcd1234 below"
+    ));
+    assert!(
+        !citation_marker_of_test("@/w/src.txt#L10-L24#abc"),
+        "8 hex required"
+    );
     assert!(!citation_marker_of_test("@/w/src.txt#L10L24#abcd1234"));
-    assert!(!citation_marker_of_test("@/w/src txt#L10-L24#abcd1234"), "no spaces");
+    assert!(
+        !citation_marker_of_test("@/w/src txt#L10-L24#abcd1234"),
+        "no spaces"
+    );
     assert!(!citation_marker_of_test("@with space/path#L1-L2#abcd1234"));
 }
 
@@ -1824,9 +2011,12 @@ fn latest_reasoning(records: &[Record]) -> String {
 }
 
 fn tool_command(arguments: &str) -> Option<String> {
-    let value=serde_json::from_str::<serde_json::Value>(arguments).ok()?;
-    value.get("command").and_then(|v|v.as_str()).map(str::to_owned)
-        .or_else(||value.get("job").map(crate::jobs::label))
+    let value = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
+    value
+        .get("command")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .or_else(|| value.get("job").map(crate::jobs::label))
 }
 
 fn readable_tool_call(name: &str, arguments: &str) -> String {
@@ -1836,9 +2026,21 @@ fn readable_tool_call(name: &str, arguments: &str) -> String {
             .unwrap_or_else(|| format!("{name} [arguments unavailable]"));
     }
     let arguments = serde_json::from_str::<serde_json::Value>(arguments).ok();
-    if name=="state" && arguments.as_ref().is_some_and(|v|v.get("todo").is_some()){return "state · checklist".into();}
-    if crate::files::is_tool(name) && let Some(value)=&arguments {
-        return format!("{name} · {}{}",value["path"].as_str().unwrap_or("[path unavailable]"),if value["preview"]==true {" · preview"} else {""});
+    if name == "state" && arguments.as_ref().is_some_and(|v| v.get("todo").is_some()) {
+        return "state · checklist".into();
+    }
+    if crate::files::is_tool(name)
+        && let Some(value) = &arguments
+    {
+        return format!(
+            "{name} · {}{}",
+            value["path"].as_str().unwrap_or("[path unavailable]"),
+            if value["preview"] == true {
+                " · preview"
+            } else {
+                ""
+            }
+        );
     }
     let details = match arguments {
         Some(serde_json::Value::Object(values)) if !values.is_empty() => values
@@ -2000,7 +2202,13 @@ fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
         out.push(Record::State(state));
     }
 
-    if let Some(snapshot) = records.iter().rev().find(|r| matches!(r,Record::Custom {kind,..} if kind==crate::todo::KIND)) { out.push(snapshot.clone()); }
+    if let Some(snapshot) = records
+        .iter()
+        .rev()
+        .find(|r| matches!(r,Record::Custom {kind,..} if kind==crate::todo::KIND))
+    {
+        out.push(snapshot.clone());
+    }
 
     // Two regions survive: the tail that compaction kept (the
     // records just before the marker), and every turn that happened
@@ -2045,7 +2253,14 @@ fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
 fn apply_checkpoint_projection(mut records: Vec<Record>) -> Vec<Record> {
     let mut open: Vec<(String, usize)> = Vec::new();
     for index in 0..records.len() {
-        let Record::Checkpoint { label, rewind_summary, .. } = &records[index] else { continue };
+        let Record::Checkpoint {
+            label,
+            rewind_summary,
+            ..
+        } = &records[index]
+        else {
+            continue;
+        };
         if rewind_summary.is_none() {
             open.push((label.clone(), index));
         } else if let Some(position) = open.iter().rposition(|(name, _)| name == label) {
@@ -2055,8 +2270,12 @@ fn apply_checkpoint_projection(mut records: Vec<Record>) -> Vec<Record> {
             let mut pending = std::collections::HashSet::new();
             for record in &records[start + 1..index] {
                 match record {
-                    Record::ToolCall { id, .. } => { pending.insert(id.clone()); }
-                    Record::ToolResult { call_id, .. } => { pending.remove(call_id); }
+                    Record::ToolCall { id, .. } => {
+                        pending.insert(id.clone());
+                    }
+                    Record::ToolResult { call_id, .. } => {
+                        pending.remove(call_id);
+                    }
                     _ => {}
                 }
             }
@@ -2115,11 +2334,21 @@ mod tests {
         let mut session = Session::create(&dir).unwrap();
         session.append(Record::User("original".into()));
         session.append(Record::User("task".into()));
-        session.append(Record::Checkpoint { label:"a".into(), log_len:2, rewind_summary:None });
+        session.append(Record::Checkpoint {
+            label: "a".into(),
+            log_len: 2,
+            rewind_summary: None,
+        });
         session.append(Record::Assistant("EXPLORATION_SECRET".into()));
-        session.append(Record::Checkpoint { label:"a".into(), log_len:4, rewind_summary:Some("retained finding".into()) });
+        session.append(Record::Checkpoint {
+            label: "a".into(),
+            log_len: 4,
+            rewind_summary: Some("retained finding".into()),
+        });
         session.reproject_history();
-        for _ in 0..20 { session.append(Record::Assistant("later work".into())); }
+        for _ in 0..20 {
+            session.append(Record::Assistant("later work".into()));
+        }
         crate::compact::fallback(&mut session, &crate::tools::State::new(), "test").unwrap();
         session.context_command("rewrite", "1 revised").unwrap();
         let text = format!("{:?}", session.messages());
@@ -2140,12 +2369,26 @@ mod tests {
         session.append(Record::User("original task".into()));
         let id = session.id.clone();
         drop(session);
-        for (command, args) in [("forget", "1"), ("unforget", "1"), ("rewrite", "1 replacement")] {
+        for (command, args) in [
+            ("forget", "1"),
+            ("unforget", "1"),
+            ("rewrite", "1 replacement"),
+        ] {
             let mut readonly = Session::open_readonly(&dir, &id).unwrap();
             let before = readonly.messages();
-            assert!(readonly.context_command(command, args).unwrap_err().contains("not saved"));
+            assert!(
+                readonly
+                    .context_command(command, args)
+                    .unwrap_err()
+                    .contains("not saved")
+            );
             assert_eq!(format!("{:?}", readonly.messages()), format!("{before:?}"));
-            assert!(!readonly.history_records().iter().any(|r| matches!(r, Record::ContextEdit { .. })));
+            assert!(
+                !readonly
+                    .history_records()
+                    .iter()
+                    .any(|r| matches!(r, Record::ContextEdit { .. }))
+            );
         }
         fs::remove_dir_all(dir).unwrap();
     }
@@ -2154,13 +2397,24 @@ mod tests {
     fn checkpoints_keep_live_exploration_and_rewind_only_when_closed() {
         let records = vec![
             Record::User("goal".into()),
-            Record::Checkpoint { label:"a".into(), log_len:1, rewind_summary:None },
+            Record::Checkpoint {
+                label: "a".into(),
+                log_len: 1,
+                rewind_summary: None,
+            },
             Record::Assistant("exploration".into()),
         ];
         let (open, _) = apply_projection(records.clone());
-        assert!(open.iter().any(|r| matches!(r, Record::Assistant(t) if t == "exploration")));
+        assert!(
+            open.iter()
+                .any(|r| matches!(r, Record::Assistant(t) if t == "exploration"))
+        );
         let mut raw = records;
-        raw.push(Record::Checkpoint { label:"a".into(), log_len:3, rewind_summary:Some("kept finding".into()) });
+        raw.push(Record::Checkpoint {
+            label: "a".into(),
+            log_len: 3,
+            rewind_summary: Some("kept finding".into()),
+        });
         raw.push(Record::User("follow-up".into()));
         let (closed, _) = apply_projection(raw);
         let messages = crate::compact::project(&closed);
@@ -2176,10 +2430,18 @@ mod tests {
     fn rewind_keeps_human_followups_outside_exploration_mask() {
         let records = vec![
             Record::User("goal".into()),
-            Record::Checkpoint { label:"a".into(), log_len:1, rewind_summary:None },
+            Record::Checkpoint {
+                label: "a".into(),
+                log_len: 1,
+                rewind_summary: None,
+            },
             Record::Assistant("exploration".into()),
             Record::User("follow-up: keep the API unchanged".into()),
-            Record::Checkpoint { label:"a".into(), log_len:4, rewind_summary:Some("finding".into()) },
+            Record::Checkpoint {
+                label: "a".into(),
+                log_len: 4,
+                rewind_summary: Some("finding".into()),
+            },
         ];
         let (projected, _) = apply_projection(records);
         let text = format!("{:?}", crate::compact::project(&projected));
@@ -2190,25 +2452,80 @@ mod tests {
     #[test]
     fn rewind_preserves_pending_sibling_calls_and_their_results() {
         let records = vec![
-            Record::Checkpoint { label:"a".into(), log_len:0, rewind_summary:None },
-            Record::ToolCall { id:"old".into(), name:"bash".into(), arguments:"{}".into() },
-            Record::ToolResult { call_id:"old".into(), name:"bash".into(), body:"exploration".into() },
-            Record::ToolCall { id:"rew".into(), name:"rewind".into(), arguments:"{}".into() },
-            Record::ToolCall { id:"next".into(), name:"read".into(), arguments:"{}".into() },
-            Record::Checkpoint { label:"a".into(), log_len:5, rewind_summary:Some("finding".into()) },
-            Record::ToolResult { call_id:"rew".into(), name:"rewind".into(), body:"done".into() },
-            Record::ToolResult { call_id:"next".into(), name:"read".into(), body:"contents".into() },
+            Record::Checkpoint {
+                label: "a".into(),
+                log_len: 0,
+                rewind_summary: None,
+            },
+            Record::ToolCall {
+                id: "old".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
+            Record::ToolResult {
+                call_id: "old".into(),
+                name: "bash".into(),
+                body: "exploration".into(),
+            },
+            Record::ToolCall {
+                id: "rew".into(),
+                name: "rewind".into(),
+                arguments: "{}".into(),
+            },
+            Record::ToolCall {
+                id: "next".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+            },
+            Record::Checkpoint {
+                label: "a".into(),
+                log_len: 5,
+                rewind_summary: Some("finding".into()),
+            },
+            Record::ToolResult {
+                call_id: "rew".into(),
+                name: "rewind".into(),
+                body: "done".into(),
+            },
+            Record::ToolResult {
+                call_id: "next".into(),
+                name: "read".into(),
+                body: "contents".into(),
+            },
         ];
         let projected = apply_checkpoint_projection(records);
         for id in ["rew", "next"] {
-            assert!(projected.iter().any(|r| matches!(r, Record::ToolCall { id: call, .. } if call == id)));
-            assert!(projected.iter().any(|r| matches!(r, Record::ToolResult { call_id, .. } if call_id == id)));
+            assert!(
+                projected
+                    .iter()
+                    .any(|r| matches!(r, Record::ToolCall { id: call, .. } if call == id))
+            );
+            assert!(
+                projected
+                    .iter()
+                    .any(|r| matches!(r, Record::ToolResult { call_id, .. } if call_id == id))
+            );
         }
         let messages = crate::compact::project(&projected);
-        let first_call = messages.iter().position(|m| matches!(m, Message::ToolCall { .. })).unwrap();
-        assert!(messages[..first_call].iter().any(|m| matches!(m, Message::System(t) if t.contains("retained report"))));
-        assert!(!messages[first_call..].iter().any(|m| matches!(m, Message::System(_))));
-        assert!(!projected.iter().any(|r| matches!(r, Record::ToolCall { id, .. } if id == "old")));
+        let first_call = messages
+            .iter()
+            .position(|m| matches!(m, Message::ToolCall { .. }))
+            .unwrap();
+        assert!(
+            messages[..first_call]
+                .iter()
+                .any(|m| matches!(m, Message::System(t) if t.contains("retained report")))
+        );
+        assert!(
+            !messages[first_call..]
+                .iter()
+                .any(|m| matches!(m, Message::System(_)))
+        );
+        assert!(
+            !projected
+                .iter()
+                .any(|r| matches!(r, Record::ToolCall { id, .. } if id == "old"))
+        );
     }
 
     #[test]
@@ -2216,15 +2533,28 @@ mod tests {
         let dir = tmpdir("checkpoint-compaction");
         let mut session = Session::create(&dir).unwrap();
         session.append(Record::User("goal".into()));
-        session.append(Record::Checkpoint { label:"open".into(), log_len:1, rewind_summary:None });
+        session.append(Record::Checkpoint {
+            label: "open".into(),
+            log_len: 1,
+            rewind_summary: None,
+        });
         session.append(Record::Assistant("investigation".into()));
         session.append(Record::User("latest task".into()));
-        session.append(Record::Compacted { kept:2, dropped:2, summary:Some("saved summary".into()), tail_start:2, system:None });
+        session.append(Record::Compacted {
+            kept: 2,
+            dropped: 2,
+            summary: Some("saved summary".into()),
+            tail_start: 2,
+            system: None,
+        });
         let id = session.id.clone();
         drop(session);
         let resumed = Session::open(&dir, &id).unwrap();
         let text = format!("{:?}", resumed.messages());
-        assert!(text.contains("saved summary") && text.contains("latest task"), "{text}");
+        assert!(
+            text.contains("saved summary") && text.contains("latest task"),
+            "{text}"
+        );
         drop(resumed);
         fs::remove_dir_all(dir).unwrap();
     }
@@ -2250,18 +2580,27 @@ mod tests {
         fs::write(&session.path, "{\"k\":\"user\",\"t\":\"replacement\"}\n").unwrap();
         session.append(Record::Assistant("must not land".into()));
         assert!(session.write_error().is_some());
-        assert_eq!(fs::read_to_string(&session.path).unwrap().lines().count(), 1);
+        assert_eq!(
+            fs::read_to_string(&session.path).unwrap().lines().count(),
+            1
+        );
     }
 
     #[test]
     fn closing_session_releases_lock_even_with_a_duplicated_descriptor() {
-        let dir=std::env::temp_dir().join(format!("gc-lock-duplicate-{}",std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gc-lock-duplicate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let session=Session::create(&dir).unwrap();
-        let inherited=session._writer_lock.as_ref().unwrap().0.try_clone().unwrap();
-        let id=session.id.clone();
+        let session = Session::create(&dir).unwrap();
+        let inherited = session
+            ._writer_lock
+            .as_ref()
+            .unwrap()
+            .0
+            .try_clone()
+            .unwrap();
+        let id = session.id.clone();
         drop(session);
-        let reopened=Session::open(&dir,&id).unwrap();
+        let reopened = Session::open(&dir, &id).unwrap();
         drop(inherited);
         assert!(acquire_writer_lock(&reopened.path).is_err());
         drop(reopened);
@@ -2292,7 +2631,15 @@ mod tests {
         let dir = tmpdir("checked-write-failure");
         let mut session = Session::create(&dir).unwrap();
         session.file = None;
-        assert!(session.append_checked(&[Record::ToolCall { id: "c1".into(), name: "bash".into(), arguments: "{}".into() }]).is_err());
+        assert!(
+            session
+                .append_checked(&[Record::ToolCall {
+                    id: "c1".into(),
+                    name: "bash".into(),
+                    arguments: "{}".into()
+                }])
+                .is_err()
+        );
         assert_eq!(session.log_len(), 0);
         assert!(session.history_records().is_empty());
         assert!(session.write_error().is_some());
@@ -2305,10 +2652,22 @@ mod tests {
             Record::State(vec!["obsolete".into()]),
             Record::State(vec![]),
             Record::Assistant("tail".into()),
-            Record::Compacted { kept: 1, dropped: 3, summary: None, tail_start: 3, system: None },
+            Record::Compacted {
+                kept: 1,
+                dropped: 3,
+                summary: None,
+                tail_start: 3,
+                system: None,
+            },
         ];
         let (projected, _) = apply_projection(records);
-        let states = projected.iter().filter_map(|r| match r { Record::State(items) => Some(items), _ => None }).collect::<Vec<_>>();
+        let states = projected
+            .iter()
+            .filter_map(|r| match r {
+                Record::State(items) => Some(items),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(states, vec![&Vec::<String>::new()]);
     }
 
@@ -2317,12 +2676,25 @@ mod tests {
         let dir = tmpdir("read-only");
         let mut writer = Session::create(&dir).unwrap();
         writer.append(Record::User("open".into()));
-        writeln!(OpenOptions::new().append(true).open(&writer.path).unwrap(), "{{broken").unwrap();
+        writeln!(
+            OpenOptions::new().append(true).open(&writer.path).unwrap(),
+            "{{broken"
+        )
+        .unwrap();
         let before = fs::read(&writer.path).unwrap();
         let readonly = Session::open_readonly(&dir, &writer.id).unwrap();
         assert_eq!(readonly.raw_turns().unwrap(), 1);
-        assert_eq!(fs::read(&writer.path).unwrap(), before, "read-only open must not repair");
-        assert!(Session::raw_records(&writer.path).unwrap().iter().any(|r| matches!(r, Record::User(t) if t == "open")));
+        assert_eq!(
+            fs::read(&writer.path).unwrap(),
+            before,
+            "read-only open must not repair"
+        );
+        assert!(
+            Session::raw_records(&writer.path)
+                .unwrap()
+                .iter()
+                .any(|r| matches!(r, Record::User(t) if t == "open"))
+        );
         let error = Session::open(&dir, &writer.id).err().unwrap();
         assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
     }
@@ -2478,6 +2850,7 @@ mod tests {
             log_len: 0,
             state_revision: RefCell::new(state_receipts::revision_of(&[])),
             write_error: None,
+            commit_observer: None,
         };
         s.records = vec![
             Record::User("hi".into()),
@@ -2594,7 +2967,10 @@ mod tests {
         assert!(bash_entries[2].text.contains("legacy output"));
         assert_eq!(bash_entries[0].tool_card.as_ref().unwrap().call_id, "a");
         assert_eq!(bash_entries[1].tool_card.as_ref().unwrap().call_id, "b");
-        assert_ne!(bash_entries[0].tool_card.as_ref().unwrap().call_id, bash_entries[1].tool_card.as_ref().unwrap().call_id);
+        assert_ne!(
+            bash_entries[0].tool_card.as_ref().unwrap().call_id,
+            bash_entries[1].tool_card.as_ref().unwrap().call_id
+        );
         assert!(
             !entries
                 .iter()
@@ -2604,9 +2980,12 @@ mod tests {
 
     #[test]
     fn tool_card_preview_is_bounded_but_expansion_keeps_full_output() {
-        let output = (0..12).map(|n| format!("line {n} {}", "x".repeat(100))).collect::<Vec<_>>().join("\n");
+        let output = (0..12)
+            .map(|n| format!("line {n} {}", "x".repeat(100)))
+            .collect::<Vec<_>>()
+            .join("\n");
         let card = glass_tui::ToolCard {
-                    expanded: false,
+            expanded: false,
             call_id: "call-exact".into(),
             command: "$ cargo test".into(),
             output: output.clone(),
@@ -2619,7 +2998,11 @@ mod tests {
         assert!(preview.contains("cargo test"));
         assert!(preview.contains("1.2s"));
         assert!(preview.contains("Enter to expand"));
-        assert!(preview.len() < 500, "preview must remain small: {} bytes", preview.len());
+        assert!(
+            preview.len() < 500,
+            "preview must remain small: {} bytes",
+            preview.len()
+        );
         let full = tool_card_text(&card, true);
         assert!(full.contains(&output));
         assert_eq!(card.call_id, "call-exact");
@@ -3415,6 +3798,7 @@ mod tests {
             log_len: 0,
             state_revision: RefCell::new(state_receipts::revision_of(&[])),
             write_error: None,
+            commit_observer: None,
         };
         s.records = vec![
             Record::User("q1".into()),
@@ -3538,11 +3922,16 @@ mod tests {
             .lines()
             .filter_map(|line| serde_json::from_str(line).ok())
             .collect();
-        assert_eq!(records.len(), 2, "the state record and its receipt land together");
+        assert_eq!(
+            records.len(),
+            2,
+            "the state record and its receipt land together"
+        );
         assert_eq!(records[0]["k"], "state");
         assert_eq!(records[1]["k"], "custom");
         assert_eq!(records[1]["c"], state_receipts::RECEIPT_KIND);
-        let receipt: serde_json::Value = serde_json::from_str(records[1]["d"].as_str().unwrap()).unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(records[1]["d"].as_str().unwrap()).unwrap();
         assert_eq!(receipt["request"], "req-1");
         // The log says who accepted the write, from the writer rather than
         // from whatever the caller claimed.
@@ -3568,9 +3957,14 @@ mod tests {
                 applied_at: 0,
             },
         });
-        session.append_checked(&[Record::State(vec!["stale".into()])]).unwrap();
+        session
+            .append_checked(&[Record::State(vec!["stale".into()])])
+            .unwrap();
         let receipts = state_receipts::receipts_in(&session.history_records());
-        assert!(receipts.is_empty(), "a receipt for another change must not be paired");
+        assert!(
+            receipts.is_empty(),
+            "a receipt for another change must not be paired"
+        );
     }
 
     #[test]
@@ -3587,7 +3981,11 @@ mod tests {
         });
         // A read-only snapshot refuses appends: the effect sandwich's failure.
         let mut readonly = Session::open_readonly(&dir, &id).unwrap();
-        assert!(readonly.append_checked(&[Record::State(state.items().to_vec())]).is_err());
+        assert!(
+            readonly
+                .append_checked(&[Record::State(state.items().to_vec())])
+                .is_err()
+        );
         // What the agent loop does with that failure.
         state = before;
         drop(readonly);
@@ -3595,7 +3993,10 @@ mod tests {
 
         let path = dir.join(format!("{id}.jsonl"));
         let log = fs::read_to_string(&path).unwrap();
-        assert!(log.is_empty(), "a rolled back write leaves no record: {log:?}");
+        assert!(
+            log.is_empty(),
+            "a rolled back write leaves no record: {log:?}"
+        );
         assert!(state_receipts::receipts_in(&Session::raw_records(&path).unwrap()).is_empty());
         // And the rolled back state claims no receipt either: the same request
         // is applied afresh instead of being answered with a receipt for work
@@ -3626,10 +4027,13 @@ mod tests {
         assert_eq!(records.len(), 3);
         assert!(matches!(&records[1], Record::State(items) if items.len() == 2));
         assert!(state_receipts::receipts_in(&records).is_empty());
-        assert_eq!(last_state_revision(&records), crate::session::state_receipts::revision_of(&[
-            "step one".to_string(),
-            "step two".to_string(),
-        ]));
+        assert_eq!(
+            last_state_revision(&records),
+            crate::session::state_receipts::revision_of(&[
+                "step one".to_string(),
+                "step two".to_string(),
+            ])
+        );
         // A state built from that log is unbound rather than claiming a
         // writer it cannot verify, and starts with an empty ledger.
         let mut state = crate::tools::State::new();
@@ -3687,14 +4091,21 @@ mod tests {
             .filter(|record| matches!(record, Record::State(_)))
             .count();
         assert_eq!(states, 1, "a retry must not double-apply the write");
-        assert_eq!(state_receipts::receipts_in(&session.history_records()).len(), 1);
+        assert_eq!(
+            state_receipts::receipts_in(&session.history_records()).len(),
+            1
+        );
     }
 
     #[test]
     fn a_receipt_read_back_shows_what_applied_it_under_which_id() {
         let dir = tmpdir("receipt-entry");
         let mut session = Session::create(&dir).unwrap();
-        apply_state(&mut session, &mut crate::tools::State::new(), r#"{"request_id":"req-9","items":["note"]}"#);
+        apply_state(
+            &mut session,
+            &mut crate::tools::State::new(),
+            r#"{"request_id":"req-9","items":["note"]}"#,
+        );
         let receipts = state_receipts::receipts_in(&session.history_records());
         assert_eq!(receipts.len(), 1);
         let (role, line) = session

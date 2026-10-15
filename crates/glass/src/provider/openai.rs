@@ -19,6 +19,7 @@ pub struct OpenAiCompat {
     pub adaptive_pacing: bool,
     pub api_key: Option<String>,
     pub model: String,
+    session_identity: Option<String>,
     /// Wire flavour. `/chat/completions` is universal; `/responses` is the
     /// newer API some providers require for reasoning models.
     pub flavour: Flavour,
@@ -41,6 +42,7 @@ impl OpenAiCompat {
             adaptive_pacing: true,
             api_key,
             model: model.into(),
+            session_identity: None,
             flavour: Flavour::ChatCompletions,
         }
     }
@@ -174,7 +176,12 @@ fn build_tools(tools: &[(String, String, String)]) -> Value {
 }
 
 impl Provider for OpenAiCompat {
-    fn model(&self)->&str{&self.model}
+    fn set_session_identity(&mut self, identity: Option<&str>) {
+        self.session_identity = identity.map(str::to_owned);
+    }
+    fn model(&self) -> &str {
+        &self.model
+    }
     fn id(&self) -> &str {
         "openai"
     }
@@ -234,20 +241,49 @@ impl Provider for OpenAiCompat {
                     body["reasoning_effort"] = json!(effort_label(budget));
                 }
             } else if m.contains("glm") || m.contains("qwen3") || m.contains("deepseek") {
-                body["thinking"] = if budget == 0 { json!({"type":"disabled"}) } else { json!({ "type": "enabled", "budget_tokens": budget }) };
+                body["thinking"] = if budget == 0 {
+                    json!({"type":"disabled"})
+                } else {
+                    json!({ "type": "enabled", "budget_tokens": budget })
+                };
             }
         }
 
         let mut rb = http_agent().post(self.endpoint());
+        if let Some(identity) = &self.session_identity {
+            rb = rb
+                .header("x-session-id", identity)
+                .header("x-session-affinity", identity);
+            if url::Url::parse(&self.base_url)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .as_deref()
+                == Some("api.openai.com")
+            {
+                body["prompt_cache_key"] = json!(identity);
+            }
+        }
         if let Some(k) = &self.api_key {
             rb = rb.header("authorization", format!("Bearer {k}"));
         }
-        let pacing_key =
-            super::pacing::acquire(&self.base_url, self.api_key.as_deref().unwrap_or(""), self.adaptive_pacing)?;
+        let pacing_key = super::pacing::acquire(
+            &self.base_url,
+            self.api_key.as_deref().unwrap_or(""),
+            self.adaptive_pacing,
+        )?;
         let resp = rb.send_json(&body).map_err(map_transport)?;
         let status = resp.status().as_u16();
-        let pacing_headers = ["retry-after", "x-ratelimit-remaining-requests", "x-ratelimit-reset-requests"]
-            .map(|name| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned));
+        let pacing_headers = [
+            "retry-after",
+            "x-ratelimit-remaining-requests",
+            "x-ratelimit-reset-requests",
+        ]
+        .map(|name| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        });
         let header = |name: &str| match name {
             "retry-after" => pacing_headers[0].clone(),
             "x-ratelimit-remaining-requests" => pacing_headers[1].clone(),
@@ -256,12 +292,18 @@ impl Provider for OpenAiCompat {
         };
         // A quota refusal is not pressure. Keep its server deadlines, but do
         // not teach the pacer to slow healthy future requests.
-        if status != 429 { super::pacing::observe(pacing_key, status, header); }
+        if status != 429 {
+            super::pacing::observe(pacing_key, status, header);
+        }
         let mut reader = resp.into_body().into_reader();
         if !(200..300).contains(&status) {
             let text = read_lossy(&mut reader).unwrap_or_default();
             if status == 429 {
-                let observed = if super::pacing::quota_limited(&extract_error(&text)) { 400 } else { status };
+                let observed = if super::pacing::quota_limited(&extract_error(&text)) {
+                    400
+                } else {
+                    status
+                };
                 super::pacing::observe(pacing_key, observed, header);
             }
             return Err(Error::Status(
@@ -280,14 +322,15 @@ impl Provider for OpenAiCompat {
         stream.acc.response_id = "not reported".into();
         stream.acc.delta_keys = "none".into();
         Ok(Box::new(stream.map(move |event| {
-            {
-                if let Event::Error(ref message) = event {
-                    let status = super::pacing::stream_status(message);
-                    if super::pacing::rate_limited(message) { super::pacing::observe(pacing_key, 429, |_| None); }
-                    else if status.is_some_and(|status| status >= 500) { super::pacing::observe(pacing_key, 503, |_| None); }
+            if let Event::Error(ref message) = event {
+                let status = super::pacing::stream_status(message);
+                if super::pacing::rate_limited(message) {
+                    super::pacing::observe(pacing_key, 429, |_| None);
+                } else if status.is_some_and(|status| status >= 500) {
+                    super::pacing::observe(pacing_key, 503, |_| None);
                 }
-                super::redact_event(event, key.as_deref())
             }
+            super::redact_event(event, key.as_deref())
         })))
     }
 }
@@ -369,19 +412,32 @@ impl<R: Read> StreamEvents<R> {
         if self.acc.sealed {
             return;
         }
-        if self.acc.tools.values().any(|p| {
-            p.id.is_empty() || p.name.is_empty()
-        }) {
+        if self
+            .acc
+            .tools
+            .values()
+            .any(|p| p.id.is_empty() || p.name.is_empty())
+        {
             self.fail("Provider returned an incomplete or invalid tool call".into());
             return;
         }
         if self.acc.text.trim().is_empty() && self.acc.tools.is_empty() {
-            let usage = self.acc.usage.as_ref().map(|u| format!("{} input / {} output", u.prompt_total(), u.output))
+            let usage = self
+                .acc
+                .usage
+                .as_ref()
+                .map(|u| format!("{} input / {} output", u.prompt_total(), u.output))
                 .unwrap_or_else(|| "not reported".into());
             let cause = match self.acc.finish.as_str() {
-                "length" => "output limit reached before an answer; increase the output budget or reduce reasoning",
-                "content_filter" => "provider filtered the answer; revise the request or switch model",
-                _ if !self.acc.reasoning.is_empty() => "reasoning arrived without an answer; retry or switch model",
+                "length" => {
+                    "output limit reached before an answer; increase the output budget or reduce reasoning"
+                }
+                "content_filter" => {
+                    "provider filtered the answer; revise the request or switch model"
+                }
+                _ if !self.acc.reasoning.is_empty() => {
+                    "reasoning arrived without an answer; retry or switch model"
+                }
                 _ => "provider completed an empty answer; retry or switch model",
             };
             if let Some(u) = self.acc.usage.take() {
@@ -471,27 +527,51 @@ impl<R: Read> StreamEvents<R> {
     /// Fold one delta object into the accumulator.
     fn consume(&mut self, v: &Value) {
         self.acc.events += 1;
-        for (key, target) in [("model", &mut self.acc.model), ("id", &mut self.acc.response_id)] {
+        for (key, target) in [
+            ("model", &mut self.acc.model),
+            ("id", &mut self.acc.response_id),
+        ] {
             if let Some(value) = v[key].as_str().or_else(|| v["response"][key].as_str()) {
                 *target = value.chars().take(160).collect();
             }
         }
-        if let Some(error) = v.get("error").or_else(|| v.get("response").and_then(|r| r.get("error"))) {
+        if let Some(error) = v
+            .get("error")
+            .or_else(|| v.get("response").and_then(|r| r.get("error")))
+        {
             let throttled = error["code"].as_u64() == Some(429)
-                || error["code"].as_str().is_some_and(|c| c == "429" || super::pacing::rate_limited(c))
+                || error["code"]
+                    .as_str()
+                    .is_some_and(|c| c == "429" || super::pacing::rate_limited(c))
                 || error["status"].as_u64() == Some(429)
-                || error["type"].as_str().is_some_and(super::pacing::rate_limited);
+                || error["type"]
+                    .as_str()
+                    .is_some_and(super::pacing::rate_limited);
             let status = ["code", "status"].iter().find_map(|name| {
-                error[*name].as_u64().and_then(|n| u16::try_from(n).ok())
-                    .or_else(|| error[*name].as_str().and_then(|code| code.parse::<u16>().ok()))
+                error[*name]
+                    .as_u64()
+                    .and_then(|n| u16::try_from(n).ok())
+                    .or_else(|| {
+                        error[*name]
+                            .as_str()
+                            .and_then(|code| code.parse::<u16>().ok())
+                    })
                     .filter(|status| (400..600).contains(status))
             });
-            if let Some(message) = error.get("message").and_then(Value::as_str).or_else(|| error.as_str())
+            if let Some(message) = error
+                .get("message")
+                .and_then(Value::as_str)
+                .or_else(|| error.as_str())
                 .or(throttled.then_some("provider temporarily throttled requests"))
-                .or(status.map(|_| "provider rejected request")) {
-                self.fail(if throttled { format!("provider rejected stream (HTTP 429): rate limit: {message}") }
-                    else if let Some(status) = status.filter(|status| (400..600).contains(status)) { format!("provider rejected stream (HTTP {status}): {message}") }
-                    else { message.to_string() });
+                .or(status.map(|_| "provider rejected request"))
+            {
+                self.fail(if throttled {
+                    format!("provider rejected stream (HTTP 429): rate limit: {message}")
+                } else if let Some(status) = status.filter(|status| (400..600).contains(status)) {
+                    format!("provider rejected stream (HTTP {status}): {message}")
+                } else {
+                    message.to_string()
+                });
                 return;
             }
         }
@@ -596,9 +676,19 @@ impl<R: Read> StreamEvents<R> {
                 "Response reached the output token limit".into(),
             ));
         }
-        let delta = choice.get("delta").filter(|d| !d.is_null()).or_else(|| choice.get("message"));
-        if let Some(fields) = delta.and_then(Value::as_object) && !fields.is_empty() {
-            self.acc.delta_keys = fields.keys().take(16).map(|k| k.chars().take(40).collect::<String>()).collect::<Vec<_>>().join(",");
+        let delta = choice
+            .get("delta")
+            .filter(|d| !d.is_null())
+            .or_else(|| choice.get("message"));
+        if let Some(fields) = delta.and_then(Value::as_object)
+            && !fields.is_empty()
+        {
+            self.acc.delta_keys = fields
+                .keys()
+                .take(16)
+                .map(|k| k.chars().take(40).collect::<String>())
+                .collect::<Vec<_>>()
+                .join(",");
         }
 
         if let Some(t) = delta
@@ -626,7 +716,8 @@ impl<R: Read> StreamEvents<R> {
             if let Some(parts) = d["content"].as_array() {
                 for part in parts {
                     if matches!(part["type"].as_str(), Some("text" | "output_text"))
-                        && let Some(t) = part["text"].as_str().filter(|t| !t.is_empty()) {
+                        && let Some(t) = part["text"].as_str().filter(|t| !t.is_empty())
+                    {
                         self.acc.text.push_str(t);
                         self.outbox.push_back(Event::Text(t.into()));
                     }
@@ -728,18 +819,45 @@ mod tests {
         use crate::session::Record;
         let records = vec![
             Record::User("task".into()),
-            Record::ToolCall { id:"rew".into(), name:"rewind".into(), arguments:"{}".into() },
-            Record::ToolCall { id:"next".into(), name:"read".into(), arguments:"{}".into() },
-            Record::Checkpoint { label:"a".into(), log_len:3, rewind_summary:Some("retained finding".into()) },
-            Record::ToolResult { call_id:"rew".into(), name:"rewind".into(), body:"done".into() },
-            Record::ToolResult { call_id:"next".into(), name:"read".into(), body:"contents".into() },
+            Record::ToolCall {
+                id: "rew".into(),
+                name: "rewind".into(),
+                arguments: "{}".into(),
+            },
+            Record::ToolCall {
+                id: "next".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+            },
+            Record::Checkpoint {
+                label: "a".into(),
+                log_len: 3,
+                rewind_summary: Some("retained finding".into()),
+            },
+            Record::ToolResult {
+                call_id: "rew".into(),
+                name: "rewind".into(),
+                body: "done".into(),
+            },
+            Record::ToolResult {
+                call_id: "next".into(),
+                name: "read".into(),
+                body: "contents".into(),
+            },
         ];
         let wire = build_messages("system", &crate::compact::project(&records));
-        let call = wire.iter().position(|m| m["tool_calls"].is_array()).unwrap();
+        let call = wire
+            .iter()
+            .position(|m| m["tool_calls"].is_array())
+            .unwrap();
         assert_eq!(wire[call]["tool_calls"].as_array().unwrap().len(), 2);
         assert_eq!(wire[call + 1]["role"], "tool");
         assert_eq!(wire[call + 2]["role"], "tool");
-        assert!(wire[..call].iter().any(|m| m["content"].as_str().is_some_and(|t| t.contains("retained finding"))));
+        assert!(wire[..call].iter().any(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|t| t.contains("retained finding"))
+        }));
     }
 
     #[test]
@@ -870,7 +988,10 @@ mod shape_tests {
             .iter()
             .filter_map(|t| t["function"]["name"].as_str())
             .collect();
-        assert_eq!(names, vec!["bash", "state", "view_image", "read", "edit", "write"]);
+        assert_eq!(
+            names,
+            vec!["bash", "state", "view_image", "read", "edit", "write"]
+        );
         assert!(arr[0]["function"]["parameters"]["properties"].is_object());
     }
 
@@ -1088,10 +1209,36 @@ mod protocol_regressions {
     }
     #[test]
     fn empty_stream_explains_finish_reason_usage_and_shape() {
-        let output = events(&[json!({"id":"r-empty","model":"actual-model","choices":[{"delta":{"reasoning_content":"private reasoning"},"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":20}})], true);
-        assert!(output.iter().any(|e| matches!(e, Event::Usage(u) if u.output == 20)));
-        let error = output.iter().find_map(|e| if let Event::Error(t)=e {Some(t)} else {None}).unwrap();
-        for field in ["output limit", "finish=length", "actual-model", "r-empty", "40 input / 20 output", "17 chars", "reasoning_content"] {
+        let output = events(
+            &[
+                json!({"id":"r-empty","model":"actual-model","choices":[{"delta":{"reasoning_content":"private reasoning"},"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":20}}),
+            ],
+            true,
+        );
+        assert!(
+            output
+                .iter()
+                .any(|e| matches!(e, Event::Usage(u) if u.output == 20))
+        );
+        let error = output
+            .iter()
+            .find_map(|e| {
+                if let Event::Error(t) = e {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        for field in [
+            "output limit",
+            "finish=length",
+            "actual-model",
+            "r-empty",
+            "40 input / 20 output",
+            "17 chars",
+            "reasoning_content",
+        ] {
             assert!(error.contains(field), "{error}");
         }
         assert!(!error.contains("private reasoning"));
@@ -1100,9 +1247,15 @@ mod protocol_regressions {
 
     #[test]
     fn compatible_typed_text_and_refusals_are_visible() {
-        for delta in [json!({"content":[{"type":"text","text":"visible"}]}),json!({"refusal":"visible"})] {
-            let output=events(&[json!({"choices":[{"delta":delta,"finish_reason":"stop"}]})],true);
-            assert_eq!(output, vec![Event::Text("visible".into()),Event::Done]);
+        for delta in [
+            json!({"content":[{"type":"text","text":"visible"}]}),
+            json!({"refusal":"visible"}),
+        ] {
+            let output = events(
+                &[json!({"choices":[{"delta":delta,"finish_reason":"stop"}]})],
+                true,
+            );
+            assert_eq!(output, vec![Event::Text("visible".into()), Event::Done]);
         }
     }
 

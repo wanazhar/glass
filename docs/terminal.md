@@ -233,3 +233,23 @@ waits. `program_status = "off"` disables reports. Headless output omits them.
 Reports use a session title or error excerpt and exclude prompts and model output.
 Terminals that do not support the sequence may ignore it. No detection handshake
 is required. This protocol is separate from turn notifications.
+
+## Code and mathematical notation
+
+Fenced snippets use native lexical highlighting for Python, JavaScript and
+TypeScript, Rust, C/C++, Java, Go, shell, JSON, SQL, configuration files, and
+markup. Keywords, strings, comments, numbers, and callable names have separate
+styles. Unknown language tags remain plain text. Highlighting does not run a
+language server or parse the project; copying a block preserves its exact source.
+Code rails use the available content width in both streaming and replay.
+
+Inline math accepts `$...$` and `\(...\)`. Display math accepts standalone
+`$$` or `\[` delimiters and `math`, `latex`, or `tex` fences. The native formatter
+supports common Greek symbols, operators, fractions, roots, scripts, and basic
+aligned/matrix notation. It renders Unicode text rather than typeset graphics.
+Unsupported commands retain their source. Parsing is limited to 16 KiB and 16
+nesting levels; TeX packages, macros, shell commands, and file access never run.
+
+Ctrl+D opens a compact centered confirmation over the conversation. Enter exits;
+Esc or Ctrl+C returns to the draft. The conversation remains saved. An unsent
+draft is discarded only when exit is confirmed.

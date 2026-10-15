@@ -364,13 +364,25 @@ pub fn choose_search(
     items: &[String],
     searchable: &[String],
 ) -> Option<usize> {
-    choose_inner(keys,title,note,items,searchable,false)
+    choose_inner(keys, title, note, items, searchable, false)
 }
 
-pub fn choose_question(keys:&KeyReader,title:&str,question:&str,items:&[String])->Option<usize> {
-    choose_inner(keys,title,question,items,items,true)
+pub fn choose_question(
+    keys: &KeyReader,
+    title: &str,
+    question: &str,
+    items: &[String],
+) -> Option<usize> {
+    choose_inner(keys, title, question, items, items, true)
 }
-fn choose_inner(keys:&KeyReader,title:&str,note:&str,items:&[String],searchable:&[String],question:bool)->Option<usize> {
+fn choose_inner(
+    keys: &KeyReader,
+    title: &str,
+    note: &str,
+    items: &[String],
+    searchable: &[String],
+    question: bool,
+) -> Option<usize> {
     let normalized = items
         .iter()
         .enumerate()
@@ -390,7 +402,9 @@ fn choose_inner(keys:&KeyReader,title:&str,note:&str,items:&[String],searchable:
         let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
         let compact = h < 14 || w < 56;
         let framed = w >= 24 && h >= 12;
-        let overhead = if compact { 3 } else { 8 } + if framed { 4 } else { 0 } + if question && compact {3} else {0};
+        let overhead = if compact { 3 } else { 8 }
+            + if framed { 4 } else { 0 }
+            + if question && compact { 3 } else { 0 };
         let preview_rows = if !compact { 4 } else { 0 };
         let visible = usize::from(h)
             .saturating_sub(overhead + preview_rows)
@@ -406,11 +420,14 @@ fn choose_inner(keys:&KeyReader,title:&str,note:&str,items:&[String],searchable:
             ]
         };
         if question && compact {
-            let note=glass_tui::markdown::sanitize(note);
-            let note_width=usize::from(w.saturating_sub(if framed {6}else{1}).max(1));
-            let mut question_lines=glass_tui::text::wrap_words(&note,note_width).into_iter().take(2).collect::<Vec<_>>();
+            let note = glass_tui::markdown::sanitize(note);
+            let note_width = usize::from(w.saturating_sub(if framed { 6 } else { 1 }).max(1));
+            let mut question_lines = glass_tui::text::wrap_words(&note, note_width)
+                .into_iter()
+                .take(2)
+                .collect::<Vec<_>>();
             question_lines.push("F2 full question".into());
-            lines.splice(0..0,question_lines);
+            lines.splice(0..0, question_lines);
         }
         lines.extend(
             matches
@@ -429,10 +446,13 @@ fn choose_inner(keys:&KeyReader,title:&str,note:&str,items:&[String],searchable:
                 let detail = searchable.get(*index).unwrap_or(item);
                 lines.push("Preview · F1 to read in full".into());
                 lines.extend(
-                    glass_tui::text::wrap_words(&glass_tui::markdown::sanitize(detail), width.saturating_sub(2).max(1))
-                        .into_iter()
-                        .take(preview_rows - 1)
-                        .map(|line| format!("│ {line}")),
+                    glass_tui::text::wrap_words(
+                        &glass_tui::markdown::sanitize(detail),
+                        width.saturating_sub(2).max(1),
+                    )
+                    .into_iter()
+                    .take(preview_rows - 1)
+                    .map(|line| format!("│ {line}")),
                 );
             }
             lines.push(format!("{} choices · F1/→ full text", matches.len()));
@@ -456,8 +476,8 @@ fn choose_inner(keys:&KeyReader,title:&str,note:&str,items:&[String],searchable:
                 KeyCode::Down if !matches.is_empty() => selected = (selected + 1) % matches.len(),
                 KeyCode::F(2) if question => {
                     drop(screen);
-                    info(keys,"Full question",note);
-                    screen=Screen::new();
+                    info(keys, "Full question", note);
+                    screen = Screen::new();
                 }
                 KeyCode::F(1) | KeyCode::Right => {
                     if let Some((index, item)) = matches.get(selected) {
@@ -820,7 +840,8 @@ pub fn rich_actions(
                 return None;
             }
             Some(Event::Key(k))
-                if page>=3 && w>=16
+                if page >= 3
+                    && w >= 16
                     && matches!(k.code, KeyCode::Char(c) if actions.iter().any(|(key,_)| *key==c))
                     && !k
                         .modifiers
@@ -875,8 +896,11 @@ pub fn animation(keys: &KeyReader) -> Option<usize> {
             })
             .collect();
         let (_, height) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
-        let framed = height >= 12 && glass_tui::crossterm::terminal::size().unwrap_or((80,24)).0 >= 24;
-        let page = usize::from(height).saturating_sub(if framed { 7 } else { 2 }).max(1);
+        let framed =
+            height >= 12 && glass_tui::crossterm::terminal::size().unwrap_or((80, 24)).0 >= 24;
+        let page = usize::from(height)
+            .saturating_sub(if framed { 7 } else { 2 })
+            .max(1);
         let offset = selected.saturating_sub(page - 1);
         screen.draw("Activity animation", &rows, "↑↓ ↵ · Esc back", offset);
         if let Some(Event::Key(key)) = keys.next_timeout(Duration::from_millis(
@@ -895,20 +919,137 @@ pub fn animation(keys: &KeyReader) -> Option<usize> {
     }
 }
 
-/// Ctrl-D confirmation preserves the caller's composer and navigation state.
-pub fn confirm_exit(keys: &KeyReader) -> bool {
-    let screen = Screen::new();
+/// Ctrl-D confirmation preserves the caller's composer and conversation.
+pub fn confirm_exit(keys: &KeyReader, editor:&glass_tui::Editor, busy:bool) -> bool {
+    take_back();
+    let managed = crate::surface::managed();
+    if managed {
+        crate::surface::overlay(true).ok();
+    } else {
+        let _ = write!(std::io::stdout(), "\x1b[?1049h");
+    }
+    let screen = Screen { managed };
     loop {
-        screen.draw("Exit glass-core?", &["Saved chat stays.".into(), "Draft is lost.".into()], "↵ exit · Esc stay", 0);
+        if managed {
+            // Repaint the chat and draft before relocating the compact dialog.
+            crate::surface::overlay(false).ok();
+            crate::surface::composer(editor,false,busy);
+            crate::surface::overlay(true).ok();
+        }
+        let (width, height) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+        let dialog = exit_dialog(width as usize, height as usize);
+        let mut out = glass_tui::theme::TerminalWriter::new(std::io::stdout().lock());
+        let _ = write!(out, "\x1b[?2026h\x1b[?25l");
+        for (index, row) in dialog.rows.iter().enumerate() {
+            let color = if index == 0 || index + 1 == dialog.rows.len() {
+                glass_tui::theme::Tone::Warning
+            } else {
+                glass_tui::theme::Tone::Body
+            };
+            let _ = write!(
+                out,
+                "\x1b[{};{}H{}{}\x1b[0m",
+                dialog.top + index + 1,
+                dialog.left + 1,
+                glass_tui::theme::ansi(color),
+                row
+            );
+        }
+        let _ = write!(out, "\x1b[?2026l");
+        let _ = out.flush();
+        drop(out);
         match keys.next_blocking() {
             Some(Event::Key(key)) => match key.code {
-                KeyCode::Enter => return true,
+                KeyCode::Enter => {
+                    drop(screen);
+                    return true;
+                }
                 KeyCode::Esc => return false,
                 _ if cancelled(key.code, key.modifiers) => return false,
                 _ => {}
             },
             None => return false,
             _ => {}
+        }
+    }
+}
+struct ExitDialog {
+    left: usize,
+    top: usize,
+    rows: Vec<String>,
+}
+fn exit_dialog(width: usize, height: usize) -> ExitDialog {
+    let width = width.max(1);
+    let height = height.max(1);
+    let span = width
+        .saturating_sub(if width >= 24 { 4 } else { 0 })
+        .clamp(1, 64);
+    let inner = span.saturating_sub(4).max(1);
+    let lines = if span >= 28 {
+        vec![
+            "Quit glass-core?",
+            "Saved conversation stays.",
+            "Unsent draft is discarded.",
+            "Enter quit · Esc stay",
+        ]
+    } else {
+        vec![
+            "Quit glass-core?",
+            "Saved chat stays",
+            "Draft is lost",
+            "↵ exit · Esc back",
+        ]
+    };
+    let mut rows = Vec::new();
+    if span >= 6 && height >= 6 {
+        let title = glass_tui::text::clip(" EXIT · confirm ", span - 2);
+        rows.push(format!(
+            "╭{}{}╮",
+            title,
+            "─".repeat(span - 2 - glass_tui::text::width(&title))
+        ));
+        for line in lines {
+            let line = glass_tui::text::clip(line, inner);
+            rows.push(format!(
+                "│ {line}{} │",
+                " ".repeat(inner - glass_tui::text::width(&line))
+            ));
+        }
+        rows.push(format!("╰{}╯", "─".repeat(span - 2)));
+    } else {
+        rows.extend(
+            ["Quit?", "↵ exit", "Esc stay"]
+                .iter()
+                .take(height)
+                .map(|line| glass_tui::text::clip(line, span)),
+        );
+    }
+    ExitDialog {
+        left: (width - span) / 2,
+        top: height.saturating_sub(rows.len()) / 2,
+        rows,
+    }
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::*;
+    #[test]
+    fn confirmation_is_compact_centered_and_bounded() {
+        for (w, h) in [(80, 30), (40, 24), (20, 8), (8, 3), (1, 1)] {
+            let panel = exit_dialog(w, h);
+            assert!(panel.rows.len() <= h);
+            assert!(
+                panel
+                    .rows
+                    .iter()
+                    .all(|line| glass_tui::text::width(line) + panel.left <= w)
+            );
+            assert!(panel.top + panel.rows.len() <= h);
+            if w >= 40 {
+                assert!(panel.rows.join(" ").contains("Enter quit · Esc stay"));
+                assert!(panel.rows.len() < h);
+            }
         }
     }
 }

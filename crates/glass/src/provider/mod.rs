@@ -5,13 +5,13 @@
 //! id, not a new implementation.
 
 mod anthropic;
-mod chain;
 mod cancellable;
+mod chain;
 pub(crate) use cancellable::scoped as with_request_cancel;
 mod openai;
 mod pacing;
 mod pacing_shared;
-pub(crate) use pacing::{with_notice as with_pacing_notice, rate_limited, stream_status};
+pub(crate) use pacing::{rate_limited, stream_status, with_notice as with_pacing_notice};
 
 pub use anthropic::Anthropic;
 pub use chain::Chain;
@@ -115,6 +115,7 @@ pub struct Request<'a> {
 }
 
 pub trait Provider {
+    fn set_session_identity(&mut self, _identity: Option<&str>) {}
     /// Exact billing card supplied by the provider wrapper, when available.
     fn rate_card(&self) -> Option<crate::pricing::RateCard> {
         None
@@ -124,7 +125,9 @@ pub trait Provider {
     fn id(&self) -> &str;
 
     /// Configured request model, distinct from the transport/provider identifier.
-    fn model(&self)->&str{self.id()}
+    fn model(&self) -> &str {
+        self.id()
+    }
 
     /// Stream one turn. Implementations must emit `Done` before returning.
     fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error>;
@@ -201,10 +204,12 @@ pub fn read_lossy(mut r: impl Read) -> io::Result<String> {
 /// Build an HTTP agent with sane timeouts and no automatic error statuses,
 /// so callers can read the body of a 429 or 500 for the error message.
 pub fn http_agent() -> ureq::Agent {
-    cancellable::agent(ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(600)))
-        .http_status_as_error(false)
-        .build())
+    cancellable::agent(
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(600)))
+            .http_status_as_error(false)
+            .build(),
+    )
 }
 
 /// Stream one turn, retrying eligible HTTP status responses.
@@ -242,7 +247,9 @@ pub fn stream_with_retry<'a>(
                         return Err(Error::Transport("provider retry cancelled".into()));
                     }
                     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                    if remaining.is_zero() { break; }
+                    if remaining.is_zero() {
+                        break;
+                    }
                     std::thread::sleep(remaining.min(std::time::Duration::from_millis(25)));
                 }
             }
@@ -254,12 +261,22 @@ pub fn stream_with_retry<'a>(
 /// Preserve structured quota classifications even when the human message is vague.
 fn http_error_message(body: &str) -> String {
     let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
-    let message = parsed.as_ref().and_then(|v| v["error"]["message"].as_str().or_else(|| v["message"].as_str()))
-        .map(str::to_owned).unwrap_or_else(|| body.chars().take(400).collect());
+    let message = parsed
+        .as_ref()
+        .and_then(|v| {
+            v["error"]["message"]
+                .as_str()
+                .or_else(|| v["message"].as_str())
+        })
+        .map(str::to_owned)
+        .unwrap_or_else(|| body.chars().take(400).collect());
     if let Some(value) = parsed {
         for object in [&value["error"], &value] {
             for field in ["code", "type"] {
-                if let Some(code) = object[field].as_str().filter(|code| pacing::quota_limited(code)) {
+                if let Some(code) = object[field]
+                    .as_str()
+                    .filter(|code| pacing::quota_limited(code))
+                {
                     return format!("{code}: {message}");
                 }
             }
@@ -271,7 +288,9 @@ fn http_error_message(body: &str) -> String {
 /// Whether policy permits automatic retries before a stream is obtained.
 pub(crate) fn is_transient(e: &Error) -> bool {
     match e {
-        Error::Status(code, message) => (*code == 429 && !pacing::quota_limited(message)) || *code >= 500,
+        Error::Status(code, message) => {
+            (*code == 429 && !pacing::quota_limited(message)) || *code >= 500
+        }
         // Transport errors do not prove that a generation was never accepted.
         Error::Transport(_) => false,
         Error::Config(_) => false,
@@ -324,7 +343,9 @@ pub fn build(
         "openai" | "openai-responses" => {
             let mut provider = OpenAiCompat::new(base_url, api_key, model);
             provider.adaptive_pacing = adaptive_pacing;
-            if kind == "openai-responses" { provider = provider.with_flavour(Flavour::Responses); }
+            if kind == "openai-responses" {
+                provider = provider.with_flavour(Flavour::Responses);
+            }
             Ok(Box::new(provider))
         }
         other => Err(Error::Config(format!("unknown provider `{other}`"))),
@@ -473,7 +494,14 @@ mod tests {
     fn builtin_surface_has_six_compact_tools() {
         let tools = builtin_tools();
         assert_eq!(tools.len(), 6);
-        assert!(tools.iter().map(|(n,d,s)|n.len()+d.len()+s.len()).sum::<usize>() <= 7000, "core schema byte budget exceeded");
+        assert!(
+            tools
+                .iter()
+                .map(|(n, d, s)| n.len() + d.len() + s.len())
+                .sum::<usize>()
+                <= 7000,
+            "core schema byte budget exceeded"
+        );
         assert_eq!(tools[0].0, "bash");
         assert_eq!(tools[1].0, "state");
     }
@@ -531,7 +559,18 @@ mod tests {
         let mods: Vec<Box<dyn glass_mod_api::Mod_>> = vec![Box::new(Greedy)];
         let tools = collect_tools(&mods);
         let names: Vec<_> = tools.iter().map(|(n, _, _)| n.as_str()).collect();
-        assert_eq!(names, vec!["bash", "state", "view_image", "read", "edit", "write", "custom"]);
+        assert_eq!(
+            names,
+            vec![
+                "bash",
+                "state",
+                "view_image",
+                "read",
+                "edit",
+                "write",
+                "custom"
+            ]
+        );
     }
 
     #[test]
@@ -558,9 +597,15 @@ mod tests {
             "openai"
         );
         assert_eq!(
-            build("openai-responses", "https://example.invalid", None, "m", true)
-                .unwrap()
-                .id(),
+            build(
+                "openai-responses",
+                "https://example.invalid",
+                None,
+                "m",
+                true
+            )
+            .unwrap()
+            .id(),
             "openai"
         );
     }
@@ -633,14 +678,25 @@ mod tests {
 
     #[test]
     fn cancelling_a_retry_does_not_wait_or_send_again() {
-        use std::sync::{Arc, atomic::{AtomicBool, AtomicU8, Ordering}};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicU8, Ordering},
+        };
         let calls = Arc::new(AtomicU8::new(0));
         let cancelled = Arc::new(AtomicBool::new(false));
-        let p = Flaky { calls: calls.clone(), fail: 1, code: 429 };
+        let p = Flaky {
+            calls: calls.clone(),
+            fail: 1,
+            code: 429,
+        };
         let start = std::time::Instant::now();
         cancellable::scoped(cancelled.clone(), || {
-            let result = stream_with_retry(&p, &flaky_req(), 3, &[10], |_, _, _| cancelled.store(true, Ordering::Release));
-            assert!(matches!(result, Err(Error::Transport(message)) if message.contains("cancelled")));
+            let result = stream_with_retry(&p, &flaky_req(), 3, &[10], |_, _, _| {
+                cancelled.store(true, Ordering::Release)
+            });
+            assert!(
+                matches!(result, Err(Error::Transport(message)) if message.contains("cancelled"))
+            );
         });
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(start.elapsed() < std::time::Duration::from_secs(1));
@@ -648,9 +704,16 @@ mod tests {
 
     #[test]
     fn already_cancelled_requests_do_not_send() {
-        use std::sync::{Arc, atomic::{AtomicBool, AtomicU8, Ordering}};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicU8, Ordering},
+        };
         let calls = Arc::new(AtomicU8::new(0));
-        let p = Flaky { calls: calls.clone(), fail: 0, code: 429 };
+        let p = Flaky {
+            calls: calls.clone(),
+            fail: 0,
+            code: 429,
+        };
         cancellable::scoped(Arc::new(AtomicBool::new(true)), || {
             assert!(stream_with_retry(&p, &flaky_req(), 3, &[0], |_, _, _| {}).is_err());
         });
@@ -691,20 +754,36 @@ mod tests {
 
     #[test]
     fn quota_refusals_are_not_transient_and_keep_their_classification() {
-        for detail in ["insufficient_quota", "quota exceeded", "credits exhausted", "billing required", "usage limit reached"] {
+        for detail in [
+            "insufficient_quota",
+            "quota exceeded",
+            "credits exhausted",
+            "billing required",
+            "usage limit reached",
+        ] {
             assert!(!is_transient(&Error::Status(429, detail.into())));
         }
         for field in ["code", "type"] {
-            for code in ["insufficient_quota", "quota_exceeded", "usage_limit_reached"] {
+            for code in [
+                "insufficient_quota",
+                "quota_exceeded",
+                "usage_limit_reached",
+            ] {
                 let value = serde_json::json!({field:code, "message":"Provider returned error"});
-                for body in [value.to_string(), serde_json::json!({"error":value}).to_string()] {
+                for body in [
+                    value.to_string(),
+                    serde_json::json!({"error":value}).to_string(),
+                ] {
                     let message = http_error_message(&body);
                     assert!(message.contains(code));
                     assert!(!is_transient(&Error::Status(429, message)));
                 }
             }
         }
-        assert!(is_transient(&Error::Status(429, "too many requests".into())));
+        assert!(is_transient(&Error::Status(
+            429,
+            "too many requests".into()
+        )));
     }
 
     #[test]
@@ -724,16 +803,27 @@ mod tests {
     fn ambiguous_transport_failure_is_not_replayed_automatically() {
         struct Accepted(std::cell::Cell<u32>);
         impl Provider for Accepted {
-            fn id(&self) -> &str { "accepted" }
-            fn context_window(&self) -> u32 { 100_000 }
-            fn stream(&self, _: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+            fn id(&self) -> &str {
+                "accepted"
+            }
+            fn context_window(&self) -> u32 {
+                100_000
+            }
+            fn stream(
+                &self,
+                _: &Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
                 self.0.set(self.0.get() + 1);
-                Err(Error::Transport("connection closed after POST acceptance".into()))
+                Err(Error::Transport(
+                    "connection closed after POST acceptance".into(),
+                ))
             }
         }
         let provider = Accepted(std::cell::Cell::new(0));
         let mut retries = 0;
-        assert!(stream_with_retry(&provider, &flaky_req(), 3, &[0,0], |_,_,_| retries += 1).is_err());
+        assert!(
+            stream_with_retry(&provider, &flaky_req(), 3, &[0, 0], |_, _, _| retries += 1).is_err()
+        );
         assert_eq!(provider.0.get(), 1);
         assert_eq!(retries, 0);
     }

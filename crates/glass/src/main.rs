@@ -4,7 +4,6 @@
 //! `glass-mod-api`; everything the model can call is in `provider::builtin_tools`.
 
 mod acp;
-mod runtime;
 mod actions;
 mod addons;
 mod advisor;
@@ -29,19 +28,20 @@ mod contracts;
 mod diagnostic_bundle;
 mod diagnostics;
 mod doctor;
+mod durable;
 mod egress;
 mod export;
 mod ext;
 mod files;
-mod images;
 mod fs_scan;
 mod guidance;
 mod hardening;
+mod hashing;
 mod help;
 mod history;
-mod hashing;
 mod history_inspector;
 mod hooks_shell;
+mod images;
 mod inbox;
 mod input;
 mod inspect;
@@ -61,7 +61,6 @@ mod osc8;
 mod output_view;
 mod partial;
 mod permissions;
-mod questions;
 mod plugin_dev;
 mod plugins;
 mod policy;
@@ -70,6 +69,7 @@ mod pricing;
 mod profiles;
 mod project_memory;
 mod provider;
+mod questions;
 mod queue;
 mod reader;
 mod readguard;
@@ -80,6 +80,7 @@ mod requests;
 mod requirements;
 mod resume_picker;
 mod rewind;
+mod runtime;
 mod sandbox;
 mod serve;
 mod session;
@@ -93,9 +94,9 @@ mod structured;
 mod subagent;
 mod surface;
 mod team;
+mod todo;
 mod tool_repair;
 mod tools;
-mod todo;
 mod transactions;
 mod transport;
 mod trust;
@@ -667,11 +668,10 @@ fn code_review(
     const DIFF_CAP: usize = 96 * 1024;
     let diff = if diff.len() > DIFF_CAP {
         let mut end = DIFF_CAP;
-        while !diff.is_char_boundary(end) { end -= 1; }
-        format!(
-            "{}…\n[diff truncated at {DIFF_CAP} bytes]",
-            &diff[..end]
-        )
+        while !diff.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…\n[diff truncated at {DIFF_CAP} bytes]", &diff[..end])
     } else {
         diff.to_string()
     };
@@ -689,8 +689,14 @@ fn code_review(
     let reports = crate::subagent::run_batch(&[task], 1, |t| {
         crate::subagent::run_task(t, workspace, scratch, &make, parent_prompt.as_deref())
     });
-    let report = reports.first().map(|report| report.trim()).filter(|report| !report.is_empty()).ok_or("the reviewer produced no report")?;
-    if let Some(error) = report.strip_prefix("subagent failed: ") { return Err(error.into()); }
+    let report = reports
+        .first()
+        .map(|report| report.trim())
+        .filter(|report| !report.is_empty())
+        .ok_or("the reviewer produced no report")?;
+    if let Some(error) = report.strip_prefix("subagent failed: ") {
+        return Err(error.into());
+    }
     Ok(report.to_owned())
 }
 
@@ -842,9 +848,18 @@ fn run_plan(args: &[String]) -> bool {
 }
 
 fn run(args: &[String]) -> Result<(), String> {
-    let mode=args.first().filter(|arg|matches!(arg.as_str(),"--restricted"|"--yolo"|"--unrestricted")).map(String::as_str);
-    let args=if mode.is_some(){&args[1..]}else{args};
-    if mode.is_some() && args.first().is_some_and(|arg|!matches!(arg.as_str(),"run"|"resume")) {return Err("Mode flags apply to interactive startup, run or resume; select a saved permission profile for other subcommands".into());}
+    let mode = args
+        .first()
+        .filter(|arg| matches!(arg.as_str(), "--restricted" | "--yolo" | "--unrestricted"))
+        .map(String::as_str);
+    let args = if mode.is_some() { &args[1..] } else { args };
+    if mode.is_some()
+        && args
+            .first()
+            .is_some_and(|arg| !matches!(arg.as_str(), "run" | "resume"))
+    {
+        return Err("Mode flags apply to interactive startup, run or resume; select a saved permission profile for other subcommands".into());
+    }
     let cfg_path = config::default_path();
     let mut cfg = config::load(&cfg_path).map_err(|e| e.to_string())?;
     // Admin requirements sit above every config layer: whatever the
@@ -869,8 +884,10 @@ fn run(args: &[String]) -> Result<(), String> {
             return match resume_picker::choose(&cfg.workspace, all, browse)? {
                 Some(pick) => {
                     std::env::set_current_dir(&pick.workspace).map_err(|e| e.to_string())?;
-                    let mut resume_args=vec!["resume".into(),pick.id];
-                    if let Some(mode)=mode {resume_args.insert(0,mode.into());}
+                    let mut resume_args = vec!["resume".into(), pick.id];
+                    if let Some(mode) = mode {
+                        resume_args.insert(0, mode.into());
+                    }
                     run(&resume_args)
                 }
                 None => Ok(()),
@@ -895,11 +912,19 @@ fn run(args: &[String]) -> Result<(), String> {
     addons::apply(&mut cfg)?;
     profiles::apply_active(&mut cfg)?;
     match mode {
-        Some("--restricted")=>{cfg.permission_profile=sandbox::PermissionProfile::WorkspaceEdit;cfg.sandbox=sandbox::Policy::Workspace;cfg.sandbox_ports.clear();},
-        Some("--yolo"|"--unrestricted")=>{cfg.permission_profile=sandbox::PermissionProfile::Unrestricted;cfg.sandbox=sandbox::Policy::Off;cfg.sandbox_env="inherit".into();},
-        _=>{},
+        Some("--restricted") => {
+            cfg.permission_profile = sandbox::PermissionProfile::WorkspaceEdit;
+            cfg.sandbox = sandbox::Policy::Workspace;
+            cfg.sandbox_ports.clear();
+        }
+        Some("--yolo" | "--unrestricted") => {
+            cfg.permission_profile = sandbox::PermissionProfile::Unrestricted;
+            cfg.sandbox = sandbox::Policy::Off;
+            cfg.sandbox_env = "inherit".into();
+        }
+        _ => {}
     }
-    crate::requirements::apply(&requirements,&mut cfg);
+    crate::requirements::apply(&requirements, &mut cfg);
     for warning in sandbox::init(&cfg) {
         eprintln!("glass-core: {warning}");
     }
@@ -910,25 +935,39 @@ fn run(args: &[String]) -> Result<(), String> {
     // Native diagrams are enabled by default; an explicit false keeps source.
     glass_tui::markdown::enable_mermaid(cfg.mermaid);
     let mermaid_renderer: glass_tui::markdown::MermaidRendererResultFn = Box::new(|body, width| {
-        let head = body.lines().map(str::trim).find(|line| !line.is_empty() && !line.starts_with("%%")).unwrap_or("");
-        if width < 8 { return Err("viewport too narrow (minimum 8 cells)".into()); }
+        let head = body
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with("%%"))
+            .unwrap_or("");
+        if width < 8 {
+            return Err("viewport too narrow (minimum 8 cells)".into());
+        }
         if head.starts_with("sequenceDiagram") || head == "sequence" {
-            return crate::mermaid::parse_sequence_at(body,width).ok_or_else(||"unsupported sequence syntax or diagram limit".into());
+            return crate::mermaid::parse_sequence_at(body, width)
+                .ok_or_else(|| "unsupported sequence syntax or diagram limit".into());
         }
         if head.starts_with("stateDiagram") {
-            return crate::mermaid::parse_state(body,width).ok_or_else(||"unsupported state syntax or diagram limit".into());
+            return crate::mermaid::parse_state(body, width)
+                .ok_or_else(|| "unsupported state syntax or diagram limit".into());
         }
         if head.starts_with("classDiagram") {
-            return crate::mermaid::parse_class(body,width).ok_or_else(||"unsupported class syntax or diagram limit".into());
+            return crate::mermaid::parse_class(body, width)
+                .ok_or_else(|| "unsupported class syntax or diagram limit".into());
         }
         if head.starts_with("erDiagram") {
-            return crate::mermaid::parse_er(body,width).ok_or_else(||"unsupported ER syntax or diagram limit".into());
+            return crate::mermaid::parse_er(body, width)
+                .ok_or_else(|| "unsupported ER syntax or diagram limit".into());
         }
         if head.starts_with("flowchart") || head.starts_with("graph") {
-            return crate::mermaid::parse(body).and_then(|chart|crate::mermaid::render(&chart,width))
-                .ok_or_else(||"unsupported flowchart syntax or diagram limit".into());
+            return crate::mermaid::parse(body)
+                .and_then(|chart| crate::mermaid::render(&chart, width))
+                .ok_or_else(|| "unsupported flowchart syntax or diagram limit".into());
         }
-        Err(format!("unsupported diagram type: {}", glass_tui::text::clip(head,48)))
+        Err(format!(
+            "unsupported diagram type: {}",
+            glass_tui::text::clip(head, 48)
+        ))
     });
     glass_tui::markdown::set_mermaid_renderer_detailed(mermaid_renderer);
     status::configure(&cfg.program_status);
@@ -950,8 +989,16 @@ fn run(args: &[String]) -> Result<(), String> {
     if args.first().is_some_and(|a| a == "send") {
         return inbox::command(&cfg, &args[1..]);
     }
-    if args.first().is_some_and(|a| a == "runtime") {
-        if args.len()!=1 { return Err("usage: gc runtime (configuration is supplied through initialize and session/new)".into()); }
+    if args
+        .first()
+        .is_some_and(|a| matches!(a.as_str(), "runtime" | "durable"))
+    {
+        if args.len() != 1 {
+            return Err(
+                "usage: gc runtime (configuration is supplied through initialize and session/new)"
+                    .into(),
+            );
+        }
         return runtime::serve(cfg);
     }
     if args.first().is_some_and(|a| a == "acp") {
@@ -1488,7 +1535,7 @@ fn headless(
     )
     .with_plan_mode(planning)
     .with_image_input(cfg.image_input)
-                    .prime_extensions()
+    .prime_extensions()
     .with_prompt(cfg.system_prompt.clone(), catalogue, prompt_instructions)
     .with_limits(cfg.max_tokens, cfg.reasoning_budget, usize::MAX)
     .with_recovery(recovering)
@@ -1640,8 +1687,15 @@ fn make_metered(
     model: &str,
 ) -> Result<Box<dyn provider::Provider>, String> {
     let key = auth::resolve(cfg)?;
-    let inner =
-        provider::build(&cfg.provider, &cfg.base_url, key, model, cfg.adaptive_pacing).map_err(|e| e.to_string())?;
+    let mut inner = provider::build(
+        &cfg.provider,
+        &cfg.base_url,
+        key,
+        model,
+        cfg.adaptive_pacing,
+    )
+    .map_err(|e| e.to_string())?;
+    inner.set_session_identity(cfg.provider_session.as_deref());
     Ok(Box::new(budget::Metered {
         inner,
         ledger,
@@ -1878,7 +1932,9 @@ fn repl(
     let mut menu_parents: Vec<(Option<glass_tui::palette::Bookmark>, String)> = Vec::new();
     crate::status::set("idle", "");
     loop {
-        if EXIT_REQUESTED.swap(false, std::sync::atomic::Ordering::AcqRel) { return Ok(()); }
+        if EXIT_REQUESTED.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            return Ok(());
+        }
         if team_owner != session.id {
             team_guard.take();
             team_guard = Some(team::start(
@@ -1896,11 +1952,20 @@ fn repl(
         jobs.set_owner(&cfg.workspace, &session.id);
         let parent = if menu_dispatched {
             menu_dispatched = false;
-            if modal::take_back() { menu_parents.pop() } else { menu_parents.clear(); None }
-        } else { None };
+            if modal::take_back() {
+                menu_parents.pop()
+            } else {
+                menu_parents.clear();
+                None
+            }
+        } else {
+            None
+        };
         let reopen = match parent {
             Some((Some(bookmark), _)) => {
-                palette.restore_managed(&mut editor, bookmark).map_err(|e| e.to_string())?;
+                palette
+                    .restore_managed(&mut editor, bookmark)
+                    .map_err(|e| e.to_string())?;
                 None
             }
             Some((None, command)) => Some(command),
@@ -1910,269 +1975,272 @@ fn repl(
         let (text, prompt_row, prompt_rows, background_recorded) = if let Some(command) = reopen {
             (command, term_size().1.saturating_sub(2).max(1), 1, false)
         } else {
-        let _ = painter.refresh_geometry(!palette.active());
-        let (w, nh) = term_size();
-        let prompt_row = nh.saturating_sub(2).max(1);
-        painter.set_width(w);
-        let restore_reader = painter.reader_needs_redraw(palette.active());
-        if !palette.active()
-            && painter.reader_active()
-            && restore_reader
-            && let Some(reader) = painter.reader.borrow_mut().as_mut()
-        {
-            reader.restore_after_overlay().map_err(|e| e.to_string())?;
-        }
-        let prompt_rows = if palette.active() {
-            palette.render(editor.text(), w, term_size().1);
-            1
-        } else {
-            surface::composer(&editor, true, false)
-        };
-
-        let mut background_recorded = accepted_background
-            .as_ref()
-            .is_some_and(|(id, text)| id == &session.id && text == editor.text());
-        let ev = loop {
-            match keys.try_next() {
-                Some(event) => break Some(event),
-                None => match keys.wait_timeout(std::time::Duration::from_millis(120)) {
-                    Ok(Some(event)) => break Some(event),
-                    Ok(None) => {
-                        team::dock(&session.id, &mut team_dock);
-                        if painter.refresh_geometry(!palette.active()) {
-                            break None;
-                        }
-                        // A due loop only fires into an empty composer: the
-                        // user mid-sentence outranks a schedule, and typed
-                        // text must never be clobbered by a timer. Inbox
-                        // messages take the same path, ahead of loops.
-                        if editor.text().is_empty()
-                            && let Some((from, message)) = inbox_mailbox.deliver(&mut session)?
-                        {
-                            background_recorded = true;
-                            accepted_background = Some((session.id.clone(), message.clone()));
-                            ui_println!("\x1b[90minbox ({from}):\x1b[0m {message}");
-                            editor.insert_str(&message);
-                            break Some(glass_tui::crossterm::event::Event::Key(
-                                glass_tui::crossterm::event::KeyEvent::new(
-                                    glass_tui::crossterm::event::KeyCode::Enter,
-                                    glass_tui::crossterm::event::KeyModifiers::NONE,
-                                ),
-                            ));
-                        }
-                        if editor.text().is_empty()
-                            && let Some(prompt) = crate::loops::due_for(&mut session, &cfg)?
-                        {
-                            background_recorded = true;
-                            accepted_background = Some((session.id.clone(), prompt.clone()));
-                            ui_println!("\x1b[90mloop:\x1b[0m {prompt}");
-                            editor.insert_str(&prompt);
-                            break Some(glass_tui::crossterm::event::Event::Key(
-                                glass_tui::crossterm::event::KeyEvent::new(
-                                    glass_tui::crossterm::event::KeyCode::Enter,
-                                    glass_tui::crossterm::event::KeyModifiers::NONE,
-                                ),
-                            ));
-                        }
-                    }
-                    Err(_) => {
-                        term::leave().ok();
-                        return Err("input stream closed".into());
-                    }
-                },
+            let _ = painter.refresh_geometry(!palette.active());
+            let (w, nh) = term_size();
+            let prompt_row = nh.saturating_sub(2).max(1);
+            painter.set_width(w);
+            let restore_reader = painter.reader_needs_redraw(palette.active());
+            if !palette.active()
+                && painter.reader_active()
+                && restore_reader
+                && let Some(reader) = painter.reader.borrow_mut().as_mut()
+            {
+                reader.restore_after_overlay().map_err(|e| e.to_string())?;
             }
-        };
-        let Some(ev) = ev else { continue };
-        let _ = painter.refresh_geometry(!palette.active());
-
-        if painter.reader_active()
-            && !palette.active()
-            && painter.reader_event(&ev, !editor.text().is_empty())?
-        {
-            continue;
-        }
-
-        if should_open_reader_for_wheel(&ev, painter.reader_active(), palette.active()) {
-            painter.open_reader(session.history_entries(), false)?;
-            let _ = painter.reader_event(&ev, !editor.text().is_empty())?;
-            continue;
-        }
-
-        // Global bindings are handled here and never reach the editor, so a
-        // ctrl-key can never leak into the prompt as a literal character.
-        let key = match ev {
-            glass_tui::crossterm::event::Event::Key(k) => k,
-            glass_tui::crossterm::event::Event::Resize(nw, nh) => {
-                painter.set_width(nw);
-                let _ = nh;
-                continue;
-            }
-            // Bracketed paste delivers a whole run at once,
-            // newlines included, as a single event. Dropping
-            // it — which is what a bare `continue` did —
-            // meant pasted text silently vanished, the one
-            // input a coding harness uses most.
-            glass_tui::crossterm::event::Event::Paste(text) => {
-                editor.insert_str(&text);
-                if palette.active() {
-                    palette.changed(&editor);
-                }
-                continue;
-            }
-            _ => continue,
-        };
-
-        if key.code == glass_tui::crossterm::event::KeyCode::Char('a')
-            && key
-                .modifiers
-                .contains(glass_tui::crossterm::event::KeyModifiers::ALT)
-        {
-            palette.cancel(&mut editor);
-            team::view(&keys, &session.id);
-            continue;
-        }
-        if key.code == glass_tui::crossterm::event::KeyCode::PageUp {
-            palette.cancel(&mut editor);
-            painter.open_reader(session.history_entries(), true)?;
-            continue;
-        }
-        let ctrl = key
-            .modifiers
-            .contains(glass_tui::crossterm::event::KeyModifiers::CONTROL);
-        if ctrl
-            && matches!(
-                key.code,
-                glass_tui::crossterm::event::KeyCode::Char('b' | 'f')
-            )
-        {
-            palette.cancel(&mut editor);
-            if key.code == glass_tui::crossterm::event::KeyCode::Char('f') {
-                painter.open_reader_search(session.history_entries())?;
+            let prompt_rows = if palette.active() {
+                palette.render(editor.text(), w, term_size().1);
+                1
             } else {
-                painter.open_reader(session.history_entries(), true)?;
-            }
-            continue;
-        }
-        if ctrl {
-            match key.code {
-                glass_tui::crossterm::event::KeyCode::Char('r') => {
-                    let prompts = crate::history::load(&config::data_dir())
-                        .into_iter()
-                        .rev()
-                        .collect::<Vec<_>>();
-                    if let Some(i) = modal::choose(
-                        &keys,
-                        "Prompt history",
-                        "Search; Enter restores a prompt for editing",
-                        &prompts,
-                    ) {
-                        editor.set_text(&prompts[i]);
-                    }
-                    continue;
-                }
-                glass_tui::crossterm::event::KeyCode::Char('x') => {
-                    keys.stop();
-                    if painter.reader_active() {
-                        painter.close_reader()?;
-                    }
-                    let result = polish::external_editor(editor.text());
-                    keys = input::KeyReader::spawn();
-                    match result {
-                        Ok(t) => editor.set_text(&t),
-                        Err(e) => modal::info(&keys, "Editor", &e),
-                    }
-                    continue;
-                }
-                glass_tui::crossterm::event::KeyCode::Char('p') => {
-                    if palette.active() {
-                        palette.cancel(&mut editor);
-                    } else {
-                        palette
-                            .open_managed(&mut editor)
-                            .map_err(|e| e.to_string())?;
-                    }
-                    continue;
-                }
-                glass_tui::crossterm::event::KeyCode::Char('d') => {
-                    if modal::confirm_exit(&keys) {
-                        palette.close();
-                        ui_println!("\nbye");
-                        return Ok(());
-                    }
-                    surface::overlay(palette.active()).ok();
-                    continue;
-                }
-                glass_tui::crossterm::event::KeyCode::Char('t') => {
-                    painter
-                        .live
-                        .borrow_mut()
-                        .toggle(true)
-                        .map_err(|e| e.to_string())?;
-                    while painter.live.borrow().active() {
-                        painter.live.borrow_mut().draw().ok();
-                        if let Some(ev) = keys.next_blocking() {
-                            painter.live.borrow_mut().event(&ev);
-                        } else {
-                            painter.live.borrow_mut().close().ok();
+                surface::composer(&editor, true, false)
+            };
+
+            let mut background_recorded = accepted_background
+                .as_ref()
+                .is_some_and(|(id, text)| id == &session.id && text == editor.text());
+            let ev = loop {
+                match keys.try_next() {
+                    Some(event) => break Some(event),
+                    None => match keys.wait_timeout(std::time::Duration::from_millis(120)) {
+                        Ok(Some(event)) => break Some(event),
+                        Ok(None) => {
+                            team::dock(&session.id, &mut team_dock);
+                            if painter.refresh_geometry(!palette.active()) {
+                                break None;
+                            }
+                            // A due loop only fires into an empty composer: the
+                            // user mid-sentence outranks a schedule, and typed
+                            // text must never be clobbered by a timer. Inbox
+                            // messages take the same path, ahead of loops.
+                            if editor.text().is_empty()
+                                && let Some((from, message)) =
+                                    inbox_mailbox.deliver(&mut session)?
+                            {
+                                background_recorded = true;
+                                accepted_background = Some((session.id.clone(), message.clone()));
+                                ui_println!("\x1b[90minbox ({from}):\x1b[0m {message}");
+                                editor.insert_str(&message);
+                                break Some(glass_tui::crossterm::event::Event::Key(
+                                    glass_tui::crossterm::event::KeyEvent::new(
+                                        glass_tui::crossterm::event::KeyCode::Enter,
+                                        glass_tui::crossterm::event::KeyModifiers::NONE,
+                                    ),
+                                ));
+                            }
+                            if editor.text().is_empty()
+                                && let Some(prompt) = crate::loops::due_for(&mut session, &cfg)?
+                            {
+                                background_recorded = true;
+                                accepted_background = Some((session.id.clone(), prompt.clone()));
+                                ui_println!("\x1b[90mloop:\x1b[0m {prompt}");
+                                editor.insert_str(&prompt);
+                                break Some(glass_tui::crossterm::event::Event::Key(
+                                    glass_tui::crossterm::event::KeyEvent::new(
+                                        glass_tui::crossterm::event::KeyCode::Enter,
+                                        glass_tui::crossterm::event::KeyModifiers::NONE,
+                                    ),
+                                ));
+                            }
                         }
+                        Err(_) => {
+                            term::leave().ok();
+                            return Err("input stream closed".into());
+                        }
+                    },
+                }
+            };
+            let Some(ev) = ev else { continue };
+            let _ = painter.refresh_geometry(!palette.active());
+
+            if painter.reader_active()
+                && !palette.active()
+                && painter.reader_event(&ev, !editor.text().is_empty())?
+            {
+                continue;
+            }
+
+            if should_open_reader_for_wheel(&ev, painter.reader_active(), palette.active()) {
+                painter.open_reader(session.history_entries(), false)?;
+                let _ = painter.reader_event(&ev, !editor.text().is_empty())?;
+                continue;
+            }
+
+            // Global bindings are handled here and never reach the editor, so a
+            // ctrl-key can never leak into the prompt as a literal character.
+            let key = match ev {
+                glass_tui::crossterm::event::Event::Key(k) => k,
+                glass_tui::crossterm::event::Event::Resize(nw, nh) => {
+                    painter.set_width(nw);
+                    let _ = nh;
+                    continue;
+                }
+                // Bracketed paste delivers a whole run at once,
+                // newlines included, as a single event. Dropping
+                // it — which is what a bare `continue` did —
+                // meant pasted text silently vanished, the one
+                // input a coding harness uses most.
+                glass_tui::crossterm::event::Event::Paste(text) => {
+                    editor.insert_str(&text);
+                    if palette.active() {
+                        palette.changed(&editor);
                     }
                     continue;
                 }
-                glass_tui::crossterm::event::KeyCode::Char('g') => {
-                    palette.cancel(&mut editor);
-                    view_transcript(&session, &loaded_mods, &keys, false)?;
-                    continue;
-                }
-                glass_tui::crossterm::event::KeyCode::Char('c') => {
-                    palette.close();
-                    editor.clear();
-                    ui_println!("^C");
-                    continue;
-                }
-                _ => {}
-            }
-        }
+                _ => continue,
+            };
 
-        if !palette.active() && key.code == glass_tui::crossterm::event::KeyCode::Tab {
-            if let Some(path) = polish::path_picker(&keys, &cfg.workspace) {
-                editor.insert_str(&path);
+            if key.code == glass_tui::crossterm::event::KeyCode::Char('a')
+                && key
+                    .modifiers
+                    .contains(glass_tui::crossterm::event::KeyModifiers::ALT)
+            {
+                palette.cancel(&mut editor);
+                team::view(&keys, &session.id);
+                continue;
             }
-            continue;
-        }
-        if palette.active() && key.code == glass_tui::crossterm::event::KeyCode::F(1) {
-            if let Some(details) = palette.selected_details(editor.text()) {
-                modal::info(&keys, "Command details", &details);
-                surface::overlay(true).ok();
+            if key.code == glass_tui::crossterm::event::KeyCode::PageUp {
+                palette.cancel(&mut editor);
+                painter.open_reader(session.history_entries(), true)?;
+                continue;
             }
-            continue;
-        }
-        let bookmark = palette.active().then(|| palette.bookmark(&editor));
-        let text = if palette.active() {
-            match palette.key(&mut editor, key) {
-                Some(t) => t,
-                None => continue,
+            let ctrl = key
+                .modifiers
+                .contains(glass_tui::crossterm::event::KeyModifiers::CONTROL);
+            if ctrl
+                && matches!(
+                    key.code,
+                    glass_tui::crossterm::event::KeyCode::Char('b' | 'f')
+                )
+            {
+                palette.cancel(&mut editor);
+                if key.code == glass_tui::crossterm::event::KeyCode::Char('f') {
+                    painter.open_reader_search(session.history_entries())?;
+                } else {
+                    painter.open_reader(session.history_entries(), true)?;
+                }
+                continue;
             }
-        } else {
-            let open_palette = key.code == glass_tui::crossterm::event::KeyCode::Char('/')
-                && editor.text().is_empty();
-            match editor.key(key) {
-                Edit::Continue => {
-                    if open_palette {
-                        palette
-                            .open_managed(&mut editor)
+            if ctrl {
+                match key.code {
+                    glass_tui::crossterm::event::KeyCode::Char('r') => {
+                        let prompts = crate::history::load(&config::data_dir())
+                            .into_iter()
+                            .rev()
+                            .collect::<Vec<_>>();
+                        if let Some(i) = modal::choose(
+                            &keys,
+                            "Prompt history",
+                            "Search; Enter restores a prompt for editing",
+                            &prompts,
+                        ) {
+                            editor.set_text(&prompts[i]);
+                        }
+                        continue;
+                    }
+                    glass_tui::crossterm::event::KeyCode::Char('x') => {
+                        keys.stop();
+                        if painter.reader_active() {
+                            painter.close_reader()?;
+                        }
+                        let result = polish::external_editor(editor.text());
+                        keys = input::KeyReader::spawn();
+                        match result {
+                            Ok(t) => editor.set_text(&t),
+                            Err(e) => modal::info(&keys, "Editor", &e),
+                        }
+                        continue;
+                    }
+                    glass_tui::crossterm::event::KeyCode::Char('p') => {
+                        if palette.active() {
+                            palette.cancel(&mut editor);
+                        } else {
+                            palette
+                                .open_managed(&mut editor)
+                                .map_err(|e| e.to_string())?;
+                        }
+                        continue;
+                    }
+                    glass_tui::crossterm::event::KeyCode::Char('d') => {
+                        if modal::confirm_exit(&keys,&editor,false) {
+                            palette.close();
+                            ui_println!("\nbye");
+                            return Ok(());
+                        }
+                        surface::overlay(palette.active()).ok();
+                        continue;
+                    }
+                    glass_tui::crossterm::event::KeyCode::Char('t') => {
+                        painter
+                            .live
+                            .borrow_mut()
+                            .toggle(true)
                             .map_err(|e| e.to_string())?;
+                        while painter.live.borrow().active() {
+                            painter.live.borrow_mut().draw().ok();
+                            if let Some(ev) = keys.next_blocking() {
+                                painter.live.borrow_mut().event(&ev);
+                            } else {
+                                painter.live.borrow_mut().close().ok();
+                            }
+                        }
+                        continue;
                     }
-                    continue;
+                    glass_tui::crossterm::event::KeyCode::Char('g') => {
+                        palette.cancel(&mut editor);
+                        view_transcript(&session, &loaded_mods, &keys, false)?;
+                        continue;
+                    }
+                    glass_tui::crossterm::event::KeyCode::Char('c') => {
+                        palette.close();
+                        editor.clear();
+                        ui_println!("^C");
+                        continue;
+                    }
+                    _ => {}
                 }
-                Edit::Submit(t) => t,
             }
-        };
 
-        if let Some(draft) = palette.take_draft() {
-            editor.set_text(&draft);
-        }
-        if let Some(bookmark) = bookmark { menu_parents.push((Some(bookmark), String::new())); }
-        (text, prompt_row, prompt_rows, background_recorded)
+            if !palette.active() && key.code == glass_tui::crossterm::event::KeyCode::Tab {
+                if let Some(path) = polish::path_picker(&keys, &cfg.workspace) {
+                    editor.insert_str(&path);
+                }
+                continue;
+            }
+            if palette.active() && key.code == glass_tui::crossterm::event::KeyCode::F(1) {
+                if let Some(details) = palette.selected_details(editor.text()) {
+                    modal::info(&keys, "Command details", &details);
+                    surface::overlay(true).ok();
+                }
+                continue;
+            }
+            let bookmark = palette.active().then(|| palette.bookmark(&editor));
+            let text = if palette.active() {
+                match palette.key(&mut editor, key) {
+                    Some(t) => t,
+                    None => continue,
+                }
+            } else {
+                let open_palette = key.code == glass_tui::crossterm::event::KeyCode::Char('/')
+                    && editor.text().is_empty();
+                match editor.key(key) {
+                    Edit::Continue => {
+                        if open_palette {
+                            palette
+                                .open_managed(&mut editor)
+                                .map_err(|e| e.to_string())?;
+                        }
+                        continue;
+                    }
+                    Edit::Submit(t) => t,
+                }
+            };
+
+            if let Some(draft) = palette.take_draft() {
+                editor.set_text(&draft);
+            }
+            if let Some(bookmark) = bookmark {
+                menu_parents.push((Some(bookmark), String::new()));
+            }
+            (text, prompt_row, prompt_rows, background_recorded)
         };
         let mut text = text.trim().to_string();
         menu_dispatched = true;
@@ -2184,20 +2252,28 @@ fn repl(
         // Every submitted prompt enters the history, commands
         // included: a shell records what was typed, and so does
         // the prompt.
-        if !revisiting { crate::history::record(&config::data_dir(), &text); }
+        if !revisiting {
+            crate::history::record(&config::data_dir(), &text);
+        }
 
         if matches!(
             text.as_str(),
             "/work" | "/dashboard" | "/hub" | "/workspace"
         ) {
             match workbench::view(&keys, &session, &mut jobs, workbench::Scope::All) {
-                Some(action) => { menu_parents.push((None, text.clone())); text = action; },
+                Some(action) => {
+                    menu_parents.push((None, text.clone()));
+                    text = action;
+                }
                 None => continue,
             }
         }
         if text == "/settings" {
             match workbench::choose(&keys, actions::Group::Settings) {
-                Some(action) => { menu_parents.push((None, text.clone())); text = action; },
+                Some(action) => {
+                    menu_parents.push((None, text.clone()));
+                    text = action;
+                }
                 None => continue,
             }
         }
@@ -3340,13 +3416,26 @@ fn repl(
         }
 
         if text == "/pacing" {
-            if let Some(index) = modal::choose(&keys, "Provider pacing", "Adaptive spacing is optional. Server Retry-After and reset deadlines always apply. Changes apply to subsequent requests; saved with an active workspace profile. Otherwise set adaptive_pacing in config.toml to persist.", &[
-                format!("{}Adaptive · learn spacing from provider pressure", if cfg.adaptive_pacing { "✓ " } else { "" }),
-                format!("{}Maximum frequency · disable learned and burst spacing", if !cfg.adaptive_pacing { "✓ " } else { "" }),
-            ]) {
+            if let Some(index) = modal::choose(
+                &keys,
+                "Provider pacing",
+                "Adaptive spacing is optional. Server Retry-After and reset deadlines always apply. Changes apply to subsequent requests; saved with an active workspace profile. Otherwise set adaptive_pacing in config.toml to persist.",
+                &[
+                    format!(
+                        "{}Adaptive · learn spacing from provider pressure",
+                        if cfg.adaptive_pacing { "✓ " } else { "" }
+                    ),
+                    format!(
+                        "{}Maximum frequency · disable learned and burst spacing",
+                        if !cfg.adaptive_pacing { "✓ " } else { "" }
+                    ),
+                ],
+            ) {
                 cfg.adaptive_pacing = index == 0;
                 *runtime_config.lock().unwrap() = cfg.clone();
-                if let Err(error) = profiles::update_active(&cfg) { modal::info(&keys, "Profile save error", &error); }
+                if let Err(error) = profiles::update_active(&cfg) {
+                    modal::info(&keys, "Profile save error", &error);
+                }
                 warmer.begin_turn();
             }
             continue;
@@ -3654,7 +3743,7 @@ fn repl(
                     &cfg.workspace,
                 )
                 .with_image_input(cfg.image_input)
-                    .prime_extensions()
+                .prime_extensions()
                 .with_prompt(
                     cfg.system_prompt.clone(),
                     catalogue.clone(),
@@ -3839,7 +3928,11 @@ fn repl(
                     }
                 }
                 Err(e) => {
-                    painter.notice(&mut surface::BodyWriter, &glass_tui::theme::ansi(glass_tui::theme::Tone::Error), &format!("error: {e}"));
+                    painter.notice(
+                        &mut surface::BodyWriter,
+                        &glass_tui::theme::ansi(glass_tui::theme::Tone::Error),
+                        &format!("error: {e}"),
+                    );
                     last_error = Some(e.to_string());
                 }
             }
@@ -3955,8 +4048,9 @@ fn drain_input(
     let mut dirty = false;
 
     while let Some(ev) = keys.try_next() {
-        if matches!(&ev, Event::Key(k) if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('d')) {
-            if modal::confirm_exit(keys) {
+        if matches!(&ev, Event::Key(k) if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('d'))
+        {
+            if modal::confirm_exit(keys,editor,true) {
                 EXIT_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
                 palette.close();
                 surface::overlay(false).ok();
@@ -3967,13 +4061,16 @@ fn drain_input(
             continue;
         }
         // Interrupt must work before overlays consume editing keys.
-        if matches!(&ev, Event::Key(k) if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c')) {
+        if matches!(&ev, Event::Key(k) if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c'))
+        {
             painter.live.borrow_mut().close().ok();
             palette.close();
             surface::overlay(false).ok();
             editor.clear();
-            painter.append_live_entry(glass_tui::Role::System,
-                "Cancelled the current turn; partial output is saved.");
+            painter.append_live_entry(
+                glass_tui::Role::System,
+                "Cancelled the current turn; partial output is saved.",
+            );
             ui_println!("\r\x1b[2K\x1b[33m⚡ interrupt\x1b[0m");
             return Some(String::new());
         }
@@ -4463,7 +4560,9 @@ impl Painter {
     }
 
     fn refresh_geometry(&self, reader_allowed: bool) -> bool {
-        if self.live.borrow().active() { return false; }
+        if self.live.borrow().active() {
+            return false;
+        }
         let current = term_size();
         if self.last_size.get() == current {
             return false;
@@ -4642,7 +4741,9 @@ impl Painter {
             Progress::ProviderNotice(text) => {
                 self.flush(&mut io);
                 let cooldown = text.starts_with("Provider cooldown");
-                if !cooldown { self.waiting.set(false); }
+                if !cooldown {
+                    self.waiting.set(false);
+                }
                 let detail = live::sanitize_provider_detail(text);
                 let notice = if cooldown {
                     detail
@@ -4688,11 +4789,10 @@ impl Painter {
         if !self.waiting.get() {
             return;
         }
-        if self
-            .last_tick
-            .get()
-            .is_some_and(|last| last.elapsed() < std::time::Duration::from_millis(glass_tui::theme::ACTIVITY_INTERVAL_MS))
-        {
+        if self.last_tick.get().is_some_and(|last| {
+            last.elapsed()
+                < std::time::Duration::from_millis(glass_tui::theme::ACTIVITY_INTERVAL_MS)
+        }) {
             return;
         }
         self.last_tick.set(Some(std::time::Instant::now()));
@@ -4706,9 +4806,15 @@ impl Painter {
 
     fn sync_reader(&self) {
         // A fullscreen live view owns these cells until it closes.
-        if self.live.borrow().active() { self.reader_dirty.set(true); return; }
+        if self.live.borrow().active() {
+            self.reader_dirty.set(true);
+            return;
+        }
         if surface::reader_invalidated()
-            && let Some(reader) = self.reader.borrow_mut().as_mut() { reader.restore_after_overlay().ok(); }
+            && let Some(reader) = self.reader.borrow_mut().as_mut()
+        {
+            reader.restore_after_overlay().ok();
+        }
         let entries = self.live.borrow().snapshot();
         if let Some(reader) = self.reader.borrow_mut().as_mut()
             && reader.update(entries).is_ok()

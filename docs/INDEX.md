@@ -53,3 +53,6 @@ through `gc help` and `gc COMMAND --help`.
 
 Historical records retain their original scope, test counts, and evidence. They
 are not the current user reference. See a topic guide first when behavior differs.
+
+- [Native durable runtime](reference/durable.md): atomic state, task recovery,
+  ownership, idempotent submissions, and committed observation.

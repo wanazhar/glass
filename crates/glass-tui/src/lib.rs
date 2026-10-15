@@ -10,7 +10,9 @@
 pub mod editor;
 pub mod layout;
 pub mod markdown;
+pub mod math;
 pub mod palette;
+pub mod syntax;
 pub mod term;
 pub mod text;
 pub mod theme;

@@ -84,6 +84,8 @@ pub struct Config {
     pub egress_allow: Vec<String>,
     /// Per-record fsync policy for session logs: "off" (default) or "always".
     pub log_fsync: String,
+    /// Host-owned affinity identity; never added to prompt text.
+    pub provider_session: Option<String>,
     /// How often streamed partial output is committed to the sidecar, in ms.
     /// 0 disables the sidecar; a crash otherwise loses at most this window.
     pub live_flush_ms: u32,
@@ -133,6 +135,7 @@ impl Default for Config {
             sandbox_egress: "off".into(),
             egress_allow: Vec::new(),
             log_fsync: "off".into(),
+            provider_session: None,
             live_flush_ms: 250,
             program_status: "on".into(),
             checkpoint_tools: false,
@@ -304,8 +307,12 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
     if let Some(v) = raw.base_url {
         cfg.base_url = v;
     }
-    if let Some(v) = raw.image_input { cfg.image_input = v; }
-    if let Some(v) = raw.adaptive_pacing { cfg.adaptive_pacing = v; }
+    if let Some(v) = raw.image_input {
+        cfg.image_input = v;
+    }
+    if let Some(v) = raw.adaptive_pacing {
+        cfg.adaptive_pacing = v;
+    }
     if let Some(v) = raw.model {
         cfg.model = v;
     }
@@ -431,7 +438,11 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
         }
         cfg.extension_isolation = v;
     }
-    if raw.sandbox_ports.is_none() && cfg.permission_profile == sandbox::PermissionProfile::WorkspaceEdit {cfg.sandbox_ports.clear();}
+    if raw.sandbox_ports.is_none()
+        && cfg.permission_profile == sandbox::PermissionProfile::WorkspaceEdit
+    {
+        cfg.sandbox_ports.clear();
+    }
     if let Some(ports) = raw.sandbox_ports {
         cfg.sandbox_ports = ports;
     }
@@ -563,8 +574,8 @@ mod tests {
     #[test]
     fn native_diagrams_default_on_and_can_be_disabled() {
         assert!(Config::default().mermaid);
-        let dir=scratch("mermaid-disabled");
-        let path=write(&dir,"c.toml","mermaid = false\n");
+        let dir = scratch("mermaid-disabled");
+        let path = write(&dir, "c.toml", "mermaid = false\n");
         assert!(!load(&path).unwrap().mermaid);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -802,20 +813,30 @@ mod tests {
 
     #[test]
     fn base_prompt_covers_framework_without_stale_tool_exclusivity() {
-        for guidance in ["neuralnets", "action:save",
-            "state` replaces", "Reasoning consumes output allowance",
-            "Answer conversation directly", "Read before editing"] {
+        for guidance in [
+            "neuralnets",
+            "action:save",
+            "state` replaces",
+            "Reasoning consumes output allowance",
+            "Answer conversation directly",
+            "Read before editing",
+        ] {
             assert!(BASE_SYSTEM_PROMPT.contains(guidance), "missing: {guidance}");
         }
         assert!(!BASE_SYSTEM_PROMPT.contains("exactly two tools"));
-        assert!(crate::guidance::model_context(BASE_SYSTEM_PROMPT.into()).contains("state {guidance:"));
+        assert!(
+            crate::guidance::model_context(BASE_SYSTEM_PROMPT.into()).contains("state {guidance:")
+        );
     }
 
     #[test]
     fn base_prompt_is_deliberately_small() {
         // Byte budget is deterministic; actual tokenization varies by provider.
-        assert!(BASE_SYSTEM_PROMPT.len() <= 800,
-            "base prompt grew to {} bytes", BASE_SYSTEM_PROMPT.len());
+        assert!(
+            BASE_SYSTEM_PROMPT.len() <= 800,
+            "base prompt grew to {} bytes",
+            BASE_SYSTEM_PROMPT.len()
+        );
     }
 
     #[test]

@@ -281,7 +281,7 @@ fn entry_lines(text: &str, role: Role, width: u16, boundary: bool) -> Vec<Line<'
 ///
 /// A `Role::Meta` entry renders as a single dim line regardless of content,
 /// which is both cheaper and visually correct for compaction markers.
-fn build_lines(text: &str, role: Role, width: u16) -> Vec<Line<'static>> {
+pub(crate) fn build_lines(text: &str, role: Role, width: u16) -> Vec<Line<'static>> {
     if role == Role::Meta && text.starts_with("error:") {
         return crate::text::wrap_words(&crate::markdown::sanitize(text), width.max(1) as usize)
             .into_iter().map(|row| Line::from(Span::styled(row, ratatui::style::Style::new().fg(crate::theme::color(crate::theme::Tone::Error))))).collect();

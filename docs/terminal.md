@@ -141,7 +141,27 @@ following. Closing and reopening reasoning returns to the latest text.
 Detailed tool output retains the preview's semantic colors, including added and
 removed file lines and diagnostics. Long tool titles and output notices stay
 within the available width. Enabled Mermaid diagrams preserve surrounding prose
-and other blocks; unsupported diagrams remain fenced source.
+and other blocks. Native Mermaid rendering is enabled by default; set
+`mermaid = false` to show source. Flowcharts support comments, node labels,
+class suffixes, nested groups, chained connections, and solid, dotted, and thick
+arrows. Wide or cyclic diagrams use a compact node and connection list. Sequence
+diagrams use a compact participant and message list when lifelines do not fit.
+State, class, and entity relationship diagrams support bounded structural views.
+Custom Mermaid styles use the terminal theme instead of arbitrary CSS.
+
+Streaming and conversation replay use the same renderer. A Mermaid block waits
+for its closing fence before rendering, with a 128 KiB and 256-line buffer limit.
+Unsupported or oversized diagrams retain their source; enabled rendering shows
+an explanation when a complete block cannot render. This is a terminal subset,
+not a browser Mermaid engine: pie charts, Gantt charts, interactive links, full
+class members, and entity attributes are not rendered natively.
+
+Inline Markdown supports underscore emphasis, strikethrough, nested emphasis,
+multi-backtick code, and links with visible destinations. Image references show
+the label and path; they do not fetch or display an image. Numbered lists accept
+both `1.` and `1)`, and nested quotes retain their rails. Raw HTML and reference
+link definitions remain text. See the [rendering audit](plan/reviews/rendering-audit-2026-10-15.md)
+for supported cases and verification.
 
 Small terminals use shorter labels and fewer decorative rows. Commands and usage
 wrap within their regions. Unicode width handling accounts for wide characters

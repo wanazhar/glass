@@ -1,6 +1,7 @@
 """Accurate Unicode VT transport with explicit alternate/save-cursor handling. Requires pyte."""
 import pyte, http.server, threading, time, json, tempfile, os, select, importlib.util, re, subprocess, fcntl, termios, struct, signal, codecs
 from pathlib import Path
+from wcwidth import wcwidth
 
 class VT:
 
@@ -49,6 +50,14 @@ class VT:
                 self.active.restore_cursor()
 
     def text(self):
+        # pyte leaves an empty continuation cell when a diff overwrites the
+        # leading half of a wide glyph. Real terminals clear that second half.
+        # Repair only orphan stubs; valid two-cell glyphs remain unchanged.
+        for row in self.active.buffer.values():
+            for x, cell in list(row.items()):
+                previous = row[x - 1].data if x else " "
+                if cell.data == "" and (not previous or wcwidth(previous[0]) != 2):
+                    row[x] = cell._replace(data=" ")
         return '\n'.join(self.active.display)
 
     def resize(self, w, h):

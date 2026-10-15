@@ -429,7 +429,7 @@ impl Transcript {
 fn display_line_for_match(text: &str, role: Role, query: &str, width: u16) -> usize {
     if role == Role::Assistant {
         let query = query.to_lowercase();
-        return crate::markdown::lines(text, usize::from(width))
+        return crate::layout::build_lines(text, role, width)
             .iter()
             .position(|row| row.to_string().to_lowercase().contains(&query))
             .unwrap_or(0);
@@ -823,6 +823,15 @@ mod tests {
         assert!(first >= t.scroll && first < t.scroll + H as usize);
     }
 
+    #[test]
+    fn search_uses_the_actual_assistant_reading_column() {
+        let text=format!("\n\n{} TARGET", "wrapping words ".repeat(40));
+        for width in [20,24,40,65] {
+            let rendered=crate::layout::build_lines(&text,Role::Assistant,width);
+            let expected=rendered.iter().position(|row|row.to_string().contains("TARGET")).unwrap();
+            assert_eq!(display_line_for_match(&text,Role::Assistant,"TARGET",width),expected);
+        }
+    }
     #[test]
     fn stable_anchor_survives_reflow_and_appends() {
         let mut t = Transcript::new(entries(80));

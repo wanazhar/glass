@@ -95,8 +95,7 @@ pub struct Config {
     /// OSC 7501 program status: "on" (default; interactive terminals only)
     /// or "off".
     pub program_status: String,
-    /// Render `mermaid` fenced blocks as diagrams (wave D). Off = blocks
-    /// stay code, byte-identical to previous builds.
+    /// Render supported `mermaid` blocks natively by default. False preserves source.
     pub mermaid: bool,
     /// OSC 8 hyperlinks (wave D): "on" | "off" | "auto" (auto consults TERM).
     pub hyperlinks: String,
@@ -138,7 +137,7 @@ impl Default for Config {
             program_status: "on".into(),
             checkpoint_tools: false,
             prewalk: String::new(),
-            mermaid: false,
+            mermaid: true,
             hyperlinks: "auto".into(),
             image_input: true,
             adaptive_pacing: true,
@@ -561,6 +560,14 @@ mod tests {
         d
     }
 
+    #[test]
+    fn native_diagrams_default_on_and_can_be_disabled() {
+        assert!(Config::default().mermaid);
+        let dir=scratch("mermaid-disabled");
+        let path=write(&dir,"c.toml","mermaid = false\n");
+        assert!(!load(&path).unwrap().mermaid);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn missing_file_yields_defaults() {
         let d = scratch("missing");

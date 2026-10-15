@@ -45,3 +45,4 @@ Historical records retain their original scope, test counts, and evidence. They
 are not the current user reference. See a topic guide first when behavior differs.
 
 - [Model guidance](reference/model-guidance.md): workflow selection, checklist instructions and discovery.
+- [Approvals and user questions](reference/interaction.md): paused decisions, execution modes and native questions.

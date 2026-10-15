@@ -70,7 +70,7 @@ impl PermissionProfile {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "unrestricted" => Some(Self::Unrestricted),
-            "workspace-edit" | "workspace_edit" => Some(Self::WorkspaceEdit),
+            "restricted" | "workspace-edit" | "workspace_edit" => Some(Self::WorkspaceEdit),
             "read-only" | "read_only" => Some(Self::ReadOnly),
             _ => None,
         }

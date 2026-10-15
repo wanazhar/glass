@@ -437,6 +437,7 @@ pub fn load(path: &Path) -> Result<Config, LoadError> {
         }
         cfg.extension_isolation = v;
     }
+    if raw.sandbox_ports.is_none() && cfg.permission_profile == sandbox::PermissionProfile::WorkspaceEdit {cfg.sandbox_ports.clear();}
     if let Some(ports) = raw.sandbox_ports {
         cfg.sandbox_ports = ports;
     }

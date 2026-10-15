@@ -59,6 +59,7 @@ mod osc8;
 mod output_view;
 mod partial;
 mod permissions;
+mod questions;
 mod plugin_dev;
 mod plugins;
 mod policy;
@@ -839,6 +840,9 @@ fn run_plan(args: &[String]) -> bool {
 }
 
 fn run(args: &[String]) -> Result<(), String> {
+    let mode=args.first().filter(|arg|matches!(arg.as_str(),"--restricted"|"--yolo"|"--unrestricted")).map(String::as_str);
+    let args=if mode.is_some(){&args[1..]}else{args};
+    if mode.is_some() && args.first().is_some_and(|arg|!matches!(arg.as_str(),"run"|"resume")) {return Err("Mode flags apply to interactive startup, run or resume; select a saved permission profile for other subcommands".into());}
     let cfg_path = config::default_path();
     let mut cfg = config::load(&cfg_path).map_err(|e| e.to_string())?;
     // Admin requirements sit above every config layer: whatever the
@@ -863,7 +867,9 @@ fn run(args: &[String]) -> Result<(), String> {
             return match resume_picker::choose(&cfg.workspace, all, browse)? {
                 Some(pick) => {
                     std::env::set_current_dir(&pick.workspace).map_err(|e| e.to_string())?;
-                    run(&["resume".into(), pick.id])
+                    let mut resume_args=vec!["resume".into(),pick.id];
+                    if let Some(mode)=mode {resume_args.insert(0,mode.into());}
+                    run(&resume_args)
                 }
                 None => Ok(()),
             };
@@ -886,6 +892,12 @@ fn run(args: &[String]) -> Result<(), String> {
     auth::apply(&mut cfg)?;
     addons::apply(&mut cfg)?;
     profiles::apply_active(&mut cfg)?;
+    match mode {
+        Some("--restricted")=>{cfg.permission_profile=sandbox::PermissionProfile::WorkspaceEdit;cfg.sandbox=sandbox::Policy::Workspace;cfg.sandbox_ports.clear();},
+        Some("--yolo"|"--unrestricted")=>{cfg.permission_profile=sandbox::PermissionProfile::Unrestricted;cfg.sandbox=sandbox::Policy::Off;cfg.sandbox_env="inherit".into();},
+        _=>{},
+    }
+    crate::requirements::apply(&requirements,&mut cfg);
     for warning in sandbox::init(&cfg) {
         eprintln!("glass-core: {warning}");
     }

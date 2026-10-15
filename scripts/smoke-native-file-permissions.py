@@ -28,11 +28,16 @@ with tempfile.TemporaryDirectory(prefix='gc-file-permissions-') as tmp:
         revision = json.loads(result.stdout)['revision']
     result = run('unrestricted',['write'],{'path':str(external),'expected':revision,'text':'outside changed'})
     assert result.returncode == 0 and external.read_text() == 'outside changed', result.stderr
-    for profile in ('workspace-edit','read-only'):
+    for profile in ('read-only',):
         result = run(profile,['read',str(external)])
         assert result.returncode != 0 and 'permission profile' in result.stderr, result.stderr
+    result = run('workspace-edit',['read',str(external)])
+    assert result.returncode == 0, result.stderr
     result = run('read-only',['write'],{'path':'new.txt','expected':None,'text':'blocked'})
     assert result.returncode != 0 and not (workspace/'new.txt').exists(), result.stderr
+    outside_new = root/'outside-new.txt'
+    denied = run('workspace-edit',['write'],{'path':str(outside_new),'expected':None,'text':'blocked'})
+    assert denied.returncode != 0 and not outside_new.exists(), denied.stderr
     result = run('workspace-edit',['write'],{'path':'new.txt','expected':None,'text':'allowed'})
     assert result.returncode == 0 and (workspace/'new.txt').read_text() == 'allowed', result.stderr
     (workspace/'link').symlink_to(external)

@@ -368,7 +368,7 @@ mod tests {
         let got = seen.lock().unwrap().clone();
         assert!(!got.is_empty(), "the subagent must have made a request");
         assert!(
-            got.iter().all(|s| s == &crate::guidance::model_context(parent.into())),
+            got.iter().all(|s| s == &crate::permissions::model_context(crate::guidance::model_context(parent.into()),false)),
             "every request must preserve the inherited prefix with one shared workflow protocol, got: {got:?}"
         );
         let _ = std::fs::remove_dir_all(&scratch);

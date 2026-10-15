@@ -364,6 +364,13 @@ pub fn choose_search(
     items: &[String],
     searchable: &[String],
 ) -> Option<usize> {
+    choose_inner(keys,title,note,items,searchable,false)
+}
+
+pub fn choose_question(keys:&KeyReader,title:&str,question:&str,items:&[String])->Option<usize> {
+    choose_inner(keys,title,question,items,items,true)
+}
+fn choose_inner(keys:&KeyReader,title:&str,note:&str,items:&[String],searchable:&[String],question:bool)->Option<usize> {
     let normalized = items
         .iter()
         .enumerate()
@@ -383,7 +390,7 @@ pub fn choose_search(
         let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
         let compact = h < 14 || w < 56;
         let framed = w >= 24 && h >= 12;
-        let overhead = if compact { 3 } else { 8 } + if framed { 4 } else { 0 };
+        let overhead = if compact { 3 } else { 8 } + if framed { 4 } else { 0 } + if question && compact {3} else {0};
         let preview_rows = if !compact { 4 } else { 0 };
         let visible = usize::from(h)
             .saturating_sub(overhead + preview_rows)
@@ -398,6 +405,13 @@ pub fn choose_search(
                 String::new(),
             ]
         };
+        if question && compact {
+            let note=glass_tui::markdown::sanitize(note);
+            let note_width=usize::from(w.saturating_sub(if framed {6}else{1}).max(1));
+            let mut question_lines=glass_tui::text::wrap_words(&note,note_width).into_iter().take(2).collect::<Vec<_>>();
+            question_lines.push("F2 full question".into());
+            lines.splice(0..0,question_lines);
+        }
         lines.extend(
             matches
                 .iter()
@@ -440,6 +454,11 @@ pub fn choose_search(
                     selected = (selected + matches.len() - 1) % matches.len()
                 }
                 KeyCode::Down if !matches.is_empty() => selected = (selected + 1) % matches.len(),
+                KeyCode::F(2) if question => {
+                    drop(screen);
+                    info(keys,"Full question",note);
+                    screen=Screen::new();
+                }
                 KeyCode::F(1) | KeyCode::Right => {
                     if let Some((index, item)) = matches.get(selected) {
                         drop(screen);
@@ -801,7 +820,8 @@ pub fn rich_actions(
                 return None;
             }
             Some(Event::Key(k))
-                if matches!(k.code, KeyCode::Char(c) if actions.iter().any(|(key,_)| *key==c))
+                if page>=3 && w>=16
+                    && matches!(k.code, KeyCode::Char(c) if actions.iter().any(|(key,_)| *key==c))
                     && !k
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>

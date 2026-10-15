@@ -33,17 +33,27 @@ fn open_at(dir: &File, name: &CString, flags: i32, mode: u32) -> Result<File, St
         Ok(unsafe { File::from_raw_fd(fd) })
     }
 }
+thread_local! { static APPROVED_CALL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+fn approved() -> bool { APPROVED_CALL.with(|value|value.get()) }
+pub fn tool_cancellable_approved(call:&glass_mod_api::ToolCall, root:&Path, cancel:&std::sync::atomic::AtomicBool, granted:bool) -> crate::tools::Outcome {
+    struct Restore(bool);
+    impl Drop for Restore { fn drop(&mut self) {APPROVED_CALL.with(|value|value.set(self.0));} }
+    let _restore=Restore(APPROVED_CALL.with(|value|value.replace(granted)));
+    tool_cancellable(call,root,cancel)
+}
+
 struct Target {
     dir: File,
     name: CString,
     label: String,
 }
 impl Target {
-    fn new(root: &Path, path: &str) -> Result<Self, String> {
+    fn new(root: &Path, path: &str, mutating: bool) -> Result<Self, String> {
         let workspace = root.canonicalize().map_err(error)?;
         let requested = Path::new(path);
-        let unrestricted = crate::sandbox::permission_profile_label() == "unrestricted"
-            && crate::sandbox::policy() == crate::sandbox::Policy::Off;
+        let unrestricted = approved() || (!mutating && crate::sandbox::policy()!=crate::sandbox::Policy::Strict)
+            || (crate::sandbox::permission_profile_label() == "unrestricted"
+            && crate::sandbox::policy() == crate::sandbox::Policy::Off);
         let absolute = if requested.is_absolute() { requested.to_path_buf() } else { workspace.join(requested) };
         // Normalize lexically, then retain descriptor-relative NOFOLLOW traversal.
         let mut normalized = std::path::PathBuf::new();
@@ -271,12 +281,12 @@ fn execute_cancellable(
     if !matches!(action, "read" | "check" | "edit" | "write" | "view_image") {
         return Err("action must be read, edit, write, or check".into());
     }
-    if let Some(reason) = crate::sandbox::refusal() { return Err(reason.to_string()); }
+    if !approved() && let Some(reason) = crate::sandbox::refusal() { return Err(reason.to_string()); }
     if matches!(action, "edit" | "write") && v["preview"] != true
-        && crate::sandbox::permission_profile_label() == "read-only" {
+        && crate::sandbox::permission_profile_label() == "read-only" && !approved() {
         return Err("Read-only permission profile blocks file mutations; preview:true remains available".into());
     }
-    let target = Target::new(root, required(v, "path")?)?;
+    let target = Target::new(root, required(v, "path")?, matches!(action,"edit"|"write") && v["preview"]!=true)?;
     let mutation = matches!(action, "edit" | "write");
     if mutation {
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -607,14 +617,15 @@ fn execute_cancellable(
     )
 }
 pub(crate) fn snapshot_text(root: &Path, path: &str) -> Result<Option<String>, String> {
-    let target = Target::new(root, path)?;
+    let target = Target::new(root, path, false)?;
     target
         .read()?
         .map(|(bytes, _)| text(&bytes).map(str::to_owned))
         .transpose()
 }
 pub(crate) fn remove_created(root: &Path, path: &str, expected: &str) -> Result<(), String> {
-    let target = Target::new(root, path)?;
+    if crate::sandbox::permission_profile_label()=="read-only" && !approved() {return Err("Read-only permission profile blocks recovery mutations".into());}
+    let target = Target::new(root, path, true)?;
     fs2::FileExt::try_lock_exclusive(&target.dir).map_err(error)?;
     let Some((bytes, _)) = target.read()? else {
         return Ok(());
@@ -716,7 +727,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
 }
 
 pub(crate) fn read_workspace_bytes(root: &Path, path: &str) -> Result<Vec<u8>, String> {
-    Target::new(root, path)?.read()?.map(|(bytes, _)| bytes).ok_or_else(|| "file does not exist".into())
+    Target::new(root, path, false)?.read()?.map(|(bytes, _)| bytes).ok_or_else(|| "file does not exist".into())
 }
 
 pub fn is_tool(name: &str) -> bool {
@@ -729,6 +740,8 @@ pub fn schemas() -> Vec<(String, String, String)> {
         "byte_offset":{"type":"integer","minimum":0},"expected":{"type":"string"}}});
     let mut mutation = json!({"type":"object","additionalProperties":false,"required":["path","expected"],"properties":{
         "path":{"type":"string"},"expected":{"type":["string","null"]},"preview":{"type":"boolean"},"validate":{"type":"boolean"}}});
+    mutation["properties"]["permission"]=json!({"type":"string","enum":["use_default","require_escalated"]});
+    mutation["properties"]["justification"]=json!({"type":"string","maxLength":2048});
     let mut write = mutation.clone();
     write["required"]
         .as_array_mut()
@@ -759,21 +772,22 @@ pub fn tool_cancellable(
     root: &Path,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> crate::tools::Outcome {
-    if let Some(reason) = crate::sandbox::refusal() {
+    if !approved() && let Some(reason) = crate::sandbox::refusal() {
         return crate::tools::Outcome::err(reason);
     }
-    let value: Value = match serde_json::from_str(&call.arguments) {
+    let mut value: Value = match serde_json::from_str(&call.arguments) {
         Ok(v) => v,
         Err(e) => return crate::tools::Outcome::err(e.to_string()),
     };
     if matches!(call.name.as_str(), "edit" | "write")
         && value["preview"] != true
-        && crate::sandbox::permission_profile_label() == "read-only"
+        && crate::sandbox::permission_profile_label() == "read-only" && !approved()
     {
         return crate::tools::Outcome::err(
             "Read-only permission profile blocks file mutations; preview:true remains available",
         );
     }
+    if let Some(object)=value.as_object_mut() {object.remove("permission");object.remove("justification");}
     match execute_cancellable(root, &call.name, &value, cancel) {
         Ok(value) => {
             let mut body = display(&value);

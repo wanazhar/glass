@@ -346,6 +346,8 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
             serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "permission":{"type":"string","enum":["use_default","require_escalated"],"description":"Request explicit human approval for this exact command outside the sandbox; do not bypass denials."},
+                    "justification":{"type":"string","maxLength":2048},
                     "command": { "type": "string", "description": "Shell command to run" },
                     "cwd": { "type": "string", "description": "Working directory, relative to the workspace root" },
                     "timeout_ms": { "type": "integer", "description": "Kill the command after this many milliseconds" },

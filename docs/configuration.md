@@ -51,7 +51,7 @@ Common optional fields:
 | `permission_profile`, `sandbox` | Distinct execution-confinement settings |
 | `extension_isolation` | Extension startup confinement |
 | `log_fsync`, `live_flush_ms` | Session durability and partial-output persistence |
-| `mermaid`, `hyperlinks` | Optional diagram and terminal-link presentation |
+| `mermaid`, `hyperlinks` | Native diagrams (default on; `mermaid = false` shows source) and optional terminal links |
 
 The default permission profile is `unrestricted`, with `sandbox = "off"`. Saved
 profiles and administrator requirements can override it. Leading launch flags

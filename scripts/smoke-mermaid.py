@@ -83,7 +83,7 @@ def main():
         server_port = server.server_port
         try:
             # Off: fenced block unchanged.
-            off = run_once(root / "config-off", "")
+            off = run_once(root / "config-off", "mermaid = false\n")
             off_text = off.read_text()
             assert "flowchart TD" in off_text, "raw source is the off-path"
             assert "──▶" not in off_text, "no diagram glyphs when off"

@@ -58,6 +58,7 @@ jobs:
           python3 scripts/smoke-scroll-submit.py
           python3 scripts/smoke-context.py
           python3 scripts/smoke-blocks.py
+          python3 scripts/smoke-rendering-audit.py
           python3 scripts/smoke-native-files-jobs.py
           python3 scripts/smoke-job-unicode.py
           python3 scripts/smoke-tool-repair.py

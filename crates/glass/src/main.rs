@@ -907,33 +907,30 @@ fn run(args: &[String]) -> Result<(), String> {
     // OSC 8 hyperlinks (wave D): conservative capability gate, off by
     // default — unsupported terminals keep byte-identical output.
     crate::osc8::configure(&cfg.hyperlinks);
-    // Mermaid diagrams (task six-wave-d-001): extension config flag, off by
-    // default — until set here, fenced blocks render exactly as before.
+    // Native diagrams are enabled by default; an explicit false keeps source.
     glass_tui::markdown::enable_mermaid(cfg.mermaid);
-    let mermaid_renderer: glass_tui::markdown::MermaidRendererFn =
-        Box::new(move |body: &str, width: usize| {
-            let head = body.trim_start();
-            if head.starts_with("sequenceDiagram") || head.starts_with("sequence") {
-                let fits = crate::mermaid::parse_sequence(body)
-                    .is_some_and(|rows| rows.iter().all(|r| r.chars().count() <= width));
-                return if fits {
-                    crate::mermaid::parse_sequence(body)
-                } else {
-                    None
-                };
-            }
-            if head.starts_with("stateDiagram") {
-                return crate::mermaid::parse_state(body, width);
-            }
-            if head.starts_with("classDiagram") {
-                return crate::mermaid::parse_class(body, width);
-            }
-            if head.starts_with("erDiagram") {
-                return crate::mermaid::parse_er(body, width);
-            }
-            crate::mermaid::parse(body).and_then(|chart| crate::mermaid::render(&chart, width))
-        });
-    glass_tui::markdown::set_mermaid_renderer(mermaid_renderer);
+    let mermaid_renderer: glass_tui::markdown::MermaidRendererResultFn = Box::new(|body, width| {
+        let head = body.lines().map(str::trim).find(|line| !line.is_empty() && !line.starts_with("%%")).unwrap_or("");
+        if width < 8 { return Err("viewport too narrow (minimum 8 cells)".into()); }
+        if head.starts_with("sequenceDiagram") || head == "sequence" {
+            return crate::mermaid::parse_sequence_at(body,width).ok_or_else(||"unsupported sequence syntax or diagram limit".into());
+        }
+        if head.starts_with("stateDiagram") {
+            return crate::mermaid::parse_state(body,width).ok_or_else(||"unsupported state syntax or diagram limit".into());
+        }
+        if head.starts_with("classDiagram") {
+            return crate::mermaid::parse_class(body,width).ok_or_else(||"unsupported class syntax or diagram limit".into());
+        }
+        if head.starts_with("erDiagram") {
+            return crate::mermaid::parse_er(body,width).ok_or_else(||"unsupported ER syntax or diagram limit".into());
+        }
+        if head.starts_with("flowchart") || head.starts_with("graph") {
+            return crate::mermaid::parse(body).and_then(|chart|crate::mermaid::render(&chart,width))
+                .ok_or_else(||"unsupported flowchart syntax or diagram limit".into());
+        }
+        Err(format!("unsupported diagram type: {}", glass_tui::text::clip(head,48)))
+    });
+    glass_tui::markdown::set_mermaid_renderer_detailed(mermaid_renderer);
     status::configure(&cfg.program_status);
     if workflows::headless_info(args, &cfg)? {
         return Ok(());

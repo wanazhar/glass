@@ -1,7 +1,7 @@
 //! Bounded terminal-native Mermaid renderer (task six-wave-d-001, extended
 //! by the six-codebase follow-up).
 //!
-//! Two families render natively; everything else falls back to the source:
+//! Five bounded families render natively; other syntax preserves source:
 //!
 //! - **Flowcharts** — node statements (`A`, `A[label]`, `A("text")`), edges
 //!   (`A --> B`, labeled `A -- text --> B`, arrow-text `A --|text|> B`), and
@@ -20,10 +20,10 @@
 //! Unsupported or overflowing input in any family goes to the
 //! fenced-source fallback — never a halfway drawing.
 //!
-//! Layout: flowchart nodes take one lane each per rank so crossings never
-//! join; sequence diagrams draw participant lifelines and one message band
-//! per event. The result is width-capped; anything exceeding the cap (or
-//! malformed) returns `None` and the caller renders the original block.
+//! Layout: simple flowcharts use ranked lanes; groups, cycles and wide graphs
+//! use compact node/connection lists. Sequence diagrams use lifelines when
+//! they fit and a participant/message list otherwise. Malformed or oversized
+//! input returns `None` and the caller renders the original source.
 
 /// Bounded diagram size. Exceeding either cap falls back to source —
 /// a renderer that draws forever is a worse renderer than no renderer.
@@ -37,8 +37,16 @@ struct Node {
     label: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum EdgeStyle { Solid, Dotted, Thick }
+impl EdgeStyle {
+    fn arrow(self) -> &'static str { match self { Self::Solid => "──▶", Self::Dotted => "┄┄▶", Self::Thick => "━━▶" } }
+    fn stem(self) -> &'static str { match self { Self::Solid => "──", Self::Dotted => "┄┄", Self::Thick => "━━" } }
+}
+
 #[derive(Debug, PartialEq)]
 struct Edge {
+    style: EdgeStyle,
     from: String,
     to: String,
     label: Option<String>,
@@ -53,6 +61,15 @@ pub struct Flowchart {
     direction: Direction,
     nodes: Vec<Node>,
     edges: Vec<Edge>,
+    groups: Vec<Group>,
+}
+
+#[derive(Debug)]
+struct Group {
+    id: String,
+    label: String,
+    parent: Option<usize>,
+    nodes: Vec<String>,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -66,18 +83,188 @@ enum Direction {
 /// here" — the caller falls back to the fenced source, never to a halfway
 /// drawing.
 pub fn parse(body: &str) -> Option<Flowchart> {
-    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
-    let header = lines.next()?;
-    let direction = parse_header(header)?;
-
+    if body.len() > 128 * 1024 { return None; }
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("%%"));
+    let direction = parse_header(lines.next()?.trim_end_matches(';').trim())?;
     let mut chart = Flowchart { direction, ..Flowchart::default() };
+    let mut groups = Vec::new();
     for line in lines {
-        parse_statement(line, &mut chart)?;
+        for statement in split_statements(line)? {
+            let line = statement.trim();
+            if line.is_empty() || line.starts_with("%%") { continue; }
+            if let Some(label) = line.strip_prefix("subgraph ") {
+                if groups.len() >= 8 || chart.groups.len() >= MAX_NODES { return None; }
+                let (id, display) = if let Some((id, tail)) = take_flow_node(label) {
+                    if tail.trim().is_empty() {
+                        flow_node_parts(id)?
+                    } else {
+                        (format!("group_{}",chart.groups.len()), clean_label(label))
+                    }
+                } else { return None; };
+                if display.len() > 4096 || chart.groups.iter().any(|g| g.id == id) { return None; }
+                chart.groups.push(Group { id, label: display, parent: groups.last().copied(), nodes: Vec::new() });
+                groups.push(chart.groups.len() - 1);
+                continue;
+            }
+            if line == "end" { groups.pop()?; continue; }
+            if let Some(direction) = line.strip_prefix("direction ") { parse_header(&format!("flowchart {direction}"))?; continue; }
+            // Mermaid style directives affect decoration, never graph structure or host CSS.
+            if ["classDef ", "class ", "style ", "linkStyle "].iter().any(|prefix| line.starts_with(prefix)) { continue; }
+            let members = parse_flow_statement(line, &mut chart)?;
+            if let Some(group) = groups.last().copied() {
+                for id in members {
+                    if !chart.groups[group].nodes.contains(&id) { chart.groups[group].nodes.push(id); }
+                }
+            }
+        }
     }
-    if chart.nodes.is_empty() {
-        return None;
-    }
+    if chart.nodes.is_empty() || !groups.is_empty() { return None; }
     Some(chart)
+}
+
+fn clean_label(label: &str) -> String {
+    let mut label = label.trim().trim_matches('"').trim_matches('`').to_owned();
+    for marker in ["<br/>", "<br />", "<br>", "<BR/>", "<BR />", "<BR>"] { label = label.replace(marker, " / "); }
+    for (entity, text) in [("&quot;", "\""), ("&lt;", "<"), ("&gt;", ">"), ("&amp;", "&"), ("&nbsp;", " ")] { label = label.replace(entity, text); }
+    glass_tui::markdown::sanitize(&label)
+}
+
+// Split semicolons/comments only outside labels; quoted code and URLs stay intact.
+fn split_statements(line: &str) -> Option<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (at, c) in line.char_indices() {
+        if escaped { escaped = false; continue; }
+        if c == '\\' { escaped = true; continue; }
+        if c == '"' { quoted = !quoted; continue; }
+        if quoted { continue; }
+        if "[({".contains(c) { depth += 1; if depth > 16 { return None; } }
+        if "])}".contains(c) { depth = depth.checked_sub(1)?; }
+        if depth == 0 && line[at..].starts_with("%%") { parts.push(&line[start..at]); return Some(parts); }
+        if depth == 0 && c == ';' { parts.push(&line[start..at]); start = at + 1; }
+    }
+    if quoted || depth != 0 { return None; }
+    parts.push(&line[start..]);
+    Some(parts)
+}
+
+fn take_flow_node(raw: &str) -> Option<(&str, &str)> {
+    let raw = raw.trim_start();
+    let mut end = 0;
+    for (at, c) in raw.char_indices() {
+        if raw[at..].starts_with("--") || raw[at..].starts_with("-.") { break; }
+        if !c.is_ascii_alphanumeric() && c != '_' && c != '-' { break; }
+        end = at + c.len_utf8();
+    }
+    if end == 0 { return None; }
+    let after = raw[end..].trim_start();
+    if after.starts_with(['[', '(', '{']) {
+        let offset = raw.len() - after.len();
+        let mut stack = Vec::new(); let mut quote = false; let mut escaped = false;
+        let mut closed = false;
+        for (at, c) in after.char_indices() {
+            if escaped { escaped = false; continue; }
+            if c == '\\' { escaped = true; continue; }
+            if c == '"' { quote = !quote; continue; }
+            if quote { continue; }
+            if "[({".contains(c) { if stack.len() >= 16 { return None; } stack.push(c); }
+            else if "])}".contains(c) {
+                let open = stack.pop()?;
+                if !matches!((open,c), ('[',']')|('(',')')|('{','}')) { return None; }
+                if stack.is_empty() { end = offset + at + 1; closed = true; break; }
+            }
+        }
+        if !closed { return None; }
+    }
+    let tail = raw[end..].trim_start();
+    if let Some(class) = tail.strip_prefix(":::") {
+        let n = class.find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != ',').unwrap_or(class.len());
+        if n == 0 { return None; }
+        end = raw.len() - class.len() + n;
+    }
+    Some((&raw[..end], &raw[end..]))
+}
+fn flow_node_parts(raw: &str) -> Option<(String,String)> {
+    let (node, tail) = take_flow_node(raw)?;
+    if !tail.trim().is_empty() { return None; }
+    let end = node.find(|c:char| !c.is_ascii_alphanumeric() && c != '_' && c != '-').unwrap_or(node.len());
+    if end > 128 { return None; }
+    let id = node[..end].to_owned();
+    let shape = node[end..].trim();
+    let label = if shape.starts_with(['[','(','{']) {
+        let mut depth = 0usize; let mut quote = false; let mut escaped = false; let mut end = None;
+        for (at,c) in shape.char_indices() {
+            if escaped { escaped = false; continue; }
+            if c == '\\' { escaped = true; continue; }
+            if c == '"' { quote = !quote; continue; }
+            if quote { continue; }
+            if "[({".contains(c) { depth += 1; }
+            if "])}".contains(c) { depth = depth.checked_sub(1)?; if depth == 0 { end = Some(at+1); break; } }
+        }
+        let shape = &shape[..end?];
+        clean_label(shape.trim_start_matches(['[','(','{']).trim_end_matches([']',')','}']))
+    } else { id.clone() };
+    if label.len() > 4096 { return None; }
+    Some((id,label))
+}
+fn flow_node(raw: &str, chart: &mut Flowchart) -> Option<String> {
+    let (id,label) = flow_node_parts(raw)?;
+    if let Some(existing) = chart.nodes.iter_mut().find(|node| node.id == id) {
+        if label != id { existing.label = label; }
+    } else {
+        if chart.nodes.len() >= MAX_NODES { return None; }
+        let label = chart.groups.iter().find(|g| g.id == id).map_or(label, |g| g.label.clone());
+        chart.nodes.push(Node { id:id.clone(), label });
+    }
+    Some(id)
+}
+fn flow_operand<'a>(raw: &'a str, chart: &mut Flowchart) -> Option<(Vec<String>, &'a str)> {
+    let (node,mut tail) = take_flow_node(raw)?;
+    let mut ids = vec![flow_node(node,chart)?];
+    while let Some(after) = tail.trim_start().strip_prefix('&') {
+        let (node,rest) = take_flow_node(after)?;
+        ids.push(flow_node(node,chart)?);tail = rest;
+        if ids.len() > MAX_NODES { return None; }
+    }
+    Some((ids,tail))
+}
+fn flow_arrow(raw: &str) -> Option<(EdgeStyle,Option<String>,&str)> {
+    let raw = raw.trim_start();
+    let style = if raw.starts_with("-.->") { EdgeStyle::Dotted } else if raw.starts_with("==>") { EdgeStyle::Thick } else { EdgeStyle::Solid };
+    let (mut label, mut tail) = if let Some(tail) = raw.strip_prefix("-->").or_else(||raw.strip_prefix("-.->")).or_else(||raw.strip_prefix("==>")) {
+        (None, tail.trim_start())
+    } else if let Some(after) = raw.strip_prefix("--|") {
+        let (label,tail) = after.split_once("|>")?;
+        (Some(clean_label(label)),tail.trim_start())
+    } else {
+        let after = raw.strip_prefix("--")?;
+        let (label,tail) = after.split_once("-->")?;
+        (Some(clean_label(label)),tail.trim_start())
+    };
+    if let Some(after) = tail.strip_prefix('|') {
+        let (text,rest) = after.split_once('|')?;
+        label = Some(clean_label(text)); tail = rest.trim_start();
+    }
+    if label.as_ref().is_some_and(|s|s.is_empty() || s.len()>4096) { return None; }
+    Some((style,label,tail))
+}
+fn parse_flow_statement(line: &str, chart: &mut Flowchart) -> Option<Vec<String>> {
+    let (mut sources,mut tail) = flow_operand(line,chart)?;
+    let mut members = sources.clone();
+    while !tail.trim().is_empty() {
+        let (style,label,rest) = flow_arrow(tail)?;
+        let (targets,rest) = flow_operand(rest,chart)?;
+        for target in &targets { if !members.contains(target) { members.push(target.clone()); } }
+        for source in &sources { for target in &targets {
+            if chart.edges.len() >= MAX_EDGES { return None; }
+            chart.edges.push(Edge {style, from:source.clone(), to:target.clone(), label:label.clone()});
+        }}
+        sources = targets; tail = rest;
+    }
+    Some(members)
 }
 
 // ---- State diagrams (follow-up 2: the third family) ----
@@ -109,7 +296,7 @@ fn state_node(id: &str, chart: &mut Flowchart) -> Option<String> {
 /// the flowchart tree and rank layout are reused unchanged; only the
 /// syntax differs (`[*]`, `-->` transitions, `state "X" as id`, `ID: desc`).
 pub fn parse_state(body: &str, width: usize) -> Option<Vec<String>> {
-    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("%%"));
     let header = lines.next()?;
     if header != "stateDiagram-v2" && header != "stateDiagram" {
         return None;
@@ -200,6 +387,7 @@ pub fn parse_state(body: &str, width: usize) -> Option<Vec<String>> {
             return None;
         }
         chart.edges.push(Edge {
+            style: EdgeStyle::Solid,
             from: source,
             to: target,
             label,
@@ -240,9 +428,36 @@ fn parse_state_alias(rest: &str, chart: &mut Flowchart) -> Option<()> {
 /// entry point because the two families share no tree; `None` means the
 /// source falls back to the fenced block (unsupported syntax, wrong shape,
 /// cap or width exceeded).
+#[cfg(test)]
 pub fn parse_sequence(body: &str) -> Option<Vec<String>> {
     let diagram = parse_sequence_diagram(body)?;
     render_sequence(&diagram)
+}
+
+/// Compact message rows preserve participants and events when lifelines cannot fit.
+pub fn parse_sequence_at(body: &str, width: usize) -> Option<Vec<String>> {
+    if body.len() > 128 * 1024 || width < 8 { return None; }
+    let diagram = parse_sequence_diagram(body)?;
+    if let Some(rows) = render_sequence(&diagram)
+        && rows.iter().all(|row|glass_tui::text::width(row)<=width) { return Some(rows); }
+    let mut rows = Vec::new();
+    let mut append = |text: String| -> Option<()> {
+        rows.extend(glass_tui::text::wrap_words(&text,width.min(88)));
+        (rows.len()<=2048).then_some(())
+    };
+    append("Participants".into())?;
+    for person in &diagram.people { append(format!("[{}] {}",person.id,person.label))?; }
+    append("Messages".into())?;
+    for event in &diagram.events {
+        match event {
+            SequenceEvent::Message {from,to,text,dashed} => append(format!("[{}] {} [{}] · {}",diagram.people[*from].id,
+                if *dashed { "┄┄▶" } else { "──▶" },diagram.people[*to].id,text))?,
+            SequenceEvent::Open(label) => append(format!("╭ {label}"))?,
+            SequenceEvent::Close => append("╰ end".into())?,
+            SequenceEvent::Note {left,right,text} => append(format!("Note [{}]–[{}] · {}",diagram.people[*left].id,diagram.people[*right].id,text))?,
+        }
+    }
+    Some(rows)
 }
 
 fn parse_header(header: &str) -> Option<Direction> {
@@ -251,77 +466,10 @@ fn parse_header(header: &str) -> Option<Direction> {
         .or_else(|| header.strip_prefix("graph"))?
         .trim();
     match rest {
-        "TD" | "TB" => Some(Direction::Down),
-        "LR" => Some(Direction::Right),
+        "TD" | "TB" | "BT" => Some(Direction::Down),
+        "LR" | "RL" => Some(Direction::Right),
         _ => None,
     }
-}
-
-fn parse_statement(line: &str, chart: &mut Flowchart) -> Option<()> {
-    // Edge statements: A --> B, A -- text --> B, A --|text|> B, A -->|text| B.
-    // The link form `A -- text --> B` carries its label between two dash
-    // pairs, so the split point is the FIRST dash-run start, and the target
-    // is whatever follows the arrow head.
-    if let Some(first_dash) = line.find("--") {
-        let (from_part, link_part) = line.split_at(first_dash);
-        let from_part = from_part.trim();
-        if from_part.is_empty() {
-            return None;
-        }
-        // Link part is one of: "--> B", "-->|text| B", "-- text --> B",
-        // "--|text|> B".
-        let (label, target) = if let Some(rest) = link_part.strip_prefix("-->") {
-            match rest.trim().strip_prefix('|') {
-                // A -->|text| B
-                Some(after) => match after.split_once('|') {
-                    Some((text, target)) => {
-                        let text = text.trim();
-                        let target = target.trim();
-                        if text.is_empty() || target.is_empty() {
-                            return None;
-                        }
-                        (Some(text.to_string()), target)
-                    }
-                    None => return None,
-                },
-                None => (None, rest.trim()),
-            }
-        } else {
-            // `-- text --> B` or `--|text|> B`
-            let after = link_part.trim_start_matches('-').trim();
-            if let Some(rest) = after.strip_prefix('|') {
-                let (text, target) = rest.split_once('|')?;
-                let text = text.trim();
-                let target = target.trim().trim_end_matches('>').trim();
-                if text.is_empty() || target.is_empty() {
-                    return None;
-                }
-                (Some(text.to_string()), target)
-            } else {
-                match after.rsplit_once("-->") {
-                    Some((text, target)) => {
-                        let text = text.trim();
-                        let target = target.trim();
-                        if text.is_empty() || target.is_empty() {
-                            return None;
-                        }
-                        (Some(text.to_string()), target)
-                    }
-                    None => return None,
-                }
-            }
-        };
-        let from = node_of(from_part, chart)?;
-        let to = node_of(target, chart)?;
-        if chart.edges.len() >= MAX_EDGES {
-            return None;
-        }
-        chart.edges.push(Edge { from, to, label });
-        return Some(());
-    }
-    // Plain node statement.
-    node_of(line, chart)?;
-    Some(())
 }
 
 /// Node operand: `A`, `A[label]`, `A(text)`, `A("text")`, `A{text}`.
@@ -363,6 +511,33 @@ fn node_of(raw: &str, chart: &mut Flowchart) -> Option<String> {
 /// Render at the given column width. `None` means the diagram cannot fit
 /// under the caps and the caller falls back to the fenced source.
 pub fn render(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
+    if chart.groups.is_empty() && let Some(rows) = render_wide(chart,width) { return Some(rows); }
+    render_compact(chart,width)
+}
+fn render_compact(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
+    let width = width.min(88);
+    if width < 8 { return None; }
+    let mut rows = Vec::new();
+    let mut append = |text: String| -> Option<()> {
+        rows.extend(glass_tui::text::wrap_words(&text,width));
+        (rows.len() <= 2048).then_some(())
+    };
+    append("Nodes".into())?;
+    for node in &chart.nodes { append(format!("[{}] {}",node.id,node.label))?; }
+    for (index,group) in chart.groups.iter().enumerate() {
+        let mut path = vec![group.label.as_str()];
+        let mut parent = group.parent;
+        while let Some(at) = parent { if at >= index { return None; } path.push(chart.groups[at].label.as_str()); parent = chart.groups[at].parent; }
+        path.reverse();
+        append(format!("Group · {}",path.join(" / ")))?;
+        if group.nodes.is_empty() { append("  (no direct nodes)".into())?; }
+        else { append(format!("  {}",group.nodes.iter().map(|id|format!("[{id}]")).collect::<Vec<_>>().join(" · ")))?; }
+    }
+    if !chart.edges.is_empty() { append("Connections".into())?; }
+    for edge in &chart.edges { append(format!("[{}] {} [{}]{}",edge.from,edge.style.arrow(),edge.to,edge.label.as_ref().map(|label|format!(" · {label}")).unwrap_or_default()))?; }
+    Some(rows)
+}
+fn render_wide(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
     let width = width.clamp(1, 88);
     if width < 12 {
         return None;
@@ -428,7 +603,7 @@ pub fn render(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
             if !row.is_empty() {
                 row.push_str("   ");
             }
-            if row.chars().count() + shape.chars().count() > width.saturating_sub(1) {
+            if glass_tui::text::width(&row) + glass_tui::text::width(&shape) > width.saturating_sub(1) {
                 // Too wide for the column: fall back to source.
                 return None;
             }
@@ -441,10 +616,10 @@ pub fn render(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
             for edge in out {
                 let target = chart.nodes.iter().find(|n| n.id == edge.to)?;
                 let suffix = match &edge.label {
-                    Some(l) => format!(" ── {} ──▶ [{}]", l, target.label),
-                    None => format!(" ──▶ [{}]", target.label),
+                    Some(l) => format!(" {} {} {} [{}]", edge.style.stem(), l, edge.style.arrow(), target.label),
+                    None => format!(" {} [{}]", edge.style.arrow(), target.label),
                 };
-                if row.chars().count() + suffix.chars().count() <= width.saturating_sub(1) {
+                if glass_tui::text::width(&row) + glass_tui::text::width(&suffix) <= width.saturating_sub(1) {
                     row.push_str(&suffix);
                 } else {
                     // continues on the next row referencing the same node
@@ -459,7 +634,7 @@ pub fn render(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
     // fallback triggers. Bounded single pass:
     let drawn: usize = rows
         .iter()
-        .map(|row| row.matches("──▶").count())
+        .map(|row| ["──▶", "┄┄▶", "━━▶"].iter().map(|arrow| row.matches(arrow).count()).sum::<usize>())
         .sum();
     if drawn < chart.edges.len() {
         return None;
@@ -472,7 +647,7 @@ pub fn render(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
 /// A class membership arrow: `A <|-- B` means B is a subclass of A.
 /// Rendered as the flowchart tree so rank layout is shared.
 pub fn parse_class(body: &str, width: usize) -> Option<Vec<String>> {
-    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("%%"));
     let header = lines.next()?;
     if header != "classDiagram" {
         return None;
@@ -510,7 +685,7 @@ pub fn parse_class(body: &str, width: usize) -> Option<Vec<String>> {
             (false, Some(l)) => Some(format!("{glyph} {l}")),
             (false, None) => Some(glyph.to_string()),
         };
-        chart.edges.push(Edge { from: from_id, to: target, label });
+        chart.edges.push(Edge { style: EdgeStyle::Solid, from: from_id, to: target, label });
     }
     if chart.nodes.is_empty() {
         return None;
@@ -550,7 +725,7 @@ fn class_ident(raw: &str) -> Option<String> {
 /// (`ENTITY { ... }`) and attribute keys are unsupported — they fall
 /// back to source, stated in the module doc.
 pub fn parse_er(body: &str, width: usize) -> Option<Vec<String>> {
-    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("%%"));
     let header = lines.next()?;
     if header != "erDiagram" {
         return None;
@@ -566,7 +741,7 @@ pub fn parse_er(body: &str, width: usize) -> Option<Vec<String>> {
         if chart.edges.len() >= MAX_EDGES {
             return None;
         }
-        chart.edges.push(Edge { from: source, to: target, label: Some(label) });
+        chart.edges.push(Edge { style: EdgeStyle::Solid, from: source, to: target, label: Some(label) });
     }
     if chart.nodes.is_empty() {
         return None;
@@ -694,7 +869,7 @@ fn take_arrow(rest: &str) -> Option<(bool, bool, &str)> {
 /// Parse a `sequenceDiagram` body. Unsupported syntax returns `None` so the
 /// caller falls back to the source — never a halfway drawing.
 fn parse_sequence_diagram(body: &str) -> Option<SequenceDiagram> {
-    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+    let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("%%"));
     let header = lines.next()?;
     if !(header == "sequenceDiagram" || header == "sequence") {
         return None;
@@ -702,6 +877,7 @@ fn parse_sequence_diagram(body: &str) -> Option<SequenceDiagram> {
     let mut diagram = SequenceDiagram::default();
     let mut nesting = 0usize;
     for line in lines {
+        if diagram.events.len() >= MAX_MESSAGES { return None; }
         if line == "end" {
             if nesting == 0 {
                 return None;
@@ -709,9 +885,6 @@ fn parse_sequence_diagram(body: &str) -> Option<SequenceDiagram> {
             nesting -= 1;
             diagram.events.push(SequenceEvent::Close);
             continue;
-        }
-        if nesting == 0 && diagram.events.len() >= MAX_MESSAGES {
-            return None;
         }
         if let Some(label) = line
             .strip_prefix("participant ")
@@ -727,7 +900,7 @@ fn parse_sequence_diagram(body: &str) -> Option<SequenceDiagram> {
             if label.is_empty() {
                 return None;
             }
-            diagram.people[index].label = label.to_string();
+            diagram.people[index].label = clean_label(label);
             continue;
         }
         let event = if let Some(text) = line.strip_prefix("loop ") {
@@ -772,7 +945,7 @@ fn parse_sequence_diagram(body: &str) -> Option<SequenceDiagram> {
             SequenceEvent::Note {
                 left: left.min(right),
                 right: left.max(right),
-                text: note_text.to_string(),
+                text: clean_label(note_text),
             }
         } else {
             let (from_id, rest) = take_identifier(line)?;
@@ -787,7 +960,7 @@ fn parse_sequence_diagram(body: &str) -> Option<SequenceDiagram> {
             SequenceEvent::Message {
                 from,
                 to,
-                text: if cross { format!("✕ {text}") } else { text.to_string() },
+                text: if cross { format!("✕ {}",clean_label(text)) } else { clean_label(text) },
                 dashed,
             }
         };
@@ -984,6 +1157,94 @@ fn render_sequence(diagram: &SequenceDiagram) -> Option<Vec<String>> {
 mod tests {
     use super::*;
 
+    const ARCHITECTURE: &str = r#"%% architecture
+flowchart TD
+    %% ===== Entry points =====
+    Entry["glass-core binary<br/>src/main.rs"]:::entry
+    Serve["glass-core serve<br/>Unix socket (0600)<br/>JSONL protocol"]:::entry
+    Attach["glass-core attach<br/>terminal client"]:::entry
+    subgraph Crate["Rust workspace crates"]
+        direction TB
+        Core["glass-core"]:::core
+        Tui["glass-tui"]:::ui
+        subgraph Agent["Agent engine"]
+            Loop["Model loop &amp; tools"]
+        end
+    end
+    Entry --> Core & Tui
+    Core --> Loop --> Serve
+    Serve -.-> Attach
+    classDef entry fill:#333,stroke:#888;
+    class Core core
+"#;
+    #[test]
+    fn existing_nodes_join_subgraphs_and_edge_styles_survive() {
+        let chart = parse("flowchart TD\nA[External]\nsubgraph G\nA -.-> B ==> C\nend").unwrap();
+        assert_eq!(chart.groups[0].nodes, vec!["A", "B", "C"]);
+        let rows = render(&chart, 40).unwrap().join("\n");
+        assert!(rows.contains("┄┄▶"));
+        assert!(rows.contains("━━▶"));
+    }
+
+    #[test]
+    fn screenshot_architecture_renders_comments_classes_groups_and_breaks() {
+        let chart = parse(ARCHITECTURE).unwrap();
+        assert_eq!(chart.nodes.len(),6);
+        assert_eq!(chart.edges.len(),5);
+        assert_eq!(chart.groups.len(),2);
+        assert_eq!(chart.groups[0].nodes,vec!["Core","Tui"]);
+        assert_eq!(chart.groups[1].parent,Some(0));
+        for width in [8,12,16,20,34,60,88] {
+            let rows=render(&chart,width).unwrap();
+            assert!(rows.iter().all(|row|glass_tui::text::width(row)<=width));
+            let joined=rows.join(" ");
+            for id in ["Entry","Serve","Attach","Core","Tui","Loop"] { assert!(joined.contains(id),"{joined}"); }
+            assert_eq!(joined.matches("──▶").count(),4);
+            assert_eq!(joined.matches("┄┄▶").count(),1);
+            assert!(!joined.contains("<br"));
+        }
+    }
+    #[test]
+    fn labels_preserve_punctuation_and_late_definitions() {
+        let chart=parse(r#"flowchart LR
+ A --> B; B -->|a call| C
+ B["literal --> ; %% ]::: inside"]:::entry
+ C["Unicode 界 &quot;quoted&quot;"]
+"#).unwrap();
+        assert_eq!(chart.edges.len(),2);
+        assert_eq!(chart.nodes.iter().find(|n|n.id=="B").unwrap().label,"literal --> ; %% ]::: inside");
+        assert!(chart.nodes.iter().find(|n|n.id=="C").unwrap().label.contains("界 \"quoted\""));
+    }
+    #[test]
+    fn cycles_and_fanout_have_complete_compact_connections() {
+        let chart=parse("flowchart TD\n A & B --> C & D\n D ==> A").unwrap();
+        assert_eq!(chart.edges.len(),5);
+        for width in [12,20,40] {
+            let rows=render(&chart,width).unwrap();
+            assert_eq!(rows.join(" ").matches("──▶").count(),4);
+            assert_eq!(rows.join(" ").matches("━━▶").count(),1);
+            assert!(rows.iter().all(|row|glass_tui::text::width(row)<=width));
+        }
+    }
+    #[test]
+    fn malformed_groups_labels_and_unsafe_directives_keep_source() {
+        for source in ["flowchart TD\nend", "flowchart TD\nsubgraph A\nB", "flowchart TD\nA[broken", "flowchart TD\nA -->", "flowchart TD\nclick A callback", "flowchart TD\nsubgraph G\nA\nend\nsubgraph G\nB\nend"] {
+            assert!(parse(source).is_none(),"{source}");
+        }
+        assert!(parse(&"A".repeat(128*1024+1)).is_none());
+    }
+    #[test]
+    fn narrow_sequences_keep_every_event_and_enforce_nested_cap() {
+        let source="sequenceDiagram\nparticipant A as Alice 界\nparticipant B as Bob\nloop checks\nA->>B: request\nB-->>A: reply\nNote over A,B: context\nend";
+        for width in [8,12,20,40,88] {
+            let rows=parse_sequence_at(source,width).unwrap();
+            assert!(rows.iter().all(|row|glass_tui::text::width(row)<=width));
+            let text=rows.join(" ");
+            for marker in ["request","reply","context"] { assert!(text.contains(marker),"{text}"); }
+        }
+        let over=format!("sequenceDiagram\nloop many\n{}end", "A->>B: message\n".repeat(MAX_MESSAGES));
+        assert!(parse_sequence_at(&over,40).is_none());
+    }
     #[test]
     fn parses_a_flowchart_with_labels_and_edges() {
         let chart = parse("flowchart TD\n A[Start] --> B{Decide}\n B -- yes --> C[End]\n B -->|no| D[Retry]").unwrap();
@@ -1141,7 +1402,7 @@ mod tests {
         };
         assert!(parse_state(&chart_body(MAX_NODES), 60).is_none(), "node cap");
         let wide = "stateDiagram-v2\n[*] --> AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --> [*]";
-        assert!(parse_state(wide, 24).is_none(), "width cap falls back");
+        assert!(parse_state(wide, 24).unwrap().iter().all(|row|glass_tui::text::width(row)<=24), "compact state layout");
     }
 
     #[test]
@@ -1174,9 +1435,9 @@ mod tests {
     }
 
     #[test]
-    fn class_diagram_wider_than_the_column_falls_back() {
+    fn class_diagram_wider_than_the_column_compacts() {
         let chart = "classDiagram\n Animal <|-- Dog\n Animal *-- Bone\n Animal o-- Tail\n Animal --> Food: eats\n";
-        assert!(parse_class(chart, 60).is_none(), "fan-out wider than the row falls back");
+        assert!(parse_class(chart, 60).unwrap().iter().all(|row|glass_tui::text::width(row)<=60), "compact class layout");
     }
 
     #[test]

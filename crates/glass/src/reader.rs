@@ -29,6 +29,7 @@ pub struct Reader {
     loaded_spills: LoadedSpills,
     fullscreen: bool,
     title: String,
+    reasoning_streaming: bool,
 }
 
 impl Reader {
@@ -67,6 +68,7 @@ impl Reader {
             loaded_spills,
             fullscreen,
             title: title.into(),
+            reasoning_streaming: false,
         };
         reader.draw()?;
         Ok(reader)
@@ -80,6 +82,33 @@ impl Reader {
     }
     pub fn searching(&self) -> bool {
         self.search.is_some()
+    }
+    /// Refresh a parked live panel before its first frame, avoiding an old-position flash.
+    pub fn reopen_latest(&mut self, entries: Vec<Entry>, streaming: bool) -> io::Result<()> {
+        self.entries = entries;
+        self.transcript.replace_entries(render_entries(&self.entries, &self.expanded_cards, &self.loaded_spills));
+        self.reasoning_streaming = streaming;
+        self.terminal = make_clean_terminal(self.area())?;
+        self.follow_latest()
+    }
+    /// Opening reasoning always returns to the live tail, even after a parked search.
+    pub fn follow_latest(&mut self) -> io::Result<()> {
+        self.search = None;
+        self.transcript.search("");
+        self.match_count = 0;
+        self.selected_card = None;
+        self.unread = 0;
+        let area = Transcript::content_rect(self.layout_area());
+        self.transcript.set_width(area.width);
+        self.transcript.follow_tail(area.height);
+        self.draw()
+    }
+    pub fn set_reasoning_streaming(&mut self, streaming: bool) -> io::Result<()> {
+        if self.reasoning_streaming != streaming {
+            self.reasoning_streaming = streaming;
+            self.draw()?;
+        }
+        Ok(())
     }
     pub fn hide_cursor(&mut self) {
         let _ = self.terminal.hide_cursor();
@@ -281,6 +310,10 @@ impl Reader {
             } else {
                 "Selected output · Enter expand/collapse · Esc back".to_string()
             }
+        } else if self.title == "Provider reasoning" {
+            if !self.transcript.follow { "End latest · Esc back".to_string() }
+            else if self.reasoning_streaming { "Live · Esc back".to_string() }
+            else { "Latest · Esc back".to_string() }
         } else if self.transcript.follow {
             String::new()
         } else if self.unread == 0 {
@@ -299,7 +332,8 @@ impl Reader {
                 use glass_tui::ratatui::{style::{Color, Style}, widgets::Block};
                 let area = frame.area();
                 frame.render_widget(Block::default().style(Style::default().bg(Color::Reset).fg(Color::Gray)), area);
-                self.transcript.draw_in(frame, &[], "Reasoning · Esc back", reasoning_area(area, &self.title));
+                let label = if self.reasoning_streaming { "Reasoning · live" } else { "Reasoning" };
+                self.transcript.draw_in(frame, &[], label, reasoning_area(area, &self.title));
             } else {
                 self.transcript.draw(frame, &[], &self.title);
             }

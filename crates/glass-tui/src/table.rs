@@ -58,21 +58,32 @@ pub(crate) fn separator(raw: &str, count: usize) -> bool {
 pub(crate) struct Table {
     headers: Vec<String>,
     row: usize,
+    align: Vec<Alignment>,
 }
+#[derive(Clone, Copy)]
+enum Alignment { Left, Center, Right }
 impl Table {
-    pub(crate) fn new(headers: Vec<String>) -> Self {
-        Self { headers, row: 0 }
+    pub(crate) fn new(headers: Vec<String>, separator: &str) -> Self {
+        let align = cells(separator).unwrap_or_default().iter().map(|cell| {
+            match (cell.starts_with(':'), cell.ends_with(':')) {
+                (true, true) => Alignment::Center,
+                (false, true) => Alignment::Right,
+                _ => Alignment::Left,
+            }
+        }).collect();
+        Self { headers, row: 0, align }
     }
-    fn columns(&self, width: usize) -> Option<usize> {
+    fn columns(&self, width: usize) -> Option<Vec<usize>> {
         let n = self.headers.len();
-        let column = width.saturating_sub((n - 1) * 3) / n;
-        (column >= 12).then_some(column)
+        let available = width.saturating_sub((n - 1) * 3);
+        let column = available / n;
+        (column >= 12).then(|| (0..n).map(|i| column + usize::from(i < available % n)).collect())
     }
     pub(crate) fn header(&self, width: usize) -> Vec<Line<'static>> {
-        if let Some(column) = self.columns(width) {
-            let mut rows = self.grid(&self.headers, column, true);
+        if let Some(columns) = self.columns(width) {
+            let mut rows = self.grid(&self.headers, &columns, true);
             rows.push(Line::from(Span::styled(
-                "─".repeat((column + 3) * self.headers.len() - 3),
+                columns.iter().map(|column| "─".repeat(*column)).collect::<Vec<_>>().join("─┼─"),
                 crate::markdown::border_style(),
             )));
             rows
@@ -86,10 +97,10 @@ impl Table {
             rows
         }
     }
-    fn grid(&self, cells: &[String], width: usize, header: bool) -> Vec<Line<'static>> {
+    fn grid(&self, cells: &[String], columns: &[usize], header: bool) -> Vec<Line<'static>> {
         let wrapped = cells
-            .iter()
-            .map(|cell| crate::markdown::cell_lines(cell, width))
+            .iter().zip(columns)
+            .map(|(cell, width)| crate::markdown::cell_lines(cell, *width))
             .collect::<Vec<_>>();
         let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
         (0..height)
@@ -101,6 +112,13 @@ impl Table {
                     }
                     let line = lines.get(y).cloned().unwrap_or_default();
                     let used = crate::text::width(&line.to_string());
+                    let padding = columns[x].saturating_sub(used);
+                    let left = match self.align.get(x).unwrap_or(&Alignment::Left) {
+                        Alignment::Left => 0,
+                        Alignment::Center => padding / 2,
+                        Alignment::Right => padding,
+                    };
+                    spans.push(Span::raw(" ".repeat(left)));
                     for mut span in line.spans {
                         if header {
                             span.style = span.style.patch(
@@ -111,9 +129,7 @@ impl Table {
                         }
                         spans.push(span);
                     }
-                    if x + 1 < wrapped.len() {
-                        spans.push(Span::raw(" ".repeat(width.saturating_sub(used))));
-                    }
+                    spans.push(Span::raw(" ".repeat(padding - left)));
                 }
                 Line::from(spans)
             })
@@ -124,8 +140,8 @@ impl Table {
         if cells.len() != self.headers.len() {
             return None;
         }
-        let mut lines = if let Some(column) = self.columns(width) {
-            self.grid(&cells, column, false)
+        let mut lines = if let Some(columns) = self.columns(width) {
+            self.grid(&cells, &columns, false)
         } else {
             let mut lines = Vec::new();
             for (header, value) in self.headers.iter().zip(&cells) {
@@ -155,6 +171,35 @@ impl Table {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn table_rows_and_dividers_fit_every_viewport() {
+        for count in 2..=8 {
+            let headers = (0..count).map(|i| format!("Column {i}")).collect::<Vec<_>>();
+            let separator = format!("|{}|", vec!["---:"; count].join("|"));
+            let raw = format!("|{}|", vec!["**界** long-value-without-spaces-1234567890"; count].join("|"));
+            for width in 1..=100 {
+                let mut table = Table::new(headers.clone(), &separator);
+                let header = table.header(width);
+                let grid = table.columns(width).is_some();
+                if grid {
+                    let divider = header.last().unwrap().to_string();
+                    assert_eq!(crate::text::width(&divider), width);
+                    assert_eq!(divider.matches('┼').count(), count - 1);
+                }
+                for row in header.into_iter().chain(table.row(&raw, width).unwrap()) {
+                    assert!(crate::text::width(&row.to_string()) <= width, "width {width}: {row}");
+                }
+            }
+        }
+    }
+    #[test]
+    fn alignment_and_remainder_cells_are_preserved() {
+        let mut table = Table::new(vec!["Name".into(), "Count".into()], "| :--- | ---: |");
+        let row = table.row("| sample | 42 |", 40).unwrap().remove(0).to_string();
+        assert!(row.starts_with("sample"));
+        assert!(row.ends_with("42"));
+        assert_eq!(crate::text::width(&row), 40);
+    }
     #[test]
     fn malformed_pipes_and_unframed_tables_fall_back_without_panicking() {
         for raw in ["|", "||", "hello | world", "| one |"] {

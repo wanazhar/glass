@@ -8,6 +8,8 @@ External project observations have not been revalidated by this editorial update
 
 ## Latest delivery
 
+- [Output presentation review](reviews/output-presentation-2026-10-15.md)
+
 - [Pre-integration runtime delivery](reviews/preintegration-runtime-2026-10-15.md)
 
 ## Design and contracts

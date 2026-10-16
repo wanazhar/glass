@@ -25,6 +25,9 @@ const view = {
   tab: "activity",
   pending: new Map(),
   generation: 0,
+  streamTruncated: false,
+  reasoningFollow: true,
+  directory: null,
 };
 const limits = { message: 262144, reasoning: 262144, preview: 1048576 };
 const text = (s, max = limits.message) => String(s ?? "").slice(0, max),
@@ -71,10 +74,14 @@ function connection(label, online = true) {
   $("#connection").className = "connection" + (online ? "" : " offline");
   $("#connection").replaceChildren(el("i"), document.createTextNode(label));
 }
+let activityKey = "";
 function updateActivity(label) {
+  const key = `${label || ""}|${view.control}|${view.id}`;
+  if (key === activityKey) return;
+  activityKey = key;
   view.active = Boolean(label);
   $("#activity").classList.toggle("working", view.active);
-  $("#activity-text").textContent = label || "Ready when you are";
+  $("#activity-text").textContent = label || "Ready";
   $("#stop").classList.toggle("hidden", !view.active);
   $("#send-mode").classList.toggle("hidden", !view.active);
   $("#ownership").textContent = view.control
@@ -82,6 +89,51 @@ function updateActivity(label) {
     : "Take control";
   $("#send").disabled = !view.control && Boolean(view.id);
 }
+let viewportFrame = 0;
+function syncViewport() {
+  if (viewportFrame) return;
+  viewportFrame = requestAnimationFrame(() => {
+    viewportFrame = 0;
+    const viewport = window.visualViewport;
+    if (viewport && viewport.scale === 1) {
+      document.documentElement.style.setProperty(
+        "--app-height",
+        `${Math.round(viewport.height)}px`,
+      );
+      document.documentElement.style.setProperty(
+        "--viewport-top",
+        `${Math.round(viewport.offsetTop)}px`,
+      );
+    }
+    follow();
+  });
+}
+window.visualViewport?.addEventListener("resize", syncViewport, {
+  passive: true,
+});
+window.visualViewport?.addEventListener("scroll", syncViewport, {
+  passive: true,
+});
+let resizeEnd;
+window.addEventListener(
+  "resize",
+  () => {
+    $(".app").classList.add("resizing");
+    clearTimeout(resizeEnd);
+    resizeEnd = setTimeout(() => $(".app").classList.remove("resizing"), 200);
+    syncViewport();
+    syncPanels();
+  },
+  { passive: true },
+);
+new ResizeObserver(([entry]) => {
+  document.documentElement.style.setProperty(
+    "--compose-height",
+    `${entry.target.offsetHeight}px`,
+  );
+  follow();
+}).observe($(".compose-zone"));
+syncViewport();
 function atBottom() {
   const n = $("#conversation");
   return n.scrollHeight - n.scrollTop - n.clientHeight < 90;
@@ -113,6 +165,34 @@ let codeId = 0;
 const renderer = {
   code({ text: source, lang }) {
     const language = (lang || "text").split(/\s/)[0].toLowerCase();
+    const labels = {
+      js: "JavaScript",
+      javascript: "JavaScript",
+      ts: "TypeScript",
+      typescript: "TypeScript",
+      py: "Python",
+      python: "Python",
+      sh: "Shell",
+      bash: "Shell",
+      text: "Plain text",
+      json: "JSON",
+      html: "HTML",
+      css: "CSS",
+      sql: "SQL",
+      diff: "Changes",
+    };
+    const label = labels[language] || language;
+    if (language === "diff" || language === "patch") {
+      const id = "code-" + ++codeId;
+      const lines = source
+        .split("\n")
+        .map(
+          (line) =>
+            `<span class="diff-line ${/^(diff |index |--- |\+\+\+ )/.test(line) ? "file" : line.startsWith("@@") ? "hunk" : line.startsWith("+") ? "add" : line.startsWith("-") ? "remove" : ""}">${escape(line) || " "}</span>`,
+        )
+        .join("");
+      return `<div class="code-block"><div class="block-head"><span>Changes</span><span><button data-copy="${id}">Copy</button><button data-preview="${id}">Expand</button></span></div><pre><code id="${id}" class="diff-code">${lines}</code></pre></div>`;
+    }
     const id = "code-" + ++codeId;
     if (language === "mermaid")
       return `<figure class="diagram-block" data-diagram="${id}"><div class="block-head"><span>◇ Mermaid diagram</span><span><button data-render="${id}">Render diagram</button><button data-preview="${id}">Expand</button></span></div><pre><code id="${id}" data-language="mermaid">${escape(source)}</code></pre><div class="diagram-render hidden"></div></figure>`;
@@ -121,7 +201,7 @@ const renderer = {
       !source.includes("\\documentclass")
     )
       return `<div class="math" data-math="display"><code>${escape(source)}</code></div>`;
-    return `<div class="code-block"><div class="block-head"><span>${escape(language)}</span><span><button data-copy="${id}">Copy</button><button data-preview="${id}">Expand</button>${["html", "svg"].includes(language) ? `<button data-html="${id}">Preview</button>` : ""}</span></div><pre><code id="${id}" data-language="${escape(language)}">${escape(source)}</code></pre></div>`;
+    return `<div class="code-block"><div class="block-head"><span>${escape(label)}</span><span><button data-copy="${id}">Copy</button><button data-preview="${id}">Expand</button>${["html", "svg"].includes(language) ? `<button data-html="${id}">Preview</button>` : ""}</span></div><pre><code id="${id}" data-language="${escape(language)}">${escape(source)}</code></pre></div>`;
   },
   table(token) {
     return (
@@ -188,21 +268,13 @@ const observer = new IntersectionObserver(
   },
   { rootMargin: "250px" },
 );
-function markdown(node, source, streaming = false) {
-  node.innerHTML = DOMPurify.sanitize(marked.parse(text(source)), {
-    ADD_ATTR: [
-      "data-language",
-      "data-copy",
-      "data-preview",
-      "data-render",
-      "data-diagram",
-      "data-math",
-      "data-html",
-      "id",
-    ],
-    FORBID_TAGS: ["style", "iframe", "object", "embed", "form", "input"],
-    ALLOW_DATA_ATTR: true,
-  });
+const markdownStates = new WeakMap(),
+  markdownContexts = new WeakMap(),
+  codeSources = new WeakMap();
+function prepareBlock(node, streaming, context) {
+  if (context?.workspace) node.dataset.assetWorkspace = context.workspace;
+  if (context?.base) node.dataset.assetBase = context.base;
+  if (context?.id) node.dataset.assetId = context.id;
   for (const n of node.querySelectorAll("[data-math]")) observer.observe(n);
   if (!streaming)
     for (const n of node.querySelectorAll("code[data-language]"))
@@ -212,34 +284,135 @@ function markdown(node, source, streaming = false) {
     a.target = "_blank";
   }
   for (const img of node.querySelectorAll("img")) {
+    if (img.dataset.assetPrepared) continue;
+    img.dataset.assetPrepared = "true";
     img.loading = "lazy";
     img.decoding = "async";
     const src = img.getAttribute("src") || "";
     if (src && !src.startsWith("data:") && !src.startsWith("blob:")) {
-      if (!/^https?:/i.test(src) && view.id)
+      if (
+        !/^(?:https?:|\/\/)/i.test(src) &&
+        (context?.workspace || context?.id || view.id)
+      ) {
+        const path =
+          !src.startsWith("/") && context?.base
+            ? context.base + "/" + src
+            : src;
         img.src =
-          "/api/file?id=" +
-          encodeURIComponent(view.id) +
+          "/api/file?" +
+          (context?.workspace
+            ? "workspace=" + encodeURIComponent(context.workspace)
+            : "id=" + encodeURIComponent(context?.id || view.id)) +
           "&path=" +
-          encodeURIComponent(src);
-      else {
+          encodeURIComponent(path);
+      } else {
         img.removeAttribute("src");
         img.alt = "External image · open its link to view";
       }
     }
   }
-  if (source.length > limits.message)
-    node.append(
-      el(
-        "p",
-        "notice",
-        "Display preview capped. The full response remains in the host transcript.",
-      ),
-    );
 }
+function markdown(node, source, streaming = false) {
+  const value = text(source);
+  let state = markdownStates.get(node);
+  if (state?.blocks.some((block) => block.node.parentNode !== node))
+    state = null;
+  if (!state) {
+    state = { blocks: [], links: "", source: "" };
+    markdownStates.set(node, state);
+  }
+  const truncated =
+    source.length > limits.message || (streaming && view.streamTruncated);
+  if (
+    state.source === source &&
+    state.streaming === streaming &&
+    Boolean(state.truncated) === truncated
+  )
+    return;
+  state.source = source;
+  state.streaming = streaming;
+  const tokens = marked.lexer(value);
+  const links = JSON.stringify(tokens.links);
+  const blocks = tokens.filter((token) => token.type !== "space");
+  for (let i = 0; i < blocks.length; i++) {
+    const token = blocks[i],
+      cached = state.blocks[i];
+    if (
+      cached &&
+      cached.raw === token.raw &&
+      cached.type === token.type &&
+      state.links === links
+    ) {
+      if ((!streaming || i < blocks.length - 1) && !cached.settled) {
+        prepareBlock(cached.node, false, markdownContexts.get(node));
+        cached.settled = true;
+      }
+      continue;
+    }
+    const list = [token];
+    list.links = tokens.links;
+    const block = el("div", "markdown-block");
+    block.innerHTML = DOMPurify.sanitize(marked.parser(list), {
+      ADD_ATTR: [
+        "data-language",
+        "data-copy",
+        "data-preview",
+        "data-render",
+        "data-diagram",
+        "data-math",
+        "data-html",
+        "id",
+      ],
+      FORBID_TAGS: ["style", "iframe", "object", "embed", "form", "input"],
+      ALLOW_DATA_ATTR: true,
+    });
+    const settled = !streaming || i < blocks.length - 1;
+    prepareBlock(block, !settled, markdownContexts.get(node));
+    const diff = block.querySelector(".diff-code");
+    if (diff) codeSources.set(diff, token.text);
+    if (cached) cached.node.replaceWith(block);
+    else node.append(block);
+    state.blocks[i] = {
+      raw: token.raw,
+      type: token.type,
+      node: block,
+      settled,
+    };
+  }
+  for (const stale of state.blocks.splice(blocks.length)) stale.node.remove();
+  state.links = links;
+  let cap = node.querySelector(":scope > .display-cap");
+  state.truncated ||=
+    source.length > limits.message || (streaming && view.streamTruncated);
+  if (state.truncated) {
+    if (!cap)
+      node.append(
+        el(
+          "p",
+          "notice display-cap",
+          "Preview limit reached · full response saved on host",
+        ),
+      );
+  } else cap?.remove();
+}
+function finishStream() {
+  if (!view.stream) return;
+  const node = view.stream;
+  view.stream = null;
+  markdown(node, view.streamText, false);
+  node.closest("article")?.classList.remove("streaming");
+}
+
 async function enhance(n) {
+  if (n.dataset.enhanced) return;
+  n.dataset.enhanced = "true";
   try {
-    if (n.dataset.math) {
+    if (n.dataset.language === "mermaid") {
+      if (n.textContent.length <= 16000) {
+        const button = n.closest("figure")?.querySelector("[data-render]");
+        if (button && !button.disabled) await renderDiagram(button, n.id);
+      }
+    } else if (n.dataset.math) {
       const source = n.textContent;
       const { math } = await loadMath();
       if (n.isConnected)
@@ -254,24 +427,40 @@ async function enhance(n) {
       if (html && n.isConnected) n.innerHTML = html;
     }
   } catch {
+    delete n.dataset.enhanced;
     /* Source stays readable when an optional renderer fails. */
   }
 }
 function message(role, source, target = $("#timeline")) {
   view.group = null;
-  view.stream = null;
+  finishStream();
+  const retained = view.reuseMessages?.get(role + "\0" + text(source))?.shift();
+  if (retained) {
+    const body = retained.querySelector(".prose");
+    if (role !== "user") {
+      const state = markdownStates.get(body);
+      if (state && text(state.source) === text(source)) state.source = source;
+      else markdown(body, source);
+    }
+    delete retained.dataset.recordIndex;
+    target.append(retained);
+    return body;
+  }
   const article = el("article", "message " + role);
   article.append(el("div", "message-meta", role === "user" ? "You" : "Glass"));
   const body = el("div", "prose");
   if (role === "user") {
     body.textContent = source;
     body.style.whiteSpace = "pre-wrap";
-  } else markdown(body, source);
+  } else {
+    markdownContexts.set(body, { id: view.id });
+    markdown(body, source);
+  }
   article.append(body);
   if (role !== "user") {
     const actions = el("div", "message-actions");
-    const copy = el("button", "", "Copy response");
-    copy.onclick = () => copyText(source);
+    const copy = el("button", "", "Copy");
+    copy.onclick = () => copyText(markdownStates.get(body)?.source || source);
     actions.append(copy);
     article.append(actions);
   }
@@ -289,9 +478,9 @@ function group(target = $("#timeline")) {
 }
 function tool(id, name, command = "", target = $("#timeline")) {
   if (id && view.tools.has(id)) return view.tools.get(id);
-  view.stream = null;
+  finishStream();
   const parent = group(target);
-  const row = el("details", "tool-row");
+  const row = el("details", "tool-row running");
   const summary = el("summary");
   summary.append(
     el("span", "tool-icon", "◇"),
@@ -320,6 +509,12 @@ function tool(id, name, command = "", target = $("#timeline")) {
   if (id) view.tools.set(id, item);
   return item;
 }
+function toolStatus(t, failed = false) {
+  t.row.classList.remove("running");
+  t.row.classList.add("completed");
+  t.row.classList.toggle("failed", failed);
+  t.row.querySelector(".tool-icon").textContent = failed ? "×" : "✓";
+}
 function record(r, target) {
   switch (r.k) {
     case "user":
@@ -345,12 +540,13 @@ function record(r, target) {
     case "bash": {
       const t = tool(r.id, "bash", r.cmd, target);
       t.output.textContent = text("$ " + r.cmd + "\n" + r.out, limits.preview);
-      t.row.classList.toggle("failed", r.code !== 0 && r.code != null);
+      toolStatus(t, r.code !== 0 && r.code != null);
       break;
     }
     case "tool": {
       const t = tool(r.id, r.name, "", target);
       t.output.textContent = text(r.t, limits.preview);
+      toolStatus(t, /^error:/i.test(r.t || ""));
       break;
     }
     case "meta":
@@ -403,13 +599,42 @@ async function history(older = false) {
     [...view.tools.entries()].filter(([, t]) => t.row.open).map(([id]) => id),
   );
   const expandedGroups = new Set(
-    [...document.querySelectorAll("#timeline .work-group[open]")].map((n) => n.dataset.recordIndex),
+    [...document.querySelectorAll("#timeline .work-group[open]")].map(
+      (n) => n.dataset.recordIndex,
+    ),
   );
   if (!older) {
     view.tools.clear();
     view.reasoning = "";
   }
-  const fragment = document.createDocumentFragment();
+  const fragment = older
+    ? document.createDocumentFragment()
+    : {
+        nodes: [],
+        append(node) {
+          this.nodes.push(node);
+        },
+        get lastElementChild() {
+          return this.nodes.at(-1);
+        },
+      };
+  if (!older) {
+    view.reuseMessages = new Map();
+    for (const node of $("#timeline").querySelectorAll(":scope > .message")) {
+      const role = node.classList.contains("user") ? "user" : "assistant";
+      const body = node.querySelector(".prose");
+      const key =
+        role +
+        "\0" +
+        text(
+          role === "user"
+            ? body.textContent
+            : markdownStates.get(body)?.source || "",
+        );
+      if (!view.reuseMessages.has(key)) view.reuseMessages.set(key, []);
+      view.reuseMessages.get(key).push(node);
+    }
+  }
   const savedGroup = view.group;
   view.group = null;
   for (const item of h.records) {
@@ -420,7 +645,15 @@ async function history(older = false) {
   }
   view.group = null;
   if (!older) {
-    $("#timeline").replaceChildren(fragment);
+    view.reuseMessages = null;
+    const timeline = $("#timeline"),
+      keep = new Set(fragment.nodes);
+    for (const node of [...timeline.children])
+      if (!keep.has(node)) node.remove();
+    for (let i = 0; i < fragment.nodes.length; i++) {
+      if (timeline.children[i] !== fragment.nodes[i])
+        timeline.insertBefore(fragment.nodes[i], timeline.children[i] || null);
+    }
   } else {
     $("#timeline").prepend(fragment);
     view.group = savedGroup;
@@ -459,13 +692,21 @@ $("#older").onclick = async () => {
 };
 function schedule() {
   if (view.frame) return;
-  view.frame = setTimeout(() => {
-    view.frame = 0;
-    requestAnimationFrame(() => {
-      if (view.stream) markdown(view.stream, view.streamText, true);
-      follow();
-    });
-  }, 100);
+  view.frame = setTimeout(
+    () => {
+      view.frame = 0;
+      requestAnimationFrame(() => {
+        if (view.stream) markdown(view.stream, view.streamText, true);
+        if (view.tab === "reasoning") details();
+        follow();
+      });
+    },
+    view.streamText.length > 196608
+      ? 250
+      : view.streamText.length > 65536
+        ? 160
+        : 80,
+  );
 }
 function event(m) {
   switch (m.t) {
@@ -487,6 +728,7 @@ function event(m) {
       view.group = null;
       view.stream = null;
       view.streamText = "";
+      view.streamTruncated = false;
       if (view.pending.has(m.request_id)) {
         const pending = view.pending.get(m.request_id);
         pending.status = "started";
@@ -526,15 +768,28 @@ function event(m) {
       if (!view.stream) {
         view.stream = message("assistant", "");
         view.streamText = "";
+        view.streamTruncated = false;
       }
-      view.streamText = text(view.streamText + (m.delta || ""));
+      view.stream.closest("article").classList.add("streaming");
+      const appended = text(view.streamText + (m.delta || ""));
+      const changed = appended !== view.streamText;
+      const capped =
+        view.streamText.length + (m.delta || "").length > limits.message;
+      const showCap = capped && !view.streamTruncated;
+      view.streamTruncated ||= capped;
+      view.streamText = appended;
       updateActivity("Writing");
-      schedule();
+      if (changed || showCap) schedule();
       break;
     case "reasoning":
-      view.reasoning = text(view.reasoning + (m.delta || ""), limits.reasoning);
-      updateActivity("Reasoning");
-      if (view.tab === "reasoning") details();
+      {
+        const next = text(view.reasoning + (m.delta || ""), limits.reasoning);
+        const changed = next !== view.reasoning;
+        view.reasoning = next;
+        updateActivity("Reasoning");
+        if (changed) schedule();
+      }
+
       break;
     case "tool":
       tool(m.call_id, m.name, m.command || "");
@@ -554,10 +809,7 @@ function event(m) {
         (m.truncated
           ? "\nPreview capped · full output remains on the host."
           : "");
-      t.row.classList.toggle(
-        "failed",
-        /failed|error:|exit [1-9]/i.test(m.summary || ""),
-      );
+      toolStatus(t, /failed|error:|exit [1-9]/i.test(m.summary || ""));
       details();
       follow();
       break;
@@ -595,8 +847,7 @@ function event(m) {
       notice(m.message, true);
       break;
     case "done":
-      if (view.stream) markdown(view.stream, view.streamText);
-      view.stream = null;
+      finishStream();
       view.streamText = "";
       view.group = null;
       view.interaction = null;
@@ -611,13 +862,15 @@ function event(m) {
 async function openThread(id) {
   if (view.source) view.source.close();
   view.source = null;
-  view.generation++;
+  const generation = ++view.generation;
   view.id = id;
   view.tools.clear();
   view.group = null;
   view.stream = null;
   view.streamText = "";
   view.reasoning = "";
+  view.tasks = [];
+  view.streamTruncated = false;
   view.interaction = null;
   view.control = false;
   view.follow = true;
@@ -625,8 +878,9 @@ async function openThread(id) {
   interaction();
   clearNotice();
   $("#welcome").classList.add("hidden");
-  $("#sidebar").classList.remove("open");
-  $("#scrim").classList.remove("open");
+  closePanels();
+  $("#timeline").replaceChildren(el("div", "loading-surface"));
+  connection("Connecting");
   const thread = view.threads.find((t) => t.session === id);
   $("#thread-name").textContent = thread?.title || "Conversation";
   $("#workspace-name").textContent = (thread?.workspace || "Workspace")
@@ -639,11 +893,12 @@ async function openThread(id) {
   renderThreads();
   try {
     await api("open", { id });
+    if (generation !== view.generation) return;
     await history();
+    if (generation !== view.generation) return;
     follow();
     const source = new EventSource("/api/events?id=" + encodeURIComponent(id));
     view.source = source;
-    const generation = view.generation;
     let eventChain = Promise.resolve();
     source.onopen = () => connection("Connected");
     source.onerror = () => connection("Reconnecting", false);
@@ -669,6 +924,9 @@ async function openThread(id) {
         .catch((error) => notice(error.message, true));
     };
   } catch (e) {
+    if (generation !== view.generation) return;
+    $("#timeline .loading-surface")?.remove();
+    connection("Unavailable", false);
     notice(e.message, true);
     updateActivity(null);
   }
@@ -691,14 +949,15 @@ function renderThreads() {
         .includes(search)
     )
       continue;
+    const workspaceKey = thread.workspace || "Other";
     const name =
       (thread.workspace || "Other").split("/").filter(Boolean).pop() ||
       "Workspace";
-    if (!groups.has(name)) {
+    if (!groups.has(workspaceKey)) {
       const section = el("section", "thread-group");
       section.append(el("div", "group-label", "⌘ " + name));
       container.append(section);
-      groups.set(name, section);
+      groups.set(workspaceKey, section);
     }
     const button = el(
       "button",
@@ -721,15 +980,21 @@ function renderThreads() {
     );
     button.append(small);
     button.onclick = () => openThread(thread.session);
-    groups.get(name).append(button);
+    groups.get(workspaceKey).append(button);
   }
   if (!container.children.length)
-    container.append(el("p", "empty", "No threads yet. Start something new."));
+    container.append(el("p", "empty", "No threads"));
 }
 $("#search").oninput = renderThreads;
-async function newThread() {
+async function newThread(workspace) {
   try {
-    const { id } = await api("new", {});
+    const { id } = await api("new", {
+      workspace:
+        typeof workspace === "string"
+          ? workspace
+          : view.threads.find((t) => t.session === view.id)?.workspace ||
+            view.workspace,
+    });
     await loadThreads();
     await openThread(id);
     $("#prompt").focus();
@@ -753,7 +1018,11 @@ $("#composer").onsubmit = async (e) => {
       notice("Take control before sending a message.");
       return;
     }
-    const id = crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("");
+    const id =
+      crypto.randomUUID?.() ??
+      Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) =>
+        b.toString(16).padStart(2, "0"),
+      ).join("");
     view.lastPrompt = value;
     const queued = view.active;
     const steering = queued && $("#send-mode").dataset.mode !== "queue";
@@ -894,15 +1163,18 @@ function interaction() {
 function details() {
   const n = $("#detail-content");
   if (!$("#details").classList.contains("open")) return;
-  n.replaceChildren();
+  if (view.tab === "files") {
+    if (n.dataset.tab !== "files") browseDirectory();
+    return;
+  }
+  if (view.tab !== "reasoning" || n.dataset.tab !== "reasoning")
+    n.replaceChildren();
+  n.dataset.tab = view.tab;
   if (view.tab === "reasoning") {
-    const body = el("div", "prose");
-    markdown(
-      body,
-      view.reasoning || "Provider-exposed reasoning will appear here.",
-    );
-    n.append(body);
-    if (view.follow) n.scrollTop = n.scrollHeight;
+    const body = n.querySelector(".prose") || el("div", "prose");
+    markdown(body, view.reasoning || "No reasoning yet.");
+    if (!body.isConnected) n.append(body);
+    if (view.reasoningFollow) n.scrollTop = n.scrollHeight;
   } else if (view.tab === "context") {
     const thread = view.threads.find((t) => t.session === view.id) || {};
     for (const [name, value] of [
@@ -955,49 +1227,377 @@ function details() {
       card.append(button);
       n.append(card);
     }
-    if (!n.children.length)
-      n.append(
-        el("p", "", "Tool activity will appear here as work progresses."),
-      );
+    if (!n.children.length) n.append(el("p", "", "No tool activity."));
     const agents = el("button", "quiet", "Inspect teammates");
     agents.onclick = () => loadAgents();
     n.append(agents);
   }
 }
-$("#details-toggle").onclick = () => {
-  $("#details").classList.toggle("open");
-  details();
+function syncPanels() {
+  const mobile = matchMedia("(max-width:700px)").matches;
+  const overlay = matchMedia("(max-width:1100px)").matches;
+  const left = mobile && $("#sidebar").classList.contains("open");
+  const right = overlay && $("#details").classList.contains("open");
+  $("#scrim").classList.toggle("open", left || right);
+  $("#sidebar").inert = mobile && !left;
+  $("#sidebar").setAttribute("aria-hidden", String(mobile && !left));
+  $("#details").inert = !$("#details").classList.contains("open");
+  $("#details").setAttribute("aria-hidden", String($("#details").inert));
+  $("#menu").setAttribute("aria-expanded", String(left));
+  $("#details-toggle").setAttribute(
+    "aria-expanded",
+    String($("#details").classList.contains("open")),
+  );
+  $(".workspace").inert = left || right;
+}
+function closePanels() {
+  $("#sidebar").classList.remove("open");
+  $("#details").classList.remove("open");
+  syncPanels();
+}
+function showPanel(panel, open = true, force = false) {
+  const target = $(panel),
+    wasOpen = target.classList.contains("open");
+  closePanels();
+  target.classList.toggle("open", open && (force || !wasOpen));
+  if (document.activeElement instanceof HTMLElement)
+    document.activeElement.blur();
+  syncPanels();
+  if (panel === "#details" && target.classList.contains("open")) details();
+}
+$("#details-toggle").onclick = () => showPanel("#details");
+$("#details-close").onclick = () => {
+  closePanels();
+  $("#details-toggle").focus();
 };
-$("#details-close").onclick = () => $("#details").classList.remove("open");
+$("#sidebar-close").onclick = () => {
+  closePanels();
+  $("#menu").focus();
+};
+$("#detail-content").addEventListener(
+  "scroll",
+  () => {
+    const n = $("#detail-content");
+    if (view.tab === "reasoning")
+      view.reasoningFollow = n.scrollHeight - n.scrollTop - n.clientHeight < 60;
+  },
+  { passive: true },
+);
 for (const tab of document.querySelectorAll("[data-tab]"))
   tab.onclick = () => {
     view.tab = tab.dataset.tab;
+    if (view.tab === "reasoning") view.reasoningFollow = true;
     document
       .querySelectorAll("[data-tab]")
       .forEach((n) => n.classList.toggle("selected", n === tab));
     details();
   };
-$("#menu").onclick = () => {
-  $("#sidebar").classList.toggle("open");
-  $("#scrim").classList.toggle("open");
-};
-$("#scrim").onclick = () => {
-  $("#sidebar").classList.remove("open");
-  $("#scrim").classList.remove("open");
-};
+$("#menu").onclick = () => showPanel("#sidebar");
+$("#scrim").onclick = () => closePanels();
+syncPanels();
 $("#theme").onclick = () => document.documentElement.classList.toggle("light");
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "k") {
     e.preventDefault();
-    $("#sidebar").classList.add("open");
+    showPanel("#sidebar", true, true);
     $("#search").focus();
   }
   if (e.key === "Escape") {
-    $("#details").classList.remove("open");
-    $("#sidebar").classList.remove("open");
-    $("#scrim").classList.remove("open");
+    closePanels();
   }
 });
+let browseVersion = 0,
+  browseAbort;
+const sizes = new Map();
+function bytes(value) {
+  if (value == null) return "—";
+  if (value < 1024) return `${value} B`;
+  const power = Math.min(4, Math.floor(Math.log(value) / Math.log(1024)));
+  return `${(value / 1024 ** power).toFixed(power > 1 ? 1 : 0)} ${["B", "KiB", "MiB", "GiB", "TiB"][power]}`;
+}
+async function browseDirectory(path, offset = 0) {
+  const version = ++browseVersion;
+  browseAbort?.abort();
+  browseAbort = new AbortController();
+  path ??=
+    view.directory ||
+    view.threads.find((t) => t.session === view.id)?.workspace ||
+    view.workspace;
+  const content = $("#detail-content");
+  content.dataset.tab = "files";
+  content.replaceChildren(el("div", "loading-surface"));
+  try {
+    const result = await api(
+      `browse?path=${encodeURIComponent(path || "")}&offset=${offset}`,
+      undefined,
+      browseAbort.signal,
+    );
+    if (version !== browseVersion || view.tab !== "files") return;
+    view.directory = result.path;
+    view.directoryResult = result;
+    renderDirectory(result);
+  } catch (e) {
+    if (
+      e.name !== "AbortError" &&
+      version === browseVersion &&
+      view.tab === "files"
+    ) {
+      if (view.directoryResult) renderDirectory(view.directoryResult);
+      else {
+        content.replaceChildren();
+        const back = el("button", "quiet", "Workspace");
+        back.onclick = () => browseDirectory(view.workspace);
+        content.append(back);
+      }
+      content.prepend(el("p", "notice error", e.message));
+    }
+  }
+}
+function renderDirectory(result) {
+  const content = $("#detail-content");
+  content.replaceChildren();
+  content.dataset.tab = "files";
+  const controls = el("div", "file-controls");
+  const up = el("button", "icon-button", "↑");
+  up.title = "Parent directory";
+  up.setAttribute("aria-label", "Parent directory");
+  up.disabled = !result.parent;
+  up.onclick = () => browseDirectory(result.parent);
+  const home = el("button", "icon-button", "⌂");
+  home.title = "Launch workspace";
+  home.setAttribute("aria-label", "Launch workspace");
+  home.onclick = () => browseDirectory(view.workspace);
+  const start = el("button", "quiet file-start", "New thread here");
+  start.onclick = () => newThread(result.path);
+  controls.append(up, home, start);
+  content.append(controls);
+  const form = el("form", "file-path");
+  const path = el("input");
+  path.value = result.path;
+  path.setAttribute("aria-label", "Directory path");
+  path.autocomplete = "off";
+  path.spellcheck = false;
+  const go = el("button", "icon-button", "→");
+  go.setAttribute("aria-label", "Open directory");
+  form.append(path, go);
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    browseDirectory(path.value);
+  };
+  content.append(form);
+  const head = el("div", "file-heading");
+  const hidden = el(
+    "button",
+    "quiet",
+    view.showHidden ? "Hide dotfiles" : "Dotfiles",
+  );
+  hidden.setAttribute("aria-pressed", String(Boolean(view.showHidden)));
+  hidden.onclick = () => {
+    view.showHidden = !view.showHidden;
+    renderDirectory(result);
+  };
+  const measure = el("button", "quiet", "Measure");
+  measure.title = "Measure disk usage · bounded scan";
+  measure.onclick = async () => {
+    measure.disabled = true;
+    try {
+      const usage = await api(`usage?path=${encodeURIComponent(result.path)}`);
+      if (view.directory === result.path && view.tab === "files")
+        measure.textContent = `${usage.partial ? "≥ " : ""}${bytes(usage.bytes)}`;
+    } catch (e) {
+      notice(e.message, true);
+    } finally {
+      measure.disabled = false;
+    }
+  };
+  const sort = el(
+    "button",
+    "quiet",
+    view.fileSort === "size" ? "Size ↓" : "Name",
+  );
+  sort.setAttribute("aria-label", "Sort files");
+  sort.onclick = () => {
+    view.fileSort = view.fileSort === "size" ? "name" : "size";
+    renderDirectory(result);
+  };
+  head.append(hidden, sort, measure);
+  content.append(head);
+  const list = el("div", "file-list");
+  const entries = result.entries.filter(
+    (entry) => view.showHidden || !entry.name.startsWith("."),
+  );
+  const fullPath = (name) => `${result.path.replace(/\/$/, "")}/${name}`;
+  if (view.fileSort === "size")
+    entries.sort(
+      (a, b) =>
+        (sizes.get(fullPath(b.name))?.bytes || b.bytes) -
+        (sizes.get(fullPath(a.name))?.bytes || a.bytes),
+    );
+  const largest = Math.max(
+    1,
+    ...entries.map(
+      (entry) => sizes.get(fullPath(entry.name))?.bytes || entry.bytes,
+    ),
+  );
+  for (const entry of entries) {
+    const full = `${result.path.replace(/\/$/, "")}/${entry.name}`;
+    const row = el("div", "file-row");
+    row.dataset.kind = entry.kind;
+    const open = el("button", "file-open");
+    open.title = entry.name;
+    open.append(
+      el(
+        "span",
+        "file-icon",
+        entry.kind === "directory" ? "▱" : entry.kind === "link" ? "↗" : "▤",
+      ),
+      el("span", "file-name", entry.name),
+    );
+    open.onclick = async () => {
+      if (entry.kind === "directory") return browseDirectory(full);
+      if (entry.kind === "link") {
+        try {
+          const target = await api(`browse?path=${encodeURIComponent(full)}`);
+          view.directory = target.path;
+          view.directoryResult = target;
+          renderDirectory(target);
+        } catch {
+          return openFile(entry.name, result.path);
+        }
+      } else return openFile(entry.name, result.path);
+    };
+    open.disabled = entry.kind === "special";
+    const known = sizes.get(full);
+    const size = el(
+      "button",
+      "file-size",
+      entry.kind === "directory"
+        ? known
+          ? `${known.partial ? "≥ " : ""}${bytes(known.bytes)}`
+          : "—"
+        : bytes(entry.bytes),
+    );
+    size.title =
+      entry.kind === "directory"
+        ? "Measure disk usage"
+        : `${bytes(entry.size)} logical · ${bytes(entry.bytes)} allocated`;
+    size.setAttribute(
+      "aria-label",
+      entry.kind === "directory" ? `Measure ${entry.name}` : size.title,
+    );
+    if (entry.kind === "directory")
+      size.onclick = async () => {
+        size.disabled = true;
+        size.textContent = "···";
+        try {
+          const usage = await api(`usage?path=${encodeURIComponent(full)}`);
+          if (sizes.size >= 256) sizes.clear();
+          sizes.set(full, usage);
+          if (view.directory === result.path && view.tab === "files")
+            renderDirectory(result);
+        } catch (e) {
+          notice(e.message, true);
+        } finally {
+          size.disabled = false;
+        }
+      };
+    else size.disabled = true;
+    const bar = el("span", "file-bar");
+    bar.style.width = `${Math.min(100, (100 * (known?.bytes || entry.bytes)) / largest)}%`;
+    row.append(bar, open, size);
+    list.append(row);
+  }
+  if (!entries.length)
+    list.append(
+      el(
+        "p",
+        "empty",
+        result.entries.length ? "Dotfiles hidden" : "Empty directory",
+      ),
+    );
+  content.append(list);
+  if (result.next != null) {
+    const more = el("button", "quiet", "Next 256");
+    more.onclick = () => browseDirectory(result.path, result.next);
+    content.append(more);
+  }
+  if (result.limited)
+    content.append(el("small", "file-limit", "Showing a bounded page"));
+}
+function showFiles() {
+  view.tab = "files";
+  document
+    .querySelectorAll("[data-tab]")
+    .forEach((n) => n.classList.toggle("selected", n.dataset.tab === "files"));
+  showPanel("#details", true, true);
+}
+$("#welcome-files").onclick = showFiles;
+$("#files-toggle").onclick = showFiles;
+let fileVersion = 0,
+  fileAbort;
+async function openFile(path, workspace) {
+  try {
+    path = decodeURIComponent(path.split("#")[0]);
+  } catch {
+    path = path.split("#")[0];
+  }
+  preview(path, "File", "", "text");
+  const version = fileVersion;
+  fileAbort = new AbortController();
+  $("#preview-body").replaceChildren(el("div", "loading-surface"));
+  $("#download").disabled = true;
+  try {
+    const query = workspace
+      ? `workspace=${encodeURIComponent(workspace)}`
+      : `id=${encodeURIComponent(view.id)}`;
+    const r = await fetch(
+      `/api/file?${query}&path=${encodeURIComponent(path)}`,
+      { signal: fileAbort.signal },
+    );
+    if (!r.ok) {
+      const error = await r.json();
+      throw Error(error.error || "Cannot read file");
+    }
+    if (version !== fileVersion || !$("#preview").open) return;
+    const type = r.headers.get("Content-Type") || "";
+    if (type === "application/pdf") {
+      const source = await r.arrayBuffer();
+      if (version === fileVersion && $("#preview").open)
+        preview(path, "PDF", source, "pdf");
+    } else if (type.startsWith("image/")) {
+      const blob = await r.blob();
+      if (version !== fileVersion || !$("#preview").open) return;
+      const url = URL.createObjectURL(blob);
+      preview(path, "Image", url, "image");
+      $("#preview").addEventListener("close", () => URL.revokeObjectURL(url), {
+        once: true,
+      });
+    } else {
+      const source = await r.text();
+      if (version !== fileVersion || !$("#preview").open) return;
+      preview(
+        path,
+        path.split(".").pop(),
+        source,
+        /\.(html?|svg)$/i.test(path)
+          ? "html"
+          : /\.(md|markdown)$/i.test(path)
+            ? "markdown"
+            : /\.json$/i.test(path)
+              ? "json"
+              : "text",
+        {
+          workspace,
+          id: view.id,
+          base: path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "",
+        },
+      );
+    }
+  } catch (e) {
+    if (e.name !== "AbortError" && version === fileVersion)
+      $("#preview-body").replaceChildren(el("p", "notice error", e.message));
+  }
+}
 async function loadAgents() {
   try {
     const agents = await api("agents?id=" + encodeURIComponent(view.id));
@@ -1033,24 +1633,34 @@ async function loadAgents() {
     notice(e.message, true);
   }
 }
-let previewBlob;
-function preview(title, kind, source, format = "text") {
+let previewBlob, previewController;
+function preview(title, kind, source, format = "text", context) {
   const dialog = $("#preview");
+  ++fileVersion;
+  fileAbort?.abort();
+  previewController?.abort();
+  previewController = new AbortController();
+  const signal = previewController.signal;
+  $("#download").disabled = false;
   $("#preview-title").textContent = title;
   $("#preview-kind").textContent = kind;
   const body = $("#preview-body");
   body.replaceChildren();
+  body.className = "";
   if (previewBlob) URL.revokeObjectURL(previewBlob);
-  previewBlob = URL.createObjectURL(
-    new Blob([source], {
-      type:
-        format === "pdf"
-          ? "application/pdf"
-          : format === "html"
-            ? "text/html"
-            : "text/plain",
-    }),
-  );
+  previewBlob =
+    format === "image"
+      ? source
+      : URL.createObjectURL(
+          new Blob([source], {
+            type:
+              format === "pdf"
+                ? "application/pdf"
+                : format === "html"
+                  ? "text/html"
+                  : "text/plain",
+          }),
+        );
   $("#download").onclick = () => {
     const a = el("a");
     a.href = previewBlob;
@@ -1091,6 +1701,7 @@ function preview(title, kind, source, format = "text") {
     (mermaidPromise ??= import("./mermaid.js"))
       .then(({ diagram }) => diagram(source))
       .then((svg) => {
+        if (signal.aborted) return;
         target.innerHTML = DOMPurify.sanitize(svg, {
           USE_PROFILES: { svg: true, svgFilters: true },
         });
@@ -1102,8 +1713,12 @@ function preview(title, kind, source, format = "text") {
       );
   } else if (format === "pdf") {
     import("./pdf.js")
-      .then(({ pdf }) => pdf(body, source))
-      .catch((e) => body.append(el("p", "notice", e.message)));
+      .then(({ pdf }) => {
+        if (!signal.aborted) return pdf(body, source, signal);
+      })
+      .catch((e) => {
+        if (!signal.aborted) body.append(el("p", "notice", e.message));
+      });
   } else if (format === "json") {
     let value;
     try {
@@ -1138,6 +1753,7 @@ function preview(title, kind, source, format = "text") {
     body.append(tree(value, "root"));
   } else if (format === "markdown") {
     body.className = "prose";
+    markdownContexts.set(body, context || { id: view.id });
     markdown(body, source);
   } else if (format === "image") {
     const img = el("img");
@@ -1157,6 +1773,9 @@ function preview(title, kind, source, format = "text") {
 }
 $("#preview-close").onclick = () => $("#preview").close();
 $("#preview").addEventListener("close", () => {
+  ++fileVersion;
+  fileAbort?.abort();
+  previewController?.abort();
   if (previewBlob) URL.revokeObjectURL(previewBlob);
   previewBlob = null;
 });
@@ -1164,13 +1783,36 @@ async function copyText(source) {
   try {
     await navigator.clipboard.writeText(source);
   } catch {
-    notice("Clipboard unavailable. Select the text to copy it.");
+    const field = el("textarea");
+    field.value = source;
+    field.readOnly = true;
+    field.style.cssText = "position:fixed;left:-9999px;font-size:16px";
+    const focused = document.activeElement;
+    (document.querySelector("dialog[open]") || document.body).append(field);
+    field.select();
+    const copied = document.execCommand("copy");
+    field.remove();
+    if (focused instanceof HTMLElement) focused.focus({ preventScroll: true });
+    if (!copied) notice("Select text to copy.");
   }
+}
+function codeSource(code) {
+  return codeSources.get(code) ?? code.textContent;
 }
 async function renderDiagram(button, id) {
   const code = document.getElementById(id),
     figure = code?.closest("figure");
   if (!figure) return;
+  const rendered = figure.querySelector(".diagram-render");
+  if (rendered.querySelector("svg")) {
+    const showSource = !figure
+      .querySelector("pre")
+      .classList.contains("hidden");
+    figure.querySelector("pre").classList.toggle("hidden", showSource);
+    rendered.classList.toggle("hidden", !showSource);
+    button.textContent = showSource ? "Source" : "Diagram";
+    return;
+  }
   button.disabled = true;
   button.textContent = "Rendering…";
   try {
@@ -1184,7 +1826,8 @@ async function renderDiagram(button, id) {
     });
     target.classList.remove("hidden");
     figure.querySelector("pre").classList.add("hidden");
-    button.textContent = "Diagram ready";
+    button.textContent = "Source";
+    button.disabled = false;
   } catch (e) {
     button.textContent = "Retry diagram";
     notice(
@@ -1210,7 +1853,7 @@ document.addEventListener("click", async (e) => {
     if (!id) return;
     const code = document.getElementById(id);
     if (!code) return;
-    if (button.dataset.copy) copyText(code.textContent);
+    if (button.dataset.copy) copyText(codeSource(code));
     else if (button.dataset.html)
       preview(
         code.dataset.language,
@@ -1223,7 +1866,7 @@ document.addEventListener("click", async (e) => {
       preview(
         code.dataset.language || "Source",
         code.dataset.language || "Code",
-        code.textContent,
+        codeSource(code),
         code.dataset.language === "mermaid" ? "diagram" : "text",
       );
     return;
@@ -1233,47 +1876,14 @@ document.addEventListener("click", async (e) => {
     const href = a.getAttribute("href");
     if (href && !/^(https?:|mailto:|#)/i.test(href)) {
       e.preventDefault();
-      try {
-        const r = await fetch(
-          "/api/file?id=" +
-            encodeURIComponent(view.id) +
-            "&path=" +
-            encodeURIComponent(href),
-        );
-        if (!r.ok) {
-          const j = await r.json();
-          throw Error(j.error);
-        }
-        const type = r.headers.get("Content-Type") || "";
-        if (type === "application/pdf") {
-          preview(href, "PDF", await r.arrayBuffer(), "pdf");
-        } else if (type.startsWith("image/")) {
-          const blob = await r.blob();
-          const url = URL.createObjectURL(blob);
-          preview(href, "Image", url, "image");
-          $("#preview").addEventListener(
-            "close",
-            () => URL.revokeObjectURL(url),
-            { once: true },
-          );
-        } else {
-          const source = await r.text();
-          preview(
-            href,
-            href.split(".").pop(),
-            source,
-            /\.(html?|svg)$/.test(href)
-              ? "html"
-              : /\.md$/.test(href)
-                ? "markdown"
-                : /\.json$/.test(href)
-                  ? "json"
-                  : "text",
-          );
-        }
-      } catch (error) {
-        notice(error.message, true);
-      }
+      const block = a.closest(
+        "[data-asset-workspace],[data-asset-base],[data-asset-id]",
+      );
+      const path =
+        !href.startsWith("/") && block?.dataset.assetBase
+          ? block.dataset.assetBase + "/" + href
+          : href;
+      await openFile(path, block?.dataset.assetWorkspace);
     }
   }
 });
@@ -1294,9 +1904,8 @@ async function start() {
       .split("/")
       .pop();
     $("#profile").textContent = status.profile;
-    $(".sidebar-footer small").textContent = status.remote
-      ? "Private connection · Tailscale"
-      : "Private local connection";
+    view.workspace = status.workspace;
+    $(".sidebar-footer small").textContent = "";
     await loadThreads();
     const id = new URLSearchParams(location.search).get("thread");
     if (id) await openThread(id);
@@ -1308,6 +1917,19 @@ async function start() {
     notice(e.message, true);
   }
 }
+$("#connection").setAttribute("role", "button");
+$("#connection").tabIndex = 0;
+$("#connection").title = "Connection · reconnect";
+$("#connection").onkeydown = (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    $("#connection").click();
+  }
+};
+$("#connection").onclick = () => {
+  if (view.id) openThread(view.id);
+  else start();
+};
 window.addEventListener("online", () => {
   if (view.id) openThread(view.id);
   else start();

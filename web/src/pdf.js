@@ -1,6 +1,8 @@
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
-export async function pdf(container, bytes) {
+export async function pdf(container, bytes, signal) {
+  let task = null,
+    closed = false;
   const loading = getDocument({
     data: new Uint8Array(bytes),
     isEvalSupported: false,
@@ -9,7 +11,18 @@ export async function pdf(container, bytes) {
     maxImageSize: 16000000,
     canvasMaxAreaInBytes: 16000000,
   });
+  const cleanup = () => {
+    closed = true;
+    task?.cancel();
+    loading.destroy().catch(() => {});
+  };
+  signal?.addEventListener("abort", cleanup, { once: true });
+  if (signal?.aborted) {
+    cleanup();
+    return;
+  }
   const doc = await loading.promise;
+  if (closed) return;
   if (doc.numPages > 500) {
     await loading.destroy();
     throw Error("PDF exceeds the 500-page preview limit. Download to view it.");
@@ -28,9 +41,7 @@ export async function pdf(container, bytes) {
   canvas.style.display = "block";
   canvas.style.margin = "20px auto";
   container.append(controls, canvas);
-  let index = 1,
-    task = null,
-    closed = false;
+  let index = 1;
   async function draw() {
     previous.disabled = next.disabled = true;
     label.textContent = `Page ${index} of ${doc.numPages}`;
@@ -66,14 +77,5 @@ export async function pdf(container, bytes) {
       });
     }
   };
-  document.querySelector("#preview").addEventListener(
-    "close",
-    () => {
-      closed = true;
-      task?.cancel();
-      loading.destroy().catch(() => {});
-    },
-    { once: true },
-  );
   await draw();
 }

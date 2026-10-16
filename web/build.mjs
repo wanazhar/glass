@@ -1,5 +1,5 @@
 import { icons } from "./build-icons.mjs";
-import { build } from "esbuild";
+import { build, transform } from "esbuild";
 import { cp, mkdir, readdir, readFile, writeFile, rm } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
@@ -25,7 +25,16 @@ await cp(
 );
 await cp("dist/app.css", "dist/math.css");
 await cp("src/index.html", "dist/index.html");
-await cp("src/style.css", "dist/style.css");
+await writeFile(
+  "dist/style.css",
+  (
+    await transform(await readFile("src/style.css", "utf8"), {
+      loader: "css",
+      minify: true,
+      target: ["safari16.4", "chrome110"],
+    })
+  ).code,
+);
 await cp("src/icon.svg", "dist/icon.svg");
 await cp("src/manifest.webmanifest", "dist/manifest.webmanifest");
 await icons();

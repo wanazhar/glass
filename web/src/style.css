@@ -1308,3 +1308,534 @@ dialog > header > div:last-child {
   font-size: 12px;
   margin-bottom: 6px;
 }
+
+/* Fixed app shell keeps standalone Safari and its keyboard in one viewport. */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+body {
+  position: fixed;
+  inset: 0;
+}
+.app {
+  position: absolute;
+  top: var(--viewport-top, 0px);
+  left: 0;
+  width: 100%;
+  height: var(--app-height, 100dvh);
+  min-height: 0;
+}
+.workspace,
+.conversation,
+#threads,
+#detail-content {
+  min-height: 0;
+}
+.workspace,
+.conversation,
+.toolbar-actions {
+  min-width: 0;
+}
+button,
+summary {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.toolbar {
+  height: calc(60px + var(--safe-top));
+  padding-top: var(--safe-top);
+  padding-left: max(24px, var(--safe-left));
+  padding-right: max(24px, var(--safe-right));
+}
+.sidebar {
+  padding-top: calc(24px + var(--safe-top));
+  padding-bottom: max(14px, var(--safe-bottom));
+}
+.search {
+  margin-top: 24px;
+}
+.sidebar-close {
+  display: none;
+}
+.welcome {
+  padding: clamp(32px, 12vh, 130px) 8px 20px;
+}
+.welcome-mark {
+  width: 38px;
+  height: 38px;
+  opacity: 0.8;
+}
+.welcome h1 {
+  font-size: 42px;
+  letter-spacing: -1.8px;
+  margin: 12px 0 24px;
+}
+.welcome-actions {
+  margin-top: 0;
+}
+.details > header {
+  padding-top: var(--safe-top);
+  min-height: calc(64px + var(--safe-top));
+}
+.details {
+  padding-bottom: var(--safe-bottom);
+}
+#latest {
+  bottom: calc(var(--compose-height, 180px) + 10px);
+  z-index: 4;
+}
+.compose-zone {
+  padding-bottom: max(12px, var(--safe-bottom));
+}
+.message-actions {
+  opacity: 0.65;
+}
+.message:hover .message-actions,
+.message:focus-within .message-actions {
+  opacity: 1;
+}
+.connection {
+  cursor: pointer;
+}
+.activity:not(.working) .activity-dot {
+  opacity: 0.5;
+}
+.activity.working .activity-dot {
+  width: 5px;
+  height: 5px;
+  box-shadow:
+    8px 0 0 var(--accent),
+    16px 0 0 var(--accent);
+  margin-right: 17px;
+  animation: breathe 1.4s ease-in-out infinite;
+}
+.loading-surface {
+  min-height: 80px;
+  border-radius: 10px;
+  background: linear-gradient(
+    100deg,
+    var(--surface) 25%,
+    var(--surface2) 45%,
+    var(--surface) 65%
+  );
+  background-size: 220% 100%;
+  animation: surface-load 1.7s ease-in-out infinite;
+}
+@keyframes surface-load {
+  to {
+    background-position: -220% 0;
+  }
+}
+@keyframes panel-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+dialog[open] {
+  animation: panel-enter 0.14s ease-out;
+}
+.markdown-block {
+  display: flow-root;
+}
+.markdown-block > :first-child {
+  margin-top: 0;
+}
+.markdown-block > :last-child {
+  margin-bottom: 0;
+}
+.markdown-block + .markdown-block {
+  margin-top: 14px;
+}
+.message.streaming .message-meta:after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: breathe 1.4s infinite;
+}
+.block-head {
+  position: sticky;
+  top: 0;
+  gap: 8px;
+}
+.block-head button {
+  font-size: 11px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border-radius: 5px;
+}
+.block-head button:hover {
+  background: var(--surface2);
+  color: var(--text);
+}
+.table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  margin: 14px 0;
+  overscroll-behavior-x: contain;
+}
+.table-wrap table {
+  margin: 0;
+  min-width: 100%;
+}
+.table-wrap th {
+  background: var(--surface2);
+  white-space: nowrap;
+}
+.table-wrap tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+.diff-code {
+  display: block;
+}
+.diff-line {
+  display: block;
+  min-height: 1.6em;
+  padding: 0 12px;
+  white-space: pre;
+}
+.diff-line.add {
+  color: var(--accent);
+  background: #79b55c16;
+}
+.diff-line.remove {
+  color: var(--red);
+  background: #f08c7014;
+}
+.diff-line.hunk {
+  color: var(--purple);
+  background: #a68ed511;
+}
+.diff-line.file {
+  color: var(--muted);
+  font-weight: 600;
+}
+.prose pre:has(.diff-code) {
+  padding: 12px 0;
+}
+.tool-row.running .tool-icon {
+  color: var(--accent);
+  animation: breathe 1.4s infinite;
+}
+.tool-row.completed .tool-icon {
+  color: var(--accent);
+}
+.tool-row.failed .tool-icon {
+  color: var(--red);
+}
+@media (max-width: 1100px) {
+  .details.open {
+    position: fixed;
+    top: var(--viewport-top, 0px);
+    height: var(--app-height, 100dvh);
+    bottom: auto;
+    z-index: 31;
+  }
+  .scrim.open {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: #0007;
+    z-index: 30;
+  }
+}
+@media (max-width: 700px) {
+  .toolbar {
+    height: calc(54px + var(--safe-top));
+    padding-left: max(8px, var(--safe-left));
+    padding-right: max(8px, var(--safe-right));
+  }
+  .icon-button,
+  .send,
+  .stop {
+    width: 40px;
+    height: 40px;
+  }
+  .toolbar .icon-button {
+    width: 44px;
+    height: 44px;
+  }
+  .sidebar {
+    position: fixed;
+    top: var(--viewport-top, 0px);
+    bottom: auto;
+    height: var(--app-height, 100dvh);
+    width: min(320px, calc(100vw - 40px));
+    z-index: 31;
+    padding-left: max(16px, var(--safe-left));
+  }
+  .sidebar-close {
+    display: inline-grid;
+    position: absolute;
+    right: 12px;
+    top: calc(22px + var(--safe-top));
+  }
+  .brand #new {
+    margin-right: 36px;
+  }
+  .search input,
+  .interaction textarea,
+  .interaction input:not([type="radio"]):not([type="checkbox"]) {
+    font-size: 16px;
+  }
+  .search {
+    min-height: 44px;
+  }
+  .thread {
+    min-height: 48px;
+  }
+  .breadcrumbs > span:first-child,
+  .crumb-separator {
+    display: none;
+  }
+  .breadcrumbs {
+    font-size: 12px;
+  }
+  .toolbar-actions {
+    flex-shrink: 0;
+  }
+  .conversation {
+    padding: 18px max(14px, var(--safe-right)) 16px max(14px, var(--safe-left));
+  }
+  .compose-zone {
+    padding-left: max(10px, var(--safe-left));
+    padding-right: max(10px, var(--safe-right));
+  }
+  .composer textarea {
+    min-height: 38px;
+    line-height: 1.5;
+  }
+  .composer {
+    padding: 10px 12px 8px;
+  }
+  .compose-foot {
+    display: none;
+  }
+  .activity {
+    min-height: 28px;
+  }
+  .composer-meta #model {
+    max-width: 120px;
+  }
+  .welcome {
+    padding-top: 8vh;
+  }
+  .welcome h1 {
+    font-size: 36px;
+  }
+  .welcome-actions {
+    flex-direction: row;
+    align-items: center;
+    gap: 16px;
+  }
+  .details {
+    width: min(380px, calc(100vw - 24px));
+  }
+  .detail-tabs {
+    overflow-x: auto;
+    flex-shrink: 0;
+  }
+  .detail-tabs button {
+    min-height: 44px;
+    flex-shrink: 0;
+  }
+  .block-head {
+    flex-wrap: wrap;
+  }
+  .prose pre {
+    font-size: 12px;
+  }
+  .message {
+    padding-bottom: 18px;
+  }
+  dialog {
+    height: var(--app-height, 100dvh);
+    top: var(--viewport-top, 0px);
+    padding-bottom: var(--safe-bottom);
+  }
+  dialog > header {
+    padding-top: max(12px, var(--safe-top));
+  }
+}
+@media (pointer: coarse) {
+  input,
+  textarea {
+    font-size: 16px;
+  }
+  .icon-button {
+    min-width: 40px;
+    min-height: 40px;
+  }
+  button.quiet,
+  .block-head button {
+    min-height: 40px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *:before,
+  *:after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.file-controls,
+.file-heading,
+.file-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0;
+}
+.file-start,
+.file-heading > :last-child {
+  margin-left: auto;
+}
+.file-path {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 3px 4px 3px 10px;
+  background: var(--surface);
+}
+.file-path input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: var(--text);
+  font:
+    12px/1.5 ui-monospace,
+    monospace;
+}
+.file-heading .quiet {
+  color: var(--muted);
+  font-size: 11px;
+}
+.file-row {
+  display: flex;
+  align-items: center;
+  min-height: 42px;
+  position: relative;
+  border-bottom: 1px solid var(--line);
+}
+.file-row:hover {
+  background: var(--surface);
+}
+.file-bar {
+  position: absolute;
+  height: 2px;
+  bottom: 0;
+  left: 0;
+  background: var(--accent);
+  opacity: 0.35;
+  pointer-events: none;
+}
+.file-open {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1;
+  min-width: 0;
+  padding: 10px 2px;
+  text-align: left;
+  font-size: 12px;
+}
+.file-icon {
+  color: var(--dim);
+  flex-shrink: 0;
+  font-size: 16px;
+}
+.file-row[data-kind="directory"] .file-icon {
+  color: var(--accent);
+}
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-size {
+  color: var(--muted);
+  flex-shrink: 0;
+  min-width: 64px;
+  text-align: right;
+  padding: 10px 2px;
+  font:
+    10px ui-monospace,
+    monospace;
+}
+.file-size:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.file-limit {
+  display: block;
+  color: var(--dim);
+  margin-top: 12px;
+}
+@media (pointer: coarse) {
+  .file-path input {
+    font-size: 16px;
+  }
+  .file-row {
+    min-height: 48px;
+  }
+}
+@media (pointer: coarse) {
+  .composer textarea,
+  .search input,
+  .interaction textarea,
+  .file-path input {
+    font-size: 16px;
+  }
+}
+
+.details {
+  padding-left: max(18px, var(--safe-left));
+  padding-right: max(18px, var(--safe-right));
+}
+.activity.working .activity-dot {
+  position: relative;
+  box-shadow: none;
+}
+.activity.working .activity-dot:before,
+.activity.working .activity-dot:after {
+  content: "";
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  top: 0;
+  left: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: breathe 1.4s ease-in-out infinite;
+  animation-delay: 0.16s;
+}
+.activity.working .activity-dot:after {
+  left: 16px;
+  animation-delay: 0.32s;
+}
+
+.app.resizing .sidebar {
+  transition: none;
+}

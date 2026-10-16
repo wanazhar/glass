@@ -957,8 +957,197 @@ fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> 
         json!({"records":records,"before":start,"totalBytes":length,"windowBytes":512*1024,"omittedLargeRecord":records.is_empty()&&end>0}),
     )
 }
+fn browse_path(settings: &Settings, path: &str) -> Result<PathBuf, String> {
+    let root = settings
+        .workspace
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let requested = if path.is_empty() {
+        root.clone()
+    } else {
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        }
+    };
+    let resolved = requested.canonicalize().map_err(|e| e.to_string())?;
+    let unrestricted =
+        settings.security["profile"] == "unrestricted" && settings.security["sandbox"] == "off";
+    if !unrestricted && !resolved.starts_with(&root) {
+        return Err("Browsing is limited to the permitted workspace".into());
+    }
+    Ok(resolved)
+}
+struct Directory(*mut libc::DIR);
+impl Drop for Directory {
+    fn drop(&mut self) {
+        unsafe {
+            libc::closedir(self.0);
+        }
+    }
+}
+impl Directory {
+    fn open(path: &std::path::Path) -> Result<Self, String> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let mut file = std::fs::File::open("/").map_err(|e| e.to_string())?;
+        for component in path.components() {
+            if let std::path::Component::Normal(name) = component {
+                use std::os::unix::ffi::OsStrExt;
+                let name = std::ffi::CString::new(name.as_bytes()).map_err(|e| e.to_string())?;
+                let fd = unsafe {
+                    libc::openat(
+                        file.as_raw_fd(),
+                        name.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )
+                };
+                if fd < 0 {
+                    return Err(std::io::Error::last_os_error().to_string());
+                }
+                file = unsafe { std::fs::File::from_raw_fd(fd) };
+            }
+        }
+        use std::os::fd::IntoRawFd;
+        let fd = file.into_raw_fd();
+        let dir = unsafe { libc::fdopendir(fd) };
+        if dir.is_null() {
+            unsafe {
+                libc::close(fd);
+            }
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(Self(dir))
+    }
+    fn next(&self) -> Option<(String, libc::stat)> {
+        for _ in 0..512 {
+            let entry = unsafe { libc::readdir(self.0) };
+            if entry.is_null() {
+                return None;
+            }
+            let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
+            let Ok(text) = name.to_str() else {
+                continue;
+            };
+            if matches!(text, "." | "..") {
+                continue;
+            }
+            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+            if unsafe {
+                libc::fstatat(
+                    libc::dirfd(self.0),
+                    name.as_ptr(),
+                    stat.as_mut_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            } != 0
+            {
+                continue;
+            }
+            return Some((text.to_string(), unsafe { stat.assume_init() }));
+        }
+        None
+    }
+}
+fn browse(settings: &Settings, query: &HashMap<String, String>) -> Result<Value, String> {
+    let path = browse_path(
+        settings,
+        query.get("path").map(String::as_str).unwrap_or(""),
+    )?;
+    let dir = Directory::open(&path)?;
+    let offset = query
+        .get("offset")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(8192);
+    let start = Instant::now();
+    for _ in 0..offset {
+        if dir.next().is_none() {
+            break;
+        }
+    }
+    let mut entries = Vec::new();
+    let mut more = false;
+    for _ in 0..257 {
+        let Some((name, stat)) = dir.next() else {
+            break;
+        };
+        if entries.len() == 256 {
+            more = true;
+            break;
+        }
+        let kind = match stat.st_mode & libc::S_IFMT {
+            libc::S_IFDIR => "directory",
+            libc::S_IFREG => "file",
+            libc::S_IFLNK => "link",
+            _ => "special",
+        };
+        entries.push(json!({"name":name,"kind":kind,"size":stat.st_size.max(0),"bytes":stat.st_blocks.max(0) as u64 * 512}));
+        if start.elapsed() > Duration::from_millis(150) {
+            more = true;
+            break;
+        }
+    }
+    let scanned = entries.len();
+    entries.sort_by(|a, b| {
+        (a["kind"] != "directory", a["name"].as_str().unwrap_or(""))
+            .cmp(&(b["kind"] != "directory", b["name"].as_str().unwrap_or("")))
+    });
+    let parent = path
+        .parent()
+        .filter(|p| browse_path(settings, &p.to_string_lossy()).is_ok())
+        .map(|p| p.to_string_lossy().into_owned());
+    Ok(
+        json!({"path":path,"parent":parent,"entries":entries,"next":if more && offset+scanned<8192{Some(offset+scanned)}else{None},"limited":more,"limit":256}),
+    )
+}
+fn disk_usage(settings: &Settings, path: &str) -> Result<Value, String> {
+    let root = browse_path(settings, path)?;
+    let start = Instant::now();
+    let mut pending = VecDeque::from([(root.clone(), 0usize)]);
+    let mut bytes = 0u64;
+    let mut count = 0usize;
+    let mut partial = false;
+    use std::os::unix::fs::MetadataExt;
+    let device = root.metadata().map_err(|e| e.to_string())?.dev();
+    let mut visited = std::collections::HashSet::new();
+    while let Some((path, depth)) = pending.pop_front() {
+        let Ok(dir) = Directory::open(&path) else {
+            partial = true;
+            continue;
+        };
+        while let Some((name, stat)) = dir.next() {
+            count += 1;
+            if i128::from(stat.st_dev) != i128::from(device)
+                || !visited.insert((stat.st_dev, stat.st_ino))
+            {
+                partial |= i128::from(stat.st_dev) != i128::from(device);
+                if count >= 4096 || start.elapsed() >= Duration::from_millis(100) {
+                    return Ok(json!({"path":root,"bytes":bytes,"entries":count,"partial":true}));
+                }
+                continue;
+            }
+            bytes = bytes.saturating_add(stat.st_blocks.max(0) as u64 * 512);
+            if stat.st_mode & libc::S_IFMT == libc::S_IFDIR {
+                if depth < 16 && pending.len() < 256 {
+                    pending.push_back((path.join(name), depth + 1));
+                } else {
+                    partial = true;
+                }
+            }
+            if count >= 4096 || start.elapsed() >= Duration::from_millis(100) {
+                return Ok(json!({"path":root,"bytes":bytes,"entries":count,"partial":true}));
+            }
+        }
+    }
+    Ok(json!({"path":root,"bytes":bytes,"entries":count,"partial":partial}))
+}
 fn preview_file(id: &str, path: &str) -> Result<(String, Vec<u8>), String> {
     let root = thread_workspace(id)?;
+    preview_path(&root, path)
+}
+fn preview_path(root: &std::path::Path, path: &str) -> Result<(String, Vec<u8>), String> {
     let requested = PathBuf::from(path);
     let file = if requested.is_absolute() {
         requested
@@ -967,12 +1156,12 @@ fn preview_file(id: &str, path: &str) -> Result<(String, Vec<u8>), String> {
     }
     .canonicalize()
     .map_err(|e| e.to_string())?;
-    if !file.starts_with(&root) {
+    if !file.starts_with(root) {
         return Err("File previews are limited to the thread workspace".into());
     }
-    let relative = file.strip_prefix(&root).map_err(|_| "File path rejected")?;
+    let relative = file.strip_prefix(root).map_err(|_| "File path rejected")?;
     let bytes = crate::files::read_workspace_bytes(
-        &root,
+        root,
         relative.to_str().ok_or("File path must be UTF-8")?,
     )?;
     if bytes.starts_with(b"%PDF-") {
@@ -1133,10 +1322,18 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
         .map_err(|e| e.to_string());
     }
     if path == "/api/file" && r.method == "GET" {
-        match preview_file(
-            query.get("id").ok_or("Missing thread")?,
-            query.get("path").ok_or("Missing file path")?,
-        ) {
+        let result = (|| {
+            if let Some(workspace) = query.get("workspace") {
+                let root = browse_path(&app.settings, workspace)?;
+                preview_path(&root, query.get("path").ok_or("Missing file path")?)
+            } else {
+                preview_file(
+                    query.get("id").ok_or("Missing thread")?,
+                    query.get("path").ok_or("Missing file path")?,
+                )
+            }
+        })();
+        match result {
             Ok((kind, body)) => {
                 return response(&mut stream, 200, &kind, &body, "").map_err(|e| e.to_string());
             }
@@ -1150,6 +1347,10 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
         ("GET", "/api/status") => Ok(
             json!({"workspace":app.settings.workspace,"remote":!app.settings.local,"name":"Glass","profile":crate::sandbox::permission_profile_label(),"security":app.settings.security}),
         ),
+        ("GET", "/api/browse") => browse(&app.settings, &query),
+        ("GET", "/api/usage") => {
+            disk_usage(&app.settings, query.get("path").ok_or("Missing directory")?)
+        }
         ("GET", "/api/threads") => Ok(crate::navigation::inspect(&app.settings.workspace)),
         ("GET", "/api/agents") => {
             let id = query.get("id").ok_or("Missing thread")?;
@@ -1194,9 +1395,13 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
             Ok(json!({"connected":true}))
         }
         ("POST", "/api/new") => {
+            let request: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
+            let workspace =
+                browse_path(&app.settings, request["workspace"].as_str().unwrap_or(""))?;
+            Directory::open(&workspace)?;
             let session = crate::session::Session::create(&crate::config::data_dir())
                 .map_err(|e| e.to_string())?;
-            crate::polish::bind(&session, &app.settings.workspace)?;
+            crate::polish::bind(&session, &workspace)?;
             Ok(json!({"id":session.id}))
         }
         ("POST", "/api/send") => {
@@ -1285,6 +1490,47 @@ mod tests {
         r.headers
             .insert("tailscale-user-login".into(), "other".into());
         assert!(!authorized(&s, &r));
+    }
+    #[test]
+    fn directory_pages_policy_and_usage_are_bounded() {
+        let root = std::env::temp_dir().join(format!(
+            "gc-browser-{}-{}",
+            std::process::id(),
+            crate::loops::now()
+        ));
+        std::fs::create_dir_all(root.join("workspace/sub")).unwrap();
+        std::fs::create_dir_all(root.join("outside")).unwrap();
+        std::fs::write(root.join("outside/secret"), b"not part of the scan").unwrap();
+        std::os::unix::fs::symlink(root.join("outside"), root.join("workspace/link")).unwrap();
+        for i in 0..300 {
+            std::fs::write(root.join(format!("workspace/file-{i}")), b"data").unwrap();
+        }
+        std::fs::hard_link(
+            root.join("workspace/file-0"),
+            root.join("workspace/sub/hardlink"),
+        )
+        .unwrap();
+        let mut s = settings();
+        s.workspace = root.join("workspace");
+        s.security = json!({"profile":"workspace-edit","sandbox":"workspace"});
+        assert!(browse_path(&s, &root.join("outside").to_string_lossy()).is_err());
+        assert!(browse_path(&s, "link").is_err());
+        assert!(Directory::open(&s.workspace.join("link")).is_err());
+        let first = browse(&s, &HashMap::new()).unwrap();
+        assert_eq!(first["entries"].as_array().unwrap().len(), 256);
+        assert_eq!(first["next"], 256);
+        let second = browse(&s, &HashMap::from([("offset".into(), "256".into())])).unwrap();
+        assert_eq!(second["entries"].as_array().unwrap().len(), 46);
+        let usage = disk_usage(&s, "").unwrap();
+        assert!(!usage["partial"].as_bool().unwrap());
+        assert_eq!(usage["entries"], 303);
+        assert!(preview_path(&s.workspace, "link/secret").is_err());
+        s.security = json!({"profile":"unrestricted","sandbox":"off"});
+        assert_eq!(
+            browse_path(&s, &root.join("outside").to_string_lossy()).unwrap(),
+            root.join("outside")
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn ids_never_form_paths() {

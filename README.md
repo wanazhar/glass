@@ -93,8 +93,8 @@ for other headless interfaces.
 
 With the optional web assets installed, `gc connect` opens a private Tailscale
 HTTPS workspace. Install it on your iPhone's Home Screen and continue the same
-threads, inspect rich previews, answer questions, or approve an operation while
-work runs on your host. The web interface loads heavy preview renderers only when
+threads, browse files, start work in another directory, inspect rich previews,
+answer questions, or approve an operation while work runs on your host. The web interface loads heavy preview renderers only when
 needed. See [Remote workspace](docs/connect.md) for setup and access controls.
 
 ## Extend the workflow

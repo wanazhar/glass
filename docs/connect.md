@@ -113,7 +113,7 @@ Previews include:
 
 - Markdown, headings, lists, tables, and quotes.
 - Syntax-colored code and unified diffs, with copy and expanded source views.
-- Mermaid charts, loaded on request, with an expanded view and zoom controls.
+- Mermaid charts rendered when visible and settled, with source switching, an expanded view, and zoom controls. Large charts remain on demand.
 - Inline and display math through KaTeX; unsupported input retains readable source.
 - Workspace Markdown, JSON trees, text, and image files.
 - HTML and SVG source previews in a script-disabled sandbox. These cannot submit
@@ -129,9 +129,41 @@ Scrolling up pauses following. Returning to the bottom resumes it. Expanding a
 preview does not change the thread's stored source. Browser suspension does not
 pause the host; reopening reloads bounded history and the current live state.
 
+## Files and working directories
+
+Open the folder button or the **Files** tab to browse the host. Select a folder,
+enter a path, or go to its parent. File rows include allocated-size indicators.
+**Measure** scans disk usage on request; a lower-bound marker means the scan
+reached its time or entry limit. Scans do not follow symbolic links or cross
+filesystem boundaries. Explicit navigation can resolve a symbolic link when the
+result remains permitted by the execution policy.
+
+**New thread here** creates a normal GC thread bound to the selected directory.
+It appears in the shared thread list and can be resumed from the TUI. Restricted
+profiles and active sandboxes keep browsing and directory selection inside the
+launch workspace. With the unrestricted profile and sandbox off, the authenticated
+host owner can select another directory. Preview content is not sent to a model.
+
+Directory pages contain at most 256 entries, sorted within each page. Pagination
+reads the live directory and is not a filesystem snapshot. Usage scans stop after
+100 ms, 4,096 entries, 256 queued directories, or 16 levels. They run only when
+requested. Filesystem operations themselves can still block on a slow or unavailable
+mount; these are traversal budgets, not kernel I/O deadlines.
+
+## Phone and home-screen layout
+
+The interface respects the notch, home indicator, landscape insets, and visible
+keyboard area. Touch text fields use at least 16px to avoid Safari focus zoom.
+Pinch zoom remains available. Threads and details use separate dismissible drawers;
+only one overlay opens at a time. Reduced-motion settings disable interface animation.
+
+Streaming preserves completed Markdown blocks and batches updates. Reasoning has
+its own follow position. Copy and expanded previews retain source text. Oversized
+live output shows a limit notice rather than repeatedly rebuilding unchanged content.
+
 ## Resource limits and storage
 
-The initial application script is roughly 22 KiB compressed. Syntax, math,
+The initial application script is roughly 26 KiB compressed. Syntax, math,
 diagrams, PDF rendering, and fonts load separately. The web assets live outside
 the Rust executable. Streaming updates are batched; offscreen messages use browser
 content visibility, and completed messages are not reparsed on every token.

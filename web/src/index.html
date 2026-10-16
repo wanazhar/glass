@@ -34,7 +34,13 @@
             ＋
           </button>
         </div>
-        <div class="sidebar-caption">YOUR WORKSPACE, WHEREVER YOU ARE</div>
+        <button
+          id="sidebar-close"
+          class="icon-button sidebar-close"
+          aria-label="Close threads"
+        >
+          ×
+        </button>
         <label class="search"
           ><span>⌕</span
           ><input
@@ -46,10 +52,7 @@
         <nav id="threads" aria-label="Conversations"></nav>
         <footer class="sidebar-footer">
           <span class="host-dot"></span>
-          <div>
-            <strong id="host">Connecting to host</strong
-            ><small>Private connection · Tailscale</small>
-          </div>
+          <div><strong id="host">Connecting</strong><small></small></div>
           <button
             id="theme"
             class="icon-button"
@@ -66,6 +69,8 @@
             class="icon-button mobile-menu"
             id="menu"
             aria-label="Show threads"
+            aria-controls="sidebar"
+            aria-expanded="false"
           >
             ☰
           </button>
@@ -78,9 +83,18 @@
             <span id="connection" class="connection"><i></i>Connecting</span
             ><button
               class="icon-button"
+              id="files-toggle"
+              aria-label="Browse files"
+              title="Files"
+            >
+              ▱</button
+            ><button
+              class="icon-button"
               id="details-toggle"
               title="Thread details"
               aria-label="Thread details"
+              aria-controls="details"
+              aria-expanded="false"
             >
               ◫
             </button>
@@ -91,19 +105,12 @@
             ↑ Load earlier activity
           </button>
           <section id="welcome" class="welcome">
-            <span class="eyebrow">A CLEAR SPACE TO THINK</span>
-            <h1>Pick up where<br />you left off<span>.</span></h1>
-            <p>
-              Your threads. Your tools. Your machine.<br />Everything stays
-              together, wherever you work.
-            </p>
+            <img class="welcome-mark" src="/icon.svg" alt="" />
+            <h1>glass<span>.</span></h1>
             <div class="welcome-actions">
               <button id="welcome-new" class="primary">
-                Start a thread <span>↗</span></button
-              ><span class="shortcut">or choose one from the sidebar</span>
-            </div>
-            <div class="welcome-foot">
-              <span>◇</span> Work continues when you step away.
+                New thread <span>＋</span></button
+              ><button id="welcome-files" class="quiet">Open folder</button>
             </div>
           </section>
           <div id="timeline" class="timeline" aria-label="Conversation"></div>
@@ -114,14 +121,14 @@
           <div id="interaction" class="interaction hidden"></div>
           <div id="activity" class="activity">
             <span class="activity-dot"></span
-            ><span id="activity-text">Ready when you are</span
+            ><span id="activity-text">Ready</span
             ><button id="ownership">Take control</button>
           </div>
           <form id="composer" class="composer">
             <textarea
               id="prompt"
               rows="2"
-              placeholder="What would you like to work on?"
+              placeholder="Message…"
               aria-label="Message"
               maxlength="60000"
             ></textarea>
@@ -159,8 +166,7 @@
             </div>
           </form>
           <div class="compose-foot">
-            <span id="usage"
-              >Executed on your host · credentials stay there</span
+            <span id="usage"></span
             ><span class="keyboard-hint"
               >Enter to send <span>·</span> Shift Enter for a new line</span
             >
@@ -181,10 +187,10 @@
         <div class="detail-tabs">
           <button class="selected" data-tab="activity">Activity</button
           ><button data-tab="reasoning">Reasoning</button
-          ><button data-tab="context">Context</button>
+          ><button data-tab="context">Context</button
+          ><button data-tab="files">Files</button>
         </div>
         <div id="detail-content"></div>
-        <footer>Same thread · shared with your terminal</footer>
       </aside>
     </div>
     <dialog id="preview">

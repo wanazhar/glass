@@ -519,6 +519,24 @@ try {
     .evaluate((n) => n.scrollTop);
   assert(readerTop < 200, "Reasoning snapped back to the bottom");
   await page.locator(".reasoning-latest").click();
+  await page.waitForFunction(
+    () => document.querySelector("#activity-text").textContent === "Ready",
+  );
+  await page.locator("#detail-content").evaluate((n) => {
+    n.scrollTop = 120;
+  });
+  await page.waitForTimeout(600);
+  assert(
+    await page.locator("#detail-content").evaluate((n) => n.scrollTop < 200),
+    "Completed reasoning must remain freely scrollable",
+  );
+  await page.locator(".reasoning-latest").click();
+  assert(
+    await page.locator("#detail-content").evaluate(
+      (n) => n.scrollHeight - n.scrollTop - n.clientHeight < 3,
+    ),
+    "Latest must return to the bottom after completion",
+  );
   await page.locator("#details-close").click();
   await page.waitForFunction(
     () => document.querySelector("#activity-text").textContent === "Ready",

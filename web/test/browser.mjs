@@ -858,10 +858,49 @@ try {
   );
   assert.equal(
     installedGeometry.header,
-    121,
-    "Header appearance must stay unchanged",
+    137,
+    "Standalone controls must clear the status-area blur",
   );
   await phone.screenshot({ path: "/tmp/gc-pwa-standalone-mobile.png" });
+  await phone.evaluate(() => {
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 425,
+    });
+    Object.defineProperty(visualViewport, "height", {
+      configurable: true,
+      value: 425,
+    });
+    Object.defineProperty(visualViewport, "offsetTop", {
+      configurable: true,
+      value: 296,
+    });
+    document.querySelector("#prompt").focus();
+    window.dispatchEvent(new Event("resize"));
+  });
+  await phone.locator("#prompt").fill("/");
+  await phone.locator("#command-search").waitFor();
+  await phone.waitForTimeout(100);
+  const keyboardPalette = await phone.locator("#commands").evaluate((n) => {
+    const r = n.getBoundingClientRect();
+    return {
+      top: r.top - visualViewport.offsetTop,
+      bottom: r.bottom - visualViewport.offsetTop,
+      height: visualViewport.height,
+      header: n.querySelector("header").getBoundingClientRect().height,
+      search: document.querySelector("#command-search").getBoundingClientRect()
+        .height,
+    };
+  });
+  assert(
+    keyboardPalette.top >= 0 &&
+      keyboardPalette.bottom <= keyboardPalette.height,
+    "Keyboard palette must fit the offset visual viewport",
+  );
+  assert(
+    keyboardPalette.header >= 30 && keyboardPalette.search >= 30,
+    "Palette header and search must remain visible with the keyboard open",
+  );
   await mobile.close();
   const manifest = await page.evaluate(async () =>
     fetch("/manifest.webmanifest").then((r) => r.json()),

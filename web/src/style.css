@@ -2557,15 +2557,15 @@ dialog > header {
 /* Standalone has no browser bars: use the full CSS viewport and one inset per edge. */
 @media (max-width: 700px) {
   .standalone:not(.keyboard-open) .toolbar {
-    height: calc(62px + var(--safe-top));
-    padding-top: calc(8px + var(--safe-top));
+    height: calc(78px + var(--safe-top));
+    padding-top: calc(24px + var(--safe-top));
   }
   .standalone:not(.keyboard-open) .compose-zone {
     padding-bottom: clamp(12px, var(--safe-bottom), 34px);
   }
   .standalone:not(.keyboard-open) .details > header {
-    min-height: calc(72px + var(--safe-top));
-    padding-top: calc(8px + var(--safe-top));
+    min-height: calc(88px + var(--safe-top));
+    padding-top: calc(24px + var(--safe-top));
   }
 }
 
@@ -2595,4 +2595,17 @@ dialog > header {
       100% - max(12px, var(--safe-top)) - max(12px, var(--safe-bottom))
     );
   }
+}
+
+/* Dialogs are in document coordinates; keyboard offsets must be included. */
+.keyboard-open #commands[open] {
+  top: calc(var(--viewport-top, 0px) + 12px);
+  bottom: auto;
+  height: auto;
+  max-height: calc(var(--app-height, 100dvh) - 24px);
+}
+#commands > header,
+#command-search,
+#command-help {
+  flex-shrink: 0;
 }

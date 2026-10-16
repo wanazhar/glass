@@ -356,3 +356,8 @@ Layout diagnostics dismiss the keyboard and wait for stable viewport geometry
 before capturing. The report includes a `settled` flag. Keyboard detection uses
 the layout viewport and last idle height because Safari can shrink both the
 window and visual viewport; its offset is applied while the keyboard is open.
+
+On iOS, the PWA uses the system-reserved status area instead of translucent
+status-bar mode. Standalone headers leave 24 px of space after the reported top
+inset. With the keyboard open, the command palette includes the visual viewport
+offset and keeps its header, search field, and footer from shrinking.

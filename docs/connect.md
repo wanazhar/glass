@@ -268,3 +268,51 @@ a reviewed handoff into a new thread. Import requires a current preview
 fingerprint and confirmation; it does not execute tools or contact a model.
 File previews require thread control. Browser `/prompts` shows only prompts
 from the current conversation.
+
+### Reading outputs on mobile
+
+The command palette uses a compact, scrollable overlay. Closing it clears a
+standalone slash from the composer and preserves longer drafts. Temporary
+notices expire; their close button dismisses them immediately. Output resuming
+also clears a stale provider cooldown notice.
+
+The folder button opens Files. The activity button opens the Activity tab.
+File names use compact UI text; path inputs remain 16 px to avoid Safari focus
+zoom. Table headers remain visible while scrolling. Tables offer wrapping,
+CSV copy, and a full-screen expanded view.
+
+Mermaid loads on demand, serializes rendering, and caches at most 32 results.
+The cache distinguishes light and dark themes. Each displayed copy receives
+unique SVG identifiers without changing label text. Source is retained on
+failure, with an explanation next to the diagram. Preview limits remain 64 KiB
+of source and 500 edges; unsupported syntax is not silently rewritten.
+
+Run `python3 scripts/smoke-web-diagrams.py` after building the web bundle to
+check 19 chart families in both themes, duplicate renders, and malformed input.
+The implementation follows the bounded render queue and cache pattern used by
+[T3 Code](https://github.com/pingdotgg/t3code/blob/main/apps/web/src/components/chat/MermaidDiagram.tsx).
+[Hermes WebUI](https://github.com/nesquena/hermes-webui/blob/master/static/ui.js)
+also keeps diagram source on failure and provides an expanded viewer.
+
+### Projects and machine-wide conversations
+
+The sidebar defaults to **All projects** from the current user's GC data
+storage on this machine. The directory where `gc connect` starts is the default
+for creating a thread, not a filter on existing conversations. Conversations
+from another OS account or another GC data directory are not merged.
+
+Project groups show the full workspace path and thread count. Expand a group
+or use the project selector. Search matches titles, paths, and thread IDs across
+the complete index, including older pages. The list loads at most 512 rows per
+request; **Load older threads** retrieves the next page. Counts indicate partial
+lists. Transcripts load only when selected.
+
+The active project's name remains visible in the mobile header. New threads
+inherit the selected project, then the active thread's project, then the
+connection's starting directory. The file browser also provides **New thread
+here** for choosing a different directory.
+
+Legacy conversations without workspace metadata appear under **Unassigned**.
+They can be read without starting a worker. Conversations whose project
+directory is missing also open as read-only archives. GC does not infer a
+workspace or grant tool access to these archives.

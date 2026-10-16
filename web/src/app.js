@@ -10,6 +10,12 @@ const $ = (s) => document.querySelector(s),
 const view = {
   id: null,
   threads: [],
+  projectFilter: "",
+  projectExpanded: new Set(),
+  nextThreads: null,
+  threadIndex: new Map(),
+  projectOptions: [],
+  totalThreads: 0,
   before: 0,
   source: null,
   active: false,
@@ -44,11 +50,21 @@ const text = (s, max = limits.message) => String(s ?? "").slice(0, max),
           "'": "&#39;",
         })[c],
     );
+let noticeTimer;
 function notice(message, error = false) {
-  $("#notice").textContent = message;
-  $("#notice").className = "notice" + (error ? " error" : "");
+  clearTimeout(noticeTimer);
+  const node = $("#notice");
+  node.replaceChildren(el("span", "", message || ""));
+  const close = el("button", "notice-close", "×");
+  close.type = "button";
+  close.setAttribute("aria-label", "Dismiss notice");
+  close.onclick = clearNotice;
+  node.append(close);
+  node.className = "notice" + (error ? " error" : "");
+  noticeTimer = setTimeout(clearNotice, error ? 15000 : 6000);
 }
 function clearNotice() {
+  clearTimeout(noticeTimer);
   $("#notice").classList.add("hidden");
 }
 async function api(path, data, signal) {
@@ -244,9 +260,9 @@ const renderer = {
   },
   table(token) {
     return (
-      '<div class="table-wrap">' +
+      '<figure class="table-block"><div class="block-head"><span>Table</span><span><button data-table="wrap">Wrap</button><button data-table="copy">Copy CSV</button><button data-table="expand">Expand</button></span></div><div class="table-wrap">' +
       marked.Renderer.prototype.table.call(this, token) +
-      "</div>"
+      "</div></figure>"
     );
   },
 };
@@ -287,6 +303,12 @@ marked.use({
   ],
 });
 let syntaxPromise, mathPromise, mermaidPromise;
+function loadMermaid() {
+  return (mermaidPromise ??= import("./mermaid.js").catch((error) => {
+    mermaidPromise = undefined;
+    throw error;
+  }));
+}
 async function loadMath() {
   if (!mathPromise) {
     mathPromise = import("./math.js");
@@ -836,6 +858,7 @@ function event(m) {
       updateActivity("Waiting for provider");
       break;
     case "text":
+      clearNotice();
       if (!view.stream) {
         view.stream = message("assistant", "");
         view.streamText = "";
@@ -935,6 +958,7 @@ function event(m) {
       notice(m.message, true);
       break;
     case "done":
+      clearNotice();
       finishStream();
       view.streamText = "";
       view.group = null;
@@ -953,6 +977,14 @@ async function openThread(id, { resume = false } = {}) {
   if (view.source) view.source.close();
   view.source = null;
   const generation = ++view.generation;
+  if (view.id !== id) {
+    ++fileVersion;
+    fileAbort?.abort();
+    view.directory = null;
+    const details = $("#detail-content");
+    delete details.dataset.tab;
+    details.replaceChildren();
+  }
   view.id = id;
   view.tools.clear();
   view.group = null;
@@ -974,17 +1006,47 @@ async function openThread(id, { resume = false } = {}) {
     $("#timeline").replaceChildren(el("div", "loading-surface"));
   } else syncPanels();
   connection("Connecting");
-  const thread = view.threads.find((t) => t.session === id);
+  let thread = threadInfo(id);
+  if (!thread) {
+    try {
+      const found = await api("threads?id=" + encodeURIComponent(id));
+      if (generation !== view.generation) return;
+      rememberThreads(found.threads || []);
+      thread = threadInfo(id);
+    } catch (error) {
+      if (generation === view.generation) {
+        connection("Unavailable", false);
+        notice(error.message, true);
+      }
+      return;
+    }
+  }
   $("#thread-name").textContent = thread?.title || "Conversation";
-  $("#workspace-name").textContent = (thread?.workspace || "Workspace")
-    .split("/")
-    .filter(Boolean)
-    .pop();
+  $("#workspace-name").textContent = projectName(thread?.workspace || "");
+  $("#workspace-name").title = thread?.workspace || "Project was not recorded";
+  $("#thread-name").title =
+    `${thread?.title || "Conversation"}\n${thread?.workspace || "Unassigned"}`;
+  $("#prompt").placeholder =
+    thread?.workspace_assigned === false ||
+    thread?.workspace_available === false
+      ? "Read-only archive · project unavailable"
+      : "Message…";
   $("#model").textContent = thread?.model || "Glass Core";
   document.title = (thread?.title || "Conversation") + " · Glass";
   window.history.replaceState(null, "", "/?thread=" + encodeURIComponent(id));
   renderThreads();
   try {
+    if (
+      thread?.workspace_assigned === false ||
+      thread?.workspace_available === false
+    ) {
+      await history();
+      if (generation !== view.generation) return;
+      connection("Read-only archive", true);
+      $("#timeline .loading-surface")?.remove();
+      follow();
+      return;
+    }
     await api("open", { id });
     if (generation !== view.generation) return;
     await history();
@@ -1050,68 +1112,194 @@ async function openThread(id, { resume = false } = {}) {
     updateActivity(null);
   }
 }
-async function loadThreads() {
-  const value = await api("threads");
-  view.threads = value.threads || [];
+let threadListVersion = 0,
+  threadListAbort,
+  threadSearchTimer;
+function threadInfo(id) {
+  return view.threadIndex.get(id) || view.threads.find((t) => t.session === id);
+}
+function rememberThreads(rows) {
+  for (const thread of rows) view.threadIndex.set(thread.session, thread);
+  while (view.threadIndex.size > 2048) {
+    const key = [...view.threadIndex.keys()].find((id) => id !== view.id);
+    if (!key) break;
+    view.threadIndex.delete(key);
+  }
+}
+async function loadThreads(more = false) {
+  const version = ++threadListVersion;
+  threadListAbort?.abort();
+  threadListAbort = new AbortController();
+  const offset = more ? view.nextThreads : 0;
+  const query = new URLSearchParams({
+    q: $("#search").value,
+    project: view.projectFilter,
+  });
+  if (offset) query.set("offset", offset);
+  let value;
+  try {
+    value = await api("threads?" + query, undefined, threadListAbort.signal);
+  } catch (error) {
+    if (version !== threadListVersion || error.name === "AbortError") return;
+    throw error;
+  }
+  if (version !== threadListVersion) return;
+  const current = new Map(
+    (more ? view.threads : []).map((t) => [t.session, t]),
+  );
+  for (const thread of value.threads || []) current.set(thread.session, thread);
+  view.threads = [...current.values()];
+  rememberThreads(value.threads || []);
+  view.projectOptions = value.projects || [];
+  view.totalThreads = value.total_threads ?? view.threads.length;
+  view.nextThreads = value.next_offset ?? null;
+  $("#more-threads").classList.toggle("hidden", view.nextThreads === null);
   renderThreads();
 }
-function renderThreads() {
-  const search = $("#search").value.toLowerCase(),
-    container = $("#threads");
-  container.replaceChildren();
-  const groups = new Map();
-  for (const thread of view.threads) {
-    if (
-      search &&
-      !((thread.title || "") + " " + thread.workspace)
-        .toLowerCase()
-        .includes(search)
-    )
-      continue;
-    const workspaceKey = thread.workspace || "Other";
-    const name =
-      (thread.workspace || "Other").split("/").filter(Boolean).pop() ||
-      "Workspace";
-    if (!groups.has(workspaceKey)) {
-      const section = el("section", "thread-group");
-      section.append(el("div", "group-label", "⌘ " + name));
-      container.append(section);
-      groups.set(workspaceKey, section);
-    }
-    const button = el(
-      "button",
-      "thread" + (thread.session === view.id ? " active" : ""),
-    );
-    button.title = thread.title || "New conversation";
-    button.append(el("strong", "", thread.title || "New conversation"));
-    const small = el("small");
-    small.append(
-      el(
-        "span",
-        thread.running_process_verified ? "running" : "",
-        thread.running_process_verified
-          ? "● Working"
-          : thread.last_status === "completed"
-            ? "Completed"
-            : "Saved",
-      ),
-      el("span", "", thread.model?.split("/").pop() || "Glass Core"),
-    );
-    button.append(small);
-    button.onclick = () => openThread(thread.session);
-    groups.get(workspaceKey).append(button);
-  }
-  if (!container.children.length)
-    container.append(el("p", "empty", "No threads"));
+function requestThreadSearch() {
+  clearTimeout(threadSearchTimer);
+  renderThreads();
+  threadSearchTimer = setTimeout(
+    () => loadThreads().catch((error) => notice(error.message, true)),
+    150,
+  );
 }
-$("#search").oninput = renderThreads;
+function projectName(path) {
+  return path ? path.split("/").filter(Boolean).pop() || "/" : "Unassigned";
+}
+function renderThreads() {
+  const search = $("#search").value.toLowerCase().trim();
+  const container = $("#threads");
+  container.replaceChildren();
+  const projects = new Map();
+  for (const thread of view.threads) {
+    const path = thread.workspace || "";
+    if (!projects.has(path)) projects.set(path, []);
+    projects.get(path).push(thread);
+  }
+  const scope = $("#project-scope");
+  scope.replaceChildren(new Option("All projects", ""));
+  const options = view.projectOptions.length
+    ? view.projectOptions
+    : [...projects].map(([workspace, rows]) => ({
+        workspace,
+        count: rows.length,
+      }));
+  for (const { workspace: path, count } of options) {
+    const option = new Option(
+      `${path ? path.replace(/^\/home\/[^/]+\//, "~/") : "Unassigned"} · ${count}`,
+      path || "@unassigned",
+    );
+    option.title = path || "Project was not recorded";
+    scope.append(option);
+  }
+  if (
+    view.projectFilter &&
+    ![...scope.options].some((option) => option.value === view.projectFilter)
+  )
+    scope.append(new Option(`${view.projectFilter} · 0`, view.projectFilter));
+  scope.value = view.projectFilter;
+  let count = 0;
+  for (const [path, rows] of [...projects].sort(
+    ([a, ar], [b, br]) =>
+      Number(!(a && ar.some((t) => t.workspace_available !== false))) -
+        Number(!(b && br.some((t) => t.workspace_available !== false))) ||
+      Number(!a) - Number(!b),
+  )) {
+    if (view.projectFilter && view.projectFilter !== (path || "@unassigned"))
+      continue;
+    const matches = rows.filter(
+      (thread) =>
+        !search ||
+        search
+          .split(/\s+/)
+          .every((word) =>
+            `${thread.title || ""} ${path} ${thread.session}`
+              .toLowerCase()
+              .includes(word),
+          ),
+    );
+    if (!matches.length) continue;
+    count += matches.length;
+    const section = el("details", "project-group");
+    section.open =
+      !!search ||
+      !!view.projectFilter ||
+      view.projectExpanded.has(path) ||
+      matches.some((t) => t.session === view.id);
+    const summary = el("summary", "project-heading");
+    const heading = el("div");
+    heading.append(
+      el("strong", "", projectName(path)),
+      el("small", "project-path", path || "Project was not recorded"),
+    );
+    summary.append(
+      heading,
+      el("span", "project-count", String(matches.length)),
+    );
+    section.append(summary);
+    section.addEventListener("toggle", () => {
+      if (section.open) view.projectExpanded.add(path);
+      else view.projectExpanded.delete(path);
+    });
+    for (const thread of matches) {
+      const button = el(
+        "button",
+        "thread" + (thread.session === view.id ? " active" : ""),
+      );
+      button.title = `${thread.title || "New conversation"}\n${path || "Unassigned"}\n${thread.session}`;
+      button.append(el("strong", "", thread.title || "New conversation"));
+      const small = el("small");
+      small.append(
+        el(
+          "span",
+          thread.running_process_verified ? "running" : "",
+          thread.running_process_verified
+            ? "● Working"
+            : thread.last_status === "completed"
+              ? "Completed"
+              : thread.workspace_available === false ||
+                  thread.workspace_assigned === false
+                ? "Archive"
+                : "Saved",
+        ),
+        el("span", "", thread.modified || ""),
+      );
+      button.append(small);
+      button.onclick = () => openThread(thread.session);
+      section.append(button);
+    }
+    container.append(section);
+  }
+  $("#thread-count").textContent =
+    view.nextThreads !== null
+      ? `${count} / ${view.totalThreads}`
+      : `${count} threads`;
+  if (!container.children.length)
+    container.append(el("p", "empty", "No matching threads"));
+}
+$("#project-scope").onchange = (e) => {
+  view.projectFilter = e.target.value;
+  requestThreadSearch();
+};
+$("#more-threads").onclick = async () => {
+  try {
+    await loadThreads(true);
+  } catch (error) {
+    notice(error.message, true);
+  }
+};
+$("#search").oninput = requestThreadSearch;
 async function newThread(workspace) {
   try {
     const { id } = await api("new", {
       workspace:
         typeof workspace === "string"
           ? workspace
-          : view.threads.find((t) => t.session === view.id)?.workspace ||
+          : (view.projectFilter && view.projectFilter !== "@unassigned"
+              ? view.projectFilter
+              : null) ||
+            threadInfo(view.id)?.workspace ||
             view.workspace,
     });
     await loadThreads();
@@ -1303,6 +1491,17 @@ function details() {
   const n = $("#detail-content");
   if (!$("#details").classList.contains("open")) return;
   if (view.tab === "files") {
+    const thread = threadInfo(view.id);
+    if (
+      thread?.workspace_assigned === false ||
+      thread?.workspace_available === false
+    ) {
+      n.dataset.tab = "archive";
+      n.replaceChildren(
+        el("p", "quiet", "This archive has no available project directory."),
+      );
+      return;
+    }
     if (n.dataset.tab !== "files") browseDirectory();
     return;
   }
@@ -1315,7 +1514,7 @@ function details() {
     if (!body.isConnected) n.append(body);
     if (view.reasoningFollow) n.scrollTop = n.scrollHeight;
   } else if (view.tab === "context") {
-    const thread = view.threads.find((t) => t.session === view.id) || {};
+    const thread = threadInfo(view.id) || {};
     for (const [name, value] of [
       ["Workspace", thread.workspace],
       ["Model", thread.model],
@@ -1404,7 +1603,10 @@ function showPanel(panel, open = true, force = false) {
   syncPanels();
   if (panel === "#details" && target.classList.contains("open")) details();
 }
-$("#details-toggle").onclick = () => showPanel("#details");
+$("#details-toggle").onclick = () => {
+  if (view.tab === "activity") showPanel("#details");
+  else openCommandTab("activity");
+};
 $("#details-close").onclick = () => {
   closePanels();
   $("#details-toggle").focus();
@@ -1492,10 +1694,7 @@ async function browseDirectory(path, offset = 0) {
   const version = ++browseVersion;
   browseAbort?.abort();
   browseAbort = new AbortController();
-  path ??=
-    view.directory ||
-    view.threads.find((t) => t.session === view.id)?.workspace ||
-    view.workspace;
+  path ??= view.directory || threadInfo(view.id)?.workspace || view.workspace;
   const content = $("#detail-content");
   content.dataset.tab = "files";
   content.replaceChildren(el("div", "loading-surface"));
@@ -1814,7 +2013,7 @@ function preview(title, kind, source, format = "text", context) {
   previewController?.abort();
   previewController = new AbortController();
   const signal = previewController.signal;
-  $("#download").disabled = false;
+  $("#download").disabled = format === "table";
   $("#preview-title").textContent = title;
   $("#preview-kind").textContent = kind;
   const body = $("#preview-body");
@@ -1848,6 +2047,8 @@ function preview(title, kind, source, format = "text", context) {
       "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\">" +
       source;
     body.append(iframe);
+  } else if (format === "table") {
+    // The caller supplies a sanitized DOM table after the modal is opened.
   } else if (format === "diagram") {
     const controls = el("div", "pdf-controls"),
       target = el("div", "diagram-render");
@@ -1871,12 +2072,14 @@ function preview(title, kind, source, format = "text", context) {
     }
     body.append(controls, target);
     target.textContent = "Rendering diagram…";
-    (mermaidPromise ??= import("./mermaid.js"))
+    loadMermaid()
       .then(({ diagram }) => diagram(source))
       .then((svg) => {
         if (signal.aborted) return;
         target.innerHTML = DOMPurify.sanitize(svg, {
-          USE_PROFILES: { svg: true, svgFilters: true },
+          USE_PROFILES: { html: true, svg: true, svgFilters: true },
+          ADD_TAGS: ["foreignObject"],
+          ADD_ATTR: ["xmlns"],
         });
       })
       .catch(
@@ -1989,7 +2192,7 @@ async function renderDiagram(button, id) {
   button.disabled = true;
   button.textContent = "Rendering…";
   try {
-    const { diagram } = await (mermaidPromise ??= import("./mermaid.js"));
+    const { diagram } = await loadMermaid();
     const svg = await diagram(code.textContent);
     const target = figure.querySelector(".diagram-render");
     target.innerHTML = DOMPurify.sanitize(svg, {
@@ -1997,16 +2200,19 @@ async function renderDiagram(button, id) {
       ADD_TAGS: ["foreignObject"],
       ADD_ATTR: ["xmlns"],
     });
+    figure.querySelector(".diagram-error")?.remove();
     target.classList.remove("hidden");
     figure.querySelector("pre").classList.add("hidden");
     button.textContent = "Source";
     button.disabled = false;
   } catch (e) {
     button.textContent = "Retry diagram";
-    notice(
-      "Diagram could not render. Source is preserved: " +
-        String(e.message).slice(0, 250),
-    );
+    let error = figure.querySelector(".diagram-error");
+    if (!error) {
+      error = el("p", "diagram-error");
+      figure.append(error);
+    }
+    error.textContent = "Source preserved · " + String(e.message).slice(0, 250);
     button.disabled = false;
   }
 }
@@ -2017,6 +2223,32 @@ document.addEventListener("click", async (e) => {
     return;
   }
   const button = e.target.closest("button");
+  if (button?.dataset.table) {
+    const block = button.closest(".table-block");
+    const table = block.querySelector("table");
+    if (button.dataset.table === "wrap") {
+      block.classList.toggle("table-wrapped");
+      button.textContent = block.classList.contains("table-wrapped")
+        ? "Compact"
+        : "Wrap";
+    } else if (button.dataset.table === "copy") {
+      copyText(
+        [...table.rows]
+          .map((row) =>
+            [...row.cells]
+              .map((cell) => '"' + cell.textContent.replaceAll('"', '""') + '"')
+              .join(","),
+          )
+          .join("\n"),
+      );
+    } else {
+      preview("Table", "Data", "", "table");
+      const wrapper = el("div", "table-wrap expanded-table");
+      wrapper.append(table.cloneNode(true));
+      $("#preview-body").append(wrapper);
+    }
+    return;
+  }
   if (button) {
     const id =
       button.dataset.copy ||
@@ -2174,7 +2406,7 @@ async function openNativeCommand(command, initialArgs = "") {
     return;
   }
   const version = ++commandViewVersion;
-  $("#commands").close();
+  closeCommands();
   const modal = $("#command-view"),
     form = $("#command-form"),
     body = $("#command-result");
@@ -2601,7 +2833,9 @@ async function openCommands(group = "") {
   const modal = $("#commands");
   $("#command-search").value = "";
   if (!modal.open) modal.showModal();
-  $("#command-help").textContent = "↑ ↓ select · Enter choose · Esc back";
+  $("#command-help").textContent = group
+    ? "↑ ↓ select · Enter choose · Esc back"
+    : "↑ ↓ select · Enter choose · Esc close";
   renderCommands();
   $("#command-search").focus({ preventScroll: true });
 }
@@ -2637,7 +2871,17 @@ function renderCommands() {
     button.setAttribute("aria-selected", String(index === commandSelection));
     button.append(
       el("strong", "", `/${c.name} ${c.hint || ""}`),
-      el("span", "", c.description),
+      el(
+        "span",
+        "",
+        c.primary
+          ? {
+              conversations: "Resume or start a thread",
+              work: "Changes, tasks and agents",
+              settings: "Models and preferences",
+            }[c.name] || c.description
+          : c.description.replace(/ · local$/, ""),
+      ),
     );
     if (
       !c.primary &&
@@ -2664,7 +2908,7 @@ function chooseCommand(c) {
       `/${c.name} requires the terminal. Browser support is not implemented yet.`;
     return;
   }
-  $("#commands").close();
+  closeCommands();
   if ($("#prompt").value.trim().startsWith("/")) $("#prompt").value = "";
   if (c.portable) openNativeCommand(c);
   else if (c.name === "help") openCommands();
@@ -2717,11 +2961,18 @@ $("#command-search").oninput = () => {
   renderCommands();
 };
 $("#open-commands").onclick = () => openCommands();
-$("#commands-close").onclick = () => $("#commands").close();
+function closeCommands() {
+  if (/^\s*\/\s*$/.test($("#prompt").value)) $("#prompt").value = "";
+  $("#commands").close();
+}
+$("#commands").addEventListener("close", () => {
+  if (/^\s*\/\s*$/.test($("#prompt").value)) $("#prompt").value = "";
+});
+$("#commands-close").onclick = () => closeCommands();
 $("#commands").addEventListener("cancel", (e) => {
   e.preventDefault();
   if (commandGroup) openCommands();
-  else $("#commands").close();
+  else closeCommands();
 });
 $("#commands").addEventListener("keydown", (e) => {
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -2751,9 +3002,7 @@ async function start() {
     }
     const status = await api("status");
     $("#host").textContent = location.hostname;
-    $("#workspace-name").textContent = String(status.workspace)
-      .split("/")
-      .pop();
+    $("#workspace-name").textContent = "All projects";
     $("#profile").textContent = status.profile;
     view.workspace = status.workspace;
     $(".sidebar-footer small").textContent = "";

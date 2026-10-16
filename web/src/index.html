@@ -49,7 +49,18 @@
             aria-label="Find a thread"
           /><kbd>⌘ K</kbd></label
         >
+        <div class="project-filter">
+          <select
+            id="project-scope"
+            aria-label="Filter conversations by project"
+          >
+            <option value="">All projects</option></select
+          ><span id="thread-count"></span>
+        </div>
         <nav id="threads" aria-label="Conversations"></nav>
+        <button id="more-threads" class="quiet hidden" type="button">
+          Load older threads
+        </button>
         <footer class="sidebar-footer">
           <span class="host-dot"></span>
           <div><strong id="host">Connecting</strong><small></small></div>
@@ -87,16 +98,36 @@
               aria-label="Browse files"
               title="Files"
             >
-              ▱</button
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                aria-hidden="true"
+              >
+                <path d="M3 7V5h7l2 2h9v13H3Z" />
+              </svg></button
             ><button
               class="icon-button"
               id="details-toggle"
-              title="Thread details"
-              aria-label="Thread details"
+              title="Thread activity"
+              aria-label="Thread activity"
               aria-controls="details"
               aria-expanded="false"
             >
-              ◫
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                aria-hidden="true"
+              >
+                <path d="M3 6h18M3 12h18M3 18h12" />
+              </svg>
             </button>
           </div>
         </header>

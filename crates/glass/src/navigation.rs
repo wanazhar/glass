@@ -37,23 +37,26 @@ fn save(session: &Session, receipt: &Receipt) -> Result<(), String> {
     )
 }
 pub(crate) fn process_stamp(pid: u32) -> Option<String> {
-    #[cfg(not(target_os="linux"))]
+    #[cfg(not(target_os = "linux"))]
     {
-        let output=std::process::Command::new("ps").args(["-p",&pid.to_string(),"-o","lstart="]).output().ok()?;
-        let stamp=String::from_utf8(output.stdout).ok()?.trim().to_owned();
-        return (output.status.success()&&!stamp.is_empty()).then_some(stamp);
+        let output = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "lstart="])
+            .output()
+            .ok()?;
+        let stamp = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+        return (output.status.success() && !stamp.is_empty()).then_some(stamp);
     }
-    #[cfg(target_os="linux")]
+    #[cfg(target_os = "linux")]
     {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // Field 22, after the parenthesized process name (which may contain spaces).
-    Some(
-        stat.rsplit_once(") ")?
-            .1
-            .split_whitespace()
-            .nth(19)?
-            .to_owned(),
-    )
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // Field 22, after the parenthesized process name (which may contain spaces).
+        Some(
+            stat.rsplit_once(") ")?
+                .1
+                .split_whitespace()
+                .nth(19)?
+                .to_owned(),
+        )
     }
 }
 pub fn viewed(session: &Session) -> Result<(), String> {
@@ -102,9 +105,55 @@ pub fn record(
     save(session, &r)
 }
 pub fn inspect(workspace: &Path) -> Value {
-    let indexed = crate::resume_picker::all(&config::data_dir());
-    let omitted = indexed.len().saturating_sub(512);
-    let rows = indexed.into_iter().take(512).map(|thread| {
+    inspect_page(workspace, 0, false, "", "", "")
+}
+pub fn inspect_web(workspace: &Path, offset: usize, query: &str, project: &str, id: &str) -> Value {
+    inspect_page(workspace, offset, true, query, project, id)
+}
+fn inspect_page(
+    workspace: &Path,
+    offset: usize,
+    unassigned: bool,
+    query: &str,
+    project: &str,
+    id: &str,
+) -> Value {
+    let indexed = if unassigned {
+        crate::resume_picker::all_for_web(&config::data_dir())
+    } else {
+        crate::resume_picker::all(&config::data_dir())
+    };
+    let machine_total = indexed.len();
+    let mut projects = std::collections::BTreeMap::<String, usize>::new();
+    for thread in &indexed {
+        *projects
+            .entry(thread.workspace.to_string_lossy().into_owned())
+            .or_default() += 1;
+    }
+    let query = query.to_lowercase();
+    let indexed = indexed
+        .into_iter()
+        .filter(|thread| {
+            (id.is_empty() || thread.id == id)
+                && (project.is_empty()
+                    || (project == "@unassigned" && thread.workspace.as_os_str().is_empty())
+                    || thread.workspace.to_string_lossy() == project)
+                && query.split_whitespace().all(|word| {
+                    format!(
+                        "{} {} {}",
+                        thread.title,
+                        thread.workspace.display(),
+                        thread.id
+                    )
+                    .to_lowercase()
+                    .contains(word)
+                })
+        })
+        .collect::<Vec<_>>();
+    let total = indexed.len();
+    let offset = offset.min(total);
+    let omitted = total.saturating_sub(offset + 512);
+    let rows = indexed.into_iter().skip(offset).take(512).map(|thread| {
         let r = load(&thread.id);
         use std::os::unix::fs::FileTypeExt;
         let live = std::fs::symlink_metadata(config::data_dir().join(format!("serve-{}.sock",thread.id)))
@@ -119,9 +168,9 @@ pub fn inspect(workspace: &Path) -> Value {
             "unread_events":r.events.saturating_sub(r.viewed),"recorded_events":r.events,
             "viewed_cursor":r.viewed,"unread_scope":"Recorded events since last explicitly viewed cursor; not messages.",
             "teammates_in_this_process":team,"parent":r.parent,"fork_turn":r.fork_turn,
-            "current_workspace":thread.workspace==workspace})
+            "current_workspace":thread.workspace==workspace,"workspace_assigned":!thread.workspace.as_os_str().is_empty(),"workspace_available":thread.workspace.is_dir()})
     }).collect::<Vec<_>>();
-    json!({"threads":rows,"limit":512,"omitted_threads":omitted,"branch_families_complete":omitted==0,"history_loaded":false})
+    json!({"threads":rows,"limit":512,"offset":offset,"total_threads":total,"machine_total":machine_total,"projects":projects.into_iter().map(|(workspace,count)|json!({"workspace":workspace,"count":count})).collect::<Vec<_>>(),"next_offset":if omitted>0 {Some(offset+512)}else{None},"omitted_threads":omitted,"branch_families_complete":offset==0&&omitted==0,"history_loaded":false})
 }
 fn family(all: &[Value], session: &str) -> BTreeSet<String> {
     let mut edges: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
@@ -134,7 +183,9 @@ fn family(all: &[Value], session: &str) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
     let mut pending = vec![session];
     while let Some(id) = pending.pop() {
-        if ids.insert(id.to_owned()) && let Some(neighbors) = edges.get(id) {
+        if ids.insert(id.to_owned())
+            && let Some(neighbors) = edges.get(id)
+        {
             pending.extend(neighbors.iter().copied());
         }
     }
@@ -237,7 +288,9 @@ pub(crate) fn choose(
             },
             &format!(
                 "{} · page {}/{} · search this page; search all below",
-                if candidates.is_empty() { "No conversations matched" } else if all {
+                if candidates.is_empty() {
+                    "No conversations matched"
+                } else if all {
                     "All projects"
                 } else {
                     "Current project"

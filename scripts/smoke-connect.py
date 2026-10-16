@@ -92,6 +92,9 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
     pdf.extend(f'trailer << /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF'.encode());(root/'sample.pdf').write_bytes(pdf)
     records=[{'k':'user','t':'Help me keep this readable.'},{'k':'call','id':'fixture-tool','name':'read','args':'{"path":"src/runtime.rs"}'},{'k':'tool','id':'fixture-tool','name':'read','t':'Read 120 lines · src/runtime.rs'},{'k':'assistant','t':FIXTURE}]
     (data/'web-fixture.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in records));(data/'web-fixture.meta.json').write_text(json.dumps({'workspace':str(root),'title':'Shared runtime workspace'}))
+    (data/'other-project.jsonl').write_text(json.dumps({'k':'user','t':'Other project fixture'})+'\n')
+    (data/'other-project.meta.json').write_text(json.dumps({'workspace':str(root/'project-two'),'title':'Other project fixture'}))
+    (data/'legacy-archive.jsonl').write_text(json.dumps({'k':'user','t':'Legacy archive fixture'})+'\n')
     env=dict(os.environ,XDG_CONFIG_HOME=str(root/'config'),XDG_DATA_HOME=str(root/'data'),GC_WEB_ASSETS=str(ROOT/'web/dist'))
     result=subprocess.run([str(BIN),'connect','--local'],cwd=root,env=env,capture_output=True,text=True,timeout=15);assert result.returncode==0,result.stderr
     match=re.search(r'http://127\.0\.0\.1:\d+/#\w+',result.stdout);assert match,result.stdout;url=match.group(0);base,token=url.split('/#');settings=json.loads((data/'connect.json').read_text())
@@ -111,6 +114,12 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         assert req('/api/export?id=web-fixture',auth=False)[0]==403
 
         assert req('/api/threads',origin='https://evil.test')[0]==403
+        threads=json.loads(req('/api/threads')[1]);by_id={t['session']:t for t in threads['threads']}
+        assert {'web-fixture','other-project','legacy-archive'} <= by_id.keys(),by_id
+        assert by_id['other-project']['workspace']==str(root/'project-two')
+        assert by_id['legacy-archive']['workspace_assigned']==False
+        assert threads['history_loaded']==False
+
         assert req('/api/send','POST',{'id':'../bad','message':{'t':'prompt','text':'no'}})[0]==400
         assert req('/api/file?id=web-fixture&path=/etc/passwd')[0]==400
         assert req('/api/history?id=web-fixture')[0]==200
@@ -127,6 +136,16 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         usage=json.loads(req('/api/usage?path='+urllib.parse.quote(str(root/'project-two')))[1]);assert usage['entries']==2 and not usage['partial']
         r=subprocess.run(['node',str(ROOT/'web/test/browser.mjs'),url],cwd=ROOT,capture_output=True,text=True,timeout=120)
         print(r.stdout,flush=True);assert r.returncode==0,r.stderr
+        # Older pages remain searchable without loading their transcripts.
+        for number in range(520):
+            path=data/f'page-{number}.jsonl';path.write_text(json.dumps({'k':'user','t':f'Paging fixture {number}'})+'\n');os.utime(path,(1,1))
+        path=data/'deep-archive.jsonl';path.write_text(json.dumps({'k':'user','t':'Deep pagination fixture'})+'\n');os.utime(path,(0,0))
+        first=json.loads(req('/api/threads')[1]);assert len(first['threads'])==512 and first['next_offset']==512
+        second=json.loads(req('/api/threads?offset=512')[1]);assert any(t['session']=='deep-archive' for t in second['threads'])
+        found=json.loads(req('/api/threads?q=Deep%20pagination')[1]);assert [t['session'] for t in found['threads']]==['deep-archive']
+        direct=json.loads(req('/api/threads?id=deep-archive')[1]);assert direct['threads'][0]['workspace_assigned']==False
+        scoped=json.loads(req('/api/threads?project='+urllib.parse.quote(str(root/'project-two')))[1]);assert all(t['workspace']==str(root/'project-two') for t in scoped['threads'])
+        print('PASS: all-project indexing, unassigned archives, global search and older-page lookup',flush=True)
         assert len(list(data.glob('serve-*.sock')))>=1
         assert Provider.calls>=6,Provider.calls
         before=(data/'web-fixture.jsonl').read_bytes()

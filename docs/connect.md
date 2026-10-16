@@ -161,8 +161,10 @@ Pinch zoom remains available. Threads and details use separate dismissible drawe
 only one overlay opens at a time. Reduced-motion settings disable interface animation.
 
 Streaming preserves completed Markdown blocks and batches updates. Reasoning has
-its own follow position. Scrolling pauses updates in the reasoning pane; Latest
-restores live output at the bottom. Completed reasoning remains freely scrollable.
+its own follow position. Touch, wheel, and keyboard scrolling pause following in the reasoning pane; Latest
+in the fixed header restores live output at the bottom. Following resumes only
+when Latest is selected or the Reasoning tab is entered. Completed reasoning
+remains freely scrollable.
 Expanded source wraps long lines and commands to the available width.
 Closing an expanded preview returns to its
 parent preview and preserves its scroll position. Escape follows the same sequence.
@@ -294,7 +296,7 @@ File names use compact UI text. Path inputs display at 14 px while retaining a
 header. Tables wrap cell content by default and scroll horizontally when needed.
 Table headers remain visible while scrolling. Tables offer compact mode, CSV copy,
 and a full-screen expanded view. Expanded tables retain the chat styling and wrap
-all cells within the screen width. Working threads show animated dots in the
+all cells within the screen width. Expanded headers scroll with their rows. Working threads show animated dots in the
 sidebar; reduced-motion preferences disable the animation.
 
 Mermaid loads on demand, serializes rendering, and caches at most 32 results.
@@ -332,3 +334,7 @@ Legacy conversations without workspace metadata appear under **Unassigned**.
 They can be read without starting a worker. Conversations whose project
 directory is missing also open as read-only archives. GC does not infer a
 workspace or grant tool access to these archives.
+
+Earlier activity loads one page per request. The button shows progress and ignores
+repeated taps until the request finishes. Prepending history preserves the reading
+position and does not replace the current reasoning, checklist, or live response.

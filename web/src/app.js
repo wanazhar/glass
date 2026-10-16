@@ -648,21 +648,27 @@ async function history(older = false) {
       (older ? "&before=" + view.before : ""),
   );
   if (generation !== view.generation) return;
+  if (older) view.follow = false;
   const scroller = $("#conversation");
   const previousTop = scroller.scrollTop;
-  const anchor = [...$("#timeline").children].find(
-    (n) =>
-      n.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top,
-  );
+  const viewportTop = scroller.getBoundingClientRect().top;
+  const anchor = older
+    ? $("#timeline").firstElementChild
+    : [...$("#timeline").children].find(
+        (n) => n.getBoundingClientRect().bottom > viewportTop,
+      );
   const anchorKey = anchor?.dataset.recordIndex;
   const anchorTop = anchor?.getBoundingClientRect().top;
   const expanded = new Set(
-    [...view.tools.entries()].filter(([, t]) => t.row.open).map(([id]) => id),
+    (older ? [] : [...view.tools.entries()])
+      .filter(([, t]) => t.row.open)
+      .map(([id]) => id),
   );
   const expandedGroups = new Set(
-    [...document.querySelectorAll("#timeline .work-group[open]")].map(
-      (n) => n.dataset.recordIndex,
-    ),
+    (older
+      ? []
+      : [...document.querySelectorAll("#timeline .work-group[open]")]
+    ).map((n) => n.dataset.recordIndex),
   );
   if (!older) {
     view.tools.clear();
@@ -697,8 +703,19 @@ async function history(older = false) {
     }
   }
   const savedGroup = view.group;
+  const liveStream = view.stream;
+  const savedReasoning = view.reasoning;
+  const savedTasks = view.tasks;
+  if (older) view.stream = null;
   view.group = null;
   for (const item of h.records) {
+    if (
+      older &&
+      (item.record.k === "reasoning" ||
+        item.record.k === "state" ||
+        (item.record.k === "custom" && item.record.c === "state/todo"))
+    )
+      continue;
     record(item.record, fragment);
     const node = fragment.lastElementChild;
     if (node && !node.dataset.recordIndex)
@@ -718,20 +735,28 @@ async function history(older = false) {
   } else {
     $("#timeline").prepend(fragment);
     view.group = savedGroup;
+    view.stream = liveStream;
+    view.reasoning = savedReasoning;
+    view.tasks = savedTasks;
   }
   if (h.omittedLargeRecord)
     notice(
       "A record exceeds the 512 KiB history window. Load earlier activity or use gc export for full source.",
     );
-  for (const [id, t] of view.tools) if (expanded.has(id)) t.row.open = true;
-  for (const group of $("#timeline").querySelectorAll(".work-group"))
+  if (!older)
+    for (const [id, t] of view.tools) if (expanded.has(id)) t.row.open = true;
+  for (const group of older
+    ? []
+    : $("#timeline").querySelectorAll(".work-group"))
     if (expandedGroups.has(group.dataset.recordIndex)) group.open = true;
-  if (!older && !view.follow) {
-    const restored = anchorKey
-      ? [...$("#timeline").children].find(
-          (n) => n.dataset.recordIndex === anchorKey,
-        )
-      : null;
+  if (older || !view.follow) {
+    const restored = older
+      ? anchor
+      : anchorKey
+        ? [...$("#timeline").children].find(
+            (n) => n.dataset.recordIndex === anchorKey,
+          )
+        : null;
     scroller.scrollTop =
       restored && anchorTop !== undefined
         ? previousTop + restored.getBoundingClientRect().top - anchorTop
@@ -741,14 +766,31 @@ async function history(older = false) {
   $("#older").classList.toggle("hidden", h.before === 0);
   details();
 }
+let earlierRequestGeneration = null;
 $("#older").onclick = async () => {
-  const node = $("#conversation"),
-    height = node.scrollHeight;
+  const button = $("#older"),
+    generation = view.generation;
+  if (earlierRequestGeneration === generation) return;
+  earlierRequestGeneration = generation;
+  button.disabled = true;
+  button.textContent = "Loading earlier activity…";
+  button.setAttribute("aria-busy", "true");
+  // Paint feedback before parsing and laying out the next page.
+  await new Promise((resolve) =>
+    requestAnimationFrame(() => setTimeout(resolve, 0)),
+  );
   try {
+    if (generation !== view.generation) return;
     await history(true);
-    node.scrollTop += node.scrollHeight - height;
   } catch (e) {
-    notice(e.message, true);
+    if (generation === view.generation) notice(e.message, true);
+  } finally {
+    if (earlierRequestGeneration === generation) {
+      earlierRequestGeneration = null;
+      button.disabled = false;
+      button.textContent = "↑ Load earlier activity";
+      button.removeAttribute("aria-busy");
+    }
   }
 };
 function schedule() {
@@ -977,6 +1019,9 @@ async function openThread(id, { resume = false } = {}) {
   if (view.source) view.source.close();
   view.source = null;
   const generation = ++view.generation;
+  $("#older").disabled = false;
+  $("#older").textContent = "↑ Load earlier activity";
+  $("#older").removeAttribute("aria-busy");
   if (view.id !== id) {
     ++fileVersion;
     fileAbort?.abort();
@@ -1496,6 +1541,7 @@ function interaction() {
 function details() {
   const n = $("#detail-content");
   if (!$("#details").classList.contains("open")) return;
+  $("#reasoning-latest").hidden = view.tab !== "reasoning";
   if (view.tab === "files") {
     const thread = threadInfo(view.id);
     if (
@@ -1526,16 +1572,7 @@ function details() {
       body.dataset.reasoningSource = source;
       body.dataset.reasoningStreaming = String(view.active);
     }
-    if (!body.isConnected) {
-      const latest = el("button", "quiet reasoning-latest", "↓ Latest");
-      latest.onclick = () => {
-        view.reasoningFollow = true;
-        details();
-        n.scrollTop = n.scrollHeight;
-      };
-      n.append(latest, body);
-    }
-    n.querySelector(".reasoning-latest").hidden = view.reasoningFollow;
+    if (!body.isConnected) n.append(body);
     if (view.reasoningFollow && changed) n.scrollTop = n.scrollHeight;
   } else if (view.tab === "context") {
     const thread = threadInfo(view.id) || {};
@@ -1639,59 +1676,82 @@ $("#sidebar-close").onclick = () => {
   closePanels();
   $("#menu").focus();
 };
-// Keep streamed DOM stable while the reader scrolls; catch up only at the bottom.
-let reasoningTouching = false,
-  reasoningResumeTimer;
+// Following resumes only on explicit Latest or when entering the reasoning tab.
+// Do not insert controls into the scroll surface during an iOS touch gesture.
 function pauseReasoning() {
-  if (view.tab !== "reasoning") return;
-  view.reasoningFollow = false;
-  const latest = $("#detail-content .reasoning-latest");
-  if (latest) latest.hidden = false;
+  if (view.tab === "reasoning") view.reasoningFollow = false;
 }
+$("#reasoning-latest").onclick = () => {
+  view.reasoningFollow = true;
+  details();
+  const pane = $("#detail-content");
+  pane.scrollTop = pane.scrollHeight;
+};
+let reasoningGesture = null;
 $("#detail-content").addEventListener(
   "touchstart",
-  () => {
-    reasoningTouching = true;
-    clearTimeout(reasoningResumeTimer);
+  (event) => {
+    if (view.tab !== "reasoning") return;
+    reasoningGesture = {
+      following: view.reasoningFollow,
+      top: event.currentTarget.scrollTop,
+      y: event.touches[0]?.clientY,
+      moved: false,
+    };
     pauseReasoning();
   },
   { passive: true },
 );
-function resumeReasoningIfBottom() {
-  if (reasoningTouching || view.tab !== "reasoning") return;
-  const n = $("#detail-content");
-  if (
-    n.scrollHeight - n.scrollTop - n.clientHeight <= 2 &&
-    !view.reasoningFollow
-  ) {
-    view.reasoningFollow = true;
-    details();
-  }
-}
+$("#detail-content").addEventListener(
+  "touchmove",
+  (event) => {
+    if (
+      reasoningGesture &&
+      Math.abs((event.touches[0]?.clientY || 0) - reasoningGesture.y) > 6
+    )
+      reasoningGesture.moved = true;
+  },
+  { passive: true },
+);
 for (const name of ["touchend", "touchcancel"])
   $("#detail-content").addEventListener(
     name,
-    () => {
-      reasoningTouching = false;
-      clearTimeout(reasoningResumeTimer);
-      reasoningResumeTimer = setTimeout(resumeReasoningIfBottom, 180);
+    (event) => {
+      const gesture = reasoningGesture;
+      reasoningGesture = null;
+      if (
+        gesture?.following &&
+        !gesture.moved &&
+        view.tab === "reasoning" &&
+        Math.abs(event.currentTarget.scrollTop - gesture.top) <= 2
+      ) {
+        view.reasoningFollow = true;
+        details();
+      }
     },
     { passive: true },
   );
 $("#detail-content").addEventListener(
   "wheel",
   (event) => {
-    if (event.deltaY < 0) pauseReasoning();
+    if (event.deltaY) pauseReasoning();
   },
   { passive: true },
 );
+$("#detail-content").addEventListener("keydown", (event) => {
+  if (
+    ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(
+      event.key,
+    )
+  )
+    pauseReasoning();
+});
 $("#detail-content").addEventListener(
   "scroll",
   () => {
-    const n = $("#detail-content");
-    if (n.scrollHeight - n.scrollTop - n.clientHeight > 2) pauseReasoning();
-    clearTimeout(reasoningResumeTimer);
-    reasoningResumeTimer = setTimeout(resumeReasoningIfBottom, 180);
+    const pane = $("#detail-content");
+    if (pane.scrollHeight - pane.scrollTop - pane.clientHeight > 2)
+      pauseReasoning();
   },
   { passive: true },
 );
@@ -2369,7 +2429,10 @@ document.addEventListener("click", async (e) => {
       const body = $("#preview-body");
       body.className = "prose";
       const figure = el("figure", "table-block table-wrapped expanded-table");
-      figure.style.setProperty("--table-columns", Math.max(1, table.rows[0]?.cells.length || 1));
+      figure.style.setProperty(
+        "--table-columns",
+        Math.max(1, table.rows[0]?.cells.length || 1),
+      );
       const wrapper = el("div", "table-wrap");
       wrapper.append(table.cloneNode(true));
       figure.append(wrapper);

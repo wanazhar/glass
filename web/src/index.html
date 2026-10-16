@@ -24,8 +24,10 @@
       <aside class="sidebar" id="sidebar" aria-label="Threads">
         <div class="brand">
           <a class="brand-home" href="/" aria-label="Glass home">
-            <img src="/icon.svg" alt="" /><span>glass<span class="brand-dot">.</span></span>
-          </a><button
+            <img src="/icon.svg" alt="" /><span
+              >glass<span class="brand-dot">.</span></span
+            > </a
+          ><button
             class="icon-button"
             id="new"
             title="New thread"
@@ -214,6 +216,9 @@
       <aside class="details" id="details" aria-label="Thread details">
         <header>
           <h2>Thread details</h2>
+          <button id="reasoning-latest" class="quiet reasoning-latest" hidden>
+            ↓ Latest
+          </button>
           <button
             class="icon-button"
             id="details-close"
@@ -228,7 +233,11 @@
           ><button data-tab="context">Context</button
           ><button data-tab="files">Files</button>
         </div>
-        <div id="detail-content"></div>
+        <div
+          id="detail-content"
+          tabindex="0"
+          aria-label="Thread detail content"
+        ></div>
       </aside>
     </div>
     <dialog id="commands" aria-label="Commands">

@@ -276,13 +276,28 @@ try {
   await page.locator('[data-table="wrap"]').first().click();
   await page.locator('[data-table="expand"]').first().click();
   await page.locator("#preview-body .expanded-table table").waitFor();
+  assert(
+    await page
+      .locator("#preview-body th")
+      .first()
+      .evaluate((n) => getComputedStyle(n).position === "static"),
+    "Expanded table headers must scroll with their rows",
+  );
   await page.setViewportSize({ width: 390, height: 844 });
   assert(
-    await page.locator("#preview-body").evaluate(n => n.scrollWidth <= n.clientWidth + 1),
+    await page
+      .locator("#preview-body")
+      .evaluate((n) => n.scrollWidth <= n.clientWidth + 1),
     "Expanded table must fit the phone width",
   );
   assert(
-    await page.locator("#preview-body table").evaluate(n => [...n.querySelectorAll("td,th")].every(cell => getComputedStyle(cell).whiteSpace === "normal")),
+    await page
+      .locator("#preview-body table")
+      .evaluate((n) =>
+        [...n.querySelectorAll("td,th")].every(
+          (cell) => getComputedStyle(cell).whiteSpace === "normal",
+        ),
+      ),
     "Expanded table cells must wrap",
   );
   await page.locator("#preview-close").click();
@@ -494,14 +509,12 @@ try {
     touchPoints: [],
   });
   await page.waitForTimeout(200);
-  const afterGesture = await page
-    .locator("#detail-content")
-    .evaluate((n) => ({
-      top: n.scrollTop,
-      height: n.clientHeight,
-      scrollHeight: n.scrollHeight,
-      scale: visualViewport.scale,
-    }));
+  const afterGesture = await page.locator("#detail-content").evaluate((n) => ({
+    top: n.scrollTop,
+    height: n.clientHeight,
+    scrollHeight: n.scrollHeight,
+    scale: visualViewport.scale,
+  }));
   assert(
     afterGesture.top < pausedTop - 50,
     "Touch drag did not scroll the reasoning pane: " +
@@ -542,15 +555,70 @@ try {
   );
   await page.locator(".reasoning-latest").click();
   assert(
-    await page.locator("#detail-content").evaluate(
-      (n) => n.scrollHeight - n.scrollTop - n.clientHeight < 3,
-    ),
+    await page
+      .locator("#detail-content")
+      .evaluate((n) => n.scrollHeight - n.scrollTop - n.clientHeight < 3),
     "Latest must return to the bottom after completion",
+  );
+  const currentReasoning = await page
+    .locator("#detail-content .prose")
+    .textContent();
+  assert(
+    await page
+      .locator(".reasoning-latest")
+      .evaluate((n) => !document.querySelector("#detail-content").contains(n)),
+    "Latest must be outside the touch scroller",
   );
   await page.locator("#details-close").click();
   await page.waitForFunction(
     () => document.querySelector("#activity-text").textContent === "Ready",
   );
+  let olderRequests = 0;
+  await page.route("**/api/history*before=*", async (route) => {
+    olderRequests++;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await route.fulfill({
+      json: {
+        records: [
+          {
+            index: -2,
+            record: {
+              k: "reasoning",
+              t: "OLD_REASONING_MUST_NOT_REPLACE_CURRENT",
+            },
+          },
+          {
+            index: -1,
+            record: { k: "assistant", t: "Earlier activity fixture loaded." },
+          },
+        ],
+        before: 0,
+      },
+    });
+  });
+  await page.locator("#older").evaluate((n) => n.classList.remove("hidden"));
+  await page.locator("#older").click();
+  await page.waitForFunction(
+    () => document.querySelector("#older").getAttribute("aria-busy") === "true",
+  );
+  await page.locator("#older").evaluate((n) => n.click());
+  await page
+    .getByText("Earlier activity fixture loaded.", { exact: true })
+    .waitFor();
+  assert.equal(
+    olderRequests,
+    1,
+    "Repeated taps must not request duplicate history pages",
+  );
+  await page.locator("#details-toggle").click();
+  await page.getByRole("button", { name: "Reasoning", exact: true }).click();
+  assert.equal(
+    await page.locator("#detail-content .prose").textContent(),
+    currentReasoning,
+    "Earlier history must not pollute current reasoning",
+  );
+  await page.locator("#details-close").click();
+  await page.unroute("**/api/history*before=*");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(
     () =>

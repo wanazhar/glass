@@ -1894,12 +1894,15 @@ function applyTheme() {
   document.querySelector('meta[name="theme-color"]').content = light
     ? "#f7f8f3"
     : "#141916";
-  $("#theme").title = `Theme: ${themeMode}. Click to change.`;
-  $("#theme").setAttribute("aria-label", `Theme: ${themeMode}. Change theme`);
+  const action = light ? "Switch to dark mode" : "Switch to light mode";
+  $("#theme").title = action;
+  $("#theme").setAttribute("aria-label", action);
 }
 systemTheme.addEventListener("change", applyTheme);
 $("#theme").onclick = () => {
-  themeMode = { system: "light", light: "dark", dark: "system" }[themeMode];
+  themeMode = document.documentElement.classList.contains("light")
+    ? "dark"
+    : "light";
   applyTheme();
 };
 applyTheme();

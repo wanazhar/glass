@@ -2568,3 +2568,31 @@ dialog > header {
     padding-top: calc(8px + var(--safe-top));
   }
 }
+
+/* WebKit can under-report the standalone layout viewport by its safe inset.
+   Fixed edges use the viewport containing block without guessed screen pixels. */
+.standalone:not(.keyboard-open) .app {
+  position: fixed;
+  inset: 0;
+  height: auto;
+}
+@media (max-width: 1100px) {
+  .standalone:not(.keyboard-open) .details.open {
+    inset: 0 0 0 auto;
+    height: auto;
+  }
+}
+@media (max-width: 700px) {
+  .standalone:not(.keyboard-open) dialog[open] {
+    inset: 0;
+    height: auto;
+    max-height: none;
+  }
+  .standalone:not(.keyboard-open) #commands[open] {
+    inset: max(12px, var(--safe-top)) 12px auto;
+    height: auto;
+    max-height: calc(
+      100% - max(12px, var(--safe-top)) - max(12px, var(--safe-bottom))
+    );
+  }
+}

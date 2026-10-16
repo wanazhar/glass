@@ -350,3 +350,8 @@ padding is capped at 34 px. Keyboard layout uses the visual viewport height.
 For device-specific sizing problems, `/layout` opens local viewport, safe-area,
 and element measurements. Copy measurements collects geometry only; the command
 does not contact a model or change layout settings.
+
+Layout diagnostics dismiss the keyboard and wait for stable viewport geometry
+before capturing. The report includes a `settled` flag. Keyboard detection uses
+the layout viewport and last idle height because Safari can shrink both the
+window and visual viewport; its offset is applied while the keyboard is open.

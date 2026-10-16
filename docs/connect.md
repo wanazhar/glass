@@ -346,3 +346,7 @@ Loading chat history skips internal-only pages within the same four-page budget.
 Teammate inspection opens a separate modal with loading, empty, and error states;
 activity updates do not replace its contents. Standalone layout uses the window height while the keyboard is closed. The toolbar leaves extra space below the status area; composer bottom
 padding is capped at 34 px. Keyboard layout uses the visual viewport height.
+
+For device-specific sizing problems, `/layout` opens local viewport, safe-area,
+and element measurements. Copy measurements collects geometry only; the command
+does not contact a model or change layout settings.

@@ -2500,12 +2500,56 @@ dialog > header {
   background: currentColor;
   animation: breathe 1.4s ease-in-out infinite;
 }
-.thread-working-dots i:nth-child(2) { animation-delay: .16s; }
-.thread-working-dots i:nth-child(3) { animation-delay: .32s; }
-:root[data-animation="none"] .thread-working-dots i { animation: none; }
-#preview-body .expanded-table { margin: 0; max-width: 100%; }
-#preview-body .expanded-table .table-wrap { max-height: none; overflow: visible; }
-#preview-body .expanded-table table { width: 100%; min-width: 0; table-layout: fixed; }
+.thread-working-dots i:nth-child(2) {
+  animation-delay: 0.16s;
+}
+.thread-working-dots i:nth-child(3) {
+  animation-delay: 0.32s;
+}
+:root[data-animation="none"] .thread-working-dots i {
+  animation: none;
+}
+#preview-body .expanded-table {
+  margin: 0;
+  max-width: 100%;
+}
+#preview-body .expanded-table .table-wrap {
+  max-height: none;
+  overflow: visible;
+}
+#preview-body .expanded-table table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
 #preview-body .expanded-table th,
-#preview-body .expanded-table td { min-width: 0; white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
-#preview-body .expanded-table code { white-space: normal; overflow-wrap: anywhere; }
+#preview-body .expanded-table td {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+#preview-body .expanded-table code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Keep reasoning controls outside the touch scroller and its layout. */
+.details > header .reasoning-latest {
+  position: static;
+  margin: 0 8px 0 auto;
+  flex-shrink: 0;
+  font-size: 11px;
+}
+#detail-content[data-tab="reasoning"] {
+  overflow-anchor: none;
+}
+#detail-content:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Expanded tables scroll as one document; sticky cells can obscure rows in Safari. */
+#preview-body .expanded-table th {
+  position: static;
+}

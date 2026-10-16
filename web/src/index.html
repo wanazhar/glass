@@ -166,7 +166,14 @@
             </div>
           </form>
           <div class="compose-foot">
-            <span id="usage"></span
+            <button
+              type="button"
+              id="open-commands"
+              class="quiet"
+              aria-label="Open commands"
+            >
+              /</button
+            ><span id="usage"></span
             ><span class="keyboard-hint"
               >Enter to send <span>·</span> Shift Enter for a new line</span
             >
@@ -193,6 +200,27 @@
         <div id="detail-content"></div>
       </aside>
     </div>
+    <dialog id="commands" aria-label="Commands">
+      <header>
+        <h2 id="commands-title">Commands</h2>
+        <button
+          type="button"
+          id="commands-close"
+          class="icon-button"
+          aria-label="Close commands"
+        >
+          ×
+        </button>
+      </header>
+      <input
+        id="command-search"
+        placeholder="Find a command…"
+        aria-label="Find a command"
+        autocomplete="off"
+      />
+      <div id="command-list" role="listbox" aria-label="Commands"></div>
+      <footer id="command-help">↑ ↓ select · Enter choose · Esc back</footer>
+    </dialog>
     <dialog id="preview">
       <header>
         <div>

@@ -51,20 +51,38 @@ function clearNotice() {
   $("#notice").classList.add("hidden");
 }
 async function api(path, data, signal) {
-  const r = await fetch("/api/" + path, {
-    method: data === undefined ? "GET" : "POST",
-    headers: data === undefined ? {} : { "Content-Type": "application/json" },
-    body: data === undefined ? undefined : JSON.stringify(data),
-    signal,
-  });
-  let value;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) controller.abort();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 12000);
   try {
-    value = await r.json();
-  } catch {
-    throw Error("Host connection unavailable");
+    const r = await fetch("/api/" + path, {
+      method: data === undefined ? "GET" : "POST",
+      headers: data === undefined ? {} : { "Content-Type": "application/json" },
+      body: data === undefined ? undefined : JSON.stringify(data),
+      signal: controller.signal,
+    });
+    let value;
+    try {
+      value = await r.json();
+    } catch {
+      throw Error("Host connection unavailable");
+    }
+    if (!r.ok) throw Error(value.error || "Request rejected");
+    return value;
+  } catch (error) {
+    if (timedOut)
+      throw Error("Host timed out. Tap the connection indicator to reconnect.");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
   }
-  if (!r.ok) throw Error(value.error || "Request rejected");
-  return value;
 }
 async function send(message) {
   if (!view.id) throw Error("Choose a thread first");
@@ -95,16 +113,27 @@ function syncViewport() {
   viewportFrame = requestAnimationFrame(() => {
     viewportFrame = 0;
     const viewport = window.visualViewport;
-    if (viewport && viewport.scale === 1) {
+    // WebKit can report a stale visualViewport size after standalone resume.
+    // CSS owns the idle viewport; override only for a visible software keyboard.
+    const focused = document.activeElement?.matches(
+      "textarea,input:not([type=radio]):not([type=checkbox]):not([type=file]):not([type=button]):not([type=submit]),[contenteditable=true]",
+    );
+    const keyboard =
+      viewport &&
+      viewport.scale === 1 &&
+      focused &&
+      window.innerHeight - viewport.height > 120;
+    if (keyboard)
       document.documentElement.style.setProperty(
         "--app-height",
         `${Math.round(viewport.height)}px`,
       );
-      document.documentElement.style.setProperty(
-        "--viewport-top",
-        `${Math.round(viewport.offsetTop)}px`,
-      );
-    }
+    else document.documentElement.style.removeProperty("--app-height");
+    document.documentElement.style.setProperty("--viewport-top", "0px");
+    document.documentElement.classList.toggle(
+      "keyboard-open",
+      Boolean(keyboard),
+    );
     follow();
   });
 }
@@ -113,6 +142,15 @@ window.visualViewport?.addEventListener("resize", syncViewport, {
 });
 window.visualViewport?.addEventListener("scroll", syncViewport, {
   passive: true,
+});
+document.addEventListener("focusin", syncViewport);
+document.addEventListener("focusout", () => {
+  syncViewport();
+  setTimeout(syncViewport, 300);
+});
+window.addEventListener("orientationchange", () => {
+  syncViewport();
+  setTimeout(syncViewport, 300);
 });
 let resizeEnd;
 window.addEventListener(
@@ -732,6 +770,7 @@ function event(m) {
       if (view.pending.has(m.request_id)) {
         const pending = view.pending.get(m.request_id);
         pending.status = "started";
+        pending.row?.classList.remove("pending");
         view.pending.delete(m.request_id);
         if (!pending.shown && !m.already_recorded)
           message("user", pending.text);
@@ -834,6 +873,7 @@ function event(m) {
       if (m.request_id && view.pending.has(m.request_id)) {
         const pending = view.pending.get(m.request_id);
         pending.status = "rejected";
+        if (pending.row?.classList.contains("pending")) pending.row.remove();
         view.pending.delete(m.request_id);
         if (!$("#prompt").value.trim()) $("#prompt").value = pending.text;
       }
@@ -859,7 +899,8 @@ function event(m) {
         .catch((e) => notice(e.message, true));
   }
 }
-async function openThread(id) {
+async function openThread(id, { resume = false } = {}) {
+  const previousFollow = view.follow;
   if (view.source) view.source.close();
   view.source = null;
   const generation = ++view.generation;
@@ -873,13 +914,16 @@ async function openThread(id) {
   view.streamTruncated = false;
   view.interaction = null;
   view.control = false;
-  view.follow = true;
+  view.follow = resume ? previousFollow : true;
   view.active = false;
   interaction();
+  updateActivity(null);
   clearNotice();
   $("#welcome").classList.add("hidden");
-  closePanels();
-  $("#timeline").replaceChildren(el("div", "loading-surface"));
+  if (!resume) {
+    closePanels();
+    $("#timeline").replaceChildren(el("div", "loading-surface"));
+  } else syncPanels();
   connection("Connecting");
   const thread = view.threads.find((t) => t.session === id);
   $("#thread-name").textContent = thread?.title || "Conversation";
@@ -900,8 +944,23 @@ async function openThread(id) {
     const source = new EventSource("/api/events?id=" + encodeURIComponent(id));
     view.source = source;
     let eventChain = Promise.resolve();
-    source.onopen = () => connection("Connected");
-    source.onerror = () => connection("Reconnecting", false);
+    let attached;
+    const ready = new Promise((resolve) => {
+      attached = resolve;
+    });
+    const readyTimeout = setTimeout(() => attached(), 12000);
+    source.onopen = () => {
+      if (generation === view.generation) connection("Connected");
+    };
+    source.onerror = () => {
+      if (generation !== view.generation) return;
+      connection("Reconnecting", false);
+      if (source.readyState === EventSource.CLOSED)
+        notice(
+          "Connection closed. Tap the connection indicator to reconnect.",
+          true,
+        );
+    };
     source.onmessage = (e) => {
       eventChain = eventChain
         .then(async () => {
@@ -920,9 +979,16 @@ async function openThread(id) {
             updateActivity(data.active ? "Working" : null);
           } else for (const m of data.events || []) await event(m);
           follow();
+          clearTimeout(readyTimeout);
+          attached();
         })
-        .catch((error) => notice(error.message, true));
+        .catch((error) => {
+          clearTimeout(readyTimeout);
+          attached();
+          notice(error.message, true);
+        });
     };
+    await ready;
   } catch (e) {
     if (generation !== view.generation) return;
     $("#timeline .loading-surface")?.remove();
@@ -997,18 +1063,25 @@ async function newThread(workspace) {
     });
     await loadThreads();
     await openThread(id);
-    $("#prompt").focus();
+    $("#prompt").focus({ preventScroll: true });
   } catch (e) {
     notice(e.message, true);
   }
 }
 $("#new").onclick = newThread;
 $("#welcome-new").onclick = newThread;
+let submitting = false;
 $("#composer").onsubmit = async (e) => {
   e.preventDefault();
   const prompt = $("#prompt"),
     value = prompt.value.trim();
-  if (!value) return;
+  if (!value || submitting) return;
+  if (value.startsWith("/")) {
+    await dispatchSlash(value);
+    return;
+  }
+  submitting = true;
+  let receipt;
   try {
     if (!view.id) {
       await newThread();
@@ -1026,7 +1099,7 @@ $("#composer").onsubmit = async (e) => {
     view.lastPrompt = value;
     const queued = view.active;
     const steering = queued && $("#send-mode").dataset.mode !== "queue";
-    const receipt = { text: value, shown: !queued, status: "sending" };
+    receipt = { text: value, shown: !queued, status: "sending" };
     view.pending.set(id, receipt);
     clearNotice();
     if (queued)
@@ -1035,20 +1108,32 @@ $("#composer").onsubmit = async (e) => {
           ? "Sending correction to the host…"
           : "Sending follow-up to the host…",
       );
+    if (!queued) {
+      receipt.row = message("user", value).closest("article");
+      receipt.row.classList.add("pending");
+    }
+    prompt.value = "";
+    prompt.style.height = "";
+    if (matchMedia("(pointer:coarse)").matches) prompt.blur();
+    syncViewport();
+    view.follow = true;
+    follow();
     await send({
       t: steering ? "steer" : "prompt",
       text: value,
       request_id: id,
     });
     if (receipt.status === "rejected") return;
-    if (!queued) message("user", value);
-    prompt.value = "";
-    prompt.style.height = "";
+
     view.follow = true;
     follow();
     if (!queued && receipt.status === "sending") updateActivity("Starting");
   } catch (e) {
+    if (!prompt.value.trim()) prompt.value = value;
+    receipt?.row?.classList.remove("pending");
     notice(e.message, true);
+  } finally {
+    submitting = false;
   }
 };
 $("#prompt").onkeydown = (e) => {
@@ -1058,6 +1143,7 @@ $("#prompt").onkeydown = (e) => {
   }
 };
 $("#prompt").oninput = (e) => {
+  if (e.target.value.trim() === "/") openCommands();
   e.target.style.height = "auto";
   e.target.style.height = Math.min(e.target.scrollHeight, 180) + "px";
 };
@@ -1274,6 +1360,22 @@ $("#sidebar-close").onclick = () => {
   closePanels();
   $("#menu").focus();
 };
+// A touch gesture must suspend following before the next streaming update.
+$("#detail-content").addEventListener(
+  "touchstart",
+  () => {
+    if (view.tab === "reasoning") view.reasoningFollow = false;
+  },
+  { passive: true },
+);
+$("#detail-content").addEventListener(
+  "wheel",
+  (event) => {
+    if (view.tab === "reasoning" && event.deltaY < 0)
+      view.reasoningFollow = false;
+  },
+  { passive: true },
+);
 $("#detail-content").addEventListener(
   "scroll",
   () => {
@@ -1295,7 +1397,25 @@ for (const tab of document.querySelectorAll("[data-tab]"))
 $("#menu").onclick = () => showPanel("#sidebar");
 $("#scrim").onclick = () => closePanels();
 syncPanels();
-$("#theme").onclick = () => document.documentElement.classList.toggle("light");
+const systemTheme = matchMedia("(prefers-color-scheme: light)");
+let themeMode = "system";
+function applyTheme() {
+  document.documentElement.classList.add("theme-ready");
+  const light =
+    themeMode === "system" ? systemTheme.matches : themeMode === "light";
+  document.documentElement.classList.toggle("light", light);
+  document.querySelector('meta[name="theme-color"]').content = light
+    ? "#f7f8f3"
+    : "#141916";
+  $("#theme").title = `Theme: ${themeMode}. Click to change.`;
+  $("#theme").setAttribute("aria-label", `Theme: ${themeMode}. Change theme`);
+}
+systemTheme.addEventListener("change", applyTheme);
+$("#theme").onclick = () => {
+  themeMode = { system: "light", light: "dark", dark: "system" }[themeMode];
+  applyTheme();
+};
+applyTheme();
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "k") {
     e.preventDefault();
@@ -1887,6 +2007,172 @@ document.addEventListener("click", async (e) => {
     }
   }
 });
+const commandActions = {
+  conversations: () => showPanel("#sidebar", true, true),
+  work: () => openCommandTab("activity"),
+  settings: () => openCommandTab("context"),
+  outputs: () => openCommandTab("activity"),
+  thinking: () => openCommandTab("reasoning"),
+  context: () => openCommandTab("context"),
+  status: () => openCommandTab("context"),
+  usage: () => openCommandTab("context"),
+  todo: () => openCommandTab("context"),
+  tasks: () => openCommandTab("context"),
+  agents: () => openCommandTab("activity"),
+  attention: () => openCommandTab("activity"),
+  queue: () => openCommandTab("activity"),
+  theme: () => $("#theme").click(),
+  redraw: () => {
+    syncViewport();
+    details();
+  },
+  search: () => {
+    showPanel("#sidebar", true, true);
+    $("#search").focus();
+  },
+  keys: () =>
+    notice(
+      "/ commands · Esc back · Enter send · Shift Enter newline · ⌘/Ctrl K threads",
+    ),
+};
+let commands = [],
+  commandGroup = "",
+  commandSelection = 0;
+function openCommandTab(tab) {
+  document.querySelector(`[data-tab="${tab}"]`).click();
+  showPanel("#details", true, true);
+}
+async function openCommands(group = "") {
+  commandGroup = group;
+  commandSelection = 0;
+  if (!commands.length) {
+    try {
+      commands = (await api("commands")).commands;
+    } catch (e) {
+      notice(`Commands unavailable: ${e.message}`, true);
+      return;
+    }
+  }
+  const modal = $("#commands");
+  $("#command-search").value = "";
+  if (!modal.open) modal.showModal();
+  $("#command-help").textContent = "↑ ↓ select · Enter choose · Esc back";
+  renderCommands();
+  $("#command-search").focus({ preventScroll: true });
+}
+function commandMatches() {
+  const query = $("#command-search")
+    .value.toLowerCase()
+    .replace(/^\//, "")
+    .trim();
+  return commands.filter((c) =>
+    query
+      ? [c.name, c.description, c.keywords, ...(c.aliases || [])]
+          .join(" ")
+          .toLowerCase()
+          .includes(query)
+      : commandGroup
+        ? c.group === commandGroup && !c.primary
+        : c.primary,
+  );
+}
+function renderCommands() {
+  const list = $("#command-list"),
+    matches = commandMatches();
+  list.replaceChildren();
+  commandSelection = Math.max(
+    0,
+    Math.min(commandSelection, matches.length - 1),
+  );
+  $("#commands-title").textContent = commandGroup || "Commands";
+  matches.forEach((c, index) => {
+    const button = el("button", "command-choice");
+    button.type = "button";
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", String(index === commandSelection));
+    button.append(
+      el("strong", "", `/${c.name} ${c.hint || ""}`),
+      el("span", "", c.description),
+    );
+    if (!c.primary && !commandActions[c.name] && c.name !== "help")
+      button.append(el("small", "", "Terminal only"));
+    button.onclick = () => chooseCommand(c);
+    list.append(button);
+  });
+  if (!matches.length) list.append(el("p", "", "No matching commands."));
+  list
+    .querySelector('[aria-selected="true"]')
+    ?.scrollIntoView({ block: "nearest" });
+}
+function chooseCommand(c) {
+  if (c.primary) {
+    openCommands(c.name);
+    return;
+  }
+  if (!commandActions[c.name] && c.name !== "help") {
+    $("#command-help").textContent =
+      `/${c.name} requires the terminal. Browser support is not implemented yet.`;
+    return;
+  }
+  $("#commands").close();
+  if ($("#prompt").value.trim().startsWith("/")) $("#prompt").value = "";
+  if (c.name === "help") openCommands();
+  else commandActions[c.name]();
+}
+async function dispatchSlash(value) {
+  const name = value.slice(1).split(/\s/, 1)[0];
+  if (!commands.length) {
+    try {
+      commands = (await api("commands")).commands;
+    } catch (e) {
+      notice(e.message, true);
+      return;
+    }
+  }
+  const c = commands.find((c) => c.name === name || c.aliases?.includes(name));
+  if (!c) {
+    notice(`Unknown command /${name}. Type / to browse commands.`, true);
+    return;
+  }
+  if (value.trim() !== `/${name}`) {
+    notice(
+      `Arguments for /${name} are not supported in the browser yet.`,
+      true,
+    );
+    return;
+  }
+  if (!c.primary && !commandActions[c.name] && c.name !== "help") {
+    notice(`/${c.name} is currently available in the terminal only.`, true);
+    return;
+  }
+  chooseCommand(c);
+}
+$("#command-search").oninput = () => {
+  commandSelection = 0;
+  renderCommands();
+};
+$("#open-commands").onclick = () => openCommands();
+$("#commands-close").onclick = () => $("#commands").close();
+$("#commands").addEventListener("cancel", (e) => {
+  e.preventDefault();
+  if (commandGroup) openCommands();
+  else $("#commands").close();
+});
+$("#commands").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    const count = commandMatches().length;
+    if (count)
+      commandSelection =
+        (commandSelection + (e.key === "ArrowDown" ? 1 : count - 1)) % count;
+    renderCommands();
+  } else if (e.key === "Enter" && e.target === $("#command-search")) {
+    e.preventDefault();
+    const c = commandMatches()[commandSelection];
+    if (c) chooseCommand(c);
+  }
+});
+
 async function start() {
   try {
     const secret = location.hash.slice(1);
@@ -1930,12 +2216,45 @@ $("#connection").onclick = () => {
   if (view.id) openThread(view.id);
   else start();
 };
-window.addEventListener("online", () => {
-  if (view.id) openThread(view.id);
-  else start();
+let reconnecting = false,
+  suspended = false;
+async function resumeConnection() {
+  syncViewport();
+  syncPanels();
+  if (reconnecting || document.visibilityState === "hidden") return;
+  reconnecting = true;
+  try {
+    if (view.id) await openThread(view.id, { resume: true });
+    else await start();
+  } finally {
+    reconnecting = false;
+  }
+}
+window.addEventListener("online", resumeConnection);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    suspended = true;
+    view.source?.close();
+    if (view.frame) {
+      clearTimeout(view.frame);
+      view.frame = 0;
+    }
+  } else if (suspended) {
+    suspended = false;
+    resumeConnection();
+  }
 });
 window.addEventListener("pageshow", (e) => {
-  if (e.persisted && view.id) openThread(view.id);
+  syncViewport();
+  syncPanels();
+  if (e.persisted) resumeConnection();
+});
+window.addEventListener("focus", () => {
+  syncViewport();
+  if (suspended && document.visibilityState !== "hidden") {
+    suspended = false;
+    resumeConnection();
+  }
 });
 start();
 

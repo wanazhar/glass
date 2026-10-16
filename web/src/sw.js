@@ -8,6 +8,8 @@ self.addEventListener("install", (event) =>
           "/",
           "/app.js",
           "/style.css",
+          "/fonts/inter-latin.woff2",
+          "/fonts/jetbrains-mono-latin.woff2",
           "/icon.svg",
           "/icon-192.png",
           "/icon-512.png",

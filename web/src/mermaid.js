@@ -13,7 +13,7 @@ mermaid.initialize({
     primaryTextColor: "#e9ede6",
     primaryBorderColor: "#638b73",
     lineColor: "#84978c",
-    fontFamily: "system-ui, sans-serif",
+    fontFamily: "Glass Sans, sans-serif",
     fontSize: "14px",
   },
 });

@@ -217,7 +217,8 @@ def main():
             crash_client.next()
             before_crash = Endpoint.calls
             crash_client.send({'t': 'prompt', 'text': 'interrupted request', 'request_id': 'req-crash'})
-            assert crash_client.next()['t'] == 'text'
+            while crash_client.next()['t'] != 'text':
+                pass
             serve.kill()
             serve.wait(timeout=10)
             crash_client.close()

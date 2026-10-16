@@ -29,3 +29,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Optional web workspace
+
+The separate web asset bundle uses Marked, DOMPurify, Highlight.js, KaTeX,
+Mermaid, and PDF.js. Their dependency versions are pinned in `web/package-lock.json`.
+The web build includes their upstream license texts in `THIRD_PARTY_NOTICES.txt`.
+These libraries are not linked into the Rust executable.

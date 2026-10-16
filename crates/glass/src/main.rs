@@ -23,6 +23,7 @@ mod compact;
 mod completions;
 mod concurrency;
 mod config;
+mod connect;
 mod context_audit;
 mod contracts;
 mod diagnostic_bundle;
@@ -856,9 +857,9 @@ fn run(args: &[String]) -> Result<(), String> {
     if mode.is_some()
         && args
             .first()
-            .is_some_and(|arg| !matches!(arg.as_str(), "run" | "resume"))
+            .is_some_and(|arg| !matches!(arg.as_str(), "run" | "resume" | "connect"))
     {
-        return Err("Mode flags apply to interactive startup, run or resume; select a saved permission profile for other subcommands".into());
+        return Err("Mode flags apply to interactive startup, run, resume or connect; select a saved permission profile for other subcommands".into());
     }
     let cfg_path = config::default_path();
     let mut cfg = config::load(&cfg_path).map_err(|e| e.to_string())?;
@@ -924,6 +925,7 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         _ => {}
     }
+    connect::inherit_security(&mut cfg,args)?;
     crate::requirements::apply(&requirements, &mut cfg);
     for warning in sandbox::init(&cfg) {
         eprintln!("glass-core: {warning}");
@@ -1005,6 +1007,15 @@ fn run(args: &[String]) -> Result<(), String> {
     if args.first().is_some_and(|a| a == "acp") {
         return acp::serve(cfg);
     }
+    if args.first().is_some_and(|a| a == "connect") {
+        return connect::command(cfg, &args[1..]);
+    }
+    if args.first().is_some_and(|a| a == "resume")
+        && let Some(id) = args.get(1)
+            && !id.contains(['/', '\\']) {
+                let socket = config::data_dir().join(format!("serve-{id}.sock"));
+                if std::os::unix::net::UnixStream::connect(&socket).is_ok() { return serve::attach(socket.to_str()); }
+            }
     if args.first().is_some_and(|a| a == "serve") {
         let mut session_id: Option<&str> = None;
         let mut socket: Option<&str> = None;

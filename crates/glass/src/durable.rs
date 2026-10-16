@@ -317,11 +317,10 @@ fn apply(state: &mut State, op: &Op, sequence: u64) -> Result<(), String> {
             {
                 return Err("invalid or reused provider identity".into());
             }
-            if let Some(owner) = owner {
-                if !state.tasks.contains_key(owner) {
+            if let Some(owner) = owner
+                && !state.tasks.contains_key(owner) {
                     return Err("unknown owner task".into());
                 }
-            }
             if let Some(parent) = parent {
                 require_cv(state, parent)?;
                 if fork_at.is_none_or(|at| at > state.sequence) {
@@ -915,8 +914,7 @@ impl Store {
                     conversation: cv,
                     record,
                 } = op
-                {
-                    if cv == conversation {
+                    && cv == conversation {
                         if reset {
                             result.clear();
                         }
@@ -927,7 +925,6 @@ impl Store {
                             },
                         ));
                     }
-                }
             }
         }
         Ok(result)

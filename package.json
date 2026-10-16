@@ -8,7 +8,8 @@
   ],
   "scripts": {
     "build": "npm run build --workspace @glass-core/extension-sdk && npm run build --workspace @glass-core/typescript-starter && npm run build --workspace @glass-core/runtime-client",
-    "test": "npm run build && node --test packages/extension-sdk/test/*.test.mjs"
+    "test": "npm run build && node --test packages/extension-sdk/test/*.test.mjs",
+    "build:web": "npm --prefix web ci && npm --prefix web run build"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

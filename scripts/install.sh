@@ -20,5 +20,23 @@ if [ -e "$bin_dir/gc" ] || [ -L "$bin_dir/gc" ]; then
 fi
 
 cargo install --locked --force --root "$install_root" --path "$repo_root/crates/glass" --bin glass-core
+if [ "${GC_INSTALL_WEB:-0}" = 1 ]; then
+    if [ ! -f "$repo_root/web/dist/app.js" ]; then
+        npm --prefix "$repo_root/web" ci --ignore-scripts
+        npm --prefix "$repo_root/web" run build
+    fi
+    web_parent=$install_root/share/glass-core
+    mkdir -p "$web_parent"
+    web_stage=$(mktemp -d "$web_parent/.web-install.XXXXXX")
+    cp -R "$repo_root/web/dist/." "$web_stage/"
+    if [ -e "$web_parent/web" ]; then
+        if [ -L "$web_parent/web" ] || [ ! -f "$web_parent/web/build.json" ]; then
+            printf '%s\n' "Refusing to replace an unrelated web asset directory: $web_parent/web" >&2
+            exit 1
+        fi
+        rm -rf "$web_parent/web"
+    fi
+    mv "$web_stage" "$web_parent/web"
+fi
 ln -sfn glass-core "$bin_dir/gc"
 printf '%s\n' "Installed $bin_dir/glass-core" "$bin_dir/gc -> glass-core"

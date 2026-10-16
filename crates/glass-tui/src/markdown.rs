@@ -764,9 +764,8 @@ fn mermaid_diagram(text: &str, width: usize) -> Option<Vec<Line<'static>>> {
             language.trim().to_ascii_lowercase().as_str(),
             "math" | "latex" | "tex"
         ) {
-            if !language.trim().eq_ignore_ascii_case("math") {
-                if let Some(rows) = latex_document(&body, width) { return Some(rows); }
-            }
+            if !language.trim().eq_ignore_ascii_case("math")
+                && let Some(rows) = latex_document(&body, width) { return Some(rows); }
             return Some(math_block(&body, text, width));
         }
         if !language.trim().eq_ignore_ascii_case("mermaid") {
@@ -1145,8 +1144,8 @@ fn stable_inline(text: &str) -> &str {
             remaining = &tail[consumed..];
             continue;
         }
-        if tail.starts_with('\\') {
-            let consumed = tail[1..].chars().next().map_or(1, |c| 1 + c.len_utf8());
+        if let Some(stripped) = tail.strip_prefix('\\') {
+            let consumed = stripped.chars().next().map_or(1, |c| 1 + c.len_utf8());
             offset += start + consumed;
             remaining = &tail[consumed..];
             continue;

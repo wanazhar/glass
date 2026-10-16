@@ -1,0 +1,1225 @@
+//! Opt-in browser gateway. Normal GC startup never starts listeners or workers.
+//! The Unix session owner executes tools; this process only projects and routes.
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+    collections::{HashMap, VecDeque},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    net::{TcpListener, TcpStream},
+    os::unix::{fs::OpenOptionsExt, net::UnixStream, process::CommandExt},
+    path::PathBuf,
+    process::{Command, Stdio},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
+};
+const MAX_BODY: usize = 65536;
+const MAX_EVENTS: usize = 1024;
+const MAX_EVENT_BYTES: usize = 1024 * 1024;
+#[derive(Clone, Serialize, Deserialize)]
+struct Settings {
+    port: u16,
+    https: u16,
+    host: String,
+    login: String,
+    token: String,
+    pid: u32,
+    stamp: String,
+    local: bool,
+    workspace: PathBuf,
+    assets: PathBuf,
+    #[serde(default)]
+    security: Value,
+}
+/// Carry explicit launch restrictions into detached workers; administrator rules
+/// are applied afterward by main. This contains policy names, never credentials.
+pub fn inherit_security(cfg: &mut crate::config::Config, args: &[String]) -> Result<(), String> {
+    if !(args.first().is_some_and(|s| s == "serve")
+        || (args.first().is_some_and(|s| s == "connect")
+            && args.get(1).is_some_and(|s| s == "_serve")))
+    {
+        return Ok(());
+    }
+    let Ok(raw) = std::env::var("GC_CONNECT_SECURITY") else {
+        return Ok(());
+    };
+    if raw.len() > 16384 {
+        return Err("Inherited connect policy exceeds bounds".into());
+    }
+    let value: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    if value.is_null() {
+        return Ok(());
+    }
+    cfg.permission_profile = crate::sandbox::PermissionProfile::parse(
+        value["profile"]
+            .as_str()
+            .ok_or("Missing inherited profile")?,
+    )
+    .ok_or("Invalid inherited profile")?;
+    cfg.sandbox = crate::sandbox::Policy::parse(
+        value["sandbox"]
+            .as_str()
+            .ok_or("Missing inherited sandbox")?,
+    )
+    .ok_or("Invalid inherited sandbox")?;
+    cfg.sandbox_ports =
+        serde_json::from_value(value["ports"].clone()).map_err(|e| e.to_string())?;
+    cfg.sandbox_env = value["env"]
+        .as_str()
+        .ok_or("Missing inherited environment policy")?
+        .into();
+    cfg.extension_isolation = value["extensionIsolation"]
+        .as_str()
+        .ok_or("Missing inherited extension policy")?
+        .into();
+    cfg.sandbox_egress = value["egress"]
+        .as_str()
+        .ok_or("Missing inherited egress policy")?
+        .into();
+    cfg.egress_allow = serde_json::from_value(value["allow"].clone()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+pub(crate) fn security(cfg: &crate::config::Config) -> Value {
+    json!({"profile":match cfg.permission_profile{crate::sandbox::PermissionProfile::Unrestricted=>"unrestricted",crate::sandbox::PermissionProfile::WorkspaceEdit=>"workspace-edit",crate::sandbox::PermissionProfile::ReadOnly=>"read-only"},"sandbox":match cfg.sandbox{crate::sandbox::Policy::Off=>"off",crate::sandbox::Policy::Workspace=>"workspace",crate::sandbox::Policy::Strict=>"strict"},"ports":cfg.sandbox_ports,"env":cfg.sandbox_env,"extensionIsolation":cfg.extension_isolation,"egress":cfg.sandbox_egress,"allow":cfg.egress_allow})
+}
+
+fn state_path() -> PathBuf {
+    crate::config::data_dir().join("connect.json")
+}
+fn load() -> Result<Settings, String> {
+    serde_json::from_slice(&crate::requests::bounded(&state_path(), 16384)?)
+        .map_err(|e| e.to_string())
+}
+fn save(settings: &Settings) -> Result<(), String> {
+    crate::auth::secure_write(
+        &state_path(),
+        &serde_json::to_vec(settings).map_err(|e| e.to_string())?,
+    )
+}
+fn alive(settings: &Settings) -> bool {
+    crate::navigation::process_stamp(settings.pid).as_deref() == Some(settings.stamp.as_str())
+        && !settings.stamp.is_empty()
+}
+fn cli(args: &[&str]) -> Result<Value, String> {
+    let out = Command::new("tailscale")
+        .args(args)
+        .output()
+        .map_err(|e| format!("Tailscale is required: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr)
+            .chars()
+            .take(1000)
+            .collect());
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("Invalid Tailscale response: {e}"))
+}
+fn port_available(port: u16) -> bool {
+    match TcpListener::bind(("0.0.0.0", port)) {
+        Ok(listener) => drop(listener),
+        Err(_) => return false,
+    }
+    match TcpListener::bind(("::", port)) {
+        Ok(listener) => {
+            drop(listener);
+            true
+        }
+        Err(error) => matches!(
+            error.kind(),
+            std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
+        ),
+    }
+}
+fn route(settings: &Settings) -> String {
+    format!("http://127.0.0.1:{}", settings.port)
+}
+fn web_url(settings: &Settings) -> String {
+    if settings.local {
+        format!("http://127.0.0.1:{}/#{}", settings.port, settings.token)
+    } else {
+        format!(
+            "https://{}{}",
+            settings.host,
+            if settings.https == 443 {
+                String::new()
+            } else {
+                format!(":{}", settings.https)
+            }
+        )
+    }
+}
+fn assets() -> Result<PathBuf, String> {
+    let mut paths = Vec::new();
+    if let Some(path) = std::env::var_os("GC_WEB_ASSETS") {
+        paths.push(PathBuf::from(path));
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        paths.push(parent.join("../share/glass-core/web"));
+    }
+    paths.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/dist"));
+    paths.into_iter().find(|p|p.join("app.js").is_file()&&p.join("index.html").is_file()).and_then(|p|p.canonicalize().ok()).ok_or("Web assets are missing. Install the GC web asset bundle, or build it with npm run build:web. Set GC_WEB_ASSETS to its directory.".into())
+}
+pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String> {
+    let lock_path = crate::config::data_dir().join("connect.lock");
+    if !args.first().is_some_and(|s| s == "_serve") {
+        std::fs::create_dir_all(crate::config::data_dir()).map_err(|e| e.to_string())?;
+        if std::fs::symlink_metadata(&lock_path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err("Connect lock must not be a symlink".into());
+        }
+    }
+    let _lock = if args.first().is_some_and(|s| s == "_serve") {
+        None
+    } else {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&lock_path)
+            .map_err(|e| e.to_string())?;
+        fs2::FileExt::try_lock_exclusive(&file)
+            .map_err(|_| "Another gc connect command is running")?;
+        Some(file)
+    };
+    match args.first().map(String::as_str) {
+        Some("_serve") => return gateway(cfg, load()?),
+        Some("status") => {
+            let s = load()?;
+            crate::cli_println!(
+                "GC Connect · {}\n{}",
+                if alive(&s) { "running" } else { "stopped" },
+                web_url(&s).split('#').next().unwrap()
+            );
+            return Ok(());
+        }
+        Some("stop") => {
+            let s = load()?;
+            if !s.local {
+                let status = cli(&["serve", "status", "--json"])?;
+                let key = format!("{}:{}", s.host, s.https);
+                if status["Web"][&key]["Handlers"]["/"]["Proxy"] == route(&s) {
+                    let out = Command::new("tailscale")
+                        .args(["serve", &format!("--https={}", s.https), "off"])
+                        .output()
+                        .map_err(|e| e.to_string())?;
+                    if !out.status.success() {
+                        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+                    }
+                }
+            }
+            if alive(&s) {
+                unsafe {
+                    libc::kill(s.pid as i32, libc::SIGTERM);
+                }
+            }
+            let _ = std::fs::remove_file(state_path());
+            crate::cli_println!(
+                "GC Connect · stopped\nSession workers and running tasks are preserved."
+            );
+            return Ok(());
+        }
+        None | Some("--local") => {}
+        _ => {
+            return Err("usage: gc connect [--local] | gc connect status | gc connect stop".into());
+        }
+    }
+    if args.len() > 1 {
+        return Err("Unexpected connect arguments".into());
+    }
+    if let Ok(s) = load()
+        && alive(&s)
+    {
+        crate::cli_println!("GC Connect · ready\n{}", web_url(&s));
+        return Ok(());
+    }
+    let local = args.first().is_some_and(|s| s == "--local");
+    let (host, login, https) = if local {
+        ("127.0.0.1".into(), String::new(), 0)
+    } else {
+        let status = cli(&["status", "--json"])?;
+        if status["BackendState"] != "Running" {
+            return Err("Tailscale is not connected. Run tailscale up first.".into());
+        }
+        let host = status["Self"]["DNSName"]
+            .as_str()
+            .ok_or("Tailscale DNS name is unavailable")?
+            .trim_end_matches('.')
+            .to_string();
+        let user = status["Self"]["UserID"]
+            .as_u64()
+            .ok_or("Tailscale user identity is unavailable on this node; use a user-owned node")?
+            .to_string();
+        let login = status["User"][&user]["LoginName"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or("Cannot resolve this node's Tailscale user")?
+            .to_string();
+        let routes = cli(&["serve", "status", "--json"])?;
+        let previous = load().ok().filter(|s| {
+            !s.local
+                && s.host == host
+                && routes["Web"][format!("{}:{}", s.host, s.https)]["Handlers"]["/"]["Proxy"]
+                    == route(s)
+        });
+        let https = previous
+            .map(|s| s.https)
+            .or_else(|| {
+                [443, 8443, 8444, 8445]
+                    .into_iter()
+                    .find(|port| routes["TCP"][port.to_string()].is_null() && port_available(*port))
+            })
+            .ok_or("No free GC HTTPS port; existing Tailscale routes were preserved")?;
+        (host, login, https)
+    };
+    let port = TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| e.to_string())?
+        .local_addr()
+        .map_err(|e| e.to_string())?
+        .port();
+    let mut random = [0u8; 32];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut random)
+        .map_err(|_| "Secure random unavailable")?;
+    let mut settings = Settings {
+        port,
+        https,
+        host,
+        login,
+        token: random.iter().map(|b| format!("{b:02x}")).collect(),
+        pid: 0,
+        stamp: String::new(),
+        local,
+        workspace: cfg.workspace.clone(),
+        assets: assets()?,
+        security: security(&cfg),
+    };
+    save(&settings)?;
+    let log_path = crate::config::data_dir().join("connect.log");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .map_err(|e| e.to_string())?;
+    let mut command = Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+    command
+        .args(["connect", "_serve"])
+        .env("GC_CONNECT_SECURITY", settings.security.to_string())
+        .current_dir(&cfg.workspace)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().map_err(|e| e.to_string())?)
+        .stderr(log);
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    settings.pid = child.id();
+    settings.stamp =
+        crate::navigation::process_stamp(settings.pid).ok_or("Gateway process did not start")?;
+    save(&settings)?;
+    let start = Instant::now();
+    loop {
+        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            return Err("Gateway startup failed; see gc data directory/connect.log".into());
+        }
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        if start.elapsed() > Duration::from_secs(5) {
+            let _ = child.kill();
+            return Err("Gateway did not become ready".into());
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    if !local {
+        let out = Command::new("tailscale")
+            .args([
+                "serve",
+                "--bg",
+                &format!("--https={https}"),
+                &route(&settings),
+            ])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            let _ = child.kill();
+            let _ = std::fs::remove_file(state_path());
+            return Err(format!(
+                "Tailscale Serve could not start: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+    }
+    crate::cli_println!(
+        "GC Connect · ready\n{}\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\ngc connect status · gc connect stop",
+        web_url(&settings)
+    );
+    Ok(())
+}
+struct Feed {
+    seq: u64,
+    bytes: usize,
+    events: VecDeque<(u64, Value, usize)>,
+    snapshot: Value,
+    active: bool,
+    interaction: Option<Value>,
+    connected: bool,
+    live: VecDeque<Value>,
+    live_bytes: usize,
+    live_clipped: bool,
+}
+struct Bridge {
+    epoch: u64,
+    writer: Mutex<UnixStream>,
+    feed: Mutex<Feed>,
+    changed: Condvar,
+}
+impl Bridge {
+    fn send(&self, value: &Value) -> Result<(), String> {
+        let bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
+        if bytes.len() > MAX_BODY {
+            return Err("Input exceeds 64 KiB".into());
+        }
+        let mut stream = self.writer.lock().unwrap();
+        stream
+            .write_all(&bytes)
+            .and_then(|_| stream.write_all(b"\n"))
+            .map_err(|e| e.to_string())
+    }
+    fn push(&self, value: Value) {
+        let size = value.to_string().len();
+        let mut f = self.feed.lock().unwrap();
+        f.seq += 1;
+        let seq = f.seq;
+        let kind = value["t"].as_str().unwrap_or("");
+        if matches!(
+            kind,
+            "turn_start" | "waiting" | "tool" | "tool_end" | "done"
+        ) {
+            f.live.clear();
+            f.live_bytes = 0;
+            f.live_clipped = false;
+        }
+        if matches!(kind, "text" | "reasoning" | "tool") {
+            let delta = value["delta"].as_str().unwrap_or("");
+            let merged = if matches!(kind, "text" | "reasoning") {
+                if let Some(last) = f.live.back_mut() {
+                    if last["t"] == kind {
+                        if let Value::String(text) = &mut last["delta"] {
+                            text.push_str(delta);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if merged {
+                f.live_bytes += delta.len();
+            } else {
+                f.live.push_back(value.clone());
+                f.live_bytes += size;
+            }
+            while f.live_bytes > 512 * 1024 || f.live.len() > 256 {
+                if let Some(old) = f.live.pop_front() {
+                    f.live_bytes = f.live_bytes.saturating_sub(old.to_string().len());
+                    f.live_clipped = true;
+                } else {
+                    break;
+                }
+            }
+        }
+        match value["t"].as_str() {
+            Some("replay") => f.snapshot = value.clone(),
+            Some("control") => {
+                f.snapshot["can_write"] = value["can_write"].clone();
+            }
+            Some("turn_start" | "waiting" | "text" | "tool" | "reasoning") => f.active = true,
+            Some("error") if value["settled"] == true => {
+                f.active = false;
+                f.interaction = None;
+            }
+            Some("done") => {
+                f.active = false;
+                f.interaction = None;
+            }
+            Some("interaction") => f.interaction = Some(value.clone()),
+            Some("interaction_done") => f.interaction = None,
+            _ => {}
+        }
+        while !f.events.is_empty()
+            && (f.events.len() >= MAX_EVENTS || f.bytes + size > MAX_EVENT_BYTES)
+        {
+            let (_, _, old) = f.events.pop_front().unwrap();
+            f.bytes -= old;
+        }
+        f.bytes += size;
+        f.events.push_back((seq, value, size));
+        self.changed.notify_all();
+    }
+}
+struct App {
+    settings: Settings,
+    bridges: Mutex<HashMap<String, Arc<Bridge>>>,
+    clients: AtomicUsize,
+}
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() < 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+fn thread_path(id: &str) -> Result<PathBuf, String> {
+    if !valid_id(id) {
+        return Err("Invalid thread ID".into());
+    }
+    let root = crate::config::data_dir()
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let path = root
+        .join(format!("{id}.jsonl"))
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    if path.parent() != Some(root.as_path()) {
+        return Err("Thread path escapes storage".into());
+    }
+    Ok(path)
+}
+fn thread_workspace(id: &str) -> Result<PathBuf, String> {
+    thread_path(id)?;
+    let meta = crate::requests::bounded(
+        &crate::config::data_dir().join(format!("{id}.meta.json")),
+        4 * 1024 * 1024,
+    )?;
+    let meta: crate::polish::Metadata = serde_json::from_slice(&meta).map_err(|e| e.to_string())?;
+    meta.workspace.canonicalize().map_err(|e| e.to_string())
+}
+fn bridge(app: &App, id: &str) -> Result<Arc<Bridge>, String> {
+    let mut map = app.bridges.lock().unwrap();
+    if let Some(b) = map.get(id) {
+        if b.feed.lock().unwrap().connected {
+            return Ok(b.clone());
+        }
+        map.remove(id);
+    }
+    if map.len() >= 16
+        && let Some(key) = map.iter().find_map(|(key, b)| {
+            let f = b.feed.lock().unwrap();
+            (!f.active && f.interaction.is_none() && Arc::strong_count(b) <= 2).then(|| key.clone())
+        })
+        && let Some(b) = map.remove(&key)
+    {
+        let _ = b.writer.lock().unwrap().shutdown(std::net::Shutdown::Both);
+    }
+    if map.len() >= 16 {
+        return Err(
+            "16 active threads are connected; restart the gateway to release idle connections"
+                .into(),
+        );
+    }
+    let workspace = thread_workspace(id)?;
+    let socket = crate::config::data_dir().join(format!("serve-{id}.sock"));
+    let stream = match UnixStream::connect(&socket) {
+        Ok(s) => s,
+        Err(_) => {
+            let log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(crate::config::data_dir().join(format!("serve-{id}.log")))
+                .map_err(|e| e.to_string())?;
+            let mut command = Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+            command
+                .args(["serve", id])
+                .env("GC_CONNECT_SECURITY", app.settings.security.to_string())
+                .current_dir(workspace)
+                .stdin(Stdio::null())
+                .stdout(log.try_clone().map_err(|e| e.to_string())?)
+                .stderr(log);
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let mut child = command.spawn().map_err(|e| e.to_string())?;
+            let start = Instant::now();
+            loop {
+                if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+                    return Err("Thread is open in another GC process, or its worker failed. Close that TUI first, then retry; GC never steals a writer lock.".into());
+                }
+                if let Ok(stream) = UnixStream::connect(&socket) {
+                    break stream;
+                }
+                if start.elapsed() > Duration::from_secs(5) {
+                    return Err("Session worker startup timed out; inspect gc logs".into());
+                }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        }
+    };
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| e.to_string())?;
+    let reader = stream.try_clone().map_err(|e| e.to_string())?;
+    static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let b = Arc::new(Bridge {
+        epoch: (u64::from(std::process::id()) << 32) | EPOCH.fetch_add(1, Ordering::Relaxed),
+        writer: Mutex::new(stream),
+        feed: Mutex::new(Feed {
+            seq: 0,
+            bytes: 0,
+            events: VecDeque::new(),
+            snapshot: Value::Null,
+            active: false,
+            interaction: None,
+            connected: true,
+            live: VecDeque::new(),
+            live_bytes: 0,
+            live_clipped: false,
+        }),
+        changed: Condvar::new(),
+    });
+    b.send(&json!({"t":"attach","protocol_version":1,"human":true,"observe":true}))?;
+    let worker = b.clone();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        loop {
+            let mut line = Vec::new();
+            match reader
+                .by_ref()
+                .take(1024 * 1024 + 1)
+                .read_until(b'\n', &mut line)
+            {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if line.len() > 1024 * 1024 || !line.ends_with(b"\n") {
+                        break;
+                    }
+                    if let Ok(value) = serde_json::from_slice(&line) {
+                        worker.push(value);
+                    }
+                }
+            }
+        }
+        worker.push(json!({"t":"disconnected","message":"Session connection closed; reconnect to inspect retained history"}));
+        worker.feed.lock().unwrap().connected = false;
+        worker.changed.notify_all();
+    });
+    let mut feed = b.feed.lock().unwrap();
+    let started = Instant::now();
+    while feed.snapshot.is_null() && feed.connected && started.elapsed() < Duration::from_secs(5) {
+        feed = b
+            .changed
+            .wait_timeout(feed, Duration::from_millis(100))
+            .unwrap()
+            .0;
+    }
+    if feed.snapshot.is_null() || feed.snapshot["security"] != app.settings.security {
+        drop(feed);
+        let _ = b.writer.lock().unwrap().shutdown(std::net::Shutdown::Both);
+        return Err("The served thread uses a different execution policy or an older protocol. Stop that idle session worker and reopen it with GC Connect; its policy was not changed.".into());
+    }
+    drop(feed);
+    b.send(&json!({"t":"control","action":"claim"}))?;
+    map.insert(id.into(), b.clone());
+    Ok(b)
+}
+struct Request {
+    method: String,
+    path: String,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+}
+fn request(stream: &mut TcpStream) -> Result<Request, String> {
+    let mut header = Vec::new();
+    while !header.ends_with(b"\r\n\r\n") {
+        if header.len() >= 16384 {
+            return Err("Headers exceed 16 KiB".into());
+        }
+        let mut b = [0];
+        stream.read_exact(&mut b).map_err(|e| e.to_string())?;
+        header.push(b[0]);
+    }
+    let text = std::str::from_utf8(&header).map_err(|_| "Invalid headers")?;
+    let mut lines = text.split("\r\n");
+    let mut first = lines.next().ok_or("Missing request")?.split_whitespace();
+    let method = first.next().ok_or("Missing method")?.to_string();
+    let path = first.next().ok_or("Missing path")?.to_string();
+    let mut headers: HashMap<String, String> = HashMap::new();
+    for line in lines.filter(|s| !s.is_empty()) {
+        let (k, v) = line.split_once(':').ok_or("Invalid header")?;
+        if headers
+            .insert(k.to_ascii_lowercase(), v.trim().into())
+            .is_some()
+        {
+            return Err("Duplicate header".into());
+        }
+    }
+    if headers.contains_key("transfer-encoding") {
+        return Err("Chunked requests are not accepted".into());
+    }
+    let len = headers
+        .get("content-length")
+        .map(|s| s.parse::<usize>())
+        .transpose()
+        .map_err(|_| "Invalid body length")?
+        .unwrap_or(0);
+    if len > MAX_BODY {
+        return Err("Input exceeds 64 KiB".into());
+    }
+    let mut body = vec![0; len];
+    stream.read_exact(&mut body).map_err(|e| e.to_string())?;
+    Ok(Request {
+        method,
+        path,
+        headers,
+        body,
+    })
+}
+fn response(
+    stream: &mut TcpStream,
+    status: u16,
+    kind: &str,
+    body: &[u8],
+    extra: &str,
+) -> std::io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 {status} {}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n{extra}\r\n",
+        if status < 400 { "OK" } else { "Error" },
+        body.len()
+    )?;
+    stream.write_all(body)
+}
+fn json_response(stream: &mut TcpStream, status: u16, value: Value) -> std::io::Result<()> {
+    response(
+        stream,
+        status,
+        "application/json",
+        value.to_string().as_bytes(),
+        "",
+    )
+}
+fn origin(settings: &Settings) -> String {
+    if settings.local {
+        format!("http://127.0.0.1:{}", settings.port)
+    } else {
+        web_url(settings)
+    }
+}
+fn authorized(settings: &Settings, r: &Request) -> bool {
+    let expected = origin(settings);
+    let host = expected.split_once("://").unwrap().1;
+    if r.headers.get("host").is_none_or(|h| h != host) {
+        return false;
+    }
+    if r.headers.get("origin").is_some_and(|o| o != &expected) {
+        return false;
+    }
+    if r.headers
+        .get("sec-fetch-site")
+        .is_some_and(|s| !matches!(s.as_str(), "same-origin" | "none"))
+    {
+        return false;
+    }
+    if settings.local {
+        r.headers.get("authorization") == Some(&format!("Bearer {}", settings.token))
+            || r.headers.get("cookie").is_some_and(|s| {
+                s.split(';')
+                    .any(|part| part.trim() == format!("gc_local={}", settings.token))
+            })
+    } else {
+        r.headers.get("tailscale-user-login") == Some(&settings.login)
+    }
+}
+fn history(id: &str, before: usize) -> Result<Value, String> {
+    history_path(&thread_path(id)?, before)
+}
+fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> {
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let length = file
+        .metadata()
+        .map_err(|e| e.to_string())?
+        .len()
+        .min(usize::MAX as u64) as usize;
+    let end = before.min(length);
+    let offset = end.saturating_sub(512 * 1024);
+    let starts_mid_record = if offset > 0 {
+        file.seek(SeekFrom::Start(offset as u64 - 1))
+            .map_err(|e| e.to_string())?;
+        let mut previous = [0];
+        file.read_exact(&mut previous).map_err(|e| e.to_string())?;
+        previous[0] != b'\n'
+    } else {
+        false
+    };
+    file.seek(SeekFrom::Start(offset as u64))
+        .map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    file.take((end - offset) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    let mut pos = offset;
+    let mut records = VecDeque::new();
+    let mut first = true;
+    for line in bytes.split_inclusive(|b| *b == b'\n') {
+        let index = pos;
+        pos += line.len();
+        if first && starts_mid_record {
+            first = false;
+            continue;
+        }
+        first = false;
+        if !line.ends_with(b"\n") || line.len() == 1 {
+            continue;
+        }
+        let record: Value = serde_json::from_slice(line).map_err(|e| e.to_string())?;
+        if records.len() >= 60 {
+            records.pop_front();
+        }
+        records.push_back(json!({"index":index,"record":record}));
+    }
+    let start = records
+        .front()
+        .and_then(|v| v["index"].as_u64())
+        .unwrap_or(offset as u64);
+    Ok(
+        json!({"records":records,"before":start,"totalBytes":length,"windowBytes":512*1024,"omittedLargeRecord":records.is_empty()&&end>0}),
+    )
+}
+fn preview_file(id: &str, path: &str) -> Result<(String, Vec<u8>), String> {
+    let root = thread_workspace(id)?;
+    let requested = PathBuf::from(path);
+    let file = if requested.is_absolute() {
+        requested
+    } else {
+        root.join(requested)
+    }
+    .canonicalize()
+    .map_err(|e| e.to_string())?;
+    if !file.starts_with(&root) {
+        return Err("File previews are limited to the thread workspace".into());
+    }
+    let relative = file.strip_prefix(&root).map_err(|_| "File path rejected")?;
+    let bytes = crate::files::read_workspace_bytes(
+        &root,
+        relative.to_str().ok_or("File path must be UTF-8")?,
+    )?;
+    if bytes.starts_with(b"%PDF-") {
+        return Ok(("application/pdf".into(), bytes));
+    }
+    if let Some(mime) = crate::polish::image_media_type(&bytes) {
+        let reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
+            .with_guessed_format()
+            .map_err(|e| e.to_string())?;
+        let (width, height) = reader.into_dimensions().map_err(|e| e.to_string())?;
+        if u64::from(width) * u64::from(height) > 16_000_000 {
+            return Err("Image preview exceeds 16 million pixels".into());
+        }
+        return Ok((mime.into(), bytes));
+    }
+    if bytes.len() > 512 * 1024 {
+        return Err("Text preview exceeds 512 KiB; inspect it with the read tool".into());
+    }
+    std::str::from_utf8(&bytes).map_err(|_| "Binary file cannot be previewed as text")?;
+    Ok(("text/plain; charset=utf-8".into(), bytes))
+}
+fn event_stream(mut stream: TcpStream, b: Arc<Bridge>, since: u64) -> std::io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nX-Accel-Buffering: no\r\nConnection: close\r\n\r\n"
+    )?;
+    stream.flush()?;
+    let mut cursor = since;
+    loop {
+        let mut f = b.feed.lock().unwrap();
+        if f.seq <= cursor && f.connected {
+            f = b
+                .changed
+                .wait_timeout(f, Duration::from_secs(15))
+                .unwrap()
+                .0;
+        }
+        let reset = cursor == 0
+            || cursor > f.seq
+            || f.events
+                .front()
+                .is_some_and(|(seq, _, _)| cursor + 1 < *seq);
+        let data = if reset {
+            json!({"reset":true,"cursor":f.seq,"active":f.active,"control":f.snapshot,"interaction":f.interaction,"live":if f.active{f.live.iter().cloned().collect::<Vec<_>>()}else{Vec::new()},"liveClipped":f.live_clipped})
+        } else {
+            json!({"cursor":f.seq,"events":f.events.iter().filter(|(seq,_,_)|*seq>cursor).map(|(_,v,_)|v).collect::<Vec<_>>()})
+        };
+        cursor = f.seq;
+        let connected = f.connected;
+        drop(f);
+        write!(stream, "id: {}:{cursor}\ndata: {data}\n\n", b.epoch)?;
+        stream.flush()?;
+        if !connected {
+            return Ok(());
+        }
+    }
+}
+fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| e.to_string())?;
+    let r = match request(&mut stream) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = json_response(&mut stream, 400, json!({"error":e}));
+            return Ok(());
+        }
+    };
+    let url = url::Url::parse(&format!("http://gateway{}", r.path)).map_err(|e| e.to_string())?;
+    let query: HashMap<String, String> = url
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    let path = url.path();
+    if path == "/api/local" && app.settings.local && r.method == "POST" {
+        let expected = origin(&app.settings);
+        if r.headers.get("host") != Some(&expected.split_once("://").unwrap().1.to_string())
+            || r.headers.get("origin") != Some(&expected)
+        {
+            return json_response(&mut stream, 403, json!({"error":"Origin rejected"}))
+                .map_err(|e| e.to_string());
+        }
+        let v: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
+        if v["token"] != app.settings.token {
+            return json_response(&mut stream, 403, json!({"error":"Access rejected"}))
+                .map_err(|e| e.to_string());
+        }
+        return response(
+            &mut stream,
+            200,
+            "application/json",
+            b"{}",
+            &format!(
+                "Set-Cookie: gc_local={}; HttpOnly; SameSite=Strict; Path=/\r\n",
+                app.settings.token
+            ),
+        )
+        .map_err(|e| e.to_string());
+    }
+    let is_asset = !path.starts_with("/api/");
+    if (!is_asset || !app.settings.local) && !authorized(&app.settings, &r) {
+        return json_response(
+            &mut stream,
+            403,
+            json!({"error":"Access is limited to this host's Tailscale owner"}),
+        )
+        .map_err(|e| e.to_string());
+    }
+    if is_asset {
+        if r.method != "GET" {
+            return Err("Unsupported method".into());
+        }
+        let file = if path == "/" {
+            app.settings.assets.join("index.html")
+        } else {
+            app.settings.assets.join(path.trim_start_matches('/'))
+        };
+        let file = file.canonicalize().map_err(|_| "Asset not found")?;
+        if !file.starts_with(&app.settings.assets) {
+            return Err("Asset path rejected".into());
+        }
+        let kind = match file.extension().and_then(|s| s.to_str()).unwrap_or("") {
+            "html" => "text/html; charset=utf-8",
+            "js" | "mjs" => "text/javascript",
+            "css" => "text/css",
+            "json" | "webmanifest" => "application/manifest+json",
+            "svg" => "image/svg+xml",
+            "png" => "image/png",
+            "woff2" => "font/woff2",
+            "woff" => "font/woff",
+            "ttf" => "font/ttf",
+            _ => "application/octet-stream",
+        };
+        let gzip = file.with_file_name(format!(
+            "{}.gz",
+            file.file_name().unwrap().to_string_lossy()
+        ));
+        let zipped = r
+            .headers
+            .get("accept-encoding")
+            .is_some_and(|s| s.split(',').any(|s| s.trim() == "gzip"))
+            && gzip.is_file();
+        let data = crate::requests::bounded(if zipped { &gzip } else { &file }, 16 * 1024 * 1024)?;
+        return response(
+            &mut stream,
+            200,
+            kind,
+            &data,
+            if zipped {
+                "Content-Encoding: gzip\r\nVary: Accept-Encoding\r\n"
+            } else {
+                ""
+            },
+        )
+        .map_err(|e| e.to_string());
+    }
+    if path == "/api/file" && r.method == "GET" {
+        match preview_file(
+            query.get("id").ok_or("Missing thread")?,
+            query.get("path").ok_or("Missing file path")?,
+        ) {
+            Ok((kind, body)) => {
+                return response(&mut stream, 200, &kind, &body, "").map_err(|e| e.to_string());
+            }
+            Err(e) => {
+                return json_response(&mut stream, 400, json!({"error":e}))
+                    .map_err(|e| e.to_string());
+            }
+        }
+    }
+    let result: Result<Value, String> = (|| match (r.method.as_str(), path) {
+        ("GET", "/api/status") => Ok(
+            json!({"workspace":app.settings.workspace,"remote":!app.settings.local,"name":"Glass","profile":crate::sandbox::permission_profile_label(),"security":app.settings.security}),
+        ),
+        ("GET", "/api/threads") => Ok(crate::navigation::inspect(&app.settings.workspace)),
+        ("GET", "/api/agents") => {
+            let id = query.get("id").ok_or("Missing thread")?;
+            thread_path(id)?;
+            crate::team::client(id, &json!({"action":"list"}))
+        }
+        ("GET", "/api/agent") => {
+            let id = query.get("id").ok_or("Missing thread")?;
+            thread_path(id)?;
+            crate::team::client(
+                id,
+                &json!({"action":"transcript","id":query.get("agent").ok_or("Missing agent")?,"before":query.get("before").and_then(|v|v.parse::<u64>().ok())}),
+            )
+        }
+        ("GET", "/api/history") => history(
+            query.get("id").ok_or("Missing thread")?,
+            query
+                .get("before")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(usize::MAX),
+        ),
+        ("GET", "/api/events") => {
+            let b = bridge(&app, query.get("id").ok_or("Missing thread")?)?;
+            let since = r
+                .headers
+                .get("last-event-id")
+                .and_then(|id| id.split_once(':'))
+                .and_then(|(epoch, seq)| {
+                    (epoch.parse::<u64>().ok() == Some(b.epoch))
+                        .then(|| seq.parse::<u64>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            let cloned = stream.try_clone().map_err(|e| e.to_string())?;
+            event_stream(cloned, b, since).map_err(|e| e.to_string())?;
+            Ok(Value::Null)
+        }
+        ("POST", "/api/open") => {
+            let v: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
+            let id = v["id"].as_str().ok_or("Missing thread")?;
+            bridge(&app, id)?;
+            Ok(json!({"connected":true}))
+        }
+        ("POST", "/api/new") => {
+            let session = crate::session::Session::create(&crate::config::data_dir())
+                .map_err(|e| e.to_string())?;
+            crate::polish::bind(&session, &app.settings.workspace)?;
+            Ok(json!({"id":session.id}))
+        }
+        ("POST", "/api/send") => {
+            let value: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
+            let id = value["id"].as_str().ok_or("Missing thread")?;
+            let message = &value["message"];
+            if !matches!(
+                message["t"].as_str(),
+                Some("prompt" | "steer" | "cancel" | "control" | "answer")
+            ) {
+                return Err("Unsupported command".into());
+            }
+            bridge(&app, id)?.send(message)?;
+            Ok(json!({"sent":true,"note":"Session acknowledgment determines durable acceptance"}))
+        }
+        _ => Err("Not found".into()),
+    })();
+    if path == "/api/events" && result.is_ok() {
+        return Ok(());
+    }
+    match result {
+        Ok(v) => json_response(&mut stream, 200, v),
+        Err(e) => json_response(&mut stream, 400, json!({"error":e})),
+    }
+    .map_err(|e| e.to_string())
+}
+fn gateway(_cfg: crate::config::Config, settings: Settings) -> Result<(), String> {
+    let listener = TcpListener::bind(("127.0.0.1", settings.port)).map_err(|e| e.to_string())?;
+    let app = Arc::new(App {
+        settings,
+        bridges: Mutex::new(HashMap::new()),
+        clients: AtomicUsize::new(0),
+    });
+    for stream in listener.incoming() {
+        let stream = stream.map_err(|e| e.to_string())?;
+        if app.clients.fetch_add(1, Ordering::SeqCst) >= 32 {
+            app.clients.fetch_sub(1, Ordering::SeqCst);
+            drop(stream);
+            continue;
+        }
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let _ = handle(stream, app.clone());
+            app.clients.fetch_sub(1, Ordering::SeqCst);
+        });
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn settings() -> Settings {
+        Settings {
+            port: 8765,
+            https: 8443,
+            host: "host.tail.ts.net".into(),
+            login: "owner@example.test".into(),
+            token: "secret".into(),
+            pid: 0,
+            stamp: String::new(),
+            local: false,
+            workspace: PathBuf::from("/tmp"),
+            assets: PathBuf::from("/tmp"),
+            security: Value::Null,
+        }
+    }
+    #[test]
+    fn identity_and_origin_are_both_required() {
+        let s = settings();
+        let mut r = Request {
+            method: "POST".into(),
+            path: "/api/send".into(),
+            headers: HashMap::from([
+                ("host".into(), "host.tail.ts.net:8443".into()),
+                ("tailscale-user-login".into(), s.login.clone()),
+            ]),
+            body: Vec::new(),
+        };
+        assert!(authorized(&s, &r));
+        r.headers
+            .insert("origin".into(), "https://evil.test".into());
+        assert!(!authorized(&s, &r));
+        r.headers.remove("origin");
+        r.headers
+            .insert("tailscale-user-login".into(), "other".into());
+        assert!(!authorized(&s, &r));
+    }
+    #[test]
+    fn ids_never_form_paths() {
+        for id in ["../x", "/tmp/file", "", "a.jsonl", "a/b"] {
+            assert!(!valid_id(id));
+        }
+        assert!(valid_id("thread_123-456"));
+    }
+}
+#[cfg(test)]
+mod regression {
+    use super::*;
+    #[test]
+    fn tail_history_pages_without_loading_the_whole_log() {
+        let path = std::env::temp_dir().join(format!(
+            "gc-connect-history-{}-{}.jsonl",
+            std::process::id(),
+            crate::loops::now()
+        ));
+        let mut file = std::fs::File::create(&path).unwrap();
+        for i in 0..1000 {
+            writeln!(file, "{}", json!({"k":"user","t":format!("message-{i}")})).unwrap();
+        }
+        drop(file);
+        let mut before = usize::MAX;
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let page = history_path(&path, before).unwrap();
+            let next = page["before"].as_u64().unwrap() as usize;
+            for r in page["records"].as_array().unwrap() {
+                assert!(seen.insert(r["index"].as_u64().unwrap()));
+            }
+            if next == 0 {
+                break;
+            }
+            assert!(next < before);
+            before = next;
+        }
+        assert_eq!(seen.len(), 1000);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn live_feed_is_bounded_and_keeps_decision_until_answered() {
+        let (writer, _reader) = UnixStream::pair().unwrap();
+        let b = Bridge {
+            epoch: 0,
+            writer: Mutex::new(writer),
+            feed: Mutex::new(Feed {
+                seq: 0,
+                bytes: 0,
+                events: VecDeque::new(),
+                snapshot: Value::Null,
+                active: false,
+                interaction: None,
+                connected: true,
+                live: VecDeque::new(),
+                live_bytes: 0,
+                live_clipped: false,
+            }),
+            changed: Condvar::new(),
+        };
+        b.push(json!({"t":"interaction","id":"one","request":{"kind":"question"}}));
+        for _ in 0..2000 {
+            b.push(json!({"t":"text","delta":"x".repeat(1000)}));
+        }
+        {
+            let f = b.feed.lock().unwrap();
+            assert!(f.events.len() <= MAX_EVENTS);
+            assert!(f.bytes <= MAX_EVENT_BYTES);
+            assert_eq!(f.interaction.as_ref().unwrap()["id"], "one");
+        }
+        b.push(json!({"t":"interaction_done"}));
+        assert!(b.feed.lock().unwrap().interaction.is_none());
+    }
+    #[test]
+    fn parser_rejects_duplicate_lengths_and_chunked_frames() {
+        for wire in [
+            "POST / HTTP/1.1\r\nContent-Length: 0\r\nContent-Length: 1\r\n\r\n",
+            "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "POST / HTTP/1.1\r\nContent-Length: 65537\r\n\r\n",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let wire = wire.to_string();
+            let writer = std::thread::spawn(move || {
+                let mut s = TcpStream::connect(address).unwrap();
+                s.write_all(wire.as_bytes()).unwrap();
+            });
+            let (mut stream, _) = listener.accept().unwrap();
+            assert!(request(&mut stream).is_err());
+            writer.join().unwrap();
+        }
+    }
+}

@@ -24,6 +24,8 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm test
+      - run: npm --prefix web ci --ignore-scripts
+      - run: npm --prefix web run build
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -35,6 +37,14 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo build --release --locked --package glass-core --bin glass-core
+      - name: Browser workspace checks
+        if: runner.os == 'Linux'
+        env:
+          GLASS_CORE_TEST_BINARY: ${{ github.workspace }}/target/release/glass-core
+        run: |
+          web/node_modules/.bin/playwright-core install --with-deps chromium
+          python3 scripts/smoke-connect.py
+          python3 scripts/smoke-connect-lifecycle.py
       - name: Installer and offline PTY checks
         env:
           GLASS_CORE_TEST_BINARY: ${{ github.workspace }}/target/release/glass-core
@@ -112,6 +122,7 @@ jobs:
           cp README.md LICENSE THIRD_PARTY.md dist/package/
           python3 -c 'import platform; print("glass-core-" + platform.system().lower() + "-" + platform.machine())' > dist/name
           tar -czf "dist/$(cat dist/name).tar.gz" -C dist/package .
+          tar -czf dist/glass-core-web-assets.tar.gz -C web/dist .
           python3 -c 'import hashlib,pathlib; [(p.with_suffix(p.suffix+".sha256").write_text(hashlib.sha256(p.read_bytes()).hexdigest()+"  "+p.name+"\n")) for p in pathlib.Path("dist").glob("*.tar.gz")]'
       - uses: actions/upload-artifact@v4
         with:

@@ -19,6 +19,7 @@ through `gc help` and `gc COMMAND --help`.
 | [Permissions](security.md) | Policy layers, confinement, approvals, limits |
 | [Optional integrations](integrations.md) | Web, MCP, plugins, verification, language services |
 | [Extending](extending.md) | Instructions, skills, subprocesses, compiled mods |
+| [Remote workspace](connect.md) | Tailscale, iPhone PWA, shared threads, rich previews |
 | [Automation](automation.md) | Headless results, SSH, ACP, served sessions, schedules |
 
 ## Detailed references

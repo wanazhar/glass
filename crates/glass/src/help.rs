@@ -110,6 +110,7 @@ const CONNECT: &[Item] = &[
     ),
 ];
 const INTEGRATE: &[Item] = &[
+    ("gc connect [status|stop]", "Open the shared web workspace privately through Tailscale."),
     ("gc serve [ID]", "Host a session over a Unix socket."),
     (
         "gc attach [--socket PATH]",

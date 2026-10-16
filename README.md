@@ -89,6 +89,14 @@ The [host protocol](docs/reference/runtime.md) covers structured sessions, image
 progress, cancellation, and isolated completion. See [Automation](docs/automation.md)
 for other headless interfaces.
 
+### Continue from your phone
+
+With the optional web assets installed, `gc connect` opens a private Tailscale
+HTTPS workspace. Install it on your iPhone's Home Screen and continue the same
+threads, inspect rich previews, answer questions, or approve an operation while
+work runs on your host. The web interface loads heavy preview renderers only when
+needed. See [Remote workspace](docs/connect.md) for setup and access controls.
+
 ## Extend the workflow
 
 The core exposes `read`, `edit`, `write`, `view_image`, `bash`, and `state`.

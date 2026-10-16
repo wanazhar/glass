@@ -627,6 +627,25 @@ fn native_block_enabled(line: &str) -> bool {
     let label = line.trim().trim_start_matches(['`', '~']).trim();
     !label.eq_ignore_ascii_case("mermaid") || mermaid_enabled()
 }
+// A document fence is not a single equation. Preview only the inert document
+// wrapper; leave unsupported preamble commands visible through source fallback.
+fn latex_document(body: &str, width: usize) -> Option<Vec<Line<'static>>> {
+    if body.len() > 16 * 1024 { return None; }
+    let (preamble, rest) = body.split_once("\\begin{document}")?;
+    let (content, trailing) = rest.rsplit_once("\\end{document}")?;
+    if !trailing.trim().is_empty() || content.contains("\\begin{document}") { return None; }
+    if !preamble.lines().all(|line| {
+        let line = line.trim();
+        line.is_empty() || line.starts_with('%') ||
+            (line.starts_with("\\documentclass{") && line.ends_with('}'))
+    }) { return None; }
+    let mut rows = vec![Line::from(Span::styled(
+        crate::text::clip("LaTeX · document preview", width),
+        Style::new().fg(crate::theme::color(crate::theme::Tone::Accent)).add_modifier(Modifier::BOLD),
+    ))];
+    rows.extend(lines(content.trim(), width));
+    Some(rows)
+}
 fn math_block(body: &str, source: &str, width: usize) -> Vec<Line<'static>> {
     let color = Style::new().fg(crate::theme::color(crate::theme::Tone::Secondary));
     match crate::math::display(body,width) {
@@ -745,6 +764,9 @@ fn mermaid_diagram(text: &str, width: usize) -> Option<Vec<Line<'static>>> {
             language.trim().to_ascii_lowercase().as_str(),
             "math" | "latex" | "tex"
         ) {
+            if !language.trim().eq_ignore_ascii_case("math") {
+                if let Some(rows) = latex_document(&body, width) { return Some(rows); }
+            }
             return Some(math_block(&body, text, width));
         }
         if !language.trim().eq_ignore_ascii_case("mermaid") {
@@ -1765,5 +1787,22 @@ mod checklist_tests {
                     .all(|span| span.style.fg == Some(crate::theme::color(tone)))
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod latex_document_regression {
+    #[test]
+    fn document_wrapper_is_not_parsed_as_an_equation() {
+        let source = "```latex\n\\documentclass{article}\n\\begin{document}\nHello, world!\n\n\\[\nE = mc^2\n\\]\n\\end{document}\n```";
+        for width in [20, 40, 88] {
+            let rows = super::lines(source, width);
+            let text = rows.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+            assert!(text.contains("Hello, world!"), "{text}");
+            assert!(text.contains("mc²"), "{text}");
+            assert!(!text.contains("unsupported math"), "{text}");
+            assert!(rows.iter().all(|row| crate::text::width(&row.to_string()) <= width));
+        }
+        assert!(super::latex_document("\\usepackage{evil}\n\\begin{document}x\\end{document}", 40).is_none());
     }
 }

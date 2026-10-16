@@ -30,6 +30,17 @@ public class Greeter {
 int main() { return 42; } // CppReady
 ```
 
+```latex
+\documentclass{article}
+\begin{document}
+Hello, world!
+
+\[
+E = mc^2
+\]
+\end{document}
+```
+
 Inline $E=mc^2$ and \(\alpha_i\).
 
 $$

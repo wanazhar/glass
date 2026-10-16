@@ -289,3 +289,12 @@ nesting levels; TeX packages, macros, shell commands, and file access never run.
 Ctrl+D opens a compact centered confirmation over the conversation. Enter exits;
 Esc or Ctrl+C returns to the draft. The conversation remains saved. An unsent
 draft is discarded only when exit is confirmed.
+
+### LaTeX document previews
+
+A `latex` or `tex` fence containing a simple `\documentclass{...}` and
+`\begin{document}` / `\end{document}` wrapper previews the document body.
+Prose and supported inline/display equations use the normal terminal renderer.
+This preview does not execute TeX or load packages. Unsupported preambles retain
+source rather than silently discarding commands. Equation-only fences continue
+to use the math renderer directly.

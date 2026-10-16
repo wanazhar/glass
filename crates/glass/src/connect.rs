@@ -595,15 +595,20 @@ impl Bridge {
         }
         match value["t"].as_str() {
             Some("replay") => f.snapshot = value.clone(),
+            Some("command_catalogue") => {
+                f.snapshot["commands"] = value["commands"].clone();
+            }
             Some("control") => {
                 f.snapshot["can_write"] = value["can_write"].clone();
             }
-            Some("turn_start" | "waiting" | "text" | "tool" | "reasoning") => f.active = true,
+            Some("command_start" | "turn_start" | "waiting" | "text" | "tool" | "reasoning") => {
+                f.active = true
+            }
             Some("error") if value["settled"] == true => {
                 f.active = false;
                 f.interaction = None;
             }
-            Some("done") => {
+            Some("command_done" | "done") => {
                 f.active = false;
                 f.interaction = None;
             }
@@ -624,6 +629,7 @@ impl Bridge {
 }
 struct App {
     settings: Settings,
+    cfg: crate::config::Config,
     bridges: Mutex<HashMap<String, Arc<Bridge>>>,
     clients: AtomicUsize,
 }
@@ -1321,6 +1327,34 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
         )
         .map_err(|e| e.to_string());
     }
+    if path == "/api/export" && r.method == "GET" {
+        let result = (|| -> Result<Vec<u8>, String> {
+            let path = thread_path(query.get("id").ok_or("Missing thread")?)?;
+            crate::requests::bounded(&path, 64 * 1024 * 1024)?;
+            let session = crate::session::Session::open_readonly(
+                &crate::config::data_dir(),
+                path.to_str().ok_or("Invalid session path")?,
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(
+                crate::export::markdown(&session, false, &crate::export::raw_records(&session))
+                    .into_bytes(),
+            )
+        })();
+        return match result {
+            Ok(bytes) => response(
+                &mut stream,
+                200,
+                "text/markdown; charset=utf-8",
+                &bytes,
+                "Content-Disposition: attachment; filename=glass-transcript.md\r\n",
+            )
+            .map_err(|e| e.to_string()),
+            Err(error) => {
+                json_response(&mut stream, 400, json!({"error":error})).map_err(|e| e.to_string())
+            }
+        };
+    }
     if path == "/api/file" && r.method == "GET" {
         let result = (|| {
             if let Some(workspace) = query.get("workspace") {
@@ -1347,16 +1381,79 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
         ("GET", "/api/status") => Ok(
             json!({"workspace":app.settings.workspace,"remote":!app.settings.local,"name":"Glass","profile":crate::sandbox::permission_profile_label(),"security":app.settings.security}),
         ),
-        ("GET", "/api/commands") => Ok(
-            json!({"commands": crate::actions::catalogue().into_iter().map(|c| {
-            let group = match crate::actions::group(&c.name) {
-                crate::actions::Group::Conversations => "conversations",
-                crate::actions::Group::Work => "work",
-                crate::actions::Group::Settings => "settings",
-            };
-            json!({"name":c.name,"description":c.description,"hint":c.hint,"aliases":c.aliases,"keywords":c.keywords,"primary":c.primary,"group":group})
-        }).collect::<Vec<_>>()}),
-        ),
+        ("GET", "/api/commands") => Ok(json!({"commands":crate::web_commands::catalogue(None)})),
+        ("POST", "/api/upgrade") => {
+            let value: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
+            let id = value["id"].as_str().ok_or("Missing thread")?;
+            if value["confirmed"] != true {
+                return Err(
+                    "Confirm restarting this thread runtime and its owned background work".into(),
+                );
+            }
+            let current = bridge(&app, id)?;
+            {
+                let feed = current
+                    .feed
+                    .lock()
+                    .map_err(|_| "Thread state unavailable")?;
+                if feed.active || feed.interaction.is_some() {
+                    return Err(
+                        "Finish or cancel the active work before restarting its runtime".into(),
+                    );
+                }
+                if feed.snapshot["can_write"] != true {
+                    return Err("Take control before restarting the thread runtime".into());
+                }
+            }
+            current.send(&json!({"t":"stop"}))?;
+            let socket = crate::config::data_dir().join(format!("serve-{id}.sock"));
+            let lock = crate::config::data_dir().join(format!("{id}.writer.lock"));
+            let started = Instant::now();
+            loop {
+                if !socket.exists() {
+                    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+                    if let Ok(file) = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                        .open(&lock)
+                        && unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }
+                            == 0
+                    {
+                        break;
+                    }
+                }
+                if started.elapsed() > Duration::from_secs(5) {
+                    return Err("The runtime is still finishing. No process was killed; reconnect after it settles.".into());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            app.bridges
+                .lock()
+                .map_err(|_| "Thread connections unavailable")?
+                .remove(id);
+            let next = bridge(&app, id)?;
+            next.send(&json!({"t":"control","action":"claim"}))?;
+            Ok(json!({"upgraded":true,"thread":id,"history_preserved":true}))
+        }
+        ("POST", "/api/command") => {
+            let value: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
+            let id = value["id"].as_str().ok_or("Missing thread")?;
+            let name = crate::actions::canonical(value["name"].as_str().ok_or("Missing command")?);
+            let path = thread_path(id)?;
+            if !crate::web_commands::readonly(name) {
+                return Err("This command requires the session control channel".into());
+            }
+            let session = crate::session::Session::open_readonly(
+                &crate::config::data_dir(),
+                path.to_str().ok_or("Invalid session path")?,
+            )
+            .map_err(|e| e.to_string())?;
+            let mut cfg = app.cfg.clone();
+            cfg.workspace = crate::polish::metadata(&session).workspace;
+            crate::web_commands::inspect_request(name, &value["values"], &session, &cfg)
+                .map(crate::web_commands::bounded_result)
+        }
         ("GET", "/api/browse") => browse(&app.settings, &query),
         ("GET", "/api/usage") => {
             disk_usage(&app.settings, query.get("path").ok_or("Missing directory")?)
@@ -1420,7 +1517,15 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
             let message = &value["message"];
             if !matches!(
                 message["t"].as_str(),
-                Some("prompt" | "steer" | "cancel" | "control" | "answer")
+                Some(
+                    "prompt"
+                        | "steer"
+                        | "cancel"
+                        | "cancel_command"
+                        | "control"
+                        | "answer"
+                        | "command"
+                )
             ) {
                 return Err("Unsupported command".into());
             }
@@ -1438,10 +1543,11 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
     }
     .map_err(|e| e.to_string())
 }
-fn gateway(_cfg: crate::config::Config, settings: Settings) -> Result<(), String> {
+fn gateway(cfg: crate::config::Config, settings: Settings) -> Result<(), String> {
     let listener = TcpListener::bind(("127.0.0.1", settings.port)).map_err(|e| e.to_string())?;
     let app = Arc::new(App {
         settings,
+        cfg,
         bridges: Mutex::new(HashMap::new()),
         clients: AtomicUsize::new(0),
     });

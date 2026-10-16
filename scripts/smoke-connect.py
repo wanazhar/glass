@@ -35,7 +35,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
         else:
             frames=[{'choices':[{'delta':{'reasoning_content':'Considering the workspace and preserving context.'}}]},{'choices':[{'delta':{'content':'StreamingReady. **Clear output**, same thread.'}}]}]
         self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
-        for frame in frames:self.wfile.write(('data: '+json.dumps(frame)+'\n\n').encode());self.wfile.flush();time.sleep(.04)
+        try:
+            for frame in frames:self.wfile.write(('data: '+json.dumps(frame)+'\n\n').encode());self.wfile.flush();time.sleep(.04)
+        except (BrokenPipeError,ConnectionResetError):return
         if 'stability fixture' in text.lower() or 'cap fixture' in text.lower():time.sleep(.6)
         if 'HOLD-WEB-STREAM' in text:type(self).hold.wait(30)
         try:self.wfile.write(b'data: [DONE]\n\n');self.wfile.flush()
@@ -103,6 +105,11 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         except urllib.error.HTTPError as e:return e.code,e.read(),e.headers
     try:
         assert req('/api/threads',auth=False)[0]==403
+        catalogue=json.loads(req('/api/commands')[1])['commands'];assert len(catalogue)>60
+        assert all(c['portable'] or c['name'] in ['conversations','work','settings','help','outputs','thinking','theme','redraw','keys','animation','tools','clear','editor'] for c in catalogue)
+        assert req('/api/command','POST',{'id':'web-fixture','name':'name','values':{'args':'no'} })[0]==400
+        assert req('/api/export?id=web-fixture',auth=False)[0]==403
+
         assert req('/api/threads',origin='https://evil.test')[0]==403
         assert req('/api/send','POST',{'id':'../bad','message':{'t':'prompt','text':'no'}})[0]==400
         assert req('/api/file?id=web-fixture&path=/etc/passwd')[0]==400
@@ -122,6 +129,12 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         print(r.stdout,flush=True);assert r.returncode==0,r.stderr
         assert len(list(data.glob('serve-*.sock')))>=1
         assert Provider.calls>=6,Provider.calls
+        before=(data/'web-fixture.jsonl').read_bytes()
+        assert req('/api/upgrade','POST',{'id':'web-fixture','confirmed':False})[0]==400
+        code,body,_=req('/api/upgrade','POST',{'id':'web-fixture','confirmed':True});assert code==200,body
+        assert (data/'web-fixture.jsonl').read_bytes()==before
+        print('PASS: explicit idle runtime restart preserves the transcript',flush=True)
+
         # A worker crash after durable queuing must not lose or duplicate a prompt.
         (data/'queue-fixture.jsonl').write_text(json.dumps({'k':'user','t':'Queue fixture'})+'\n')
         (data/'queue-fixture.meta.json').write_text(json.dumps({'workspace':str(root),'title':'Queue fixture'}))
@@ -139,6 +152,41 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         client=None
         try:
             client=connect_queue();reader=client.makefile('rb');wire(client,{'t':'attach'});assert line(reader)['t']=='replay'
+            def command(name,values,request_id):
+                wire(client,{'t':'command','name':name,'values':values,'request_id':request_id})
+                while True:
+                    value=line(reader)
+                    if value.get('t')=='command_result' and value.get('request_id')==request_id:return value
+            local_calls=Provider.calls
+            value=command('todo',{'action':'add','args':'Exactly once checklist'},'todo-once');assert 'error' not in value,value
+            assert command('todo',{'action':'add','args':'Exactly once checklist'},'todo-once')==value
+            inspected=command('todo',{},'inspect-todo');assert inspected['result']['body'].count('Exactly once checklist')==1,inspected
+            assert Provider.calls==local_calls
+            observer=connect_queue();observed=observer.makefile('rb');wire(observer,{'t':'attach','observe':True});assert line(observed)['can_write']==False
+            wire(observer,{'t':'command','name':'model','values':{'args':'not-authorized'},'request_id':'denied'});assert line(observed)['t']=='error'
+            wire(observer,{'t':'command','name':'status','values':{},'request_id':'read-status'});assert line(observed)['t']=='command_result'
+            observed.close();observer.close()
+            wire(client,{'t':'command','name':'btw','values':{'args':'HOLD-WEB-STREAM'},'request_id':'cancel-btw'})
+            while line(reader).get('t')!='command_start':pass
+            value=command('status',{},'during-btw');assert 'error' not in value,value
+            for name in ('queue','extensions'):
+                value=command(name,{},'during-btw-'+name);assert 'error' not in value,value
+            deadline=time.monotonic()+2
+            while Provider.calls==local_calls and time.monotonic()<deadline:time.sleep(.02)
+            wire(client,{'t':'cancel_command','request_id':'cancel-btw'})
+            while True:
+                value=line(reader)
+                if value.get('t')=='command_result' and value.get('request_id')=='cancel-btw':break
+            assert 'cancel' in value.get('error','').lower(),value
+            assert 'HOLD-WEB-STREAM' not in (data/'queue-fixture.jsonl').read_text()
+            assert 'error' not in command('todo',{'action':'clear','confirmed':True},'clear-todo')
+            (data/'queue-fixture.queue.json').write_text(json.dumps({'pending':['SavedQueueReady'],'steer':None,'delivered':0}))
+            value=command('queue',{'action':'saved-edit','args':'1','text':'SavedQueueReady'},'edit-saved');assert 'error' not in value,value
+            value=command('queue-run',{},'run-saved');assert 'error' not in value,value
+            while line(reader).get('t')!='done':pass
+            assert json.loads((data/'queue-fixture.queue.json').read_text())['pending']==[]
+            assert Provider.received.count('SavedQueueReady')==1,Provider.received
+            print('PASS: local commands, duplicate prevention, observer guards, saved queue and cancellable model commands',flush=True)
             wire(client,{'t':'prompt','text':'HOLD-WEB-STREAM','request_id':'held'})
             while line(reader).get('t')!='text':pass
             queued={'t':'prompt','text':'RecoveredQueueReady','request_id':'durable-one'};wire(client,queued)

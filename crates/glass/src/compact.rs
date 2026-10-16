@@ -46,18 +46,20 @@ pub fn branch_summary(dropped: &[Record]) -> Option<String> {
             Record::Assistant(text) if !text.trim().is_empty() => {
                 last_action = Some(text.lines().next().unwrap_or(text).to_string());
             }
-            Record::ToolCall {name,arguments,..} if crate::files::is_tool(name) => {
-                if let Ok(value)=serde_json::from_str::<serde_json::Value>(arguments)
-                    && let Some(path)=value["path"].as_str()
-                    && !files.iter().any(|p|p==path) && files.len()<4 {
-                    files.push(glass_tui::text::clip(path,512));
+            Record::ToolCall {
+                name, arguments, ..
+            } if crate::files::is_tool(name) => {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments)
+                    && let Some(path) = value["path"].as_str()
+                    && !files.iter().any(|p| p == path)
+                    && files.len() < 4
+                {
+                    files.push(glass_tui::text::clip(path, 512));
                 }
             }
             // A plausible path literal from a shell command: same heuristic
             // the inspector uses; false positives cost one bounded word.
-            Record::Bash { command, .. }
-                if last_action.is_none() || files.is_empty() =>
-            {
+            Record::Bash { command, .. } if last_action.is_none() || files.is_empty() => {
                 for token in command.split_whitespace() {
                     if token.starts_with('-') || token.len() < 3 {
                         continue;
@@ -162,7 +164,9 @@ pub fn rebuild(records: &[Record], state: &State) -> Vec<Record> {
         out.push(Record::State(state.items().to_vec()));
     }
 
-    if state.todo != crate::todo::Board::default() { out.push(state.todo.record()); }
+    if state.todo != crate::todo::Board::default() {
+        out.push(state.todo.record());
+    }
 
     // Recent tail, skipping a leading orphan tool result whose requesting
     // assistant turn was dropped. Providers reject that pairing.
@@ -226,7 +230,12 @@ pub fn shrink_tool_results(records: &mut [Record], pressure: f32) -> usize {
         if protected.contains(&i) {
             continue;
         }
-        if let Record::ToolResult { body, name, call_id } = &records[i] {
+        if let Record::ToolResult {
+            body,
+            name,
+            call_id,
+        } = &records[i]
+        {
             let bytes = body.len();
             records[i] = Record::ToolResult {
                 name: name.clone(),
@@ -301,7 +310,10 @@ fn clip_record(text: &str, cap: usize) -> String {
         return text.to_string();
     }
     let head: String = text.chars().take(cap).collect();
-    format!("{head}\n[… {} chars truncated to fit the summary request]", total - cap)
+    format!(
+        "{head}\n[… {} chars truncated to fit the summary request]",
+        total - cap
+    )
 }
 
 /// Drop oversized tool results wherever they are.
@@ -313,7 +325,11 @@ pub fn evict_oversized(records: &mut [Record], cap: usize) -> usize {
     let mut evicted = 0;
     for r in records.iter_mut() {
         let (name, call_id, bytes) = match r {
-            Record::ToolResult { body, name, call_id } if body.len() > cap => (name.clone(), call_id.clone(), body.len()),
+            Record::ToolResult {
+                body,
+                name,
+                call_id,
+            } if body.len() > cap => (name.clone(), call_id.clone(), body.len()),
             _ => continue,
         };
         *r = Record::ToolResult {
@@ -396,26 +412,40 @@ pub fn summary_output_limit(provider: &dyn Provider) -> u32 {
 }
 
 pub fn fit_summary_prompt(provider: &dyn Provider, prompt: &str) -> String {
-    let budget = provider.context_window().saturating_sub(summary_output_limit(provider)).saturating_sub(provider.context_window() / 16).max(1);
+    let budget = provider
+        .context_window()
+        .saturating_sub(summary_output_limit(provider))
+        .saturating_sub(provider.context_window() / 16)
+        .max(1);
     let mut cap = prompt.len().min(96_000);
     loop {
         let fitted = excerpt(prompt, cap);
-        if provider.estimate_tokens(&[Message::User(fitted.clone())]) <= budget || cap == 0 { return fitted; }
+        if provider.estimate_tokens(&[Message::User(fitted.clone())]) <= budget || cap == 0 {
+            return fitted;
+        }
         cap /= 2;
     }
 }
 
 fn excerpt(text: &str, cap: usize) -> String {
-    if text.len() <= cap { return text.to_string(); }
+    if text.len() <= cap {
+        return text.to_string();
+    }
     let marker = "\n[Middle omitted; full transcript remains in the session log.]\n";
     let available = cap.saturating_sub(marker.len());
     let mut head = available / 3;
-    while !text.is_char_boundary(head) { head -= 1; }
+    while !text.is_char_boundary(head) {
+        head -= 1;
+    }
     let mut tail = text.len().saturating_sub(available - head);
-    while !text.is_char_boundary(tail) { tail += 1; }
+    while !text.is_char_boundary(tail) {
+        tail += 1;
+    }
     if cap < marker.len() {
         let mut end = cap.min(text.len());
-        while !text.is_char_boundary(end) { end -= 1; }
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
         return text[..end].to_string();
     }
     format!("{}{marker}{}", &text[..head], &text[tail..])
@@ -424,43 +454,83 @@ fn excerpt(text: &str, cap: usize) -> String {
 /// Extractive recovery: no invented model summary and no provider request.
 /// Original records remain in the append-only session log.
 pub fn fallback(session: &mut Session, state: &State, reason: &str) -> Result<(), String> {
-    let summary = format!("Extractive checkpoint (model summary unavailable).\n{}", excerpt(&summary_prompt_bounded(&session.records, state, 400), 24_000));
-    let system = session.history_records().iter().rev().find_map(|r| match r { Record::Compacted { system, .. } => Some(system.clone()), _ => None }).flatten();
+    let summary = format!(
+        "Extractive checkpoint (model summary unavailable).\n{}",
+        excerpt(
+            &summary_prompt_bounded(&session.records, state, 400),
+            24_000
+        )
+    );
+    let system = session
+        .history_records()
+        .iter()
+        .rev()
+        .find_map(|r| match r {
+            Record::Compacted { system, .. } => Some(system.clone()),
+            _ => None,
+        })
+        .flatten();
     let before = session.records.len();
     let tail_start = session.log_len();
     let mut projected = Vec::new();
-    if let Some(first) = session.records.iter().find(|r| matches!(r, Record::User(_))) { projected.push(first.clone()); }
-    projected.push(Record::System(format!("Summary of earlier work in this session:\n{summary}")));
+    if let Some(first) = session
+        .records
+        .iter()
+        .find(|r| matches!(r, Record::User(_)))
+    {
+        projected.push(first.clone());
+    }
+    projected.push(Record::System(format!(
+        "Summary of earlier work in this session:\n{summary}"
+    )));
     projected.push(Record::State(state.items().to_vec()));
-    if state.todo != crate::todo::Board::default() { projected.push(state.todo.record()); }
+    if state.todo != crate::todo::Board::default() {
+        projected.push(state.todo.record());
+    }
     let kept = projected.len();
-    session.append_checked(&[Record::State(state.items().to_vec()), Record::Compacted {
-        kept, dropped: before.saturating_sub(kept), summary: Some(summary),
-        tail_start: tail_start + 1, system,
-    }]).map_err(|e| e.to_string())?;
+    session
+        .append_checked(&[
+            Record::State(state.items().to_vec()),
+            Record::Compacted {
+                kept,
+                dropped: before.saturating_sub(kept),
+                summary: Some(summary),
+                tail_start: tail_start + 1,
+                system,
+            },
+        ])
+        .map_err(|e| e.to_string())?;
     session.records = projected;
     let _ = reason;
     session.append(Record::Meta("Compacted locally; model summary unavailable. Full transcript retained in the session log.".into()));
     Ok(())
 }
 
-pub fn run_manual(provider: &dyn Provider, session: &mut Session, state: &State, focus: Option<&str>) -> Result<(usize, usize), String> {
-    let before = provider.estimate_tokens(&session.messages()) as usize;
-    match run_manual_summary(provider, session, state, focus) {
-        Ok(result) => Ok(result),
-        Err(error) => {
-            fallback(session, state, &error)?;
-            Ok((before, provider.estimate_tokens(&session.messages()) as usize))
-        }
-    }
-}
-
-fn run_manual_summary(
+pub fn run_manual(
     provider: &dyn Provider,
     session: &mut Session,
     state: &State,
     focus: Option<&str>,
 ) -> Result<(usize, usize), String> {
+    let before = provider.estimate_tokens(&session.messages()) as usize;
+    match run_manual_summary(provider, session, state, focus) {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            fallback(session, state, &error)?;
+            Ok((
+                before,
+                provider.estimate_tokens(&session.messages()) as usize,
+            ))
+        }
+    }
+}
+
+pub fn manual_summary(
+    provider: &dyn Provider,
+    session: &Session,
+    state: &State,
+    focus: Option<&str>,
+) -> Result<(usize, String), String> {
     let before = provider.estimate_tokens(&session.messages()) as usize;
     let prompt = manual_prompt(&session.records, state, focus);
     let tools: Vec<(String, String, String)> = Vec::new();
@@ -473,7 +543,7 @@ fn run_manual_summary(
         max_tokens: summary_output_limit(provider),
         reasoning: Some(0),
     };
-    let mut trace=crate::requests::Trace::compaction(session,&req);
+    let mut trace = crate::requests::Trace::compaction(session, &req);
     let stream = provider::stream_with_retry(
         provider,
         &req,
@@ -497,21 +567,36 @@ fn run_manual_summary(
     if summary.is_empty() {
         return Err("provider returned an empty summary; conversation left unchanged".into());
     }
+    Ok((before, summary.into()))
+}
+pub fn commit_manual_summary(session: &mut Session, summary: &str) -> Result<(), String> {
     let before_len = session.records.len();
-    // The surviving tail is the last KEEP_RECENT records; replay needs the
-    // index to rebuild this projection instead of reverting to raw history.
-    let tail_start = session.log_len().saturating_sub(KEEP_RECENT);
-    session.records = apply_summary(&session.records, summary);
-    let kept = session.records.len();
-    session.append(Record::Compacted {
-        kept,
-        dropped: before_len.saturating_sub(kept),
-        summary: Some(summary.to_string()),
-        tail_start,
-        system: None,
-    });
-    let after = provider.estimate_tokens(&session.messages()) as usize;
-    Ok((before, after))
+    let projected = apply_summary(&session.records, summary);
+    let kept = projected.len();
+    session
+        .append_checked(&[Record::Compacted {
+            kept,
+            dropped: before_len.saturating_sub(kept),
+            summary: Some(summary.into()),
+            tail_start: session.log_len().saturating_sub(KEEP_RECENT),
+            system: None,
+        }])
+        .map_err(|e| e.to_string())?;
+    session.records = projected;
+    Ok(())
+}
+fn run_manual_summary(
+    provider: &dyn Provider,
+    session: &mut Session,
+    state: &State,
+    focus: Option<&str>,
+) -> Result<(usize, usize), String> {
+    let (before, summary) = manual_summary(provider, session, state, focus)?;
+    commit_manual_summary(session, &summary)?;
+    Ok((
+        before,
+        provider.estimate_tokens(&session.messages()) as usize,
+    ))
 }
 
 fn role_label(role: glass_tui::Role) -> &'static str {
@@ -534,7 +619,13 @@ pub fn apply_summary(records: &[Record], summary: &str) -> Vec<Record> {
     out.push(Record::System(format!(
         "Summary of earlier work in this session:\n{summary}"
     )));
-    if let Some(snapshot)=records.iter().rev().find(|r|matches!(r,Record::Custom{kind,..}if kind==crate::todo::KIND)){out.push(snapshot.clone());}
+    if let Some(snapshot) = records
+        .iter()
+        .rev()
+        .find(|r| matches!(r,Record::Custom{kind,..}if kind==crate::todo::KIND))
+    {
+        out.push(snapshot.clone());
+    }
     // Keep a short tail so the model retains immediate momentum.
     let tail_start = records.len().saturating_sub(KEEP_RECENT);
     let mut tail: Vec<Record> = records[tail_start..].to_vec();
@@ -549,9 +640,14 @@ pub fn apply_summary(records: &[Record], summary: &str) -> Vec<Record> {
 ///
 /// Mirrors `Session::messages`, but takes a slice so compaction can project a
 /// rebuilt list before deciding to commit it.
-pub fn project(records: &[Record]) -> Vec<Message> { project_filtered(records, None) }
+pub fn project(records: &[Record]) -> Vec<Message> {
+    project_filtered(records, None)
+}
 
-pub(crate) fn project_filtered(records: &[Record], active: Option<&std::collections::HashSet<&str>>) -> Vec<Message> {
+pub(crate) fn project_filtered(
+    records: &[Record],
+    active: Option<&std::collections::HashSet<&str>>,
+) -> Vec<Message> {
     let calls = records
         .iter()
         .filter_map(|r| {
@@ -574,12 +670,30 @@ pub(crate) fn project_filtered(records: &[Record], active: Option<&std::collecti
         .collect::<std::collections::HashSet<_>>();
     let mut earlier = Vec::new();
     let mut messages = Vec::new();
-    let latest: std::collections::HashMap<&str, usize> = records.iter().enumerate().filter_map(|(index, r)| match r { Record::Image {data, ..} => Some((data.as_str(), index)), _ => None }).collect();
+    let latest: std::collections::HashMap<&str, usize> = records
+        .iter()
+        .enumerate()
+        .filter_map(|(index, r)| match r {
+            Record::Image { data, .. } => Some((data.as_str(), index)),
+            _ => None,
+        })
+        .collect();
     for (index, record) in records.iter().enumerate() {
-        if let (Some(active), Record::Image {data, ..}) = (active, record)
-            && (!active.contains(data.as_str()) || latest.get(data.as_str()) != Some(&index)) { continue; }
-        let Some(m) = record.to_message() else { continue };
-        if matches!(record, Record::Checkpoint { rewind_summary: Some(_), .. }) {
+        if let (Some(active), Record::Image { data, .. }) = (active, record)
+            && (!active.contains(data.as_str()) || latest.get(data.as_str()) != Some(&index))
+        {
+            continue;
+        }
+        let Some(m) = record.to_message() else {
+            continue;
+        };
+        if matches!(
+            record,
+            Record::Checkpoint {
+                rewind_summary: Some(_),
+                ..
+            }
+        ) {
             // A rewind happens inside a tool batch. Its report must not split
             // the assistant calls from their following tool results.
             earlier.push(m);
@@ -615,9 +729,14 @@ pub(crate) fn project_filtered(records: &[Record], active: Option<&std::collecti
         }
     }
     earlier.extend(messages);
-    if records.iter().any(|r|matches!(r,Record::Custom{kind,..}if kind==crate::todo::KIND))
-        && let Ok(board)=crate::todo::Board::restore(records)
-        && let Some(context)=board.context() { earlier.push(Message::System(context)); }
+    if records
+        .iter()
+        .any(|r| matches!(r,Record::Custom{kind,..}if kind==crate::todo::KIND))
+        && let Ok(board) = crate::todo::Board::restore(records)
+        && let Some(context) = board.context()
+    {
+        earlier.push(Message::System(context));
+    }
     crate::images::expand(earlier)
 }
 
@@ -627,13 +746,24 @@ mod tests {
 
     struct FailedSummary;
     impl Provider for FailedSummary {
-        fn id(&self) -> &str { "transport" }
-        fn model(&self) -> &str { "actual-model" }
-        fn context_window(&self) -> u32 { 128_000 }
-        fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item=Event> + '_>, provider::Error> {
+        fn id(&self) -> &str {
+            "transport"
+        }
+        fn model(&self) -> &str {
+            "actual-model"
+        }
+        fn context_window(&self) -> u32 {
+            128_000
+        }
+        fn stream(
+            &self,
+            req: &Request<'_>,
+        ) -> Result<Box<dyn Iterator<Item = Event> + '_>, provider::Error> {
             assert_eq!(req.model, "actual-model");
             assert_eq!(req.reasoning, Some(0));
-            Ok(Box::new(vec![Event::Error("reasoning arrived without an answer".into())].into_iter()))
+            Ok(Box::new(
+                vec![Event::Error("reasoning arrived without an answer".into())].into_iter(),
+            ))
         }
     }
     #[test]
@@ -641,9 +771,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gc-summary-fallback-{}", std::process::id()));
         let mut session = Session::create(&dir).unwrap();
         session.append(Record::User("preserve original goal".into()));
-        session.append(Record::ToolResult { name:"bash".into(), call_id:"large".into(), body:"x".repeat(100_000) });
+        session.append(Record::ToolResult {
+            name: "bash".into(),
+            call_id: "large".into(),
+            body: "x".repeat(100_000),
+        });
         session.append(Record::User("latest task instruction".into()));
-        let (before, after) = run_manual(&FailedSummary, &mut session, &State::new(), None).unwrap();
+        let (before, after) =
+            run_manual(&FailedSummary, &mut session, &State::new(), None).unwrap();
         assert!(after < before);
         let text = format!("{:?}", session.messages());
         assert!(text.contains("latest task instruction"));
@@ -652,15 +787,34 @@ mod tests {
         drop(session);
         let resumed = Session::open(&dir, &id).unwrap();
         assert!(format!("{:?}", resumed.messages()).contains("latest task instruction"));
-        assert!(resumed.records.iter().all(|r| !matches!(r, Record::ToolResult { body, .. } if body.len() > 2000)));
+        assert!(
+            resumed
+                .records
+                .iter()
+                .all(|r| !matches!(r, Record::ToolResult { body, .. } if body.len() > 2000))
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn branch_summary_names_files_and_bounds_the_action() {
         let dropped = vec![
             Record::Assistant("Refactored the cache module after profiling.".into()),
-            Record::Bash { call_id: None, command: "cargo build crates/glass/src/cache.rs".into(), output: "".into(), exit_code: Some(0), truncated: false, spill: None },
-            Record::Bash { call_id: None, command: "--verbose --flag".into(), output: "".into(), exit_code: Some(0), truncated: false, spill: None },
+            Record::Bash {
+                call_id: None,
+                command: "cargo build crates/glass/src/cache.rs".into(),
+                output: "".into(),
+                exit_code: Some(0),
+                truncated: false,
+                spill: None,
+            },
+            Record::Bash {
+                call_id: None,
+                command: "--verbose --flag".into(),
+                output: "".into(),
+                exit_code: Some(0),
+                truncated: false,
+                spill: None,
+            },
         ];
         let line = branch_summary(&dropped).unwrap();
         assert!(line.contains("last action — Refactored"), "{line}");
@@ -671,10 +825,21 @@ mod tests {
         // A long action is bounded.
         let dropped = vec![Record::Assistant("x".repeat(5_000))];
         let line = branch_summary(&dropped).unwrap();
-        assert!(line.chars().count() < 260, "bounded: {}", line.chars().count());
+        assert!(
+            line.chars().count() < 260,
+            "bounded: {}",
+            line.chars().count()
+        );
 
         // No assistant content in the gap: no summary, no invention.
-        let dropped = vec![Record::Bash { call_id: None, command: "ls".into(), output: "".into(), exit_code: Some(0), truncated: false, spill: None }];
+        let dropped = vec![Record::Bash {
+            call_id: None,
+            command: "ls".into(),
+            output: "".into(),
+            exit_code: Some(0),
+            truncated: false,
+            spill: None,
+        }];
         assert!(branch_summary(&dropped).is_none());
     }
 
@@ -856,7 +1021,10 @@ mod tests {
         let recs = vec![Record::User("small".into()), Record::Assistant(big.clone())];
         let prompt = summary_prompt(&recs, &State::new());
         assert!(prompt.contains("small"));
-        assert!(prompt.contains("chars truncated"), "truncation must be marked");
+        assert!(
+            prompt.contains("chars truncated"),
+            "truncation must be marked"
+        );
         assert!(
             !prompt.contains(&big),
             "the full oversized record must not be re-streamed to the summarizer"

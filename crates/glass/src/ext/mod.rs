@@ -209,7 +209,14 @@ impl Registry {
     }
 
     pub fn enable(&mut self, spec: &str, workspace: &Path, model: &str) -> Result<(), String> {
-        self.register(spawn_one(spec, workspace, model)?, spec)
+        self.enable_with_reserved(spec,workspace,model,&[])
+    }
+    pub fn enable_with_reserved(&mut self,spec:&str,workspace:&Path,model:&str,reserved:&[String])->Result<(),String>{
+        let mut extension=spawn_one(spec,workspace,model)?;
+        if extension.manifest.tools.iter().any(|tool|reserved.contains(&tool.name)) {
+            extension.shutdown();return Err("Extension tool conflicts with an enabled mod or core tool".into());
+        }
+        self.register(extension,spec)
     }
     pub fn register(&mut self, mut extension: Extension, spec: &str) -> Result<(), String> {
         let tools = extension

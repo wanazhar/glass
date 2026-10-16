@@ -86,6 +86,100 @@ try {
   await page.waitForFunction(
     () => document.querySelector("#send").disabled === false,
   );
+  const nativeCommand = async (name) => {
+    await page.locator("#open-commands").click();
+    await page.locator("#command-search").fill(name);
+    await page
+      .getByRole("option")
+      .filter({ hasText: new RegExp(`^/${name}\\b`) })
+      .click();
+    await page.locator("#command-view").waitFor({ state: "visible" });
+    await page.waitForFunction(
+      () =>
+        !document.querySelector('#command-form button[type="submit"]').disabled,
+    );
+  };
+  await nativeCommand("todo");
+  await page.locator('#command-form [name="action"]').selectOption("add");
+  await page
+    .locator('#command-form [name="args"]')
+    .fill("Browser checklist survives reload");
+  await page.locator('#command-form button[type="submit"]').click();
+  await page
+    .locator("#command-result")
+    .getByText("Browser checklist survives reload", { exact: false })
+    .waitFor();
+  await page.locator('#command-form [name="action"]').selectOption("clear");
+  await page.locator('#command-form [name="confirmed"]').check();
+  await page.locator('#command-form button[type="submit"]').click();
+  await page.waitForFunction(
+    () =>
+      !document.querySelector('#command-form button[type="submit"]').disabled,
+  );
+  await page.locator("#command-close").click();
+  await nativeCommand("status");
+  await page
+    .locator("#command-result")
+    .getByText("mock", { exact: true })
+    .waitFor();
+  await page.locator("#command-close").click();
+  await nativeCommand("tasks");
+  await page.locator('#command-form [name="action"]').selectOption("task-add");
+  await page
+    .locator('#command-form [name="args"]')
+    .fill("Browser task fixture");
+  await page
+    .locator('#command-form [name="acceptance"]')
+    .fill("Browser assertions pass");
+  await page.locator('#command-form button[type="submit"]').click();
+  await page.waitForFunction(
+    () =>
+      !document.querySelector('#command-form button[type="submit"]').disabled,
+  );
+  assert.equal(await page.locator("#command-status").textContent(), "");
+  await page.locator("#command-close").click();
+  await nativeCommand("name");
+  await page
+    .locator('#command-form [name="args"]')
+    .fill("Shared runtime workspace");
+  await page.locator('#command-form button[type="submit"]').click();
+  await page.waitForFunction(
+    () =>
+      !document.querySelector('#command-form button[type="submit"]').disabled,
+  );
+  assert.equal(
+    await page.locator("#thread-name").textContent(),
+    "Shared runtime workspace",
+  );
+  await page.locator("#command-close").click();
+  await nativeCommand("login");
+  await page.locator('#command-form [name="action"]').selectOption("api");
+  assert.equal(
+    await page.locator('#command-form [name="secret"]').getAttribute("type"),
+    "password",
+  );
+  assert(await page.locator('#command-form [name="secret"]').isVisible());
+  await page
+    .locator('#command-form [name="secret"]')
+    .fill("fixture-only-secret");
+  await page.locator('#command-form [name="action"]').selectOption("list");
+  assert(await page.locator('#command-form [name="secret"]').isDisabled());
+  assert.equal(
+    await page.locator('#command-form [name="secret"]').inputValue(),
+    "",
+  );
+  assert.equal(
+    await page
+      .locator("#command-form")
+      .evaluate((form) => new FormData(form).has("secret")),
+    false,
+  );
+  await page.locator("#command-close").click();
+  const exportResponse = await page.request.get(
+    new URL("/api/export?id=web-fixture", url).href,
+  );
+  assert(exportResponse.ok());
+  assert((await exportResponse.text()).includes("A quieter place to work"));
   await page.locator(".katex").first().waitFor();
   await page.locator(".hljs-keyword").first().waitFor();
   await page.locator(".diagram-render svg").waitFor({ timeout: 30000 });
@@ -242,8 +336,10 @@ try {
   );
   await page.locator("#prompt").fill("cap fixture");
   await page.locator("#send").click();
-  await page.locator(".message.streaming .display-cap").waitFor();
-  const cap = await page.locator(".message.streaming .prose").textContent();
+  await page.locator(".message .display-cap").waitFor();
+  const cap = await page
+    .locator(".message:has(.display-cap) .prose")
+    .textContent();
   assert(cap.length < 263000, "Streaming display cap exceeded");
   await page.waitForFunction(
     () => document.querySelector("#activity-text").textContent === "Ready",

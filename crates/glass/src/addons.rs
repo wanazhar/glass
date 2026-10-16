@@ -13,7 +13,10 @@ pub struct Bundle {
 }
 pub const BUNDLES: &[Bundle] = &[
     Bundle {
-        name: "adapters", description: "Lazy external ACP agents and DAP debuggers", interpreter: "python3", file: "adapters.py",
+        name: "adapters",
+        description: "Lazy external ACP agents and DAP debuggers",
+        interpreter: "python3",
+        file: "adapters.py",
         source: include_str!("../../../extensions/adapters/adapters.py"),
         access: "Starts only explicitly configured argv in adapters.json, at tool invocation. External agents and debugger execution require separate opt-in flags. Reverse execution requests are refused; processes are stopped when disabled.",
     },
@@ -440,4 +443,65 @@ pub fn manage(
             _ => {}
         }
     }
+}
+
+/// Human-only add-on management. Starting executable code requires confirmation.
+pub fn request(
+    cfg: &mut config::Config,
+    registry: &mut ext::Registry,
+    action: &str,
+    spec: &str,
+    confirmed: bool,
+) -> Result<serde_json::Value, String> {
+    if !action.is_empty() && action != "list" {
+        if !confirmed {
+            return Err("Confirm enabling or disabling executable extension code".into());
+        }
+        let mut prefs = load()?;
+        let bundle = BUNDLES.iter().find(|b| b.name == spec);
+        let resolved = if let Some(b) = bundle {
+            command(b)?
+        } else {
+            spec.into()
+        };
+        if action != "reload" && (resolved.is_empty() || resolved.len() > 4096) {
+            return Err("Choose a bundle or extension command".into());
+        }
+        match action {
+            "enable" => {
+                let mods = crate::mods::load(&cfg.mods)?;
+                let reserved = crate::provider::collect_tools(&mods)
+                    .into_iter()
+                    .map(|(name, _, _)| name)
+                    .collect::<Vec<_>>();
+                registry.enable_with_reserved(&resolved, &cfg.workspace, &cfg.model, &reserved)?;
+                prefs.disabled.remove(&resolved);
+                if let Some(b) = bundle {
+                    prefs.enabled.insert(b.name.into());
+                } else {
+                    prefs.custom_enabled.insert(resolved.clone());
+                }
+                if !cfg.extensions.contains(&resolved) {
+                    cfg.extensions.push(resolved);
+                }
+            }
+            "disable" => {
+                if let Some(b) = bundle {
+                    prefs.enabled.remove(b.name);
+                }
+                prefs.custom_enabled.remove(&resolved);
+                prefs.disabled.insert(resolved.clone());
+                cfg.extensions.retain(|s| s != &resolved);
+                registry.reload(&cfg.extensions, &cfg.workspace, &cfg.model);
+            }
+            "reload" => registry.reload(&cfg.extensions, &cfg.workspace, &cfg.model),
+            _ => return Err("Choose list, enable, disable or reload".into()),
+        }
+        save(&prefs)?;
+    }
+    Ok(snapshot(cfg, registry))
+}
+
+pub fn snapshot(cfg: &config::Config, registry: &ext::Registry) -> serde_json::Value {
+    serde_json::json!({"configured":cfg.extensions,"loaded":registry.names(),"failures":registry.failures(),"bundles":BUNDLES.iter().map(|b|serde_json::json!({"name":b.name,"description":b.description,"access":b.access})).collect::<Vec<_>>()} )
 }

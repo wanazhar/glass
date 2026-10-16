@@ -62,7 +62,9 @@ pub fn plan(
         let reasoning = cfg.reasoning_budget;
         let instructions = crate::trust::gated(cfg, &crate::agents_md::load(&cfg.workspace), false);
         let planning_prompt = cfg.system_prompt.clone();
-        let request = format!("{task}\n\nReturn a plan grouped under Markdown phase headings, with each actionable step as - [ ] task. Do not execute the plan.");
+        let request = format!(
+            "{task}\n\nReturn a plan grouped under Markdown phase headings, with each actionable step as - [ ] task. Do not execute the plan."
+        );
         let factory_for_worker = factory.clone();
         let result = modal::task(keys, "Inspecting and planning", move |cancel, status| {
             let p = factory_for_worker()?;
@@ -138,7 +140,11 @@ pub fn plan(
         match modal::choose(keys, "Plan review", &saved.task, &actions) {
             Some(0) => modal::info(keys, "Proposed plan", &saved.proposal),
             Some(1) => {
-                crate::todo::apply_user(state,current,serde_json::json!([{"op":"init","items":crate::todo::plan_items(&saved.proposal,&saved.task)}]))?;
+                crate::todo::apply_user(
+                    state,
+                    current,
+                    serde_json::json!([{"op":"init","items":crate::todo::plan_items(&saved.proposal,&saved.task)}]),
+                )?;
                 return Ok(Some(format!(
                     "Implement this approved plan for the task: {}\n\n{}\n\nThe approved plan is already in the native checklist. Update state.todo by returned task IDs as work progresses. Verify the implementation and report the actual checks performed.",
                     saved.task, saved.proposal
@@ -391,8 +397,14 @@ pub fn diagnostics(
     let p = if let Some(factory) = factory {
         factory()?
     } else {
-        let inner = provider::build(&cfg.provider, &cfg.base_url, key, &cfg.model, cfg.adaptive_pacing)
-            .map_err(|e| e.to_string())?;
+        let inner = provider::build(
+            &cfg.provider,
+            &cfg.base_url,
+            key,
+            &cfg.model,
+            cfg.adaptive_pacing,
+        )
+        .map_err(|e| e.to_string())?;
         let audit =
             Session::create(&config::data_dir().join("diagnostics")).map_err(|e| e.to_string())?;
         let path = audit.path.with_extension("cost.json");
@@ -470,7 +482,7 @@ pub fn doctor(keys: &KeyReader, cfg: &config::Config, factory: crate::warmer::Pr
     }
 }
 
-fn git(root: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
+pub(crate) fn git(root: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
     git_cancellable(root, args, input, &AtomicBool::new(false))
 }
 fn git_cancellable(
@@ -653,12 +665,27 @@ fn stage_hunks(keys: &KeyReader, root: &Path, path: &str) -> Result<Option<Strin
             );
             return Ok(None);
         }
-        let board=crate::workspace::load(root)?;
-        let rows = parts.iter().map(|h|{
-            let fingerprint=crate::workspace::hash(format!("{header}{h}").as_bytes());
-            let review=board.reviews.get(&fingerprint);
-            format!("{} {}{}",if review.is_some_and(|r|r.reviewed){"✓"}else{"·"},h.lines().next().unwrap_or("Hunk"),review.filter(|r|!r.comments.is_empty()).map(|r|format!(" · {} comments",r.comments.len())).unwrap_or_default())
-        }).collect::<Vec<_>>();
+        let board = crate::workspace::load(root)?;
+        let rows = parts
+            .iter()
+            .map(|h| {
+                let fingerprint = crate::workspace::hash(format!("{header}{h}").as_bytes());
+                let review = board.reviews.get(&fingerprint);
+                format!(
+                    "{} {}{}",
+                    if review.is_some_and(|r| r.reviewed) {
+                        "✓"
+                    } else {
+                        "·"
+                    },
+                    h.lines().next().unwrap_or("Hunk"),
+                    review
+                        .filter(|r| !r.comments.is_empty())
+                        .map(|r| format!(" · {} comments", r.comments.len()))
+                        .unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>();
         let Some(i) = modal::choose(keys, "Review a hunk", path, &rows) else {
             return Ok(None);
         };
@@ -997,6 +1024,72 @@ pub fn headless_info(args: &[String], cfg: &config::Config) -> Result<bool, Stri
         }
     }
     Ok(true)
+}
+
+/// The browser's planning view uses the same read-only agent mode as the TUI.
+pub fn portable_plan(
+    cfg: &config::Config,
+    current: &Session,
+    factory: crate::warmer::ProviderFactory,
+    task: &str,
+    cancel: Arc<AtomicBool>,
+) -> Result<serde_json::Value, String> {
+    let path = plan_path(current);
+    if task.trim().is_empty() {
+        return match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(serde_json::json!({"task":"","proposal":""}))
+            }
+            Err(e) => Err(e.to_string()),
+        };
+    }
+    let provider = factory()?;
+    let mut session =
+        Session::create(&config::data_dir().join("plans")).map_err(|e| e.to_string())?;
+    session.append_checked(&[Record::User(format!("{task}\n\nReturn a plan grouped under Markdown phase headings, with each actionable step as - [ ] task. Do not execute the plan."))]).map_err(|e|e.to_string())?;
+    let mut state = tools::State::new();
+    let mods = Vec::new();
+    let mut extensions = ext::Registry::empty();
+    let mut agent = Agent::new(
+        provider.as_ref(),
+        &mut session,
+        &mut state,
+        &mods,
+        &mut extensions,
+        &cfg.workspace,
+    )
+    .with_plan_mode(true)
+    .with_prompt(
+        cfg.system_prompt.clone(),
+        None,
+        crate::trust::gated(cfg, &crate::agents_md::load(&cfg.workspace), false),
+    )
+    .with_limits(cfg.max_tokens, cfg.reasoning_budget, 12)
+    .with_stream_factory(factory);
+    let (out, stop) = agent
+        .run_turn(|slot| {
+            if cancel.load(Ordering::Acquire) {
+                *slot = Some(String::new());
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    if !matches!(stop, Stop::Finished) || out.text.trim().is_empty() {
+        return Err("Planning did not finish; no plan saved".into());
+    }
+    if cancel.load(Ordering::Acquire) {
+        return Err("Planning cancelled; no plan saved".into());
+    }
+    let saved = Plan {
+        task: task.into(),
+        proposal: out.text,
+    };
+    let value = serde_json::to_value(&saved).map_err(|e| e.to_string())?;
+    auth::secure_write(
+        &path,
+        &serde_json::to_vec(&saved).map_err(|e| e.to_string())?,
+    )?;
+    Ok(value)
 }
 
 #[cfg(test)]

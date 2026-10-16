@@ -122,6 +122,33 @@ impl Queue {
         self.steer.as_deref().or_else(|| self.pending.front().map(String::as_str))
     }
 
+    pub fn edit_saved(&mut self, action: &str, index: usize, text: &str) -> Result<(), String> {
+        let mut next = self.clone();
+        if action == "clear" { next.pending.clear(); next.steer = None; }
+        else {
+            if index >= next.describe().len() { return Err("Choose a saved queue index from the list (starting at 1)".into()); }
+            let steer = next.steer.is_some() && index == 0;
+            let offset = usize::from(next.steer.is_some());
+            let item = index.saturating_sub(offset);
+            match action {
+                "edit" if !text.trim().is_empty() => {
+                    if steer { next.steer = Some(text.into()); } else { next.pending[item] = text.into(); }
+                }
+                "earlier" if !steer && item > 0 => next.pending.swap(item, item - 1),
+                "later" if !steer && item + 1 < next.pending.len() => next.pending.swap(item, item + 1),
+                "promote" if !steer => {
+                    let value = next.pending.remove(item).unwrap();
+                    if let Some(old) = next.steer.replace(value) { next.pending.push_front(old); }
+                }
+                "remove" => { if steer { next.steer = None; } else { next.pending.remove(item); } }
+                _ => return Err("This saved queue action is not available for the selected item".into()),
+            }
+        }
+        next.save()?;
+        *self = next;
+        Ok(())
+    }
+
     pub fn manage(&mut self, keys: &crate::input::KeyReader) {
         loop {
             let entries = self.describe();
@@ -275,6 +302,23 @@ pub fn classify(text: &str, alt: bool, turn_running: bool) -> Option<Intent> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn saved_edits_preserve_order_and_reject_invalid_indices() {
+        let mut queue = super::Queue::new();
+        queue.push(super::Intent::FollowUp("first".into()));
+        queue.push(super::Intent::FollowUp("second".into()));
+        queue.edit_saved("earlier",1,"").unwrap();
+        assert_eq!(queue.next_prompt(),Some("second"));
+        queue.edit_saved("edit",0,"updated").unwrap();
+        queue.edit_saved("promote",0,"").unwrap();
+        assert_eq!(queue.correction(),Some("updated"));
+        let before=queue.describe();
+        assert!(queue.edit_saved("remove",99,"").is_err());
+        assert_eq!(queue.describe(),before);
+        queue.edit_saved("clear",0,"").unwrap();
+        assert!(queue.is_empty());
+    }
+
     use super::*;
 
     #[test]

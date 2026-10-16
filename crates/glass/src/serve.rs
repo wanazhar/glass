@@ -25,12 +25,12 @@
 //! Loopback-only by construction.
 
 use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::hash::{Hash, Hasher};
 
 use serde_json::{Value, json};
 
@@ -68,7 +68,10 @@ fn attach_state_path(socket: &Path) -> PathBuf {
 }
 
 fn load_attach_state(path: &Path) -> AttachState {
-    std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
 }
 
 fn save_attach_state(path: &Path, state: &AttachState) -> Result<(), String> {
@@ -76,10 +79,17 @@ fn save_attach_state(path: &Path, state: &AttachState) -> Result<(), String> {
     crate::auth::secure_write(path, &bytes)
 }
 
-fn update_attach_state(path: &Path, state: &mut AttachState, message: &Value) -> Result<(), String> {
+fn update_attach_state(
+    path: &Path,
+    state: &mut AttachState,
+    message: &Value,
+) -> Result<(), String> {
     match message.get("t").and_then(Value::as_str) {
         Some("replay") => {
-            let session = message.get("session").and_then(Value::as_str).map(str::to_owned);
+            let session = message
+                .get("session")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             if state.session != session {
                 state.cursor = 0;
                 state.pending = None;
@@ -94,7 +104,11 @@ fn update_attach_state(path: &Path, state: &mut AttachState, message: &Value) ->
                 state.cursor = cursor.min(usize::MAX as u64) as usize;
             }
             let response_id = message.get("request_id").and_then(Value::as_str);
-            if state.pending.as_ref().is_some_and(|pending| response_id == Some(pending.id.as_str())) {
+            if state
+                .pending
+                .as_ref()
+                .is_some_and(|pending| response_id == Some(pending.id.as_str()))
+            {
                 state.pending = None;
             }
         }
@@ -107,22 +121,40 @@ fn attach_message(state: &AttachState) -> Value {
     json!({"t":"attach", "protocol_version":PROTOCOL_VERSION, "since":state.cursor, "session":state.session})
 }
 
-fn connect_cancellable(path: &Path, keys: &crate::input::KeyReader, out: &mut std::io::Stdout) -> Result<Option<UnixStream>, String> {
+fn connect_cancellable(
+    path: &Path,
+    keys: &crate::input::KeyReader,
+    out: &mut std::io::Stdout,
+) -> Result<Option<UnixStream>, String> {
     let mut delay = std::time::Duration::from_millis(250);
     loop {
         match UnixStream::connect(path) {
             Ok(stream) => {
-                stream.set_nonblocking(true).map_err(|error| error.to_string())?;
-                let _ = writeln!(out, "\r\n\x1b[32mconnection available · replay cursor retained\x1b[0m");
+                stream
+                    .set_nonblocking(true)
+                    .map_err(|error| error.to_string())?;
+                let _ = writeln!(
+                    out,
+                    "\r\n\x1b[32mconnection available · replay cursor retained\x1b[0m"
+                );
                 let _ = out.flush();
                 return Ok(Some(stream));
             }
             Err(error) => {
-                let _ = write!(out, "\r\x1b[33mconnection lost · retrying in {:.2}s · Ctrl-C cancel\x1b[0m", delay.as_secs_f32());
+                let _ = write!(
+                    out,
+                    "\r\x1b[33mconnection lost · retrying in {:.2}s · Ctrl-C cancel\x1b[0m",
+                    delay.as_secs_f32()
+                );
                 let _ = out.flush();
                 if let Some(glass_tui::crossterm::event::Event::Key(key)) = keys.next_timeout(delay)
-                    && key.modifiers.contains(glass_tui::crossterm::event::KeyModifiers::CONTROL)
-                    && matches!(key.code, glass_tui::crossterm::event::KeyCode::Char('c' | 'd'))
+                    && key
+                        .modifiers
+                        .contains(glass_tui::crossterm::event::KeyModifiers::CONTROL)
+                    && matches!(
+                        key.code,
+                        glass_tui::crossterm::event::KeyCode::Char('c' | 'd')
+                    )
                 {
                     return Ok(None);
                 }
@@ -179,10 +211,14 @@ impl Client {
             match self.stream.read(&mut chunk) {
                 Ok(0) => return Incoming::Closed,
                 Ok(n) => {
-                    if self.buf.len()+n > 128*1024 { return Incoming::Closed; }
+                    if self.buf.len() + n > 128 * 1024 {
+                        return Incoming::Closed;
+                    }
                     self.buf.extend_from_slice(&chunk[..n]);
-                    if self.buf.contains(&b'\n') { break; }
-                },
+                    if self.buf.contains(&b'\n') {
+                        break;
+                    }
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(_) => return Incoming::Closed,
             }
@@ -243,9 +279,12 @@ fn bound_replay(entries: Vec<Value>) -> (Vec<Value>, bool) {
     let mut clipped = false;
     for mut entry in entries.into_iter().rev() {
         if let Some(text) = entry.get("text").and_then(Value::as_str)
-            && text.len() > REPLAY_ENTRY_BYTES {
+            && text.len() > REPLAY_ENTRY_BYTES
+        {
             let mut end = REPLAY_ENTRY_BYTES;
-            while !text.is_char_boundary(end) { end -= 1; }
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
             let source_bytes = text.len();
             let preview = text[..end].to_owned();
             entry["source_bytes"] = json!(source_bytes);
@@ -253,8 +292,13 @@ fn bound_replay(entries: Vec<Value>) -> (Vec<Value>, bool) {
             entry["truncated"] = json!(true);
             clipped = true;
         }
-        let size = serde_json::to_vec(&entry).map(|v| v.len() + 1).unwrap_or(REPLAY_BYTES);
-        if bytes + size > REPLAY_BYTES { clipped = true; break; }
+        let size = serde_json::to_vec(&entry)
+            .map(|v| v.len() + 1)
+            .unwrap_or(REPLAY_BYTES);
+        if bytes + size > REPLAY_BYTES {
+            clipped = true;
+            break;
+        }
         bytes += size;
         retained.push(entry);
     }
@@ -277,84 +321,216 @@ fn default_socket() -> Result<PathBuf, String> {
     newest.ok_or_else(|| "no served session found; start one with `glass-core serve`".into())
 }
 
-fn save_followups(path:&Path,queue:&VecDeque<Value>)->Result<(),String>{
-    if queue.len()>32{return Err("Follow-up queue is full (32 prompts)".into());}
-    let bytes=serde_json::to_vec(queue).map_err(|e|e.to_string())?;
-    if bytes.len()>2*1024*1024{return Err("Follow-up queue exceeds 2 MiB".into());}
-    crate::auth::secure_write(path,&bytes)
+fn save_followups(path: &Path, queue: &VecDeque<Value>) -> Result<(), String> {
+    if queue.len() > 32 {
+        return Err("Follow-up queue is full (32 prompts)".into());
+    }
+    let bytes = serde_json::to_vec(queue).map_err(|e| e.to_string())?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err("Follow-up queue exceeds 2 MiB".into());
+    }
+    crate::auth::secure_write(path, &bytes)
 }
-fn accept_followup(path:&Path,queue:&mut VecDeque<Value>,message:&Value,seen:&std::collections::HashMap<String,String>)->Result<(Value,bool),String>{
-    static NEXT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
-    let text=message["text"].as_str().filter(|s|!s.trim().is_empty()&&s.len()<=60000).ok_or("Follow-up must contain 1–60000 bytes")?;
-    if message.get("inbox_recorded").is_some(){return Err("Reserved delivery field".into());}
-    let id=match message.get("request_id"){Some(Value::String(id))if !id.is_empty()&&id.len()<=128=>id.clone(),None=>format!("queue-{}-{}-{}",std::process::id(),crate::loops::now(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)),_=>return Err("Invalid follow-up request ID".into())};
-    if seen.contains_key(&id)||queue.iter().any(|v|v["request_id"]==id){return Ok((json!({"request_id":id}),false));}
-    let value=json!({"t":"prompt","text":text,"request_id":id});let mut next=queue.clone();next.push_back(value.clone());save_followups(path,&next)?;*queue=next;Ok((value,true))
+fn accept_followup(
+    path: &Path,
+    queue: &mut VecDeque<Value>,
+    message: &Value,
+    seen: &std::collections::HashMap<String, String>,
+) -> Result<(Value, bool), String> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let text = message["text"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty() && s.len() <= 60000)
+        .ok_or("Follow-up must contain 1–60000 bytes")?;
+    if message.get("inbox_recorded").is_some() {
+        return Err("Reserved delivery field".into());
+    }
+    let id = match message.get("request_id") {
+        Some(Value::String(id)) if !id.is_empty() && id.len() <= 128 => id.clone(),
+        None => format!(
+            "queue-{}-{}-{}",
+            std::process::id(),
+            crate::loops::now(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ),
+        _ => return Err("Invalid follow-up request ID".into()),
+    };
+    if seen.contains_key(&id) || queue.iter().any(|v| v["request_id"] == id) {
+        return Ok((json!({"request_id":id}), false));
+    }
+    let value = json!({"t":"prompt","text":text,"request_id":id});
+    let mut next = queue.clone();
+    next.push_back(value.clone());
+    save_followups(path, &next)?;
+    *queue = next;
+    Ok((value, true))
 }
-fn accept_clients(listener:&UnixListener, clients:&std::rc::Rc<std::cell::RefCell<Vec<Client>>>, sequence:&std::cell::Cell<u64>)->Result<(),String>{
+fn accept_clients(
+    listener: &UnixListener,
+    clients: &std::rc::Rc<std::cell::RefCell<Vec<Client>>>,
+    sequence: &std::cell::Cell<u64>,
+) -> Result<(), String> {
     for _ in 0..MAX_CLIENTS {
-        match listener.accept(){
-            Ok((stream,_))=>{let _=stream.set_nonblocking(true);let mut slots=clients.borrow_mut();if slots.len()>=MAX_CLIENTS{continue;}let id=sequence.get().checked_add(1).ok_or("Client sequence exhausted")?;sequence.set(id);slots.push(Client{id,stream,buf:Vec::new(),human:false});}
-            Err(e) if e.kind()==std::io::ErrorKind::WouldBlock=>break,
-            Err(e)=>return Err(e.to_string()),
+        match listener.accept() {
+            Ok((stream, _)) => {
+                let _ = stream.set_nonblocking(true);
+                let mut slots = clients.borrow_mut();
+                if slots.len() >= MAX_CLIENTS {
+                    continue;
+                }
+                let id = sequence
+                    .get()
+                    .checked_add(1)
+                    .ok_or("Client sequence exhausted")?;
+                sequence.set(id);
+                slots.push(Client {
+                    id,
+                    stream,
+                    buf: Vec::new(),
+                    human: false,
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => return Err(e.to_string()),
         }
-    }Ok(())
+    }
+    Ok(())
 }
-fn busy_attach(client:&mut Client,message:&Value,owner:&std::cell::Cell<Option<u64>>,snapshot:&Value,live:&std::collections::VecDeque<Value>){
-    if message.get("protocol_version").is_some_and(|v|v.as_u64()!=Some(PROTOCOL_VERSION)){send(&mut client.stream,json!({"t":"error","message":"Unsupported attach protocol"}));return;}
-    client.human=message["human"]==true;
-    if owner.get().is_none()&&message["observe"]!=true {owner.set(Some(client.id));}
-    let mut replay=snapshot.clone();
-    if let Some(id)=snapshot["session"].as_str()
-        && let Ok(session)=Session::open_readonly(&config::data_dir(),id){let(entries,cursor,reset)=replay_from(&session,None);replay["entries"]=json!(entries);replay["cursor"]=json!(cursor);replay["reset"]=json!(reset);}replay["client"]=json!(client.id);replay["owner"]=json!(owner.get());replay["can_write"]=json!(owner.get()==Some(client.id));replay["reset"]=json!(true);replay["busy"]=json!(true);
-    send(&mut client.stream,replay);for event in live{send(&mut client.stream,event.clone());}
+fn busy_attach(
+    client: &mut Client,
+    message: &Value,
+    owner: &std::cell::Cell<Option<u64>>,
+    snapshot: &Value,
+    live: &std::collections::VecDeque<Value>,
+) {
+    if message
+        .get("protocol_version")
+        .is_some_and(|v| v.as_u64() != Some(PROTOCOL_VERSION))
+    {
+        send(
+            &mut client.stream,
+            json!({"t":"error","message":"Unsupported attach protocol"}),
+        );
+        return;
+    }
+    client.human = message["human"] == true;
+    if owner.get().is_none() && message["observe"] != true {
+        owner.set(Some(client.id));
+    }
+    let mut replay = snapshot.clone();
+    if let Some(id) = snapshot["session"].as_str()
+        && let Ok(session) = Session::open_readonly(&config::data_dir(), id)
+    {
+        let (entries, cursor, reset) = replay_from(&session, None);
+        replay["entries"] = json!(entries);
+        replay["cursor"] = json!(cursor);
+        replay["reset"] = json!(reset);
+    }
+    replay["client"] = json!(client.id);
+    replay["owner"] = json!(owner.get());
+    replay["can_write"] = json!(owner.get() == Some(client.id));
+    replay["reset"] = json!(true);
+    replay["busy"] = json!(true);
+    send(&mut client.stream, replay);
+    for event in live {
+        send(&mut client.stream, event.clone());
+    }
 }
 /// The session remains paused; only its current input owner may answer.
-fn human_decision(clients: &std::rc::Rc<std::cell::RefCell<Vec<Client>>>, owner: &std::rc::Rc<std::cell::Cell<Option<u64>>>, request: &Value, listener:&UnixListener, sequence:&std::cell::Cell<u64>, snapshot:&Value, live:&std::cell::RefCell<VecDeque<Value>>) -> Result<Value,String> {
+fn human_decision(
+    clients: &std::rc::Rc<std::cell::RefCell<Vec<Client>>>,
+    owner: &std::rc::Rc<std::cell::Cell<Option<u64>>>,
+    request: &Value,
+    listener: &UnixListener,
+    sequence: &std::cell::Cell<u64>,
+    snapshot: &Value,
+    live: &std::cell::RefCell<VecDeque<Value>>,
+) -> Result<Value, String> {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let id = format!("human-{}-{}",std::process::id(),SEQUENCE.fetch_add(1,std::sync::atomic::Ordering::Relaxed));
-    broadcast(clients,json!({"t":"interaction","id":id,"request":request}));
-    let started=std::time::Instant::now();
+    let id = format!(
+        "human-{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    broadcast(
+        clients,
+        json!({"t":"interaction","id":id,"request":request}),
+    );
+    let started = std::time::Instant::now();
     loop {
-        if crate::signals::interrupted() || started.elapsed()>std::time::Duration::from_secs(1800) {return Err("Human decision cancelled or expired; nothing approved".into());}
-        accept_clients(listener,clients,sequence)?;
+        if crate::signals::interrupted() || started.elapsed() > std::time::Duration::from_secs(1800)
         {
-            let mut slots=clients.borrow_mut();
-            if owner.get().is_some_and(|id|!slots.iter().any(|c|c.id==id)) {owner.set(None);}
-            let mut closed=Vec::new();
-            for (index,c) in slots.iter_mut().enumerate() {
+            return Err("Human decision cancelled or expired; nothing approved".into());
+        }
+        accept_clients(listener, clients, sequence)?;
+        {
+            let mut slots = clients.borrow_mut();
+            if owner
+                .get()
+                .is_some_and(|id| !slots.iter().any(|c| c.id == id))
+            {
+                owner.set(None);
+            }
+            let mut closed = Vec::new();
+            for (index, c) in slots.iter_mut().enumerate() {
                 loop {
                     match c.try_incoming() {
-                        Incoming::Closed=>{closed.push(index);break;},
-                        Incoming::Idle|Incoming::Malformed=>break,
-                        Incoming::Message(message)=>match message["t"].as_str() {
-                            Some("attach")=>{busy_attach(c,&message,owner,snapshot,&live.borrow());send(&mut c.stream,json!({"t":"interaction","id":id,"request":request}));}
-                            Some("control")=>{
-                                if message["action"]=="claim" && owner.get().is_none() {owner.set(Some(c.id));}
-                                if message["action"]=="release" && owner.get()==Some(c.id) {owner.set(None);}
-                                send(&mut c.stream,json!({"t":"control","client":c.id,"owner":owner.get(),"can_write":owner.get()==Some(c.id)}));
-                                send(&mut c.stream,json!({"t":"interaction","id":id,"request":request}));
+                        Incoming::Closed => {
+                            closed.push(index);
+                            break;
+                        }
+                        Incoming::Idle | Incoming::Malformed => break,
+                        Incoming::Message(message) => match message["t"].as_str() {
+                            Some("attach") => {
+                                busy_attach(c, &message, owner, snapshot, &live.borrow());
+                                send(
+                                    &mut c.stream,
+                                    json!({"t":"interaction","id":id,"request":request}),
+                                );
                             }
-                            Some("answer") if owner.get()==Some(c.id) && message["id"]==id=>{
-                                let result=message["answer"].clone();
+                            Some("control") => {
+                                if message["action"] == "claim" && owner.get().is_none() {
+                                    owner.set(Some(c.id));
+                                }
+                                if message["action"] == "release" && owner.get() == Some(c.id) {
+                                    owner.set(None);
+                                }
+                                send(
+                                    &mut c.stream,
+                                    json!({"t":"control","client":c.id,"owner":owner.get(),"can_write":owner.get()==Some(c.id)}),
+                                );
+                                send(
+                                    &mut c.stream,
+                                    json!({"t":"interaction","id":id,"request":request}),
+                                );
+                            }
+                            Some("answer") if owner.get() == Some(c.id) && message["id"] == id => {
+                                let result = message["answer"].clone();
                                 drop(slots);
-                                broadcast(clients,json!({"t":"interaction_done","id":id}));
+                                broadcast(clients, json!({"t":"interaction_done","id":id}));
                                 return Ok(result);
                             }
-                            Some("cancel") if owner.get()==Some(c.id)=>{return Err("Human cancelled the decision; nothing approved".into());}
-                            _=>send(&mut c.stream,json!({"t":"error","message":"Turn paused for a human decision; claim control and answer the current request"})),
-                        }
+                            Some("cancel") if owner.get() == Some(c.id) => {
+                                return Err("Human cancelled the decision; nothing approved".into());
+                            }
+                            _ => send(
+                                &mut c.stream,
+                                json!({"t":"error","message":"Turn paused for a human decision; claim control and answer the current request"}),
+                            ),
+                        },
                     }
                 }
             }
-            for index in closed.into_iter().rev(){slots.remove(index);}
+            for index in closed.into_iter().rev() {
+                slots.remove(index);
+            }
         }
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
 }
 
 pub fn serve(
-    cfg: config::Config,
+    mut cfg: config::Config,
     session_id: Option<&str>,
     socket: Option<&str>,
 ) -> Result<(), String> {
@@ -374,10 +550,18 @@ pub fn serve(
         None => dir.join(format!("serve-{}.sock", session.id)),
     };
     if std::fs::symlink_metadata(&socket_path).is_ok() {
-        if UnixStream::connect(&socket_path).is_ok() { return Err("Socket already serves a live session; choose another socket".into()); }
+        if UnixStream::connect(&socket_path).is_ok() {
+            return Err("Socket already serves a live session; choose another socket".into());
+        }
         use std::os::unix::fs::FileTypeExt;
-        if !std::fs::symlink_metadata(&socket_path).map_err(|e|e.to_string())?.file_type().is_socket() { return Err("Refusing to replace a non-socket path".into()); }
-        std::fs::remove_file(&socket_path).map_err(|e|e.to_string())?;
+        if !std::fs::symlink_metadata(&socket_path)
+            .map_err(|e| e.to_string())?
+            .file_type()
+            .is_socket()
+        {
+            return Err("Refusing to replace a non-socket path".into());
+        }
+        std::fs::remove_file(&socket_path).map_err(|e| e.to_string())?;
     }
     let listener = UnixListener::bind(&socket_path)
         .map_err(|e| format!("cannot bind {}: {e}", socket_path.display()))?;
@@ -403,20 +587,24 @@ pub fn serve(
             });
         }
     }
-    let mods = crate::mods::load(&cfg.mods)?;
+    let mut mods = crate::mods::load(&cfg.mods)?;
     let mut extensions = ext::Registry::load(&cfg.extensions, &cfg.workspace, &cfg.model);
     if let Ok(records) = Session::raw_records(&session.path) {
         extensions.seed_custom(&records);
     }
     let ledger_path = session.path.with_extension("cost.json");
     let ledger = crate::budget::load(&ledger_path, cfg.cost_limit);
+    let runtime_config = std::sync::Arc::new(std::sync::Mutex::new(cfg.clone()));
     let factory: crate::warmer::ProviderFactory = {
-        let configured = cfg.clone();
+        let configured = std::sync::Arc::clone(&runtime_config);
         let ledger = std::sync::Arc::clone(&ledger);
         let path = std::sync::Arc::new(std::sync::Mutex::new(ledger_path.clone()));
         std::sync::Arc::new(move || {
             crate::make_provider(
-                &configured,
+                &configured
+                    .lock()
+                    .map_err(|_| "Runtime configuration unavailable")?
+                    .clone(),
                 std::sync::Arc::clone(&ledger),
                 std::sync::Arc::clone(&path),
                 None,
@@ -424,27 +612,45 @@ pub fn serve(
         })
     };
     let factory_for_model: crate::warmer::ProviderForModel = {
-        let configured = cfg.clone();
+        let configured = std::sync::Arc::clone(&runtime_config);
         let ledger = std::sync::Arc::clone(&ledger);
         let path = std::sync::Arc::new(std::sync::Mutex::new(ledger_path));
         std::sync::Arc::new(move |model: &str| {
-            let configured = configured.clone();
+            let configured = std::sync::Arc::clone(&configured);
             let ledger = std::sync::Arc::clone(&ledger);
             let path = std::sync::Arc::clone(&path);
             let model = model.to_string();
             let factory: crate::warmer::ProviderFactory = std::sync::Arc::new(move || {
-                crate::make_provider(&configured, std::sync::Arc::clone(&ledger), std::sync::Arc::clone(&path), Some(&model))
+                crate::make_provider(
+                    &configured
+                        .lock()
+                        .map_err(|_| "Runtime configuration unavailable")?
+                        .clone(),
+                    std::sync::Arc::clone(&ledger),
+                    std::sync::Arc::clone(&path),
+                    Some(&model),
+                )
             });
             factory
         })
     };
-    let _team = crate::team::start(&session.id, &cfg.workspace, std::sync::Arc::clone(&factory), factory_for_model, &cfg.model)?;
-    let instructions = crate::trust::gated(&cfg, &crate::agents_md::load(&cfg.workspace), false);
+    let _team = crate::team::start(
+        &session.id,
+        &cfg.workspace,
+        std::sync::Arc::clone(&factory),
+        factory_for_model,
+        &cfg.model,
+    )?;
+    let mut instructions =
+        crate::trust::gated(&cfg, &crate::agents_md::load(&cfg.workspace), false);
 
     let clients = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Client>::new()));
     let client_sequence = std::rc::Rc::new(std::cell::Cell::new(0u64));
     let owner = std::rc::Rc::new(std::cell::Cell::new(None::<u64>));
     let mut mailbox = crate::inbox::Mailbox::open(&session);
+    let mut command_receipts: std::collections::HashMap<String, Value> =
+        std::collections::HashMap::new();
+    let mut retry_available = crate::navigation::load(&session.id).status == "blocked";
     let mut pending: VecDeque<Value> = VecDeque::new();
     // The accepted marker is committed before any prompt work starts. On a
     // restart an accepted-but-uncompleted request is reported as interrupted,
@@ -458,12 +664,35 @@ pub fn serve(
                 _ => None,
             })
             .collect();
-    let queue_path=session.path.with_extension("serve-queue.json");
-    let mut durable_followups:VecDeque<Value>=if queue_path.exists(){serde_json::from_slice(&crate::requests::bounded(&queue_path,2*1024*1024)?).map_err(|e|format!("Invalid saved follow-up queue: {e}"))?}else{VecDeque::new()};
-    if durable_followups.len()>32||durable_followups.iter().any(|v|v["t"]!="prompt"||v["text"].as_str().is_none_or(|s|s.is_empty()||s.len()>60000)||v["request_id"].as_str().is_none_or(|s|s.is_empty()||s.len()>128)){return Err("Saved follow-up queue exceeds bounds".into());}
-    durable_followups.retain(|v|v["request_id"].as_str().is_some_and(|id|!seen_requests.contains_key(id)));
+    let queue_path = session.path.with_extension("serve-queue.json");
+    let mut durable_followups: VecDeque<Value> = if queue_path.exists() {
+        serde_json::from_slice(&crate::requests::bounded(&queue_path, 2 * 1024 * 1024)?)
+            .map_err(|e| format!("Invalid saved follow-up queue: {e}"))?
+    } else {
+        VecDeque::new()
+    };
+    if durable_followups.len() > 32
+        || durable_followups.iter().any(|v| {
+            v["t"] != "prompt"
+                || v["text"]
+                    .as_str()
+                    .is_none_or(|s| s.is_empty() || s.len() > 60000)
+                || v["request_id"]
+                    .as_str()
+                    .is_none_or(|s| s.is_empty() || s.len() > 128)
+        })
+    {
+        return Err("Saved follow-up queue exceeds bounds".into());
+    }
+    durable_followups.retain(|v| {
+        v["request_id"]
+            .as_str()
+            .is_some_and(|id| !seen_requests.contains_key(id))
+    });
     pending.extend(durable_followups.iter().cloned());
-    if queue_path.exists(){save_followups(&queue_path,&durable_followups)?;}
+    if queue_path.exists() {
+        save_followups(&queue_path, &durable_followups)?;
+    }
     let failure;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
 
@@ -475,7 +704,10 @@ pub fn serve(
         // Attaches accumulate (up to a cap): mirroring one session into two
         // terminals is the point, and a new attach no longer evicts the old
         // one. Same-user access to a 0600 socket is the whole auth story.
-        if let Err(error)=accept_clients(&listener,&clients,&client_sequence) {failure=Some(error);break 'serve;}
+        if let Err(error) = accept_clients(&listener, &clients, &client_sequence) {
+            failure = Some(error);
+            break 'serve;
+        }
 
         // One message per iteration, with the client it came from (None for
         // messages from the mid-turn queue or produced by a loop).
@@ -523,13 +755,19 @@ pub fn serve(
                                 &clients,
                                 json!({"t": "text", "delta": format!("\n\x1b[90m[inbox from {from}]\x1b[0m {text}\n")}),
                             );
-                            Some((None, json!({"t": "prompt", "text": text, "inbox_recorded":true})))
-                        } else if let Some(prompt) = crate::loops::due_for(&mut session,&cfg)? {
+                            Some((
+                                None,
+                                json!({"t": "prompt", "text": text, "inbox_recorded":true}),
+                            ))
+                        } else if let Some(prompt) = crate::loops::due_for(&mut session, &cfg)? {
                             broadcast(
                                 &clients,
                                 json!({"t": "text", "delta": format!("\n\x1b[90m[loop]\x1b[0m {prompt}\n")}),
                             );
-                            Some((None, json!({"t": "prompt", "text": prompt, "inbox_recorded":true})))
+                            Some((
+                                None,
+                                json!({"t": "prompt", "text": prompt, "inbox_recorded":true}),
+                            ))
                         } else {
                             std::thread::sleep(std::time::Duration::from_millis(30));
                             continue;
@@ -542,52 +780,89 @@ pub fn serve(
             continue;
         };
 
-        // Send to the client that asked, if it is still attached.
+        // Stable identity survives attaches and disconnects during a model command.
+        let sender_id = origin.and_then(|i| clients.borrow().get(i).map(|c| c.id));
         let to_origin = |value: Value| {
-            if let Some(i) = origin
-                && let Some(c) = clients.borrow_mut().get_mut(i)
+            if let Some(id) = sender_id
+                && let Some(client) = clients.borrow_mut().iter_mut().find(|c| c.id == id)
             {
-                send(&mut c.stream, value);
+                send(&mut client.stream, value);
             }
         };
 
-        if owner.get().is_some_and(|id| !clients.borrow().iter().any(|c|c.id==id)) { owner.set(None); }
-        let sender_id=origin.and_then(|i|clients.borrow().get(i).map(|c|c.id));
-        if origin.is_some() && matches!(message["t"].as_str(),Some("prompt"|"steer"|"cancel")) && sender_id!=owner.get() {
-            to_origin(json!({"t":"error","request_id":message.get("request_id"),"message":"Read-only observer: claim control before sending input","owner":owner.get()}));
+        if owner
+            .get()
+            .is_some_and(|id| !clients.borrow().iter().any(|c| c.id == id))
+        {
+            owner.set(None);
+        }
+        if origin.is_some()
+            && matches!(
+                message["t"].as_str(),
+                Some("prompt" | "steer" | "cancel" | "cancel_command" | "command")
+            )
+            && sender_id != owner.get()
+            && !(message["t"] == "command"
+                && crate::web_commands::inspect_only(
+                    crate::actions::canonical(message["name"].as_str().unwrap_or("")),
+                    &message["values"],
+                ))
+        {
+            to_origin(
+                json!({"t":"error","request_id":message.get("request_id"),"message":"Read-only observer: claim control before sending input","owner":owner.get()}),
+            );
             continue;
         }
         match message.get("t").and_then(Value::as_str) {
             Some("control") => {
                 let action = message["action"].as_str();
                 if !matches!(action, Some("claim" | "release")) {
-                    to_origin(json!({"t":"error","message":"Control action must be claim or release"}));
+                    to_origin(
+                        json!({"t":"error","message":"Control action must be claim or release"}),
+                    );
                     continue;
                 }
-                let release=action==Some("release");
-                if release && sender_id==owner.get() { owner.set(None); }
-                else if !release && owner.get().is_none() { owner.set(sender_id); }
-                to_origin(json!({"t":"control","owner":owner.get(),"client":sender_id,"can_write":sender_id.is_some()&&sender_id==owner.get()}));
+                let release = action == Some("release");
+                if release && sender_id == owner.get() {
+                    owner.set(None);
+                } else if !release && owner.get().is_none() {
+                    owner.set(sender_id);
+                }
+                to_origin(
+                    json!({"t":"control","owner":owner.get(),"client":sender_id,"can_write":sender_id.is_some()&&sender_id==owner.get()}),
+                );
             }
             Some("attach") => {
-                if let Some(i) = origin { clients.borrow_mut()[i].human = message["human"] == true; }
-                if message.get("protocol_version").is_some_and(|v| v.as_u64() != Some(PROTOCOL_VERSION)) {
-                    to_origin(json!({"t":"error","message":"Unsupported attach protocol version","protocol_version":PROTOCOL_VERSION}));
+                if let Some(i) = origin {
+                    clients.borrow_mut()[i].human = message["human"] == true;
+                }
+                if message
+                    .get("protocol_version")
+                    .is_some_and(|v| v.as_u64() != Some(PROTOCOL_VERSION))
+                {
+                    to_origin(
+                        json!({"t":"error","message":"Unsupported attach protocol version","protocol_version":PROTOCOL_VERSION}),
+                    );
                     continue;
                 }
-                if owner.get().is_none() && message["observe"]!=Value::Bool(true) { owner.set(sender_id); }
+                if owner.get().is_none() && message["observe"] != Value::Bool(true) {
+                    owner.set(sender_id);
+                }
                 let claimed_session = message.get("session").and_then(Value::as_str);
                 let wrong_session = claimed_session.is_some_and(|id| id != session.id);
                 let since = message
                     .get("since")
                     .and_then(Value::as_u64)
-                    .map(|n| n as usize).filter(|_| !wrong_session);
+                    .map(|n| n as usize)
+                    .filter(|_| !wrong_session);
                 let (entries, cursor, reset) = replay_from(&session, since);
                 to_origin(json!({
                     "t": "replay",
                     "protocol_version": PROTOCOL_VERSION,
                     "replay_byte_limit": REPLAY_BYTES,
                     "security":crate::connect::security(&cfg),
+                    "commands":crate::web_commands::catalogue(Some(&extensions)),
+                    "command_transport":true,
                     "client":sender_id,"owner":owner.get(),"can_write":sender_id.is_some()&&sender_id==owner.get(),
                     "session": session.id,
                     "entries": entries,
@@ -595,7 +870,228 @@ pub fn serve(
                     "reset": reset || wrong_session,
                 }));
             }
-            Some("prompt"|"steer") => {
+            Some("cancel_command") => {
+                let target = message["request_id"].clone();
+                let before = pending.len();
+                pending.retain(|m| m["t"] != "command" || m["request_id"] != target);
+                to_origin(
+                    json!({"t":"command_result","request_id":target,"error":if before!=pending.len(){"Queued command cancelled"}else{"Command is no longer queued or running; inspect its result before retrying"}}),
+                );
+            }
+            Some("command") => {
+                let id = message["request_id"]
+                    .as_str()
+                    .filter(|s| !s.is_empty() && s.len() <= 128);
+                let Some(id) = id else {
+                    to_origin(
+                        json!({"t":"command_result","request_id":message["request_id"],"error":"Command request ID is required (1–128 bytes)"}),
+                    );
+                    continue;
+                };
+                let name = crate::actions::canonical(message["name"].as_str().unwrap_or(""));
+                let mutation = !crate::web_commands::inspect_only(name, &message["values"]);
+                let receipt_id = format!("command:{id}");
+                if let Some(reply) = command_receipts.get(id) {
+                    to_origin(reply.clone());
+                    continue;
+                }
+                if seen_requests.contains_key(&receipt_id) {
+                    to_origin(
+                        json!({"t":"command_result","request_id":id,"error":"This command was already accepted. It will not be replayed; inspect its state before submitting again."}),
+                    );
+                    continue;
+                }
+                if message["values"].to_string().len() > 65536 {
+                    to_origin(
+                        json!({"t":"command_result","request_id":id,"error":"Command values exceed 64 KiB"}),
+                    );
+                    continue;
+                }
+                if mutation {
+                    if let Err(error) = session.append_checked(&[Record::ServeRequest {
+                        id: receipt_id.clone(),
+                        status: "accepted".into(),
+                    }]) {
+                        to_origin(
+                            json!({"t":"command_result","request_id":id,"error":format!("Cannot record command acceptance: {error}")}),
+                        );
+                        continue;
+                    }
+                    seen_requests.insert(receipt_id.clone(), "accepted".into());
+                }
+                let extension_snapshot = crate::addons::snapshot(&cfg, &extensions);
+                let previous = cfg.clone();
+                let result = if crate::web_commands::heavy(name, &message["values"]) {
+                    CommandRuntime {
+                        clients: &clients,
+                        owner: &owner,
+                        listener: &listener,
+                        sequence: &client_sequence,
+                        session: &mut session,
+                        state: &mut state,
+                        cfg: &mut cfg,
+                        factory: &factory,
+                        ledger: &ledger,
+                        queue: &mut durable_followups,
+                        pending: &mut pending,
+                        queue_path: &queue_path,
+                        seen: &seen_requests,
+                        catalogue: crate::web_commands::catalogue(Some(&extensions)),
+                        extension_snapshot,
+                    }
+                    .run(name, &message)
+                } else if extensions.has_command(name)
+                    && !crate::actions::catalogue().iter().any(|c| c.name == name)
+                {
+                    extensions.run_command(name,message["values"]["args"].as_str().unwrap_or("")).map(|body|json!({"title":format!("/{name}"),"format":"markdown","body":body})).ok_or_else(||"Extension returned no result".into())
+                } else if name == "queue-run" {
+                    (|| -> Result<Value, String> {
+                        let mut saved = crate::queue::Queue::open(&session)?;
+                        if saved.is_empty() {
+                            return Ok(
+                                json!({"title":"/queue-run","body":{"message":"No saved follow-ups to run"}}),
+                            );
+                        }
+                        factory()?;
+                        if let Some(text) = saved.deliver(&mut session)? {
+                            pending.push_front(
+                                json!({"t":"prompt","text":text,"inbox_recorded":true}),
+                            );
+                        }
+                        Ok(
+                            json!({"title":"/queue-run","body":{"remaining":saved.describe(),"running":true}}),
+                        )
+                    })()
+                } else if name == "queue" {
+                    let action = message["values"]["action"].as_str().unwrap_or("");
+                    let target = message["values"]["args"].as_str().unwrap_or("");
+                    if let Some(action) = action.strip_prefix("saved-") {
+                        (|| -> Result<Value, String> {
+                            let mut saved = crate::queue::Queue::open(&session)?;
+                            let index = if action == "clear" {
+                                0
+                            } else {
+                                target
+                                    .parse::<usize>()
+                                    .ok()
+                                    .and_then(|n| n.checked_sub(1))
+                                    .ok_or("Use a saved queue index starting at 1")?
+                            };
+                            saved.edit_saved(
+                                action,
+                                index,
+                                message["values"]["text"].as_str().unwrap_or(""),
+                            )?;
+                            Ok(
+                                json!({"title":"/queue","body":{"saved":saved.describe(),"queued":durable_followups}}),
+                            )
+                        })()
+                    } else if !matches!(action, "" | "inspect" | "list" | "remove" | "clear") {
+                        Err("Unknown queue action".into())
+                    } else if matches!(action, "remove" | "clear") {
+                        let removed: Vec<Value> = durable_followups
+                            .iter()
+                            .filter(|m| action == "clear" || m["request_id"] == target)
+                            .map(|m| m["request_id"].clone())
+                            .collect();
+                        let mut next = durable_followups.clone();
+                        next.retain(|m| action != "clear" && m["request_id"] != target);
+                        save_followups(&queue_path, &next).map(|()| {
+                            durable_followups = next;
+                            pending.retain(|m| m["t"] != "prompt" || !removed.contains(&m["request_id"]));
+                            json!({"title":"/queue","format":"json","body":{"queued":durable_followups}})
+                        })
+                    } else {
+                        Ok(
+                            json!({"title":"/queue","format":"json","body":{"queued":durable_followups,"saved":crate::queue::Queue::open(&session)?.describe(),"delivery":"Follow-ups run automatically in order after the active turn; /queue-run resumes saved terminal follow-ups"}}),
+                        )
+                    }
+                } else if name == "retry" {
+                    if retry_available {
+                        retry_available = false;
+                        pending.push_front(json!({"t":"prompt","text":"Resume the interrupted response using existing context and completed tools.","inbox_recorded":true}));
+                        Ok(
+                            json!({"title":"/retry","format":"json","body":{"resuming":true,"completed_tools_replayed":false}}),
+                        )
+                    } else {
+                        Err("No failed response is available to retry".into())
+                    }
+                } else if name == "extensions" {
+                    crate::addons::request(
+                        &mut cfg,
+                        &mut extensions,
+                        message["values"]["action"].as_str().unwrap_or(""),
+                        message["values"]["args"].as_str().unwrap_or(""),
+                        message["values"]["confirmed"] == true,
+                    )
+                    .map(|body| json!({"title":"/extensions","format":"json","body":body}))
+                } else {
+                    crate::web_commands::execute(
+                        name,
+                        &message["values"],
+                        &mut session,
+                        &mut state,
+                        &mut cfg,
+                        &factory,
+                        &ledger,
+                    )
+                };
+                *runtime_config
+                    .lock()
+                    .map_err(|_| "Runtime configuration unavailable")? = cfg.clone();
+                if cfg.mods != previous.mods {
+                    mods = crate::mods::load(&cfg.mods)?;
+                }
+                if cfg.system_prompt != previous.system_prompt || name == "init" {
+                    instructions =
+                        crate::trust::gated(&cfg, &crate::agents_md::load(&cfg.workspace), false);
+                }
+                if name != "extensions"
+                    && (cfg.extensions != previous.extensions || cfg.model != previous.model)
+                {
+                    extensions.reload(&cfg.extensions, &cfg.workspace, &cfg.model);
+                }
+                if matches!(
+                    name,
+                    "profiles" | "model" | "login" | "logout" | "extensions"
+                ) {
+                    broadcast(
+                        &clients,
+                        json!({"t":"command_catalogue","commands":crate::web_commands::catalogue(Some(&extensions))}),
+                    );
+                }
+                if let Ok(value) = &result
+                    && let Some(prompt) = value["body"]["start_prompt"].as_str()
+                {
+                    pending.push_back(json!({"t":"prompt","text":prompt}));
+                }
+                let reply = match result {
+                    Ok(value) => {
+                        json!({"t":"command_result","request_id":message["request_id"],"result":crate::web_commands::bounded_result(value)})
+                    }
+                    Err(error) => {
+                        json!({"t":"command_result","request_id":message["request_id"],"error":error})
+                    }
+                };
+                if mutation {
+                    if let Err(error) = session.append_checked(&[Record::ServeRequest {
+                        id: receipt_id.clone(),
+                        status: "completed".into(),
+                    }]) {
+                        eprintln!("Command receipt: {error}");
+                    } else {
+                        seen_requests.insert(receipt_id, "completed".into());
+                    }
+                }
+                if command_receipts.len() >= 256
+                    && let Some(key) = command_receipts.keys().next().cloned()
+                {
+                    command_receipts.remove(&key);
+                }
+                command_receipts.insert(id.into(), reply.clone());
+                to_origin(reply);
+            }
+            Some("prompt" | "steer") => {
                 if origin.is_some() && message.get("inbox_recorded").is_some() {
                     to_origin(json!({"t":"error","message":"Reserved delivery field"}));
                     continue;
@@ -631,21 +1127,37 @@ pub fn serve(
                     seen_requests.insert(id.to_string(), "accepted".into());
                 }
                 if message["inbox_recorded"] != true
-                    && let Err(error) = session.append_checked(&[Record::User(text)]) {
+                    && let Err(error) = session.append_checked(&[Record::User(text)])
+                {
                     to_origin(
                         json!({"t":"error", "request_id":message.get("request_id"), "message": format!("cannot durably record prompt; it was not run: {error}")}),
                     );
                     continue;
                 }
-                if let Some(id)=message["request_id"].as_str(){
-                    durable_followups.retain(|v|v["request_id"]!=id);
-                    if queue_path.exists()&& let Err(error)=save_followups(&queue_path,&durable_followups){eprintln!("follow-up receipt cleanup: {error}");}
+                if let Some(id) = message["request_id"].as_str() {
+                    durable_followups.retain(|v| v["request_id"] != id);
+                    if queue_path.exists()
+                        && let Err(error) = save_followups(&queue_path, &durable_followups)
+                    {
+                        eprintln!("follow-up receipt cleanup: {error}");
+                    }
                 }
-                broadcast(&clients,json!({"t":"turn_start","request_id":message.get("request_id"),"already_recorded":message["inbox_recorded"]==true,"text":if message["inbox_recorded"]==true{Value::Null}else{message["text"].clone()}}));
+                broadcast(
+                    &clients,
+                    json!({"t":"turn_start","request_id":message.get("request_id"),"already_recorded":message["inbox_recorded"]==true,"text":if message["inbox_recorded"]==true{Value::Null}else{message["text"].clone()}}),
+                );
                 let provider = match factory() {
                     Ok(p) => p,
                     Err(e) => {
-                        if let Err(error) = crate::navigation::record(&session, &cfg.workspace, &cfg.model, "blocked") { eprintln!("navigation receipt: {error}"); }
+                        retry_available = true;
+                        if let Err(error) = crate::navigation::record(
+                            &session,
+                            &cfg.workspace,
+                            &cfg.model,
+                            "blocked",
+                        ) {
+                            eprintln!("navigation receipt: {error}");
+                        }
                         let mut detail = crate::live::sanitize_provider_detail(&e);
                         if let Some(id) = message.get("request_id").and_then(Value::as_str) {
                             match session.append_checked(&[Record::ServeRequest {
@@ -666,16 +1178,22 @@ pub fn serve(
                     }
                 };
                 let outer = std::rc::Rc::clone(&clients);
-                let input_owner=std::rc::Rc::clone(&owner);
+                let input_owner = std::rc::Rc::clone(&owner);
                 let mut queued: Vec<Value> = Vec::new();
-                let mut correction:Option<Value>=None;
-                if let Err(error) = crate::team::record_notices(&mut session) { eprintln!("team receipt: {error}"); }
-                if let Err(error) = crate::navigation::record(&session, &cfg.workspace, &cfg.model, "running") { eprintln!("navigation receipt: {error}"); }
-                let (replay_entries,replay_cursor,replay_reset)=replay_from(&session,None);
-                let snapshot=json!({"t":"replay","session":session.id,"entries":replay_entries,"cursor":replay_cursor,"reset":replay_reset,"protocol_version":PROTOCOL_VERSION,"security":crate::connect::security(&cfg)});
-                let live=std::rc::Rc::new(std::cell::RefCell::new(VecDeque::<Value>::new()));
-                let progress_live=live.clone();
-                let live_bytes=std::rc::Rc::new(std::cell::Cell::new(0usize));
+                let mut correction: Option<Value> = None;
+                if let Err(error) = crate::team::record_notices(&mut session) {
+                    eprintln!("team receipt: {error}");
+                }
+                if let Err(error) =
+                    crate::navigation::record(&session, &cfg.workspace, &cfg.model, "running")
+                {
+                    eprintln!("navigation receipt: {error}");
+                }
+                let (replay_entries, replay_cursor, replay_reset) = replay_from(&session, None);
+                let snapshot = json!({"t":"replay","session":session.id,"entries":replay_entries,"cursor":replay_cursor,"reset":replay_reset,"protocol_version":PROTOCOL_VERSION,"security":crate::connect::security(&cfg),"commands":crate::web_commands::catalogue(Some(&extensions)),"command_transport":true});
+                let live = std::rc::Rc::new(std::cell::RefCell::new(VecDeque::<Value>::new()));
+                let progress_live = live.clone();
+                let live_bytes = std::rc::Rc::new(std::cell::Cell::new(0usize));
                 let outcome = {
                     let mut agent = Agent::new(
                         provider.as_ref(),
@@ -721,13 +1239,25 @@ pub fn serve(
                         live_bytes.set(bytes);
                         drop(retained);broadcast(&outer,event);
                     });
-                    if clients.borrow().iter().any(|c|c.human) {
+                    if clients.borrow().iter().any(|c| c.human) {
                         let human_clients = std::rc::Rc::clone(&clients);
                         let human_owner = std::rc::Rc::clone(&owner);
-                        let listener=&listener;let sequence=client_sequence.clone();let replay=snapshot.clone();let human_live=live.clone();
+                        let listener = &listener;
+                        let sequence = client_sequence.clone();
+                        let replay = snapshot.clone();
+                        let human_live = live.clone();
                         agent = agent.with_human(move |request| {
-                            let result=human_decision(&human_clients,&human_owner,request,listener,&sequence,&replay,&human_live);
-                            broadcast(&human_clients,json!({"t":"interaction_done"}));result
+                            let result = human_decision(
+                                &human_clients,
+                                &human_owner,
+                                request,
+                                listener,
+                                &sequence,
+                                &replay,
+                                &human_live,
+                            );
+                            broadcast(&human_clients, json!({"t":"interaction_done"}));
+                            result
                         });
                     }
                     let outer = std::rc::Rc::clone(&clients);
@@ -743,7 +1273,7 @@ pub fn serve(
                             loop {
                                 match c.try_incoming() {
                                     Incoming::Message(message) => {
-                                        if Some(c.id)!=input_owner.get() && matches!(message["t"].as_str(),Some("prompt"|"steer"|"cancel")) {
+                                        if Some(c.id)!=input_owner.get() && matches!(message["t"].as_str(),Some("prompt"|"steer"|"cancel"|"cancel_command"|"command")) && !(message["t"]=="command"&&crate::web_commands::inspect_only(crate::actions::canonical(message["name"].as_str().unwrap_or("")),&message["values"])) {
                                             send(&mut c.stream,json!({"t":"error","request_id":message.get("request_id"),"message":"Read-only observer cannot change an active turn"}));
                                         } else {
                                             match message.get("t").and_then(Value::as_str) {
@@ -761,6 +1291,11 @@ pub fn serve(
                                                             Err(error)=>send(&mut c.stream,json!({"t":"error","request_id":message.get("request_id"),"message":error})),
                                                         }
                                                     }else{send(&mut c.stream,json!({"t":"error","request_id":message.get("request_id"),"message":"Steering text must be 1–60000 bytes"}));}
+                                                }
+                                                Some("cancel_command")=>{queued.retain(|m|m["t"]!="command"||m["request_id"]!=message["request_id"]);send(&mut c.stream,json!({"t":"command_result","request_id":message["request_id"],"error":"Queued command cancelled"}));}
+                                                Some("command") => {
+                                                    if queued.len() >= 32 { send(&mut c.stream,json!({"t":"command_result","request_id":message["request_id"],"error":"Command queue is full"})); }
+                                                    else { send(&mut c.stream,json!({"t":"command_queued","request_id":message["request_id"]})); if crate::actions::canonical(message["name"].as_str().unwrap_or(""))=="queue" {pending.push_front(message);}else{queued.push(message);} }
                                                 }
                                                 Some("cancel") => *steer = Some(String::new()),
                                                 Some("prompt") => match accept_followup(&queue_path,&mut durable_followups,&message,&seen_requests){
@@ -785,14 +1320,33 @@ pub fn serve(
                         }
                     })
                 };
-                if let Some(mut correction)=correction {
-                    if !matches!(&outcome,Ok((_,Stop::Steered)))&& let Some(object)=correction.as_object_mut(){object.remove("inbox_recorded");}
+                if let Some(mut correction) = correction {
+                    if !matches!(&outcome, Ok((_, Stop::Steered)))
+                        && let Some(object) = correction.as_object_mut()
+                    {
+                        object.remove("inbox_recorded");
+                    }
                     pending.push_front(correction);
                 }
                 pending.extend(queued);
-                let status = match &outcome { Err(_) => "blocked", Ok((_, Stop::Cancelled)) => "cancelled", Ok((_, Stop::Steered)) => "steered", Ok((_, Stop::ToolBudget)) => "incomplete", Ok((_, Stop::Finished)) => "completed" };
-                if let Err(error) = crate::navigation::record(&session, &cfg.workspace, &cfg.model, status) { eprintln!("navigation receipt: {error}"); }
-                if matches!(&outcome, Ok((_, Stop::Finished))) && let Err(error) = crate::advisor::milestone(&session) { eprintln!("advisor: {error}"); }
+                retry_available = outcome.is_err();
+                let status = match &outcome {
+                    Err(_) => "blocked",
+                    Ok((_, Stop::Cancelled)) => "cancelled",
+                    Ok((_, Stop::Steered)) => "steered",
+                    Ok((_, Stop::ToolBudget)) => "incomplete",
+                    Ok((_, Stop::Finished)) => "completed",
+                };
+                if let Err(error) =
+                    crate::navigation::record(&session, &cfg.workspace, &cfg.model, status)
+                {
+                    eprintln!("navigation receipt: {error}");
+                }
+                if matches!(&outcome, Ok((_, Stop::Finished)))
+                    && let Err(error) = crate::advisor::milestone(&session)
+                {
+                    eprintln!("advisor: {error}");
+                }
 
                 let (stop, text) = match outcome {
                     Ok((out, stop)) => (stop, out.text),
@@ -822,7 +1376,10 @@ pub fn serve(
                         seen_requests.insert(id.to_string(), "completed".into());
                     }
                 }
-                broadcast(&clients, json!({"t": "done", "request_id":message.get("request_id"), "cursor":crate::export::raw_records(&session).len(), "stop": stop, "text": text}));
+                broadcast(
+                    &clients,
+                    json!({"t": "done", "request_id":message.get("request_id"), "cursor":crate::export::raw_records(&session).len(), "stop": stop, "text": text}),
+                );
             }
             Some("cancel") => { /* no turn running: nothing to cancel */ }
             Some("stop") => {
@@ -1093,15 +1650,23 @@ pub fn attach(socket: Option<&str>) -> Result<(), String> {
             let mut disconnected = false;
             loop {
                 match stream.read(&mut chunk) {
-                    Ok(0) => { disconnected = true; break; }
+                    Ok(0) => {
+                        disconnected = true;
+                        break;
+                    }
                     Ok(n) => inbuf.extend_from_slice(&chunk[..n]),
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(_) => { disconnected = true; break; }
+                    Err(_) => {
+                        disconnected = true;
+                        break;
+                    }
                 }
             }
             if disconnected {
                 inbuf.clear();
-                let Some(reconnected) = connect_cancellable(&socket, &keys, &mut out)? else { return Ok(()); };
+                let Some(reconnected) = connect_cancellable(&socket, &keys, &mut out)? else {
+                    return Ok(());
+                };
                 stream = reconnected;
                 send(&mut stream, attach_message(&state));
                 shown_prompt = false;
@@ -1119,7 +1684,10 @@ pub fn attach(socket: Option<&str>) -> Result<(), String> {
                     {
                         // Replay confirms this is still the request's session
                         // before any uncertain prompt is resent.
-                        send(&mut stream, json!({"t":"prompt", "text":pending.text, "request_id":pending.id}));
+                        send(
+                            &mut stream,
+                            json!({"t":"prompt", "text":pending.text, "request_id":pending.id}),
+                        );
                     }
                     shown_prompt = render(&mut out, value, shown_prompt)?;
                 }
@@ -1142,7 +1710,10 @@ pub fn attach(socket: Option<&str>) -> Result<(), String> {
                     _ => match editor.key(key) {
                         glass_tui::Edit::Submit(text) => {
                             if state.pending.is_some() {
-                                let _ = writeln!(out, "\r\n\x1b[33mwaiting for the prior request to resolve\x1b[0m");
+                                let _ = writeln!(
+                                    out,
+                                    "\r\n\x1b[33mwaiting for the prior request to resolve\x1b[0m"
+                                );
                                 continue;
                             }
                             let _ = write!(out, "\x1b[36m❯\x1b[0m {}\r\n", raw(&text));
@@ -1187,7 +1758,10 @@ fn render(out: &mut std::io::Stdout, value: Value, shown: bool) -> Result<bool, 
     match value.get("t").and_then(Value::as_str) {
         Some("replay") => {
             if value.get("reset").and_then(Value::as_bool) == Some(true) {
-                let _ = writeln!(out, "\r\n\x1b[33mconnection history reset · session changed or saved cursor expired\x1b[0m");
+                let _ = writeln!(
+                    out,
+                    "\r\n\x1b[33mconnection history reset · session changed or saved cursor expired\x1b[0m"
+                );
             }
             if let Some(entries) = value.get("entries").and_then(Value::as_array) {
                 for entry in entries {
@@ -1230,22 +1804,46 @@ fn render(out: &mut std::io::Stdout, value: Value, shown: bool) -> Result<bool, 
             let _ = write!(out, "\r\n\x1b[31m{message}\x1b[0m\r\n");
         }
         Some("duplicate") => {
-            let message = value.get("message").and_then(Value::as_str).unwrap_or("request was already accepted");
-            let _ = writeln!(out, "\r\n\x1b[33mrequest already handled · {message}\x1b[0m");
+            let message = value
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("request was already accepted");
+            let _ = writeln!(
+                out,
+                "\r\n\x1b[33mrequest already handled · {message}\x1b[0m"
+            );
         }
         Some("retrying") => {
             let attempt = value.get("attempt").and_then(Value::as_u64).unwrap_or(0);
             let delay = value.get("delay_s").and_then(Value::as_u64).unwrap_or(0);
-            let reason = value.get("reason").and_then(Value::as_str).unwrap_or("transient provider failure");
-            let _ = writeln!(out, "\r\n\x1b[33mprovider retry {attempt} in {delay}s · {reason} · /retry /status\x1b[0m");
+            let reason = value
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("transient provider failure");
+            let _ = writeln!(
+                out,
+                "\r\n\x1b[33mprovider retry {attempt} in {delay}s · {reason} · /retry /status\x1b[0m"
+            );
         }
         Some("provider_notice") => {
-            let message = value.get("message").and_then(Value::as_str).unwrap_or("fallback active");
-            let _ = writeln!(out, "\r\n\x1b[33mprovider fallback · {message} · /status /model\x1b[0m");
+            let message = value
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("fallback active");
+            let _ = writeln!(
+                out,
+                "\r\n\x1b[33mprovider fallback · {message} · /status /model\x1b[0m"
+            );
         }
         Some("provider_error") => {
-            let message = value.get("message").and_then(Value::as_str).unwrap_or("provider stream failed");
-            let _ = writeln!(out, "\r\n\x1b[31mprovider error · {message} · recover with /retry, /status or /login\x1b[0m");
+            let message = value
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("provider stream failed");
+            let _ = writeln!(
+                out,
+                "\r\n\x1b[31mprovider error · {message} · recover with /retry, /status or /login\x1b[0m"
+            );
         }
         _ => return Ok(shown),
     }
@@ -1257,21 +1855,221 @@ fn raw(text: &str) -> String {
     text.replace('\r', "").replace('\n', "\r\n")
 }
 
+/// Only explicit model commands allocate a worker. The session writer stays in
+/// this actor, which continues to accept cancellation, replay and follow-ups.
+struct CommandRuntime<'a> {
+    clients: &'a std::rc::Rc<std::cell::RefCell<Vec<Client>>>,
+    owner: &'a std::rc::Rc<std::cell::Cell<Option<u64>>>,
+    listener: &'a UnixListener,
+    sequence: &'a std::cell::Cell<u64>,
+    session: &'a mut Session,
+    state: &'a mut crate::tools::State,
+    cfg: &'a mut config::Config,
+    factory: &'a crate::warmer::ProviderFactory,
+    ledger: &'a crate::budget::Shared,
+    queue: &'a mut VecDeque<Value>,
+    pending: &'a mut VecDeque<Value>,
+    queue_path: &'a Path,
+    seen: &'a std::collections::HashMap<String, String>,
+    catalogue: Vec<Value>,
+    extension_snapshot: Value,
+}
+impl CommandRuntime<'_> {
+    fn run(&mut self, name: &str, message: &Value) -> Result<Value, String> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let rx = crate::web_commands::start_heavy(
+            name.into(),
+            message["values"].clone(),
+            self.session.path.clone(),
+            self.cfg.clone(),
+            std::sync::Arc::clone(self.factory),
+            std::sync::Arc::clone(&cancel),
+        );
+        let (entries, cursor, reset) = replay_from(self.session, None);
+        let snapshot = json!({"t":"replay","session":self.session.id,"entries":entries,"cursor":cursor,"reset":reset,"protocol_version":PROTOCOL_VERSION,"security":crate::connect::security(self.cfg),"commands":self.catalogue,"command_transport":true});
+        broadcast(
+            self.clients,
+            json!({"t":"command_start","name":name,"request_id":message["request_id"]}),
+        );
+        let outcome = loop {
+            match rx.try_recv() {
+                Ok(result) => break result,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    break Err("Command worker stopped before returning a result".into());
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            if crate::signals::interrupted() {
+                cancel.store(true, Ordering::Release);
+            }
+            if let Err(error) = accept_clients(self.listener, self.clients, self.sequence) {
+                cancel.store(true, Ordering::Release);
+                break Err(error);
+            }
+            let mut dead = Vec::new();
+            {
+                let mut clients = self.clients.borrow_mut();
+                if self
+                    .owner
+                    .get()
+                    .is_some_and(|id| !clients.iter().any(|c| c.id == id))
+                {
+                    self.owner.set(None);
+                }
+                for (i, client) in clients.iter_mut().enumerate() {
+                    for _ in 0..16 {
+                        let input = match client.try_incoming() {
+                            Incoming::Message(v) => v,
+                            Incoming::Closed => {
+                                dead.push(i);
+                                break;
+                            }
+                            Incoming::Malformed | Incoming::Idle => break,
+                        };
+                        match input["t"].as_str() {
+                            Some("attach") => {
+                                busy_attach(client, &input, self.owner, &snapshot, &VecDeque::new())
+                            }
+                            Some("cancel" | "cancel_command")
+                                if self.owner.get() == Some(client.id) =>
+                            {
+                                if input["t"] == "cancel"
+                                    || input["request_id"] == message["request_id"]
+                                {
+                                    cancel.store(true, Ordering::Release);
+                                } else {
+                                    self.pending.retain(|m| {
+                                        m["t"] != "command"
+                                            || m["request_id"] != input["request_id"]
+                                    });
+                                    send(
+                                        &mut client.stream,
+                                        json!({"t":"command_result","request_id":input["request_id"],"error":"Queued command cancelled"}),
+                                    );
+                                }
+                            }
+                            Some("prompt" | "steer") if self.owner.get() == Some(client.id) => {
+                                match accept_followup(
+                                    self.queue_path,
+                                    self.queue,
+                                    &input,
+                                    self.seen,
+                                ) {
+                                    Ok((value, true)) => {
+                                        self.pending.push_back(value.clone());
+                                        send(
+                                            &mut client.stream,
+                                            json!({"t":"queued","request_id":value["request_id"],"durable":true}),
+                                        );
+                                    }
+                                    Ok((value, false)) => send(
+                                        &mut client.stream,
+                                        json!({"t":"duplicate","request_id":value["request_id"]}),
+                                    ),
+                                    Err(error) => send(
+                                        &mut client.stream,
+                                        json!({"t":"error","request_id":input["request_id"],"message":error}),
+                                    ),
+                                }
+                            }
+                            Some("command") => {
+                                let command =
+                                    crate::actions::canonical(input["name"].as_str().unwrap_or(""));
+                                if crate::web_commands::inspect_only(command, &input["values"]) {
+                                    let result = if command == "queue" {
+                                        crate::queue::Queue::open(self.session).map(|saved|json!({"title":"/queue","body":{"queued":self.queue,"saved":saved.describe()}}))
+                                    } else if command == "extensions" {
+                                        Ok(
+                                            json!({"title":"/extensions","body":self.extension_snapshot}),
+                                        )
+                                    } else {
+                                        crate::web_commands::execute(
+                                            command,
+                                            &input["values"],
+                                            self.session,
+                                            self.state,
+                                            self.cfg,
+                                            self.factory,
+                                            self.ledger,
+                                        )
+                                    };
+                                    let reply = match result {
+                                        Ok(value) => {
+                                            json!({"t":"command_result","request_id":input["request_id"],"result":crate::web_commands::bounded_result(value)})
+                                        }
+                                        Err(error) => {
+                                            json!({"t":"command_result","request_id":input["request_id"],"error":error})
+                                        }
+                                    };
+                                    send(&mut client.stream, reply);
+                                } else if self.owner.get() == Some(client.id)
+                                    && self.pending.len() < 32
+                                {
+                                    send(
+                                        &mut client.stream,
+                                        json!({"t":"command_queued","request_id":input["request_id"]}),
+                                    );
+                                    if command == "queue" {
+                                        self.pending.push_front(input);
+                                    } else {
+                                        self.pending.push_back(input);
+                                    }
+                                } else {
+                                    send(
+                                        &mut client.stream,
+                                        json!({"t":"command_result","request_id":input["request_id"],"error":"Claim control first; queued commands are limited to 32"}),
+                                    );
+                                }
+                            }
+                            _ => send(
+                                &mut client.stream,
+                                json!({"t":"error","request_id":input.get("request_id"),"message":"A model command is running. Cancel it or queue a follow-up."}),
+                            ),
+                        }
+                    }
+                }
+                for i in dead.into_iter().rev() {
+                    clients.remove(i);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let result = crate::web_commands::finish_heavy(
+            name,
+            outcome,
+            self.session,
+            self.state,
+            cancel.load(Ordering::Acquire),
+        );
+        broadcast(
+            self.clients,
+            json!({"t":"command_done","name":name,"request_id":message["request_id"]}),
+        );
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn replay_is_bounded_and_marks_utf8_previews() {
-        let entries = (0..200).map(|n| json!({"role":"tool","text":"界".repeat(40_000),"n":n})).collect();
+        let entries = (0..200)
+            .map(|n| json!({"role":"tool","text":"界".repeat(40_000),"n":n}))
+            .collect();
         let (entries, clipped) = bound_replay(entries);
         assert!(clipped);
         assert!(serde_json::to_vec(&entries).unwrap().len() <= REPLAY_BYTES);
         assert_eq!(entries.last().unwrap()["n"], 199);
         assert!(entries.iter().all(|e| e["truncated"] == true));
-        assert!(entries.iter().all(|e| e["text"].as_str().unwrap().len() <= REPLAY_ENTRY_BYTES));
+        assert!(
+            entries
+                .iter()
+                .all(|e| e["text"].as_str().unwrap().len() <= REPLAY_ENTRY_BYTES)
+        );
     }
-
 
     fn scratch(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("gc-serve-{}-{tag}", std::process::id()));
@@ -1339,16 +2137,29 @@ mod tests {
             session: Some("session-a".into()),
             cursor: 17,
             request_seq: 9,
-            pending: Some(PendingRequest { id: "request-exact-9".into(), text: "do it once".into() }),
+            pending: Some(PendingRequest {
+                id: "request-exact-9".into(),
+                text: "do it once".into(),
+            }),
         };
         save_attach_state(&path, &state).unwrap();
         let mut restarted = load_attach_state(&path);
         assert_eq!(attach_message(&restarted)["since"], 17);
         assert_eq!(restarted.pending.as_ref().unwrap().id, "request-exact-9");
-        update_attach_state(&path, &mut restarted, &json!({"t":"replay", "session":"session-a", "cursor":18})).unwrap();
+        update_attach_state(
+            &path,
+            &mut restarted,
+            &json!({"t":"replay", "session":"session-a", "cursor":18}),
+        )
+        .unwrap();
         assert_eq!(restarted.cursor, 18);
         assert_eq!(restarted.pending.as_ref().unwrap().id, "request-exact-9");
-        update_attach_state(&path, &mut restarted, &json!({"t":"duplicate", "request_id":"request-exact-9", "cursor":20})).unwrap();
+        update_attach_state(
+            &path,
+            &mut restarted,
+            &json!({"t":"duplicate", "request_id":"request-exact-9", "cursor":20}),
+        )
+        .unwrap();
         assert_eq!(restarted.cursor, 20);
         assert!(restarted.pending.is_none());
         assert_eq!(restarted.request_seq, 9);
@@ -1383,18 +2194,53 @@ mod tests {
         assert!(stop_completed(true, true, &[]));
     }
 }
-#[cfg(test)]mod followup_regression{
+#[cfg(test)]
+mod followup_regression {
     use super::*;
-    #[test]fn queued_followups_commit_before_ack_and_deduplicate(){
-        let path=std::env::temp_dir().join(format!("gc-queue-{}-{}.json",std::process::id(),crate::loops::now()));
-        let mut queue=VecDeque::new();let seen=std::collections::HashMap::new();let message=json!({"t":"prompt","text":"Continue carefully","request_id":"one"});
-        assert!(accept_followup(&path,&mut queue,&message,&seen).unwrap().1);
-        let saved:VecDeque<Value>=serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();assert_eq!(saved,queue);
-        assert!(!accept_followup(&path,&mut queue,&message,&seen).unwrap().1);assert_eq!(queue.len(),1);
-        let mut reserved=message.clone();reserved["request_id"]=json!("two");reserved["inbox_recorded"]=json!(true);assert!(accept_followup(&path,&mut queue,&reserved,&seen).is_err());
-        assert_eq!(queue.len(),1);std::fs::remove_file(path).unwrap();
+    #[test]
+    fn queued_followups_commit_before_ack_and_deduplicate() {
+        let path = std::env::temp_dir().join(format!(
+            "gc-queue-{}-{}.json",
+            std::process::id(),
+            crate::loops::now()
+        ));
+        let mut queue = VecDeque::new();
+        let seen = std::collections::HashMap::new();
+        let message = json!({"t":"prompt","text":"Continue carefully","request_id":"one"});
+        assert!(
+            accept_followup(&path, &mut queue, &message, &seen)
+                .unwrap()
+                .1
+        );
+        let saved: VecDeque<Value> =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved, queue);
+        assert!(
+            !accept_followup(&path, &mut queue, &message, &seen)
+                .unwrap()
+                .1
+        );
+        assert_eq!(queue.len(), 1);
+        let mut reserved = message.clone();
+        reserved["request_id"] = json!("two");
+        reserved["inbox_recorded"] = json!(true);
+        assert!(accept_followup(&path, &mut queue, &reserved, &seen).is_err());
+        assert_eq!(queue.len(), 1);
+        std::fs::remove_file(path).unwrap();
     }
-    #[test]fn failed_queue_commit_does_not_accept_the_prompt(){
-        let path=std::env::temp_dir();let mut queue=VecDeque::new();assert!(accept_followup(&path,&mut queue,&json!({"t":"prompt","text":"task","request_id":"id"}),&std::collections::HashMap::new()).is_err());assert!(queue.is_empty());
+    #[test]
+    fn failed_queue_commit_does_not_accept_the_prompt() {
+        let path = std::env::temp_dir();
+        let mut queue = VecDeque::new();
+        assert!(
+            accept_followup(
+                &path,
+                &mut queue,
+                &json!({"t":"prompt","text":"task","request_id":"id"}),
+                &std::collections::HashMap::new()
+            )
+            .is_err()
+        );
+        assert!(queue.is_empty());
     }
 }

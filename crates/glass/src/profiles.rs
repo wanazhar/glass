@@ -20,7 +20,9 @@ pub struct Profile {
     #[serde(default = "enabled")]
     pub adaptive_pacing: bool,
 }
-fn enabled() -> bool { true }
+fn enabled() -> bool {
+    true
+}
 #[derive(Default, Serialize, Deserialize)]
 pub struct Store {
     pub profiles: BTreeMap<String, Profile>,
@@ -233,4 +235,72 @@ pub fn manage(keys: &KeyReader, cfg: &config::Config) -> Result<Option<config::C
             }
         }
     }
+}
+
+/// Explicit human profile changes shared by local and remote frontends.
+pub fn request(
+    cfg: &mut config::Config,
+    action: &str,
+    name: &str,
+    text: &str,
+    confirmed: bool,
+) -> Result<serde_json::Value, String> {
+    let mut store = load()?;
+    let root = workspace(&cfg.workspace)?;
+    match action {
+        "" | "list" => {}
+        "save" => {
+            if name.trim().is_empty() || name.len() > 200 {
+                return Err("Use a profile name up to 200 bytes".into());
+            }
+            if store.profiles.contains_key(name) && !confirmed {
+                return Err("Confirm replacing the saved profile".into());
+            }
+            store
+                .profiles
+                .insert(name.into(), Profile::capture(name.into(), cfg));
+            store.active.insert(root.clone(), name.into());
+            save(&store)?;
+        }
+        "use" => {
+            if !confirmed {
+                return Err("Confirm applying the profile, including its extensions".into());
+            }
+            let profile = store.profiles.get(name).ok_or("Unknown profile")?;
+            profile.apply(cfg)?;
+            store.active.insert(root.clone(), name.into());
+            save(&store)?;
+        }
+        "delete" => {
+            if !confirmed {
+                return Err("Confirm deleting the profile".into());
+            }
+            store.profiles.remove(name);
+            store.active.retain(|_, v| v != name);
+            save(&store)?;
+        }
+        "instructions" => {
+            if text.len() > 60000 {
+                return Err("Instructions exceed 60000 bytes".into());
+            }
+            cfg.system_prompt = text.into();
+            update_active(cfg)?;
+        }
+        "global" => {
+            if !confirmed {
+                return Err("Confirm applying global settings".into());
+            }
+            let mut global = config::load(&config::default_path()).map_err(|e| e.to_string())?;
+            global.workspace = cfg.workspace.clone();
+            auth::apply(&mut global)?;
+            crate::addons::apply(&mut global)?;
+            store.active.remove(&root);
+            save(&store)?;
+            *cfg = global;
+        }
+        _ => return Err("Choose list, save, use, delete, instructions, or global".into()),
+    }
+    Ok(
+        serde_json::json!({"active":store.active.get(&root),"profiles":store.profiles.values().map(|p|serde_json::json!({"name":p.name,"provider":p.provider,"model":p.model,"mods":p.mods,"extensions":p.extensions})).collect::<Vec<_>>()}),
+    )
 }

@@ -375,3 +375,7 @@ Fullscreen viewer headers use the same clearance below the iOS status area as
 the main toolbar. The compact palette starts below that area as well. Returning
 from a preview preserves the sidebar's scroll position and focus; its pane
 outline is shown for keyboard navigation rather than touch interaction.
+
+The command palette is centered in the safe viewport when the keyboard is closed
+and in the visual viewport when it is open. Its command list scrolls if needed;
+the header, search field, and footer remain visible.

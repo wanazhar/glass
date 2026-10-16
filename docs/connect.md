@@ -367,3 +367,6 @@ Standalone shell geometry is also selected through the CSS display-mode media
 query. Its first frame therefore uses the same header spacing, fixed edges, and
 bottom inset as the initialized app, without waiting for JavaScript or making
 an additional startup request.
+
+Accent-button text uses the same light-theme color token before and after
+JavaScript initialization, preventing a dark-to-white text flash at launch.

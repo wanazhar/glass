@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#141916" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link rel="stylesheet" href="/style.css" />
+    <title>Glass · workspace</title>
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar" id="sidebar" aria-label="Threads">
+        <div class="brand">
+          <img src="/icon.svg" alt="" /><span
+            >glass<span class="brand-dot">.</span></span
+          ><button
+            class="icon-button"
+            id="new"
+            title="New thread"
+            aria-label="New thread"
+          >
+            ＋
+          </button>
+        </div>
+        <div class="sidebar-caption">YOUR WORKSPACE, WHEREVER YOU ARE</div>
+        <label class="search"
+          ><span>⌕</span
+          ><input
+            id="search"
+            placeholder="Find a thread…"
+            aria-label="Find a thread"
+          /><kbd>⌘ K</kbd></label
+        >
+        <nav id="threads" aria-label="Conversations"></nav>
+        <footer class="sidebar-footer">
+          <span class="host-dot"></span>
+          <div>
+            <strong id="host">Connecting to host</strong
+            ><small>Private connection · Tailscale</small>
+          </div>
+          <button
+            id="theme"
+            class="icon-button"
+            aria-label="Toggle color theme"
+          >
+            ◐
+          </button>
+        </footer>
+      </aside>
+      <div class="scrim" id="scrim"></div>
+      <main class="workspace">
+        <header class="toolbar">
+          <button
+            class="icon-button mobile-menu"
+            id="menu"
+            aria-label="Show threads"
+          >
+            ☰
+          </button>
+          <div class="breadcrumbs">
+            <span id="workspace-name">Workspace</span
+            ><span class="crumb-separator">/</span
+            ><strong id="thread-name">New thread</strong>
+          </div>
+          <div class="toolbar-actions">
+            <span id="connection" class="connection"><i></i>Connecting</span
+            ><button
+              class="icon-button"
+              id="details-toggle"
+              title="Thread details"
+              aria-label="Thread details"
+            >
+              ◫
+            </button>
+          </div>
+        </header>
+        <div class="conversation" id="conversation">
+          <button id="older" class="older hidden">
+            ↑ Load earlier activity
+          </button>
+          <section id="welcome" class="welcome">
+            <span class="eyebrow">A CLEAR SPACE TO THINK</span>
+            <h1>Pick up where<br />you left off<span>.</span></h1>
+            <p>
+              Your threads. Your tools. Your machine.<br />Everything stays
+              together, wherever you work.
+            </p>
+            <div class="welcome-actions">
+              <button id="welcome-new" class="primary">
+                Start a thread <span>↗</span></button
+              ><span class="shortcut">or choose one from the sidebar</span>
+            </div>
+            <div class="welcome-foot">
+              <span>◇</span> Work continues when you step away.
+            </div>
+          </section>
+          <div id="timeline" class="timeline" aria-label="Conversation"></div>
+        </div>
+        <button id="latest" class="latest hidden">↓ Back to latest</button>
+        <section class="compose-zone">
+          <div id="notice" class="notice hidden" role="status"></div>
+          <div id="interaction" class="interaction hidden"></div>
+          <div id="activity" class="activity">
+            <span class="activity-dot"></span
+            ><span id="activity-text">Ready when you are</span
+            ><button id="ownership">Take control</button>
+          </div>
+          <form id="composer" class="composer">
+            <textarea
+              id="prompt"
+              rows="2"
+              placeholder="What would you like to work on?"
+              aria-label="Message"
+              maxlength="60000"
+            ></textarea>
+            <div class="composer-bottom">
+              <div class="composer-meta">
+                <span class="diamond">◇</span><span id="model">Glass Core</span
+                ><span class="meta-divider"></span
+                ><span id="profile">Host execution</span>
+              </div>
+              <div class="composer-actions">
+                <button
+                  type="button"
+                  id="send-mode"
+                  class="quiet hidden"
+                  data-mode="steer"
+                >
+                  Steer task
+                </button>
+                <button
+                  type="button"
+                  id="stop"
+                  class="stop hidden"
+                  aria-label="Stop current turn"
+                >
+                  ■</button
+                ><button
+                  type="submit"
+                  id="send"
+                  class="send"
+                  aria-label="Send message"
+                >
+                  ↑
+                </button>
+              </div>
+            </div>
+          </form>
+          <div class="compose-foot">
+            <span id="usage"
+              >Executed on your host · credentials stay there</span
+            ><span class="keyboard-hint"
+              >Enter to send <span>·</span> Shift Enter for a new line</span
+            >
+          </div>
+        </section>
+      </main>
+      <aside class="details" id="details" aria-label="Thread details">
+        <header>
+          <h2>Thread details</h2>
+          <button
+            class="icon-button"
+            id="details-close"
+            aria-label="Close details"
+          >
+            ×
+          </button>
+        </header>
+        <div class="detail-tabs">
+          <button class="selected" data-tab="activity">Activity</button
+          ><button data-tab="reasoning">Reasoning</button
+          ><button data-tab="context">Context</button>
+        </div>
+        <div id="detail-content"></div>
+        <footer>Same thread · shared with your terminal</footer>
+      </aside>
+    </div>
+    <dialog id="preview">
+      <header>
+        <div>
+          <span class="eyebrow" id="preview-kind">PREVIEW</span>
+          <h2 id="preview-title">Preview</h2>
+        </div>
+        <div>
+          <button id="download" class="quiet">Download</button
+          ><button
+            id="preview-close"
+            class="icon-button"
+            aria-label="Close preview"
+          >
+            ×
+          </button>
+        </div>
+      </header>
+      <div id="preview-body"></div>
+    </dialog>
+    <script nomodule>
+      This browser needs JavaScript modules to use Glass.
+    </script>
+  </body>
+</html>

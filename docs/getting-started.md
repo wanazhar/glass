@@ -31,6 +31,10 @@ cargo build --release --package glass-core --bin glass-core
 Run the command from the project you want to work on. Git is optional for chat
 and tool execution; Git-based checkpoints and change review require a repository.
 
+For the optional web workspace, use `GC_INSTALL_WEB=1 ./scripts/install.sh`.
+Then run `gc connect`. See [Remote workspace](connect.md) for Tailscale and iPhone
+setup. Normal installation does not require Node.
+
 ## Choose an execution mode
 
 Running `gc` uses saved settings. With no configured override, the default is

@@ -81,7 +81,7 @@ const RECIPES: &[(&str, &str)] = &[
     ),
     (
         "delivery",
-        "Use gc review for recorded commands and changes, gc contract for structured result validation, and workspace artifacts/evidence for actual checks. gc pr inspects checks/reviews; publication requires user authorization. Use gc worktree --help for isolated work, preview cleanup and inspect ownership before applying it. gc skill capture/save records a reusable workflow after review. Settings, auth, policy, serve/ACP and companion manage the harness; never silently change security or expose network listeners to complete unrelated tasks.",
+        "Use gc review for recorded commands and changes, gc contract for structured result validation, and workspace artifacts/evidence for actual checks. gc pr inspects checks/reviews; publication requires user authorization. Use gc worktree --help for isolated work, preview cleanup and inspect ownership before applying it. gc skill capture/save records a reusable workflow after review. Settings, auth, policy, serve/ACP, companion and connect manage the harness; never silently change security or expose network listeners to complete unrelated tasks.",
     ),
     (
         "files",

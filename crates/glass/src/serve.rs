@@ -169,6 +169,7 @@ struct Client {
     id: u64,
     stream: UnixStream,
     buf: Vec<u8>,
+    human: bool,
 }
 
 impl Client {
@@ -276,6 +277,82 @@ fn default_socket() -> Result<PathBuf, String> {
     newest.ok_or_else(|| "no served session found; start one with `glass-core serve`".into())
 }
 
+fn save_followups(path:&Path,queue:&VecDeque<Value>)->Result<(),String>{
+    if queue.len()>32{return Err("Follow-up queue is full (32 prompts)".into());}
+    let bytes=serde_json::to_vec(queue).map_err(|e|e.to_string())?;
+    if bytes.len()>2*1024*1024{return Err("Follow-up queue exceeds 2 MiB".into());}
+    crate::auth::secure_write(path,&bytes)
+}
+fn accept_followup(path:&Path,queue:&mut VecDeque<Value>,message:&Value,seen:&std::collections::HashMap<String,String>)->Result<(Value,bool),String>{
+    static NEXT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
+    let text=message["text"].as_str().filter(|s|!s.trim().is_empty()&&s.len()<=60000).ok_or("Follow-up must contain 1–60000 bytes")?;
+    if message.get("inbox_recorded").is_some(){return Err("Reserved delivery field".into());}
+    let id=match message.get("request_id"){Some(Value::String(id))if !id.is_empty()&&id.len()<=128=>id.clone(),None=>format!("queue-{}-{}-{}",std::process::id(),crate::loops::now(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)),_=>return Err("Invalid follow-up request ID".into())};
+    if seen.contains_key(&id)||queue.iter().any(|v|v["request_id"]==id){return Ok((json!({"request_id":id}),false));}
+    let value=json!({"t":"prompt","text":text,"request_id":id});let mut next=queue.clone();next.push_back(value.clone());save_followups(path,&next)?;*queue=next;Ok((value,true))
+}
+fn accept_clients(listener:&UnixListener, clients:&std::rc::Rc<std::cell::RefCell<Vec<Client>>>, sequence:&std::cell::Cell<u64>)->Result<(),String>{
+    for _ in 0..MAX_CLIENTS {
+        match listener.accept(){
+            Ok((stream,_))=>{let _=stream.set_nonblocking(true);let mut slots=clients.borrow_mut();if slots.len()>=MAX_CLIENTS{continue;}let id=sequence.get().checked_add(1).ok_or("Client sequence exhausted")?;sequence.set(id);slots.push(Client{id,stream,buf:Vec::new(),human:false});}
+            Err(e) if e.kind()==std::io::ErrorKind::WouldBlock=>break,
+            Err(e)=>return Err(e.to_string()),
+        }
+    }Ok(())
+}
+fn busy_attach(client:&mut Client,message:&Value,owner:&std::cell::Cell<Option<u64>>,snapshot:&Value,live:&std::collections::VecDeque<Value>){
+    if message.get("protocol_version").is_some_and(|v|v.as_u64()!=Some(PROTOCOL_VERSION)){send(&mut client.stream,json!({"t":"error","message":"Unsupported attach protocol"}));return;}
+    client.human=message["human"]==true;
+    if owner.get().is_none()&&message["observe"]!=true {owner.set(Some(client.id));}
+    let mut replay=snapshot.clone();
+    if let Some(id)=snapshot["session"].as_str()
+        && let Ok(session)=Session::open_readonly(&config::data_dir(),id){let(entries,cursor,reset)=replay_from(&session,None);replay["entries"]=json!(entries);replay["cursor"]=json!(cursor);replay["reset"]=json!(reset);}replay["client"]=json!(client.id);replay["owner"]=json!(owner.get());replay["can_write"]=json!(owner.get()==Some(client.id));replay["reset"]=json!(true);replay["busy"]=json!(true);
+    send(&mut client.stream,replay);for event in live{send(&mut client.stream,event.clone());}
+}
+/// The session remains paused; only its current input owner may answer.
+fn human_decision(clients: &std::rc::Rc<std::cell::RefCell<Vec<Client>>>, owner: &std::rc::Rc<std::cell::Cell<Option<u64>>>, request: &Value, listener:&UnixListener, sequence:&std::cell::Cell<u64>, snapshot:&Value, live:&std::cell::RefCell<VecDeque<Value>>) -> Result<Value,String> {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let id = format!("human-{}-{}",std::process::id(),SEQUENCE.fetch_add(1,std::sync::atomic::Ordering::Relaxed));
+    broadcast(clients,json!({"t":"interaction","id":id,"request":request}));
+    let started=std::time::Instant::now();
+    loop {
+        if crate::signals::interrupted() || started.elapsed()>std::time::Duration::from_secs(1800) {return Err("Human decision cancelled or expired; nothing approved".into());}
+        accept_clients(listener,clients,sequence)?;
+        {
+            let mut slots=clients.borrow_mut();
+            if owner.get().is_some_and(|id|!slots.iter().any(|c|c.id==id)) {owner.set(None);}
+            let mut closed=Vec::new();
+            for (index,c) in slots.iter_mut().enumerate() {
+                loop {
+                    match c.try_incoming() {
+                        Incoming::Closed=>{closed.push(index);break;},
+                        Incoming::Idle|Incoming::Malformed=>break,
+                        Incoming::Message(message)=>match message["t"].as_str() {
+                            Some("attach")=>{busy_attach(c,&message,owner,snapshot,&live.borrow());send(&mut c.stream,json!({"t":"interaction","id":id,"request":request}));}
+                            Some("control")=>{
+                                if message["action"]=="claim" && owner.get().is_none() {owner.set(Some(c.id));}
+                                if message["action"]=="release" && owner.get()==Some(c.id) {owner.set(None);}
+                                send(&mut c.stream,json!({"t":"control","client":c.id,"owner":owner.get(),"can_write":owner.get()==Some(c.id)}));
+                                send(&mut c.stream,json!({"t":"interaction","id":id,"request":request}));
+                            }
+                            Some("answer") if owner.get()==Some(c.id) && message["id"]==id=>{
+                                let result=message["answer"].clone();
+                                drop(slots);
+                                broadcast(clients,json!({"t":"interaction_done","id":id}));
+                                return Ok(result);
+                            }
+                            Some("cancel") if owner.get()==Some(c.id)=>{return Err("Human cancelled the decision; nothing approved".into());}
+                            _=>send(&mut c.stream,json!({"t":"error","message":"Turn paused for a human decision; claim control and answer the current request"})),
+                        }
+                    }
+                }
+            }
+            for index in closed.into_iter().rev(){slots.remove(index);}
+        }
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+}
+
 pub fn serve(
     cfg: config::Config,
     session_id: Option<&str>,
@@ -365,7 +442,7 @@ pub fn serve(
     let instructions = crate::trust::gated(&cfg, &crate::agents_md::load(&cfg.workspace), false);
 
     let clients = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Client>::new()));
-    let mut client_sequence = 0u64;
+    let client_sequence = std::rc::Rc::new(std::cell::Cell::new(0u64));
     let owner = std::rc::Rc::new(std::cell::Cell::new(None::<u64>));
     let mut mailbox = crate::inbox::Mailbox::open(&session);
     let mut pending: VecDeque<Value> = VecDeque::new();
@@ -381,6 +458,12 @@ pub fn serve(
                 _ => None,
             })
             .collect();
+    let queue_path=session.path.with_extension("serve-queue.json");
+    let mut durable_followups:VecDeque<Value>=if queue_path.exists(){serde_json::from_slice(&crate::requests::bounded(&queue_path,2*1024*1024)?).map_err(|e|format!("Invalid saved follow-up queue: {e}"))?}else{VecDeque::new()};
+    if durable_followups.len()>32||durable_followups.iter().any(|v|v["t"]!="prompt"||v["text"].as_str().is_none_or(|s|s.is_empty()||s.len()>60000)||v["request_id"].as_str().is_none_or(|s|s.is_empty()||s.len()>128)){return Err("Saved follow-up queue exceeds bounds".into());}
+    durable_followups.retain(|v|v["request_id"].as_str().is_some_and(|id|!seen_requests.contains_key(id)));
+    pending.extend(durable_followups.iter().cloned());
+    if queue_path.exists(){save_followups(&queue_path,&durable_followups)?;}
     let failure;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
 
@@ -392,28 +475,7 @@ pub fn serve(
         // Attaches accumulate (up to a cap): mirroring one session into two
         // terminals is the point, and a new attach no longer evicts the old
         // one. Same-user access to a 0600 socket is the whole auth story.
-        match listener.accept() {
-            Ok((stream, _)) => {
-                let _ = stream.set_nonblocking(true);
-                let mut slots = clients.borrow_mut();
-                if slots.len() >= MAX_CLIENTS {
-                    // Preserve existing clients, particularly the input owner.
-                    drop(stream);
-                    continue;
-                }
-                client_sequence = client_sequence.checked_add(1).ok_or("Client sequence exhausted")?;
-                slots.push(Client {
-                    id: client_sequence,
-                    stream,
-                    buf: Vec::new(),
-                });
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(e) => {
-                failure = Some(e.to_string());
-                break 'serve;
-            }
-        }
+        if let Err(error)=accept_clients(&listener,&clients,&client_sequence) {failure=Some(error);break 'serve;}
 
         // One message per iteration, with the client it came from (None for
         // messages from the mid-turn queue or produced by a loop).
@@ -491,7 +553,7 @@ pub fn serve(
 
         if owner.get().is_some_and(|id| !clients.borrow().iter().any(|c|c.id==id)) { owner.set(None); }
         let sender_id=origin.and_then(|i|clients.borrow().get(i).map(|c|c.id));
-        if origin.is_some() && matches!(message["t"].as_str(),Some("prompt"|"cancel")) && sender_id!=owner.get() {
+        if origin.is_some() && matches!(message["t"].as_str(),Some("prompt"|"steer"|"cancel")) && sender_id!=owner.get() {
             to_origin(json!({"t":"error","request_id":message.get("request_id"),"message":"Read-only observer: claim control before sending input","owner":owner.get()}));
             continue;
         }
@@ -508,6 +570,7 @@ pub fn serve(
                 to_origin(json!({"t":"control","owner":owner.get(),"client":sender_id,"can_write":sender_id.is_some()&&sender_id==owner.get()}));
             }
             Some("attach") => {
+                if let Some(i) = origin { clients.borrow_mut()[i].human = message["human"] == true; }
                 if message.get("protocol_version").is_some_and(|v| v.as_u64() != Some(PROTOCOL_VERSION)) {
                     to_origin(json!({"t":"error","message":"Unsupported attach protocol version","protocol_version":PROTOCOL_VERSION}));
                     continue;
@@ -524,6 +587,7 @@ pub fn serve(
                     "t": "replay",
                     "protocol_version": PROTOCOL_VERSION,
                     "replay_byte_limit": REPLAY_BYTES,
+                    "security":crate::connect::security(&cfg),
                     "client":sender_id,"owner":owner.get(),"can_write":sender_id.is_some()&&sender_id==owner.get(),
                     "session": session.id,
                     "entries": entries,
@@ -531,7 +595,7 @@ pub fn serve(
                     "reset": reset || wrong_session,
                 }));
             }
-            Some("prompt") => {
+            Some("prompt"|"steer") => {
                 if origin.is_some() && message.get("inbox_recorded").is_some() {
                     to_origin(json!({"t":"error","message":"Reserved delivery field"}));
                     continue;
@@ -573,6 +637,11 @@ pub fn serve(
                     );
                     continue;
                 }
+                if let Some(id)=message["request_id"].as_str(){
+                    durable_followups.retain(|v|v["request_id"]!=id);
+                    if queue_path.exists()&& let Err(error)=save_followups(&queue_path,&durable_followups){eprintln!("follow-up receipt cleanup: {error}");}
+                }
+                broadcast(&clients,json!({"t":"turn_start","request_id":message.get("request_id"),"already_recorded":message["inbox_recorded"]==true,"text":if message["inbox_recorded"]==true{Value::Null}else{message["text"].clone()}}));
                 let provider = match factory() {
                     Ok(p) => p,
                     Err(e) => {
@@ -592,15 +661,21 @@ pub fn serve(
                             }
                         }
                         to_origin(json!({"t": "error", "request_id":message.get("request_id"),
-                            "cursor":crate::export::raw_records(&session).len(), "message":detail}));
+                            "cursor":crate::export::raw_records(&session).len(), "message":detail,"settled":true}));
                         continue;
                     }
                 };
                 let outer = std::rc::Rc::clone(&clients);
                 let input_owner=std::rc::Rc::clone(&owner);
                 let mut queued: Vec<Value> = Vec::new();
+                let mut correction:Option<Value>=None;
                 if let Err(error) = crate::team::record_notices(&mut session) { eprintln!("team receipt: {error}"); }
                 if let Err(error) = crate::navigation::record(&session, &cfg.workspace, &cfg.model, "running") { eprintln!("navigation receipt: {error}"); }
+                let (replay_entries,replay_cursor,replay_reset)=replay_from(&session,None);
+                let snapshot=json!({"t":"replay","session":session.id,"entries":replay_entries,"cursor":replay_cursor,"reset":replay_reset,"protocol_version":PROTOCOL_VERSION,"security":crate::connect::security(&cfg)});
+                let live=std::rc::Rc::new(std::cell::RefCell::new(VecDeque::<Value>::new()));
+                let progress_live=live.clone();
+                let live_bytes=std::rc::Rc::new(std::cell::Cell::new(0usize));
                 let outcome = {
                     let mut agent = Agent::new(
                         provider.as_ref(),
@@ -615,37 +690,84 @@ pub fn serve(
                     .with_prompt(cfg.system_prompt.clone(), None, instructions.clone())
                     .with_live(cfg.live_flush_ms as u64)
                     .with_stream_factory(std::sync::Arc::clone(&factory))
-                    .with_progress(move |progress| match progress {
-                        Progress::Text(t) => broadcast(&outer, json!({"t": "text", "delta": t})),
-                        Progress::ToolStart { call_id, name, command } => broadcast(
-                            &outer,
-                            json!({"t": "tool", "call_id": call_id, "name": name, "command": command}),
-                        ),
-                        Progress::ToolEnd { call_id, summary, .. } => {
-                            broadcast(&outer, json!({"t": "tool_end", "call_id":call_id,"summary": summary}))
-                        }
-                        Progress::Retrying { attempt, delay_s, reason } => broadcast(&outer, json!({"t":"retrying", "attempt":attempt, "delay_s":delay_s, "reason":crate::live::sanitize_provider_detail(&reason)})),
-                        Progress::ProviderNotice(text) => broadcast(&outer, json!({"t":"provider_notice", "message":crate::live::sanitize_provider_detail(text)})),
-                        Progress::ProviderFailure(text) => broadcast(&outer, json!({"t":"provider_error", "message":crate::live::sanitize_provider_detail(text)})),
-                        _ => {}
+                    .with_limits(cfg.max_tokens,cfg.reasoning_budget,usize::MAX)
+                    .with_checkpoint_tools(cfg.checkpoint_tools)
+                    .with_progress(move |progress| {
+                        let event=match progress {
+                            Progress::Waiting=>json!({"t":"waiting"}),
+                            Progress::Reasoning(t)=>json!({"t":"reasoning","delta":t}),
+                            Progress::Text(t)=>json!({"t":"text","delta":t}),
+                            Progress::ToolStart{call_id,name,command}=>json!({"t":"tool","call_id":call_id,"name":name,"command":command}),
+                            Progress::ToolEnd{call_id,summary,output}=>{
+                                let end=output.char_indices().map(|(i,_)|i).take_while(|i|*i<=65536).last().unwrap_or(0);
+                                let (preview,truncated)=if output.len()>65536{(&output[..end],true)}else{(output,false)};
+                                json!({"t":"tool_end","call_id":call_id,"summary":summary,"output":preview,"truncated":truncated})
+                            }
+                            Progress::Retrying{attempt,delay_s,reason}=>json!({"t":"retrying","attempt":attempt,"delay_s":delay_s,"reason":crate::live::sanitize_provider_detail(&reason)}),
+                            Progress::ProviderNotice(t)=>json!({"t":"provider_notice","message":crate::live::sanitize_provider_detail(t)}),
+                            Progress::ProviderFailure(t)=>json!({"t":"provider_error","message":crate::live::sanitize_provider_detail(t)}),
+                            Progress::Compacted{kept,dropped}=>json!({"t":"compacted","kept":kept,"dropped":dropped}),
+                            _=>return,
+                        };
+                        let mut retained=progress_live.borrow_mut();
+                        if matches!(event["t"].as_str(),Some("waiting"|"tool"|"tool_end")){retained.clear();live_bytes.set(0);}
+                        let delta=event["delta"].as_str().unwrap_or("");
+                        let merged=if matches!(event["t"].as_str(),Some("text"|"reasoning")) {
+                            if let Some(last)=retained.back_mut(){if last["t"]==event["t"]{if let Value::String(text)=&mut last["delta"]{text.push_str(delta);true}else{false}}else{false}}else{false}
+                        }else{false};
+                        let mut bytes=live_bytes.get().saturating_add(if merged{delta.len()}else{event.to_string().len()});
+                        if !merged{retained.push_back(event.clone());}
+                        while retained.len()>256||bytes>256*1024 {if let Some(old)=retained.pop_front(){bytes=bytes.saturating_sub(old.to_string().len());}else{break;}}
+                        live_bytes.set(bytes);
+                        drop(retained);broadcast(&outer,event);
                     });
+                    if clients.borrow().iter().any(|c|c.human) {
+                        let human_clients = std::rc::Rc::clone(&clients);
+                        let human_owner = std::rc::Rc::clone(&owner);
+                        let listener=&listener;let sequence=client_sequence.clone();let replay=snapshot.clone();let human_live=live.clone();
+                        agent = agent.with_human(move |request| {
+                            let result=human_decision(&human_clients,&human_owner,request,listener,&sequence,&replay,&human_live);
+                            broadcast(&human_clients,json!({"t":"interaction_done"}));result
+                        });
+                    }
                     let outer = std::rc::Rc::clone(&clients);
                     agent.run_turn(|steer| {
+                        if accept_clients(&listener,&outer,&client_sequence).is_err(){*steer=Some(String::new());}
                         if crate::signals::interrupted() {
                             *steer = Some(String::new());
                         }
                         let mut slots = outer.borrow_mut();
+                        if input_owner.get().is_some_and(|id|!slots.iter().any(|c|c.id==id)) {input_owner.set(None);}
                         let mut dead: Vec<usize> = Vec::new();
                         for (i, c) in slots.iter_mut().enumerate() {
                             loop {
                                 match c.try_incoming() {
                                     Incoming::Message(message) => {
-                                        if Some(c.id)!=input_owner.get() && matches!(message["t"].as_str(),Some("prompt"|"cancel")) {
+                                        if Some(c.id)!=input_owner.get() && matches!(message["t"].as_str(),Some("prompt"|"steer"|"cancel")) {
                                             send(&mut c.stream,json!({"t":"error","request_id":message.get("request_id"),"message":"Read-only observer cannot change an active turn"}));
                                         } else {
                                             match message.get("t").and_then(Value::as_str) {
+                                                Some("attach") => busy_attach(c,&message,&input_owner,&snapshot,&live.borrow()),
+                                                Some("control") => {
+                                                    if message["action"]=="release" && input_owner.get()==Some(c.id) { input_owner.set(None); }
+                                                    if message["action"]=="claim" && input_owner.get().is_none() { input_owner.set(Some(c.id)); }
+                                                    send(&mut c.stream,json!({"t":"control","owner":input_owner.get(),"client":c.id,"can_write":input_owner.get()==Some(c.id)}));
+                                                }
+                                                Some("steer") if correction.is_none()=>{
+                                                    if let Some(text)=message["text"].as_str().filter(|s|!s.trim().is_empty()&&s.len()<=60000){
+                                                        match accept_followup(&queue_path,&mut durable_followups,&message,&seen_requests){
+                                                            Ok((mut next,true))=>{*steer=Some(text.to_owned());next["inbox_recorded"]=json!(true);correction=Some(next);send(&mut c.stream,json!({"t":"steering","request_id":message.get("request_id"),"durable":true}));}
+                                                            Ok((value,false))=>send(&mut c.stream,json!({"t":"duplicate","request_id":value["request_id"]})),
+                                                            Err(error)=>send(&mut c.stream,json!({"t":"error","request_id":message.get("request_id"),"message":error})),
+                                                        }
+                                                    }else{send(&mut c.stream,json!({"t":"error","request_id":message.get("request_id"),"message":"Steering text must be 1–60000 bytes"}));}
+                                                }
                                                 Some("cancel") => *steer = Some(String::new()),
-                                                Some("prompt") if queued.len()<32 => queued.push(message),
+                                                Some("prompt") => match accept_followup(&queue_path,&mut durable_followups,&message,&seen_requests){
+                                                    Ok((value,true))=>{send(&mut c.stream,json!({"t":"queued","request_id":value["request_id"],"durable":true}));queued.push(value);}
+                                                    Ok((value,false))=>send(&mut c.stream,json!({"t":"duplicate","request_id":value["request_id"],"message":"Follow-up already queued or started; not replayed"})),
+                                                    Err(error)=>send(&mut c.stream,json!({"t":"error","request_id":message.get("request_id"),"message":error})),
+                                                },
                                                 _ => send(&mut c.stream,json!({"t":"error","message":"Control and replay requests are available after this turn; queued input is limited to 32 prompts"})),
                                             }
                                         }
@@ -663,6 +785,10 @@ pub fn serve(
                         }
                     })
                 };
+                if let Some(mut correction)=correction {
+                    if !matches!(&outcome,Ok((_,Stop::Steered)))&& let Some(object)=correction.as_object_mut(){object.remove("inbox_recorded");}
+                    pending.push_front(correction);
+                }
                 pending.extend(queued);
                 let status = match &outcome { Err(_) => "blocked", Ok((_, Stop::Cancelled)) => "cancelled", Ok((_, Stop::Steered)) => "steered", Ok((_, Stop::ToolBudget)) => "incomplete", Ok((_, Stop::Finished)) => "completed" };
                 if let Err(error) = crate::navigation::record(&session, &cfg.workspace, &cfg.model, status) { eprintln!("navigation receipt: {error}"); }
@@ -673,7 +799,7 @@ pub fn serve(
                     Err(e) => {
                         broadcast(
                             &clients,
-                            json!({"t": "error", "request_id":message.get("request_id"), "cursor":crate::export::raw_records(&session).len(), "message": format!("turn failed: {e}")}),
+                            json!({"t": "error", "request_id":message.get("request_id"), "cursor":crate::export::raw_records(&session).len(), "message": format!("turn failed: {e}"),"settled":true}),
                         );
                         continue;
                     }
@@ -1255,5 +1381,20 @@ mod tests {
             "trailing partial frame is incomplete"
         );
         assert!(stop_completed(true, true, &[]));
+    }
+}
+#[cfg(test)]mod followup_regression{
+    use super::*;
+    #[test]fn queued_followups_commit_before_ack_and_deduplicate(){
+        let path=std::env::temp_dir().join(format!("gc-queue-{}-{}.json",std::process::id(),crate::loops::now()));
+        let mut queue=VecDeque::new();let seen=std::collections::HashMap::new();let message=json!({"t":"prompt","text":"Continue carefully","request_id":"one"});
+        assert!(accept_followup(&path,&mut queue,&message,&seen).unwrap().1);
+        let saved:VecDeque<Value>=serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();assert_eq!(saved,queue);
+        assert!(!accept_followup(&path,&mut queue,&message,&seen).unwrap().1);assert_eq!(queue.len(),1);
+        let mut reserved=message.clone();reserved["request_id"]=json!("two");reserved["inbox_recorded"]=json!(true);assert!(accept_followup(&path,&mut queue,&reserved,&seen).is_err());
+        assert_eq!(queue.len(),1);std::fs::remove_file(path).unwrap();
+    }
+    #[test]fn failed_queue_commit_does_not_accept_the_prompt(){
+        let path=std::env::temp_dir();let mut queue=VecDeque::new();assert!(accept_followup(&path,&mut queue,&json!({"t":"prompt","text":"task","request_id":"id"}),&std::collections::HashMap::new()).is_err());assert!(queue.is_empty());
     }
 }

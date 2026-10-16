@@ -7,6 +7,7 @@ pub const COMMANDS: &[&str] = &[
     "structure",
     "transaction",
     "companion",
+    "connect",
     "resume",
     "run",
     "sessions",

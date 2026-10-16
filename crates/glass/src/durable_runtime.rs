@@ -39,7 +39,7 @@ fn commit(store: &Shared, ops: Vec<Op>) -> Result<u64, String> {
     store.commit(seq, ops)
 }
 impl Host {
-    pub fn open(dir: &PathBuf, fsync: bool) -> Result<Self, String> {
+    pub fn open(dir: &std::path::Path, fsync: bool) -> Result<Self, String> {
         let mut store = Store::open(&dir.join("durable"), fsync)?;
         store.recover()?;
         let store = Rc::new(RefCell::new(store));
@@ -155,7 +155,7 @@ impl Host {
         &mut self,
         method: &str,
         p: &Value,
-        dir: &PathBuf,
+        dir: &std::path::Path,
         cfg: &config::Config,
         wire: &Rc<RefCell<Wire>>,
         request: &Value,
@@ -579,7 +579,7 @@ impl Host {
     fn run_task(
         &mut self,
         task: &Task,
-        dir: &PathBuf,
+        dir: &std::path::Path,
         cfg: &config::Config,
         wire: &Rc<RefCell<Wire>>,
         request: &Value,
@@ -668,8 +668,8 @@ impl Host {
         let result = run(&mut conversation, wire, request, Vec::new());
         wire.borrow_mut().durable = None;
         wire.borrow_mut().durable_task = None;
-        if self.store.borrow().state.tasks[&task.id].status == "running" {
-            if let Some(context) = &conversation.durable {
+        if self.store.borrow().state.tasks[&task.id].status == "running"
+            && let Some(context) = &conversation.durable {
                 context.finish(
                     if wire.borrow().disconnected {
                         "interrupted"
@@ -680,7 +680,6 @@ impl Host {
                     request,
                 )?;
             }
-        }
         result
     }
 }

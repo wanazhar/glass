@@ -36,7 +36,15 @@ fn save(session: &Session, receipt: &Receipt) -> Result<(), String> {
         &serde_json::to_vec(receipt).map_err(|e| e.to_string())?,
     )
 }
-fn process_stamp(pid: u32) -> Option<String> {
+pub(crate) fn process_stamp(pid: u32) -> Option<String> {
+    #[cfg(not(target_os="linux"))]
+    {
+        let output=std::process::Command::new("ps").args(["-p",&pid.to_string(),"-o","lstart="]).output().ok()?;
+        let stamp=String::from_utf8(output.stdout).ok()?.trim().to_owned();
+        return (output.status.success()&&!stamp.is_empty()).then_some(stamp);
+    }
+    #[cfg(target_os="linux")]
+    {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // Field 22, after the parenthesized process name (which may contain spaces).
     Some(
@@ -46,6 +54,7 @@ fn process_stamp(pid: u32) -> Option<String> {
             .nth(19)?
             .to_owned(),
     )
+    }
 }
 pub fn viewed(session: &Session) -> Result<(), String> {
     let mut r = read(&session.path.with_extension("nav.json"));

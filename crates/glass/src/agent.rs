@@ -220,6 +220,7 @@ pub struct Agent<'a> {
     /// Interactive user-input channel, borrowed from the existing terminal reader.
     /// Headless/ACP agents leave this unset and never advertise elicitation support.
     input_keys: Option<&'a crate::input::KeyReader>,
+    human: Option<HumanDecision<'a>>,
     approved_calls: std::collections::HashMap<String, String>,
     /// Cached system-prompt contribution from extensions.
     ext_prompt: String,
@@ -264,6 +265,8 @@ pub struct Agent<'a> {
 const VERIFY_TAIL_LINES: usize = 40;
 
 /// A progress callback.
+type HumanDecision<'a> = Box<dyn Fn(&serde_json::Value) -> Result<serde_json::Value,String> + 'a>;
+
 pub type ProgressSink<'a> = Box<dyn Fn(Progress<'_>) + 'a>;
 
 impl Drop for Agent<'_> {
@@ -353,6 +356,7 @@ impl<'a> Agent<'a> {
             project_instructions: None,
             on_progress: None,
             input_keys: None,
+            human: None,
             approved_calls: std::collections::HashMap::new(),
             ext_prompt: String::new(),
             prefix_bytes: 0,
@@ -412,12 +416,12 @@ impl<'a> Agent<'a> {
         if let Some((tools, _)) = &self.hosted { return tools.clone(); }
         if self.read_only {
             let mut tools=crate::inspect::schema();
-            if self.input_keys.is_some() {tools.push(crate::questions::schema());}
+            if self.input_keys.is_some() || self.human.is_some() {tools.push(crate::questions::schema());}
             tools
         } else {
             let mut tools = provider::collect_tools(self.mods);
             if !self.image_input { tools.retain(|(name, _, _)| name != "view_image"); }
-            if self.input_keys.is_some() { tools.push(crate::questions::schema()); }
+            if self.input_keys.is_some() || self.human.is_some() { tools.push(crate::questions::schema()); }
             if self.checkpoint_tools {
                 tools.extend(crate::provider::checkpoint_tool_schemas());
             }
@@ -504,6 +508,12 @@ impl<'a> Agent<'a> {
         self
     }
 
+    /// Bind a trusted frontend's paused, explicit human decision channel.
+    pub fn with_human(mut self, human: impl Fn(&serde_json::Value) -> Result<serde_json::Value, String> + 'a) -> Self {
+        self.human = Some(Box::new(human));
+        self
+    }
+
     /// Enable the model-invoked checkpoint/rewind/wait tools.
     pub fn with_checkpoint_tools(mut self, on: bool) -> Self {
         self.checkpoint_tools = on;
@@ -528,7 +538,7 @@ impl<'a> Agent<'a> {
         if !matches!(call.name.as_str(),"bash"|"edit"|"write") {return Some("Only bash, edit and write support elevation; nothing executed".into());}
         if self.read_only {return Some("Plan mode cannot request execution rights".into());}
         if crate::sandbox::permission_profile_label()=="unrestricted" && crate::sandbox::policy()==crate::sandbox::Policy::Off {return None;}
-        let Some(keys)=self.input_keys else {return Some("Approval required: no interactive human is connected; nothing executed".into());};
+        if self.input_keys.is_none() && self.human.is_none() {return Some("Approval required: no interactive human is connected; nothing executed".into());}
         if call.arguments.len()>65536 {return Some("Operation exceeds the 64 KiB approval review bound; split it into smaller explicit operations".into());}
         let requirements=match crate::requirements::load(&crate::config::config_dir()) {Ok(r)=>r,Err(e)=>return Some(e)};
         if requirements.sandbox.is_some_and(|policy|policy!=crate::sandbox::Policy::Off) {return Some("Administrator sandbox requirements forbid elevation".into());}
@@ -542,7 +552,15 @@ impl<'a> Agent<'a> {
         // menus hide their note, which is not sufficient approval disclosure.
         let payload=match serde_json::from_str::<serde_json::Value>(&call.arguments).and_then(|value|serde_json::to_string_pretty(&value)) {Ok(payload)=>payload,Err(error)=>return Some(error.to_string())};
         let review=format!("**Paused · ↑↓/PgUp/PgDn scroll**\n**a allow once · d/Esc deny**\n\n{reason}\n\n## Exact {} operation\n```json\n{payload}\n```\n\nThis one operation runs outside the configured sandbox. Denial grants nothing; the configured profile remains unchanged.",call.name);
-        let chosen=crate::modal::rich_actions(keys,"Approval required",&review,&[('a',"Allow once"),('d',"Deny")]);
+        let chosen = if let Some(human) = &self.human {
+            match human(&serde_json::json!({"kind":"approval","call_id":call.id,"name":call.name,"operation":serde_json::from_str::<serde_json::Value>(&call.arguments).unwrap_or_default(),"reason":reason,"review":review})) {
+                Ok(answer) if answer["allow"] == true => Some('a'),
+                Err(error) if error.contains("cancelled") || error.contains("expired") => {self.steer=Some(String::new());None},
+                _ => None,
+            }
+        } else {
+            crate::modal::rich_actions(self.input_keys.unwrap(),"Approval required",&review,&[('a',"Allow once"),('d',"Deny")])
+        };
         if chosen!=Some('a') {
             self.session.append(Record::Meta(format!("Approval denied: {}",call.id)));
             return Some("User denied this operation. Do not repeat or work around the denial; choose an allowed approach or explain the blocker.".into());
@@ -1516,10 +1534,14 @@ impl<'a> Agent<'a> {
         if let Some(reason)=self.approval_refusal(call) { self.finish_tool(call,tools::Outcome::err(reason)); return; }
         if call.name=="ask_user_question" {
             self.emit_tool_start(call);
-            let outcome=serde_json::from_str(&call.arguments).map_err(|e|e.to_string()).and_then(|value|crate::questions::run(&value,self.input_keys));
+            let outcome=serde_json::from_str(&call.arguments).map_err(|e|e.to_string()).and_then(|value| {
+                if let Some(human) = &self.human {
+                    crate::questions::remote(&value, |request| human(&serde_json::json!({"kind":"question","request":request})))
+                } else { crate::questions::run(&value,self.input_keys) }
+            });
             match outcome {
                 Ok(value)=>{if value["status"]=="cancelled" {self.steer=Some(String::new());} self.finish_tool(call,tools::Outcome::ok(value.to_string()));},
-                Err(error)=>self.finish_tool(call,tools::Outcome::err(error)),
+                Err(error)=>{if error.contains("cancelled") || error.contains("expired") {self.steer=Some(String::new());}self.finish_tool(call,tools::Outcome::err(error));},
             }
             return;
         }
@@ -2282,7 +2304,7 @@ impl<'a> Agent<'a> {
         }
         let system = latest_system_checkpoint(&self.session.history_records())
             .unwrap_or_else(|| self.system_prompt());
-        crate::permissions::model_context(crate::guidance::model_context(crate::neuralnets::refresh_context(system, self.project_instructions.as_deref())),self.input_keys.is_some())
+        crate::permissions::model_context(crate::guidance::model_context(crate::neuralnets::refresh_context(system, self.project_instructions.as_deref())),self.input_keys.is_some() || self.human.is_some())
     }
 
     /// Assemble the system prompt: base, then mod contributions, then skills.

@@ -805,6 +805,34 @@ try {
       ),
     "Standalone shell must fill the current window height",
   );
+  await phone.evaluate(() => {
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: visualViewport.height - 80,
+    });
+    document.documentElement.style.setProperty("--safe-bottom", "96px");
+    window.dispatchEvent(new Event("resize"));
+  });
+  await phone.waitForTimeout(250);
+  const standaloneSpacing = await phone.evaluate(() => ({
+    appBottom: document.querySelector(".app").getBoundingClientRect().bottom,
+    composerBottom: document.querySelector(".composer").getBoundingClientRect()
+      .bottom,
+    menuTop: document.querySelector("#menu").getBoundingClientRect().top,
+    height: visualViewport.height,
+  }));
+  assert(
+    Math.abs(standaloneSpacing.appBottom - standaloneSpacing.height) < 2,
+    "Stale window height must not shorten standalone layout",
+  );
+  assert(
+    standaloneSpacing.height - standaloneSpacing.composerBottom <= 35,
+    "Standalone composer must not inherit a browser-sized bottom gap",
+  );
+  assert(
+    standaloneSpacing.menuTop >= 55,
+    "Standalone header needs space below the status area",
+  );
   await phone.screenshot({ path: "/tmp/gc-pwa-standalone-mobile.png" });
   await mobile.close();
   const manifest = await page.evaluate(async () =>

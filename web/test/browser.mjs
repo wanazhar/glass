@@ -824,6 +824,43 @@ try {
     standaloneSpacing.menuTop >= 55,
     "Standalone header needs space below the status area",
   );
+  await phone.setViewportSize({ width: 430, height: 932 });
+  await phone.evaluate(() => {
+    document.documentElement.style.setProperty("--safe-top", "59px");
+    document.documentElement.style.setProperty("--safe-bottom", "34px");
+    document.documentElement.style.height = "873px";
+    document.body.style.height = "873px";
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 873,
+    });
+    Object.defineProperty(visualViewport, "height", {
+      configurable: true,
+      value: 873,
+    });
+    window.dispatchEvent(new Event("resize"));
+  });
+  await phone.waitForTimeout(250);
+  const installedGeometry = await phone.evaluate(() => ({
+    height: document.querySelector(".app").getBoundingClientRect().height,
+    bottom: document.querySelector(".composer").getBoundingClientRect().bottom,
+    header: document.querySelector(".toolbar").getBoundingClientRect().height,
+  }));
+  assert.equal(
+    installedGeometry.height,
+    932,
+    "Fixed shell must escape the under-reported 873px containing block",
+  );
+  assert.equal(
+    installedGeometry.bottom,
+    898,
+    "Composer must leave exactly the 34px bottom safe area",
+  );
+  assert.equal(
+    installedGeometry.header,
+    121,
+    "Header appearance must stay unchanged",
+  );
   await phone.screenshot({ path: "/tmp/gc-pwa-standalone-mobile.png" });
   await mobile.close();
   const manifest = await page.evaluate(async () =>

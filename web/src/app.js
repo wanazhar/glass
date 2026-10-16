@@ -138,7 +138,7 @@ function syncViewport() {
       "standalone",
       Boolean(standalone),
     );
-    // Keep standalone layout on the window geometry used before the CSS viewport switch.
+    // Keyboard geometry needs an explicit height; idle standalone uses fixed viewport edges.
     const focused = document.activeElement?.matches(
       "textarea,input:not([type=radio]):not([type=checkbox]):not([type=file]):not([type=button]):not([type=submit]),[contenteditable=true]",
     );
@@ -159,11 +159,6 @@ function syncViewport() {
       document.documentElement.style.setProperty(
         "--app-height",
         `${viewport.height}px`,
-      );
-    } else if (standalone) {
-      document.documentElement.style.setProperty(
-        "--app-height",
-        `${window.innerHeight}px`,
       );
     } else {
       document.documentElement.style.removeProperty("--app-height");

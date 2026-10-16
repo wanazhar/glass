@@ -69,12 +69,15 @@ pub(crate) struct Thread {
     stamp: Option<std::time::SystemTime>,
 }
 pub(crate) fn index(dir: &Path, workspace: &Path) -> Vec<Thread> {
-    index_scoped(dir, Some(workspace))
+    index_scoped(dir, Some(workspace), false)
 }
 pub(crate) fn all(dir: &Path) -> Vec<Thread> {
-    index_scoped(dir, None)
+    index_scoped(dir, None, false)
 }
-fn index_scoped(dir: &Path, workspace: Option<&Path>) -> Vec<Thread> {
+pub(crate) fn all_for_web(dir: &Path) -> Vec<Thread> {
+    index_scoped(dir, None, true)
+}
+fn index_scoped(dir: &Path, workspace: Option<&Path>, unassigned: bool) -> Vec<Thread> {
     let root = workspace
         .unwrap_or(Path::new("/"))
         .canonicalize()
@@ -95,7 +98,10 @@ fn index_scoped(dir: &Path, workspace: Option<&Path>) -> Vec<Thread> {
         let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        let meta = regular_file(&path.with_extension("meta.json")).and_then(read_meta);
+        let meta_path = path.with_extension("meta.json");
+        let meta = regular_file(&meta_path)
+            .and_then(read_meta)
+            .or_else(|| (unassigned && !meta_path.exists()).then(Meta::default));
         let Some(meta) = meta.filter(|m| workspace.is_none() || m.workspace == root) else {
             continue;
         };
@@ -152,6 +158,35 @@ pub fn choose(workspace: &Path, all: bool, browse: bool) -> Result<Option<Pick>,
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn web_index_includes_unassigned_without_guessing_a_workspace() {
+        let root =
+            std::env::temp_dir().join(format!("gc-web-index-{}", crate::auth::random(8).unwrap()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("bound.jsonl"),
+            "{\"k\":\"user\",\"t\":\"Bound\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("bound.meta.json"),
+            serde_json::json!({"workspace":root,"title":"Bound"}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("legacy.jsonl"),
+            "{\"k\":\"user\",\"t\":\"Legacy\"}\n",
+        )
+        .unwrap();
+        assert_eq!(super::all(&root).len(), 1);
+        let rows = super::all_for_web(&root);
+        assert_eq!(rows.len(), 2);
+        let legacy = rows.iter().find(|r| r.id == "legacy").unwrap();
+        assert!(legacy.workspace.as_os_str().is_empty());
+        assert_eq!(legacy.title, "Legacy");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     use super::*;
     #[test]
     fn index_ignores_attachment_payload_and_other_projects() {

@@ -1458,7 +1458,7 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
         ("GET", "/api/usage") => {
             disk_usage(&app.settings, query.get("path").ok_or("Missing directory")?)
         }
-        ("GET", "/api/threads") => Ok(crate::navigation::inspect(&app.settings.workspace)),
+        ("GET", "/api/threads") => Ok(crate::navigation::inspect_web(&app.settings.workspace, query.get("offset").and_then(|s|s.parse::<usize>().ok()).unwrap_or(0), query.get("q").map(String::as_str).unwrap_or(""), query.get("project").map(String::as_str).unwrap_or(""), query.get("id").map(String::as_str).unwrap_or(""))),
         ("GET", "/api/agents") => {
             let id = query.get("id").ok_or("Missing thread")?;
             thread_path(id)?;

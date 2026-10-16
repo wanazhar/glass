@@ -46,6 +46,15 @@ try {
   );
 
   await page
+    .locator("#threads .thread")
+    .filter({ hasText: "Shared runtime workspace" })
+    .waitFor({ state: "attached" });
+  await page
+    .locator(".project-group")
+    .filter({ hasText: "Shared runtime workspace" })
+    .locator("summary")
+    .click();
+  await page
     .getByRole("button", { name: "Shared runtime workspace" })
     .waitFor();
   assert(
@@ -77,7 +86,65 @@ try {
     !(await page.locator("#commands").evaluate((n) => n.open)),
     "Root Escape did not close commands",
   );
+  assert.equal(await page.locator("#prompt").inputValue(), "");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#prompt").fill("/");
+  await page.locator("#commands").waitFor({ state: "visible" });
+  const palette = await page.locator("#commands").boundingBox();
+  assert(
+    palette.width < 390 &&
+      palette.height < 500 &&
+      palette.x >= 0 &&
+      palette.x + palette.width <= 390,
+    "Mobile palette is not compact",
+  );
+  await page.locator("#commands-close").click();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.locator("#prompt").fill("/not-a-gc-command");
+  await page.locator("#send").click();
+  await page.locator("#notice .notice-close").click();
+  assert(
+    await page
+      .locator("#notice")
+      .evaluate((n) => n.classList.contains("hidden")),
+  );
   await page.locator("#prompt").fill("");
+
+  await page.locator("#prompt").fill("");
+  await page.locator("#search").fill("Legacy archive fixture");
+  await page.getByRole("button", { name: "Legacy archive fixture" }).click();
+  await page
+    .locator("#timeline")
+    .getByText("Legacy archive fixture", { exact: true })
+    .waitFor();
+  assert(await page.locator("#send").isDisabled());
+  assert.equal(
+    await page.locator("#workspace-name").textContent(),
+    "Unassigned",
+  );
+  // A direct archive link must work when its metadata is absent from page one.
+  await page.route("**/api/threads?*", async (route) => {
+    if (new URL(route.request().url()).searchParams.has("id"))
+      return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    body.threads = body.threads.filter((t) => t.session !== "legacy-archive");
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(new URL("/?thread=legacy-archive", url).href);
+  await page
+    .locator("#timeline")
+    .getByText("Legacy archive fixture", { exact: true })
+    .waitFor();
+  assert(await page.locator("#send").isDisabled());
+  await page.unroute("**/api/threads?*");
+  await page.locator("#search").fill("");
+  await page.locator("#project-scope").selectOption({ label: "All projects" });
+  const fixtureGroup = page
+    .locator(".project-group")
+    .filter({ hasText: "Shared runtime workspace" });
+  if (!(await fixtureGroup.evaluate((n) => n.open)))
+    await fixtureGroup.locator("summary").click();
   await page.getByRole("button", { name: "Shared runtime workspace" }).click();
   await page
     .locator("#timeline")
@@ -197,6 +264,12 @@ try {
   assert((await page.locator(".diff-line.add").count()) > 0);
   assert((await page.locator(".diff-line.remove").count()) > 0);
   assert((await page.locator(".table-wrap table th").count()) >= 3);
+  await page.locator('[data-table="wrap"]').first().click();
+  assert(await page.locator(".table-wrapped").count());
+  await page.locator('[data-table="expand"]').first().click();
+  await page.locator("#preview-body .expanded-table table").waitFor();
+  await page.locator("#preview-close").click();
+
   await page.screenshot({
     path: "/tmp/gc-connect-desktop.png",
     fullPage: true,

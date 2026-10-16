@@ -2304,7 +2304,7 @@ impl<'a> Agent<'a> {
         }
         let system = latest_system_checkpoint(&self.session.history_records())
             .unwrap_or_else(|| self.system_prompt());
-        crate::permissions::model_context(crate::guidance::model_context(crate::neuralnets::refresh_context(system, self.project_instructions.as_deref())),self.input_keys.is_some() || self.human.is_some())
+        crate::permissions::model_context(crate::guidance::teammate_context(crate::guidance::model_context(crate::neuralnets::refresh_context(system, self.project_instructions.as_deref())), crate::team::enabled(&self.session.id)),self.input_keys.is_some() || self.human.is_some())
     }
 
     /// Assemble the system prompt: base, then mod contributions, then skills.

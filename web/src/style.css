@@ -2486,3 +2486,26 @@ dialog > header {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
 }
+
+.thread-working-dots {
+  display: inline-flex;
+  gap: 3px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.thread-working-dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: breathe 1.4s ease-in-out infinite;
+}
+.thread-working-dots i:nth-child(2) { animation-delay: .16s; }
+.thread-working-dots i:nth-child(3) { animation-delay: .32s; }
+:root[data-animation="none"] .thread-working-dots i { animation: none; }
+#preview-body .expanded-table { margin: 0; max-width: 100%; }
+#preview-body .expanded-table .table-wrap { max-height: none; overflow: visible; }
+#preview-body .expanded-table table { width: 100%; min-width: 0; table-layout: fixed; }
+#preview-body .expanded-table th,
+#preview-body .expanded-table td { min-width: 0; white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+#preview-body .expanded-table code { white-space: normal; overflow-wrap: anywhere; }

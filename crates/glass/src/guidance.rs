@@ -38,6 +38,16 @@ pub fn model_context(system: String) -> String {
     replace_generated(system, "[GC workflow protocol ", MODEL_PROTOCOL)
 }
 
+/// Advertise managed teammates only for sessions with an active owner hub.
+pub fn teammate_context(system: String, available: bool) -> String {
+    let guidance = if available {
+        "[GC teammates] Managed subagents are available through bash: \"$GC_BIN\" agent create NAME \"FOCUSED TASK\". Use agent --help for options and agent list/inspect/transcript/wait/send/resume to manage returned IDs. GC_AGENT_OWNER selects this session automatically. Default workers are read-only; --write permits edits. When asked to delegate, use these commands instead of claiming subagents are unavailable."
+    } else {
+        "[GC teammates] This session has no managed teammate owner. Do not claim to have spawned teammates."
+    };
+    replace_generated(system, "[GC teammates]", guidance)
+}
+
 /// Nudge only on an existing tool-loop boundary: no extra model call or timer.
 /// Once per turn, after twelve tool results since the last checklist update.
 pub fn progress_reminder(records: &[crate::session::Record], board: &crate::todo::Board) -> Option<&'static str> {

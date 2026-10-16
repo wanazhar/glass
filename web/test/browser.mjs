@@ -276,7 +276,17 @@ try {
   await page.locator('[data-table="wrap"]').first().click();
   await page.locator('[data-table="expand"]').first().click();
   await page.locator("#preview-body .expanded-table table").waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert(
+    await page.locator("#preview-body").evaluate(n => n.scrollWidth <= n.clientWidth + 1),
+    "Expanded table must fit the phone width",
+  );
+  assert(
+    await page.locator("#preview-body table").evaluate(n => [...n.querySelectorAll("td,th")].every(cell => getComputedStyle(cell).whiteSpace === "normal")),
+    "Expanded table cells must wrap",
+  );
   await page.locator("#preview-close").click();
+  await page.setViewportSize({ width: 1280, height: 900 });
 
   await page.screenshot({
     path: "/tmp/gc-connect-desktop.png",

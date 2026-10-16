@@ -1255,7 +1255,7 @@ function renderThreads() {
           "span",
           thread.running_process_verified ? "running" : "",
           thread.running_process_verified
-            ? "● Working"
+            ? "Working"
             : thread.last_status === "completed"
               ? "Completed"
               : thread.workspace_available === false ||
@@ -1265,6 +1265,12 @@ function renderThreads() {
         ),
         el("span", "", thread.modified || ""),
       );
+      if (thread.running_process_verified) {
+        const dots = el("span", "thread-working-dots");
+        dots.setAttribute("aria-hidden", "true");
+        for (let i = 0; i < 3; i++) dots.append(el("i"));
+        small.querySelector(".running").prepend(dots);
+      }
       button.append(small);
       button.onclick = () => openThread(thread.session);
       section.append(button);
@@ -2360,9 +2366,14 @@ document.addEventListener("click", async (e) => {
       );
     } else {
       preview("Table", "Data", "", "table");
-      const wrapper = el("div", "table-wrap expanded-table");
+      const body = $("#preview-body");
+      body.className = "prose";
+      const figure = el("figure", "table-block table-wrapped expanded-table");
+      figure.style.setProperty("--table-columns", Math.max(1, table.rows[0]?.cells.length || 1));
+      const wrapper = el("div", "table-wrap");
       wrapper.append(table.cloneNode(true));
-      $("#preview-body").append(wrapper);
+      figure.append(wrapper);
+      body.append(figure);
     }
     return;
   }

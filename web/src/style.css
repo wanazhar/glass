@@ -354,7 +354,7 @@ a {
 }
 .primary {
   background: var(--accent);
-  color: #192319;
+  color: var(--accent-text, #192319);
   font-size: 12px;
   font-weight: 600;
   border-radius: 8px;
@@ -484,6 +484,9 @@ a {
   color: #1c291b;
   font-size: 19px;
   font-weight: 600;
+}
+.send {
+  color: var(--accent-text, #1c291b);
 }
 .stop {
   background: var(--surface2);
@@ -1220,6 +1223,7 @@ dialog > header > div:last-child {
   --muted: #637360;
   --dim: #7e8b78;
   --accent: #456d37;
+  --accent-text: #fff;
   --accent-bg: #e1ebda;
   --purple: #725b8c;
   --red: #a34539;
@@ -1264,10 +1268,6 @@ dialog > header > div:last-child {
 }
 .light .prose code {
   background: #e2ebd9;
-}
-.light .send,
-.light .primary {
-  color: #fff;
 }
 .pdf-controls {
   display: flex;
@@ -1880,6 +1880,7 @@ dialog {
     --muted: #637360;
     --dim: #7e8b78;
     --accent: #456d37;
+    --accent-text: #fff;
     --accent-bg: #e1ebda;
     --purple: #725b8c;
     --red: #a34539;

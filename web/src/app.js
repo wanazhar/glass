@@ -28,6 +28,7 @@ const view = {
   streamTruncated: false,
   reasoningFollow: true,
   directory: null,
+  commandTransportReady: false,
 };
 const limits = { message: 262144, reasoning: 262144, preview: 1048576 };
 const text = (s, max = limits.message) => String(s ?? "").slice(0, max),
@@ -748,7 +749,38 @@ function schedule() {
 }
 function event(m) {
   switch (m.t) {
+    case "command_start":
+      updateActivity(`Working · /${m.name}`);
+      break;
+    case "command_done":
+      updateActivity(null);
+      break;
+    case "command_queued":
+      if (commandRequests.has(m.request_id))
+        $("#command-status").textContent =
+          "Waiting for the current turn to finish. This command will run once.";
+      break;
+    case "command_result": {
+      const pending = commandRequests.get(m.request_id);
+      if (pending) {
+        commandRequests.delete(m.request_id);
+        clearTimeout(pending.timer);
+        if (m.error) pending.reject(new Error(m.error));
+        else pending.resolve(m.result);
+      }
+      break;
+    }
+    case "command_catalogue":
+      if (Array.isArray(m.commands)) {
+        commands = m.commands;
+        view.commandTransportReady = true;
+      }
+      break;
     case "replay":
+      if (Array.isArray(m.commands)) {
+        commands = m.commands;
+        view.commandTransportReady = true;
+      }
       view.control = Boolean(m.can_write);
       updateActivity(view.active ? "Working" : null);
       break;
@@ -864,6 +896,13 @@ function event(m) {
       break;
     case "provider_error":
     case "error":
+      if (m.request_id && commandRequests.has(m.request_id)) {
+        const pending = commandRequests.get(m.request_id);
+        clearTimeout(pending.timer);
+        commandRequests.delete(m.request_id);
+        pending.reject(new Error(m.message || "Command rejected"));
+        break;
+      }
       if (m.settled) {
         view.interaction = null;
         interaction();
@@ -883,6 +922,15 @@ function event(m) {
       notice(m.message || `Provider cooldown · retry ${m.attempt}`);
       break;
     case "disconnected":
+      for (const [id, pending] of commandRequests) {
+        clearTimeout(pending.timer);
+        pending.reject(
+          new Error(
+            "The host disconnected. The command may have completed; inspect its state before retrying.",
+          ),
+        );
+        commandRequests.delete(id);
+      }
       connection("Disconnected", false);
       notice(m.message, true);
       break;
@@ -901,6 +949,7 @@ function event(m) {
 }
 async function openThread(id, { resume = false } = {}) {
   const previousFollow = view.follow;
+  view.commandTransportReady = false;
   if (view.source) view.source.close();
   view.source = null;
   const generation = ++view.generation;
@@ -968,6 +1017,10 @@ async function openThread(id, { resume = false } = {}) {
           const data = JSON.parse(e.data);
           if (data.reset) {
             view.control = Boolean(data.control?.can_write);
+            if (Array.isArray(data.control?.commands)) {
+              commands = data.control.commands;
+              view.commandTransportReady = true;
+            }
             view.interaction = data.interaction;
             await history();
             if (generation !== view.generation) return;
@@ -2007,7 +2060,499 @@ document.addEventListener("click", async (e) => {
     }
   }
 });
+function renderCommandResult(root, value, format) {
+  if (format === "markdown") {
+    root.classList.add("prose");
+    markdown(root, String(value || ""));
+    return;
+  }
+  let count = 0;
+  function node(value, key, depth = 0) {
+    if (++count > 3000 || depth > 16)
+      return el("p", "quiet", "Display limit reached. Narrow the query.");
+    if (value && typeof value === "object") {
+      const section = el("details", "command-section");
+      section.open = depth < 2;
+      section.append(
+        el(
+          "summary",
+          "",
+          `${key || "Result"}${Array.isArray(value) ? ` · ${value.length}` : ""}`,
+        ),
+      );
+      for (const [name, item] of Object.entries(value)) {
+        if (count >= 3000) {
+          section.append(
+            el("p", "quiet", "Display limit reached. Narrow the query."),
+          );
+          break;
+        }
+        section.append(node(item, name, depth + 1));
+      }
+      return section;
+    }
+    const row = el("div", "command-value");
+    if (key) row.append(el("span", "command-key", key.replaceAll("_", " ")));
+    if (
+      ["proposal", "draft", "answer", "text", "diff", "preview"].includes(
+        key,
+      ) &&
+      typeof value === "string"
+    ) {
+      const content = el("div", "prose");
+      markdown(
+        content,
+        key === "diff" || key === "preview"
+          ? "```diff\n" + value + "\n```"
+          : value,
+      );
+      row.append(content);
+    } else
+      row.append(el("span", "", value === null ? "—" : String(value ?? "")));
+    return row;
+  }
+  root.append(node(value, ""));
+}
+function openDraftEditor() {
+  const modal = $("#draft-editor");
+  $("#draft-text").value = $("#prompt").value;
+  modal.showModal();
+  $("#draft-text").focus({ preventScroll: true });
+}
+$("#draft-save").onclick = () => {
+  $("#prompt").value = $("#draft-text").value;
+  $("#draft-editor").close();
+  $("#prompt").focus({ preventScroll: true });
+};
+$("#draft-cancel").onclick = () => $("#draft-editor").close();
+function openAnimationPicker() {
+  $("#animations").showModal();
+}
+for (const button of document.querySelectorAll("[data-animation]"))
+  button.onclick = () => {
+    document.documentElement.dataset.animation = button.dataset.animation;
+    $("#animations").close();
+  };
+const commandRequests = new Map();
+let commandViewVersion = 0;
+function commandTransport(name, values, inspect = false) {
+  if (!view.commandTransportReady)
+    return Promise.reject(
+      new Error(
+        "This thread uses an older runtime. Restart it below to enable browser commands.",
+      ),
+    );
+  if (!view.control && !inspect)
+    return Promise.reject(
+      new Error("Take control before changing this session."),
+    );
+  const request_id = Array.from(
+    crypto.getRandomValues(new Uint8Array(16)),
+    (b) => b.toString(16).padStart(2, "0"),
+  ).join("");
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      commandRequests.delete(request_id);
+      reject(
+        new Error(
+          "No completion receipt received. The command may still be running; inspect its state before retrying.",
+        ),
+      );
+    }, 300000);
+    view.commandRequestId = request_id;
+    commandRequests.set(request_id, { resolve, reject, timer });
+    send({ t: "command", name, values, request_id }).catch((error) => {
+      clearTimeout(timer);
+      commandRequests.delete(request_id);
+      reject(error);
+    });
+  });
+}
+async function openNativeCommand(command, initialArgs = "") {
+  if (!view.id) {
+    notice("Open a conversation first.");
+    return;
+  }
+  const version = ++commandViewVersion;
+  $("#commands").close();
+  const modal = $("#command-view"),
+    form = $("#command-form"),
+    body = $("#command-result");
+  $("#command-title").textContent = `/${command.name}`;
+  $("#command-status").textContent = "";
+  body.replaceChildren();
+  form.replaceChildren();
+  if (!modal.open) modal.showModal();
+  if (!view.commandTransportReady && !command.readonly) {
+    const note = el(
+      "p",
+      "quiet",
+      "This saved thread uses an older runtime. Restarting preserves its transcript and stops its owned background jobs and teammates. Active work must finish first.",
+    );
+    const label = el(
+      "label",
+      "command-confirm",
+      "Restart this thread runtime and its owned background work",
+    );
+    const consent = el("input");
+    consent.type = "checkbox";
+    label.prepend(consent);
+    const upgrade = el("button", "command-run", "Restart runtime");
+    upgrade.type = "button";
+    upgrade.onclick = async () => {
+      if (!consent.checked) {
+        $("#command-status").textContent = "Confirm the restart first.";
+        return;
+      }
+      upgrade.disabled = true;
+      try {
+        await api("upgrade", { id: view.id, confirmed: true });
+        modal.close();
+        await openThread(view.id, { resume: true });
+        await openNativeCommand(command, initialArgs);
+      } catch (error) {
+        $("#command-status").textContent = error.message;
+        upgrade.disabled = false;
+      }
+    };
+    form.append(note, label, upgrade);
+    return;
+  }
+  const fields = command.form?.fields || [];
+  for (const field of fields) {
+    const label = el("label", "command-field", field.label);
+    const choices =
+      field.key === "action" && field.label.includes("|")
+        ? field.label.split("|").map((s) => s.trim().split(/\s/)[0])
+        : null;
+    const input = el(
+      choices ? "select" : field.kind === "textarea" ? "textarea" : "input",
+    );
+    if (choices)
+      for (const choice of choices) {
+        const option = el("option", "", choice);
+        option.value = choice;
+        input.append(option);
+      }
+    input.name = field.key;
+    if (!choices && field.kind !== "textarea") input.type = field.kind;
+    input.autocomplete = "off";
+    if (field.key === "args") input.value = initialArgs;
+    if (command.name === "rewrite" && initialArgs) {
+      const split = initialArgs.indexOf(" ");
+      if (field.key === "turn")
+        input.value = split < 0 ? initialArgs : initialArgs.slice(0, split);
+      if (field.key === "text")
+        input.value = split < 0 ? "" : initialArgs.slice(split + 1);
+    }
+    if (command.name === "job" && initialArgs) {
+      const [id, action = "poll"] = initialArgs.split(/\s+/);
+      if (field.key === "id") input.value = id;
+      if (field.key === "action") input.value = action;
+    }
+    if (field.key === "action" && command.name === "plan" && initialArgs)
+      input.value = "generate";
+    if (field.key === "secret") {
+      input.autocomplete = "new-password";
+      input.spellcheck = false;
+      input.autocapitalize = "off";
+    }
+    label.append(input);
+    form.append(label);
+  }
+  if (command.form?.confirm || command.name === "todo") {
+    const label = el("label", "command-confirm", "Confirm this change");
+    const input = el("input");
+    input.type = "checkbox";
+    input.name = "confirmed";
+    label.prepend(input);
+    form.append(label);
+  }
+  const variants = {
+    handoff: {
+      inspect: [],
+      save: ["args"],
+      "preview-import": ["args"],
+      import: ["args", "expected"],
+    },
+    queue: {
+      list: [],
+      remove: ["args"],
+      clear: [],
+      "saved-edit": ["args", "text"],
+      "saved-earlier": ["args"],
+      "saved-later": ["args"],
+      "saved-promote": ["args"],
+      "saved-remove": ["args"],
+      "saved-clear": [],
+    },
+    login: {
+      list: [],
+      use: ["args"],
+      api: ["provider", "endpoint", "model", "label", "secret"],
+      oauth: [],
+      callback: ["args", "model", "label", "secret"],
+    },
+    profiles: {
+      list: [],
+      save: ["args"],
+      use: ["args"],
+      delete: ["args"],
+      instructions: ["text"],
+      global: [],
+    },
+    plan: { inspect: [], generate: ["args"], execute: [] },
+    init: { draft: ["args"], write: ["text", "expected"] },
+    git: {
+      status: [],
+      diff: [],
+      stage: ["args", "expected"],
+      unstage: ["args", "expected"],
+      "stage-patch": ["patch", "expected"],
+      "unstage-patch": ["patch", "expected"],
+      "revert-patch": ["patch", "expected"],
+      "revert-file": ["args", "expected"],
+      commit: ["args", "expected"],
+    },
+    pr: {
+      status: [],
+      checks: [],
+      reviews: [],
+      preview: ["title", "body_file", "base"],
+      create: ["title", "body_file", "base", "expected"],
+    },
+    neuralnets: {
+      list: [],
+      search: ["query"],
+      read: ["id"],
+      save: ["kind", "text"],
+      update: ["id", "text", "expected"],
+      forget: ["id", "expected"],
+      restore: ["id", "expected"],
+      purge: ["expected"],
+    },
+    capture: { draft: ["args", "first", "last"], save: ["args", "text"] },
+    context: {
+      inspect: [],
+      instructions: [],
+      system: [],
+      skills: [],
+      requests: [],
+      remove: ["args"],
+    },
+    security: { inspect: [], profile: ["args"], approve: ["args"] },
+    advisor: {
+      inspect: [],
+      request: [],
+      cadence: ["args"],
+      disposition: ["args", "text"],
+    },
+    agents: {
+      list: [],
+      transcript: ["id"],
+      create: ["name", "args", "model", "options"],
+      send: ["id", "args"],
+      resume: ["id", "args"],
+      interrupt: ["id"],
+      archive: ["id"],
+      budget: ["id", "options"],
+      limits: ["id", "options"],
+    },
+    tasks: {
+      list: [],
+      "task-add": ["args", "acceptance", "depends", "paths"],
+      "task-claim": ["id", "owner"],
+      "task-finish": ["id", "owner", "check"],
+      "task-release": ["id", "owner"],
+      "debug-add": ["args"],
+      "debug-evidence": ["id", "args"],
+      "debug-instrument": ["id", "args"],
+      "debug-resolve": ["id"],
+      "artifact-add": ["args", "acceptance"],
+      "artifact-preview": ["id"],
+      "artifact-read": ["id", "offset", "limit"],
+      "findings-import": ["args"],
+      "findings-show": ["id"],
+      "findings-disposition": ["id", "args"],
+      "role-set": ["args", "model", "tokens"],
+      "handoff-show": ["id"],
+      "handoff-import": ["args"],
+      advanced: ["args"],
+    },
+  };
+  const updateFields = () => {
+    const action = form.elements.namedItem("action")?.value;
+    const visible = variants[command.name]?.[action];
+    for (const label of form.querySelectorAll(".command-field")) {
+      const input = label.querySelector("input,textarea,select");
+      label.hidden =
+        !!visible && input.name !== "action" && !visible.includes(input.name);
+      input.disabled = label.hidden;
+      if (label.hidden && input.name === "secret") input.value = "";
+    }
+    const confirmed = form.elements.namedItem("confirmed");
+    if (confirmed) confirmed.checked = false;
+  };
+  form.elements.namedItem("action")?.addEventListener("change", updateFields);
+  updateFields();
+  const button = el(
+    "button",
+    "command-run",
+    command.readonly ? "Refresh" : fields.length ? "Apply" : "Run",
+  );
+  button.type = "submit";
+  form.append(button);
+  const cancel = el("button", "quiet", "Cancel command");
+  cancel.type = "button";
+  cancel.hidden = true;
+  cancel.onclick = () => {
+    if (view.commandRequestId) {
+      send({ t: "cancel_command", request_id: view.commandRequestId }).catch(
+        (error) => ($("#command-status").textContent = error.message),
+      );
+      $("#command-status").textContent = "Cancellation requested…";
+    }
+  };
+  form.append(cancel);
+  const execute = async (inspect = false) => {
+    const id = view.id;
+    button.disabled = true;
+    $("#command-status").textContent = inspect
+      ? "Loading…"
+      : command.form?.model_request
+        ? "Working · uses model tokens"
+        : view.active
+          ? "Waiting for the current turn…"
+          : "Working…";
+    const values = Object.fromEntries(new FormData(form));
+    cancel.hidden =
+      inspect ||
+      !["compact", "btw", "code-review", "plan", "init", "doctor"].includes(
+        command.name,
+      );
+    $("#command-status").dataset.working = "true";
+    values.confirmed = form.elements.namedItem("confirmed")?.checked === true;
+    try {
+      const result = command.readonly
+        ? await api("command", {
+            id,
+            name: command.name,
+            values: inspect ? {} : values,
+          })
+        : await commandTransport(command.name, inspect ? {} : values, inspect);
+      if (version !== commandViewVersion || id !== view.id) return;
+      body.replaceChildren();
+      body.className = "command-data";
+      renderCommandResult(body, result.body, result.format);
+      for (const key of ["expected", "draft", "attempt"]) {
+        const target = form.elements.namedItem(
+          key === "draft" ? "text" : key === "attempt" ? "args" : key,
+        );
+        if (target && result.body?.[key] !== undefined)
+          target.value = String(result.body[key]);
+      }
+      if (result.body?.authorize_url) {
+        const link = el("a", "command-run", "Continue sign-in");
+        link.href = result.body.authorize_url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        body.prepend(link);
+        const action = form.elements.namedItem("action");
+        if (action) {
+          action.value = "callback";
+          updateFields();
+        }
+      }
+      const secret = form.elements.namedItem("secret");
+      if (secret) secret.value = "";
+      $("#command-status").textContent = "";
+      if (result.body?.open_thread) {
+        modal.close();
+        await loadThreads();
+        await openThread(result.body.open_thread);
+      }
+      if (command.name === "todo") await history();
+      if (command.name === "name") {
+        await loadThreads();
+        $("#thread-name").textContent = result.body.title;
+      }
+      if (["model", "login"].includes(command.name) && result.body?.model)
+        $("#model").textContent = result.body.model;
+      if (command.name === "export" && result.body?.download) {
+        const download = el("a", "command-run", "Download Markdown");
+        download.href = result.body.download;
+        download.download = result.body.filename;
+        body.prepend(download);
+      }
+    } catch (error) {
+      if (version === commandViewVersion)
+        $("#command-status").textContent = error.message;
+    } finally {
+      if (version === commandViewVersion) {
+        button.disabled = false;
+        cancel.hidden = true;
+        $("#command-status").dataset.working = "false";
+      }
+    }
+  };
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    execute();
+  };
+  if (
+    command.readonly ||
+    [
+      "handoff",
+      "todo",
+      "budget",
+      "pacing",
+      "model",
+      "mods",
+      "jobs",
+      "security",
+      "prewalk",
+      "constraints",
+      "loop",
+      "neuralnets",
+      "profiles",
+      "login",
+      "plan",
+      "advisor",
+      "git",
+      "pr",
+      "agents",
+      "extensions",
+      "tasks",
+      "queue",
+      "context",
+      "status",
+      "settings-info",
+      "doctor",
+      "quote",
+    ].includes(command.name)
+  )
+    await execute(true);
+  else if ((initialArgs || !fields.length) && !command.form?.confirm)
+    await execute();
+  else
+    $("#command-status").textContent = command.form?.model_request
+      ? "Uses model tokens when run."
+      : "Changes run on your host. They are not sent to the model.";
+}
+$("#command-close").onclick = () => $("#command-view").close();
+
 const commandActions = {
+  clear: () => newThread(),
+  tools: () => {
+    document.documentElement.classList.toggle("compact-tools");
+    notice(
+      document.documentElement.classList.contains("compact-tools")
+        ? "Compact tool cards"
+        : "Expanded tool cards",
+    );
+  },
+  editor: () => openDraftEditor(),
+  animation: () => openAnimationPicker(),
   conversations: () => showPanel("#sidebar", true, true),
   work: () => openCommandTab("activity"),
   settings: () => openCommandTab("context"),
@@ -2094,7 +2639,12 @@ function renderCommands() {
       el("strong", "", `/${c.name} ${c.hint || ""}`),
       el("span", "", c.description),
     );
-    if (!c.primary && !commandActions[c.name] && c.name !== "help")
+    if (
+      !c.primary &&
+      !c.portable &&
+      !commandActions[c.name] &&
+      c.name !== "help"
+    )
       button.append(el("small", "", "Terminal only"));
     button.onclick = () => chooseCommand(c);
     list.append(button);
@@ -2109,14 +2659,15 @@ function chooseCommand(c) {
     openCommands(c.name);
     return;
   }
-  if (!commandActions[c.name] && c.name !== "help") {
+  if (!c.portable && !commandActions[c.name] && c.name !== "help") {
     $("#command-help").textContent =
       `/${c.name} requires the terminal. Browser support is not implemented yet.`;
     return;
   }
   $("#commands").close();
   if ($("#prompt").value.trim().startsWith("/")) $("#prompt").value = "";
-  if (c.name === "help") openCommands();
+  if (c.portable) openNativeCommand(c);
+  else if (c.name === "help") openCommands();
   else commandActions[c.name]();
 }
 async function dispatchSlash(value) {
@@ -2134,6 +2685,15 @@ async function dispatchSlash(value) {
     notice(`Unknown command /${name}. Type / to browse commands.`, true);
     return;
   }
+  const args = value
+    .trim()
+    .slice(name.length + 1)
+    .trim();
+  if (args && c.portable) {
+    $("#prompt").value = "";
+    await openNativeCommand(c, args);
+    return;
+  }
   if (value.trim() !== `/${name}`) {
     notice(
       `Arguments for /${name} are not supported in the browser yet.`,
@@ -2141,7 +2701,12 @@ async function dispatchSlash(value) {
     );
     return;
   }
-  if (!c.primary && !commandActions[c.name] && c.name !== "help") {
+  if (
+    !c.primary &&
+    !c.portable &&
+    !commandActions[c.name] &&
+    c.name !== "help"
+  ) {
     notice(`/${c.name} is currently available in the terminal only.`, true);
     return;
   }

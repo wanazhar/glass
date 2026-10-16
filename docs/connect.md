@@ -208,13 +208,63 @@ section; Escape at the root closes the palette. Touch selection is supported.
 The catalogue comes from the native action registry and is fetched only when
 first opened.
 
-Browser commands open conversation navigation, activity, reasoning, context,
-checklists, and theme controls. Other commands are marked **Terminal only**.
-Their native handlers have not yet been exposed through the browser protocol.
-Arguments are not currently supported. Unknown or unsupported slash commands
-produce a local notice and are never submitted to the model. Opening the palette
-does not use model tokens and remains available during a running turn.
+The browser exposes the native command catalogue, including arguments and
+extension commands. Commands open a focused form or a local view. File, Git,
+workspace task, checklist, model, profile, memory, and agent operations run on
+the host through the same native handlers. Confirmation fields protect actions
+such as restores, publication, and configuration changes. Credential fields
+are masked and are not added to the conversation or sent as model prompts.
+
+Opening the palette and inspecting local state do not use model tokens.
+Commands that request model work, such as compaction, planning, and code review,
+run only after submission and provide cancellation. Mutations submitted during
+a running turn wait for a safe boundary; inspection remains available.
+Unknown slash commands produce a local notice and are never sent as chat text.
+
+Older thread workers require an explicit restart before using native browser
+commands. The browser offers a confirmation step, waits for the idle worker to
+exit, and reconnects with the current binary. Conversation history is preserved;
+worker-owned background jobs and teammates stop during this restart. Active
+work is not automatically interrupted.
+
+Command results are bounded for transport. Export downloads the full transcript
+separately. Read-only observers can inspect state but cannot submit mutations or
+model work. Browser presentation uses forms and result panels rather than
+reproducing terminal-specific controls.
 
 The interface bundles its sans serif and monospace fonts locally. The theme
 follows the device setting by default; the theme button cycles through light,
 dark, and system modes. Code and mathematical notation retain their own fonts.
+
+### Command transport
+
+The browser reads command names and form descriptors from `/api/commands`.
+Thread replay can replace this catalogue with registered extension commands.
+Local inspection uses authenticated `POST /api/command`; session operations
+use the existing `/api/send` bridge with a `command` frame containing `name`,
+`values`, and a unique `request_id` of at most 128 bytes. Values are limited to
+64 KiB. Responses arrive as `command_result` with either `result` or `error`.
+Model operations also emit `command_start` and `command_done`.
+
+`cancel_command` targets a request ID. Cancellation is cooperative: completed
+side effects remain completed. Mutation receipts prevent automatic replay after
+a disconnect or worker restart. If a response is lost, inspect the affected
+state before submitting a new request. Receipts contain IDs and status, not
+form values or credentials.
+
+`POST /api/upgrade` requires thread control, an idle runtime, and explicit
+confirmation. It uses graceful shutdown and never kills an active process.
+`GET /api/export?id=THREAD` returns a Markdown attachment; transcript downloads
+are limited to source logs of 64 MiB.
+
+The queue view distinguishes live request IDs from saved terminal follow-ups.
+Use `saved-*` actions with the displayed one-based index to edit, reorder,
+promote, or remove a saved item. `/queue-run` checks provider readiness before
+committing delivery of the next saved item. A delivery receipt prevents a
+second user message from being appended after a worker crash.
+
+`/handoff` previews the current conversation, saves a new host file, or imports
+a reviewed handoff into a new thread. Import requires a current preview
+fingerprint and confirmation; it does not execute tools or contact a model.
+File previews require thread control. Browser `/prompts` shows only prompts
+from the current conversation.

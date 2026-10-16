@@ -1979,3 +1979,167 @@ dialog > header {
   font-size: 12px;
   border-top: 1px solid var(--line);
 }
+
+#command-view {
+  width: min(760px, 100vw);
+}
+#command-content {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+}
+#command-result .tool-output {
+  max-height: none;
+  overflow: visible;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+#command-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 20px;
+}
+.command-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.command-field input,
+.command-field textarea {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  width: 100%;
+  font-size: 16px;
+}
+.command-field textarea {
+  min-height: 100px;
+  resize: vertical;
+}
+.command-confirm {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 13px;
+}
+.command-run {
+  align-self: flex-start;
+  background: var(--accent-bg);
+  color: var(--accent);
+  padding: 10px 22px;
+  border-radius: 8px;
+}
+#command-status {
+  min-height: 24px;
+  padding: 12px 20px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+}
+
+.command-field select {
+  font: inherit;
+  font-size: 16px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+.command-section {
+  margin: 10px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.command-section summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 13px;
+}
+.command-value {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.command-key {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: capitalize;
+}
+.command-value .prose {
+  white-space: normal;
+}
+#draft-text {
+  flex: 1 1 0;
+  min-height: 0;
+  resize: none;
+  background: var(--bg);
+  color: var(--text);
+  border: 0;
+  padding: 20px;
+  font-size: 16px;
+}
+#draft-editor footer {
+  padding: 12px 20px;
+}
+.animation-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+}
+.animation-choices button {
+  text-align: left;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.compact-tools .tool-row:not([open]) > :not(summary) {
+  display: none;
+}
+:root[data-animation="pulse"] .activity.working .activity-dot {
+  animation: breathe 0.7s ease-in-out infinite;
+  transform: scale(1.2);
+}
+:root[data-animation="pulse"] .activity.working .activity-dot:before,
+:root[data-animation="pulse"] .activity.working .activity-dot:after,
+:root[data-animation="breathe"] .activity.working .activity-dot:before,
+:root[data-animation="breathe"] .activity.working .activity-dot:after,
+:root[data-animation="none"] .activity.working .activity-dot:before,
+:root[data-animation="none"] .activity.working .activity-dot:after {
+  display: none;
+}
+:root[data-animation="none"] .activity.working .activity-dot {
+  animation: none;
+}
+
+.compact-tools .tool-description {
+  display: none;
+}
+.command-field[hidden] {
+  display: none;
+}
+#command-status[data-working="true"]:before {
+  content: "•••";
+  color: var(--accent);
+  margin-right: 8px;
+  animation: breathe 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  #command-status:before {
+    animation: none;
+  }
+}

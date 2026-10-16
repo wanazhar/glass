@@ -39,8 +39,10 @@ pub fn snapshot(effective:&config::Config)->Result<Value,String> {
     if let Some(name)=&active {
         let profile=store.profiles.get(name).ok_or("Active workspace profile is missing")?;
         let theme=glass_tui::theme::current();
+        let animation=glass_tui::theme::current_animation();
         let result=profile.apply(&mut candidate);
         glass_tui::theme::select(theme);
+        glass_tui::theme::select_animation(animation);
         result?;
         apply("workspace profile",&candidate);
     }

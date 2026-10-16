@@ -508,7 +508,7 @@ pub fn browser(url: &str) -> bool {
         false
     }
 }
-struct Attempt {
+pub(crate) struct Attempt {
     listener: TcpListener,
     state: String,
     nonce: String,
@@ -519,7 +519,7 @@ struct Attempt {
     pub url: String,
 }
 impl Attempt {
-    fn start(store: &mut Store, existing: Option<Credential>) -> Result<Self, String> {
+    pub(crate) fn start(store: &mut Store, existing: Option<Credential>) -> Result<Self, String> {
         if store.host_id.is_empty() {
             store.host_id = edit(|fresh| {
                 if fresh.host_id.is_empty() {
@@ -622,7 +622,7 @@ impl Attempt {
             .ok_or("Callback has no authorization code")?;
         Ok((code.clone(), client))
     }
-    fn exchange(self, callback: String) -> Result<Credential, String> {
+    pub(crate) fn exchange(self, callback: String) -> Result<Credential, String> {
         let (code, client) = self.callback(&callback)?;
         let v = token_form(&[
             ("grant_type", "authorization_code"),

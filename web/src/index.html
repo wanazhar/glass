@@ -221,6 +221,52 @@
       <div id="command-list" role="listbox" aria-label="Commands"></div>
       <footer id="command-help">↑ ↓ select · Enter choose · Esc back</footer>
     </dialog>
+    <dialog id="draft-editor" aria-label="Draft editor">
+      <header>
+        <h2>Draft</h2>
+        <button
+          type="button"
+          id="draft-cancel"
+          class="icon-button"
+          aria-label="Cancel draft editing"
+        >
+          ×
+        </button>
+      </header>
+      <textarea id="draft-text" aria-label="Draft text"></textarea>
+      <footer>
+        <button type="button" id="draft-save" class="command-run">
+          Use draft
+        </button>
+      </footer>
+    </dialog>
+    <dialog id="animations" aria-label="Working animation">
+      <header><h2>Working animation</h2></header>
+      <div class="animation-choices">
+        <button data-animation="dots">••• Dots</button
+        ><button data-animation="pulse">◇ Pulse</button
+        ><button data-animation="breathe">◌ Breathe</button
+        ><button data-animation="none">— Still</button>
+      </div>
+    </dialog>
+    <dialog id="command-view" aria-label="Command">
+      <header>
+        <h2 id="command-title">Command</h2>
+        <button
+          type="button"
+          id="command-close"
+          class="icon-button"
+          aria-label="Close command"
+        >
+          ×
+        </button>
+      </header>
+      <div id="command-content">
+        <div id="command-result"></div>
+        <form id="command-form"></form>
+      </div>
+      <footer id="command-status" role="status"></footer>
+    </dialog>
     <dialog id="preview">
       <header>
         <div>

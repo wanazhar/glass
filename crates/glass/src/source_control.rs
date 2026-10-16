@@ -9,7 +9,7 @@ use std::{
 };
 
 const HELP: &str = "gc pr status|checks|reviews [--json]\ngc pr preview --title TEXT --body-file FILE [--base BRANCH] [--json]\ngc pr create --publish --expect-hash HASH --title TEXT --body-file FILE [--base BRANCH] [--json]\nPublication is explicit. Push the reviewed branch separately; no implicit push or merge.";
-fn capture(
+pub(crate) fn capture(
     root: &Path,
     program: &str,
     args: &[&str],
@@ -206,15 +206,13 @@ fn publish(root: &Path, value: &Value, cancel: &AtomicBool) -> Result<Value, Str
     let _ = std::fs::remove_file(&temp);
     result.map(|url| json!({"published":true,"draft":true,"url":url.trim(),"head":value["head"]}))
 }
-pub fn command(args: &[String]) -> Result<(), String> {
-    if args.is_empty() || args.iter().any(|s| s == "--help") {
-        crate::cli::text("Pull requests", HELP);
-        return Ok(());
+pub fn request(root: &Path, args: &[String]) -> Result<Value, String> {
+    if args.is_empty() {
+        return query(root, "status", &AtomicBool::new(false));
     }
-    let root = std::env::current_dir().map_err(|e| e.to_string())?;
     let action = &args[0];
     let value = if matches!(action.as_str(), "preview" | "create") {
-        let value = plan(&root, &args[1..])?;
+        let value = plan(root, &args[1..])?;
         if action == "create" {
             if !args.iter().any(|s| s == "--publish") {
                 return Err("Publication requires --publish; use gc pr preview first".into());
@@ -226,7 +224,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
             if expected.map(String::as_str) != value["preview_fingerprint"].as_str() {
                 return Err("Run gc pr preview, review it, then pass --expect-hash PREVIEW_FINGERPRINT; nothing published".into());
             }
-            publish(&root, &value, &AtomicBool::new(false))?
+            publish(root, &value, &AtomicBool::new(false))?
         } else {
             value
         }
@@ -234,8 +232,17 @@ pub fn command(args: &[String]) -> Result<(), String> {
         if args[1..].iter().any(|s| s != "--json") {
             return Err(HELP.into());
         }
-        query(&root, action, &AtomicBool::new(false))?
+        query(root, action, &AtomicBool::new(false))?
     };
+    Ok(value)
+}
+pub fn command(args: &[String]) -> Result<(), String> {
+    if args.is_empty() || args.iter().any(|s| s == "--help") {
+        crate::cli::text("Pull requests", HELP);
+        return Ok(());
+    }
+    let root = std::env::current_dir().map_err(|e| e.to_string())?;
+    let value = request(&root, args)?;
     if args.iter().any(|s| s == "--json") {
         crate::emit_json(value);
     } else {
@@ -243,6 +250,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
     }
     Ok(())
 }
+
 pub fn view(keys: &crate::input::KeyReader, root: &Path) {
     loop {
         let actions = [

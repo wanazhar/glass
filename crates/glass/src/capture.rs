@@ -66,7 +66,7 @@ fn draft_path(path: &Path, name: &str, from: usize, through: usize) -> Result<St
             .join("\n\n")
     ))
 }
-fn save(name: &str, draft: &str, directory: &Path) -> Result<std::path::PathBuf, String> {
+pub fn save(name: &str, draft: &str, directory: &Path) -> Result<std::path::PathBuf, String> {
     safe_name(name)?;
     if draft.len() > 128 * 1024 {
         return Err("Skill exceeds 128 KiB".into());

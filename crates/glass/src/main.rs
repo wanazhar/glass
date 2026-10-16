@@ -24,6 +24,7 @@ mod completions;
 mod concurrency;
 mod config;
 mod connect;
+mod web_commands;
 mod context_audit;
 mod contracts;
 mod diagnostic_bundle;

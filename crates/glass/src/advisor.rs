@@ -69,7 +69,7 @@ fn snapshot(s: &Session) -> Result<Value, String> {
     } else {
         crate::team::client(&s.id, &json!({"action":"list"})).unwrap_or_else(|_| json!([]))
     };
-    let remote=crate::team::get(&s.id).is_none();
+    let remote = crate::team::get(&s.id).is_none();
     let reviewers=agents.as_array().into_iter().flatten().filter(|a|a["name"].as_str().is_some_and(|name|name.starts_with("review-"))).take(32).map(|a| {
         let detail=a;
         let result=detail["result"].as_str().unwrap_or("");
@@ -179,46 +179,52 @@ pub fn view(keys: &crate::input::KeyReader, s: &Session) {
         }
     }
 }
-pub fn command(args: &[String]) -> Result<(), String> {
-    let usage = "gc advisor SESSION [--json] | gc advisor SESSION request | gc advisor SESSION cadence N|off | gc advisor SESSION disposition AGENT NOTE";
-    let id = args.first().ok_or(usage)?;
-    let session = Session::open_readonly(&config::data_dir(), id).map_err(|e| e.to_string())?;
-    let value = match args.get(1).map(String::as_str) {
-        None | Some("--json") if args.len() <= 2 => snapshot(&session)?,
-        Some("request") if args.len() == 2 => launch(&session)?,
-        Some("cadence") if args.len() == 3 => {
-            let mut s = load(&session)?;
-            s.every_turns = if args[2] == "off" {
+pub fn request(session: &Session, args: &[String]) -> Result<Value, String> {
+    let usage = "advisor: request | cadence N|off | disposition AGENT NOTE";
+    let value = match args.first().map(String::as_str) {
+        None | Some("--json") if args.len() <= 1 => snapshot(session)?,
+        Some("request") if args.len() == 1 => launch(session)?,
+        Some("cadence") if args.len() == 2 => {
+            let mut s = load(session)?;
+            s.every_turns = if args[1] == "off" {
                 None
             } else {
                 Some(
-                    args[2]
+                    args[1]
                         .parse::<usize>()
                         .ok()
                         .filter(|n| (1..=1000).contains(n))
                         .ok_or("Cadence must be 1–1000 or off")?,
                 )
             };
-            s.last_requested_turn = turn(&session);
-            save(&session, &s)?;
-            snapshot(&session)?
+            s.last_requested_turn = turn(session);
+            save(session, &s)?;
+            snapshot(session)?
         }
-        Some("disposition") if args.len() == 4 => {
-            let mut s = load(&session)?;
-            if args[2].is_empty()
-                || args[2].len() > 128
-                || args[3].trim().is_empty()
-                || args[3].len() > 1024
-                || (!s.dispositions.contains_key(&args[2]) && s.dispositions.len() >= 128)
+        Some("disposition") if args.len() == 3 => {
+            let mut s = load(session)?;
+            if args[1].is_empty()
+                || args[1].len() > 128
+                || args[2].trim().is_empty()
+                || args[2].len() > 1024
+                || (!s.dispositions.contains_key(&args[1]) && s.dispositions.len() >= 128)
             {
                 return Err("Disposition limit reached".into());
             }
-            s.dispositions.insert(args[2].clone(), args[3].clone());
-            save(&session, &s)?;
-            snapshot(&session)?
+            s.dispositions.insert(args[1].clone(), args[2].clone());
+            save(session, &s)?;
+            snapshot(session)?
         }
         _ => return Err(usage.into()),
     };
+    Ok(value)
+}
+pub fn command(args: &[String]) -> Result<(), String> {
+    let id = args
+        .first()
+        .ok_or("gc advisor SESSION [request|cadence N|off|disposition AGENT NOTE]")?;
+    let session = Session::open_readonly(&config::data_dir(), id).map_err(|e| e.to_string())?;
+    let value = request(&session, &args[1..])?;
     if args.iter().any(|s| s == "--json") {
         crate::emit_json(value);
     } else {

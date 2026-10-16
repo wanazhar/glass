@@ -204,3 +204,78 @@ pub fn choose(
     .map_err(|e| e.to_string())?;
     Ok(Some((fork, through)))
 }
+
+/// Guarded file rewind shared with the browser; preview and apply use a hash.
+pub fn portable(
+    session: &Session,
+    workspace: &Path,
+    through: usize,
+    files: bool,
+    expected: Option<&str>,
+) -> Result<Value, String> {
+    let turns = session.raw_turns().map_err(|e| e.to_string())?;
+    if through == 0 || through > turns {
+        return Err("Choose an existing turn".into());
+    }
+    let dir = crate::config::data_dir()
+        .join("checkpoints")
+        .join(&session.id);
+    let _guards = if files {
+        guard_other_sessions(session, workspace)?
+    } else {
+        Vec::new()
+    };
+    let restore = if files {
+        let receipts = turn_checkpoints(session);
+        let target = receipts
+            .iter()
+            .rev()
+            .find(|r| r["turn"].as_u64() == Some(through as u64))
+            .ok_or("No checkpoint for that turn; choose keep files")?;
+        let latest = receipts.last().ok_or("No latest checkpoint")?;
+        let target = Checkpoint::load(&dir, target["label"].as_str().ok_or("Invalid checkpoint")?)?;
+        let latest = Checkpoint::load(&dir, latest["label"].as_str().ok_or("Invalid checkpoint")?)?;
+        let root = workspace.canonicalize().map_err(|e| e.to_string())?;
+        if target.workspace.canonicalize().map_err(|e| e.to_string())? != root
+            || latest.workspace.canonicalize().map_err(|e| e.to_string())? != root
+        {
+            return Err("Checkpoint belongs to another workspace".into());
+        }
+        Some(Checkpoint {
+            before: target.after.ok_or("Checkpoint unfinished")?,
+            after: latest.after,
+            workspace: target.workspace,
+            label: format!("rewind-{through}"),
+        })
+    } else {
+        None
+    };
+    if let Some(c) = &restore {
+        let diff = c.diff()?;
+        let hash = crate::workspace::hash(diff.as_bytes());
+        if expected.is_none() {
+            return Ok(
+                serde_json::json!({"preview":diff,"expected":hash,"through":through,"files":true}),
+            );
+        }
+        if expected != Some(hash.as_str()) {
+            return Err("Workspace changed since preview; review the rewind again".into());
+        }
+    }
+    let mut fork = session
+        .branch(&crate::config::data_dir(), through)
+        .map_err(|e| e.to_string())?;
+    crate::polish::save(&fork, &crate::polish::metadata(session))?;
+    if let Some(c) = restore {
+        c.undo(&dir)
+            .map_err(|e| format!("Rewind failed: {e}; retained fork {}", fork.id))?;
+    }
+    crate::navigation::lineage(&fork, &session.id, through)?;
+    fork.append_checked(&[Record::Meta(format!(
+        "Rewound after turn {through}; files {}. Original {} retained.",
+        if files { "restored" } else { "kept" },
+        session.id
+    ))])
+    .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({"open_thread":fork.id,"through":through,"files_restored":files}))
+}

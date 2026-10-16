@@ -93,14 +93,26 @@ pub struct Finding {
     #[serde(default = "open_disposition")]
     pub disposition: String,
 }
-fn open_disposition() -> String { "open".into() }
+fn open_disposition() -> String {
+    "open".into()
+}
 fn validate_finding(finding: &Finding) -> Result<(), String> {
     valid_path(&finding.path)?;
     short(&finding.title)?;
-    if finding.line == 0 || finding.evidence.trim().is_empty() || finding.evidence.len() > 16 * 1024
-        || !matches!(finding.severity.as_str(), "critical" | "high" | "medium" | "low" | "info")
-        || !matches!(finding.disposition.as_str(), "open" | "accepted" | "fixed" | "dismissed")
-    { return Err("Invalid finding severity, location, evidence or disposition".into()); }
+    if finding.line == 0
+        || finding.evidence.trim().is_empty()
+        || finding.evidence.len() > 16 * 1024
+        || !matches!(
+            finding.severity.as_str(),
+            "critical" | "high" | "medium" | "low" | "info"
+        )
+        || !matches!(
+            finding.disposition.as_str(),
+            "open" | "accepted" | "fixed" | "dismissed"
+        )
+    {
+        return Err("Invalid finding severity, location, evidence or disposition".into());
+    }
     Ok(())
 }
 
@@ -198,7 +210,9 @@ fn validate(board: &Board) -> Result<(), String> {
     let mut finding_ids = HashSet::new();
     for finding in &board.findings {
         validate_finding(finding)?;
-        if finding.id == 0 || !finding_ids.insert(finding.id) { return Err("Duplicate finding ID".into()); }
+        if finding.id == 0 || !finding_ids.insert(finding.id) {
+            return Err("Duplicate finding ID".into());
+        }
     }
     if [
         board.tasks.len(),
@@ -471,19 +485,41 @@ pub fn preview(root: &Path, id: u32) -> Result<String, String> {
         ))
     }
 }
-pub fn artifact_range(root: &Path, id: u32, offset: usize, limit: usize) -> Result<serde_json::Value, String> {
-    if limit == 0 || limit > 32 * 1024 { return Err("Read limit must be 1..32768 bytes".into()); }
+pub fn artifact_range(
+    root: &Path,
+    id: u32,
+    offset: usize,
+    limit: usize,
+) -> Result<serde_json::Value, String> {
+    if limit == 0 || limit > 32 * 1024 {
+        return Err("Read limit must be 1..32768 bytes".into());
+    }
     let board = load(root)?;
-    let item = board.artifacts.iter().find(|a| a.id == id).ok_or("Unknown artifact")?;
+    let item = board
+        .artifacts
+        .iter()
+        .find(|a| a.id == id)
+        .ok_or("Unknown artifact")?;
     let path = scoped(root, item.path.to_str().ok_or("Non UTF-8 path")?)?;
     let bytes = crate::requests::bounded(&path, 8 * 1024 * 1024)?;
-    if hash(&bytes) != item.fingerprint { return Err("Artifact changed since registration".into()); }
-    let text = std::str::from_utf8(&bytes).map_err(|_| "Artifact is binary; textual range unavailable")?;
-    if offset > text.len() || !text.is_char_boundary(offset) { return Err("Byte offset must be an in-range UTF-8 boundary".into()); }
+    if hash(&bytes) != item.fingerprint {
+        return Err("Artifact changed since registration".into());
+    }
+    let text =
+        std::str::from_utf8(&bytes).map_err(|_| "Artifact is binary; textual range unavailable")?;
+    if offset > text.len() || !text.is_char_boundary(offset) {
+        return Err("Byte offset must be an in-range UTF-8 boundary".into());
+    }
     let mut end = offset.saturating_add(limit).min(text.len());
-    while !text.is_char_boundary(end) { end -= 1; }
-    if end == offset && offset < text.len() { return Err("Limit cannot contain the next Unicode character".into()); }
-    Ok(json!({"artifact":id,"revision":item.fingerprint,"byte_offset":offset,"end_byte_offset":end,"total_bytes":bytes.len(),"text":&text[offset..end],"next_byte_offset":(end < bytes.len()).then_some(end),"preview_truncated":end < bytes.len(),"source_truncated":false}))
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == offset && offset < text.len() {
+        return Err("Limit cannot contain the next Unicode character".into());
+    }
+    Ok(
+        json!({"artifact":id,"revision":item.fingerprint,"byte_offset":offset,"end_byte_offset":end,"total_bytes":bytes.len(),"text":&text[offset..end],"next_byte_offset":(end < bytes.len()).then_some(end),"preview_truncated":end < bytes.len(),"source_truncated":false}),
+    )
 }
 
 pub fn role(root: &Path, name: &str) -> Option<Role> {
@@ -533,12 +569,7 @@ fn option(args: &[String], name: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1))
         .cloned()
 }
-pub fn command(args: &[String]) -> Result<(), String> {
-    let root = std::env::current_dir().map_err(|e| e.to_string())?;
-    if args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
-        crate::cli::text("Workspace", HELP);
-        return Ok(());
-    }
+pub fn request(root: &Path, args: &[String]) -> Result<serde_json::Value, String> {
     let args = args
         .iter()
         .filter(|a| a.as_str() != "--json")
@@ -583,7 +614,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
         return Err(HELP.into());
     }
     let value = match args.first().map(String::as_str) {
-        None | Some("list") => serde_json::to_value(load(&root)?).map_err(|e| e.to_string())?,
+        None | Some("list") => serde_json::to_value(load(root)?).map_err(|e| e.to_string())?,
         Some("task") => match arg(1)? {
             "add" => {
                 let title = arg(2)?;
@@ -600,22 +631,22 @@ pub fn command(args: &[String]) -> Result<(), String> {
                 let paths = option(&args, "--paths")
                     .map(|s| {
                         s.split(',')
-                            .map(|p| ownership_path(&root, p))
+                            .map(|p| ownership_path(root, p))
                             .collect::<Result<Vec<_>, _>>()
                     })
                     .transpose()?
                     .unwrap_or_default();
-                let id = edit(&root, |b| add_task(b, title, &accept, depends, paths))?;
+                let id = edit(root, |b| add_task(b, title, &accept, depends, paths))?;
                 json!({"task":id,"status":"pending"})
             }
             "claim" => {
                 let id = number(args.get(2))?;
-                edit(&root, |b| {
+                edit(root, |b| {
                     for task in &mut b.tasks {
                         task.paths = task
                             .paths
                             .iter()
-                            .map(|p| ownership_path(&root, p))
+                            .map(|p| ownership_path(root, p))
                             .collect::<Result<Vec<_>, _>>()?;
                     }
                     claim(b, id, arg(3)?)
@@ -626,7 +657,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
                 let id = number(args.get(2))?;
                 let owner = arg(3)?;
                 let finish = arg(1)? == "finish";
-                edit(&root, |b| {
+                edit(root, |b| {
                     let task = b
                         .tasks
                         .iter_mut()
@@ -652,7 +683,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
         },
         Some("debug") => {
             let action = arg(1)?;
-            let id = edit(&root, |b| {
+            let id = edit(root, |b| {
                 if action == "add" {
                     let claim = arg(2)?;
                     short(claim)?;
@@ -678,7 +709,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
                         h.evidence.push(arg(3)?.into());
                     }
                     "instrument" => {
-                        let path = scoped(&root, arg(3)?)?;
+                        let path = scoped(root, arg(3)?)?;
                         h.instrumentation.push(path.display().to_string());
                     }
                     "resolve" => {
@@ -695,16 +726,27 @@ pub fn command(args: &[String]) -> Result<(), String> {
         }
         Some("findings") => match arg(1)? {
             "show" => {
-                let id=number(args.get(2))?;
-                let board=load(&root)?;
-                json!(board.findings.iter().find(|f|f.id==id).ok_or("Unknown finding")?)
+                let id = number(args.get(2))?;
+                let board = load(root)?;
+                json!(
+                    board
+                        .findings
+                        .iter()
+                        .find(|f| f.id == id)
+                        .ok_or("Unknown finding")?
+                )
             }
             "import" => {
                 let bytes = crate::requests::bounded(Path::new(arg(2)?), 256 * 1024)?;
-                let mut findings: Vec<Finding> = serde_json::from_slice(&bytes).map_err(|e| format!("Invalid findings: {e}"))?;
-                if findings.len() > 128 { return Err("Import at most 128 findings".into()); }
-                for finding in &findings { validate_finding(finding)?; }
-                let ids = edit(&root, |board| {
+                let mut findings: Vec<Finding> =
+                    serde_json::from_slice(&bytes).map_err(|e| format!("Invalid findings: {e}"))?;
+                if findings.len() > 128 {
+                    return Err("Import at most 128 findings".into());
+                }
+                for finding in &findings {
+                    validate_finding(finding)?;
+                }
+                let ids = edit(root, |board| {
                     let mut ids = Vec::new();
                     for finding in &mut findings {
                         finding.id = next(board.findings.iter().map(|f| f.id))?;
@@ -718,8 +760,12 @@ pub fn command(args: &[String]) -> Result<(), String> {
             "disposition" => {
                 let id = number(args.get(2))?;
                 let disposition = arg(3)?;
-                edit(&root, |board| {
-                    let finding = board.findings.iter_mut().find(|f| f.id == id).ok_or("Unknown finding")?;
+                edit(root, |board| {
+                    let finding = board
+                        .findings
+                        .iter_mut()
+                        .find(|f| f.id == id)
+                        .ok_or("Unknown finding")?;
                     finding.disposition = disposition.into();
                     validate_finding(finding)
                 })?;
@@ -729,8 +775,8 @@ pub fn command(args: &[String]) -> Result<(), String> {
         },
         Some("artifact") => match arg(1)? {
             "add" => {
-                let mut item = artifact(&root, arg(2)?, arg(3)?)?;
-                let id = edit(&root, |b| {
+                let mut item = artifact(root, arg(2)?, arg(3)?)?;
+                let id = edit(root, |b| {
                     item.id = next(b.artifacts.iter().map(|a| a.id))?;
                     let id = item.id;
                     b.artifacts.push(item);
@@ -738,8 +784,13 @@ pub fn command(args: &[String]) -> Result<(), String> {
                 })?;
                 json!({"artifact":id})
             }
-            "preview" => json!({"text":preview(&root,number(args.get(2))?)?}),
-            "read" => artifact_range(&root, number(args.get(2))?, arg(3)?.parse().map_err(|_| "Invalid byte offset")?, arg(4)?.parse().map_err(|_| "Invalid limit")?)?,
+            "preview" => json!({"text":preview(root,number(args.get(2))?)?}),
+            "read" => artifact_range(
+                root,
+                number(args.get(2))?,
+                arg(3)?.parse().map_err(|_| "Invalid byte offset")?,
+                arg(4)?.parse().map_err(|_| "Invalid limit")?,
+            )?,
             _ => return Err(HELP.into()),
         },
         Some("role") if arg(1)? == "set" => {
@@ -749,7 +800,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
             }
             let model = arg(3)?;
             let tokens = arg(4)?.parse::<u64>().map_err(|_| "Invalid token budget")?;
-            edit(&root, |b| {
+            edit(root, |b| {
                 b.roles.insert(
                     name.into(),
                     Role {
@@ -761,26 +812,43 @@ pub fn command(args: &[String]) -> Result<(), String> {
             })?;
             json!({"role":name,"model":model,"tokens":tokens})
         }
-        Some("handoff") if args.get(1).is_some_and(|s|s=="show") => {
-            let task=number(args.get(2))?;
-            let board=load(&root)?;
-            json!(board.handoffs.iter().rev().find(|h|h.task==task).ok_or("Unknown task handoff")?)
+        Some("handoff") if args.get(1).is_some_and(|s| s == "show") => {
+            let task = number(args.get(2))?;
+            let board = load(root)?;
+            json!(
+                board
+                    .handoffs
+                    .iter()
+                    .rev()
+                    .find(|h| h.task == task)
+                    .ok_or("Unknown task handoff")?
+            )
         }
         Some("handoff") => {
-            let bytes = crate::requests::bounded(&scoped(&root, arg(1)?)?, 64 * 1024)?;
+            let bytes = crate::requests::bounded(&scoped(root, arg(1)?)?, 64 * 1024)?;
             let value = serde_json::from_slice(&bytes).map_err(|_| "Invalid handoff schema")?;
-            receive_handoff(&root, value)?;
+            receive_handoff(root, value)?;
             json!({"status":"handoff saved"})
         }
         _ => return Err(HELP.into()),
     };
-    if std::env::args().any(|a| a == "--json") {
+    Ok(value)
+}
+pub fn command(args: &[String]) -> Result<(), String> {
+    if args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
+        crate::cli::text("Workspace", HELP);
+        return Ok(());
+    }
+    let root = std::env::current_dir().map_err(|e| e.to_string())?;
+    let value = request(&root, args)?;
+    if args.iter().any(|a| a == "--json") {
         crate::emit_json(value);
     } else {
         crate::cli::report("Workspace", &value);
     }
     Ok(())
 }
+
 fn tasks_view(keys: &KeyReader, root: &Path, board: &Board) -> Result<(), String> {
     let mut rows = vec!["＋ Add task".to_owned()];
     rows.extend(board.tasks.iter().map(|task| {
@@ -1061,18 +1129,53 @@ pub fn view(keys: &KeyReader, root: &Path) {
             continue;
         }
         if index == 6 {
-            let rows = board.findings.iter().map(|f| format!("{} · {}:{} · {} · {}", f.severity, f.path, f.line, f.title, f.disposition)).collect::<Vec<_>>();
-            let Some(selected) = modal::choose_search(keys, "Review findings", "Select to inspect evidence and disposition", &rows, &rows) else { continue };
+            let rows = board
+                .findings
+                .iter()
+                .map(|f| {
+                    format!(
+                        "{} · {}:{} · {} · {}",
+                        f.severity, f.path, f.line, f.title, f.disposition
+                    )
+                })
+                .collect::<Vec<_>>();
+            let Some(selected) = modal::choose_search(
+                keys,
+                "Review findings",
+                "Select to inspect evidence and disposition",
+                &rows,
+                &rows,
+            ) else {
+                continue;
+            };
             let finding = &board.findings[selected];
-            modal::markdown(keys, &finding.title, &format!("**{}** · {}:{}\n\n{}\n\nDisposition: {}", finding.severity, finding.path, finding.line, finding.evidence, finding.disposition));
+            modal::markdown(
+                keys,
+                &finding.title,
+                &format!(
+                    "**{}** · {}:{}\n\n{}\n\nDisposition: {}",
+                    finding.severity,
+                    finding.path,
+                    finding.line,
+                    finding.evidence,
+                    finding.disposition
+                ),
+            );
             let choices = ["open", "accepted", "fixed", "dismissed"].map(String::from);
-            if let Some(choice) = modal::choose(keys, "Finding disposition", &finding.title, &choices)
+            if let Some(choice) =
+                modal::choose(keys, "Finding disposition", &finding.title, &choices)
                 && let Err(error) = edit(root, |b| {
-                    let item = b.findings.iter_mut().find(|f| f.id == finding.id).ok_or("Finding no longer exists")?;
+                    let item = b
+                        .findings
+                        .iter_mut()
+                        .find(|f| f.id == finding.id)
+                        .ok_or("Finding no longer exists")?;
                     item.disposition = choices[choice].clone();
                     Ok(())
                 })
-            { modal::info(keys, "Finding was not changed", &error); }
+            {
+                modal::info(keys, "Finding was not changed", &error);
+            }
             continue;
         }
         if index == 3 {
@@ -1214,11 +1317,24 @@ mod tests {
     use super::*;
     #[test]
     fn review_findings_require_evidence_location_and_known_disposition() {
-        let mut finding = Finding { id:1, severity:"high".into(),path:"src/main.rs".into(),line:5,title:"Incorrect result".into(),evidence:"The branch returns before saving".into(),disposition:"open".into() };
+        let mut finding = Finding {
+            id: 1,
+            severity: "high".into(),
+            path: "src/main.rs".into(),
+            line: 5,
+            title: "Incorrect result".into(),
+            evidence: "The branch returns before saving".into(),
+            disposition: "open".into(),
+        };
         assert!(validate_finding(&finding).is_ok());
-        finding.line = 0; assert!(validate_finding(&finding).is_err());
-        finding.line = 5; finding.path = "../outside".into(); assert!(validate_finding(&finding).is_err());
-        finding.path = "src/main.rs".into(); finding.disposition = "pretend-fixed".into(); assert!(validate_finding(&finding).is_err());
+        finding.line = 0;
+        assert!(validate_finding(&finding).is_err());
+        finding.line = 5;
+        finding.path = "../outside".into();
+        assert!(validate_finding(&finding).is_err());
+        finding.path = "src/main.rs".into();
+        finding.disposition = "pretend-fixed".into();
+        assert!(validate_finding(&finding).is_err());
     }
 
     #[test]

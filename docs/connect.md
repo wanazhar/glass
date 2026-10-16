@@ -150,6 +150,9 @@ reads the live directory and is not a filesystem snapshot. Usage scans stop afte
 requested. Filesystem operations themselves can still block on a slow or unavailable
 mount; these are traversal budgets, not kernel I/O deadlines.
 
+The Glass logo in the thread sidebar returns to the home screen. This does not
+create a thread or stop work in an existing thread.
+
 ## Phone and home-screen layout
 
 The interface respects the notch, home indicator, landscape insets, and visible
@@ -159,7 +162,9 @@ only one overlay opens at a time. Reduced-motion settings disable interface anim
 
 Streaming preserves completed Markdown blocks and batches updates. Reasoning has
 its own follow position. Scrolling pauses updates in the reasoning pane; Latest
-restores live output at the bottom. Closing an expanded preview returns to its
+restores live output at the bottom. Completed reasoning remains freely scrollable.
+Expanded source wraps long lines and commands to the available width.
+Closing an expanded preview returns to its
 parent preview and preserves its scroll position. Escape follows the same sequence.
 Copy and expanded previews retain source text. Oversized
 live output shows a limit notice rather than repeatedly rebuilding unchanged content.

@@ -1511,17 +1511,26 @@ function details() {
   if (view.tab === "reasoning") {
     const body = n.querySelector(".prose") || el("div", "prose");
     if (body.isConnected && !view.reasoningFollow) return;
-    markdown(body, view.reasoning || "No reasoning yet.", view.active);
+    const source = view.reasoning || "No reasoning yet.";
+    const changed =
+      body.dataset.reasoningSource !== source ||
+      body.dataset.reasoningStreaming !== String(view.active);
+    if (changed) {
+      markdown(body, source, view.active);
+      body.dataset.reasoningSource = source;
+      body.dataset.reasoningStreaming = String(view.active);
+    }
     if (!body.isConnected) {
       const latest = el("button", "quiet reasoning-latest", "↓ Latest");
       latest.onclick = () => {
         view.reasoningFollow = true;
         details();
+        n.scrollTop = n.scrollHeight;
       };
       n.append(latest, body);
     }
     n.querySelector(".reasoning-latest").hidden = view.reasoningFollow;
-    if (view.reasoningFollow) n.scrollTop = n.scrollHeight;
+    if (view.reasoningFollow && changed) n.scrollTop = n.scrollHeight;
   } else if (view.tab === "context") {
     const thread = threadInfo(view.id) || {};
     for (const [name, value] of [
@@ -1673,6 +1682,8 @@ $("#detail-content").addEventListener(
 $("#detail-content").addEventListener(
   "scroll",
   () => {
+    const n = $("#detail-content");
+    if (n.scrollHeight - n.scrollTop - n.clientHeight > 2) pauseReasoning();
     clearTimeout(reasoningResumeTimer);
     reasoningResumeTimer = setTimeout(resumeReasoningIfBottom, 180);
   },
@@ -1686,6 +1697,10 @@ for (const tab of document.querySelectorAll("[data-tab]"))
       .querySelectorAll("[data-tab]")
       .forEach((n) => n.classList.toggle("selected", n === tab));
     details();
+    if (view.tab === "reasoning") {
+      const pane = $("#detail-content");
+      pane.scrollTop = pane.scrollHeight;
+    }
   };
 $("#menu").onclick = () => showPanel("#sidebar");
 $("#scrim").onclick = () => closePanels();

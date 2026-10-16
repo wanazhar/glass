@@ -14,6 +14,8 @@ const browser = await chromium.launch({
 const context = await browser.newContext({
   viewport: { width: 1440, height: 1000 },
 });
+// Plain HTTP has getRandomValues but does not expose randomUUID.
+await context.addInitScript(() => Object.defineProperty(crypto, "randomUUID", { value: undefined }));
 const page = await context.newPage();
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e)));

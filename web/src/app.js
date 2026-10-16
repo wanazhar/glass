@@ -753,7 +753,7 @@ $("#composer").onsubmit = async (e) => {
       notice("Take control before sending a message.");
       return;
     }
-    const id = crypto.randomUUID();
+    const id = crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("");
     view.lastPrompt = value;
     const queued = view.active;
     const steering = queued && $("#send-mode").dataset.mode !== "queue";

@@ -575,8 +575,8 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
             "gc send SESSION_ID \"Please focus on the parser\"",
         ),
         "connect" => (
-            "gc connect [--local]\ngc connect status\ngc connect stop",
-            "Open the installable web workspace through private Tailscale HTTPS. Existing routes are preserved. Closing the browser does not stop tasks. --local uses a private loopback access link. stop removes only GC remote access; served tasks continue.",
+            "gc connect [--local | --http]\ngc connect status\ngc connect stop",
+            "Open the installable web workspace through private Tailscale HTTPS. Existing routes are preserved. Closing the browser does not stop tasks. --http adds a tailnet HTTP link using the host IP. --local uses a private loopback access link. stop removes only GC remote access; served tasks continue.",
             "gc connect\ngc connect status",
         ),
         "serve" => (

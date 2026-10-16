@@ -2378,3 +2378,83 @@ dialog > header {
     display: none;
   }
 }
+
+/* Flex children must shrink within the toolbar, not draw beneath its actions. */
+.toolbar {
+  overflow: hidden;
+}
+.toolbar > .mobile-menu,
+.toolbar-actions {
+  flex: 0 0 auto;
+}
+.breadcrumbs {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.breadcrumbs strong,
+.breadcrumbs > span:first-child {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.table-block table {
+  width: max-content;
+  table-layout: auto;
+}
+.table-block td,
+.table-block th,
+.expanded-table td,
+.expanded-table th {
+  max-width: none;
+}
+.table-wrapped table {
+  width: 100%;
+  min-width: calc(var(--table-columns, 3) * 180px);
+  table-layout: fixed;
+}
+.table-wrapped td,
+.table-wrapped th {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+.table-wrapped td code,
+.expanded-table td code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.expanded-table table {
+  table-layout: auto;
+  width: 100%;
+}
+.expanded-table td {
+  min-width: 150px;
+}
+.file-path-field {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.file-path .file-path-field input {
+  width: 114.286%;
+  max-width: none;
+  font-size: 16px;
+  transform: scale(0.875);
+  transform-origin: left center;
+}
+.reasoning-latest {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--sidebar);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  margin: 0 0 8px;
+  padding: 5px 10px;
+}
+.reasoning-latest[hidden] {
+  display: none;
+}

@@ -260,7 +260,7 @@ const renderer = {
   },
   table(token) {
     return (
-      '<figure class="table-block"><div class="block-head"><span>Table</span><span><button data-table="wrap">Wrap</button><button data-table="copy">Copy CSV</button><button data-table="expand">Expand</button></span></div><div class="table-wrap">' +
+      `<figure class="table-block table-wrapped" style="--table-columns:${Math.max(1, token.header.length)}"><div class="block-head"><span>Table</span><span><button data-table="wrap">Compact</button><button data-table="copy">Copy CSV</button><button data-table="expand">Expand</button></span></div><div class="table-wrap">` +
       marked.Renderer.prototype.table.call(this, token) +
       "</div></figure>"
     );
@@ -1510,8 +1510,17 @@ function details() {
   n.dataset.tab = view.tab;
   if (view.tab === "reasoning") {
     const body = n.querySelector(".prose") || el("div", "prose");
-    markdown(body, view.reasoning || "No reasoning yet.");
-    if (!body.isConnected) n.append(body);
+    if (body.isConnected && !view.reasoningFollow) return;
+    markdown(body, view.reasoning || "No reasoning yet.", view.active);
+    if (!body.isConnected) {
+      const latest = el("button", "quiet reasoning-latest", "↓ Latest");
+      latest.onclick = () => {
+        view.reasoningFollow = true;
+        details();
+      };
+      n.append(latest, body);
+    }
+    n.querySelector(".reasoning-latest").hidden = view.reasoningFollow;
     if (view.reasoningFollow) n.scrollTop = n.scrollHeight;
   } else if (view.tab === "context") {
     const thread = threadInfo(view.id) || {};
@@ -1615,28 +1624,57 @@ $("#sidebar-close").onclick = () => {
   closePanels();
   $("#menu").focus();
 };
-// A touch gesture must suspend following before the next streaming update.
+// Keep streamed DOM stable while the reader scrolls; catch up only at the bottom.
+let reasoningTouching = false,
+  reasoningResumeTimer;
+function pauseReasoning() {
+  if (view.tab !== "reasoning") return;
+  view.reasoningFollow = false;
+  const latest = $("#detail-content .reasoning-latest");
+  if (latest) latest.hidden = false;
+}
 $("#detail-content").addEventListener(
   "touchstart",
   () => {
-    if (view.tab === "reasoning") view.reasoningFollow = false;
+    reasoningTouching = true;
+    clearTimeout(reasoningResumeTimer);
+    pauseReasoning();
   },
   { passive: true },
 );
+function resumeReasoningIfBottom() {
+  if (reasoningTouching || view.tab !== "reasoning") return;
+  const n = $("#detail-content");
+  if (
+    n.scrollHeight - n.scrollTop - n.clientHeight <= 2 &&
+    !view.reasoningFollow
+  ) {
+    view.reasoningFollow = true;
+    details();
+  }
+}
+for (const name of ["touchend", "touchcancel"])
+  $("#detail-content").addEventListener(
+    name,
+    () => {
+      reasoningTouching = false;
+      clearTimeout(reasoningResumeTimer);
+      reasoningResumeTimer = setTimeout(resumeReasoningIfBottom, 180);
+    },
+    { passive: true },
+  );
 $("#detail-content").addEventListener(
   "wheel",
   (event) => {
-    if (view.tab === "reasoning" && event.deltaY < 0)
-      view.reasoningFollow = false;
+    if (event.deltaY < 0) pauseReasoning();
   },
   { passive: true },
 );
 $("#detail-content").addEventListener(
   "scroll",
   () => {
-    const n = $("#detail-content");
-    if (view.tab === "reasoning")
-      view.reasoningFollow = n.scrollHeight - n.scrollTop - n.clientHeight < 60;
+    clearTimeout(reasoningResumeTimer);
+    reasoningResumeTimer = setTimeout(resumeReasoningIfBottom, 180);
   },
   { passive: true },
 );
@@ -1677,7 +1715,7 @@ document.addEventListener("keydown", (e) => {
     showPanel("#sidebar", true, true);
     $("#search").focus();
   }
-  if (e.key === "Escape") {
+  if (e.key === "Escape" && !document.querySelector("dialog[open]")) {
     closePanels();
   }
 });
@@ -1751,7 +1789,9 @@ function renderDirectory(result) {
   path.spellcheck = false;
   const go = el("button", "icon-button", "→");
   go.setAttribute("aria-label", "Open directory");
-  form.append(path, go);
+  const pathField = el("div", "file-path-field");
+  pathField.append(path);
+  form.append(pathField, go);
   form.onsubmit = (e) => {
     e.preventDefault();
     browseDirectory(path.value);
@@ -1935,12 +1975,12 @@ async function openFile(path, workspace) {
     if (type === "application/pdf") {
       const source = await r.arrayBuffer();
       if (version === fileVersion && $("#preview").open)
-        preview(path, "PDF", source, "pdf");
+        preview(path, "PDF", source, "pdf", undefined, true);
     } else if (type.startsWith("image/")) {
       const blob = await r.blob();
       if (version !== fileVersion || !$("#preview").open) return;
       const url = URL.createObjectURL(blob);
-      preview(path, "Image", url, "image");
+      preview(path, "Image", url, "image", undefined, true);
       $("#preview").addEventListener("close", () => URL.revokeObjectURL(url), {
         once: true,
       });
@@ -1963,6 +2003,7 @@ async function openFile(path, workspace) {
           id: view.id,
           base: path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "",
         },
+        true,
       );
     }
   } catch (e) {
@@ -2006,8 +2047,37 @@ async function loadAgents() {
   }
 }
 let previewBlob, previewController;
-function preview(title, kind, source, format = "text", context) {
+const previewStack = [];
+function preview(
+  title,
+  kind,
+  source,
+  format = "text",
+  context,
+  replace = false,
+) {
   const dialog = $("#preview");
+  if (dialog.open && !replace) {
+    const body = $("#preview-body");
+    previewStack.push({
+      nodes: [...body.childNodes],
+      className: body.className,
+      top: body.scrollTop,
+      left: body.scrollLeft,
+      title: $("#preview-title").textContent,
+      kind: $("#preview-kind").textContent,
+      blob: previewBlob,
+      download: $("#download").onclick,
+      disabled: $("#download").disabled,
+      context: markdownContexts.get(body),
+      markdown: markdownStates.get(body),
+    });
+    previewBlob = null;
+    if (previewStack.length > 8) {
+      const oldest = previewStack.shift();
+      if (oldest.blob) URL.revokeObjectURL(oldest.blob);
+    }
+  }
   ++fileVersion;
   fileAbort?.abort();
   previewController?.abort();
@@ -2147,13 +2217,45 @@ function preview(title, kind, source, format = "text", context) {
   }
   if (!dialog.open) dialog.showModal();
 }
-$("#preview-close").onclick = () => $("#preview").close();
+function closePreview() {
+  if (!previewStack.length) {
+    $("#preview").close();
+    return;
+  }
+  ++fileVersion;
+  fileAbort?.abort();
+  previewController?.abort();
+  if (previewBlob) URL.revokeObjectURL(previewBlob);
+  const parent = previewStack.pop(),
+    body = $("#preview-body");
+  body.replaceChildren(...parent.nodes);
+  body.className = parent.className;
+  $("#preview-title").textContent = parent.title;
+  $("#preview-kind").textContent = parent.kind;
+  $("#download").onclick = parent.download;
+  $("#download").disabled = parent.disabled;
+  previewBlob = parent.blob;
+  if (parent.context) markdownContexts.set(body, parent.context);
+  else markdownContexts.delete(body);
+  if (parent.markdown) markdownStates.set(body, parent.markdown);
+  else markdownStates.delete(body);
+  body.scrollTop = parent.top;
+  body.scrollLeft = parent.left;
+}
+$("#preview-close").onclick = closePreview;
+$("#preview").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closePreview();
+});
 $("#preview").addEventListener("close", () => {
   ++fileVersion;
   fileAbort?.abort();
   previewController?.abort();
   if (previewBlob) URL.revokeObjectURL(previewBlob);
   previewBlob = null;
+  for (const parent of previewStack)
+    if (parent.blob) URL.revokeObjectURL(parent.blob);
+  previewStack.length = 0;
 });
 async function copyText(source) {
   try {

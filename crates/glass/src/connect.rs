@@ -1347,6 +1347,16 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
         ("GET", "/api/status") => Ok(
             json!({"workspace":app.settings.workspace,"remote":!app.settings.local,"name":"Glass","profile":crate::sandbox::permission_profile_label(),"security":app.settings.security}),
         ),
+        ("GET", "/api/commands") => Ok(
+            json!({"commands": crate::actions::catalogue().into_iter().map(|c| {
+            let group = match crate::actions::group(&c.name) {
+                crate::actions::Group::Conversations => "conversations",
+                crate::actions::Group::Work => "work",
+                crate::actions::Group::Settings => "settings",
+            };
+            json!({"name":c.name,"description":c.description,"hint":c.hint,"aliases":c.aliases,"keywords":c.keywords,"primary":c.primary,"group":group})
+        }).collect::<Vec<_>>()}),
+        ),
         ("GET", "/api/browse") => browse(&app.settings, &query),
         ("GET", "/api/usage") => {
             disk_usage(&app.settings, query.get("path").ok_or("Missing directory")?)

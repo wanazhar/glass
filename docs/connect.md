@@ -198,3 +198,23 @@ The browser smoke script uses Playwright Core and an installed Chromium. Set
 `GC_BROWSER_BINARY` to its executable, or install Playwright's Chromium through
 `web/node_modules/.bin/playwright-core install chromium`. It uses isolated local
 storage and a mock provider, and does not change Tailscale routes.
+
+## Browser commands
+
+Type `/` in the composer to open the command palette. Choose Conversations,
+Work, or Settings, or search by command name, alias, or description. Arrow keys
+move the selection and Enter chooses it. Escape returns to the root from a
+section; Escape at the root closes the palette. Touch selection is supported.
+The catalogue comes from the native action registry and is fetched only when
+first opened.
+
+Browser commands open conversation navigation, activity, reasoning, context,
+checklists, and theme controls. Other commands are marked **Terminal only**.
+Their native handlers have not yet been exposed through the browser protocol.
+Arguments are not currently supported. Unknown or unsupported slash commands
+produce a local notice and are never submitted to the model. Opening the palette
+does not use model tokens and remains available during a running turn.
+
+The interface bundles its sans serif and monospace fonts locally. The theme
+follows the device setting by default; the theme button cycles through light,
+dark, and system modes. Code and mathematical notation retain their own fonts.

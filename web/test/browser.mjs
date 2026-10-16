@@ -25,6 +25,26 @@ const paths = [];
 page.on("request", (r) => paths.push(new URL(r.url()).pathname));
 try {
   await page.goto(url);
+  await page.evaluate(() => document.fonts.ready);
+  assert(
+    await page.evaluate(() => document.fonts.check('14px "Glass Sans"')),
+    "Bundled UI font did not load",
+  );
+  assert.match(
+    await page
+      .locator("#prompt")
+      .evaluate((n) => getComputedStyle(n).fontFamily),
+    /Glass Sans/,
+  );
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.waitForFunction(() =>
+    document.documentElement.classList.contains("light"),
+  );
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.waitForFunction(
+    () => !document.documentElement.classList.contains("light"),
+  );
+
   await page
     .getByRole("button", { name: "Shared runtime workspace" })
     .waitFor();
@@ -34,6 +54,30 @@ try {
     ),
     "Heavy preview loaded on welcome",
   );
+  await page.locator("#prompt").fill("/");
+  await page.locator("#commands").waitFor({ state: "visible" });
+  await page.locator(".command-choice").filter({ hasText: "/work" }).click();
+  await page.keyboard.press("Escape");
+  assert(
+    await page.locator("#commands").evaluate((n) => n.open),
+    "Escape closed nested commands",
+  );
+  await page.locator("#command-search").fill("thinking");
+  await page.keyboard.press("Enter");
+  assert(
+    await page
+      .locator("#details")
+      .evaluate((n) => n.classList.contains("open")),
+  );
+  await page.locator("#details-close").click();
+  await page.locator("#prompt").fill("/");
+  await page.locator("#commands").waitFor({ state: "visible" });
+  await page.keyboard.press("Escape");
+  assert(
+    !(await page.locator("#commands").evaluate((n) => n.open)),
+    "Root Escape did not close commands",
+  );
+  await page.locator("#prompt").fill("");
   await page.getByRole("button", { name: "Shared runtime workspace" }).click();
   await page
     .locator("#timeline")

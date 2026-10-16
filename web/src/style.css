@@ -1,3 +1,17 @@
+@font-face {
+  font-family: "Glass Sans";
+  src: url("/fonts/inter-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Glass Mono";
+  src: url("/fonts/jetbrains-mono-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+}
 :root {
   color-scheme: dark;
   --bg: #141916;
@@ -13,13 +27,9 @@
   --purple: #c5b5df;
   --red: #f0a69c;
   --shadow: 0 20px 70px #0005;
-  font-family:
-    Inter,
-    ui-sans-serif,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  --font-sans: "Glass Sans", sans-serif;
+  --font-mono: "Glass Mono", monospace;
+  font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.6;
   background: var(--bg);
@@ -33,7 +43,9 @@ body {
 }
 button,
 input,
-textarea {
+textarea,
+select,
+option {
   font: inherit;
 }
 button {
@@ -586,7 +598,7 @@ a {
   margin: 24px 0;
 }
 .prose code {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.86em;
   color: var(--accent);
   padding: 2px 5px;
@@ -722,9 +734,7 @@ a {
   padding: 12px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font:
-    11px/1.7 ui-monospace,
-    monospace;
+  font: 11px/1.7 var(--font-mono);
   color: var(--muted);
 }
 .tool-actions {
@@ -1274,9 +1284,7 @@ dialog > header > div:last-child {
 }
 .json-node {
   margin: 7px 0 7px 14px;
-  font:
-    12px/1.8 ui-monospace,
-    monospace;
+  font: 12px/1.8 var(--font-mono);
 }
 .json-node > summary {
   color: var(--accent);
@@ -1284,9 +1292,7 @@ dialog > header > div:last-child {
 }
 .json-value {
   margin: 3px 0 3px 20px;
-  font:
-    12px/1.8 ui-monospace,
-    monospace;
+  font: 12px/1.8 var(--font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1724,9 +1730,7 @@ dialog[open] {
   outline: 0;
   background: none;
   color: var(--text);
-  font:
-    12px/1.5 ui-monospace,
-    monospace;
+  font: 12px/1.5 var(--font-mono);
 }
 .file-heading .quiet {
   color: var(--muted);
@@ -1780,9 +1784,7 @@ dialog[open] {
   min-width: 64px;
   text-align: right;
   padding: 10px 2px;
-  font:
-    10px ui-monospace,
-    monospace;
+  font: 10px var(--font-mono);
 }
 .file-size:disabled {
   opacity: 1;
@@ -1838,4 +1840,142 @@ dialog[open] {
 
 .app.resizing .sidebar {
   transition: none;
+}
+
+/* The idle viewport remains CSS-driven after iOS standalone suspension. */
+.keyboard-open {
+  --safe-bottom: 0px;
+}
+
+/* WebKit's async scrolling needs concrete row geometry inside this fixed shell. */
+@supports (-webkit-touch-callout: none) {
+  .message {
+    content-visibility: visible;
+    contain-intrinsic-size: none;
+  }
+}
+.message.pending .message-meta {
+  opacity: 0.5;
+}
+
+pre,
+code,
+kbd,
+samp {
+  font-family: var(--font-mono);
+}
+dialog {
+  font-family: var(--font-sans);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not(.theme-ready) {
+    color-scheme: light;
+    --bg: #f7f8f3;
+    --sidebar: #eef0e8;
+    --surface: #f0f2eb;
+    --surface2: #e7ece1;
+    --line: #d7ddcf;
+    --text: #28332a;
+    --muted: #637360;
+    --dim: #7e8b78;
+    --accent: #456d37;
+    --accent-bg: #e1ebda;
+    --purple: #725b8c;
+    --red: #a34539;
+    --shadow: 0 20px 70px #17301516;
+  }
+}
+
+/* Keep one bounded touch scroller per drawer or preview. */
+.details {
+  min-height: 0;
+  overflow: hidden;
+}
+.details > header,
+.detail-tabs {
+  flex-shrink: 0;
+}
+#detail-content {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  white-space: normal;
+  padding-bottom: max(18px, var(--safe-bottom));
+}
+dialog[open] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+dialog > header {
+  flex-shrink: 0;
+}
+#preview-body {
+  flex: 1 1 0;
+  min-height: 0;
+  height: auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: max(24px, var(--safe-bottom));
+}
+.file-path input {
+  font-family: var(--font-sans);
+  letter-spacing: -0.2px;
+}
+
+#commands {
+  width: min(560px, 100vw);
+  height: min(600px, 85dvh);
+}
+#command-search {
+  margin: 14px 20px;
+  padding: 12px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-width: 0;
+  font-size: 16px;
+}
+#command-list {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 12px;
+  touch-action: pan-y;
+}
+.command-choice {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  text-align: left;
+  padding: 12px;
+  border-radius: 8px;
+  gap: 4px;
+}
+.command-choice[aria-selected="true"] {
+  background: var(--accent-bg);
+}
+.command-choice strong {
+  color: var(--accent);
+  font-weight: 550;
+}
+.command-choice span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.command-choice small {
+  color: var(--dim);
+}
+#command-help {
+  padding: 12px 20px;
+  color: var(--muted);
+  font-size: 12px;
+  border-top: 1px solid var(--line);
 }

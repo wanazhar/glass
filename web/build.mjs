@@ -25,6 +25,15 @@ await cp(
 );
 await cp("dist/app.css", "dist/math.css");
 await cp("src/index.html", "dist/index.html");
+await mkdir("dist/fonts", { recursive: true });
+await cp(
+  "node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2",
+  "dist/fonts/inter-latin.woff2",
+);
+await cp(
+  "node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2",
+  "dist/fonts/jetbrains-mono-latin.woff2",
+);
 await writeFile(
   "dist/style.css",
   (

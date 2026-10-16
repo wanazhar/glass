@@ -2149,13 +2149,16 @@ dialog > header {
 #commands {
   position: fixed;
   inset: auto;
-  top: max(12px, calc(var(--app-height, 100dvh) * 0.12));
-  left: max(12px, calc((100vw - 480px) / 2));
-  transform: none;
+  top: calc(50% + var(--safe-top) * 0.5 - var(--safe-bottom) * 0.5);
+  left: 50%;
+  transform: translate(-50%, -50%);
   margin: 0;
   width: min(480px, calc(100vw - 24px));
   height: auto;
-  max-height: min(560px, calc(var(--app-height, 100dvh) - 48px));
+  max-height: min(
+    560px,
+    calc(100% - var(--safe-top) - var(--safe-bottom) - 48px)
+  );
   border: 1px solid var(--line);
   border-radius: 16px;
   padding: 0;
@@ -2587,23 +2590,16 @@ dialog > header {
   }
 }
 @media (max-width: 700px) {
-  .standalone:not(.keyboard-open) dialog[open] {
+  .standalone:not(.keyboard-open) dialog[open]:not(#commands) {
     inset: 0;
     height: auto;
     max-height: none;
-  }
-  .standalone:not(.keyboard-open) #commands[open] {
-    inset: max(12px, var(--safe-top)) 12px auto;
-    height: auto;
-    max-height: calc(
-      100% - max(12px, var(--safe-top)) - max(12px, var(--safe-bottom))
-    );
   }
 }
 
 /* Dialogs are in document coordinates; keyboard offsets must be included. */
 .keyboard-open #commands[open] {
-  top: calc(var(--viewport-top, 0px) + 12px);
+  top: calc(var(--viewport-top, 0px) + var(--app-height, 100dvh) * 0.5);
   bottom: auto;
   height: auto;
   max-height: calc(var(--app-height, 100dvh) - 24px);
@@ -2637,11 +2633,5 @@ dialog > header {
 @media (max-width: 700px) {
   .standalone:not(.keyboard-open) dialog[open]:not(#commands) > header {
     padding-top: calc(var(--safe-top) + 24px);
-  }
-  .standalone:not(.keyboard-open) #commands[open] {
-    top: calc(var(--safe-top) + 24px);
-    max-height: calc(
-      100% - var(--safe-top) - 24px - max(12px, var(--safe-bottom))
-    );
   }
 }

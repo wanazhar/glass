@@ -137,8 +137,7 @@ function syncViewport() {
       "standalone",
       Boolean(standalone),
     );
-    // WebKit can report a stale visualViewport size after standalone resume.
-    // CSS owns the idle viewport; override only for a visible software keyboard.
+    // Keep standalone layout on the window geometry used before the CSS viewport switch.
     const focused = document.activeElement?.matches(
       "textarea,input:not([type=radio]):not([type=checkbox]):not([type=file]):not([type=button]):not([type=submit]),[contenteditable=true]",
     );
@@ -147,17 +146,19 @@ function syncViewport() {
       viewport.scale === 1 &&
       focused &&
       window.innerHeight - viewport.height > 120;
-    if (keyboard)
+    if (keyboard) {
       document.documentElement.style.setProperty(
         "--app-height",
-        `${Math.round(viewport.height)}px`,
+        `${viewport.height}px`,
       );
-    else if (standalone)
+    } else if (standalone) {
       document.documentElement.style.setProperty(
         "--app-height",
-        CSS.supports("height", "100lvh") ? "100lvh" : "100vh",
+        `${window.innerHeight}px`,
       );
-    else document.documentElement.style.removeProperty("--app-height");
+    } else {
+      document.documentElement.style.removeProperty("--app-height");
+    }
     document.documentElement.style.setProperty("--viewport-top", "0px");
     document.documentElement.classList.toggle(
       "keyboard-open",

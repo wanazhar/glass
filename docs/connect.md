@@ -344,6 +344,5 @@ loads older reasoning automatically; Earlier reasoning loads another bounded bat
 Each batch reads at most four history pages, with a 256 KiB reasoning preview limit.
 Loading chat history skips internal-only pages within the same four-page budget.
 Teammate inspection opens a separate modal with loading, empty, and error states;
-activity updates do not replace its contents. Standalone layout uses the full CSS viewport when the software keyboard is
-closed. The toolbar leaves extra space below the status area; composer bottom
+activity updates do not replace its contents. Standalone layout uses the window height while the keyboard is closed. The toolbar leaves extra space below the status area; composer bottom
 padding is capped at 34 px. Keyboard layout uses the visual viewport height.

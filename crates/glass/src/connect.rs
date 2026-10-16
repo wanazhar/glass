@@ -22,6 +22,10 @@ const MAX_EVENT_BYTES: usize = 1024 * 1024;
 struct Settings {
     port: u16,
     https: u16,
+    #[serde(default)]
+    http: u16,
+    #[serde(default)]
+    http_host: String,
     host: String,
     login: String,
     token: String,
@@ -115,6 +119,104 @@ fn cli(args: &[&str]) -> Result<Value, String> {
     }
     serde_json::from_slice(&out.stdout).map_err(|e| format!("Invalid Tailscale response: {e}"))
 }
+// Tailscale's HTTP router appends the tailnet DNS suffix even to IP Hosts.
+// Add just that alias through its local API, with CAS to protect other routes.
+fn tailscale_api(method: &str, body: &[u8], etag: &str) -> Result<(u16, String, Vec<u8>), String> {
+    let path = std::env::var_os("GC_TAILSCALE_SOCKET")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/run/tailscale/tailscaled.sock"));
+    let mut stream = UnixStream::connect(path).map_err(|e| format!("Tailscale local API: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| e.to_string())?;
+    if !etag
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'"' || b == b'-')
+    {
+        return Err("Invalid Tailscale configuration version".into());
+    }
+    write!(stream, "{method} /localapi/v0/serve-config HTTP/1.0\r\nHost: local-tailscaled.sock\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\nIf-Match: {etag}\r\n\r\n", body.len()).map_err(|e| e.to_string())?;
+    stream.write_all(body).map_err(|e| e.to_string())?;
+    let mut data = Vec::new();
+    stream
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| e.to_string())?;
+    if data.len() > 1024 * 1024 {
+        return Err("Tailscale configuration exceeds bounds".into());
+    }
+    let split = data
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or("Invalid Tailscale API response")?;
+    let headers = std::str::from_utf8(&data[..split]).map_err(|e| e.to_string())?;
+    let status = headers
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .ok_or("Invalid Tailscale API status")?;
+    let etag = headers
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(k, _)| k.eq_ignore_ascii_case("etag"))
+        .map(|(_, v)| v.trim().to_string())
+        .unwrap_or_default();
+    Ok((status, etag, data[split + 4..].to_vec()))
+}
+fn http_alias(settings: &Settings, add: bool) -> Result<(), String> {
+    if settings.http == 0 {
+        return Ok(());
+    }
+    let suffix = settings
+        .host
+        .split_once('.')
+        .ok_or("Invalid Tailscale hostname")?
+        .1;
+    let key = format!("{}.{}:{}", settings.http_host, suffix, settings.http);
+    for _ in 0..3 {
+        let (status, etag, body) = tailscale_api("GET", b"", "")?;
+        if status != 200 || etag.is_empty() {
+            return Err(format!(
+                "Cannot read Tailscale route version: HTTP {status}"
+            ));
+        }
+        let mut config: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+        let web = config["Web"]
+            .as_object_mut()
+            .ok_or("Tailscale web routes unavailable")?;
+        if add {
+            let source = format!("{}:{}", settings.host, settings.http);
+            let handler = web
+                .get(&source)
+                .filter(|h| h["Handlers"]["/"]["Proxy"] == route(settings))
+                .cloned()
+                .ok_or("GC HTTP route changed during setup")?;
+            if web.get(&key).is_some_and(|h| h != &handler) {
+                return Err("HTTP IP alias belongs to another service".into());
+            }
+            web.insert(key.clone(), handler);
+        } else if web
+            .get(&key)
+            .is_some_and(|h| h["Handlers"]["/"]["Proxy"] == route(settings))
+        {
+            web.remove(&key);
+        } else {
+            return Ok(());
+        }
+        let encoded = serde_json::to_vec(&config).map_err(|e| e.to_string())?;
+        let (status, _, _) = tailscale_api("POST", &encoded, &etag)?;
+        if status == 200 {
+            return Ok(());
+        }
+        if status != 412 {
+            return Err(format!("Cannot update GC HTTP IP route: HTTP {status}"));
+        }
+    }
+    Err("Tailscale routes changed concurrently; retry gc connect".into())
+}
 fn port_available(port: u16) -> bool {
     match TcpListener::bind(("0.0.0.0", port)) {
         Ok(listener) => drop(listener),
@@ -135,6 +237,12 @@ fn route(settings: &Settings) -> String {
     format!("http://127.0.0.1:{}", settings.port)
 }
 fn web_url(settings: &Settings) -> String {
+    if settings.http > 0 {
+        return format!("http://{}:{}", settings.http_host, settings.http);
+    }
+    https_url(settings)
+}
+fn https_url(settings: &Settings) -> String {
     if settings.local {
         format!("http://127.0.0.1:{}/#{}", settings.port, settings.token)
     } else {
@@ -199,15 +307,21 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
         Some("stop") => {
             let s = load()?;
             if !s.local {
+                http_alias(&s, false)?;
                 let status = cli(&["serve", "status", "--json"])?;
-                let key = format!("{}:{}", s.host, s.https);
-                if status["Web"][&key]["Handlers"]["/"]["Proxy"] == route(&s) {
-                    let out = Command::new("tailscale")
-                        .args(["serve", &format!("--https={}", s.https), "off"])
-                        .output()
-                        .map_err(|e| e.to_string())?;
-                    if !out.status.success() {
-                        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+                for (protocol, port) in [("https", s.https), ("http", s.http)] {
+                    if port == 0 {
+                        continue;
+                    }
+                    let key = format!("{}:{}", s.host, port);
+                    if status["Web"][&key]["Handlers"]["/"]["Proxy"] == route(&s) {
+                        let out = Command::new("tailscale")
+                            .args(["serve", &format!("--{protocol}={port}"), "off"])
+                            .output()
+                            .map_err(|e| e.to_string())?;
+                        if !out.status.success() {
+                            return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+                        }
                     }
                 }
             }
@@ -222,9 +336,11 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
             );
             return Ok(());
         }
-        None | Some("--local") => {}
+        None | Some("--local" | "--http") => {}
         _ => {
-            return Err("usage: gc connect [--local] | gc connect status | gc connect stop".into());
+            return Err(
+                "usage: gc connect [--local | --http] | gc connect status | gc connect stop".into(),
+            );
         }
     }
     if args.len() > 1 {
@@ -233,6 +349,9 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
     if let Ok(s) = load()
         && alive(&s)
     {
+        if args.first().is_some_and(|a| a == "--http") && s.http == 0 {
+            return Err("Remote access is already running. Run gc connect stop, then gc connect --http. Served tasks continue.".into());
+        }
         crate::cli_println!("GC Connect · ready\n{}", web_url(&s));
         return Ok(());
     }
@@ -272,8 +391,29 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
                     .into_iter()
                     .find(|port| routes["TCP"][port.to_string()].is_null() && port_available(*port))
             })
+            .or_else(|| args.first().is_some_and(|a| a == "--http").then_some(0))
             .ok_or("No free GC HTTPS port; existing Tailscale routes were preserved")?;
         (host, login, https)
+    };
+    let (http, http_host) = if args.first().is_some_and(|a| a == "--http") {
+        let status = cli(&["status", "--json"])?;
+        let ip = status["TailscaleIPs"]
+            .as_array()
+            .and_then(|ips| {
+                ips.iter()
+                    .filter_map(Value::as_str)
+                    .find(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
+            })
+            .ok_or("Tailscale IPv4 address is unavailable")?
+            .to_string();
+        let routes = cli(&["serve", "status", "--json"])?;
+        let http = [8080, 8081, 8082, 8083]
+            .into_iter()
+            .find(|port| routes["TCP"][port.to_string()].is_null() && port_available(*port))
+            .ok_or("No free GC HTTP port; existing routes were preserved")?;
+        (http, ip)
+    } else {
+        (0, String::new())
     };
     let port = TcpListener::bind("127.0.0.1:0")
         .map_err(|e| e.to_string())?
@@ -286,6 +426,8 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
     let mut settings = Settings {
         port,
         https,
+        http,
+        http_host,
         host,
         login,
         token: random.iter().map(|b| format!("{b:02x}")).collect(),
@@ -339,24 +481,33 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
         std::thread::sleep(Duration::from_millis(40));
     }
     if !local {
-        let out = Command::new("tailscale")
-            .args([
-                "serve",
-                "--bg",
-                &format!("--https={https}"),
-                &route(&settings),
-            ])
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !out.status.success() {
-            let _ = child.kill();
-            let _ = std::fs::remove_file(state_path());
-            return Err(format!(
-                "Tailscale Serve could not start: {}",
-                String::from_utf8_lossy(&out.stderr)
-            ));
+        for (protocol, port) in [("https", https), ("http", http)] {
+            if port == 0 {
+                continue;
+            }
+            let out = Command::new("tailscale")
+                .args([
+                    "serve",
+                    "--bg",
+                    &format!("--{protocol}={port}"),
+                    &route(&settings),
+                ])
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !out.status.success() {
+                if protocol == "https" && http > 0 {
+                    crate::cli_println!("HTTPS setup unavailable; continuing with tailnet HTTP.");
+                    continue;
+                }
+                // Keep the verified HTTPS gateway available if optional HTTP setup fails.
+                return Err(format!(
+                    "Tailscale {protocol} Serve could not start: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
         }
     }
+    http_alias(&settings, true)?;
     crate::cli_println!(
         "GC Connect · ready\n{}\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\ngc connect status · gc connect stop",
         web_url(&settings)
@@ -724,12 +875,15 @@ fn origin(settings: &Settings) -> String {
     }
 }
 fn authorized(settings: &Settings, r: &Request) -> bool {
-    let expected = origin(settings);
-    let host = expected.split_once("://").unwrap().1;
-    if r.headers.get("host").is_none_or(|h| h != host) {
+    let candidates = [origin(settings), https_url(settings)];
+    let Some(expected) = candidates.iter().find(|candidate| {
+        r.headers
+            .get("host")
+            .is_some_and(|host| host == candidate.split_once("://").unwrap().1)
+    }) else {
         return false;
-    }
-    if r.headers.get("origin").is_some_and(|o| o != &expected) {
+    };
+    if r.headers.get("origin").is_some_and(|o| o != expected) {
         return false;
     }
     if r.headers
@@ -1098,6 +1252,8 @@ mod tests {
         Settings {
             port: 8765,
             https: 8443,
+            http: 0,
+            http_host: String::new(),
             host: "host.tail.ts.net".into(),
             login: "owner@example.test".into(),
             token: "secret".into(),

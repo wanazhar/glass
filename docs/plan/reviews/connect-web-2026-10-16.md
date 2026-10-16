@@ -47,3 +47,21 @@ handoff before web access. Shared served clients have explicit input ownership.
 HTML previews cannot execute scripts or submit forms. Large previews are bounded;
 PDFs render one page at a time. Tailnet owner identity is required; tagged nodes
 are not supported in this mode. Existing unrelated Tailscale routes remain intact.
+
+## HTTP compatibility follow-up
+
+Added `gc connect --http` for direct tailnet IP access, keeping HTTPS when
+available. HTTP startup can proceed if HTTPS setup fails or all candidate HTTPS
+ports are occupied. Each origin still requires an exact host/port match and the
+Tailscale owner's identity. Stopping checks both recorded routes before removal.
+The browser uses `crypto.getRandomValues` when `crypto.randomUUID` is unavailable
+on plain HTTP. Lifecycle tests include HTTP IP requests, cross-origin rejection,
+parallel HTTPS, and forced HTTPS setup failure. Browser tests explicitly remove
+`randomUUID` to exercise the HTTP-compatible submission path. An independent
+reviewer confirmed the HTTPS dependency was removed. HTTP does not provide
+service worker caching or the full browser clipboard API.
+
+Live IP access exposed Tailscale HTTP hostname normalization. GC now manages the
+normalized alias through the bounded local Unix API, with ETag compare-and-swap
+and retries. Tests cover version conflicts and alias cleanup. Real HTTP page and
+owner-authenticated API access returned HTTP 200.

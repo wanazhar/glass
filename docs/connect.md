@@ -42,6 +42,25 @@ unrelated routes are not replaced. Stopping removes GC's route only if it still
 points to GC's recorded loopback endpoint. It does not reset Tailscale Serve or
 stop session workers. Use `gc stop THREAD_ID` separately to stop an idle worker.
 
+For direct HTTP access by Tailscale IP, use:
+
+```sh
+gc connect stop # only if the gateway is already running
+gc connect --http
+```
+
+This prints `http://TAILSCALE_IP:PORT` and keeps the HTTPS endpoint when available. Both use
+Tailscale owner identity checks. The HTTP listener uses an available port from
+8080 through 8083. It stays inside the tailnet; it is not a public listener.
+Plain HTTP supports the online workspace, but browsers require HTTPS for service
+worker caching and some clipboard features. Use HTTPS for the full PWA experience.
+`gc connect stop` removes both GC routes while preserving session workers.
+Tailscale's HTTP router normalizes IP hosts with the tailnet DNS suffix. GC adds
+and removes that exact alias through the local daemon API using version checks,
+so unrelated or concurrently changed routes are preserved. The default daemon
+socket is `/var/run/tailscale/tailscaled.sock`; set `GC_TAILSCALE_SOCKET` when the
+daemon uses another Unix socket path.
+
 For local development without Tailscale:
 
 ```sh

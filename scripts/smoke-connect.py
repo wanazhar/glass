@@ -99,6 +99,11 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
     pdf.extend(f'trailer << /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF'.encode());(root/'sample.pdf').write_bytes(pdf)
     records=[{'k':'user','t':'Help me keep this readable.'},{'k':'call','id':'fixture-tool','name':'read','args':'{"path":"src/runtime.rs"}'},{'k':'tool','id':'fixture-tool','name':'read','t':'Read 120 lines · src/runtime.rs'},{'k':'assistant','t':FIXTURE}]
     (data/'web-fixture.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in records));(data/'web-fixture.meta.json').write_text(json.dumps({'workspace':str(root),'title':'Shared runtime workspace'}))
+    reasoning_records=[{'k':'reasoning','t':'Archived thought '+str(i)+'. '+('Earlier investigation details. '*35)+'\n\n'} for i in range(80)]
+    reasoning_records += [{'k':'meta','t':'Internal fixture record'} for _ in range(70)]
+    reasoning_records += [{'k':'reasoning','t':'Latest short thought.'},{'k':'assistant','t':'Reasoning archive response.'}]
+    (data/'reasoning-archive.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in reasoning_records))
+    (data/'reasoning-archive.meta.json').write_text(json.dumps({'workspace':str(root),'title':'Reasoning archive fixture'}))
     (data/'other-project.jsonl').write_text(json.dumps({'k':'user','t':'Other project fixture'})+'\n')
     (data/'other-project.meta.json').write_text(json.dumps({'workspace':str(root/'project-two'),'title':'Other project fixture'}))
     (data/'legacy-archive.jsonl').write_text(json.dumps({'k':'user','t':'Legacy archive fixture'})+'\n')

@@ -22,6 +22,7 @@ const view = {
   control: false,
   follow: true,
   reasoning: "",
+  reasoningBefore: 0,
   tools: new Map(),
   group: null,
   stream: null,
@@ -144,6 +145,14 @@ function syncViewport() {
       document.documentElement.style.setProperty(
         "--app-height",
         `${Math.round(viewport.height)}px`,
+      );
+    else if (
+      matchMedia("(display-mode: standalone)").matches ||
+      navigator.standalone
+    )
+      document.documentElement.style.setProperty(
+        "--app-height",
+        `${window.innerHeight}px`,
       );
     else document.documentElement.style.removeProperty("--app-height");
     document.documentElement.style.setProperty("--viewport-top", "0px");
@@ -708,6 +717,7 @@ async function history(older = false) {
   const savedTasks = view.tasks;
   if (older) view.stream = null;
   view.group = null;
+  let visibleRecords = 0;
   for (const item of h.records) {
     if (
       older &&
@@ -716,7 +726,9 @@ async function history(older = false) {
         (item.record.k === "custom" && item.record.c === "state/todo"))
     )
       continue;
+    const previousNode = fragment.lastElementChild;
     record(item.record, fragment);
+    if (fragment.lastElementChild !== previousNode) visibleRecords++;
     const node = fragment.lastElementChild;
     if (node && !node.dataset.recordIndex)
       node.dataset.recordIndex = String(item.index);
@@ -763,8 +775,10 @@ async function history(older = false) {
         : previousTop;
   }
   view.before = h.before;
+  if (!older) view.reasoningBefore = h.before;
   $("#older").classList.toggle("hidden", h.before === 0);
   details();
+  return visibleRecords;
 }
 let earlierRequestGeneration = null;
 $("#older").onclick = async () => {
@@ -781,7 +795,10 @@ $("#older").onclick = async () => {
   );
   try {
     if (generation !== view.generation) return;
-    await history(true);
+    for (let page = 0; page < 4; page++) {
+      const rendered = await history(true);
+      if (generation !== view.generation || rendered || !view.before) break;
+    }
   } catch (e) {
     if (generation === view.generation) notice(e.message, true);
   } finally {
@@ -1036,6 +1053,7 @@ async function openThread(id, { resume = false } = {}) {
   view.stream = null;
   view.streamText = "";
   view.reasoning = "";
+  view.reasoningBefore = 0;
   view.tasks = [];
   view.streamTruncated = false;
   view.interaction = null;
@@ -1538,6 +1556,68 @@ function interaction() {
     panel.append(form);
   }
 }
+let reasoningLoading = null;
+async function loadEarlierReasoning(automatic = false) {
+  const id = view.id,
+    generation = view.generation;
+  if (!id || !view.reasoningBefore || reasoningLoading === generation) return;
+  reasoningLoading = generation;
+  details();
+  try {
+    for (
+      let page = 0;
+      page < 4 &&
+      view.reasoningBefore &&
+      view.reasoning.length < limits.reasoning;
+      page++
+    ) {
+      const before = view.reasoningBefore;
+      const data = await api(
+        "history?id=" + encodeURIComponent(id) + "&before=" + before,
+      );
+      if (generation !== view.generation) return;
+      if (data.before >= before)
+        throw new Error("Reasoning history cursor did not advance");
+      view.reasoningBefore = data.before;
+      const prefix = data.records
+        .filter((item) => item.record.k === "reasoning")
+        .map((item) => item.record.t || "")
+        .join("");
+      if (!prefix) continue;
+      const pane = $("#detail-content"),
+        top = pane.scrollTop,
+        height = pane.scrollHeight;
+      const room = Math.max(0, limits.reasoning - view.reasoning.length);
+      view.reasoning = (room ? prefix.slice(-room) : "") + view.reasoning;
+      if (view.tab === "reasoning" && (!automatic || view.reasoningFollow)) {
+        const following = view.reasoningFollow;
+        view.reasoningFollow = true;
+        details();
+        view.reasoningFollow = following;
+        pane.scrollTop = following
+          ? pane.scrollHeight
+          : top + pane.scrollHeight - height;
+      }
+      if (!automatic || pane.scrollHeight > pane.clientHeight + 100) break;
+    }
+  } catch (e) {
+    if (generation === view.generation) notice(e.message, true);
+  } finally {
+    if (reasoningLoading === generation) {
+      reasoningLoading = null;
+      if (generation === view.generation) {
+        const button = $(".reasoning-earlier");
+        if (button) {
+          button.disabled =
+            !view.reasoningBefore || view.reasoning.length >= limits.reasoning;
+          button.textContent = view.reasoningBefore
+            ? "↑ Earlier reasoning"
+            : "All loaded";
+        }
+      }
+    }
+  }
+}
 function details() {
   const n = $("#detail-content");
   if (!$("#details").classList.contains("open")) return;
@@ -1572,7 +1652,26 @@ function details() {
       body.dataset.reasoningSource = source;
       body.dataset.reasoningStreaming = String(view.active);
     }
-    if (!body.isConnected) n.append(body);
+    if (!body.isConnected) {
+      const earlier = el(
+        "button",
+        "quiet reasoning-earlier",
+        "↑ Earlier reasoning",
+      );
+      earlier.onclick = () => loadEarlierReasoning(false);
+      n.append(earlier, body);
+    }
+    const earlier = n.querySelector(".reasoning-earlier");
+    earlier.disabled =
+      !view.reasoningBefore ||
+      reasoningLoading === view.generation ||
+      view.reasoning.length >= limits.reasoning;
+    earlier.textContent =
+      reasoningLoading === view.generation
+        ? "Loading reasoning…"
+        : view.reasoningBefore
+          ? "↑ Earlier reasoning"
+          : "All loaded";
     if (view.reasoningFollow && changed) n.scrollTop = n.scrollHeight;
   } else if (view.tab === "context") {
     const thread = threadInfo(view.id) || {};
@@ -1766,6 +1865,8 @@ for (const tab of document.querySelectorAll("[data-tab]"))
     if (view.tab === "reasoning") {
       const pane = $("#detail-content");
       pane.scrollTop = pane.scrollHeight;
+      if (pane.scrollHeight <= pane.clientHeight + 100)
+        loadEarlierReasoning(true);
     }
   };
 $("#menu").onclick = () => showPanel("#sidebar");
@@ -2093,10 +2194,25 @@ async function openFile(path, workspace) {
   }
 }
 async function loadAgents() {
+  const id = view.id,
+    generation = view.generation;
+  preview("Teammates", "Agents", "Loading teammates…");
+  const controller = previewController;
   try {
-    const agents = await api("agents?id=" + encodeURIComponent(view.id));
-    const n = $("#detail-content");
-    for (const agent of Array.isArray(agents) ? agents : agents.agents || []) {
+    const agents = await api(
+      "agents?id=" + encodeURIComponent(id),
+      undefined,
+      controller.signal,
+    );
+    if (generation !== view.generation || controller.signal.aborted) return;
+    const n = $("#preview-body");
+    n.replaceChildren();
+    const list = Array.isArray(agents) ? agents : agents.agents || [];
+    if (!list.length)
+      n.append(
+        el("p", "quiet", "No teammates have been created for this thread."),
+      );
+    for (const agent of list) {
       const card = el("div", "detail-card");
       card.append(
         el("strong", "", agent.name || agent.id),
@@ -2107,24 +2223,30 @@ async function loadAgents() {
         try {
           const result = await api(
             "agent?id=" +
-              encodeURIComponent(view.id) +
+              encodeURIComponent(id) +
               "&agent=" +
               encodeURIComponent(agent.id),
+            undefined,
+            controller.signal,
           );
+          if (generation !== view.generation || controller.signal.aborted)
+            return;
           preview(
             agent.name || "Teammate",
             "Transcript",
             result.text || JSON.stringify(result, null, 2),
           );
         } catch (e) {
-          notice(e.message, true);
+          if (generation === view.generation && !controller.signal.aborted)
+            card.append(el("p", "notice error", e.message));
         }
       };
       card.append(button);
       n.append(card);
     }
   } catch (e) {
-    notice(e.message, true);
+    if (generation === view.generation && !controller.signal.aborted)
+      $("#preview-body").replaceChildren(el("p", "notice error", e.message));
   }
 }
 let previewBlob, previewController;

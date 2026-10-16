@@ -15,7 +15,9 @@ const context = await browser.newContext({
   viewport: { width: 1440, height: 1000 },
 });
 // Plain HTTP has getRandomValues but does not expose randomUUID.
-await context.addInitScript(() => Object.defineProperty(crypto, "randomUUID", { value: undefined }));
+await context.addInitScript(() =>
+  Object.defineProperty(crypto, "randomUUID", { value: undefined }),
+);
 const page = await context.newPage();
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e)));
@@ -42,9 +44,6 @@ try {
   );
   await page.locator(".katex").first().waitFor();
   await page.locator(".hljs-keyword").first().waitFor();
-  await page
-    .getByRole("button", { name: "Render diagram", exact: true })
-    .click();
   await page.locator(".diagram-render svg").waitFor({ timeout: 30000 });
   assert(
     await page
@@ -53,6 +52,13 @@ try {
       .then((s) => s.includes("Glass runtime")),
     "Diagram labels missing",
   );
+  await page.getByRole("button", { name: "Source", exact: true }).click();
+  assert(await page.locator(".diagram-block pre").isVisible());
+  await page.getByRole("button", { name: "Diagram", exact: true }).click();
+  assert(await page.locator(".diagram-render svg").isVisible());
+  assert((await page.locator(".diff-line.add").count()) > 0);
+  assert((await page.locator(".diff-line.remove").count()) > 0);
+  assert((await page.locator(".table-wrap table th").count()) >= 3);
   await page.screenshot({
     path: "/tmp/gc-connect-desktop.png",
     fullPage: true,
@@ -82,9 +88,7 @@ try {
     .first()
     .waitFor({ timeout: 30000 });
   await page.waitForFunction(
-    () =>
-      document.querySelector("#activity-text").textContent ===
-      "Ready when you are",
+    () => document.querySelector("#activity-text").textContent === "Ready",
   );
   await page.locator("#prompt").fill("Ask a question");
   await page.locator("#send").click();
@@ -94,9 +98,7 @@ try {
   await page.locator("#interaction textarea").fill("A custom answer");
   await page.getByRole("button", { name: "Send answer", exact: true }).click();
   await page.waitForFunction(
-    () =>
-      document.querySelector("#activity-text").textContent ===
-      "Ready when you are",
+    () => document.querySelector("#activity-text").textContent === "Ready",
     { timeout: 30000 },
   );
   await page.locator("#prompt").fill("Request approval");
@@ -106,25 +108,30 @@ try {
     .waitFor({ timeout: 30000 });
   await page.getByRole("button", { name: "Deny", exact: true }).click();
   await page.waitForFunction(
-    () =>
-      document.querySelector("#activity-text").textContent ===
-      "Ready when you are",
+    () => document.querySelector("#activity-text").textContent === "Ready",
     { timeout: 30000 },
   );
-  await page.locator('#prompt').fill('HOLD-WEB-STREAM');
-  await page.locator('#send').click();
-  await page.waitForFunction(()=>document.querySelector('#activity').classList.contains('working'));
-  await page.locator('#prompt').fill('SteeringReady correction');
-  await page.locator('#send').click();
-  await page.waitForFunction(()=>document.querySelector('#activity-text').textContent==='Ready when you are',{timeout:15000});
-  await page.locator('#timeline').getByText(/Follow-up.*SteeringReady correction/).first().waitFor();
+  await page.locator("#prompt").fill("HOLD-WEB-STREAM");
+  await page.locator("#send").click();
+  await page.waitForFunction(() =>
+    document.querySelector("#activity").classList.contains("working"),
+  );
+  await page.locator("#prompt").fill("SteeringReady correction");
+  await page.locator("#send").click();
+  await page.waitForFunction(
+    () => document.querySelector("#activity-text").textContent === "Ready",
+    { timeout: 15000 },
+  );
+  await page
+    .locator("#timeline")
+    .getByText(/Follow-up.*SteeringReady correction/)
+    .first()
+    .waitFor();
   await page.locator("#prompt").fill("Hello streaming");
   await page.locator("#send").click();
   await page.getByText("StreamingReady.").first().waitFor({ timeout: 30000 });
   await page.waitForFunction(
-    () =>
-      document.querySelector("#activity-text").textContent ===
-      "Ready when you are",
+    () => document.querySelector("#activity-text").textContent === "Ready",
     { timeout: 30000 },
   );
   await page.locator("#details-toggle").click();
@@ -147,6 +154,56 @@ try {
       .count(),
     1,
   );
+  await page.locator("#prompt").fill("stability fixture");
+  await page.locator("#send").click();
+  await page
+    .locator(".message.streaming")
+    .getByText("StableParagraph", { exact: false })
+    .waitFor();
+  await page.evaluate(
+    () =>
+      (window.__stableBlock = document.querySelector(
+        ".message.streaming .markdown-block",
+      )),
+  );
+  await page
+    .locator(".message.streaming")
+    .getByText("Frame 8 remains readable.", { exact: true })
+    .waitFor();
+  assert(
+    await page.evaluate(
+      () =>
+        window.__stableBlock.isConnected &&
+        window.__stableBlock ===
+          document.querySelector(".message.streaming .markdown-block"),
+    ),
+    "Completed streamed block was replaced",
+  );
+  await page.waitForFunction(
+    () => document.querySelector("#activity-text").textContent === "Ready",
+  );
+  await page.waitForTimeout(100);
+  assert(
+    await page.evaluate(() => window.__stableBlock.isConnected),
+    "Settled history replaced stable streamed content",
+  );
+  await page.locator("#prompt").fill("interleaved fixture");
+  await page.locator("#send").click();
+  await page
+    .locator("#timeline")
+    .getByText("BeforeToolReady.", { exact: true })
+    .waitFor();
+  await page.waitForFunction(
+    () => document.querySelector("#activity-text").textContent === "Ready",
+  );
+  await page.locator("#prompt").fill("cap fixture");
+  await page.locator("#send").click();
+  await page.locator(".message.streaming .display-cap").waitFor();
+  const cap = await page.locator(".message.streaming .prose").textContent();
+  assert(cap.length < 263000, "Streaming display cap exceeded");
+  await page.waitForFunction(
+    () => document.querySelector("#activity-text").textContent === "Ready",
+  );
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(200);
   await page.screenshot({ path: "/tmp/gc-connect-mobile.png", fullPage: true });
@@ -161,6 +218,139 @@ try {
     () => document.querySelector("#sidebar").getBoundingClientRect().left === 0,
   );
   await page.locator("#scrim").click({ position: { x: 370, y: 400 } });
+  await page.locator("#details-toggle").click();
+  await page.getByRole("button", { name: "Files", exact: true }).click();
+  await page.locator(".file-name").filter({ hasText: "notes.md" }).waitFor();
+  await page.locator(".file-open").filter({ hasText: "notes.md" }).click();
+  await page
+    .locator("#preview-body")
+    .getByText("PreviewReady notes stay on the host.")
+    .waitFor();
+  await page.locator("#preview-close").click();
+  await page.locator(".file-open").filter({ hasText: "project-two" }).click();
+  await page.waitForFunction(() =>
+    document.querySelector(".file-path input")?.value.endsWith("/project-two"),
+  );
+  for (let repeat = 0; repeat < 2; repeat++) {
+    await page.locator(".file-open").filter({ hasText: "readme.md" }).click();
+    await page.waitForFunction(
+      () => document.querySelector("#preview-body img")?.naturalWidth === 1,
+    );
+    assert(
+      (await page.locator("#preview-body img").getAttribute("src")).includes(
+        "workspace=",
+      ),
+    );
+    await page.locator("#preview-close").click();
+  }
+  await page
+    .getByRole("button", { name: "New thread here", exact: true })
+    .click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#workspace-name").textContent === "project-two",
+  );
+  await page.locator("#details-toggle").click();
+  await page.getByRole("button", { name: "Context", exact: true }).click();
+  await page
+    .locator("#detail-content")
+    .getByText(/project-two/)
+    .first()
+    .waitFor();
+  await page.locator("#details-close").click();
+  const mobile = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+  });
+  await mobile.addInitScript(() =>
+    document.addEventListener("DOMContentLoaded", () => {
+      document.documentElement.style.setProperty("--safe-top", "47px");
+      document.documentElement.style.setProperty("--safe-bottom", "34px");
+    }),
+  );
+  const phone = await mobile.newPage();
+  phone.on("pageerror", (e) => errors.push(String(e)));
+  await phone.goto(url);
+  for (const size of [
+    { width: 390, height: 844 },
+    { width: 375, height: 667 },
+    { width: 430, height: 932 },
+    { width: 844, height: 390 },
+  ]) {
+    await phone.setViewportSize(size);
+    await phone.evaluate((w) => {
+      document.documentElement.style.setProperty(
+        "--safe-left",
+        w > 700 ? "47px" : "0px",
+      );
+      document.documentElement.style.setProperty(
+        "--safe-right",
+        w > 700 ? "47px" : "0px",
+      );
+    }, size.width);
+    await phone.waitForTimeout(100);
+    assert(
+      await phone.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    );
+    assert(
+      await phone.evaluate(() => document.body.scrollHeight <= innerHeight + 1),
+    );
+    if (size.width > 700) {
+      await phone.locator("#details-toggle").click();
+      const close = await phone.locator("#details-close").boundingBox();
+      assert(
+        close.x + close.width <= size.width - 47,
+        "Landscape drawer close overlaps safe area",
+      );
+      await phone.locator("#details-close").click();
+    }
+    if (size.width <= 700) {
+      assert.equal(
+        await phone
+          .locator(".workspace")
+          .evaluate((n) => n.getBoundingClientRect().left),
+        0,
+        "Mobile workspace shifted",
+      );
+      const menu = phone.locator("#menu");
+      assert((await menu.boundingBox()).y >= 47);
+      await menu.click();
+      await phone.waitForFunction(
+        () =>
+          document.querySelector("#menu").getAttribute("aria-expanded") ===
+          "true",
+      );
+      await phone.locator("#search").focus();
+      assert.equal(
+        await phone
+          .locator("#search")
+          .evaluate((n) => getComputedStyle(n).fontSize),
+        "16px",
+      );
+      await phone.locator("#sidebar-close").click();
+      await phone.locator("#details-toggle").click();
+      await phone.getByRole("button", { name: "Files", exact: true }).click();
+      await phone.locator(".file-list").waitFor();
+      await phone.locator("#details-close").click();
+    }
+  }
+  await phone.setViewportSize({ width: 390, height: 844 });
+  await phone.evaluate(() => {
+    document.documentElement.style.setProperty("--safe-left", "0px");
+    document.documentElement.style.setProperty("--safe-right", "0px");
+  });
+  await phone.waitForTimeout(250);
+  await phone.waitForFunction(
+    () =>
+      document.querySelector("#sidebar").getBoundingClientRect().right <= 0 &&
+      document.querySelector(".workspace").getBoundingClientRect().left === 0,
+  );
+  await phone.screenshot({ path: "/tmp/gc-pwa-standalone-mobile.png" });
+  await mobile.close();
   const manifest = await page.evaluate(async () =>
     fetch("/manifest.webmanifest").then((r) => r.json()),
   );
@@ -170,9 +360,12 @@ try {
   console.log(
     "PASS: desktop + iPhone layouts, lazy rendering, Mermaid, math, syntax, safe HTML, files, commands, custom answers, denied approval, reasoning, reload and PWA",
   );
-} catch(error) {
-  console.error('Browser surface:',(await page.locator('body').innerText()).slice(-10000));
-  await page.screenshot({path:'/tmp/gc-connect-browser-failure.png'});
+} catch (error) {
+  console.error(
+    "Browser surface:",
+    (await page.locator("body").innerText()).slice(-10000),
+  );
+  await page.screenshot({ path: "/tmp/gc-connect-browser-failure.png" });
   throw error;
 } finally {
   await context.close();

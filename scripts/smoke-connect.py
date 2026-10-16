@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Isolated native gateway + real-browser smoke checks. Never changes Tailscale."""
+import base64,urllib.parse
 import http.server,json,os,re,subprocess,tempfile,threading,time,urllib.request,urllib.error,socket,sys
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
@@ -16,6 +17,13 @@ class Provider(http.server.BaseHTTPRequestHandler):
         messages=body.get('messages',[]);last=messages[-1] if messages else {};text=str(last.get('content',''));type(self).received.append(text)
         if last.get('role')=='tool':
             frames=[{'choices':[{'delta':{'content':'Decision received. Work continues.'}}]}]
+        elif 'cap fixture' in text.lower():
+            frames=[{'choices':[{'delta':{'content':'Bounded output '+('x'*65536)}}]} for _ in range(5)]
+        elif 'stability fixture' in text.lower():
+            chunks=['StableParagraph **retained**.\n\n```javascript\nconst fixed = 1;\n```\n\n']+[f'Frame {i} remains readable.\n\n' for i in range(12)]
+            frames=[{'choices':[{'delta':{'content':chunk}}]} for chunk in chunks]
+        elif 'interleaved fixture' in text.lower():
+            frames=[{'choices':[{'delta':{'content':'BeforeToolReady.\n\n'}}]},{'choices':[{'delta':{'tool_calls':[{'index':0,'id':'call-interleaved','type':'function','function':{'name':'bash','arguments':'{"command":"printf tool-ready"}'}}]},'finish_reason':'tool_calls'}]}]
         elif 'question' in text.lower():
             args={'questions':[{'question':'Which output style?','options':[{'label':'Compact','description':'Less space'},{'label':'Detailed','description':'More context'}]}]}
             frames=[{'choices':[{'delta':{'tool_calls':[{'index':0,'id':'call-question','type':'function','function':{'name':'ask_user_question','arguments':json.dumps(args)}}]},'finish_reason':'tool_calls'}]}]
@@ -28,6 +36,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
             frames=[{'choices':[{'delta':{'reasoning_content':'Considering the workspace and preserving context.'}}]},{'choices':[{'delta':{'content':'StreamingReady. **Clear output**, same thread.'}}]}]
         self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
         for frame in frames:self.wfile.write(('data: '+json.dumps(frame)+'\n\n').encode());self.wfile.flush();time.sleep(.04)
+        if 'stability fixture' in text.lower() or 'cap fixture' in text.lower():time.sleep(.6)
         if 'HOLD-WEB-STREAM' in text:type(self).hold.wait(30)
         try:self.wfile.write(b'data: [DONE]\n\n');self.wfile.flush()
         except (BrokenPipeError,ConnectionResetError):pass
@@ -70,6 +79,7 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
     root=Path(tmp);data=root/'data/glass-core';data.mkdir(parents=True);cfg=root/'config/glass-core';cfg.mkdir(parents=True)
     provider=http.server.ThreadingHTTPServer(('127.0.0.1',0),Provider);threading.Thread(target=provider.serve_forever,daemon=True).start()
     (cfg/'config.toml').write_text(f'provider="openai"\nmodel="mock"\napi_key_env=""\nbase_url="http://127.0.0.1:{provider.server_port}/v1"\nsandbox="workspace"\n')
+    (root/'project-two').mkdir();(root/'project-two'/'readme.md').write_text('# Second project\n\n![Fixture icon](icon.png)');(root/'project-two'/'icon.png').write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1kAAAAASUVORK5CYII='));(root/'outside-link').symlink_to('/etc',target_is_directory=True)
     (root/'notes.md').write_text('# Project notes\n\nPreviewReady notes stay on the host.');(root/'result.json').write_text('{"state":"ready","files":2}')
     # One-page fixture, generated without a PDF library.
     objects=[b'<< /Type /Catalog /Pages 2 0 R >>',b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',b'<< /Length 44 >>\nstream\nBT /F1 18 Tf 30 100 Td (PreviewReady) Tj ET\nendstream',b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']
@@ -100,6 +110,14 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         assert json.loads(req('/api/history?id=web-fixture')[1])['records'][-1]['record']['t']==FIXTURE
         assert req('/api/send','POST',{'id':'web-fixture','message':{'t':'unsupported'}})[0]==400
         assert req('/api/new','POST',{})[0]==200
+        listing=json.loads(req('/api/browse')[1]);assert len(listing['entries'])<=256;assert any(e['name']=='project-two' for e in listing['entries'])
+        assert req('/api/browse?path=/etc')[0]==400
+        assert req('/api/browse?path='+urllib.parse.quote(str(root/'outside-link')))[0]==400
+        assert req('/api/file?workspace=/etc&path=passwd')[0]==400
+        assert req('/api/new','POST',{'workspace':'/etc'})[0]==400
+        code,body,_=req('/api/new','POST',{'workspace':str(root/'project-two')});assert code==200
+        new=json.loads(body)['id'];assert json.loads((data/(new+'.meta.json')).read_text())['workspace']==str(root/'project-two')
+        usage=json.loads(req('/api/usage?path='+urllib.parse.quote(str(root/'project-two')))[1]);assert usage['entries']==2 and not usage['partial']
         r=subprocess.run(['node',str(ROOT/'web/test/browser.mjs'),url],cwd=ROOT,capture_output=True,text=True,timeout=120)
         print(r.stdout,flush=True);assert r.returncode==0,r.stderr
         assert len(list(data.glob('serve-*.sock')))>=1

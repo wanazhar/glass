@@ -964,6 +964,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 .and_then(|chart| crate::mermaid::render(&chart, width))
                 .ok_or_else(|| "unsupported flowchart syntax or diagram limit".into());
         }
+        if let Some(chart)=crate::mermaid::render_chart(body,width){return chart;}
         Err(format!(
             "unsupported diagram type: {}",
             glass_tui::text::clip(head, 48)

@@ -1,11 +1,9 @@
 //! Rendering surface for glass.
 //!
-//! Two renderers, one log:
-//! - [`term`] + [`editor`]: the default view. Writes into the terminal's own
-//!   scrollback. No alt-screen, no resident history, ~300 lines of state.
-//! - [`transcript`]: opt-in fullscreen viewer on ctrl+g. This is where the
-//!   scrollbar and jump-to-turn live, and it renders through [`layout`] so
-//!   frame cost tracks the viewport rather than the length of history.
+//! Streaming and replay share Markdown, code, math, and table presentation.
+//! The application owns the terminal surface; this crate provides its editor,
+//! bounded viewport layout, and transcript controller. Inline and fullscreen
+//! readers share anchors, search, paging, and follow state without a scrollbar.
 
 pub mod editor;
 pub mod layout;

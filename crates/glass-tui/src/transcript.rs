@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout as RLayout, Rect},
     style::Style,
-    widgets::{Block, Borders, List, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{Block, Borders, List, Paragraph},
 };
 
 use super::layout::Layout;
@@ -315,12 +315,12 @@ impl Transcript {
         self.scroll = keep.min(self.layout.total_lines().saturating_sub(1));
     }
 
-    /// Actual text cells: one header row, one controls row, and a scrollbar column.
+    /// Actual text cells: one header row, one controls row, with the full available text width.
     pub fn content_rect(area: Rect) -> Rect {
         Rect::new(
             area.x,
             area.y.saturating_add(1).min(area.bottom()),
-            area.width.saturating_sub(1),
+            area.width,
             area.height.saturating_sub(2),
         )
     }
@@ -330,7 +330,13 @@ impl Transcript {
         self.draw_in(frame, mods, session_label, frame.area());
     }
 
-    pub fn draw_in(&mut self, frame: &mut Frame, mods: &[Box<dyn Mod_>], session_label: &str, area: Rect) {
+    pub fn draw_in(
+        &mut self,
+        frame: &mut Frame,
+        mods: &[Box<dyn Mod_>],
+        session_label: &str,
+        area: Rect,
+    ) {
         let chunks = RLayout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(0), Constraint::Length(1)])
@@ -380,21 +386,6 @@ impl Transcript {
             view,
         );
         frame.render_widget(List::new(items), content);
-
-        let total = self.layout.total_lines();
-        if total > 0 {
-            // Ratatui expects the number of scroll positions, not total
-            // wrapped lines. The last legal offset is total - viewport.
-            let viewport = usize::from(content.height);
-            let mut sb = ScrollbarState::new(total.saturating_sub(viewport) + 1)
-                .viewport_content_length(viewport)
-                .position(self.scroll);
-            frame.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalRight),
-                view,
-                &mut sb,
-            );
-        }
 
         let controls = if let Some(hint) = &self.inline_hint {
             hint.as_str()
@@ -576,31 +567,23 @@ mod tests {
     }
 
     #[test]
-    fn scrollbar_thumb_reaches_both_ends_for_each_viewport() {
+    fn scrolling_has_no_bar_and_uses_full_width() {
         use ratatui::{Terminal, backend::TestBackend};
         for (width, height) in [(80, 24), (40, 19), (20, 8), (19, 4)] {
-            for count in [1, 15, 100] {
-                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-                let mut transcript = Transcript::new(entries(count));
-                transcript.top();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut transcript = Transcript::new(entries(100));
+            for follow in [false, true] {
+                transcript.follow = follow;
                 terminal
                     .draw(|frame| transcript.draw(frame, &[], "Log"))
                     .unwrap();
                 assert_eq!(
-                    terminal.backend().buffer()[(width - 1, 1)].symbol(),
-                    "█",
-                    "top: {width}x{height}, {count} entries"
+                    Transcript::content_rect(Rect::new(0, 0, width, height)).width,
+                    width
                 );
-                transcript.follow = true;
-                terminal
-                    .draw(|frame| transcript.draw(frame, &[], "Log"))
-                    .unwrap();
-                // Last track cell is above the down arrow and controls row.
-                assert_eq!(
-                    terminal.backend().buffer()[(width - 1, height - 3)].symbol(),
-                    "█",
-                    "bottom: {width}x{height}, {count} entries"
-                );
+                for row in 1..height - 1 {
+                    assert_ne!(terminal.backend().buffer()[(width - 1, row)].symbol(), "█");
+                }
             }
         }
     }
@@ -825,11 +808,17 @@ mod tests {
 
     #[test]
     fn search_uses_the_actual_assistant_reading_column() {
-        let text=format!("\n\n{} TARGET", "wrapping words ".repeat(40));
-        for width in [20,24,40,65] {
-            let rendered=crate::layout::build_lines(&text,Role::Assistant,width);
-            let expected=rendered.iter().position(|row|row.to_string().contains("TARGET")).unwrap();
-            assert_eq!(display_line_for_match(&text,Role::Assistant,"TARGET",width),expected);
+        let text = format!("\n\n{} TARGET", "wrapping words ".repeat(40));
+        for width in [20, 24, 40, 65] {
+            let rendered = crate::layout::build_lines(&text, Role::Assistant, width);
+            let expected = rendered
+                .iter()
+                .position(|row| row.to_string().contains("TARGET"))
+                .unwrap();
+            assert_eq!(
+                display_line_for_match(&text, Role::Assistant, "TARGET", width),
+                expected
+            );
         }
     }
     #[test]

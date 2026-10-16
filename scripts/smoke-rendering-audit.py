@@ -39,10 +39,21 @@ CASES=[
  ('state','stateDiagram-v2\n[*] --> RootReady\nRootReady --> EndReady: finish',True,True),
  ('class','classDiagram\nRootReady <|-- EndReady\nRootReady *-- Data',True,True),
  ('er','erDiagram\nRootReady ||--o{ EndReady : contains',True,True),
- ('unsupported','pie\n"RootReady": 1',True,False),
+ ('unsupported','packet-beta\n0-3: "RootReady"',True,False),
  ('malformed','flowchart TD\nsubgraph Unclosed\nA[RootReady]',True,False),
  ('disabled','flowchart TD\nA[RootReady] --> B',False,False),
 ]
+CASES += [
+ ('pie','pie showData\n title RootReady\n "First": 30\n "Second": 70',True,True),
+ ('xy','xychart-beta\n title RootReady\n x-axis [Jan, Feb, Mar]\n y-axis "Count" 0 --> 100\n bar [10, 20, 30]\n line [5, 15, 25]',True,True),
+ ('timeline','timeline\n title RootReady\n section Build\n 2025 : Coded : Tested\n : Shipped\n 2026 : Improved',True,True),
+ ('mindmap','mindmap\n  root((RootReady))\n    First\n      Child\n    Second',True,True),
+ ('journey','journey\n title RootReady\n section Start\n Login: 3: User, Service\n Read: 5: User',True,True),
+ ('quadrant','quadrantChart\n title RootReady\n x-axis Low --> High\n y-axis Low --> High\n quadrant-1 Expand\n Alpha: [0.2, 0.7]\n Beta: [0.8, 0.2]',True,True),
+ ('gantt','gantt\n title RootReady\n dateFormat YYYY-MM-DD\n section Build\n Code :done, code, 2026-10-16, 3d\n Review :crit, review, after code, 2d\n Ship :milestone, ship, after review, 0d',True,True),
+ ('sankey','sankey-beta\nRootReady,Storage,10\n"Storage, primary",Output,5',True,True),
+]
+
 MARKDOWN='''# RootReady
 
 __BoldReady__ _ItalicReady_ ~~OldReady~~ ***BothReady***
@@ -97,7 +108,7 @@ def run(name,body,enabled,native,size,markdown=False):
   t=Terminal(root,env,size)
   try:
    t.idle();t.send('render fixture\r')
-   t.wait('RootReady',12);t.collect(.1)
+   t.wait('packet-beta' if name=='unsupported' else 'RootReady',12);t.collect(.1)
    rendered=plain(t.seen)
    if not markdown:
     raw=body.splitlines()[0]
@@ -130,4 +141,4 @@ if __name__ == '__main__':
  for size in [(80,30),(40,24),(20,8)]:
   for case in CASES:run(*case,size)
   run('markdown',MARKDOWN,True,True,size,markdown=True)
- print('PASS: 45 release PTY rendering cases; streamed/replayed diagrams, screenshot syntax, all five supported families, explicit source fallback, Markdown, exact logs and drafts')
+ print(f'PASS: {(len(CASES)+1)*3} release PTY rendering cases; thirteen bounded chart families, explicit source fallback, Markdown, exact logs and drafts')

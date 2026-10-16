@@ -127,6 +127,8 @@ class Terminal:
         self.send('\x03')
         self.collect(0.1)
         self.send('\x04')
+        self.collect(0.1)
+        self.send('\r')
         try:
             self.p.wait(timeout=2)
         except subprocess.TimeoutExpired:

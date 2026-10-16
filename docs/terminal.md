@@ -124,7 +124,9 @@ PageUp or Ctrl+B moves toward older content. PageDown moves toward newer content
 Ctrl+F depends on the active view and search state. Terminals that forward mouse
 events support wheel scrolling. New output preserves a paused reading position.
 End or Esc returns to the latest content, subject to the active search/modal layer.
-The composer remains separate from the transcript.
+The composer remains separate from the transcript. Readers show position and
+return-to-bottom hints without a vertical scrollbar; its column is available
+for text. Paging, search anchors, and follow mode remain active.
 
 Ctrl+G opens the transcript while idle or busy. Ctrl+T opens reasoning text or
 public summaries exposed by the provider. Providers that expose neither show an
@@ -153,12 +155,38 @@ diagrams use a compact participant and message list when lifelines do not fit.
 State, class, and entity relationship diagrams support bounded structural views.
 Custom Mermaid styles use the terminal theme instead of arbitrary CSS.
 
+Additional chart families use layouts suited to terminal cells:
+
+| Mermaid family | Native presentation |
+| --- | --- |
+| `pie` | Labeled shares, values, percentages, and proportion bars |
+| `xychart` / `xychart-beta` | Category/value rows, bars, and line sparklines; declared axis ranges apply |
+| `timeline` | Sections and ordered period/event connections |
+| `mindmap` | Indented tree with sibling and continuation rails |
+| `journey` | Sections, task scores, five-point ratings, and actors |
+| `quadrantChart` | Quadrant names, bounded coordinate plot, exact point legend, overlap markers |
+| `gantt` | Calendar-date task spans, dependency dates, status tags, and milestone markers |
+| `sankey-beta` | Weighted source/destination connections and relative flow bars |
+
+These are semantic terminal views, rather than raster copies of browser charts.
+Data charts accept at most 64 items, 256 source lines and 64 KiB. XY charts accept
+four series and 64 points per series. Gantt supports `YYYY-MM-DD`, day/week
+durations, prior-task `after` dependencies and zero-duration milestones.
+Working-day exclusions, forward dependencies, alternate date formats, custom
+class definitions and unsupported directives fall back to source. Mindmaps
+support 16 levels; narrow views use explicit level labels when rails cannot fit.
+Non-finite numbers, invalid dates, mismatched series, and ambiguous syntax do not
+produce a partial chart.
+
 Streaming and conversation replay use the same renderer. A Mermaid block waits
 for its closing fence before rendering, with a 128 KiB and 256-line buffer limit.
 Unsupported or oversized diagrams retain their source; enabled rendering shows
 an explanation when a complete block cannot render. This is a terminal subset,
-not a browser Mermaid engine: pie charts, Gantt charts, interactive links, full
-class members, and entity attributes are not rendered natively.
+not a browser Mermaid engine: interactive links, full class members, entity
+attributes, custom CSS, and unsupported families retain source.
+
+GitHub-style NOTE, TIP, IMPORTANT, WARNING and CAUTION callouts use a labeled,
+colored heading above their quoted detail.
 
 Inline Markdown supports underscore emphasis, strikethrough, nested emphasis,
 multi-backtick code, and links with visible destinations. Image references show
@@ -238,15 +266,23 @@ is required. This protocol is separate from turn notifications.
 
 Fenced snippets use native lexical highlighting for Python, JavaScript and
 TypeScript, Rust, C/C++, Java, Go, shell, JSON, SQL, configuration files, and
-markup. Keywords, strings, comments, numbers, and callable names have separate
+markup, Ruby, Lua, R, PHP, PowerShell, Dockerfiles, Makefiles, GraphQL, patches,
+and logs. Python triple quotes, Rust raw literals, Java text blocks, Lua long
+strings/comments and HTML comments retain their multiline state. Diff additions
+and removals have separate colors; logs distinguish warnings and errors.
+Keywords, strings, comments, numbers, and callable names have separate
 styles. Unknown language tags remain plain text. Highlighting does not run a
 language server or parse the project; copying a block preserves its exact source.
 Code rails use the available content width in both streaming and replay.
 
 Inline math accepts `$...$` and `\(...\)`. Display math accepts standalone
 `$$` or `\[` delimiters and `math`, `latex`, or `tex` fences. The native formatter
-supports common Greek symbols, operators, fractions, roots, scripts, and basic
-aligned/matrix notation. It renders Unicode text rather than typeset graphics.
+supports Greek symbols, operators, fractions, indexed roots, scripts, vectors,
+accents, boxed expressions, binomial notation and common number-set symbols.
+Standalone display fractions use a stacked rule. Matrices, arrays, cases and
+aligned expressions use aligned columns and native delimiters; narrow matrices
+use numbered row lists instead of clipping entries. Display geometry is bounded
+to 32 rows and 16 columns. It renders Unicode text rather than typeset graphics.
 Unsupported commands retain their source. Parsing is limited to 16 KiB and 16
 nesting levels; TeX packages, macros, shell commands, and file access never run.
 

@@ -338,3 +338,11 @@ workspace or grant tool access to these archives.
 Earlier activity loads one page per request. The button shows progress and ignores
 repeated taps until the request finishes. Prepending history preserves the reading
 position and does not replace the current reasoning, checklist, or live response.
+
+The reasoning reader has its own history cursor. Opening a short reasoning pane
+loads older reasoning automatically; Earlier reasoning loads another bounded batch.
+Each batch reads at most four history pages, with a 256 KiB reasoning preview limit.
+Loading chat history skips internal-only pages within the same four-page budget.
+Teammate inspection opens a separate modal with loading, empty, and error states;
+activity updates do not replace its contents. Standalone layout uses the current
+window height when the software keyboard is closed.

@@ -711,12 +711,13 @@ try {
     isMobile: true,
     hasTouch: true,
   });
-  await mobile.addInitScript(() =>
+  await mobile.addInitScript(() => {
+    Object.defineProperty(navigator, "standalone", { value: true });
     document.addEventListener("DOMContentLoaded", () => {
       document.documentElement.style.setProperty("--safe-top", "47px");
       document.documentElement.style.setProperty("--safe-bottom", "34px");
-    }),
-  );
+    });
+  });
   const phone = await mobile.newPage();
   phone.on("pageerror", (e) => errors.push(String(e)));
   await phone.goto(url);
@@ -796,6 +797,14 @@ try {
       document.querySelector("#sidebar").getBoundingClientRect().right <= 0 &&
       document.querySelector(".workspace").getBoundingClientRect().left === 0,
   );
+  assert(
+    await phone
+      .locator(".app")
+      .evaluate(
+        (n) => Math.abs(n.getBoundingClientRect().height - innerHeight) < 2,
+      ),
+    "Standalone shell must fill the current window height",
+  );
   await phone.screenshot({ path: "/tmp/gc-pwa-standalone-mobile.png" });
   await mobile.close();
   const manifest = await page.evaluate(async () =>
@@ -803,6 +812,58 @@ try {
   );
   assert.equal(manifest.display, "standalone");
   assert.equal(manifest.name, "Glass");
+  await page.goto(new URL("/?thread=reasoning-archive", url).href);
+  await page
+    .getByText("Reasoning archive response.", { exact: true })
+    .waitFor();
+  await page.locator("#details-toggle").click();
+  await page.getByRole("button", { name: "Reasoning", exact: true }).click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#detail-content .prose")
+      ?.textContent.includes("Archived thought"),
+  );
+  assert(
+    await page
+      .locator("#detail-content")
+      .evaluate((n) => n.scrollHeight > n.clientHeight + 100),
+    "Older reasoning must load and become scrollable",
+  );
+  await page.locator("#detail-content").evaluate((n) => {
+    n.scrollTop = 0;
+  });
+  await page.waitForTimeout(300);
+  assert(
+    await page.locator("#detail-content").evaluate((n) => n.scrollTop < 10),
+    "Archived reasoning must remain at the chosen position",
+  );
+  await page.locator("#details-close").click();
+  await page.locator("#older").click();
+  await page.waitForFunction(
+    () => !document.querySelector("#older").hasAttribute("aria-busy"),
+  );
+  assert(
+    await page
+      .locator("#older")
+      .evaluate((n) => n.classList.contains("hidden")),
+    "Internal-only earlier pages must advance to the beginning",
+  );
+  await page.locator("#details-toggle").click();
+  await page.getByRole("button", { name: "Activity", exact: true }).click();
+  await page.route("**/api/agents?*", (route) =>
+    route.fulfill({ json: { agents: [] } }),
+  );
+  await page
+    .getByRole("button", { name: "Inspect teammates", exact: true })
+    .click();
+  await page
+    .locator("#preview-body")
+    .getByText("No teammates have been created for this thread.", {
+      exact: true,
+    })
+    .waitFor();
+  await page.locator("#preview-close").click();
+  await page.unroute("**/api/agents?*");
   assert.deepEqual(errors, []);
   console.log(
     "PASS: desktop + iPhone layouts, lazy rendering, Mermaid, math, syntax, safe HTML, files, commands, custom answers, denied approval, reasoning, reload and PWA",

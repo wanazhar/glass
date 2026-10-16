@@ -229,6 +229,10 @@ run only after submission and provide cancellation. Mutations submitted during
 a running turn wait for a safe boundary; inspection remains available.
 Unknown slash commands produce a local notice and are never sent as chat text.
 
+Models receive an explicit teammate CLI recipe when their session has a managed
+teammate runtime. The recipe also refreshes after a resumed system checkpoint.
+An older worker needs a runtime restart to receive updated model guidance.
+
 Older thread workers require an explicit restart before using native browser
 commands. The browser offers a confirmation step, waits for the idle worker to
 exit, and reconnects with the current binary. Conversation history is preserved;
@@ -289,7 +293,9 @@ File names use compact UI text. Path inputs display at 14 px while retaining a
 16 px input size to avoid Safari focus zoom. Long thread titles stay within the
 header. Tables wrap cell content by default and scroll horizontally when needed.
 Table headers remain visible while scrolling. Tables offer compact mode, CSV copy,
-and a full-screen expanded view.
+and a full-screen expanded view. Expanded tables retain the chat styling and wrap
+all cells within the screen width. Working threads show animated dots in the
+sidebar; reduced-motion preferences disable the animation.
 
 Mermaid loads on demand, serializes rendering, and caches at most 32 results.
 The cache distinguishes light and dark themes. Each displayed copy receives

@@ -264,8 +264,16 @@ try {
   assert((await page.locator(".diff-line.add").count()) > 0);
   assert((await page.locator(".diff-line.remove").count()) > 0);
   assert((await page.locator(".table-wrap table th").count()) >= 3);
-  await page.locator('[data-table="wrap"]').first().click();
   assert(await page.locator(".table-wrapped").count());
+  await page.locator('[data-table="wrap"]').first().click();
+  assert.equal(
+    await page
+      .locator(".table-block")
+      .first()
+      .evaluate((n) => n.classList.contains("table-wrapped")),
+    false,
+  );
+  await page.locator('[data-table="wrap"]').first().click();
   await page.locator('[data-table="expand"]').first().click();
   await page.locator("#preview-body .expanded-table table").waitFor();
   await page.locator("#preview-close").click();
@@ -284,6 +292,27 @@ try {
     .locator("#preview")
     .getByText("PreviewReady notes stay on the host.")
     .waitFor();
+  const parentTitle = await page.locator("#preview-title").textContent();
+  const parentTop = await page.locator("#preview-body").evaluate((n) => {
+    n.scrollTop = n.scrollHeight;
+    return n.scrollTop;
+  });
+  assert(parentTop > 100, "Nested file fixture is not scrollable");
+  await page.locator("#preview-body [data-preview]").click();
+  await page
+    .locator("#preview-body")
+    .getByText("const nestedPreview = true;", { exact: false })
+    .waitFor();
+  await page.locator("#preview-close").click();
+  assert.equal(await page.locator("#preview-title").textContent(), parentTitle);
+  await page
+    .locator("#preview-body")
+    .getByText("PreviewReady notes stay on the host.")
+    .waitFor();
+  await page.locator("#preview-body [data-preview]").click();
+  await page.keyboard.press("Escape");
+  assert.equal(await page.locator("#preview-title").textContent(), parentTitle);
+  assert(await page.locator("#preview").evaluate((n) => n.open));
   await page.locator("#preview-close").click();
   await page.getByRole("link", { name: "a small JSON artifact" }).click();
   await page.locator("#preview .json-node").waitFor();
@@ -418,6 +447,115 @@ try {
     () => document.querySelector("#activity-text").textContent === "Ready",
   );
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#prompt").fill("scroll reasoning fixture");
+  await page.locator("#send").click();
+  await page.locator("#details-toggle").click();
+  await page.locator('button[data-tab="reasoning"]').click();
+  await page.waitForFunction(() => {
+    const n = document.querySelector("#detail-content");
+    return n.scrollHeight > n.clientHeight * 3;
+  });
+  const readerBounds = await page.locator("#detail-content").boundingBox();
+  const beforeGesture = await page
+    .locator("#detail-content")
+    .evaluate((n) => n.scrollTop);
+  const touch = await context.newCDPSession(page);
+  await touch.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+  const point = {
+    x: Math.round(readerBounds.x + readerBounds.width / 2),
+    y: Math.round(readerBounds.y + 80),
+  };
+  await touch.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [point],
+  });
+  const pausedTop = await page
+    .locator("#detail-content")
+    .evaluate((n) => n.scrollTop);
+  for (let step = 1; step <= 6; step++) {
+    await touch.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{ x: point.x, y: point.y + step * 30 }],
+    });
+    await page.waitForTimeout(20);
+  }
+  await touch.send("Input.dispatchTouchEvent", {
+    type: "touchEnd",
+    touchPoints: [],
+  });
+  await page.waitForTimeout(200);
+  const afterGesture = await page
+    .locator("#detail-content")
+    .evaluate((n) => ({
+      top: n.scrollTop,
+      height: n.clientHeight,
+      scrollHeight: n.scrollHeight,
+      scale: visualViewport.scale,
+    }));
+  assert(
+    afterGesture.top < pausedTop - 50,
+    "Touch drag did not scroll the reasoning pane: " +
+      JSON.stringify({
+        beforeGesture,
+        pausedTop,
+        afterGesture,
+        readerBounds,
+        hit: await page.evaluate(
+          ({ x, y }) =>
+            document.elementFromPoint(x, y)?.outerHTML.slice(0, 150),
+          point,
+        ),
+      }),
+  );
+  await touch.detach();
+  await page.locator("#detail-content").dispatchEvent("touchstart");
+  await page.locator("#detail-content").evaluate((n) => {
+    n.scrollTop = 100;
+  });
+  await page.locator("#detail-content").dispatchEvent("touchend");
+  await page.waitForTimeout(300);
+  const readerTop = await page
+    .locator("#detail-content")
+    .evaluate((n) => n.scrollTop);
+  assert(readerTop < 200, "Reasoning snapped back to the bottom");
+  await page.locator(".reasoning-latest").click();
+  await page.locator("#details-close").click();
+  await page.waitForFunction(
+    () => document.querySelector("#activity-text").textContent === "Ready",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(
+    () =>
+      (document.querySelector("#thread-name").textContent =
+        "A very long thread title ".repeat(30)),
+  );
+  const titleBounds = await page.locator("#thread-name").boundingBox();
+  const actionsBounds = await page.locator(".toolbar-actions").boundingBox();
+  assert(
+    titleBounds.x + titleBounds.width <= actionsBounds.x,
+    "Title overlaps toolbar actions",
+  );
+  const overflow = await page.locator(".table-wrapped").evaluateAll((blocks) =>
+    blocks.flatMap((block) =>
+      [...block.querySelectorAll("td")].flatMap((cell) => {
+        const bounds = cell.getBoundingClientRect();
+        const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+        const errors = [];
+        while (walker.nextNode()) {
+          const range = document.createRange();
+          range.selectNodeContents(walker.currentNode);
+          for (const rect of range.getClientRects())
+            if (
+              rect.width &&
+              (rect.right > bounds.right + 1 || rect.left < bounds.left - 1)
+            )
+              errors.push("Cell content overlaps a neighbor");
+        }
+        return errors;
+      }),
+    ),
+  );
+  assert.deepEqual(overflow, []);
   await page.waitForTimeout(200);
   await page.screenshot({ path: "/tmp/gc-connect-mobile.png", fullPage: true });
   assert(

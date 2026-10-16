@@ -158,7 +158,10 @@ Pinch zoom remains available. Threads and details use separate dismissible drawe
 only one overlay opens at a time. Reduced-motion settings disable interface animation.
 
 Streaming preserves completed Markdown blocks and batches updates. Reasoning has
-its own follow position. Copy and expanded previews retain source text. Oversized
+its own follow position. Scrolling pauses updates in the reasoning pane; Latest
+restores live output at the bottom. Closing an expanded preview returns to its
+parent preview and preserves its scroll position. Escape follows the same sequence.
+Copy and expanded previews retain source text. Oversized
 live output shows a limit notice rather than repeatedly rebuilding unchanged content.
 
 ## Resource limits and storage
@@ -277,9 +280,11 @@ notices expire; their close button dismisses them immediately. Output resuming
 also clears a stale provider cooldown notice.
 
 The folder button opens Files. The activity button opens the Activity tab.
-File names use compact UI text; path inputs remain 16 px to avoid Safari focus
-zoom. Table headers remain visible while scrolling. Tables offer wrapping,
-CSV copy, and a full-screen expanded view.
+File names use compact UI text. Path inputs display at 14 px while retaining a
+16 px input size to avoid Safari focus zoom. Long thread titles stay within the
+header. Tables wrap cell content by default and scroll horizontally when needed.
+Table headers remain visible while scrolling. Tables offer compact mode, CSV copy,
+and a full-screen expanded view.
 
 Mermaid loads on demand, serializes rendering, and caches at most 32 results.
 The cache distinguishes light and dark themes. Each displayed copy receives

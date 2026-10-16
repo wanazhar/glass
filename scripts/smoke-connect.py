@@ -19,6 +19,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
             frames=[{'choices':[{'delta':{'content':'Decision received. Work continues.'}}]}]
         elif 'cap fixture' in text.lower():
             frames=[{'choices':[{'delta':{'content':'Bounded output '+('x'*65536)}}]} for _ in range(5)]
+        elif 'scroll reasoning fixture' in text.lower():
+            frames=[{'choices':[{'delta':{'reasoning_content':('Reading section '+str(i)+'. '+('A detailed observation about the current task. '*20)+'\n\n')}}]} for i in range(40)]
+            frames.append({'choices':[{'delta':{'content':'Reasoning scroll finished.'}}]})
         elif 'stability fixture' in text.lower():
             chunks=['StableParagraph **retained**.\n\n```javascript\nconst fixed = 1;\n```\n\n']+[f'Frame {i} remains readable.\n\n' for i in range(12)]
             frames=[{'choices':[{'delta':{'content':chunk}}]} for chunk in chunks]
@@ -52,6 +55,10 @@ The runtime and your workspace stay together. Here is a **readable preview** of 
 | iPhone | Connected | Private tailnet |
 | Runtime | Working | Same tools |
 
+| Feature | Implementation | Why it helps |
+| --- | --- | --- |
+| Boundaries | A long explanation with `some_long_identifier_without_spaces` and inline code. A long explanation with `some_long_identifier_without_spaces` and inline code. A long explanation with `some_long_identifier_without_spaces` and inline code. A long explanation with `some_long_identifier_without_spaces` and inline code. A long explanation with `some_long_identifier_without_spaces` and inline code. A long explanation with `some_long_identifier_without_spaces` and inline code. A long explanation with `some_long_identifier_without_spaces` and inline code. A long explanation with `some_long_identifier_without_spaces` and inline code. A long explanation with `some_long_identifier_without_spaces` and inline code. A long explanation with `some_long_identifier_without_spaces` and inline code. A long explanation with `some_long_identifier_without_spaces` and inline code. A long explanation with `some_long_identifier_without_spaces` and inline code.  | A separate explanation in the next cell. A separate explanation in the next cell. A separate explanation in the next cell. A separate explanation in the next cell. A separate explanation in the next cell. A separate explanation in the next cell. A separate explanation in the next cell. A separate explanation in the next cell. A separate explanation in the next cell. A separate explanation in the next cell. A separate explanation in the next cell. A separate explanation in the next cell. A separate explanation in the next cell. A separate explanation in the next cell. A separate explanation in the next cell.  |
+
 ```typescript
 interface Thread { id: string; status: "working" | "ready" }
 const resume = (thread: Thread) => thread.id;
@@ -82,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
     provider=http.server.ThreadingHTTPServer(('127.0.0.1',0),Provider);threading.Thread(target=provider.serve_forever,daemon=True).start()
     (cfg/'config.toml').write_text(f'provider="openai"\nmodel="mock"\napi_key_env=""\nbase_url="http://127.0.0.1:{provider.server_port}/v1"\nsandbox="workspace"\n')
     (root/'project-two').mkdir();(root/'project-two'/'readme.md').write_text('# Second project\n\n![Fixture icon](icon.png)');(root/'project-two'/'icon.png').write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1kAAAAASUVORK5CYII='));(root/'outside-link').symlink_to('/etc',target_is_directory=True)
-    (root/'notes.md').write_text('# Project notes\n\nPreviewReady notes stay on the host.');(root/'result.json').write_text('{"state":"ready","files":2}')
+    (root/'notes.md').write_text('# Project notes\n\nPreviewReady notes stay on the host.\n\n'+('Additional file detail.\n\n'*150)+'```javascript\nconst nestedPreview = true;\n```');(root/'result.json').write_text('{"state":"ready","files":2}')
     # One-page fixture, generated without a PDF library.
     objects=[b'<< /Type /Catalog /Pages 2 0 R >>',b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',b'<< /Length 44 >>\nstream\nBT /F1 18 Tf 30 100 Td (PreviewReady) Tj ET\nendstream',b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']
     pdf=bytearray(b'%PDF-1.4\n');offsets=[0]
@@ -234,6 +241,7 @@ with tempfile.TemporaryDirectory(prefix='gc-connect-smoke-') as tmp:
         assert req('/api/status',auth=False)[0]==403
         print('PASS: auth/origin, paths, bounded history, shared writer, browser UI, tools, questions, approvals, PWA and rich previews',flush=True)
     finally:
+        Provider.hold.set()
         subprocess.run([str(BIN),'connect','stop'],cwd=root,env=env,capture_output=True,timeout=10)
         for path in data.glob('serve-*.sock'):
             try:

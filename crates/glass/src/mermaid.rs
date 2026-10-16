@@ -1,7 +1,7 @@
 //! Bounded terminal-native Mermaid renderer (task six-wave-d-001, extended
 //! by the six-codebase follow-up).
 //!
-//! Five bounded families render natively; other syntax preserves source:
+//! Thirteen bounded families render natively; other syntax preserves source:
 //!
 //! - **Flowcharts** — node statements (`A`, `A[label]`, `A("text")`), edges
 //!   (`A --> B`, labeled `A -- text --> B`, arrow-text `A --|text|> B`), and
@@ -17,6 +17,10 @@
 //! - **ER diagrams** — entity relationships with a required cardinality
 //!   label. Attribute blocks fall back.
 //!
+//! - **Data charts** — pie proportions, XY bars/lines, timelines, mindmaps,
+//!   journeys, quadrants, calendar-day Gantt schedules and weighted Sankey flows.
+//!   See `mermaid_charts` for exact semantic layouts and bounded parsers.
+//!
 //! Unsupported or overflowing input in any family goes to the
 //! fenced-source fallback — never a halfway drawing.
 //!
@@ -24,6 +28,10 @@
 //! use compact node/connection lists. Sequence diagrams use lifelines when
 //! they fit and a participant/message list otherwise. Malformed or oversized
 //! input returns `None` and the caller renders the original source.
+
+#[path="mermaid_charts.rs"]
+mod charts;
+pub use charts::render as render_chart;
 
 /// Bounded diagram size. Exceeding either cap falls back to source —
 /// a renderer that draws forever is a worse renderer than no renderer.

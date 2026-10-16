@@ -110,7 +110,7 @@ fn inline_depth(text: &str, depth: usize) -> Vec<Span<'static>> {
             } else {
                 body
             };
-            if !body.starts_with(char::is_whitespace) && !body.ends_with(char::is_whitespace) {
+            if !body.starts_with(char::is_whitespace) && !body.ends_with(char::is_whitespace) && !(open=="$"&&tail[open.len()+end+close.len()..].starts_with(|c:char|c.is_ascii_digit())) {
                 let consumed=open.len()+end+close.len();
                 match crate::math::render(body) {
                     Ok(rendered)=>spans.push(Span::styled(rendered,Style::new().fg(crate::theme::color(crate::theme::Tone::Secondary)))),
@@ -498,6 +498,14 @@ impl Presentation {
                 },
             }];
         }
+        if let Some(rest)=trimmed.strip_prefix("> [!")&&let Some((kind,body))=rest.split_once(']') {
+            let tone=match kind{"NOTE"=>Some(crate::theme::Tone::Secondary),"TIP"=>Some(crate::theme::Tone::Success),"IMPORTANT"=>Some(crate::theme::Tone::Accent),"WARNING"=>Some(crate::theme::Tone::Warning),"CAUTION"=>Some(crate::theme::Tone::Error),_=>None};
+            if let Some(tone)=tone {if !complete{return Vec::new();}
+                let title=kind[..1].to_owned()+&kind[1..].to_ascii_lowercase();let mut spans=vec![Span::styled(title,Style::new().fg(crate::theme::color(tone)).add_modifier(Modifier::BOLD))];
+                if !body.trim().is_empty(){spans.push(Span::raw(" · "));spans.extend(inline(body.trim()));}
+                return wrap_spans(spans,width,"│ ","│ ",cursor);
+            }
+        }
         let heading = trimmed.chars().take_while(|c| *c == '#').count();
         if (1..=6).contains(&heading) && trimmed[heading..].starts_with(' ') {
             let content = trimmed[heading..].trim_start();
@@ -621,15 +629,15 @@ fn native_block_enabled(line: &str) -> bool {
 }
 fn math_block(body: &str, source: &str, width: usize) -> Vec<Line<'static>> {
     let color = Style::new().fg(crate::theme::color(crate::theme::Tone::Secondary));
-    match crate::math::render(body) {
+    match crate::math::display(body,width) {
         Ok(text) => {
             let mut rows = vec![Line::from(Span::styled(
                 crate::text::clip("∑ Math", width),
                 color.add_modifier(Modifier::BOLD),
             ))];
-            for line in text.lines() {
+            for line in text {
                 rows.extend(
-                    crate::text::wrap_words(line, width)
+                    if crate::text::width(&line)<=width{vec![line]}else{crate::text::wrap_words(&line, width)}
                         .into_iter()
                         .map(|line| Line::from(Span::styled(line, color))),
                 );
@@ -777,14 +785,14 @@ fn mermaid_diagram(text: &str, width: usize) -> Option<Vec<Line<'static>>> {
                 line.as_str(),
                 "Nodes" | "Connections" | "Participants" | "Messages"
             ) || line.starts_with("Group · ")
-                || line.starts_with('╭');
+                || line.starts_with('╭') || line.starts_with("Section ·") || line.starts_with("Bars ·") || line.starts_with("Line ·") || line.starts_with("Gantt ·") || line.starts_with("Sankey ·") || line.starts_with("Pie proportions");
             let tone = if heading {
                 crate::theme::Tone::Accent
             } else if line.contains("──▶")
                 || line.contains("┄┄▶")
                 || line.contains("━━▶")
                 || line.trim() == "▼"
-                || line.trim() == "│"
+                || line.trim() == "│" || line.contains('█') || line.contains('━') || line.contains('●')
             {
                 crate::theme::Tone::Secondary
             } else {
@@ -1324,6 +1332,47 @@ mod tests {
         assert!(text.contains("command") && text.contains(" output"));
     }
 
+    #[test]
+    fn expanded_code_math_and_callouts_match_streaming(){
+        let source=r####"> [!WARNING] Review before applying.
+> Preserve this detail.
+
+```rust
+let text = r##"raw
+still raw"##;
+```
+```python
+def example():
+    text = """triple
+second line"""
+    return text
+```
+```lua
+local text = [[first
+second]]
+--[[ comment
+still comment ]]
+```
+```diff
+--- before
++++ after
+@@ -1 +1 @@
+-old
++new
+```
+$$
+\begin{bmatrix}1 & 22 \\ 333 & 4\end{bmatrix}
+$$
+
+$$
+\frac{x+1}{n}
+$$
+
+Costs $5-$10; math $x^2$.
+"####;
+        for width in [10usize,20,40,90]{let margin=if width>=24{2}else{1};let expected=lines(source,width-margin*2).iter().map(|r|r.to_string().trim_end().to_owned()).filter(|r|!r.is_empty()).collect::<Vec<_>>();let mut stream=Stream::default();let mut output=Vec::new();for c in source.chars(){stream.write(&mut output,&c.to_string(),width);}stream.flush(&mut output,width);let actual=project(&output).iter().map(|r|r.trim_end().strip_prefix(&" ".repeat(margin)).unwrap_or(r.trim_end()).to_owned()).filter(|r|!r.is_empty()).collect::<Vec<_>>();assert_eq!(actual,expected,"{width}");}
+        assert_eq!(inline("Costs $5-$10").iter().map(|s|s.content.as_ref()).collect::<String>(),"Costs $5-$10");
+    }
     #[test]
     fn unsupported_inline_math_keeps_delimiters_and_source(){
         for source in [r"\(\unknown_{x}\)",r"$\unknown_{x}$",r"$$\input{x}$$"]{

@@ -40,6 +40,48 @@ $$
 \sqrt{x+1}
 ```
 """
+SOURCE += r'''
+> [!NOTE] Native output stays readable.
+> [!WARNING] Check values before applying.
+
+```python
+value = """first
+second line"""
+```
+```rust
+let value = r##"raw
+literal"##;
+```
+```graphql
+query Example { user { name } }
+```
+```diff
+--- before
++++ after
+@@ -1 +1 @@
+-old
++new
+```
+```log
+INFO working
+WARN attention
+ERROR failed
+```
+
+$$
+\begin{bmatrix}1 & 22 \\ 333 & 4\end{bmatrix}
+$$
+
+$$
+\frac{x+1}{n}
+$$
+
+$$
+\begin{aligned}a &= b \\ long &= c\end{aligned}
+$$
+
+Inline $\sqrt[3]{x} + \mathbb{R} + \hat{x}$; currency $5-$10.
+'''
 for size in [(80,30),(40,24),(20,8)]:
     audit.run('syntax-math',SOURCE,True,True,size,markdown=True)
     with tempfile.TemporaryDirectory(prefix='gc-exit-pty-') as tmp:

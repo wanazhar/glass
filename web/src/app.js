@@ -131,6 +131,12 @@ function syncViewport() {
   viewportFrame = requestAnimationFrame(() => {
     viewportFrame = 0;
     const viewport = window.visualViewport;
+    const standalone =
+      matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+    document.documentElement.classList.toggle(
+      "standalone",
+      Boolean(standalone),
+    );
     // WebKit can report a stale visualViewport size after standalone resume.
     // CSS owns the idle viewport; override only for a visible software keyboard.
     const focused = document.activeElement?.matches(
@@ -146,13 +152,10 @@ function syncViewport() {
         "--app-height",
         `${Math.round(viewport.height)}px`,
       );
-    else if (
-      matchMedia("(display-mode: standalone)").matches ||
-      navigator.standalone
-    )
+    else if (standalone)
       document.documentElement.style.setProperty(
         "--app-height",
-        `${window.innerHeight}px`,
+        CSS.supports("height", "100lvh") ? "100lvh" : "100vh",
       );
     else document.documentElement.style.removeProperty("--app-height");
     document.documentElement.style.setProperty("--viewport-top", "0px");

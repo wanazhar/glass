@@ -2553,3 +2553,18 @@ dialog > header {
 #preview-body .expanded-table th {
   position: static;
 }
+
+/* Standalone has no browser bars: use the full CSS viewport and one inset per edge. */
+@media (max-width: 700px) {
+  .standalone:not(.keyboard-open) .toolbar {
+    height: calc(62px + var(--safe-top));
+    padding-top: calc(8px + var(--safe-top));
+  }
+  .standalone:not(.keyboard-open) .compose-zone {
+    padding-bottom: clamp(12px, var(--safe-bottom), 34px);
+  }
+  .standalone:not(.keyboard-open) .details > header {
+    min-height: calc(72px + var(--safe-top));
+    padding-top: calc(8px + var(--safe-top));
+  }
+}

@@ -3091,6 +3091,7 @@ async function openNativeCommand(command, initialArgs = "") {
 $("#command-close").onclick = () => $("#command-view").close();
 
 const commandActions = {
+  layout: () => inspectLayout(),
   clear: () => newThread(),
   tools: () => {
     document.documentElement.classList.toggle("compact-tools");
@@ -3142,6 +3143,12 @@ async function openCommands(group = "") {
   if (!commands.length) {
     try {
       commands = (await api("commands")).commands;
+      commands.push({
+        name: "layout",
+        description: "Inspect local viewport geometry",
+        group: "settings",
+        portable: false,
+      });
     } catch (e) {
       notice(`Commands unavailable: ${e.message}`, true);
       return;
@@ -3231,11 +3238,69 @@ function chooseCommand(c) {
   else if (c.name === "help") openCommands();
   else commandActions[c.name]();
 }
+function inspectLayout() {
+  const probe = el("div");
+  probe.style.cssText =
+    "position:fixed;visibility:hidden;padding-top:var(--safe-top);padding-bottom:var(--safe-bottom)";
+  document.body.append(probe);
+  const computed = getComputedStyle(probe);
+  const safe = {
+    top: parseFloat(computed.paddingTop),
+    bottom: parseFloat(computed.paddingBottom),
+  };
+  probe.remove();
+  const rect = (selector) => {
+    const r = $(selector).getBoundingClientRect();
+    return {
+      top: Math.round(r.top),
+      height: Math.round(r.height),
+      bottom: Math.round(r.bottom),
+    };
+  };
+  const v = window.visualViewport;
+  const data = {
+    version: "layout-1",
+    standalone: Boolean(
+      navigator.standalone || matchMedia("(display-mode: standalone)").matches,
+    ),
+    viewport: {
+      window: innerHeight,
+      visible: v?.height,
+      offset: v?.offsetTop,
+      scale: v?.scale,
+      screen: screen.height,
+    },
+    safeArea: safe,
+    app: rect(".app"),
+    toolbar: rect(".toolbar"),
+    composer: rect(".composer"),
+    composeZone: rect(".compose-zone"),
+    configuredHeight:
+      document.documentElement.style.getPropertyValue("--app-height"),
+  };
+  const source = JSON.stringify(data, null, 2);
+  preview("Layout measurements", "Local diagnostics", source, "json");
+  const copy = el("button", "quiet", "Copy measurements");
+  copy.onclick = () => copyText(source);
+  $("#preview-body").prepend(copy);
+}
 async function dispatchSlash(value) {
   const name = value.slice(1).split(/\s/, 1)[0];
+  if (name === "layout") {
+    closeCommands();
+    $("#prompt").value = "";
+    inspectLayout();
+    return;
+  }
   if (!commands.length) {
     try {
       commands = (await api("commands")).commands;
+      commands.push({
+        name: "layout",
+        description: "Inspect local viewport geometry",
+        group: "settings",
+        portable: false,
+      });
     } catch (e) {
       notice(e.message, true);
       return;

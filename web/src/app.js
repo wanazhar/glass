@@ -125,7 +125,8 @@ function updateActivity(label) {
     : "Take control";
   $("#send").disabled = !view.control && Boolean(view.id);
 }
-let viewportFrame = 0;
+let viewportFrame = 0,
+  idleViewportHeight = 0;
 function syncViewport() {
   if (viewportFrame) return;
   viewportFrame = requestAnimationFrame(() => {
@@ -145,7 +146,15 @@ function syncViewport() {
       viewport &&
       viewport.scale === 1 &&
       focused &&
-      window.innerHeight - viewport.height > 120;
+      Math.max(
+        idleViewportHeight,
+        document.documentElement.clientHeight,
+        window.innerHeight,
+      ) -
+        viewport.height >
+        120;
+    if (!focused && viewport?.scale === 1)
+      idleViewportHeight = Math.max(idleViewportHeight, viewport.height);
     if (keyboard) {
       document.documentElement.style.setProperty(
         "--app-height",
@@ -159,7 +168,10 @@ function syncViewport() {
     } else {
       document.documentElement.style.removeProperty("--app-height");
     }
-    document.documentElement.style.setProperty("--viewport-top", "0px");
+    document.documentElement.style.setProperty(
+      "--viewport-top",
+      keyboard ? `${viewport.offsetTop}px` : "0px",
+    );
     document.documentElement.classList.toggle(
       "keyboard-open",
       Boolean(keyboard),
@@ -179,6 +191,7 @@ document.addEventListener("focusout", () => {
   setTimeout(syncViewport, 300);
 });
 window.addEventListener("orientationchange", () => {
+  idleViewportHeight = 0;
   syncViewport();
   setTimeout(syncViewport, 300);
 });
@@ -3238,7 +3251,46 @@ function chooseCommand(c) {
   else if (c.name === "help") openCommands();
   else commandActions[c.name]();
 }
-function inspectLayout() {
+async function inspectLayout() {
+  preview(
+    "Layout measurements",
+    "Local diagnostics",
+    "Waiting for the keyboard to close…",
+  );
+  const controller = previewController;
+  document.activeElement?.blur();
+  let settled = false,
+    previous = "",
+    stable = 0;
+  // Keyboard dismissal animates viewport height and offset after focus has moved.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  for (let attempt = 0; attempt < 16; attempt++) {
+    if (controller.signal.aborted) return;
+    const viewport = window.visualViewport;
+    const sample = `${innerHeight}:${viewport?.height}:${viewport?.offsetTop}`;
+    stable = sample === previous ? stable + 1 : 0;
+    previous = sample;
+    const layoutHeight = Math.max(
+      document.documentElement.clientHeight,
+      idleViewportHeight,
+      innerHeight,
+    );
+    if (
+      stable >= 2 &&
+      (!viewport ||
+        viewport.scale !== 1 ||
+        layoutHeight - viewport.height < 120)
+    ) {
+      settled = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  syncViewport();
+  await new Promise((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(resolve)),
+  );
+  if (controller.signal.aborted) return;
   const probe = el("div");
   probe.style.cssText =
     "position:fixed;visibility:hidden;padding-top:var(--safe-top);padding-bottom:var(--safe-bottom)";
@@ -3259,7 +3311,9 @@ function inspectLayout() {
   };
   const v = window.visualViewport;
   const data = {
-    version: "layout-1",
+    version: "layout-2",
+    settled,
+    layoutViewport: document.documentElement.clientHeight,
     standalone: Boolean(
       navigator.standalone || matchMedia("(display-mode: standalone)").matches,
     ),
@@ -3279,7 +3333,14 @@ function inspectLayout() {
       document.documentElement.style.getPropertyValue("--app-height"),
   };
   const source = JSON.stringify(data, null, 2);
-  preview("Layout measurements", "Local diagnostics", source, "json");
+  preview(
+    "Layout measurements",
+    "Local diagnostics",
+    source,
+    "json",
+    undefined,
+    true,
+  );
   const copy = el("button", "quiet", "Copy measurements");
   copy.onclick = () => copyText(source);
   $("#preview-body").prepend(copy);

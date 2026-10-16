@@ -370,3 +370,8 @@ an additional startup request.
 
 Accent-button text uses the same light-theme color token before and after
 JavaScript initialization, preventing a dark-to-white text flash at launch.
+
+Fullscreen viewer headers use the same clearance below the iOS status area as
+the main toolbar. The compact palette starts below that area as well. Returning
+from a preview preserves the sidebar's scroll position and focus; its pane
+outline is shown for keyboard navigation rather than touch interaction.

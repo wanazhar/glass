@@ -2609,3 +2609,22 @@ dialog > header {
 #command-help {
   flex-shrink: 0;
 }
+
+/* Apply launch geometry on the first paint, before the application module runs.
+   The class-based rules above also cover older navigator.standalone clients. */
+@media (display-mode: standalone) {
+  :root:not(.keyboard-open) .app {
+    position: fixed;
+    inset: 0;
+    height: auto;
+  }
+}
+@media (display-mode: standalone) and (max-width: 700px) {
+  :root:not(.keyboard-open) .toolbar {
+    height: calc(78px + var(--safe-top));
+    padding-top: calc(24px + var(--safe-top));
+  }
+  :root:not(.keyboard-open) .compose-zone {
+    padding-bottom: clamp(12px, var(--safe-bottom), 34px);
+  }
+}

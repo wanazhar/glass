@@ -362,3 +362,8 @@ On iOS, the PWA uses the system-reserved status area instead of translucent
 status-bar mode. Standalone headers leave 24 px of space after the reported top
 inset. With the keyboard open, the command palette includes the visual viewport
 offset and keeps its header, search field, and footer from shrinking.
+
+Standalone shell geometry is also selected through the CSS display-mode media
+query. Its first frame therefore uses the same header spacing, fixed edges, and
+bottom inset as the initialized app, without waiting for JavaScript or making
+an additional startup request.

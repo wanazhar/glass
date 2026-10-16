@@ -28,3 +28,19 @@ Drafts are versioned, bounded, per host/thread, persisted on edits with debounce
 ## Verification and delivery
 
 Independent source review required. Builds and syntax/compile checks permitted. Do not add or run tests unless user explicitly requests them. Record evidence, remaining limitations, bundle size and all unfinished scope here. Do not label incomplete features shipped. No gateway restart, push or publication without authorization. Update docs/connect.md to describe implemented behavior only.
+
+## Acceptance ledger
+
+| Deliverable | Acceptance | State |
+| --- | --- | --- |
+| Reader/history | Earlier reasoning appears while following is paused; older/newer windows bounded; concurrent prepend/refresh serialized; visible anchor survives prepends | implementing |
+| Mobile/expanded readers | Safe-area/keyboard layout preserved; text wraps; table presentation consistent; closing nested view renews parent lifecycle | implementing |
+| Drafts/context | Versioned bounded drafts per thread, restoration cannot overwrite another thread; explicit upload/reference chips; no auto-send | implementing |
+| Direct controls | Model/profile controls invoke native commands; queued message management uses durable native receipts; edit/retry preserve history | implementing |
+| Changes | Actual status/diffs; hunk actions require reviewed fingerprint and confirmation | implementing |
+| File editor | Bounded text editing, stale revision refusal, writer control, unsaved edit handling | implementing |
+| Agent/task views | Visible-only refresh, bounded transcript, reopened parent works, assignment/status/results readable | implementing |
+| Attention/notifications | Needs-input/failure/completion visible; opt-in capability-detected alerts with clear foreground-only scope | implementing |
+| Artifacts | Consistent expansion; optional scripts explicitly started in isolated opaque sandbox without host access/network | implementing |
+
+Baseline existing build: app.js.gz 36,400 bytes; style.css.gz 8,586 bytes. Bundle sizes are size measurements, not latency benchmarks. New workflow UI should be lazy-loaded rather than eagerly growing the initial shell. No competitive speed claim.

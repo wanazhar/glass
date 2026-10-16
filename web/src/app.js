@@ -1906,6 +1906,17 @@ $("#theme").onclick = () => {
   applyTheme();
 };
 applyTheme();
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Tab")
+    document.documentElement.classList.add("keyboard-navigation");
+});
+document.addEventListener(
+  "pointerdown",
+  () => {
+    document.documentElement.classList.remove("keyboard-navigation");
+  },
+  { passive: true },
+);
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "k") {
     e.preventDefault();

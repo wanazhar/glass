@@ -2545,7 +2545,10 @@ dialog > header {
 #detail-content[data-tab="reasoning"] {
   overflow-anchor: none;
 }
-#detail-content:focus-visible {
+#detail-content:focus {
+  outline: none;
+}
+.keyboard-navigation #detail-content:focus {
   outline: 1px solid var(--accent);
   outline-offset: -2px;
 }
@@ -2627,5 +2630,18 @@ dialog > header {
   }
   :root:not(.keyboard-open) .compose-zone {
     padding-bottom: clamp(12px, var(--safe-bottom), 34px);
+  }
+}
+
+/* Fullscreen viewers share the toolbar's clearance below the iOS status blur. */
+@media (max-width: 700px) {
+  .standalone:not(.keyboard-open) dialog[open]:not(#commands) > header {
+    padding-top: calc(var(--safe-top) + 24px);
+  }
+  .standalone:not(.keyboard-open) #commands[open] {
+    top: calc(var(--safe-top) + 24px);
+    max-height: calc(
+      100% - var(--safe-top) - 24px - max(12px, var(--safe-bottom))
+    );
   }
 }

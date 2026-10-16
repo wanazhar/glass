@@ -8,6 +8,8 @@ External project observations have not been revalidated by this editorial update
 
 ## Latest delivery
 
+- [Web workflow delivery](tasks/web-workflow-delivery.md): performance-first reading, composition, review, and mobile workflows (in progress).
+
 - [Output presentation review](reviews/output-presentation-2026-10-15.md)
 
 - [Pre-integration runtime delivery](reviews/preintegration-runtime-2026-10-15.md)

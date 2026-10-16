@@ -161,6 +161,7 @@ pub fn attach(s: &mut Session, workspace: &Path, path: &str) -> Result<(), Strin
     let bytes = crate::requests::bounded(&p, 8 * 1024 * 1024)?;
     let mut m = metadata(s);
     m.attachments.retain(|a| a.path != p);
+    if m.attachments.len() >= 128 {return Err("Attachment limit reached (128); remove an attachment in /context".into());}
     if image_media_type(&bytes).is_some() {
         let prepared = crate::images::prepare(&bytes, path, || false)?;
         let reference = prepared["reference"].as_str().ok_or("missing image reference")?;

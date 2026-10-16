@@ -40,6 +40,7 @@ pub fn supported(name: &str) -> bool {
                 | "rewrite"
                 | "compact"
                 | "attach"
+                | "file"
                 | "quote"
                 | "export"
                 | "constraints"
@@ -365,6 +366,26 @@ pub fn execute(
     }
     if matches!(name, "settings-info" | "status") {
         return inspect(name, s, cfg);
+    }
+    if matches!(name,"quote"|"branch"|"rewrite") && v.get("source_record").is_some() {
+        let index=v["source_record"].as_u64().ok_or("Invalid source record")? as usize;
+        let records=s.history_records();
+        let source=match records.get(index) {
+            Some(crate::session::Record::User(t)|crate::session::Record::Assistant(t))=>t,
+            Some(crate::session::Record::ToolResult{body:t,..}|crate::session::Record::Bash{output:t,..})=>t,
+            _=>return Err("Source activity changed; reload the message".into()),
+        };
+        if v["source_expected"].as_str()!=Some(crate::workspace::hash(source.as_bytes()).as_str()) {
+            return Err("Source activity changed; reload before applying this action".into());
+        }
+        if name=="quote" && v["args"].as_str().and_then(|s|s.parse::<usize>().ok())!=Some(index) {
+            return Err("Quote source does not match the selected activity".into());
+        }
+        let turn=records[..=index].iter().filter(|r|matches!(r,crate::session::Record::User(_))).count();
+        let chosen=if name=="branch" {v["args"].as_str()} else {v["turn"].as_str()};
+        if name!="quote" && chosen.and_then(|s|s.parse::<usize>().ok())!=Some(if name=="branch" && v["before"]==true {turn.saturating_sub(1)} else {turn}) {
+            return Err("Turn changed; reload the selected activity".into());
+        }
     }
     let args = label(v, "args")?;
     if matches!(name, "undo" | "restore" | "forget" | "rewrite" | "bg") && v["confirmed"] != true {
@@ -880,8 +901,39 @@ pub fn execute(
             )?;
             json!({"before_estimate":before,"after_estimate":after,"saved":true})
         }
+        "file" => {
+            if v["confirmed"] != true {return Err("Confirm saving this file".into());}
+            let path = v["path"].as_str().ok_or("Missing file path")?;
+            let requested = std::path::Path::new(path);
+            if requested.is_absolute() || requested.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+                return Err("Choose a relative path within the thread workspace".into());
+            }
+            let text = v["text"].as_str().ok_or("Missing file text")?;
+            if text.len() > 32768 {return Err("Browser editing is limited to 32 KiB".into());}
+            crate::files::execute(&cfg.workspace, "write", v)?
+        }
         "attach" => {
+            let upload = v["upload"].as_str().unwrap_or("");
+            let args = if upload.is_empty() {args.clone()} else {
+                if upload.len()!=64 || !upload.bytes().all(|b|b.is_ascii_hexdigit()) {
+                    return Err("Invalid upload token".into());
+                }
+                config::data_dir().join("web-uploads").join(&s.id).join(upload).to_string_lossy().into_owned()
+            };
             crate::polish::attach(s, &cfg.workspace, &args)?;
+            if !upload.is_empty() {
+                let name:String=v["upload_name"].as_str().unwrap_or("attachment").chars()
+                    .filter(|c|!c.is_control() && *c!='/' && *c!='\\').take(120).collect();
+                let mut meta=crate::polish::metadata(s);
+                if let Some(attachment)=meta.attachments.iter_mut().find(|a|a.path==std::path::Path::new(&args)) {
+                    attachment.source=Some(format!("Uploaded {} · {}",name,attachment.source.as_deref().unwrap_or("snapshot")));
+                }
+                crate::polish::save(s,&meta)?;
+            }
+            // The native context/image snapshot is now durable. Staging bytes
+            // have no remaining consumer and need not accumulate for the life
+            // of this thread. Failed attaches remain bounded for retry.
+            if !upload.is_empty() {let _=std::fs::remove_file(&args);}
             json!({"attached":args})
         }
         "quote" => {
@@ -957,9 +1009,9 @@ pub fn execute(
             if through > s.raw_turns().map_err(|e| e.to_string())? {
                 return Err("Choose an existing turn".into());
             }
-            let child = s
-                .branch(&config::data_dir(), through)
-                .map_err(|e| e.to_string())?;
+            let child = if through==0 && v["before"]==true && v.get("source_record").is_some() {
+                Session::create(&config::data_dir()).map_err(|e|e.to_string())?
+            } else {s.branch(&config::data_dir(), through).map_err(|e|e.to_string())?};
             crate::polish::save(&child, &crate::polish::metadata(s))?;
             crate::navigation::lineage(&child, &s.id, through)?;
             json!({"open_thread":child.id})
@@ -1143,13 +1195,40 @@ pub fn execute(
     Ok(result(name, body, "json"))
 }
 
+pub(crate) fn changes(cfg: &config::Config) -> Result<Value, String> {
+    let mut value = git(cfg, &json!({"action":"status"}))?;
+    let raw = crate::workflows::git(&cfg.workspace, &["status", "--porcelain=v1", "-z"], None)?;
+    let mut records = raw.split(|b| *b == 0).filter(|r| !r.is_empty());
+    let mut files = Vec::new();
+    while let Some(record) = records.next() {
+        if record.len() < 4 {continue;}
+        let path = String::from_utf8(record[3..].to_vec()).map_err(|_|"Git paths must be UTF-8")?;
+        let renamed = matches!(record[0], b'R'|b'C') || matches!(record[1], b'R'|b'C');
+        let old = if renamed {records.next().map(|p|String::from_utf8_lossy(p).into_owned())} else {None};
+        files.push(json!({"path":path,"index":(record[0] as char).to_string(),"worktree":(record[1] as char).to_string(),"oldPath":old}));
+        if files.len() >= 512 {return Err("Changes review is limited to 512 files; narrow the repository changes first".into());}
+    }
+    value["files"] = json!(files);
+    // Preserve the actor's fingerprint over HEAD + index while presenting the
+    // index-to-worktree patch required by stage/revert hunk operations.
+    value["combined"] = value["diff"].clone();
+    value["diff"] = json!(String::from_utf8(crate::workflows::git(&cfg.workspace,
+        &["diff","--no-ext-diff","--no-textconv","--binary"],None)?).map_err(|e|e.to_string())?);
+    Ok(value)
+}
+
 fn git(cfg: &config::Config, v: &Value) -> Result<Value, String> {
     let capture = |args: &[&str]| {
         String::from_utf8(crate::workflows::git(&cfg.workspace, args, None)?)
             .map_err(|e| e.to_string())
     };
     let status = capture(&["status", "--short"])?;
-    let diff = capture(&["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--binary"])?;
+    let head = crate::workflows::git(&cfg.workspace, &["rev-parse", "--verify", "HEAD"], None).is_ok();
+    let diff = if head {
+        capture(&["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--binary"])?
+    } else {
+        capture(&["diff", "--no-ext-diff", "--no-textconv", "--binary"])?
+    };
     let staged = capture(&[
         "diff",
         "--no-ext-diff",

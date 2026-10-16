@@ -247,8 +247,9 @@ model work. Browser presentation uses forms and result panels rather than
 reproducing terminal-specific controls.
 
 The interface bundles its sans serif and monospace fonts locally. The theme
-follows the device setting by default; the theme button cycles through light,
-dark, and system modes. Code and mathematical notation retain their own fonts.
+follows the device setting by default. The theme button switches directly between
+light and dark based on the currently visible theme. Reloading restores device
+theme following. Code and mathematical notation retain their own fonts.
 
 ### Command transport
 

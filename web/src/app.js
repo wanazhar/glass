@@ -1,4 +1,4 @@
-import { createToolActivity, setToolInput, finishToolActivity, startToolActivity, refreshToolTime, activitySnapshot } from "./activity.js";
+import { createToolActivity, setToolInput, finishToolActivity, startToolActivity, refreshToolTime, activitySnapshot, renderActivityConsole } from "./activity.js";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { draftStore } from "./drafts.js";
@@ -740,18 +740,18 @@ function refreshToolActivity() {
 }
 document.addEventListener("visibilitychange", refreshToolActivity);
 function openAgentActivity() {
-  preview("Agent activity", "Read-only · updates at tool events", activitySnapshot(view.tools.values()), "text");
+  preview("Agent activity", "Read-only · updates at tool events", activitySnapshot(view.tools.values()), "activity");
   activityPreviewThread = view.id;
   $("#preview-body").classList.add("agent-console");
   $("#preview-body").scrollTop = $("#preview-body").scrollHeight;
 }
 function refreshAgentActivity() {
   if (activityPreviewThread !== view.id || !$("#preview").open) return;
-  const body = $("#preview-body"), pre = body.querySelector("pre");
-  if (!pre || !body.classList.contains("agent-console")) return;
+  const body = $("#preview-body");
+  if (!body.classList.contains("agent-console")) return;
   const following = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
   const snapshot = activitySnapshot(view.tools.values());
-  pre.textContent = snapshot;
+  renderActivityConsole(body, view.tools.values());
   if (previewBlob) URL.revokeObjectURL(previewBlob);
   previewBlob = URL.createObjectURL(new Blob([snapshot], { type: "text/plain" }));
   if (following) body.scrollTop = body.scrollHeight;
@@ -2782,7 +2782,10 @@ function preview(
     a.download = title.replace(/[^a-z0-9._-]/gi, "-");
     a.click();
   };
-  if (format === "html") {
+  if (format === "activity") {
+    body.className = "agent-console";
+    renderActivityConsole(body, view.tools.values());
+  } else if (format === "html") {
     const iframe = el("iframe");
     iframe.setAttribute("sandbox", "");
     iframe.referrerPolicy = "no-referrer";

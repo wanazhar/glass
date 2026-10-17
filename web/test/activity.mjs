@@ -124,10 +124,36 @@ try {
     await saved.getByRole("button", { name: "Expand output", exact: true }).click();
     await page.evaluate(() => document.querySelector("#agent-activity").click());
     await page.locator("#preview-body.agent-console").waitFor();
-    assert.match(await page.locator("#preview-body").textContent(), /Running · bash/);
+    assert(await page.locator('.activity-entry[data-state="running"]').count() >= 1);
+    assert(await page.locator(".activity-command").count() >= 1);
+    await page.getByRole("combobox", { name: "Filter activity" }).selectOption("failed");
+    assert.equal(await page.locator('.activity-entry[data-state="running"]:visible').count(), 0);
+    assert(await page.locator('.activity-entry[data-state="failed"]:visible').count() >= 1);
+    await page.getByRole("combobox", { name: "Filter activity" }).selectOption("all");
+    await page.getByRole("button", { name: "Collapse all", exact: true }).click();
+    assert.equal(await page.locator(".activity-entry[open]").count(), 0);
+    await page.getByRole("button", { name: "Expand all", exact: true }).click();
+    assert.equal(await page.locator(".activity-entry[open]").count(), await page.locator(".activity-entry").count());
     emit([{ t: "tool_end", call_id: "live", output: "[exit 1]\nA useful failure message", summary: "exit 1" }]);
     await page.locator("#preview-body").getByText(/Useful failure message/i).waitFor();
-    assert.match(await page.locator("#preview-body").textContent(), /× Failed · bash/);
+    assert(await page.locator('.activity-entry[data-state="failed"]').count() >= 2);
+    const contrast = await page.locator(".activity-result").last().evaluate(element => {
+      const luminance = color => {
+        const channels = color.match(/[\d.]+/g).slice(0, 3).map(Number).map(value => {
+          value /= 255; return value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4;
+        });
+        return channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722;
+      };
+      const style = getComputedStyle(element), a = luminance(style.color), b = luminance(style.backgroundColor);
+      return (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
+    });
+    assert(contrast >= 7, "Execution output must have strong contrast in both themes");
+    assert.equal(await page.locator(".activity-result").last().evaluate(element => getComputedStyle(element).whiteSpace), "pre");
+    await page.getByRole("button", { name: "Wrap lines", exact: true }).click();
+    assert.equal(await page.locator(".activity-result").last().evaluate(element => getComputedStyle(element).whiteSpace), "pre-wrap");
+    assert.equal(await page.locator("#preview-body code").count(), 0, "Activity output must not inherit prose code colors");
+    await page.locator("#preview-body").evaluate(element => element.scrollTop = 0);
+    await page.screenshot({ path: `/tmp/gc-structured-activity-${width}-${colorScheme}.png` });
     await page.locator("#preview-close").click();
     assert(await live.evaluate(element => element.classList.contains("failed")));
     emit([{ t: "tool_end", call_id: "resumed", output: "Finished background check", summary: "exit 0" }]);

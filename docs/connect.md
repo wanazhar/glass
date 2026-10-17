@@ -115,10 +115,15 @@ arguments are available when replaying saved calls; live starts currently expose
 only their command or target.
 
 The `›_` toolbar button opens **Agent activity**, a read-only execution log built
-from existing tool events. It updates at start/completion boundaries, follows new
+from existing tool events. Steps have separate status, command/target, and result
+sections, with All/Running/Failed filters, expand/collapse controls, and a line-wrap
+toggle. Result columns stay aligned by default and scroll horizontally. Output uses
+plain, high-contrast text in the active theme, independent of Markdown code colors. It updates at start/completion boundaries, follows new
 output only when already at the bottom, and offers a snapshot download. This is
 not an interactive shell or byte-by-byte terminal stream. Log snapshots retain
-up to 128K characters of recent output; individual steps retain their existing previews.
+up to 128K characters of recent output. The structured view shows at most 48
+recent steps, with an 8K-character result preview per step; individual conversation
+steps retain their existing fuller previews.
 
 Public reasoning appears as collapsed Thinking/Thoughts rows between steps.
 Their 64K-character previews render Markdown only when expanded. The Reasoning tab

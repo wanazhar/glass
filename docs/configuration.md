@@ -31,7 +31,9 @@ The other adapters are `anthropic` and `openai-responses`. Select an adapter tha
 matches the endpoint. Protocol compatibility alone does not establish support
 for tools, images, reasoning, model discovery, or every streaming event. Set
 `image_input = false` for a text-only model to disable native image viewing and
-reject existing image context before a foreground, served or ACP request.
+omit existing pixels from foreground, served and ACP model requests with an
+explicit text notice. Original attachments remain stored. `display_image` still
+shares files in web chat without model vision.
 
 `/settings` and `gc settings --json` show effective settings and their provenance.
 `/profiles` saves workspace-specific provider/model choices, account references,

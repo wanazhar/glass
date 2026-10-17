@@ -428,10 +428,9 @@ function prepareBlock(node, streaming, context) {
         !/^(?:https?:|\/\/)/i.test(src) &&
         (context?.workspace || context?.id || view.id)
       ) {
-        const path =
-          !src.startsWith("/") && context?.base
-            ? context.base + "/" + src
-            : src;
+        let decoded;
+        try { decoded = decodeURIComponent(src); } catch { decoded = src; }
+        const path = !decoded.startsWith("/") && context?.base ? context.base + "/" + decoded : decoded;
         img.src =
           "/api/file?" +
           (context?.workspace
@@ -772,14 +771,44 @@ function tool(id, name, command = "", target = $("#timeline"), args, saved = fal
   const item = createToolActivity({ name: name || "tool", command, args, saved, preview, copy: copyText, activity: openAgentActivity });
   if (id) item.row.dataset.callId = id;
   parent.append(item.row);
-  const count = parent.children.length - 1;
+  const count = parent.querySelectorAll(":scope > .tool-row").length;
   parent.firstChild.textContent = `${count} ${count === 1 ? "step" : "steps"}`;
   if (id) view.tools.set(id, item);
   refreshToolActivity();
   refreshAgentActivity();
   return item;
 }
+function sharedImage(t) {
+  if (t.name !== "display_image" || t.sharedImage || !t.output.textContent.startsWith("[display image]\n")) return;
+  let value;
+  try { value = JSON.parse(t.output.textContent.split("\n")[1]); } catch { return; }
+  if (value.kind !== "image_display" || typeof value.path !== "string" || value.path.length > 4096
+      || !/^image\/(png|jpeg|gif|webp)$/.test(value.media_type)
+      || !Number.isInteger(value.width) || !Number.isInteger(value.height)
+      || value.width <= 0 || value.height <= 0 || value.width * value.height > 32000000) return;
+  const figure = el("figure", "shared-image-card"), open = el("button", "shared-image-open");
+  open.type = "button";
+  const image = el("img");
+  const filename = value.path.split("/").pop();
+  image.alt = "Shared image: " + filename;
+  image.loading = "lazy";
+  image.decoding = "async";
+  image.width = value.width;
+  image.height = value.height;
+  image.src = "/api/file?id=" + encodeURIComponent(view.id) + "&path=" + encodeURIComponent(value.path);
+  image.onerror = () => {
+    image.hidden = true;
+    if (!figure.querySelector(".shared-image-error")) figure.append(el("p", "shared-image-error", "Image preview unavailable. Open the file to check its location and permissions."));
+  };
+  open.append(image);
+  open.onclick = () => openFile(value.path, undefined, true);
+  open.setAttribute("aria-label", "Open shared image " + filename);
+  figure.append(open, el("figcaption", "", `${filename} · ${value.width} × ${value.height} · Shared without model vision`));
+  t.row.after(figure);
+  t.sharedImage = figure;
+}
 function toolStatus(t, failed = false) {
+  if (!failed) sharedImage(t);
   finishToolActivity(t, failed);
   refreshToolActivity();
   refreshAgentActivity();
@@ -2628,8 +2657,8 @@ $("#welcome-files").onclick = showFiles;
 $("#files-toggle").onclick = showFiles;
 let fileVersion = 0,
   fileAbort;
-async function openFile(path, workspace) {
-  try {
+async function openFile(path, workspace, rawPath = false) {
+  if (!rawPath) try {
     path = decodeURIComponent(path.split("#")[0]);
   } catch {
     path = path.split("#")[0];

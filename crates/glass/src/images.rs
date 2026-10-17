@@ -11,6 +11,72 @@ const ENCODED: usize = 1_048_576;
 static PREPARED: Mutex<Vec<(String, Value)>> = Mutex::new(Vec::new());
 static HOT: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
+/// Display metadata only: no pixel decoding, re-encoding, or model input artifact.
+pub fn share(bytes: &[u8], path: &str) -> Result<Value, String> {
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err("image exceeds 8 MiB".into());
+    }
+    let format = image::guess_format(bytes).map_err(|e| format!("invalid image: {e}"))?;
+    let media_type = match format {
+        image::ImageFormat::Png => "image/png",
+        image::ImageFormat::Jpeg => "image/jpeg",
+        image::ImageFormat::Gif => "image/gif",
+        image::ImageFormat::WebP => "image/webp",
+        _ => return Err("supported images: PNG, JPEG, GIF, WebP".into()),
+    };
+    let (width, height) = image::ImageReader::with_format(Cursor::new(bytes), format)
+        .into_dimensions()
+        .map_err(|e| format!("invalid image dimensions: {e}"))?;
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > PIXELS {
+        return Err("image exceeds 32 million pixels or has empty dimensions".into());
+    }
+    let mut encoded = String::new();
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    Ok(
+        json!({"kind":"image_display","path":path,"width":width,"height":height,"bytes":bytes.len(),"media_type":media_type,"markdown":format!("![Image]({encoded})")}),
+    )
+}
+
+pub fn display_shared(value: &Value) -> String {
+    format!(
+        "[display image]\n{value}\nShown to the user only. No pixels supplied to the model; visual contents are unknown. Already shared in web chat. Markdown is available for inline placement if needed."
+    )
+}
+
+/// Keep durable images for readers while projecting text-only provider input.
+/// This branch deliberately never opens prepared image artifacts.
+pub fn expand_for_model(messages: Vec<Message>, image_input: bool) -> Vec<Message> {
+    if image_input {
+        return expand(messages);
+    }
+    messages.into_iter().map(|message| match message {
+        Message::Image {..} => Message::User("[Image omitted: the current model receives text only. Visual contents are unavailable; do not claim to have inspected it.]".into()),
+        Message::ToolResult {call_id, name, body} if name == "view_image" && body.starts_with("[image ") => {
+            let metadata = body.lines().next().unwrap_or_default();
+            Message::ToolResult {call_id, name, body:format!("{metadata}\nPixels omitted for this text-only model. Visual contents are unknown. Use display_image to show the file to the user without inspecting it.")}
+        },
+        other => other,
+    }).collect()
+}
+
+pub fn text_only_rejection(error: &crate::provider::Error) -> bool {
+    let detail = match error {
+        crate::provider::Error::Status(400, detail) => detail.to_ascii_lowercase(),
+        crate::provider::Error::Transport(detail) if detail.starts_with("http 400: ") => {
+            detail.to_ascii_lowercase()
+        }
+        _ => return false,
+    };
+    detail.contains("supports text input only")
+        || detail.contains("model does not support image inputs")
+}
 pub fn prepare(bytes: &[u8], path: &str, cancelled: impl Fn() -> bool) -> Result<Value, String> {
     if cancelled() {
         return Err("Image operation cancelled".into());
@@ -242,6 +308,72 @@ mod tests {
             .unwrap();
         output.into_inner()
     }
+    #[test]
+    fn display_metadata_never_becomes_model_pixels() {
+        let bytes = png(8, 6);
+        let value = share(&bytes, "shots/ui #1 (é).png").unwrap();
+        assert_eq!(value["width"], 8);
+        assert_eq!(value["height"], 6);
+        assert_eq!(
+            value["markdown"],
+            "![Image](shots/ui%20%231%20%28%C3%A9%29.png)"
+        );
+        assert!(value.get("reference").is_none());
+        for image_input in [false, true] {
+            let result = expand_for_model(
+                vec![Message::ToolResult {
+                    call_id: "display".into(),
+                    name: "display_image".into(),
+                    body: display_shared(&value),
+                }],
+                image_input,
+            );
+            assert!(
+                !result
+                    .iter()
+                    .any(|message| matches!(message, Message::Image { .. }))
+            );
+        }
+        let old = vec![
+            Message::ToolResult {
+                call_id: "old".into(),
+                name: "view_image".into(),
+                body: format!(
+                    "[image {} · old.png · 8×6]\nPixels supplied to the model;",
+                    "0".repeat(64)
+                ),
+            },
+            Message::Image {
+                media_type: "image/jpeg".into(),
+                data: "private pixels".into(),
+            },
+        ];
+        let projected = expand_for_model(old, false);
+        assert!(
+            !projected
+                .iter()
+                .any(|message| matches!(message, Message::Image { .. }))
+        );
+        let rendered = format!("{projected:?}");
+        assert!(rendered.contains("Pixels omitted"));
+        assert!(!rendered.contains("private pixels") && !rendered.contains("Image unavailable"));
+        assert!(share(b"not an image", "bad.png").is_err());
+        assert!(text_only_rejection(&crate::provider::Error::Status(
+            400,
+            "Beam supports text input only.".into()
+        )));
+        assert!(!text_only_rejection(&crate::provider::Error::Status(
+            500,
+            "supports text input only".into()
+        )));
+        assert!(text_only_rejection(&crate::provider::Error::Transport(
+            "http 400: Beam supports text input only.".into()
+        )));
+        assert!(!text_only_rejection(&crate::provider::Error::Transport(
+            "timeout".into()
+        )));
+    }
+
     #[test]
     fn preparation_is_bounded_and_replay_is_after_all_results() {
         let value = prepare(&png(2000, 4), "shot.png", || false).unwrap();

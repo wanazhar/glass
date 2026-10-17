@@ -3067,3 +3067,9 @@ dialog > header {
 #preview-body.agent-console .activity-result { white-space: pre; overflow-wrap: normal; }
 #preview-body.agent-console.activity-wrap .activity-result { white-space: pre-wrap; overflow-wrap: anywhere; }
 .activity-console-controls button[aria-pressed="true"] { background: var(--accent-bg); border-color: var(--accent); }
+
+.shared-image-card { max-width: 640px; margin: 12px 0 22px 28px; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: var(--surface); }
+.shared-image-open { display: block; width: 100%; padding: 0; }
+.shared-image-card img { display: block; width: 100%; height: auto; max-height: 480px; object-fit: contain; background: var(--bg); }
+.shared-image-card figcaption, .shared-image-error { padding: 12px 16px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .shared-image-card { margin-left: 0; } }

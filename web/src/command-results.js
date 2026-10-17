@@ -6,17 +6,28 @@ const node = (tag, cls, text) => {
   return n;
 };
 const label = key => String(key).replaceAll('_', ' ').replace(/\b\w/g, c => c.toUpperCase()).replace(/\bUsd\b/g, 'USD');
+const titles = { fs_scan: 'File search cache', env: 'Environment', extensionIsolation: 'Extension isolation', expected: 'Revision', cost_usd: 'Reported cost (USD)', cwd: 'Working directory', args: 'Arguments', stdout: 'Output', stderr: 'Errors', id: 'ID', url: 'URL', api: 'API', input: 'Input', output: 'Output' };
+const pretty = key => titles[key] || label(key).replace(/([a-z])([A-Z])/g, '$1 $2');
 const display = value => value == null ? 'Not reported' : typeof value === 'boolean' ? (value ? 'Yes' : 'No') : String(value) || 'None';
-export function renderCommandData(root, value, { command = '', markdown, privateEntry = () => false } = {}) {
+export function renderCommandData(root, value, { command = '', markdown, privateEntry = () => false, onSelect } = {}) {
   let count = 0;
   function field(key, value) {
-    const row = node('div', 'command-field');
-    row.append(node('dt', '', label(key)));
+    const row = node('div', 'command-stat');
+    row.append(node('dt', '', pretty(key)));
     const content = node('dd');
     if (typeof value === 'string' && ['proposal', 'draft', 'answer', 'text', 'diff', 'preview'].includes(key) && markdown) {
       content.className = 'prose';
-      markdown(content, ['diff', 'preview'].includes(key) ? '```diff\n' + value + '\n```' : value);
-    } else content.textContent = display(value);
+      markdown(content, ['diff', 'preview'].includes(key) ? '```diff\n' + value.slice(0, 65536) + '\n```' : value.slice(0, 65536));
+    } else if (typeof value === 'string' && (value.includes('\n') || ['output', 'stdout', 'stderr', 'patch', 'system', 'instructions'].includes(key))) {
+      row.classList.add('command-stat-wide');
+      const text = node('pre', 'command-literal', value.slice(0, 65536));
+      content.append(text);
+
+    } else if (['status', 'state', 'outcome'].includes(key) && typeof value === 'string') {
+      content.append(node('span', 'command-badge', value.replaceAll('_', ' ')));
+    } else content.textContent = display(value).slice(0, 65536);
+    if (typeof value === 'string' && value.length > 65536) content.append(node('p', 'quiet', 'Preview limited to 64K characters. Narrow the query for more.'));
+    if (['proposal', 'draft', 'answer', 'text', 'diff', 'preview'].includes(key)) row.classList.add('command-stat-wide');
     row.append(content);
     return row;
   }
@@ -24,22 +35,47 @@ export function renderCommandData(root, value, { command = '', markdown, private
     const section = node('section', 'command-group');
     if (privateEntry(data)) return section;
     if (++count > 3000 || depth > 16) { section.append(node('p', 'quiet', 'Display limit reached. Narrow the query.')); return section; }
-    if (title) section.append(node('h3', '', label(title)));
+    if (title) section.append(node('h3', '', pretty(title)));
     if (Array.isArray(data)) {
-      if (!data.length) section.append(node('p', 'quiet', 'None'));
+      if (!data.length) { section.append(node('p', 'command-empty', title ? `No ${pretty(title).toLowerCase()} to show.` : 'Nothing to show yet.')); return section; }
+      const list = node('div', 'command-result-list');
+      const cards = [];
       for (const item of data.slice(0, 300)) {
-        if (++count > 3000) { section.append(node('p', 'quiet', 'Display limit reached. Narrow the query.')); break; }
+        if (++count > 3000) { list.append(node('p', 'quiet', 'Display limit reached. Narrow the query.')); break; }
         if (privateEntry(item)) continue;
+        const card = node('article', 'command-list-item');
         if (item && typeof item === 'object') {
-          const name = item.command ?? item.name ?? item.title ?? item.id;
-          const card = node('article', 'command-list-item');
-          if (name != null) card.append(node('h4', '', String(name)));
-          const rest = Object.fromEntries(Object.entries(item).filter(([key]) => !['command', 'name', 'title', 'id'].includes(key)));
-          card.append(group(rest, '', depth + 1)); section.append(card);
-        } else section.append(node('p', 'command-list-text', display(item)));
+          const identity = ['name', 'title', 'label', 'command', 'path', 'model', 'session', 'id', 'record'].find(key => typeof item[key] === 'string' || typeof item[key] === 'number');
+          if (identity) card.append(node('h4', '', ['id', 'record'].includes(identity) ? `${pretty(identity)} ${item[identity]}` : String(item[identity])));
+          const rest = Object.fromEntries(Object.entries(item).filter(([key]) => key !== identity));
+          card.append(group(rest, '', depth + 1));
+          if (command === 'quote' && Number.isInteger(item.record) && onSelect) {
+            const choose = node('button', 'quiet', 'Use this excerpt'); choose.type = 'button';
+            choose.onclick = () => onSelect(item); card.append(choose);
+          }
+        } else {
+          const text = display(item);
+          card.classList.toggle('command-short-item', text.length < 80 && !text.includes('\n') && command !== 'prompts');
+          card.append(node('p', '', text.slice(0, 65536)));
+          if (text.length > 65536) card.append(node('p', 'quiet', 'Preview limited to 64K characters. Narrow the query for more.'));
+        }
+        list.append(card); cards.push(card);
         if (count >= 3000) break;
       }
-      if (data.length > 300) section.append(node('p', 'quiet', 'Showing the first 300 items. Narrow the query.'));
+      if (cards.length > 8) {
+        const search = node('input', 'command-filter'); search.type = 'search';
+        search.placeholder = `Filter ${title ? pretty(title).toLowerCase() : 'results'}…`;
+        search.setAttribute('aria-label', search.placeholder.replace('…', ''));
+        const status = node('p', 'command-list-count'); status.setAttribute('role', 'status');
+        search.oninput = () => {
+          const query = search.value.trim().toLowerCase(); let visible = 0;
+          for (const card of cards) { card.hidden = !card.textContent.toLowerCase().includes(query); if (!card.hidden) visible++; }
+          status.textContent = `${visible} of ${cards.length} ${cards.length === 1 ? 'item' : 'items'}`;
+        };
+        search.oninput(); section.append(search, status);
+      }
+      section.append(list);
+      if (data.length > 300) section.append(node('p', 'quiet', 'Showing the first 300 items. Narrow the command query for more.'));
     } else if (data && typeof data === 'object') {
       const fields = node('dl', 'command-fields');
       for (const [key, item] of Object.entries(data)) {
@@ -52,7 +88,10 @@ export function renderCommandData(root, value, { command = '', markdown, private
         if (count >= 3000) break;
         if (item && typeof item === 'object') section.append(group(item, key, depth + 1));
       }
-    } else section.append(node('p', '', display(data)));
+    } else {
+      section.append(node('p', 'command-message', display(data).slice(0, 65536)));
+      if (display(data).length > 65536) section.append(node('p', 'quiet', 'Preview limited to 64K characters. Narrow the query for more.'));
+    }
     return section;
   }
   function diagnostics(data) {

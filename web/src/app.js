@@ -3150,13 +3150,13 @@ document.addEventListener("click", async (e) => {
     }
   }
 });
-function renderCommandResult(root, value, format, command) {
+function renderCommandResult(root, value, format, command, onSelect) {
   if (format === "markdown") {
     root.classList.add("prose");
     markdown(root, String(value || ""));
     return;
   }
-  renderCommandData(root, value, { command, markdown, privateEntry: privateProviderEntry });
+  renderCommandData(root, value, { command, markdown, privateEntry: privateProviderEntry, onSelect });
 }
 function openDraftEditor() {
   const modal = $("#draft-editor");
@@ -3228,6 +3228,8 @@ async function openNativeCommand(command, initialArgs = "") {
   $("#command-status").textContent = "";
   body.replaceChildren();
   form.replaceChildren();
+  modal.querySelector('.command-description')?.remove();
+  if (command.description) form.before(el('p', 'command-description', command.description.replace(/ · local$/, '')));
   if (!modal.open) modal.showModal();
   if (!view.commandTransportReady && !command.readonly) {
     body.append(
@@ -3243,7 +3245,7 @@ async function openNativeCommand(command, initialArgs = "") {
   for (const field of fields) {
     const label = el("label", "command-field", field.label);
     const choices =
-      field.key === "action" && field.label.includes("|")
+      ["action", "kind"].includes(field.key) && field.kind === "text" && field.label.includes("|")
         ? field.label.split("|").map((s) => s.trim().split(/\s/)[0])
         : null;
     const input = el(
@@ -3251,7 +3253,7 @@ async function openNativeCommand(command, initialArgs = "") {
     );
     if (choices)
       for (const choice of choices) {
-        const option = el("option", "", choice);
+        const option = el("option", "", choice.replaceAll("-", " ").replaceAll("_", " "));
         option.value = choice;
         input.append(option);
       }
@@ -3290,6 +3292,10 @@ async function openNativeCommand(command, initialArgs = "") {
     form.append(label);
   }
   const variants = {
+    model: { inspect: [], list: [], set: ["args"] },
+    extensions: { list: [], enable: ["args"], disable: ["args"], reload: [] },
+    job: { poll: ["id"], stop: ["id"], input: ["id", "text"] },
+    todo: { add: ["args"], complete: ["args"], start: ["args"], block: ["args"], remove: ["args"], clear: [] },
     handoff: {
       inspect: [],
       save: ["args"],
@@ -3343,6 +3349,7 @@ async function openNativeCommand(command, initialArgs = "") {
       create: ["title", "body_file", "base", "expected"],
     },
     neuralnets: {
+      mode: ["text"],
       list: [],
       search: ["query"],
       read: ["id"],
@@ -3401,6 +3408,7 @@ async function openNativeCommand(command, initialArgs = "") {
       advanced: ["args"],
     },
   };
+  let actionButton;
   const updateFields = () => {
     const action = form.elements.namedItem("action")?.value;
     const visible = variants[command.name]?.[action];
@@ -3411,6 +3419,8 @@ async function openNativeCommand(command, initialArgs = "") {
       input.disabled = label.hidden;
       if (label.hidden && input.name === "secret") input.value = "";
     }
+    if (actionButton) actionButton.textContent = command.readonly || ['inspect', 'list', 'status', 'poll'].includes(action)
+      ? 'Refresh' : action ? action.replaceAll('-', ' ').replace(/^./, c => c.toUpperCase()) : fields.length ? 'Apply' : 'Run';
     const confirmed = form.elements.namedItem("confirmed");
     if (confirmed) confirmed.checked = false;
   };
@@ -3423,6 +3433,8 @@ async function openNativeCommand(command, initialArgs = "") {
   );
   button.type = "submit";
   form.append(button);
+  actionButton = button;
+  updateFields();
   const cancel = el("button", "quiet", "Cancel command");
   cancel.type = "button";
   cancel.hidden = true;
@@ -3464,7 +3476,13 @@ async function openNativeCommand(command, initialArgs = "") {
       if (version !== commandViewVersion || id !== view.id) return;
       body.replaceChildren();
       body.className = "command-data";
-      renderCommandResult(body, result.body, result.format, command.name);
+      renderCommandResult(body, result.body, result.format, command.name, item => {
+        if (command.name !== 'quote') return;
+        form.elements.namedItem('args').value = String(item.record);
+        form.elements.namedItem('text').value = item.excerpt || '';
+        $('#command-status').textContent = 'Excerpt selected. Review it, then choose Apply to attach it.';
+        form.elements.namedItem('text').focus({ preventScroll: false });
+      });
       for (const key of ["expected", "draft", "attempt"]) {
         const target = form.elements.namedItem(
           key === "draft" ? "text" : key === "attempt" ? "args" : key,
@@ -3553,7 +3571,7 @@ async function openNativeCommand(command, initialArgs = "") {
     ].includes(command.name)
   )
     await execute(true);
-  else if ((initialArgs || !fields.length) && !command.form?.confirm)
+  else if (initialArgs && !command.form?.confirm)
     await execute();
   else
     $("#command-status").textContent = command.form?.model_request

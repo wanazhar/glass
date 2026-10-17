@@ -259,8 +259,14 @@ the host through the same native handlers. Confirmation fields protect actions
 such as restores, publication, and configuration changes. Credential fields
 are masked and are not added to the conversation or sent as model prompts.
 
-Command results use labeled rows and compact sections. `/guidance` provides a
-searchable command list; `/usage` summarizes tokens, cache reporting and known
+All native palette result views share labeled rows, readable empty states and
+compact sections. Lists retain item IDs and provide a local filter for larger
+results; multiline output and diffs use the full reading width. Quote sources
+can be selected into the form for review before attaching. Command forms show
+only fields relevant to the chosen action. Opening a command does not start a
+model request; submit its form to run it.
+
+`/guidance` provides a searchable command list; `/usage` summarizes tokens, cache reporting and known
 cost, with diagnostics under More details. Missing usage and price remain
 explicitly unreported. `/status` puts connection and model details first.
 

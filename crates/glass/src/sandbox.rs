@@ -527,12 +527,12 @@ fn shell_inner(command: &str) -> Command {
         let mut cmd = Command::new("/usr/bin/sandbox-exec");
         cmd.arg("-p")
             .arg(profile)
-            .arg("/bin/sh")
+            .arg("/bin/bash")
             .arg("-c")
             .arg(command);
         return cmd;
     }
-    let mut cmd = Command::new("/bin/sh");
+    let mut cmd = Command::new("/bin/bash");
     cmd.arg("-c").arg(command);
     cmd
 }

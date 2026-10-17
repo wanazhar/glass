@@ -49,6 +49,9 @@ struct Target {
 }
 impl Target {
     fn new(root: &Path, path: &str, mutating: bool) -> Result<Self, String> {
+        Self::with_parents(root, path, mutating, false)
+    }
+    fn with_parents(root: &Path, path: &str, mutating: bool, create: bool) -> Result<Self, String> {
         let workspace = root.canonicalize().map_err(error)?;
         let requested = Path::new(path);
         let unrestricted = approved() || (!mutating && crate::sandbox::policy()!=crate::sandbox::Policy::Strict)
@@ -76,12 +79,16 @@ impl Target {
         }
         let mut dir = File::open(&root).map_err(error)?;
         for part in &parts[..parts.len() - 1] {
-            dir = open_at(
-                &dir,
-                &c(part.as_os_str())?,
-                libc::O_RDONLY | libc::O_DIRECTORY,
-                0,
-            )?;
+            let name = c(part.as_os_str())?;
+            if create {
+                // Descriptor-relative mkdir and NOFOLLOW reopen retain the same
+                // confinement against concurrent symlink substitution.
+                let rc = unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), 0o755) };
+                if rc < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
+                    return Err(error(std::io::Error::last_os_error()));
+                }
+            }
+            dir = open_at(&dir, &name, libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
         }
         Ok(Self {
             dir,
@@ -282,7 +289,17 @@ fn execute_cancellable(
         && crate::sandbox::permission_profile_label() == "read-only" && !approved() {
         return Err("Read-only permission profile blocks file mutations; preview:true remains available".into());
     }
-    let target = Target::new(root, required(v, "path")?, matches!(action,"edit"|"write") && v["preview"]!=true)?;
+    let create_parents = action == "write" && v["preview"] != true && v.get("expected").is_some_and(Value::is_null);
+    if create_parents {
+        let content = required(v, "text")?;
+        if content.len() > MAX_FILE { return Err("result exceeds 8 MiB".into()); }
+        text(content.as_bytes())?;
+        if v.get("preview").is_some_and(|value| !value.is_boolean())
+            || v.get("validate").is_some_and(|value| !value.is_boolean()) {
+            return Err("preview and validate must be booleans".into());
+        }
+    }
+    let target = Target::with_parents(root, required(v, "path")?, matches!(action,"edit"|"write") && v["preview"]!=true, create_parents)?;
     let mutation = matches!(action, "edit" | "write");
     if mutation {
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -472,23 +489,46 @@ fn execute_cancellable(
                 if old.is_empty() {
                     return Err("old must not be empty; use a line insertion".into());
                 }
-                let first = source.find(old);
-                if first.is_none() {
+                // Reads display CRLF as LF. Match that representation without
+                // normalizing unrelated bytes or weakening uniqueness checks.
+                let normalized;
+                let needle;
+                let (haystack, old_match) = if source.contains(old) {
+                    (source, old.to_string())
+                } else {
+                    normalized = source.replace("\r\n", "\n");
+                    needle = old.replace("\r\n", "\n");
+                    (normalized.as_str(), needle)
+                };
+                let Some(start) = haystack.find(&old_match) else {
                     return Err(format!(
                         "edit {}: old text was not found; nothing written. Re-read the target range with the current revision",
                         index + 1
                     ));
-                }
-                if first.is_some_and(|at| {
-                    source[at + source[at..].chars().next().unwrap().len_utf8()..].contains(old)
-                }) {
+                };
+                if haystack[start + haystack[start..].chars().next().unwrap().len_utf8()..].contains(&old_match) {
                     return Err(format!(
                         "edit {}: old text matches more than once; nothing written. Use original-file line ranges for repeated text",
                         index + 1
                     ));
                 }
-                let start = first.unwrap();
-                spans.push((start, start + old.len(), required(op, "new")?.to_string()));
+                let new = required(op, "new")?;
+                if std::ptr::eq(haystack.as_ptr(), source.as_ptr()) {
+                    spans.push((start, start + old.len(), new.to_string()));
+                } else {
+                    let original_offset = |offset: usize| {
+                        let mut original = 0;
+                        let mut remaining = offset;
+                        while remaining > 0 {
+                            if source.as_bytes()[original..].starts_with(b"\r\n") { original += 1; }
+                            original += 1;
+                            remaining -= 1;
+                        }
+                        original
+                    };
+                    spans.push((original_offset(start), original_offset(start + old_match.len()),
+                        new.replace("\r\n", "\n").replace('\n', ending)));
+                }
             } else {
                 let start = number(op, "start", 0)?;
                 let end = number(op, "end", usize::MAX)?;
@@ -735,7 +775,7 @@ pub fn schemas() -> Vec<(String, String, String)> {
     let read = json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{
         "path":{"type":"string"},"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":1000},
         "byte_offset":{"type":"integer","minimum":0},"expected":{"type":"string"}}});
-    let mut mutation = json!({"type":"object","additionalProperties":false,"required":["path","expected"],"properties":{
+    let mut mutation = json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{
         "path":{"type":"string"},"expected":{"type":["string","null"]},"preview":{"type":"boolean"},"validate":{"type":"boolean"}}});
     mutation["properties"]["permission"]=json!({"type":"string","enum":["use_default","require_escalated"]});
     mutation["properties"]["justification"]=json!({"type":"string","maxLength":2048});
@@ -756,8 +796,8 @@ pub fn schemas() -> Vec<(String, String, String)> {
     vec![
         ("view_image".into(), "Inspect a PNG, JPEG, GIF or WebP as an image, including browser screenshots. Returns source, dimensions and a reusable image reference; image pixels reach vision-capable models. No symlinks; input max 8 MiB, 32 million pixels; bounded resize and metadata removal.".into(), json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string"}}}).to_string()),
         ("read".into(),"Read a UTF-8 file allowed by the active permission profile with line numbers and whole-file revision. Defaults: offset=1, limit=200. Follow next_read for truncated output; byte_offset requires expected. No symlinks; max 8 MiB.".into(),read.to_string()),
-        ("edit".into(),"Edit a previously read file using its expected revision. edits use unique old/new text or original 1-based start/end/text ranges (insert: end=start-1). Atomic; preview returns a diff without writing; validate requires supported syntax checks.".into(),mutation.to_string()),
-        ("write".into(),"Atomically write a UTF-8 file allowed by the active permission profile. expected:null creates only; replacing requires a prior read revision. preview returns a diff without writing; validate requires supported syntax checks. No symlinks; max 8 MiB.".into(),write.to_string())
+        ("edit".into(),"Edit a previously read file. Omit expected to use the session’s last native read/write revision; explicit expected overrides it. edits use unique old/new text or original 1-based start/end/text ranges (insert: end=start-1). Atomic; preview returns a diff without writing; validate requires supported syntax checks.".into(),mutation.to_string()),
+        ("write".into(),"Atomically write a UTF-8 file allowed by the active permission profile. Omit expected to use the session’s last native read/write revision (otherwise create-only); expected:null forces create-only. preview returns a diff without writing; validate requires supported syntax checks. Creates missing parent directories for create-only writes. No symlinks; max 8 MiB.".into(),write.to_string())
     ]
 }
 
@@ -904,6 +944,32 @@ mod tests {
     }
     fn read(d: &Dir, name: &str) -> Value {
         execute(&d.0, "read", &json!({"path":name})).unwrap()
+    }
+
+    #[test]
+    fn normalized_exact_edits_still_reject_ambiguity_and_overlap() {
+        let d = dir();
+        std::fs::write(d.0.join("a"), "one\r\ntwo\r\none\r\ntwo\r\n").unwrap();
+        let rev = read(&d, "a")["revision"].clone();
+        assert!(execute(&d.0, "edit", &json!({"path":"a","expected":rev,"edits":[{"old":"one\ntwo","new":"lost"}]})).unwrap_err().contains("more than once"));
+        std::fs::write(d.0.join("a"), "one\r\ntwo\r\nthree\r\n").unwrap();
+        let rev = read(&d, "a")["revision"].clone();
+        assert!(execute(&d.0, "edit", &json!({"path":"a","expected":rev,"edits":[{"old":"one\ntwo","new":"first"},{"old":"two\nthree","new":"last"}]})).unwrap_err().contains("overlapping"));
+        assert_eq!(std::fs::read(d.0.join("a")).unwrap(), b"one\r\ntwo\r\nthree\r\n");
+    }
+
+    #[test]
+    fn nested_create_and_crlf_exact_edit_preserve_guards() {
+        let d = dir();
+        let created = execute(&d.0, "write", &json!({"path":"nested/deep/a.txt","expected":null,"text":"é\r\none\r\ntwo\r\nend\r\n"})).unwrap();
+        execute(&d.0, "edit", &json!({"path":"nested/deep/a.txt","expected":created["revision"],"edits":[{"old":"one\ntwo","new":"ONE\nTWO"}]})).unwrap();
+        assert_eq!(std::fs::read(d.0.join("nested/deep/a.txt")).unwrap(), "é\r\nONE\r\nTWO\r\nend\r\n".as_bytes());
+        assert!(execute(&d.0, "write", &json!({"path":"nested/deep/a.txt","expected":null,"text":"lost"})).is_err());
+        assert!(execute(&d.0, "write", &json!({"path":"preview/new.txt","expected":null,"text":"test","preview":true})).is_err());
+        assert!(!d.0.join("preview").exists());
+        std::os::unix::fs::symlink(d.0.join("nested"), d.0.join("link")).unwrap();
+        assert!(execute(&d.0,"write",&json!({"path":"link/escape/x","expected":null,"text":"lost"})).is_err());
+        assert!(!d.0.join("nested/escape").exists());
     }
 
     #[test]

@@ -1619,7 +1619,7 @@ impl<'a> Agent<'a> {
         if let Some(reason)=self.authorization_refusal(call) {return self.finish_tool(call,tools::Outcome::err(reason));}
         if let Some(reason)=self.read_before_write_refusal(call) {return self.finish_tool(call,tools::Outcome::err(reason));}
         let granted=call.arg_str("path").is_some_and(|path|self.approved_calls.get(&call.id)==Some(&path));
-        let workspace=self.workspace.to_path_buf();let worker=call.clone();
+        let workspace=self.workspace.to_path_buf();let worker=self.reads.native_call(call,self.workspace);
         let (tx,rx)=std::sync::mpsc::channel();
         let cancel=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancel=cancel.clone();
@@ -1634,8 +1634,9 @@ impl<'a> Agent<'a> {
                 Err(_)=>break tools::Outcome::err("Native file worker failed; re-read before retrying a mutation"),
             }
         };
-        if call.name=="read" && outcome.exit_code==Some(0)
-            && let Some(path)=call.arg_str("path") {self.reads.mark_at(&self.workspace.join(path),self.tool_call_index);}
+        if outcome.exit_code == Some(0) {
+            self.reads.observe_native(call, &outcome.body, self.workspace, self.tool_call_index);
+        }
         let mut body=outcome.body;
         if matches!(call.name.as_str(), "edit" | "write")
             && let Some(path) = call.arg_str("path")
@@ -2161,8 +2162,10 @@ impl<'a> Agent<'a> {
             outcome = tools::Outcome::err("Image input is disabled for this model");
         } else if crate::files::is_tool(&call.name) {
             if let Some(refusal)=self.read_before_write_refusal(call) {return self.finish_tool(call,tools::Outcome::err(refusal));}
-            outcome=crate::files::tool(call,self.workspace);
-            if call.name=="read" && outcome.exit_code==Some(0) && let Some(path)=call.arg_str("path") {self.reads.mark_at(&self.workspace.join(path),self.tool_call_index);}
+            outcome=crate::files::tool(&self.reads.native_call(call,self.workspace),self.workspace);
+            if outcome.exit_code == Some(0) {
+                self.reads.observe_native(call, &outcome.body, self.workspace, self.tool_call_index);
+            }
         } else if call.name == "bash" {
             if let Some(refusal) = self.read_before_write_refusal(call) {
                 self.emit(Progress::BlockedByGuard(&refusal));

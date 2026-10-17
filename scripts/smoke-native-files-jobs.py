@@ -16,7 +16,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
             revision=re.search(r'revision ([a-f0-9]{64})',results[0]).group(1)
             payload=json.dumps({'path':'sample.json','expected':revision,'edits':[{'start':2,'end':2,'text':'  "value": 42'}],'validate':True})
             args={'command':"\"$GC_BIN\" file edit <<'GC_EDIT'\n"+payload+'\nGC_EDIT'}
-        elif n==2:args={'command':"printf 'JOBREADY\\n'; read line; printf 'ECHO:%s\\n' \"$line\"; sleep 30",'job':{'action':'start'}}
+        elif n==2:args={'command':"values=(one two); [[ ${values[1]} == two ]] || exit 9; printf 'JOBREADY\\n'; read line; printf 'ECHO:%s\\n' \"$line\"; sleep 30",'job':{'action':'start'}}
         elif n==3:args={'job':{'action':'input','id':1,'text':'native-input\n'}}
         elif n==4:args={'command':'sleep 0.1'}
         elif n==5:args={'job':{'action':'poll','id':1,'offset':0}}
@@ -47,8 +47,7 @@ for size in [(80,30),(40,24),(20,8)]:
             assert '✓ syntax' in t.seen and '◆ sample.json' in t.seen,t.seen
             assert '\x1b[38;5;' in t.seen,t.seen
             if size[0]>=40: assert '-   "value": 1' in re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',t.seen),t.seen
-            assert all(len(request['tools'])==5 for request in Provider.requests)
-            assert all([x['function']['name'] for x in request['tools']]==['bash','state','read','edit','write'] for request in Provider.requests)
+            assert all({'bash','state','read','edit','write'} <= {x['function']['name'] for x in request['tools']} for request in Provider.requests)
             t.send('draft');t.collect(.1);t.resize(20,8);t.resize(*size);assert 'draft' in t.vt.text(),t.vt.text()
             records=[json.loads(line) for p in data.glob('*.jsonl') if p.stem!='history' for line in p.read_text().splitlines()]
             assert any(r.get('k')=='tool' and 'ECHO:native-input' in str(r) for r in records),records

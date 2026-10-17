@@ -5,8 +5,8 @@
 ## Compact native tools
 
 `read`, `edit`, and `write` expose the bounded native file engine directly.
-Reads return line numbers and revisions; changes require those revisions and support
-previews and syntax checks. `bash` handles search, pipelines, builds, tests and
+Reads return line numbers and revisions; the agent retains native revisions for
+changes and supports previews and syntax checks. `bash` handles search, pipelines, builds, tests and
 processes. `state` preserves task notes, manages the native execution checklist,
 and discovers deeper workflows on demand. See the [checklist reference](reference/checklist.md)
 for batched operations, stable IDs, blockers and durable receipts. `/todo` opens
@@ -48,8 +48,15 @@ bounds. Explicit file redirection is required for complete larger logs.
 ## Native file tools
 
 Prefer `read` for file inspection, `edit` for surgical changes, and `write` for new
-files or deliberate replacement. Existing-file changes require a previous read and
-its whole-file `expected` revision. `expected:null` is create-only. `preview:true`
+files or deliberate replacement. Existing-file changes require a previous read. Model calls may omit `expected`:
+GC supplies the last successful native read/write revision retained by the active
+agent, never a fresh revision sampled from disk. External changes still produce
+a stale-revision error and require another read. Explicit `expected` values take
+precedence; `expected:null` is always create-only. Without a retained revision,
+an omitted revision on `write` is create-only and `edit` asks for a native read.
+The standalone CLI has no agent revision state and still requires `expected`.
+Create-only writes create missing parent directories without following symlinks;
+previews never create directories. `preview:true`
 shows a proposed diff without writing; `validate:true` requires a passing supported
 syntax check. Reads are bounded and return continuation instructions when truncated. Native
 results provide one `next_read` argument object; CLI text provides a command hint
@@ -86,7 +93,10 @@ entire old block. Every operation validates before a batch commits:
 ```
 
 For insertion use `end=start-1`. Line ranges preserve the file's CRLF convention,
-BOM and final-newline behavior; exact replacements use explicit supplied text.
+BOM and final-newline behavior. Exact replacements first match supplied bytes;
+if no exact match exists, LF/CRLF differences are tolerated with uniqueness still
+required and only the replacement region converted to the file's line endings.
+Unrelated bytes remain unchanged. Other whitespace and punctuation stay exact.
 `file write` accepts `path`, `expected`, and `text`; `expected:null` means
 create-only. Existing files require the current revision. At most 128 edit
 operations and one million indexed lines are accepted; exact edits need no line
@@ -107,7 +117,8 @@ leaves the original unchanged; ordinary Python/JavaScript writes do not spawn
 checkers. Use project commands for compiler/type/test diagnostics. `--json`
 provides structured file and diagnostic results for headless callers.
 
-Bash accepts a `job` object. Each line below is a separate tool call:
+`bash` executes `/bin/bash` with `-c` in foreground and background paths, including
+Bash arrays, `[[ … ]]`, and process substitution. Bash accepts a `job` object. Each line below is a separate tool call:
 
 ```jsonl
 {"command":"npm run dev","job":{"action":"start"}}
@@ -229,3 +240,29 @@ control writes. Bash does not require a document read before such a control
 write when unrestricted with sandboxing off, or when the exact command has an
 explicit approval. Ordinary file replacement still requires reading the file.
 This exception does not bypass shell policy or OS permissions.
+
+## Pi tool comparison
+
+The tool audit compared Pi's [native tool implementation](https://github.com/earendil-works/pi/tree/910149912ca29d7ae4eaa945bb2b53eb84c68264/packages/coding-agent/src/core/tools)
+with GC's engine and recent local tool failures. GC now covers the following
+common workflows without an extra provider call or dependency:
+
+| Tool | Compatibility and retained GC behavior |
+| --- | --- |
+| `bash` | Actual Bash syntax in foreground and background jobs. GC retains explicit exit status, cancellation, timeout bounds, and bounded overflow storage. |
+| `read` | Relative/absolute paths allowed by the active permissions, numbered UTF-8 text, continuation, and stale continuation detection. GC defaults to 200 lines to limit context growth. Images use `view_image`. |
+| `write` | New files in missing parent directories; deliberate whole-file replacement after a native read. The agent carries the observed revision; explicit null remains create-only. |
+| `edit` | Unique exact replacements, atomic batches, and LF/CRLF matching without modifying unrelated bytes. GC also offers original-file line ranges, previews, and syntax validation. |
+
+This is workflow compatibility, not identical schemas or unrestricted limits.
+GC retains its 8 MiB text-file bound, no-follow paths, revision checks, and smaller
+inline output budgets. Use Bash or owned jobs for larger/binary data. GC does not
+silently normalize smart quotes, Unicode punctuation, or arbitrary whitespace in
+edits; use the actual text or line ranges. Native schemas remain `text` and
+`edits:[{old,new}]`, rather than Pi's `content` and `oldText/newText` fields.
+CLI callers continue to pass revisions explicitly. These differences are
+intentional and remain visible in each tool's advertised schema.
+
+Provider-wire and PTY regression coverage exercises omitted revisions, preview
+isolation, nested creation, explicit stale revisions, external writes followed by
+stale automatic revision refusal, reread recovery, and read-only permissions.

@@ -181,7 +181,7 @@ pub fn bash_owned(
     // Approved exceptions must bypass macOS's sandbox-exec wrapper as well as
     // Linux's Landlock pre-exec hook. They apply only to exact command bytes.
     let mut builder = if exception {
-        let mut cmd = std::process::Command::new("/bin/sh");
+        let mut cmd = std::process::Command::new("/bin/bash");
         cmd.arg("-c").arg(&command);
         cmd
     } else {
@@ -889,6 +889,17 @@ mod tests {
             name: "bash".into(),
             arguments: args.to_string(),
         }
+    }
+
+    #[test]
+    fn bash_supports_arrays_conditionals_and_process_substitution() {
+        let call = glass_mod_api::ToolCall {
+            id: "bash-syntax".into(), name: "bash".into(),
+            arguments: serde_json::json!({"command":r#"items=(first second); [[ ${items[1]} == second ]] && read -r value < <(printf 'success\n'); printf '%s' "$value""#}).to_string(),
+        };
+        let outcome = bash(&call, &std::env::temp_dir());
+        assert_eq!(outcome.exit_code, Some(0), "{}", outcome.body);
+        assert!(outcome.body.contains("success"), "{}", outcome.body);
     }
 
     #[test]

@@ -111,7 +111,7 @@ impl Jobs {
             .open(&output)
             .map_err(err)?;
         let mut cmd = if exception {
-            let mut c = Command::new("/bin/sh");
+            let mut c = Command::new("/bin/bash");
             c.arg("-c").arg(command);
             c
         } else {

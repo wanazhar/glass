@@ -3073,3 +3073,27 @@ dialog > header {
 .shared-image-card img { display: block; width: 100%; height: auto; max-height: 480px; object-fit: contain; background: var(--bg); }
 .shared-image-card figcaption, .shared-image-error { padding: 12px 16px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 @media (max-width: 700px) { .shared-image-card { margin-left: 0; } }
+
+/* Command summaries share one reading surface instead of nested JSON boxes. */
+.command-data { line-height: 1.55; }
+.command-group { min-width: 0; margin: 0 0 22px; }
+.command-group h3 { font-size: 14px; margin: 18px 0 10px; color: var(--text); }
+.command-fields { margin: 0; }
+.command-field { display: grid; grid-template-columns: minmax(100px, 32%) minmax(0, 1fr); gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.command-field dt { color: var(--muted); }
+.command-field dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.command-list-item { padding: 15px 0; border-bottom: 1px solid var(--line); }
+.command-list-item h3, .command-list-item h4 { margin: 0 0 5px; font-size: 15px; overflow-wrap: anywhere; }
+.command-list-item p { margin: 0; font-size: 14px; }
+.command-list-item .command-group { margin: 0; }
+.command-list-text { display: inline-block; margin: 4px 8px 4px 0; padding: 4px 10px; border-radius: 6px; background: var(--surface); font-size: 13px; }
+.command-filter { width: 100%; margin: 12px 0 4px; }
+.command-intro, .command-note { font-size: 14px; margin: 0 0 16px; overflow-wrap: anywhere; }
+.command-note { color: var(--muted); }
+.command-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.command-metric { padding: 14px; border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; gap: 7px; }
+.command-metric strong { font-size: 20px; font-weight: 600; overflow-wrap: anywhere; }
+.command-diagnostics { border-top: 1px solid var(--line); padding-top: 14px; }
+.command-diagnostics > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+@media(max-width: 500px) { .command-field { grid-template-columns: minmax(95px, 38%) minmax(0, 1fr); gap: 12px; } }
+.tool-wait-hint { font-size: 13px; line-height: 1.5; padding: 12px 16px; margin: 0; color: var(--muted); border-top: 1px solid var(--line); }

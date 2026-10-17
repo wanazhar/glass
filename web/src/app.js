@@ -1,3 +1,4 @@
+import { renderCommandData } from "./command-results.js";
 import { createToolActivity, setToolInput, finishToolActivity, startToolActivity, refreshToolTime, activitySnapshot, renderActivityConsole } from "./activity.js";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -3149,59 +3150,13 @@ document.addEventListener("click", async (e) => {
     }
   }
 });
-function renderCommandResult(root, value, format) {
+function renderCommandResult(root, value, format, command) {
   if (format === "markdown") {
     root.classList.add("prose");
     markdown(root, String(value || ""));
     return;
   }
-  let count = 0;
-  function node(value, key, depth = 0) {
-    if (privateProviderEntry(value)) return document.createDocumentFragment();
-    if (++count > 3000 || depth > 16)
-      return el("p", "quiet", "Display limit reached. Narrow the query.");
-    if (value && typeof value === "object") {
-      const section = el("details", "command-section");
-      section.open = depth < 2;
-      section.append(
-        el(
-          "summary",
-          "",
-          `${key || "Result"}${Array.isArray(value) ? ` · ${value.length}` : ""}`,
-        ),
-      );
-      for (const [name, item] of Object.entries(value)) {
-        if (count >= 3000) {
-          section.append(
-            el("p", "quiet", "Display limit reached. Narrow the query."),
-          );
-          break;
-        }
-        section.append(node(item, name, depth + 1));
-      }
-      return section;
-    }
-    const row = el("div", "command-value");
-    if (key) row.append(el("span", "command-key", key.replaceAll("_", " ")));
-    if (
-      ["proposal", "draft", "answer", "text", "diff", "preview"].includes(
-        key,
-      ) &&
-      typeof value === "string"
-    ) {
-      const content = el("div", "prose");
-      markdown(
-        content,
-        key === "diff" || key === "preview"
-          ? "```diff\n" + value + "\n```"
-          : value,
-      );
-      row.append(content);
-    } else
-      row.append(el("span", "", value === null ? "—" : String(value ?? "")));
-    return row;
-  }
-  root.append(node(value, ""));
+  renderCommandData(root, value, { command, markdown, privateEntry: privateProviderEntry });
 }
 function openDraftEditor() {
   const modal = $("#draft-editor");
@@ -3509,7 +3464,7 @@ async function openNativeCommand(command, initialArgs = "") {
       if (version !== commandViewVersion || id !== view.id) return;
       body.replaceChildren();
       body.className = "command-data";
-      renderCommandResult(body, result.body, result.format);
+      renderCommandResult(body, result.body, result.format, command.name);
       for (const key of ["expected", "draft", "attempt"]) {
         const target = form.elements.namedItem(
           key === "draft" ? "text" : key === "attempt" ? "args" : key,

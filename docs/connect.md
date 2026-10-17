@@ -259,6 +259,11 @@ the host through the same native handlers. Confirmation fields protect actions
 such as restores, publication, and configuration changes. Credential fields
 are masked and are not added to the conversation or sent as model prompts.
 
+Command results use labeled rows and compact sections. `/guidance` provides a
+searchable command list; `/usage` summarizes tokens, cache reporting and known
+cost, with diagnostics under More details. Missing usage and price remain
+explicitly unreported. `/status` puts connection and model details first.
+
 Opening the palette and inspecting local state do not use model tokens.
 Commands that request model work, such as compaction, planning, and code review,
 run only after submission and provide cancellation. Mutations submitted during

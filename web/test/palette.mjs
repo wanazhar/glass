@@ -8,6 +8,8 @@ import { resolve, extname } from 'node:path';
 const root = resolve('web/dist');
 const { commands } = JSON.parse(await readFile(new URL('./fixtures/commands.json', import.meta.url)));
 const streams = new Set(), sent = [], errors = [];
+let holdStatus = false;
+const heldStatus = [];
 const selected = new Set((process.env.GC_PALETTE_COMMANDS || '').split(',').filter(Boolean));
 const included = command => !selected.size || selected.has(command.name);
 function result(name) {
@@ -35,8 +37,11 @@ const server = createServer(async (req, res) => {
       if (path === '/api/command') data = result(body.name);
       else if (body.message.t === 'command') {
         const m = body.message; sent.push(m);
-        assert.deepEqual(m.values, {}, `Opening /${m.name} must not execute a mutation or model request`);
-        for (const stream of streams) stream.write(`data: ${JSON.stringify({ events: [{ t: 'command_result', request_id: m.request_id, result: result(m.name) }] })}\n\n`);
+        if (!(holdStatus && m.name === 'status')) assert.deepEqual(m.values, {}, `Opening /${m.name} must not execute a mutation or model request`);
+        const deliver = (fail = false) => {
+          for (const stream of streams) stream.write(`data: ${JSON.stringify({ events: [{ t: 'command_result', request_id: m.request_id, ...(fail ? { error: 'Fixture unavailable' } : { result: result(m.name) }) }] })}\n\n`);
+        };
+        if (holdStatus && m.name === 'status') heldStatus.push(deliver); else deliver();
       }
     }
     res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); return;
@@ -57,6 +62,8 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/?thread=fixture`);
   await page.waitForFunction(() => document.querySelector('#ownership').textContent === 'Release control');
   for (const command of commands.filter(c => c.portable && included(c))) {
+    holdStatus = command.name === 'status';
+    if (holdStatus) await page.locator('#command-result').evaluate(n => n.classList.add('prose'));
     await page.locator('#prompt').fill('/');
     await page.locator('#commands').waitFor({ state: 'visible' });
     await page.locator('#command-search').fill(command.name);
@@ -64,6 +71,44 @@ try {
     await choice.click();
     await page.locator('#command-view').waitFor({ state: 'visible' });
     assert.equal(await page.locator('#command-title').textContent(), '/' + command.name);
+    if (holdStatus) {
+      const waitPending = async () => {
+        for (let n = 0; n < 200 && !heldStatus.length; n++) await new Promise(r => setTimeout(r, 10));
+        assert(heldStatus.length, 'Expected held status request');
+      };
+      const geometry = () => page.evaluate(() => ['#command-view', '#command-form', '#command-status'].map(selector => {
+        const r = document.querySelector(selector).getBoundingClientRect(); return [r.top, r.height, r.width];
+      }));
+      await waitPending();
+      await page.locator('#command-result[aria-busy=true] .command-skeleton').waitFor();
+      assert.equal(await page.locator('#command-result').getAttribute('class'), 'command-data');
+      await page.locator('#command-view').evaluate(n => Promise.all(n.getAnimations().map(a => a.finished.catch(() => {}))));
+      const before = await geometry();
+      heldStatus.shift()();
+      await page.locator('#command-result[aria-busy=false]').waitFor();
+      assert.deepEqual(await geometry(), before, 'Loading must not move controls, footer or dialog');
+      await page.evaluate(() => window.previousResult = document.querySelector('#command-result').firstElementChild);
+      await page.locator('#command-form .command-run').click();
+      await waitPending();
+      assert(await page.evaluate(() => document.querySelector('#command-result').firstElementChild === window.previousResult));
+      assert.equal(await page.locator('.command-skeleton').count(), 0, 'Refresh keeps the previous results');
+      heldStatus.shift()(true);
+      await page.locator('#command-result[aria-busy=false]').waitFor();
+      assert(await page.evaluate(() => document.querySelector('#command-result').firstElementChild === window.previousResult), 'Failed refresh preserves the previous result');
+      assert.match(await page.locator('#command-status').innerText(), /Fixture unavailable/);
+      assert.deepEqual(await geometry(), before, 'Failed refresh must not resize the shell');
+      await page.locator('#command-close').click();
+      await page.locator('#prompt').fill('/');
+      await page.locator('#commands').waitFor({ state: 'visible' });
+      await page.locator('#command-search').fill('status');
+      await page.locator('.command-choice').filter({ has: page.locator('strong', { hasText: /^\/status(?:\s|$)/ }) }).click();
+      await waitPending();
+      heldStatus.shift()(true);
+      await page.locator('#command-result[aria-busy=false]').waitFor();
+      assert.equal(await page.locator('.command-skeleton').count(), 0);
+      assert.match(await page.locator('#command-result').innerText(), /Results could not load/);
+      holdStatus = false;
+    }
     await page.waitForFunction(() => !document.querySelector('#command-status').dataset.working || document.querySelector('#command-status').dataset.working === 'false');
     for (const input of await page.locator('#command-form .command-field:visible input, #command-form .command-field:visible select, #command-form .command-field:visible textarea').all()) {
       assert.equal(await input.evaluate(n => getComputedStyle(n.parentElement).display), 'flex', 'Form fields must not inherit result grids');

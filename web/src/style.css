@@ -3110,3 +3110,14 @@ dialog > header {
 #command-form .command-field { display: flex; flex-direction: column; padding: 0; border: 0; }
 #command-form .command-field[hidden] { display: none; }
 @media(max-width: 500px) { .command-stat-wide { grid-template-columns: 1fr; } }
+
+/* Result arrivals never move the command controls or resize the footer. */
+#command-content { scrollbar-gutter: stable; }
+#command-form { margin-top: 0; margin-bottom: 22px; }
+#command-view .command-description { margin: 0 0 16px; }
+#command-result { min-height: 280px; }
+#command-status { flex: 0 0 64px; height: 64px; min-height: 64px; overflow: auto; box-sizing: border-box; }
+.command-skeleton { min-height: 280px; }
+.command-skeleton-row { display: grid; grid-template-columns: 32% 1fr; gap: 20px; padding: 18px 0; border-bottom: 1px solid var(--line); }
+.command-skeleton-row span { display: block; height: 12px; width: 70%; background: var(--line); border-radius: 4px; }
+.command-skeleton-row span:last-child { width: 85%; }

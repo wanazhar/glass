@@ -93,7 +93,9 @@ choose **Steer task** to apply a correction before further actions, or **Queue
 follow-up** to run another prompt afterward. The stop button cancels the current
 turn. Queued follow-ups are saved before GC acknowledges them. On restart, prompts
 that never started can resume; an accepted request with unknown effects is not
-replayed automatically. Unsent drafts stay in the open page; they are not stored in browser storage.
+replayed automatically. Unsent text drafts are stored locally in this browser, separately for each thread.
+The store retains at most 24 drafts for 30 days, with a 60,000-character limit
+per draft. Storage failures are reported; saving a draft never submits it.
 
 Approvals pause the agent and show the exact operation and justification. Only
 the input owner can allow it once or deny it. Questions support choices, multiple
@@ -379,3 +381,69 @@ outline is shown for keyboard navigation rather than touch interaction.
 The command palette is centered in the safe viewport when the keyboard is closed
 and in the visual viewport when it is open. Its command list scrolls if needed;
 the header, search field, and footer remain visible.
+
+
+## Direct work controls
+
+The composer provides file attachments, model and execution-profile selection,
+active-context inspection, saved-queue management, and a Work view. These use
+the native session commands and their completion receipts. Mutations require
+input ownership. An older gateway or worker is identified explicitly; unsupported
+workflow controls explain that an update is needed. Updating assets does not
+restart an existing runtime.
+
+Choose files from the device or paste image files into the composer. Uploads
+remain outside the project and become active snapshots only after the native
+attachment command succeeds. Text inputs are limited to 32 KiB; image inputs to
+8 MiB and pass through GC's existing image preparation. Active attachment chips
+reopen Context, where snapshots can be removed from future requests. Context
+usage remains unknown when the runtime does not report it.
+
+Sent messages provide quote and edit/branch actions. Editing branches before the
+selected prompt and restores its text for review; it preserves the original
+conversation and does not rewind workspace files. Source fingerprints are
+checked by the runtime before applying source-sensitive actions. Retry is an
+explicit native request and can consume provider quota.
+
+Changes shows actual staged and working-tree diffs, including untracked file
+actions. Hunks render when their file is opened. Staging, unstaging and discarding
+use the reviewed Git fingerprint; stale state is rejected. Binary, rename and
+file-mode changes use whole-file actions instead of fabricated partial patches.
+The browser response is limited to 2 MB.
+
+Text file previews offer editing and attachment controls. Editing is limited to
+32 KiB UTF-8 files inside the thread workspace, uses GC's atomic file writes,
+and rejects a stale revision. Unsaved edits require a discard decision when
+leaving; reconnecting the same thread preserves the editor.
+
+Work shows tasks and teammates, with explicit task creation/completion and
+transcript inspection. Its refresh runs only while the view is open and the
+page is visible; refreshing does not replace an in-progress task form.
+
+### Large saved output
+
+Live reasoning remains a bounded reading window. Earlier/Newer and Latest
+controls separate reading from following the stream. Read full saved reasoning
+opens retained source independently of the live window. Saved activity text
+loads in 128 KiB pages; the first page requires one request rather than assembling
+many raw JSON chunks. Parsed record snapshots are bounded to 8 MiB per record,
+16 MiB across at most 16 cached records, and expire after two minutes. Continuation
+requests carry a revision fingerprint. Use transcript export for larger records.
+
+### Interactive HTML
+
+HTML previews start with scripts disabled. Run scripts explicitly creates a
+separately served document with an opaque sandbox origin and an independent
+content policy. It has no GC host/session bridge; fetches, external resource
+loads, forms, workers and child frames are restricted. Frame self-navigation
+means this is not an absolute no-network guarantee. Sources are limited to
+512 KiB; the host retains at most 16 temporary documents / 4 MiB for ten minutes.
+The normal application content policy is unchanged.
+
+### Notifications
+
+Notifications are opt-in and capability-detected, and require a supported secure
+browser context. Connected-page events can announce completion, failure or a
+request for input. Selecting an alert opens its thread. This does not provide
+background push delivery when the page is suspended or disconnected, including
+iPhone PWA background delivery.

@@ -42,6 +42,7 @@ const view = {
   commandTransportReady: false,
 };
 const notifyAttention = attention($("#notifications"));
+let initialOpening = true;
 const limits = { message: 262144, reasoning: 262144, preview: 1048576 };
 const text = (s, max = limits.message) => String(s ?? "").slice(0, max),
   escape = (s) =>
@@ -1308,7 +1309,7 @@ async function openThread(id, { resume = false } = {}) {
         connection("Unavailable", false);
         notice(error.message, true);
       }
-      return;
+      return { ok: false, message: error.message };
     }
   }
   $("#thread-name").textContent = thread?.title || "Conversation";
@@ -1335,7 +1336,7 @@ async function openThread(id, { resume = false } = {}) {
       connection("Read-only archive", true);
       $("#timeline .loading-surface")?.remove();
       follow();
-      return;
+      return { ok: true };
     }
     await api("open", { id });
     if (generation !== view.generation) return;
@@ -1396,12 +1397,14 @@ async function openThread(id, { resume = false } = {}) {
         });
     };
     await ready;
+    if (generation === view.generation) return { ok: true };
   } catch (e) {
     if (generation !== view.generation) return;
     $("#timeline .loading-surface")?.remove();
     connection("Unavailable", false);
     notice(e.message, true);
     updateActivity(null);
+    return { ok: false, message: e.message };
   }
 }
 let threadListVersion = 0,
@@ -2244,9 +2247,10 @@ function applyTheme() {
   const light =
     themeMode === "system" ? systemTheme.matches : themeMode === "light";
   document.documentElement.classList.toggle("light", light);
-  document.querySelector('meta[name="theme-color"]').content = light
-    ? "#f7f8f3"
-    : "#141916";
+  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+    meta.content = light ? "#f7f8f3" : "#141916";
+    meta.removeAttribute("media");
+  }
   const action = light ? "Switch to dark mode" : "Switch to light mode";
   $("#theme").title = action;
   $("#theme").setAttribute("aria-label", action);
@@ -3798,13 +3802,25 @@ async function start() {
     $(".sidebar-footer small").textContent = "";
     await loadThreads();
     const id = new URLSearchParams(location.search).get("thread");
-    if (id) await openThread(id);
-    else connection("Connected");
+    if (id) {
+      const opened = await openThread(id);
+      if (!opened?.ok)
+        return (
+          opened || {
+            ok: false,
+            message: "The requested thread could not open.",
+          }
+        );
+    } else connection("Connected");
     if ("serviceWorker" in navigator)
-      navigator.serviceWorker.register("/sw.js").catch(() => {});
+      navigator.serviceWorker
+        .register("/sw.js", { updateViaCache: "none" })
+        .catch(() => {});
+    return { ok: true };
   } catch (e) {
     connection("Unavailable", false);
     notice(e.message, true);
+    return { ok: false, message: e.message };
   }
 }
 $("#connection").setAttribute("role", "button");
@@ -3825,7 +3841,8 @@ let reconnecting = false,
 async function resumeConnection() {
   syncViewport();
   syncPanels();
-  if (reconnecting || document.visibilityState === "hidden") return;
+  if (initialOpening || reconnecting || document.visibilityState === "hidden")
+    return;
   reconnecting = true;
   try {
     if (view.id) await openThread(view.id, { resume: true });
@@ -3861,7 +3878,9 @@ window.addEventListener("focus", () => {
   }
 });
 restoreDraft();
-start();
+export const initialReady = start().finally(() => {
+  initialOpening = false;
+});
 
 $("#send-mode").onclick = () => {
   const button = $("#send-mode");
@@ -3997,3 +4016,9 @@ $(".brand-home").addEventListener("click", async (event) => {
     location.href = "/";
   }
 });
+
+export function revealShell() {
+  syncViewport();
+  syncPanels();
+  follow();
+}

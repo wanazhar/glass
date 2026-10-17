@@ -2855,3 +2855,140 @@ dialog > header {
     display: none;
   }
 }
+
+/* The launch is a separate first-paint surface; app layout is unchanged. */
+.app[hidden],
+.launch[hidden],
+#launch-retry[hidden] {
+  display: none;
+}
+.launch {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  color: var(--text);
+  padding: calc(32px + var(--safe-top)) max(28px, var(--safe-right))
+    calc(32px + var(--safe-bottom)) max(28px, var(--safe-left));
+}
+.launch-composition {
+  width: min(280px, 100%);
+  text-align: left;
+  transform: translateY(-10px);
+}
+.launch-cube {
+  display: block;
+  width: 52px;
+  height: 52px;
+  margin: 0;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 7;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.launch-outline {
+  stroke-dasharray: 380;
+  stroke-dashoffset: 0;
+  animation: launch-outline 0.28s ease-out both;
+}
+.launch-joint {
+  animation: launch-joint 0.24s ease-out both;
+}
+.launch-wordmark {
+  font-size: 48px;
+  letter-spacing: -0.065em;
+  line-height: 1.05;
+  font-weight: 450;
+}
+.launch-wordmark span {
+  color: var(--accent);
+}
+.launch-rule {
+  width: 100%;
+  height: 1px;
+  background: var(--line);
+  margin: 24px 0 14px;
+}
+.launch-status p {
+  margin: 0;
+}
+#launch-status {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.015em;
+}
+.launch-detail {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.65;
+  margin: 10px 0 0 !important;
+  max-width: 280px;
+  overflow-wrap: anywhere;
+}
+.launch-detail:empty {
+  display: none;
+}
+#launch-retry {
+  margin-top: 20px;
+  font-size: 12px;
+  padding: 8px 18px;
+}
+.launch[data-state="error"] .launch-cube {
+  animation: none;
+}
+.launch[data-state="error"] .launch-outline,
+.launch[data-state="error"] .launch-joint {
+  animation: none;
+}
+@keyframes launch-outline {
+  from {
+    stroke-dashoffset: 380;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes launch-joint {
+  from {
+    opacity: 0.25;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .launch-outline,
+  .launch-joint {
+    animation: none;
+  }
+}
+
+.launch-fallback {
+  visibility: hidden;
+  animation: launch-recovery 0s 15s forwards;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 20px;
+}
+.launch[data-booted] .launch-fallback {
+  display: none;
+}
+@keyframes launch-recovery {
+  to {
+    visibility: visible;
+  }
+}
+
+.launch-lockup {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .launch-fallback {
+    visibility: visible;
+  }
+}

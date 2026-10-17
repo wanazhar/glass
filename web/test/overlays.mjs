@@ -15,24 +15,27 @@ try {
   await page.addStyleTag({ content: css });
   const result = await page.evaluate(ids => {
     const styles = [];
-    for (const id of [...ids, 'workflow']) {
+    for (const id of [...ids, 'workflow', 'changes', 'teammates', 'git']) {
       const dialog = document.createElement('dialog'); dialog.id = id;
-      if (id === 'workflow') dialog.className = 'workflow';
+      if (['workflow', 'changes', 'teammates'].includes(id)) dialog.className = 'workflow';
+      if (['changes', 'teammates', 'git'].includes(id)) dialog.classList.add('floating-palette');
       const header = document.createElement('header'); header.textContent = 'Overlay title';
       const body = document.createElement('div'); body.style.height = '1200px'; body.textContent = 'Scrollable content';
       dialog.append(header, body); document.body.append(dialog); dialog.showModal();
       const s = getComputedStyle(dialog);
-      styles.push({ id, radius: [s.borderTopLeftRadius, s.borderTopRightRadius, s.borderBottomLeftRadius, s.borderBottomRightRadius], border: s.borderTopWidth, color: s.borderTopColor, overflow: s.overflow });
+      styles.push({ id, radius: [s.borderTopLeftRadius, s.borderTopRightRadius, s.borderBottomLeftRadius, s.borderBottomRightRadius], border: s.borderTopWidth, color: s.borderTopColor, overflow: s.overflow, width: dialog.getBoundingClientRect().width, height: dialog.getBoundingClientRect().height, x: dialog.getBoundingClientRect().x, y: dialog.getBoundingClientRect().y });
       dialog.close(); dialog.remove();
     }
     return styles;
   }, ids);
   for (const overlay of result) {
-    const reader = !['commands', 'workflow'].includes(overlay.id) && width <= 700;
+    const reader = !['commands', 'changes', 'teammates', 'git'].includes(overlay.id);
     assert.deepEqual(overlay.radius, Array(4).fill(reader ? '0px' : '16px'), `${overlay.id} ${width} ${mode}`);
     assert.equal(overlay.border, reader ? '0px' : '1px');
     if (!reader) assert.equal(overlay.color, result[0].color);
     assert.equal(overlay.overflow, 'hidden');
+    if (reader) { assert.equal(overlay.width, width); assert.equal(overlay.height, 900); }
+    else { assert(Math.abs(overlay.x + overlay.width / 2 - width / 2) <= 1, overlay.id + ' horizontal centering'); assert(Math.abs(overlay.y + overlay.height / 2 - 450) <= 1, overlay.id + ' vertical centering'); }
   }
   console.log(`PASS ${result.length} overlay borders ${width}px ${theme} ${mode || 'browser'}`);
   await page.close();

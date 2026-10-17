@@ -3224,6 +3224,7 @@ async function openNativeCommand(command, initialArgs = "") {
   const modal = $("#command-view"),
     form = $("#command-form"),
     body = $("#command-result");
+  modal.classList.toggle("floating-palette", command.name === "git");
   $("#command-title").textContent = `/${command.name}`;
   $("#command-status").textContent = "";
   $("#command-status").removeAttribute("data-error");

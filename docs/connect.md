@@ -259,6 +259,10 @@ the host through the same native handlers. Confirmation fields protect actions
 such as restores, publication, and configuration changes. Credential fields
 are masked and are not added to the conversation or sent as model prompts.
 
+Only the command-selection menus, Git/Changes, and Work & teammates use rounded
+floating panels. Other command views, readers, editors and workflow surfaces
+are square, borderless full-screen views on all screen sizes.
+
 Command controls stay above the results while data loads. A compact inline
 status beside the action buttons reports progress and errors without a footer. The initial result
 area reserves space with static placeholders; refresh keeps the current results

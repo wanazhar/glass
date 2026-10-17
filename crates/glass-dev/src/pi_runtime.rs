@@ -9,7 +9,6 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -123,8 +122,11 @@ pub enum PiSessionRequest {
     },
 }
 
-pub type PiToolExecutor =
-    Arc<dyn Fn(&ToolCall, bool, bool) -> DevelopmentResult<Value> + Send + Sync>;
+/// Executes one host tool call against the resident Glass workspace.
+///
+/// The Pi backend shares the engine-independent executor type so Glass owns
+/// tool execution for every resident harness.
+pub use crate::resident_harness::AgentToolExecutor as PiToolExecutor;
 
 #[derive(Clone, Default)]
 pub struct PiRuntimeOptions {

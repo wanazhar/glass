@@ -15,12 +15,21 @@ published supported release.
 
 ## Trust boundaries
 
+Glass is collaboration-first: the resident agent is a teammate with the same
+tools the human has, and the boundaries below exist so both collaborators stay
+legible and reconcilable, not so the agent is throttled. The resident engine is
+started in host tool mode, which gives it no built-in filesystem, shell, or
+network tools of its own; the complete catalog it can call is the one Glass
+registered, and Glass executes every call against the live workspace revision.
+Approvals, where a session's authority requires one, are single-use and tied to
+the exact serialized call.
+
 | Boundary | Authority it carries | Safe default | Primary risk |
 |---|---|---|---|
 | Project root | read and bounded mutation below one canonical directory | canonicalize every path; reject escapes and conflicting edits | source or secret disclosure, unintended writes |
 | Workspace trust | activate repository-supplied commands and agent context | untrusted static inspection; local explicit decision; external identity-bound store | code execution while opening an unfamiliar repository |
 | PTY/process manager | execute commands with the current OS user's privileges | bounded resident sessions and explicit stop/detach | arbitrary local command execution |
-| Agent gateway | request schema-validated project and browser tools | built-in Pi tools disabled; mutations require authority and confirmation | prompt-driven local or browser mutation |
+| Agent gateway | request schema-validated project and browser tools | engine built-in tools disabled; Glass executes every call and records the revision it ran against | prompt-driven local or browser mutation |
 | Browser/CDP | inspect and control the selected Chrome profile | locally owned endpoint, dedicated profile, structured observation | cookies, authenticated pages, downloads, arbitrary page script |
 | MCP stdio/socket | invoke the negotiated CLI-equivalent tool surface | local transport, initialization, capability checks, daemon mutation leases | confused-deputy calls from an untrusted client |
 | Remote View/application server | display current local state and accept bounded control | loopback-only listener, short-lived token, SSH forwarding | session observation or control by another network peer |

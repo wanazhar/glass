@@ -1227,12 +1227,15 @@ impl DevelopmentToolRouter {
                 let agent = match agent {
                     Some(agent) => agent,
                     None => {
-                        let readiness = crate::pi_runtime::pi_readiness()?;
+                        let readiness = crate::resident_harness::resident_readiness()?;
                         if !readiness.ready {
-                            return Err(DevelopmentError::Conflict(
-                                "Pi is not ready; use Agent [s] to install the runtime and [l] to sign in"
-                                    .into(),
-                            ));
+                            return Err(DevelopmentError::Conflict(format!(
+                                "{} is not ready; {}",
+                                readiness.selected.label(),
+                                readiness.remediation.first().cloned().unwrap_or_else(|| {
+                                    "install the engine and connect a provider".into()
+                                })
+                            )));
                         }
                         let id = workspace
                             .agents()
@@ -1878,6 +1881,19 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         .map(|name| service_descriptor(name, false))
         .chain(MUTATE.iter().map(|name| service_descriptor(name, true)))
         .collect()
+}
+
+/// Complete host tool catalog registered with the resident agent engine.
+///
+/// Glass Core host sessions receive this catalog once, when the session is
+/// created, so the frozen schema set always matches what the governed router
+/// can actually execute. Duplicate names keep their first descriptor.
+pub(crate) fn host_tool_catalog() -> Vec<ToolDescriptor> {
+    let mut catalog = AgentToolGateway::default().descriptors();
+    catalog.extend(service_descriptors());
+    let mut seen = std::collections::HashSet::new();
+    catalog.retain(|descriptor| seen.insert(descriptor.name.clone()));
+    catalog
 }
 
 pub(crate) fn tool_requires_mutation(name: &str) -> bool {

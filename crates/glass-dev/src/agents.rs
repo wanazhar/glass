@@ -1,7 +1,12 @@
-//! Glass-owned scheduling for independent resident Pi agent sessions.
+//! Glass-owned scheduling for independent resident agent sessions.
+//!
+//! The engine is selected by `GLASS_AGENT_HARNESS`; Glass Core is the default
+//! and the Pi SDK runtime is the legacy backend. Glass owns tool execution,
+//! approvals, and evidence for both.
 
 use crate::development::{DevelopmentError, DevelopmentResult};
-use crate::pi_runtime::{GlassPiRuntime, PiRuntimeOptions, PiSessionRequest, PiToolExecutor};
+use crate::pi_runtime::PiSessionRequest;
+use crate::resident_harness::{AgentToolExecutor, ResidentHarness, ResidentHarnessOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -106,13 +111,13 @@ pub struct AgentSpec {
     /// Agents that must complete before this agent starts.
     #[serde(default)]
     pub dependencies: Vec<AgentId>,
-    /// Optional Pi model override.
+    /// Optional engine model override.
     pub model: Option<String>,
-    /// Optional Pi thinking-level override.
+    /// Optional engine thinking-level override.
     pub thinking: Option<String>,
     /// Optional existing worktree path.
     pub worktree: Option<PathBuf>,
-    /// Optional architect session to fork as a Pi subagent.
+    /// Optional architect session to fork as a subagent.
     pub fork_from: Option<PathBuf>,
     /// Whether governed tool restrictions are disabled.
     #[serde(default)]
@@ -161,7 +166,7 @@ pub struct AgentSnapshot {
     pub thinking: Option<String>,
     /// Canonical worktree used by the worker.
     pub worktree: PathBuf,
-    /// Persisted Pi session file, when the runtime has one.
+    /// Persisted engine session file, when the runtime has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_file: Option<String>,
     /// Whether unrestricted tools were enabled.
@@ -178,7 +183,7 @@ pub struct AgentSnapshot {
     pub dropped_event_count: u64,
     /// Last worker error, if any.
     pub last_error: Option<String>,
-    /// Last Pi response identifier, if any.
+    /// Last engine response identifier, if any.
     pub last_response_id: Option<String>,
     /// Bounded tool/runtime evidence values.
     pub evidence: Vec<Value>,
@@ -217,7 +222,7 @@ enum WorkerCommand {
 enum WorkerEvent {
     Ready(AgentId),
     RequestStarted(AgentId, String, bool),
-    Pi(AgentId, Value),
+    Engine(AgentId, Value),
     Failed(AgentId, String),
     Stopped(AgentId),
 }
@@ -234,17 +239,19 @@ struct AgentRecord {
 struct WorkerRuntime {
     worktree: PathBuf,
     fork_from: Option<PathBuf>,
-    local_tool_executor: Option<PiToolExecutor>,
+    local_tool_executor: Option<AgentToolExecutor>,
     sessions_dir: PathBuf,
     broker: Option<ResidentAgentBroker>,
     additional_system_prompt: Option<String>,
 }
 
-/// Registry and scheduler for independent Pi subprocesses.
+/// Registry and scheduler for independent resident agent processes.
 ///
-/// Each running agent owns a distinct Pi process and persistent session. The
-/// registry only starts dependency-ready work, bounds all queues and retained
-/// evidence, and never silently promotes a failed dependency to success.
+/// Each running agent owns a distinct engine process and persistent session.
+/// The registry only starts dependency-ready work, bounds all queues and
+/// retained evidence, and never silently promotes a failed dependency to
+/// success. `GLASS_AGENT_HARNESS` selects the engine; Glass Core is the
+/// default.
 pub(crate) struct AgentRegistry {
     root: PathBuf,
     sessions_dir: PathBuf,
@@ -252,7 +259,7 @@ pub(crate) struct AgentRegistry {
     events_tx: SyncSender<WorkerEvent>,
     events_rx: Receiver<WorkerEvent>,
     history: VecDeque<AgentEvent>,
-    local_tool_executor: Option<PiToolExecutor>,
+    local_tool_executor: Option<AgentToolExecutor>,
     next_agent: u64,
     next_event: u64,
     broker: Option<ResidentAgentBroker>,
@@ -309,7 +316,7 @@ impl AgentRegistry {
         self.broker = Some(broker);
         Ok(())
     }
-    pub(crate) fn set_local_tool_executor(&mut self, executor: PiToolExecutor) {
+    pub(crate) fn set_local_tool_executor(&mut self, executor: AgentToolExecutor) {
         self.local_tool_executor = Some(executor);
     }
 
@@ -329,7 +336,7 @@ impl AgentRegistry {
         Ok(())
     }
 
-    /// Active user-global and trusted-project instructions supplied to Pi.
+    /// Active user-global and trusted-project instructions supplied to the engine.
     #[cfg(test)]
     pub fn additional_system_prompt(&self) -> Option<&str> {
         self.additional_system_prompt.as_deref()
@@ -565,7 +572,7 @@ impl AgentRegistry {
     ) -> DevelopmentResult<()> {
         self.refresh()?;
         let frame_id = frame_id.into();
-        validate_text("Pi approval frame", &frame_id, 256)?;
+        validate_text("resident approval frame", &frame_id, 256)?;
         let record = self.record_mut(id)?;
         if record.snapshot.status.terminal() {
             return Err(DevelopmentError::Conflict(format!(
@@ -637,10 +644,10 @@ impl AgentRegistry {
             Ok(Ok(request_id)) => Ok(request_id),
             Ok(Err(error)) => Err(DevelopmentError::Process(error)),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(DevelopmentError::Conflict(
-                "Pi did not start the request within 15 seconds".into(),
+                "the resident engine did not start the request within 15 seconds".into(),
             )),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(DevelopmentError::Process(
-                "Pi worker stopped before starting the request".into(),
+                "the resident worker stopped before starting the request".into(),
             )),
         }
     }
@@ -944,7 +951,7 @@ impl AgentRegistry {
                 }
                 self.record_event(&id, "requestStarted", Value::String(request_id));
             }
-            WorkerEvent::Pi(id, value) => {
+            WorkerEvent::Engine(id, value) => {
                 if let Some(record) = self.records.get_mut(&id) {
                     if let Some(file) = value
                         .pointer("/result/sessionFile")
@@ -976,7 +983,7 @@ impl AgentRegistry {
                 let kind = value
                     .get("type")
                     .and_then(Value::as_str)
-                    .unwrap_or("piEvent")
+                    .unwrap_or("engineEvent")
                     .to_string();
                 self.record_event(&id, &kind, value);
             }
@@ -1125,7 +1132,7 @@ fn run_worker(
     events: SyncSender<WorkerEvent>,
     dropped_events: Arc<AtomicU64>,
 ) {
-    let options = PiRuntimeOptions {
+    let options = ResidentHarnessOptions {
         unrestricted: spec.unrestricted,
         session_dir: runtime.sessions_dir,
         name: Some(format!("{}: {}", spec.role, id.as_str())),
@@ -1137,7 +1144,11 @@ fn run_worker(
         resume: false,
         fork_from: runtime.fork_from,
     };
-    let mut harness = match GlassPiRuntime::spawn(&runtime.worktree, options) {
+    let mut harness = match ResidentHarness::spawn(
+        crate::resident_harness::ResidentHarnessKind::from_env(),
+        &runtime.worktree,
+        options,
+    ) {
         Ok(harness) => harness,
         Err(error) => {
             send_critical_worker_event(&events, WorkerEvent::Failed(id, error.to_string()));
@@ -1185,7 +1196,7 @@ fn run_worker(
                     if let Err(error) = harness.resolve_tool_approval(&frame_id, approved) {
                         send_critical_worker_event(
                             &events,
-                            WorkerEvent::Pi(
+                            WorkerEvent::Engine(
                                 id.clone(),
                                 serde_json::json!({
                                     "type":"glass_tool_approval_resolved",
@@ -1208,7 +1219,7 @@ fn run_worker(
         match harness.recv_event_timeout(Duration::from_millis(25)) {
             Ok(Some(value)) => send_lossy_worker_event(
                 &events,
-                WorkerEvent::Pi(id.clone(), value),
+                WorkerEvent::Engine(id.clone(), value),
                 &dropped_events,
             ),
             Ok(None) => {}
@@ -1344,7 +1355,7 @@ mod tests {
         let dropped = AtomicU64::new(0);
         send_lossy_worker_event(
             &sender,
-            WorkerEvent::Pi(id, serde_json::json!({"type":"delta"})),
+            WorkerEvent::Engine(id, serde_json::json!({"type":"delta"})),
             &dropped,
         );
         assert_eq!(dropped.load(Ordering::Relaxed), 1);
@@ -1502,11 +1513,12 @@ mod tests {
     }
 
     #[test]
-    fn independent_pi_sessions_schedule_dependencies_and_stream_state() {
-        if std::process::Command::new("pi")
-            .arg("--version")
-            .output()
-            .is_err()
+    fn independent_resident_sessions_schedule_dependencies_and_stream_state() {
+        // The engine is selected by GLASS_AGENT_HARNESS, so gate on the
+        // selected harness's readiness instead of on one executable name.
+        if !crate::resident_harness::resident_readiness()
+            .map(|readiness| readiness.ready)
+            .unwrap_or(false)
         {
             return;
         }

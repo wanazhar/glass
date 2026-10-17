@@ -1,6 +1,6 @@
 # Glass Coding Harness Architecture
 
-**Status: Current 0.3.14 source behavior.** This guide defines worker boundaries and display-state flow in `glass-dev`. It does not make an external coding program part of Glass and does not change immutable release history. See [Development Runtime](development-runtime.md) for project semantics and [Native Pi SDK runtime](pi-sdk-runtime.md) for Pi protocol details.
+**Status: Current 0.3.14 source behavior.** This guide defines worker boundaries and display-state flow in `glass-dev`. It does not make an external coding program part of Glass and does not change immutable release history. See [Development Runtime](development-runtime.md) for project semantics, [Glass Core resident harness](glass-core-harness.md) for the default resident engine, and [Native Pi SDK runtime](pi-sdk-runtime.md) for the legacy Pi backend.
 
 ## Runtime planes
 
@@ -36,8 +36,9 @@ The four agent paths are intentionally different:
 
 | Path | Lifetime and ownership | Capability boundary |
 |---|---|---|
-| Deterministic local harness | One synchronous `LocalHarness` request | No model provider, no Pi process, no persistent conversation; bounded references and scripted read/list/process/diff prompts |
-| Native Pi resident agent | One `AgentRegistry` record, worker thread, `GlassPiRuntime`, and Pi `AgentSession` | Glass-registered tools through the resident router; persistent session and event evidence |
+| Deterministic local harness | One synchronous `LocalHarness` request | No model provider, no engine process, no persistent conversation; bounded references and scripted read/list/process/diff prompts |
+| Resident agent (Glass Core) | One `AgentRegistry` record, worker thread, `ResidentHarness`, and one `GlassCoreRuntime` speaking the engine host protocol | Glass-registered tools through the resident router; persistent session and event evidence |
+| Resident agent (legacy Pi) | The same registry record and worker with `GLASS_AGENT_HARNESS=pi`, a `GlassPiRuntime`, and a Pi `AgentSession` | Same Glass-registered tools and evidence; the engine differs, the authority does not |
 | External harness handoff | One installed interactive executable receives the terminal | Fixed catalog and PATH lookup; Glass does not emulate its protocol or own its session |
 | One-shot delegation | One bounded Codex, Claude, or OpenCode child | Read-only default, bounded output, no resident identity or session |
 
@@ -73,7 +74,7 @@ The worker's internal `ActorRequest` channel is an ordinary multi-producer chann
 
 Screenshot requests use a separate visual-request flag. While one screenshot request is pending, additional screenshot requests are ignored. Results contain request ID, requested columns/rows, and a typed result. The worker does not retain an unbounded frame history. Visual capture is explicit and does not make browser pixels authoritative over semantic revisions.
 
-Resident Pi worker channels have separate bounds: command capacity 32, Pi event capacity 256, agent history capacity 512, and per-agent evidence capacity 64. Lossy Pi events may be dropped and the agent snapshot reports `droppedEventCount`; critical ready, failure, stop, and request-start events use the critical path. See [Native Pi SDK runtime](pi-sdk-runtime.md).
+Resident agent worker channels have separate bounds: command capacity 32, engine event capacity 256, agent history capacity 512, and per-agent evidence capacity 64. Lossy engine events may be dropped and the agent snapshot reports `droppedEventCount`; critical ready, failure, stop, and request-start events use the critical path. The Glass Core adapter adds one protocol bound of its own: it rejects any engine frame above 1 MiB and bounds each host tool result to 512 KiB. See [Glass Core resident harness](glass-core-harness.md) and the [legacy Pi backend](pi-sdk-runtime.md).
 
 Workspace and transport limits remain authoritative: daemon requests and responses are each at most 1 MiB, daemon event batches at most 256, tool result routing at most 512 KiB, project buffers at most 1 MiB, PTY output tails 32 KiB, and managed PTY processes 32 per project. The snapshot worker does not enlarge any of these limits.
 
@@ -104,7 +105,7 @@ Editor comments, proposals, checkpoints, and explicit collaboration claims are w
 
 ## Resident agents and tool approval
 
-The TUI submits agent commands to the workspace actor. The resident agent worker multiplexes Pi commands and events; a request acknowledgement is not a settled turn. The UI follows `agent_settled` and typed agent status before showing completion. Mutating tools cross `DevelopmentToolRouter`, which checks workspace trust, actor, generation, project revision, path, confirmation, and browser leases. One native Pi mutation approval is pending at a time. A stale or duplicate approval fails closed. A one-shot non-interactive adapter denies UI requests rather than waiting for an unavailable human.
+The TUI submits agent commands to the workspace actor. The resident agent worker multiplexes engine commands and events; a request acknowledgement is not a settled turn. The UI follows `agent_settled` and typed agent status before showing completion. Mutating tools cross `DevelopmentToolRouter`, which checks workspace trust, actor, generation, project revision, path, confirmation, and browser leases. One resident mutation approval is pending at a time. A stale or duplicate approval fails closed. A one-shot non-interactive adapter denies UI requests rather than waiting for an unavailable human.
 
 A tool failure is rendered as an error/evidence result and does not update the project revision as if the tool succeeded. Browser tools disappear while detached or recovering. The worker keeps receiving input while a tool or agent turn is running; cancellation and workspace shutdown are explicit paths.
 

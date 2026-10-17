@@ -7,6 +7,33 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Resident agents can now run on the `glass-core` engine. Glass starts
+  `glass-core runtime` as a subprocess, speaks its documented JSON-RPC 2.0 host
+  protocol, registers its governed tool catalog with the session, and executes
+  every `tool/execute` call itself. The adapter is `core_runtime.rs`; engine
+  selection is `resident_harness.rs`, and `GLASS_CORE_BINARY` selects a
+  specific engine executable. Readiness (`glass agent doctor`, `glass agent
+  status`) reports the selected engine, protocol version, provider readiness,
+  and ordered remediation.
+- Offline fixture tests drive a fake `glass-core runtime` over the real
+  protocol: session startup, a full turn with a host tool call, a mutation that
+  parks on an approval frame and resumes on the human decision, and rejection
+  of an unknown approval frame. They need no provider account.
+
+### Changed
+
+- Glass Core is the default resident harness; the Pi SDK runtime is now the
+  explicit legacy backend, selected with `GLASS_AGENT_HARNESS=pi`. Both engines
+  share the Glass-owned tool executor, approval surface, and evidence rules, so
+  switching engines does not change who owns a tool call.
+- Product positioning is collaboration-first. The README, security policy,
+  positioning guide, and getting-started guide now describe a resident agent as
+  a teammate with the same tools as the human, and describe the remaining
+  boundaries in terms of legibility, revisions, attribution, and reversibility
+  rather than limiting a trusted collaborator.
+
+### Added
+
 - Native content-worker timer and lifetime notifications now wake a bounded
   owner pump that routes page turns by exact context/frame identity and sends
   their effects through the native browser cascade. Parent-frame event and

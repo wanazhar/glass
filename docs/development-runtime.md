@@ -138,13 +138,14 @@ Glass has four distinct agent paths:
 | Path | Ownership and behavior | Entry point |
 |---|---|---|
 | Deterministic local harness | Synchronous, browser-independent `glass.harness.v1` reducer. It resolves bounded references and scripted prompts such as `read PATH`, `files`, `process list`, and `diff`; it has no model provider or persistent session. | `glass agent hello/prompt --harness local --root .` |
-| Native Pi resident agent | `AgentRegistry` worker with a persistent native `AgentSession`, governed Glass tools, and optional browser context. | TUI Agent surface; `glass.agent.*`; see [Native Pi SDK runtime](pi-sdk-runtime.md) |
+| Resident agent (Glass Core) | `AgentRegistry` worker with a persistent engine session over the host runtime protocol, governed Glass tools, and optional browser context. | TUI Agent surface; `glass.agent.*`; see [Glass Core resident harness](glass-core-harness.md) |
+| Resident agent (legacy Pi) | The same registry worker and governed tools with a native Pi `AgentSession`, selected by `GLASS_AGENT_HARNESS=pi`. | TUI Agent surface; [Native Pi SDK runtime](pi-sdk-runtime.md) |
 | External harness handoff | Fixed executable names discovered on `PATH`; Glass hands the terminal to the selected interactive program and resumes after exit. It does not emulate or register that program. | `glass harness list`; `glass harness start NAME --root .` |
 | One-shot delegation | Temporary Codex, Claude, or OpenCode child. Read-only is default; output and errors are bounded; no resident identity or session is created. | `glass agent delegate HARNESS PROMPT --root .` |
 
-`glass agent prompt --harness pi` is the compatibility Pi command adapter for a one-shot CLI request. It is not the resident native `AgentSession` path. Use the TUI or daemon-backed resident agent for steering, follow-up, approvals, and persistent ownership.
+`glass agent prompt --harness pi` is the compatibility Pi command adapter for a one-shot CLI request. It is not the resident engine path. Use the TUI or daemon-backed resident agent for steering, follow-up, approvals, and persistent ownership.
 
-The trusted native Pi tool gateway provides read, list, search, edit, write, process, test, LSP, Git, browser, workflow, debugger, and task capabilities according to availability. A mutation is checked again at execution time; stale revisions, leases, path confinement, trust, and confirmation still apply. See [MCP integration](mcp.md) for transport semantics.
+The trusted resident tool gateway provides read, list, search, edit, write, process, test, LSP, Git, browser, workflow, debugger, and task capabilities according to availability. The resident engine receives this catalog once, when its session opens, and Glass executes every call; a mutation is checked again at execution time, where stale revisions, leases, path confinement, and confirmation still apply. See [MCP integration](mcp.md) for transport semantics.
 
 ## Failure and recovery matrix
 
@@ -175,6 +176,7 @@ Run the targeted tests from the repository when validating a change. Do not trea
 
 ## Related guides
 
+- [Glass Core resident harness](glass-core-harness.md)
 - [Native Pi SDK runtime](pi-sdk-runtime.md)
 - [Autonomous task DAGs](task-dag.md)
 - [Coding harness architecture](harness-architecture.md)

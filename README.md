@@ -1,15 +1,22 @@
 # Glass
 
-Glass is a local-first coding workspace for developing, operating, and
-verifying applications with humans and agents. Coding is the primary workflow:
-the native terminal UI, local agent harness, files, editor, PTYs, tests,
-diagnostics, and Git diff live together in one revision-aware workspace. Browser
-intelligence is an integrated optional app surface for UI work and verification.
+Glass is a local-first coding workspace where a human and an agent work on the
+same project at the same time. Coding is the primary workflow: the native
+terminal UI, the resident agent, files, editor, PTYs, tests, diagnostics, and
+Git diff live together in one revision-aware workspace, and every change either
+side makes is visible to the other. Browser intelligence is an integrated
+optional app surface for UI work and verification.
 
+Glass is collaboration-first. The agent is a teammate with the same tools you
+have, not a request queue behind an approval wall: it reads, edits, runs, and
+verifies in your workspace while you watch, steer, or take over. Guardrails
+that remain are about *legibility and reversibility* — revisions, attribution,
+evidence, and undo — not about limiting what a trusted collaborator may attempt.
 
-**Status: Current 0.3.14 source behavior.** The TUI, editor, Pi integration,
-collaboration affordances, and terminal presentation notes below describe this
-checkout; current-source changes are not claimed as published-release behavior.
+**Status: Current 0.3.14 source behavior.** The TUI, editor, Glass Core
+resident harness, collaboration affordances, and terminal presentation notes
+below describe this checkout; current-source changes are not claimed as
+published-release behavior.
 
 The complete product is `glass-dev`, which installs both `glass` and
 `glass-browser`. The focused `glass-browser` package provides the standalone
@@ -22,8 +29,8 @@ runtime.
              ┌────────────────────────┼────────────────────────┐
              │                        │                        │
        project runtime          agent coordination       browser workspace
-   files · editor · PTYs       local/Pi · MCP · leases   semantics · actions
-   LSP · diff · timeline       revisions · attribution   Web IR · workflows
+   files · editor · PTYs      Glass Core · MCP · leases   semantics · actions
+   LSP · diff · timeline      revisions · attribution   Web IR · workflows
              │                        │                        │
              └────────────────────────┼────────────────────────┘
                                       │
@@ -32,17 +39,23 @@ runtime.
                     local terminal · SSH/Mosh · iPhone
 ```
 
-Glass does not host code, credentials, or browsers. It does not infer an
-autonomous plan or silently act on a page. Project mutations stay inside the
-selected root. Browser mutations require current evidence, policy authority,
-and revision checks.
+Resident agents run on the [Glass Core](docs/glass-core-harness.md) engine over
+its host runtime protocol. Glass owns the workspace, the tool router, and the
+conversation surface; the engine owns the model loop, recovery, compaction, and
+session records. The Pi SDK runtime remains available as an explicit legacy
+backend (`GLASS_AGENT_HARNESS=pi`) for existing installations.
+
+Glass does not host code, credentials, or browsers. Project mutations stay
+inside the selected root, and browser mutations are checked against the
+revision they were observed in, so concurrent human and agent work stays
+reconcilable instead of silently conflicting.
 
 ## Choose the product
 
 | Package | Installed commands | Choose it when |
 |---|---|---|
 | `glass-dev` | `glass`, `glass-browser` | You want the complete development workspace, TUI, agents, MCP, project runtime, and browser control plane. |
-| `glass-browser` | `glass-browser` | You want browser automation or the reusable Rust library without PTY, LSP, project, Pi, or Neovim dependencies. |
+| `glass-browser` | `glass-browser` | You want browser automation or the reusable Rust library without PTY, LSP, project, agent, or Neovim dependencies. |
 
 The packages intentionally share the `glass-browser` executable name and
 cannot own it in the same Cargo installation root. Follow the tested
@@ -149,9 +162,9 @@ it does not terminate the editor, PTYs, agent, or project session.
 First-launch onboarding stays inside the TUI:
 
 ```text
-glass → Trust (only when required) → Agent → Pi readiness → composer
+glass → Trust (only when required) → Agent → engine readiness → composer
                                       │
-                         :agent setup / :agent setup login
+                        :agent setup / :agent setup login
                                       │
                          Enter sends → Glass Agent streams
 ```
@@ -159,12 +172,12 @@ glass → Trust (only when required) → Agent → Pi readiness → composer
 On an untrusted project, Glass opens `Trust` first. `I` inspects, `O` opens
 without trust, `1` trusts once, and `T` trusts the project; repository-controlled
 execution stays blocked until a local decision. On `Agent`, type a message or
-press `Enter` to begin. If Pi is not ready, the same flow queues `:agent setup`
-to install or repair the pinned managed runtime; approve the one-use setup
-request with `Enter`/`Y`, or cancel with `Esc`/`N`. Then use `:agent setup login`
-to hand this terminal to Pi's `/login`; exit Pi to return to Glass. `:agent
-update` refreshes the pinned runtime. `:agent doctor` and `:agent status` show
-readiness without secrets.
+press `Enter` to begin. Resident agents run on Glass Core; when the engine is
+missing, `:agent setup` reports the exact repair step and the harness override
+instead of installing a second runtime. `:agent doctor` and `:agent status`
+report the selected engine, its protocol, and provider readiness without
+secrets. Existing Pi installations keep working with
+`GLASS_AGENT_HARNESS=pi`.
 
 Talk from any surface. `Ctrl-L` opens the shared composer dock. `Alt-A` docks
 from the editor. Default mode is Agent. `Ctrl-Shift-A` cycles Ask, Plan, and
@@ -175,13 +188,15 @@ the default follow-up mode queues the next message. Sent prompts remain visible
 as `YOU` messages while the resident agent streams `GLASS AGENT` text and tool
 activity. A send failure restores the draft with an edit-and-retry message; a
 busy background operation keeps new text in the composer. The human-controlled
-resident Pi session runs unrestricted by default in Glass Dev.
+resident session runs unrestricted by default in Glass Dev: a trusted
+collaborator works at full speed, and Glass keeps the audit trail instead of
+interrupting it.
 
-Type in the dock to talk. On Agent, `/` opens Pi's native slash-command modal
-and `:` opens Glass's workspace command palette; the Pi modal covers all 23
-official commands in the pinned SDK and accepts loaded extension, prompt, and
+Type in the dock to talk. On Agent, `/` opens the resident engine's command
+modal and `:` opens Glass's workspace command palette; Glass routes Pi sessions
+to the pinned SDK's official commands and accepts loaded extension, prompt, and
 skill commands by name. Results are written to the Agent transcript and More.
-`/login` hands the terminal to Pi for provider authentication. `a` opens this
+`/login` authenticates the provider for the engine in use. `a` opens this
 surface's actions. The Terminal surface starts the detected development suite
 with `:process start dev`; its action menu also exposes logs, input, stop, and
 health. Tasks shows the workspace-local Agent checklist (persisted at
@@ -258,7 +273,7 @@ when on, source lines wrap at whitespace where possible, continuation rows keep
 their gutter alignment, and cursor, selection, and syntax highlighting remain
 aligned. When off, horizontal scrolling follows source columns. In either
 mode, arrows move, `Shift`+arrows select, `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y`
-undo/redo, and `Alt-A` asks Pi with the unsaved buffer attached. The editor
+undo/redo, and `Alt-A` asks the resident agent with the unsaved buffer attached. The editor
 starts in INSERT. `Esc` returns to NORMAL. `Esc` from NORMAL on a clean buffer
 leaves the editor. Unsaved files still ask: `S` save, `D` discard, `Q`
 discard-and-quit, or `Esc`/`N` stay. `Ctrl-C` opens Glass quit confirmation
@@ -693,8 +708,8 @@ Browser startup from the TUI is headed and persistent by default:
 
 The first command preserves an authenticated profile for human interaction;
 the second is disposable. If the preferred port is occupied, Glass presents
-attach, automatic-port, and retry choices while keeping the project and Pi
-Agent surfaces available. Target inventory can be archived without selecting
+attach, automatic-port, and retry choices while keeping the project and agent
+surfaces available. Target inventory can be archived without selecting
 or closing pages:
 
 ```console
@@ -709,21 +724,36 @@ for the controller state machine and authority boundaries.
 
 ## Agents and collaboration
 
-The Development Runtime includes a Glass-owned bounded tool gateway and actor
-timeline. The deterministic local harness is always available:
+Glass is built for two collaborators on one workspace: you and a resident
+agent. The Development Runtime includes a Glass-owned bounded tool gateway and
+actor timeline, so both of you operate the same files, processes, and browser
+sessions with the same revision rules. The deterministic local harness is
+always available and needs no provider:
 
 ```console
 glass agent hello --root .
 glass agent prompt "Inspect @workspace and @diagnostic" --root .
 ```
 
-The native Pi SDK runtime uses a persistent `AgentSession` with raw built-in
-tools disabled. Its only executable capability is the Glass-owned gateway into
-bounded project, browser, workflow, and resident-runtime tools:
+Resident sessions run on the Glass Core engine over its host runtime protocol
+(`glass-core runtime`). The engine owns the model loop; Glass owns the tool
+schemas, executes every call, and records the evidence. The engine receives no
+built-in filesystem or shell tools of its own, so what a collaborator can do in
+your workspace is exactly the catalog Glass registered:
+
+```console
+glass agent doctor
+glass agent status
+```
+
+`glass agent doctor` reports the selected engine, its protocol version,
+provider readiness, and the repair steps for the current state. `GLASS_CORE_BINARY`
+selects a specific engine executable; `GLASS_AGENT_HARNESS=pi` keeps an existing
+installation on the legacy Pi SDK backend, which Glass still drives with the
+same Glass-owned tools:
 
 ```console
 glass agent hello --harness pi --root .
-glass agent doctor
 glass agent setup
 glass agent setup --login
 glass agent setup --update
@@ -752,11 +782,12 @@ glass agent delegate opencode "map the project entrypoints" --root .
 The TUI exposes the same operations as `:harness list`, `:harness start NAME`,
 and `:harness delegate NAME PROMPT`. Delegation defaults to a read-only
 harness sandbox and returns bounded structured output. Workspace writes require
-`--sandbox workspace-write --allow-mutation --yes`; the resident Pi `delegate`
-tool uses the same approval boundary.
+`--sandbox workspace-write --allow-mutation --yes`; the resident agent's
+`delegate` tool uses the same boundary.
 
 `--update` forces a reinstall of Glass's pinned Pi SDK version; it does not
-silently select an unreviewed upstream version.
+silently select an unreviewed upstream version. It applies to the legacy Pi
+backend only.
 
 For direct Glass/browser operations or non-TUI callers that need the process-wide
 unrestricted mode, launch the cockpit with:
@@ -767,23 +798,26 @@ glass --yolo
 
 `--yolo` disables Glass tool confirmations for that process, bypasses the
 workspace-trust execution gate for Glass Dev, automatically accepts confirmation
-requests from loaded Pi extensions, grants browser policy capabilities without
-confirmation, and loads trusted Pi resources plus all their registered tools.
-The resident Glass Dev TUI already treats its Pi session as human-controlled
+requests from loaded extensions, grants browser policy capabilities without
+confirmation, and loads trusted resources plus all their registered tools.
+The resident Glass Dev TUI already treats its agent session as human-controlled
 and unrestricted; `--yolo` additionally makes its Glass-owned development
 routes and project configuration executable in the current process. It does
 not persist trust or disable revision checks, workspace/daemon leases, explicit
 host denials, protocol bounds, or result-size limits.
 
 Nothing is downloaded during startup. `agent doctor` and `agent status` report
-the resolved Node/SDK/auth/provider/session state without secrets; `agent
-setup` explicitly installs the release-pinned SDK or selects an existing entry.
-Tool availability follows the live workspace and its revisions, policy,
-mutation leases, and PTY/browser ownership. Project mutations require the
-applicable precondition and policy plus confirmation. In the resident TUI, each Pi mutation pauses on a
-Glass-owned approval sheet; `Y`/Enter approves that exact serialized call once
-and `N`/Esc denies it. Unanswered requests expire after 120 seconds, while
-non-interactive Pi CLI requests deny them immediately. Prompt text, page content, secrets, and process
+the selected resident engine, its protocol version, provider readiness, and
+remediation without secrets; `agent setup` explicitly installs the release-pinned
+Pi SDK for the legacy backend or selects an existing entry. Tool availability
+follows the live workspace and its revisions, mutation leases, and PTY/browser
+ownership. Project mutations are recorded with the precondition and revision
+they were made against, so a collaborator can review or revert them. In the
+resident TUI, a mutation that is not covered by the current session's authority
+pauses on a Glass-owned approval sheet; `Y`/Enter approves that exact serialized
+call once and `N`/Esc denies it. Unanswered requests expire after 120 seconds,
+while
+non-interactive CLI requests deny them immediately. Prompt text, page content, secrets, and process
 output are not copied into the persisted timeline.
 
 The overrides are coding-harness complete: `read` supports bounded line paging,
@@ -794,11 +828,13 @@ approved command for up to 300 seconds. Directory creation, rename, deletion,
 diagnostics, verification, Git status, semantic inspection, Web IR, and task
 planning are also available as explicit `glass_*` tools.
 
-Pi retains its configured provider/model catalog, including supported custom
-providers from `models.json`; use `glass agent models` or the Agent surface.
-The Glass Dev TUI loads its configured Pi context files, extensions, skills,
-templates, and themes in the resident human-controlled session. Its Pi
-built-in filesystem and shell tools remain replaced by Glass-owned tools.
+Glass Core sessions inherit the engine's configured provider and model catalog;
+`glass agent models` and the Agent surface list what the engine reports. Pi
+sessions retain their own configured provider/model catalog, including supported
+custom providers from `models.json`, and the TUI loads their configured context
+files, extensions, skills, templates, and themes in the resident
+human-controlled session. In both backends the built-in filesystem and shell
+tools stay replaced by Glass-owned tools.
 
 External agents can use the CLI or MCP project tools and attach an attributed
 actor. Conflicting file claims fail closed rather than silently overwriting

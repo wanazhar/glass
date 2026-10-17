@@ -6346,7 +6346,7 @@ mod tests {
     fn agent_onboarding_actions_are_available_without_leaving_the_tui() {
         let mut state = state(TuiLayout::Desktop);
         state.surface = DevSurface::Agent;
-        state.request_agent_setup();
+        state.request_agent_setup_mode(crate::ResidentHarnessKind::Pi, false);
         assert_eq!(state.surface, DevSurface::Agent);
         assert_eq!(
             state
@@ -6364,7 +6364,7 @@ mod tests {
             Some(false)
         );
         state.deny_confirmation();
-        state.request_agent_update();
+        state.request_agent_setup_mode(crate::ResidentHarnessKind::Pi, true);
         assert_eq!(
             state
                 .pending_confirmation
@@ -6383,6 +6383,28 @@ mod tests {
         state.request_agent_login().expect("queue Pi login");
         assert!(state.agent_login_requested);
         assert!(state.status.contains("exit Pi to return"));
+    }
+
+    #[test]
+    fn glass_core_setup_reports_engine_repair_instead_of_installing_pi() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Agent;
+        state.request_agent_setup_mode(crate::ResidentHarnessKind::GlassCore, false);
+        assert_eq!(state.surface, DevSurface::Agent);
+        assert!(
+            state.pending_confirmation.is_none(),
+            "Glass Core is an executable, so no managed runtime install is queued"
+        );
+        assert!(
+            state.status.contains("Glass Core is the resident engine"),
+            "{}",
+            state.status
+        );
+        assert!(
+            state.status.contains("GLASS_AGENT_HARNESS=pi"),
+            "{}",
+            state.status
+        );
     }
 
     #[test]

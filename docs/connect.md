@@ -471,3 +471,14 @@ A small independent bootstrap exposes retry if the application cannot load.
 Startup assets are preloaded/versioned together; supported service-worker
 contexts retain the current and one previous shell cohort. Startup does not wait
 for optional renderers or service-worker registration.
+
+## Provider reasoning replay
+
+Chat Completions reasoning required by subsequent tool requests is retained with
+the assistant response and tool-call IDs, including across resumed sessions and
+context projection. These internal records are separate from the visible
+reasoning reader and excluded from ordinary history and exports. They are not
+converted into Responses or Anthropic reasoning. Existing display-only reasoning
+from older versions is not automatically reinterpreted as provider wire data.
+Provider failures remain explicit; deploying this fix does not retry a model
+request or replay a tool.

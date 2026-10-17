@@ -1,6 +1,6 @@
 # Provider reasoning and mobile interaction fixes
 
-Status: in-progress. User reported missing messages[2].reasoning_content after tool execution, indistinguishable project expansion, and first-focus keyboard palette scroll lock.
+Status: delivered. User reported missing messages[2].reasoning_content after tool execution, indistinguishable project expansion, and first-focus keyboard palette scroll lock.
 
 ## Contract
 
@@ -26,4 +26,8 @@ Separate Rust provider/runtime and frontend tasks, independent review. No test s
 - Merged `044ea34`: explicit native project disclosure, shaded open headings and grouped threads; touch category browsing without forced keyboard focus; stable palette rows and scoped scrolling during keyboard transitions.
 - Independent source review passed. Frontend build and syntax checks passed; no test suites run. Static visual review covered sidebar states. Physical iPhone first-keyboard touch scrolling remains unverified.
 - Reversible web asset deployment served shell `91d5d80cc2e7`; public build metadata matches installed files. No gateway or chat runtime restart.
-- Provider reasoning implementation and independent review remain in progress.
+- Provider fix merged as `f9d3038`; independent source review, workspace compile, and optimized release build passed. No test suites or live inference run.
+- Final frontend shell `bc1c8f508607` also excludes private provider metadata from generic inspectors.
+- Installed and activated native binary SHA-256 `1c6032c6e5eb5b57a1c4446e41db42b0fc466321ede280e7ea3965be6e171d04`. All 21 workers and the gateway match the installed executable inode.
+- Repaired only the affected historical conversation with a backed-up, original 116-byte reasoning association. Existing records are byte-identical after excluding the one new marker; original tool result is preserved. No provider request or tool replay.
+- Gateway rotation briefly encountered TCP TIME_WAIT bind refusal; waited until the port cleared, restored unchanged settings/security, and completed the remaining nine updates. Final public status HTTP 200; no active work interrupted.

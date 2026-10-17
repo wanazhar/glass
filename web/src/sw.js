@@ -60,3 +60,23 @@ self.addEventListener("fetch", (event) => {
       ),
   );
 });
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const id = event.notification.data?.thread;
+  if (typeof id !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(id)) return;
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then(async (clients) => {
+        const client = clients.find(
+          (client) => new URL(client.url).origin === self.location.origin,
+        );
+        if (client) {
+          await client.focus();
+          client.postMessage({ t: "open_thread", id });
+        } else
+          await self.clients.openWindow("/?thread=" + encodeURIComponent(id));
+      }),
+  );
+});

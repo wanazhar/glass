@@ -2635,3 +2635,203 @@ dialog > header {
     padding-top: calc(var(--safe-top) + 24px);
   }
 }
+
+/* Work surfaces are loaded on demand; share the existing Glass tokens. */
+.workflow {
+  width: min(920px, calc(100% - 24px));
+  max-height: calc(var(--app-height, 100dvh) - 32px);
+  padding: 0;
+}
+.workflow header,
+.workflow-status {
+  flex: none;
+}
+.workflow-body {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 20px;
+}
+.workflow-actions,
+.file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.workflow input,
+.workflow textarea {
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  min-width: 0;
+}
+.workflow-search {
+  width: 100%;
+  box-sizing: border-box;
+}
+.workflow-choices {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+}
+.workflow-choices button {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.file-editor {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: min(55dvh, 520px);
+  resize: vertical;
+  font-family: var(--font-mono, monospace) !important;
+  font-size: 14px !important;
+  line-height: 1.6;
+  tab-size: 2;
+}
+.workflow-status {
+  padding: 12px 20px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.change-file {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  margin: 10px 0;
+}
+.change-file summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  margin-bottom: 10px;
+}
+.diff-source,
+.git-status {
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diff-hunk {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.diff-hunk button {
+  margin-right: 8px;
+}
+.context-chips {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.context-chips:empty {
+  display: none;
+}
+.context-chip {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 5px 9px;
+  white-space: nowrap;
+  font: inherit;
+  font-size: 11px;
+  color: var(--muted);
+  background: transparent;
+}
+.composer-meta [role="button"] {
+  cursor: pointer;
+}
+.workflow[data-pending] .workflow-body button {
+  pointer-events: none;
+  opacity: 0.6;
+}
+@media (max-width: 700px) {
+  .workflow {
+    margin: auto;
+    max-height: calc(
+      var(--app-height, 100dvh) - env(safe-area-inset-top) - 32px
+    );
+  }
+  .workflow-body {
+    padding: 14px;
+  }
+  .workflow input {
+    font-size: 16px;
+  }
+}
+
+.queue-editor {
+  width: 100%;
+  min-height: 90px;
+  resize: vertical;
+}
+.agent-transcript {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 45dvh;
+  overflow: auto;
+  font-size: 12px;
+}
+.saved-activity-source {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 13px/1.65 var(--font-mono);
+}
+.native-message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11px;
+  margin-top: 8px;
+  opacity: 0.7;
+}
+.native-message-actions button {
+  padding: 0;
+}
+.artifact-run {
+  margin-bottom: 10px;
+}
+#notifications {
+  font-size: 10px;
+  padding: 4px;
+  max-width: 92px;
+}
+.inline-work {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.inline-agent {
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 700px) {
+  .workflow textarea.file-editor,
+  .workflow textarea.queue-editor {
+    font-size: 16px !important;
+  }
+}
+
+.change-path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.change-path > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

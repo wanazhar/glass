@@ -1,5 +1,7 @@
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import { draftStore } from "./drafts.js";
+import { attention } from "./notifications.js";
 const $ = (s) => document.querySelector(s),
   el = (tag, cls, text) => {
     const n = document.createElement(tag);
@@ -34,9 +36,12 @@ const view = {
   generation: 0,
   streamTruncated: false,
   reasoningFollow: true,
+  reasoningWindows: [],
+  reasoningSources: [],
   directory: null,
   commandTransportReady: false,
 };
+const notifyAttention = attention($("#notifications"));
 const limits = { message: 262144, reasoning: 262144, preview: 1048576 };
 const text = (s, max = limits.message) => String(s ?? "").slice(0, max),
   escape = (s) =>
@@ -68,6 +73,31 @@ function clearNotice() {
   clearTimeout(noticeTimer);
   $("#notice").classList.add("hidden");
 }
+let draftWarning = false;
+const drafts = draftStore(() => {
+  if (!draftWarning) {
+    draftWarning = true;
+    queueMicrotask(() =>
+      notice(
+        "Draft storage unavailable. Keep this tab open until you send.",
+        true,
+      ),
+    );
+  }
+});
+const draftKey = () => location.host + "/" + (view.id || "new");
+function saveDraft() {
+  const value = $("#prompt").value;
+  drafts.write(draftKey(), value.trimStart().startsWith("/") ? "" : value);
+}
+function restoreDraft() {
+  $("#prompt").value = drafts.read(draftKey());
+  $("#prompt").style.height = "";
+}
+window.addEventListener("pagehide", () => {
+  saveDraft();
+  drafts.flush();
+});
 async function api(path, data, signal) {
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -228,12 +258,16 @@ $("#conversation").addEventListener(
   "scroll",
   () => {
     if ($("#conversation").clientWidth !== readingWidth) return;
-    view.follow = atBottom();
+    view.follow = !view.tailPruned && atBottom();
     $("#latest").classList.toggle("hidden", view.follow);
   },
   { passive: true },
 );
-$("#latest").onclick = () => {
+$("#latest").onclick = async () => {
+  if (view.tailPruned) {
+    view.tailPruned = false;
+    await history();
+  }
   view.follow = true;
   follow();
 };
@@ -539,6 +573,84 @@ function message(role, source, target = $("#timeline")) {
     markdown(body, source);
   }
   article.append(body);
+  const nativeActions = el("div", "message-actions native-message-actions");
+  for (const [label, action] of role === "user"
+    ? [
+        ["Edit in branch", "edit"],
+        ["Branch", "branch"],
+        ["Quote", "quote"],
+      ]
+    : [
+        ["Quote", "quote"],
+        ["Branch", "branch"],
+      ]) {
+    const button = el("button", "", label);
+    button.type = "button";
+    button.onclick = async () => {
+      if (!article.dataset.recordIndex)
+        return notice("Wait for this message to be saved on the host.");
+      if (!view.control)
+        return notice("Take control before changing this conversation.");
+      if (!view.hostWorkflows || !view.workerWorkflows)
+        return notice(
+          "Message actions need the updated gateway and thread runtime. Restart them when the host is idle.",
+        );
+      const id = view.id,
+        generation = view.generation;
+      if (article.dataset.actionPending) return;
+      article.dataset.actionPending = "true";
+      button.disabled = true;
+      try {
+        const location = await api(
+          "activity-location?id=" +
+            encodeURIComponent(id) +
+            "&recordOffset=" +
+            article.dataset.recordIndex,
+        );
+        if (generation !== view.generation) return;
+        if (
+          action === "edit" &&
+          !confirm(
+            "Create a branch before this prompt? Workspace files stay as they are. Edit the draft and send when ready.",
+          )
+        )
+          return;
+        const result = await commandTransport(
+          action === "quote" ? "quote" : "branch",
+          {
+            args: String(
+              action === "quote"
+                ? location.record
+                : action === "edit"
+                  ? Math.max(0, location.turn - 1)
+                  : location.turn,
+            ),
+            source_record: location.record,
+            source_expected: location.revision,
+            before: action === "edit",
+          },
+        );
+        if (generation !== view.generation) return;
+        if (result.body?.open_thread) {
+          await loadThreads();
+          if (generation !== view.generation) return;
+          await openThread(result.body.open_thread);
+          if (action === "edit") {
+            $("#prompt").value = source;
+            saveDraft();
+            $("#prompt").focus({ preventScroll: true });
+          }
+        } else notice("Quoted message attached to future requests.");
+      } catch (e) {
+        if (generation === view.generation) notice(e.message, true);
+      } finally {
+        delete article.dataset.actionPending;
+        button.disabled = false;
+      }
+    };
+    nativeActions.append(button);
+  }
+  article.append(nativeActions);
   if (role !== "user") {
     const actions = el("div", "message-actions");
     const copy = el("button", "", "Copy");
@@ -606,7 +718,7 @@ function record(r, target) {
       message("assistant", r.t || "", target);
       break;
     case "reasoning":
-      view.reasoning = text(view.reasoning + (r.t || ""), limits.reasoning);
+      view.reasoning = (view.reasoning + (r.t || "")).slice(-limits.reasoning);
       break;
     case "call":
     case "tool_call": {
@@ -659,7 +771,19 @@ function record(r, target) {
     }
   }
 }
-async function history(older = false) {
+let historyQueue = Promise.resolve();
+function history(older = false) {
+  const generation = view.generation;
+  if (older) view.follow = false;
+  const next = historyQueue
+    .catch(() => {})
+    .then(() =>
+      generation === view.generation ? historyNow(older) : undefined,
+    );
+  historyQueue = next;
+  return next;
+}
+async function historyNow(older = false) {
   const id = view.id,
     generation = view.generation;
   if (!id) return;
@@ -673,11 +797,9 @@ async function history(older = false) {
   const scroller = $("#conversation");
   const previousTop = scroller.scrollTop;
   const viewportTop = scroller.getBoundingClientRect().top;
-  const anchor = older
-    ? $("#timeline").firstElementChild
-    : [...$("#timeline").children].find(
-        (n) => n.getBoundingClientRect().bottom > viewportTop,
-      );
+  const anchor = [...$("#timeline").children].find(
+    (n) => n.getBoundingClientRect().bottom > viewportTop,
+  );
   const anchorKey = anchor?.dataset.recordIndex;
   const anchorTop = anchor?.getBoundingClientRect().top;
   const expanded = new Set(
@@ -745,6 +867,25 @@ async function history(older = false) {
     if (node && !node.dataset.recordIndex)
       node.dataset.recordIndex = String(item.index);
   }
+  for (const omitted of h.omitted || []) {
+    const card = el("div", "detail-card large-activity");
+    card.dataset.recordIndex = String(omitted.recordOffset);
+    card.append(
+      el("p", "quiet", "Large saved activity · " + bytes(omitted.bytes)),
+    );
+    const read = el(
+      "button",
+      "quiet",
+      omitted.readable ? "Read large activity" : "Use export for this activity",
+    );
+    read.disabled = !omitted.readable;
+    read.onclick = async () => {
+      await openWorkflow("largeRecord", omitted.recordOffset);
+    };
+    card.append(read);
+    fragment.append(card);
+    visibleRecords++;
+  }
   view.group = null;
   if (!older) {
     view.reuseMessages = null;
@@ -762,6 +903,15 @@ async function history(older = false) {
     view.stream = liveStream;
     view.reasoning = savedReasoning;
     view.tasks = savedTasks;
+  }
+  const retainedTimeline = $("#timeline");
+  if (older && retainedTimeline.children.length > 240) {
+    while (retainedTimeline.children.length > 240)
+      retainedTimeline.lastElementChild.remove();
+    view.tailPruned = true;
+    $("#latest").classList.remove("hidden");
+    for (const [id, t] of view.tools)
+      if (!t.row.isConnected) view.tools.delete(id);
   }
   if (h.omittedLargeRecord)
     notice(
@@ -787,7 +937,18 @@ async function history(older = false) {
         : previousTop;
   }
   view.before = h.before;
-  if (!older) view.reasoningBefore = h.before;
+  if (!older) {
+    view.reasoningBefore = h.before;
+    view.reasoningSources = h.records
+      .filter((item) => item.record.k === "reasoning")
+      .map((item) => item.index)
+      .concat(
+        (h.omitted || [])
+          .filter((item) => item.readable)
+          .map((item) => item.recordOffset),
+      )
+      .slice(-64);
+  }
   $("#older").classList.toggle("hidden", h.before === 0);
   details();
   return visibleRecords;
@@ -859,7 +1020,10 @@ function event(m) {
         commandRequests.delete(m.request_id);
         clearTimeout(pending.timer);
         if (m.error) pending.reject(new Error(m.error));
-        else pending.resolve(m.result);
+        else {
+          pending.resolve(m.result);
+          if (pending.name === "todo") history().catch(() => {});
+        }
       }
       break;
     }
@@ -870,6 +1034,7 @@ function event(m) {
       }
       break;
     case "replay":
+      view.workerWorkflows = m.web_workflows === 1;
       if (Array.isArray(m.commands)) {
         commands = m.commands;
         view.commandTransportReady = true;
@@ -878,6 +1043,7 @@ function event(m) {
       updateActivity(view.active ? "Working" : null);
       break;
     case "control":
+      view.workerWorkflows = m.web_workflows === 1;
       view.control = Boolean(m.can_write);
       updateActivity(view.active ? "Working" : null);
       if (!view.control)
@@ -948,7 +1114,13 @@ function event(m) {
       break;
     case "reasoning":
       {
-        const next = text(view.reasoning + (m.delta || ""), limits.reasoning);
+        if (view.reasoningWindows.length) {
+          updateActivity("Reasoning");
+          break;
+        }
+        const next = (view.reasoning + (m.delta || "")).slice(
+          -limits.reasoning,
+        );
         const changed = next !== view.reasoning;
         view.reasoning = next;
         updateActivity("Reasoning");
@@ -980,6 +1152,7 @@ function event(m) {
       break;
     }
     case "interaction":
+      notifyAttention("Glass needs your answer", view.id);
       view.interaction = m;
       interaction();
       updateActivity("Waiting for your decision");
@@ -998,11 +1171,32 @@ function event(m) {
         break;
       }
       if (m.settled) {
+        notifyAttention("Glass needs attention", view.id);
         view.interaction = null;
         interaction();
         updateActivity(null);
       }
       notice(m.message || "The operation failed", true);
+      if (m.t === "provider_error" || m.settled) {
+        const retry = el("button", "quiet", "Retry provider request");
+        retry.onclick = async () => {
+          if (
+            !confirm(
+              "Retry the failed provider request? This may consume model tokens.",
+            )
+          )
+            return;
+          retry.disabled = true;
+          try {
+            await commandTransport("retry", {});
+          } catch (e) {
+            notice(e.message, true);
+          } finally {
+            retry.disabled = false;
+          }
+        };
+        $("#notice").append(retry);
+      }
       if (m.request_id && view.pending.has(m.request_id)) {
         const pending = view.pending.get(m.request_id);
         pending.status = "rejected";
@@ -1029,6 +1223,7 @@ function event(m) {
       notice(m.message, true);
       break;
     case "done":
+      notifyAttention("Glass finished working", view.id);
       clearNotice();
       finishStream();
       view.streamText = "";
@@ -1043,8 +1238,17 @@ function event(m) {
   }
 }
 async function openThread(id, { resume = false } = {}) {
+  if (
+    view.id !== id &&
+    workflowPromise &&
+    !(await workflowPromise).prepareLeave()
+  )
+    return;
   const previousFollow = view.follow;
+  if (view.id !== id) saveDraft();
   view.commandTransportReady = false;
+  view.workerWorkflows = false;
+  if (view.id !== id) workflowPromise?.then((w) => w.close());
   if (view.source) view.source.close();
   view.source = null;
   const generation = ++view.generation;
@@ -1059,13 +1263,21 @@ async function openThread(id, { resume = false } = {}) {
     delete details.dataset.tab;
     details.replaceChildren();
   }
+  const switched = view.id !== id;
   view.id = id;
+  if (switched) {
+    restoreDraft();
+    $("#context-chips").replaceChildren();
+  }
   view.tools.clear();
+  view.tailPruned = false;
   view.group = null;
   view.stream = null;
   view.streamText = "";
   view.reasoning = "";
   view.reasoningBefore = 0;
+  view.reasoningWindows = [];
+  view.reasoningSources = [];
   view.tasks = [];
   view.streamTruncated = false;
   view.interaction = null;
@@ -1124,6 +1336,7 @@ async function openThread(id, { resume = false } = {}) {
     }
     await api("open", { id });
     if (generation !== view.generation) return;
+    refreshContext();
     await history();
     if (generation !== view.generation) return;
     follow();
@@ -1154,6 +1367,7 @@ async function openThread(id, { resume = false } = {}) {
           const data = JSON.parse(e.data);
           if (data.reset) {
             view.control = Boolean(data.control?.can_write);
+            view.workerWorkflows = data.control?.web_workflows === 1;
             if (Array.isArray(data.control?.commands)) {
               commands = data.control.commands;
               view.commandTransportReady = true;
@@ -1398,12 +1612,14 @@ $("#composer").onsubmit = async (e) => {
   const prompt = $("#prompt"),
     value = prompt.value.trim();
   if (!value || submitting) return;
+  if (view.attaching)
+    return notice("Wait for attachments to finish before sending.");
   if (value.startsWith("/")) {
     await dispatchSlash(value);
     return;
   }
   submitting = true;
-  let receipt;
+  let receipt, submissionKey, submissionGeneration;
   try {
     if (!view.id) {
       await newThread();
@@ -1413,6 +1629,8 @@ $("#composer").onsubmit = async (e) => {
       notice("Take control before sending a message.");
       return;
     }
+    submissionKey = draftKey();
+    submissionGeneration = view.generation;
     const id =
       crypto.randomUUID?.() ??
       Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) =>
@@ -1435,6 +1653,7 @@ $("#composer").onsubmit = async (e) => {
       receipt.row.classList.add("pending");
     }
     prompt.value = "";
+    saveDraft();
     prompt.style.height = "";
     if (matchMedia("(pointer:coarse)").matches) prompt.blur();
     syncViewport();
@@ -1445,13 +1664,22 @@ $("#composer").onsubmit = async (e) => {
       text: value,
       request_id: id,
     });
-    if (receipt.status === "rejected") return;
+    if (
+      receipt.status === "rejected" ||
+      submissionGeneration !== view.generation
+    )
+      return;
 
     view.follow = true;
     follow();
     if (!queued && receipt.status === "sending") updateActivity("Starting");
   } catch (e) {
-    if (!prompt.value.trim()) prompt.value = value;
+    if (submissionKey && !drafts.read(submissionKey))
+      drafts.write(submissionKey, value);
+    if (submissionGeneration === view.generation && !prompt.value.trim()) {
+      prompt.value = value;
+      saveDraft();
+    }
     receipt?.row?.classList.remove("pending");
     notice(e.message, true);
   } finally {
@@ -1465,6 +1693,7 @@ $("#prompt").onkeydown = (e) => {
   }
 };
 $("#prompt").oninput = (e) => {
+  saveDraft();
   if (e.target.value.trim() === "/") openCommands();
   e.target.style.height = "auto";
   e.target.style.height = Math.min(e.target.scrollHeight, 180) + "px";
@@ -1576,13 +1805,7 @@ async function loadEarlierReasoning(automatic = false) {
   reasoningLoading = generation;
   details();
   try {
-    for (
-      let page = 0;
-      page < 4 &&
-      view.reasoningBefore &&
-      view.reasoning.length < limits.reasoning;
-      page++
-    ) {
+    for (let page = 0; page < 4 && view.reasoningBefore; page++) {
       const before = view.reasoningBefore;
       const data = await api(
         "history?id=" + encodeURIComponent(id) + "&before=" + before,
@@ -1595,12 +1818,40 @@ async function loadEarlierReasoning(automatic = false) {
         .filter((item) => item.record.k === "reasoning")
         .map((item) => item.record.t || "")
         .join("");
-      if (!prefix) continue;
+      if (!prefix) {
+        view.reasoningSources = [
+          ...(data.omitted || [])
+            .filter((item) => item.readable)
+            .map((item) => item.recordOffset),
+          ...view.reasoningSources,
+        ].slice(0, 64);
+        details();
+        continue;
+      }
+      const prefixSources = data.records
+        .filter((item) => item.record.k === "reasoning")
+        .map((item) => item.index)
+        .concat(
+          (data.omitted || [])
+            .filter((item) => item.readable)
+            .map((item) => item.recordOffset),
+        );
       const pane = $("#detail-content"),
         top = pane.scrollTop,
         height = pane.scrollHeight;
-      const room = Math.max(0, limits.reasoning - view.reasoning.length);
-      view.reasoning = (room ? prefix.slice(-room) : "") + view.reasoning;
+      if (prefix.length + view.reasoning.length > limits.reasoning) {
+        view.reasoningWindows.push({
+          text: view.reasoning,
+          before,
+          sources: view.reasoningSources,
+        });
+        if (view.reasoningWindows.length > 3) view.reasoningWindows.shift();
+        view.reasoning = prefix.slice(-limits.reasoning);
+      } else view.reasoning = prefix + view.reasoning;
+      view.reasoningSources = [
+        ...prefixSources,
+        ...view.reasoningSources,
+      ].slice(0, 64);
       if (view.tab === "reasoning" && (!automatic || view.reasoningFollow)) {
         const following = view.reasoningFollow;
         view.reasoningFollow = true;
@@ -1620,8 +1871,7 @@ async function loadEarlierReasoning(automatic = false) {
       if (generation === view.generation) {
         const button = $(".reasoning-earlier");
         if (button) {
-          button.disabled =
-            !view.reasoningBefore || view.reasoning.length >= limits.reasoning;
+          button.disabled = !view.reasoningBefore;
           button.textContent = view.reasoningBefore
             ? "↑ Earlier reasoning"
             : "All loaded";
@@ -1629,6 +1879,75 @@ async function loadEarlierReasoning(automatic = false) {
       }
     }
   }
+}
+let inlineWorkTimer,
+  inlineWorkAbort,
+  inlineAgents = [],
+  inlineAgentThread;
+function renderInlineWork(root) {
+  root.replaceChildren();
+  const tasks = view.tasks || [];
+  if (tasks.length)
+    root.append(
+      el(
+        "p",
+        "quiet",
+        tasks.filter((t) => t.status === "completed").length +
+          "/" +
+          tasks.length +
+          " tasks complete",
+      ),
+    );
+  if (inlineAgentThread === view.id)
+    for (const agent of inlineAgents.slice(0, 12)) {
+      const row = el(
+        "button",
+        "inline-agent",
+        (agent.name || agent.id) + " · " + (agent.status || "Saved"),
+      );
+      row.type = "button";
+      row.onclick = () => loadAgents();
+      root.append(row);
+    }
+  const manage = el("button", "quiet", "Work & teammates");
+  manage.onclick = () => loadAgents();
+  root.append(manage);
+}
+function pollInlineWork() {
+  if (inlineWorkAbort || !view.id) return;
+  const id = view.id,
+    generation = view.generation,
+    controller = new AbortController();
+  inlineWorkAbort = controller;
+  const refresh = async () => {
+    if (
+      controller.signal.aborted ||
+      generation !== view.generation ||
+      view.tab !== "activity" ||
+      !$("#details").classList.contains("open")
+    ) {
+      if (inlineWorkAbort === controller) inlineWorkAbort = null;
+      return;
+    }
+    if (document.visibilityState === "visible")
+      try {
+        const data = await api(
+          "agents?id=" + encodeURIComponent(id),
+          undefined,
+          controller.signal,
+        );
+        if (controller.signal.aborted || generation !== view.generation) return;
+        inlineAgentThread = id;
+        inlineAgents = (Array.isArray(data) ? data : data.agents || []).slice(
+          0,
+          64,
+        );
+        const root = $(".inline-work");
+        if (root && view.tab === "activity") renderInlineWork(root);
+      } catch {}
+    inlineWorkTimer = setTimeout(refresh, 5000);
+  };
+  refresh();
 }
 function details() {
   const n = $("#detail-content");
@@ -1654,11 +1973,12 @@ function details() {
   n.dataset.tab = view.tab;
   if (view.tab === "reasoning") {
     const body = n.querySelector(".prose") || el("div", "prose");
-    if (body.isConnected && !view.reasoningFollow) return;
+    const readerTop = n.scrollTop;
     const source = view.reasoning || "No reasoning yet.";
     const changed =
-      body.dataset.reasoningSource !== source ||
-      body.dataset.reasoningStreaming !== String(view.active);
+      !reasoningGesture &&
+      (body.dataset.reasoningSource !== source ||
+        body.dataset.reasoningStreaming !== String(view.active));
     if (changed) {
       markdown(body, source, view.active);
       body.dataset.reasoningSource = source;
@@ -1671,20 +1991,40 @@ function details() {
         "↑ Earlier reasoning",
       );
       earlier.onclick = () => loadEarlierReasoning(false);
-      n.append(earlier, body);
+      const newer = el("button", "quiet reasoning-newer", "↓ Newer reasoning");
+      newer.onclick = () => {
+        const window = view.reasoningWindows.pop();
+        if (!window) return;
+        view.reasoning = window.text;
+        view.reasoningBefore = window.before;
+        view.reasoningSources = window.sources || [];
+        details();
+        n.scrollTop = 0;
+      };
+      const saved = el(
+        "button",
+        "quiet reasoning-saved",
+        "Read full saved reasoning",
+      );
+      saved.onclick = async () => {
+        await openWorkflow("reasoningArchive", view.reasoningSources);
+      };
+      n.append(earlier, newer, saved, body);
     }
     const earlier = n.querySelector(".reasoning-earlier");
     earlier.disabled =
-      !view.reasoningBefore ||
-      reasoningLoading === view.generation ||
-      view.reasoning.length >= limits.reasoning;
+      !view.reasoningBefore || reasoningLoading === view.generation;
+    n.querySelector(".reasoning-saved").hidden =
+      !view.reasoningSources.length || !view.hostWorkflows;
+    n.querySelector(".reasoning-newer").hidden = !view.reasoningWindows.length;
     earlier.textContent =
       reasoningLoading === view.generation
         ? "Loading reasoning…"
         : view.reasoningBefore
           ? "↑ Earlier reasoning"
           : "All loaded";
-    if (view.reasoningFollow && changed) n.scrollTop = n.scrollHeight;
+    if (changed)
+      n.scrollTop = view.reasoningFollow ? n.scrollHeight : readerTop;
   } else if (view.tab === "context") {
     const thread = threadInfo(view.id) || {};
     for (const [name, value] of [
@@ -1720,6 +2060,10 @@ function details() {
       n.append(card);
     }
   } else {
+    const work = el("section", "inline-work");
+    n.append(work);
+    renderInlineWork(work);
+    pollInlineWork();
     for (const t of [...view.tools.values()].slice(-40).reverse()) {
       const card = el("div", "detail-card");
       card.append(
@@ -1761,6 +2105,9 @@ function syncPanels() {
   $(".workspace").inert = left || right;
 }
 function closePanels() {
+  clearTimeout(inlineWorkTimer);
+  inlineWorkAbort?.abort();
+  inlineWorkAbort = null;
   $("#sidebar").classList.remove("open");
   $("#details").classList.remove("open");
   syncPanels();
@@ -1792,7 +2139,11 @@ $("#sidebar-close").onclick = () => {
 function pauseReasoning() {
   if (view.tab === "reasoning") view.reasoningFollow = false;
 }
-$("#reasoning-latest").onclick = () => {
+$("#reasoning-latest").onclick = async () => {
+  if (view.reasoningWindows.length) {
+    view.reasoningWindows = [];
+    await history();
+  }
   view.reasoningFollow = true;
   details();
   const pane = $("#detail-content");
@@ -1835,10 +2186,9 @@ for (const name of ["touchend", "touchcancel"])
         !gesture.moved &&
         view.tab === "reasoning" &&
         Math.abs(event.currentTarget.scrollTop - gesture.top) <= 2
-      ) {
+      )
         view.reasoningFollow = true;
-        details();
-      }
+      if (gesture) details();
     },
     { passive: true },
   );
@@ -2213,6 +2563,27 @@ async function openFile(path, workspace) {
         },
         true,
       );
+      if (
+        view.id &&
+        (!workspace || workspace === threadInfo(view.id)?.workspace)
+      ) {
+        const actions = el("div", "file-actions");
+        const edit = el("button", "quiet", "Edit file"),
+          attach = el("button", "quiet", "Attach to context");
+        edit.onclick = async () => {
+          await openWorkflow("editor", path);
+        };
+        attach.onclick = async () => {
+          try {
+            await commandTransport("attach", { args: path });
+            notice("File attached to future requests.");
+          } catch (e) {
+            notice(e.message, true);
+          }
+        };
+        actions.append(edit, attach);
+        $("#preview-body").prepend(actions);
+      }
     }
   } catch (e) {
     if (e.name !== "AbortError" && version === fileVersion)
@@ -2220,60 +2591,7 @@ async function openFile(path, workspace) {
   }
 }
 async function loadAgents() {
-  const id = view.id,
-    generation = view.generation;
-  preview("Teammates", "Agents", "Loading teammates…");
-  const controller = previewController;
-  try {
-    const agents = await api(
-      "agents?id=" + encodeURIComponent(id),
-      undefined,
-      controller.signal,
-    );
-    if (generation !== view.generation || controller.signal.aborted) return;
-    const n = $("#preview-body");
-    n.replaceChildren();
-    const list = Array.isArray(agents) ? agents : agents.agents || [];
-    if (!list.length)
-      n.append(
-        el("p", "quiet", "No teammates have been created for this thread."),
-      );
-    for (const agent of list) {
-      const card = el("div", "detail-card");
-      card.append(
-        el("strong", "", agent.name || agent.id),
-        el("p", "", agent.status || ""),
-      );
-      const button = el("button", "quiet", "Read transcript");
-      button.onclick = async () => {
-        try {
-          const result = await api(
-            "agent?id=" +
-              encodeURIComponent(id) +
-              "&agent=" +
-              encodeURIComponent(agent.id),
-            undefined,
-            controller.signal,
-          );
-          if (generation !== view.generation || controller.signal.aborted)
-            return;
-          preview(
-            agent.name || "Teammate",
-            "Transcript",
-            result.text || JSON.stringify(result, null, 2),
-          );
-        } catch (e) {
-          if (generation === view.generation && !controller.signal.aborted)
-            card.append(el("p", "notice error", e.message));
-        }
-      };
-      card.append(button);
-      n.append(card);
-    }
-  } catch (e) {
-    if (generation === view.generation && !controller.signal.aborted)
-      $("#preview-body").replaceChildren(el("p", "notice error", e.message));
-  }
+  if (view.id) await openWorkflow("work");
 }
 let previewBlob, previewController;
 const previewStack = [];
@@ -2345,7 +2663,45 @@ function preview(
     iframe.srcdoc =
       "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\">" +
       source;
-    body.append(iframe);
+    const activate = el(
+      "button",
+      "quiet artifact-run",
+      "Run interactive preview",
+    );
+    activate.type = "button";
+    activate.title =
+      "Runs scripts in an isolated frame. External resources, fetch, forms and host access are restricted.";
+    activate.onclick = async () => {
+      const actionSignal = previewController?.signal;
+      if (!view.interactiveArtifacts || !view.id)
+        return notice(
+          "Interactive previews need the updated gateway and an open thread.",
+        );
+      activate.disabled = true;
+      try {
+        const response = await fetch(
+          "/api/artifact?id=" + encodeURIComponent(view.id),
+          {
+            method: "POST",
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+            body: source,
+            signal: actionSignal,
+          },
+        );
+        const result = await response.json();
+        if (!response.ok)
+          throw Error(result.error || "Cannot prepare interactive preview");
+        if (actionSignal?.aborted) return;
+        iframe.setAttribute("sandbox", "allow-scripts");
+        iframe.removeAttribute("srcdoc");
+        iframe.src = result.url;
+        activate.textContent = "Interactive · isolated from Glass";
+      } catch (e) {
+        activate.disabled = false;
+        if (!actionSignal?.aborted) notice(e.message, true);
+      }
+    };
+    body.append(activate, iframe);
   } else if (format === "table") {
     // The caller supplies a sanitized DOM table after the modal is opened.
   } else if (format === "diagram") {
@@ -2455,6 +2811,7 @@ function closePreview() {
   fileAbort?.abort();
   previewController?.abort();
   if (previewBlob) URL.revokeObjectURL(previewBlob);
+  previewController = new AbortController();
   const parent = previewStack.pop(),
     body = $("#preview-body");
   body.replaceChildren(...parent.nodes);
@@ -2692,6 +3049,7 @@ function openDraftEditor() {
 }
 $("#draft-save").onclick = () => {
   $("#prompt").value = $("#draft-text").value;
+  saveDraft();
   $("#draft-editor").close();
   $("#prompt").focus({ preventScroll: true });
 };
@@ -2731,7 +3089,7 @@ function commandTransport(name, values, inspect = false) {
       );
     }, 300000);
     view.commandRequestId = request_id;
-    commandRequests.set(request_id, { resolve, reject, timer });
+    commandRequests.set(request_id, { resolve, reject, timer, name });
     send({ t: "command", name, values, request_id }).catch((error) => {
       clearTimeout(timer);
       commandRequests.delete(request_id);
@@ -3453,6 +3811,8 @@ async function start() {
       );
     }
     const status = await api("status");
+    view.hostWorkflows = status.web_workflows === 1;
+    view.interactiveArtifacts = status.interactive_artifacts === 1;
     $("#host").textContent = location.hostname;
     $("#workspace-name").textContent = "All projects";
     $("#profile").textContent = status.profile;
@@ -3522,6 +3882,7 @@ window.addEventListener("focus", () => {
     resumeConnection();
   }
 });
+restoreDraft();
 start();
 
 $("#send-mode").onclick = () => {
@@ -3530,3 +3891,131 @@ $("#send-mode").onclick = () => {
   button.textContent =
     button.dataset.mode === "queue" ? "Queue follow-up" : "Steer task";
 };
+
+let workflowPromise;
+function workflow() {
+  return (workflowPromise ||= import("./workflows.js").then(({ workflows }) =>
+    workflows({
+      api,
+      command: commandTransport,
+      view,
+      el,
+      notice,
+      saveDraft,
+      onAttached: () => refreshContext(),
+    }),
+  ));
+}
+for (const [id, name] of [
+  ["model", "model"],
+  ["profile", "profiles"],
+]) {
+  const node = $("#" + id);
+  node.setAttribute("role", "button");
+  node.tabIndex = 0;
+  node.title = name === "model" ? "Choose a model" : "Execution profiles";
+  node.onclick = () => {
+    if (!view.id) return notice("Open a thread first.");
+    workflow()
+      .then((w) => w.picker(name))
+      .catch((e) => notice(e.message, true));
+  };
+  node.onkeydown = (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      node.click();
+    }
+  };
+}
+$("#attach").onclick = () => {
+  if (!view.id || !view.control)
+    return notice("Open a thread and take control before attaching files.");
+  $("#attachment-input").click();
+};
+$("#attachment-input").onchange = async (e) => {
+  const files = [...e.target.files];
+  e.target.value = "";
+  await (await workflow()).attach(files);
+};
+$("#changes-toggle").onclick = async () => {
+  if (!view.id) return notice("Open a thread first.");
+  await openWorkflow("changes");
+};
+$("#context-toggle").onclick = async () => {
+  if (!view.id) return notice("Open a thread first.");
+  await openWorkflow("context");
+};
+$("#prompt").addEventListener("paste", (e) => {
+  const files = [...e.clipboardData.files];
+  if (files.length) {
+    e.preventDefault();
+    workflow().then((w) => w.attach(files));
+  }
+});
+
+$("#work-toggle").onclick = async () => {
+  if (!view.id) return notice("Open a thread first.");
+  await openWorkflow("work");
+};
+$("#queue-toggle").onclick = async () => {
+  if (!view.id) return notice("Open a thread first.");
+  await openWorkflow("queue");
+};
+
+async function refreshContext() {
+  if (!view.hostWorkflows || !view.id) return;
+  const id = view.id,
+    generation = view.generation;
+  try {
+    const result = await api("context?id=" + encodeURIComponent(id));
+    if (generation !== view.generation) return;
+    const chips = $("#context-chips");
+    chips.replaceChildren();
+    for (const attachment of (result.attachments || []).slice(0, 8)) {
+      const chip = el(
+        "button",
+        "context-chip",
+        attachment.source?.match(/^Uploaded (.*?) ·/)?.[1] ||
+          attachment.path.split("/").pop(),
+      );
+      chip.type = "button";
+      chip.title = attachment.path + " · active context";
+      chip.onclick = () => $("#context-toggle").click();
+      chips.append(chip);
+    }
+    $("#context-toggle").textContent =
+      "Context" +
+      (result.attachments?.length ? " · " + result.attachments.length : "");
+    $("#context-toggle").title =
+      "Active attachments and context · usage is not reported by this runtime";
+  } catch {}
+}
+
+navigator.serviceWorker?.addEventListener("message", (event) => {
+  if (
+    event.data?.t === "open_thread" &&
+    typeof event.data.id === "string" &&
+    /^[a-zA-Z0-9_-]{1,128}$/.test(event.data.id)
+  )
+    openThread(event.data.id);
+});
+
+async function openWorkflow(name, ...args) {
+  try {
+    if (!view.id) return notice("Open a thread first.");
+    return await (await workflow())[name](...args);
+  } catch (e) {
+    notice(e.message, true);
+  }
+}
+
+$(".brand-home").addEventListener("click", async (event) => {
+  if (!workflowPromise) return;
+  event.preventDefault();
+  const work = await workflowPromise;
+  if (work.prepareLeave()) {
+    saveDraft();
+    drafts.flush();
+    location.href = "/";
+  }
+});

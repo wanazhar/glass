@@ -1047,7 +1047,9 @@ function event(m) {
       updateActivity(view.active ? "Working" : null);
       break;
     case "control":
-      view.workerWorkflows = m.web_workflows === 1;
+      // Ownership updates need not repeat the runtime capabilities from replay.
+      if (Object.hasOwn(m, "web_workflows"))
+        view.workerWorkflows = m.web_workflows === 1;
       view.control = Boolean(m.can_write);
       updateActivity(view.active ? "Working" : null);
       if (!view.control)

@@ -34,9 +34,10 @@ installation; this index owns the cross-product documentation map.
 | Trying Glass for the first time | [Getting started](getting-started.md) | [Installation](installation.md), [CLI](cli.md) |
 | Developing a project in the terminal | [Development Runtime](development-runtime.md) | [Development TUI](architecture/development-tui.md), [daemon](daemon.md) |
 | Editing, reviewing, or collaborating on source | [Development Runtime](development-runtime.md) | [Development TUI](architecture/development-tui.md), [MCP tool catalog](mcp-tools.md) |
-| Launching or delegating to coding harnesses | [Development Runtime](development-runtime.md) | [CLI](cli.md), [Native Pi SDK runtime](pi-sdk-runtime.md) |
-| Running resident Pi agents | [Native Pi SDK runtime](pi-sdk-runtime.md) | [Development Runtime](development-runtime.md), [daemon](daemon.md) |
-| Automating a repair DAG | [Autonomous task DAGs](task-dag.md) | [Native Pi SDK runtime](pi-sdk-runtime.md), [daemon](daemon.md) |
+| Launching or delegating to coding harnesses | [Development Runtime](development-runtime.md) | [CLI](cli.md), [Glass Core resident harness](glass-core-harness.md) |
+| Running resident agents | [Glass Core resident harness](glass-core-harness.md) | [Development Runtime](development-runtime.md), [daemon](daemon.md) |
+| Keeping an existing Pi installation | [Native Pi SDK runtime](pi-sdk-runtime.md) | [Glass Core resident harness](glass-core-harness.md) |
+| Automating a repair DAG | [Autonomous task DAGs](task-dag.md) | [Glass Core resident harness](glass-core-harness.md), [daemon](daemon.md) |
 | Running persistent analysis code | [Persistent kernels](kernels.md) | [Workspace trust](workspace-trust.md), [MCP tool catalog](mcp-tools.md) |
 | Debugging a resident process | [Resident debugger](debugger.md) | [Development Runtime](development-runtime.md), [Persistent kernels](kernels.md) |
 | Explaining a regression path | [Development Graph and replay](development-graph.md) | [Measured experiments](experiments.md), [Autonomous task DAGs](task-dag.md) |
@@ -79,8 +80,12 @@ current user instructions.
   persistence, configuration inspection, project-skill authority, and TUI UX.
 - [Customization governance](customization-governance.md) — authority classes,
   skill provenance, hook/tool evidence, effective mutation policy, and labels.
-- [Native Pi SDK runtime](pi-sdk-runtime.md) — direct AgentSession integration,
-  bounded IPC, governed tools, lifecycle, persistence, and migration failures.
+- [Glass Core resident harness](glass-core-harness.md) — the default resident
+  engine: host runtime protocol, session lifecycle, tool execution, approvals,
+  engine selection, and reported capability gaps.
+- [Native Pi SDK runtime](pi-sdk-runtime.md) — the legacy resident backend:
+  direct AgentSession integration, bounded IPC, governed tools, lifecycle,
+  persistence, and migration failures.
 - [Autonomous task DAGs](task-dag.md) — automatic dispatch, verification,
   dependency wakeup, retries, budgets, controls, and durable scheduling.
 - [Measured experiments](experiments.md) — isolated approaches, automatic

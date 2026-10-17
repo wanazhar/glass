@@ -112,18 +112,22 @@
 //!
 //! ## Modules
 //!
-//! [`agents`] owns resident Pi scheduling and evidence. [`browser`] provides
-//! the development browser service. [`development`] contains files, editors,
-//! processes, language services, and project execution. [`tools`] and
-//! [`trust`] enforce governed operations, while [`tui`] and [`workspace`]
-//! connect those services to the interactive product.
+//! [`resident_harness`] selects the resident agent engine and defaults to
+//! [`core_runtime`], the `glass-core` host runtime. [`agents`] owns resident
+//! agent scheduling and evidence. [`browser`] provides the development browser
+//! service. [`development`] contains files, editors, processes, language
+//! services, and project execution. [`tools`] and [`trust`] route governed
+//! operations, while [`tui`] and [`workspace`] connect those services to the
+//! interactive product.
 
-/// Resident Pi agent scheduling, evidence, and lifecycle control.
+/// Resident agent scheduling, evidence, and lifecycle control.
 pub mod agents;
 /// Development-browser service owned by the resident workspace worker.
 pub mod browser;
 /// Command-line argument and dispatch support for Glass Dev.
 pub mod cli;
+/// Managed Glass Core runtime readiness and resident sessions.
+pub mod core_runtime;
 /// User and project customization loading.
 pub mod customization;
 /// Resident development daemon integration.
@@ -153,7 +157,12 @@ pub mod lsp;
 /// MCP server and tool integration.
 pub mod mcp;
 /// Managed Pi runtime readiness and sessions.
+///
+/// Pi is the legacy resident backend. New sessions run on [`core_runtime`]
+/// through [`resident_harness`] unless `GLASS_AGENT_HARNESS` selects Pi.
 pub mod pi_runtime;
+/// Resident agent engine selection, options, and readiness.
+pub mod resident_harness;
 /// Task scheduling, evidence, and verification requirements.
 pub mod tasks;
 /// Test execution and result collection.
@@ -175,6 +184,11 @@ use glass_browser::cli::args::Cli;
 pub use agents::{AgentEvent, AgentId, AgentSnapshot, AgentSpec, AgentStatus, ResidentAgentBroker};
 /// Development browser configuration, state, and service handle.
 pub use browser::{BrowserRuntimeState, BrowserStartConfig};
+/// Resident Glass Core readiness, options, and harness selection.
+pub use core_runtime::{
+    CoreReadiness, CoreReadinessComponent, CoreReadinessState, CoreRuntimeOptions,
+    GLASS_CORE_BINARY_ENV, GLASS_CORE_PROTOCOL_VERSION, core_readiness, resolve_core_binary,
+};
 /// User-facing customization and skill configuration.
 pub use customization::{Customization, GlassConfig, Skill};
 /// Experiment management and comparison types.
@@ -192,6 +206,11 @@ pub use lsp::{LanguageServerConfig, LanguageServiceEvent};
 /// Pi readiness and managed-session request types.
 pub use pi_runtime::{
     PINNED_PI_SDK_VERSION, PiReadiness, PiReadinessComponent, PiReadinessState, PiSessionRequest,
+};
+/// Resident harness identity, options, and readiness.
+pub use resident_harness::{
+    AgentToolExecutor, HARNESS_ENV, ResidentHarnessKind, ResidentHarnessOptions, ResidentReadiness,
+    harness_kind_from_id, resident_readiness,
 };
 /// Task scheduling, retry, evidence, and verification types.
 pub use tasks::{

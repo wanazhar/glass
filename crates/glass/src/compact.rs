@@ -194,7 +194,7 @@ pub fn rebuild(records: &[Record], state: &State) -> Vec<Record> {
     while matches!(out.first(), Some(Record::ToolResult { .. })) {
         out.remove(0);
     }
-    out
+    crate::reasoning::retain(records,out)
 }
 
 /// Replace oversized tool results with a placeholder.
@@ -687,6 +687,11 @@ pub(crate) fn project_filtered(
         let Some(m) = record.to_message() else {
             continue;
         };
+        if let Message::ChatReasoning{assistant_hash,tool_call_ids,..}=&m {
+            let assistant=matches!(records.get(index+1),Some(Record::Assistant(t)) if assistant_hash.as_deref()==Some(crate::workspace::hash(t.as_bytes()).as_str()));
+            let tool=tool_call_ids.iter().any(|id|calls.contains(id.as_str()) && results.contains(id.as_str()));
+            if !assistant && !tool {continue;}
+        }
         if matches!(
             record,
             Record::Checkpoint {

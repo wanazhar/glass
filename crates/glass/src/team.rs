@@ -1000,7 +1000,8 @@ fn window(path: &Path, before: Option<u64>) -> Result<Value, String> {
         bytes.drain(..skip);
         start += skip as u64;
     }
-    Ok(json!({"text":String::from_utf8_lossy(&bytes),"before":start,"end":end,"has_more":start>0}))
+    let (start,text)=crate::reasoning::public_window(path,start,&bytes)?;
+    Ok(json!({"text":text,"before":start,"end":end,"has_more":start>0}))
 }
 #[cfg(test)]
 fn tail(path: &Path) -> Result<String, String> {

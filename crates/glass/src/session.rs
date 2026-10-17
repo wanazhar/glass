@@ -184,7 +184,9 @@ impl Record {
                 "sum": summary, "tail": tail_start, "sys": system
             }),
             Record::Custom { kind, data } => {
-                json!({ "k": "custom", "c": kind, "d": data })
+                if kind==crate::reasoning::KIND {
+                    json!({"_private":"provider/chat-reasoning","k":"custom","c":kind,"d":data})
+                } else {json!({ "k": "custom", "c": kind, "d": data })}
             }
             Record::ServeRequest { id, status } => {
                 json!({"k":"serve_request", "id":id, "status":status})
@@ -270,6 +272,7 @@ impl Record {
 
     /// Project into the model context. `None` means display-only.
     pub(crate) fn to_message(&self) -> Option<Message> {
+        if let Some(message)=crate::reasoning::message(self) {return Some(message);}
         match self {
             Record::Custom {
                 kind,
@@ -1786,7 +1789,7 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
 
     let mut entries = Vec::new();
     for (record_index, (record, (turn, epoch))) in records.iter().zip(scopes).enumerate() {
-        if matches!(record, Record::Custom { kind, .. } if kind==crate::todo::KIND) {
+        if matches!(record, Record::Custom { kind, .. } if kind==crate::todo::KIND || kind==crate::reasoning::KIND) {
             continue;
         }
         if matches!(record, Record::Custom { kind, .. } if matches!(kind.as_str(), "queue/delivery" | "constraints/delivery" | "session/branch" | "turn/checkpoint"))
@@ -2244,6 +2247,7 @@ fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
         out.remove(0);
     }
 
+    let out=crate::reasoning::retain(&records,out);
     let turn = out.iter().filter(|r| matches!(r, Record::User(_))).count();
     (out, turn)
 }
@@ -2279,9 +2283,11 @@ fn apply_checkpoint_projection(mut records: Vec<Record>) -> Vec<Record> {
                     _ => {}
                 }
             }
-            for record in &mut records[start + 1..index] {
+            let markers=crate::reasoning::checkpoint_markers(&records,start+1..index,&pending);
+            for (relative,record) in records[start + 1..index].iter_mut().enumerate() {
                 let keep = matches!(record, Record::User(_))
-                    || matches!(record, Record::ToolCall { id, .. } if pending.contains(id));
+                    || matches!(record, Record::ToolCall { id, .. } if pending.contains(id))
+                    || markers.contains(&(start+1+relative));
                 if !keep {
                     *record = Record::Meta("Checkpoint exploration hidden from context".into());
                 }

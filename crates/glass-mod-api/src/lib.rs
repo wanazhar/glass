@@ -11,6 +11,13 @@ use std::collections::BTreeMap;
 pub enum Message {
     User(String),
     Assistant(String),
+    /// Provider-returned Chat Completions reasoning associated with one
+    /// response. Adapters for other API formats must not reinterpret it.
+    ChatReasoning {
+        content: Option<String>,
+        assistant_hash: Option<String>,
+        tool_call_ids: Vec<String>,
+    },
     ToolCall {
         id: String,
         name: String,
@@ -36,7 +43,7 @@ impl Message {
     pub fn role(&self) -> &'static str {
         match self {
             Message::User(_) | Message::Image { .. } => "user",
-            Message::Assistant(_) | Message::ToolCall { .. } => "assistant",
+            Message::Assistant(_) | Message::ToolCall { .. } | Message::ChatReasoning { .. } => "assistant",
             Message::ToolResult { .. } => "user",
             Message::System(_) => "system",
         }
@@ -45,6 +52,7 @@ impl Message {
     pub fn text(&self) -> &str {
         match self {
             Message::User(s) | Message::Assistant(s) | Message::System(s) => s,
+            Message::ChatReasoning { content, .. } => content.as_deref().unwrap_or(""),
             Message::ToolResult { body, .. } => body,
             Message::ToolCall { arguments, .. } => arguments,
             // Images have no text; byte length would be a meaningless proxy.

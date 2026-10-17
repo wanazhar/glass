@@ -955,12 +955,14 @@ fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> 
             continue;
         }
         let record: Value = serde_json::from_slice(line).map_err(|e| e.to_string())?;
+        if crate::reasoning::private_value(&record) {continue;}
         if records.len() >= 60 {
             records.pop_front();
         }
         records.push_back(json!({"index":index,"record":record}));
     }
     let mut omitted = Vec::new();
+    let mut private_before=None;
     if starts_mid_record {
         let mut prefix_file = std::fs::File::open(path).map_err(|e|e.to_string())?;
         let floor = offset.saturating_sub(8 * 1024 * 1024);
@@ -982,7 +984,8 @@ fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> 
         let record_end = bytes.iter().position(|b| *b==b'\n').map(|n|offset+n+1)
             .or_else(||(end<length).then_some(end));
         if let (Some(start),Some(finish))=(record_start,record_end) {
-            if finish-start > 512*1024 {
+            if crate::reasoning::private_at(path,start as u64)? {private_before=Some(start as u64);}
+            else if finish-start > 512*1024 {
                 omitted.push(json!({"recordOffset":start,"bytes":finish-start,"readable":finish-start<=8*1024*1024}));
             }
         }
@@ -990,7 +993,7 @@ fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> 
     let start = records
         .front()
         .and_then(|v| v["index"].as_u64())
-        .unwrap_or_else(||omitted.first().and_then(|v|v["recordOffset"].as_u64()).unwrap_or(offset as u64));
+        .unwrap_or_else(||omitted.first().and_then(|v|v["recordOffset"].as_u64()).unwrap_or(private_before.unwrap_or(offset as u64)));
     Ok(
         json!({"omitted":omitted,"records":records,"before":start,"totalBytes":length,"windowBytes":512*1024,"omittedLargeRecord":records.is_empty()&&end>0}),
     )
@@ -1032,7 +1035,8 @@ fn activity_texts()->&'static Mutex<HashMap<String,ActivityText>> {
 }
 fn activity_text(id:&str,record_offset:usize,offset:usize,expected:&str)->Result<Value,String> {
     use std::io::BufRead;
-    thread_path(id)?;
+    let path=thread_path(id)?;
+    if crate::reasoning::private_at(&path,record_offset as u64)? {return Err("Provider replay metadata is private; use the reasoning view".into());}
     if offset>0 && expected.is_empty() {return Err("Text continuation requires its previous revision".into());}
     let key=format!("{id}:{record_offset}:{expected}");
     let page=|entry:&ActivityText|->Result<Value,String> {
@@ -1078,6 +1082,8 @@ fn activity_text(id:&str,record_offset:usize,offset:usize,expected:&str)->Result
 }
 fn history_record(id: &str, record_offset: usize, offset: usize) -> Result<Value, String> {
     use base64::Engine;
+    let record_path=thread_path(id)?;
+    if crate::reasoning::private_at(&record_path,record_offset as u64)? {return Err("Provider replay metadata is private; use the reasoning view".into());}
     if offset >= 8*1024*1024 {return Err("Large activity exceeds the 8 MiB reader limit; export the transcript".into());}
     let mut file = std::fs::File::open(thread_path(id)?).map_err(|e|e.to_string())?;
     if record_offset > 0 {

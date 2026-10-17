@@ -20,3 +20,10 @@ Layout:
 ## Delivery
 
 Separate Rust provider/runtime and frontend tasks, independent review. No test suites added/run unless requested; builds, syntax and source review permitted. No live inference or user prompt replay. Native deployment can require a rebuild and runtime update; finish the concrete change before approval if interrupting active work. UI assets can deploy reversibly without runtime interruptions. Document actual evidence and remaining physical iPhone verification.
+
+## Frontend delivery
+
+- Merged `044ea34`: explicit native project disclosure, shaded open headings and grouped threads; touch category browsing without forced keyboard focus; stable palette rows and scoped scrolling during keyboard transitions.
+- Independent source review passed. Frontend build and syntax checks passed; no test suites run. Static visual review covered sidebar states. Physical iPhone first-keyboard touch scrolling remains unverified.
+- Reversible web asset deployment served shell `91d5d80cc2e7`; public build metadata matches installed files. No gateway or chat runtime restart.
+- Provider reasoning implementation and independent review remain in progress.

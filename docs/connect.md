@@ -217,6 +217,9 @@ Type `/` in the composer to open the command palette. Choose Conversations,
 Work, or Settings, or search by command name, alias, or description. Arrow keys
 move the selection and Enter chooses it. Escape returns to the root from a
 section; Escape at the root closes the palette. Touch selection is supported.
+On touch devices, browsing a category leaves the keyboard closed; tap search to
+type. Typing `/` opens search with typing focus. The command list retains its
+scrolling element while the keyboard changes the visible viewport.
 The catalogue comes from the native action registry and is fetched only when
 first opened.
 
@@ -382,6 +385,10 @@ The command palette is centered in the safe viewport when the keyboard is closed
 and in the visual viewport when it is open. Its command list scrolls if needed;
 the header, search field, and footer remain visible.
 
+
+Project groups in the thread sidebar use a disclosure chevron. Expanded groups
+have a shaded heading and indented threads with a grouping line; collapsed
+groups retain the project name, path, and thread count.
 
 ## Direct work controls
 

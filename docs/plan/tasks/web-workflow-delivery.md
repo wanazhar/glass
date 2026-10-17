@@ -1,6 +1,6 @@
 # Web workflow delivery
 
-Status: implemented and source-reviewed; runtime activation pending. User authorized the complete Hermes/T3 gap delivery on 2026-10-16.
+Status: implemented and source-reviewed; gateway activated, runtime-update affordance polish in progress. User authorized the complete Hermes/T3 gap delivery on 2026-10-16.
 Priorities: 1. performance 2. pretty. Preserve the Glass typography, palette and lightweight architecture.
 
 ## Objective and contract
@@ -58,3 +58,9 @@ Final main shell version `de2f41fe348d`: initial JavaScript 40,001 bytes gzip, C
 Constraints: notifications require a supported secure context and an active page connection, with no background iOS push infrastructure. Context usage is unknown when unreported. Live follow-ups can be removed; saved follow-ups support editing/reordering. Large saved records above 8 MiB require export. Existing workers need an explicit idle runtime update for new native mutations; gateway activation must not interrupt those workers.
 
 Installed release binary and shell `de2f41fe348d` on 2026-10-17 without restarting processes. Previous binary and web assets are retained for rollback. Gateway PID 2558673 still runs its previous executable; explicit gateway-only restart approval is pending. Task worktrees were removed after patch-equivalence checks; all integrated changes remain on master.
+
+## Gateway activation — 2026-10-17
+
+User explicitly approved gateway-only restart. New gateway PID 2642030 runs the installed release; both `web_workflows` and `interactive_artifacts` report 1. Public `http://100.98.115.95:8080/api/status` returned HTTP 200 with those flags. All 22 preexisting served worker process identities and the launch security policy were preserved. The first readiness probe used a localhost Host header and was correctly rejected; the old gateway was restored before repeating the restart with the configured Host header. Existing routes and settings remained unchanged.
+
+Deployment exposed an older-worker affordance gap: portable command support may be present while `web_workflows` is absent. A focused client follow-up exposes explicit runtime update controls; no workers are automatically restarted.

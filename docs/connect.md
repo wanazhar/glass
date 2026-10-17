@@ -355,20 +355,24 @@ This avoids WebKit under-reporting the installed app viewport by its safe inset.
 padding is capped at 34 px. Keyboard layout uses the visual viewport height.
 
 For device-specific sizing problems, `/layout` opens local viewport, safe-area,
-and element measurements. Copy measurements collects geometry only; the command
-does not contact a model or change layout settings.
+and element measurements. The report also includes the loaded shell version,
+requested Apple status-bar style, page theme colors and browser user agent. These
+page values do not establish which native status-bar style iPadOS applied.
+Copy measurements collects local diagnostics; the command does not contact a
+model or change layout settings.
 
 Layout diagnostics dismiss the keyboard and wait for stable viewport geometry
 before capturing. The report includes a `settled` flag. Keyboard detection uses
 the layout viewport and last idle height because Safari can shrink both the
 window and visual viewport; its offset is applied while the keyboard is open.
 
-On iOS, the PWA declares a black, system-reserved native status bar in both
-page themes. This keeps the native time/battery strip dark when Glass is switched
-to dark mode on a light-mode device. It does not use translucent status-bar mode
-or change viewport sizing. Standalone headers leave 24 px of space after the
-reported top inset. With the keyboard open, the command palette includes the visual viewport
-offset and keeps its header, search field, and footer from shrinking.
+On iOS, the page requests a black, system-reserved native status bar in both
+page themes. A device report still shows a white native strip after this change;
+server metadata and browser checks alone do not verify native iPadOS appearance.
+The setting does not request translucent status-bar mode or change viewport
+sizing. Standalone headers leave 24 px of space after the reported top inset. With
+the keyboard open, the command palette includes the visual viewport offset and
+keeps its header, search field, and footer from shrinking.
 
 Standalone shell geometry is also selected through the CSS display-mode media
 query. Its first frame therefore uses the same header spacing, fixed edges, and

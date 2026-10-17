@@ -121,7 +121,7 @@ export function renderCommandData(root, value, { command = '', markdown, private
   if (command === 'usage' && value && typeof value === 'object') {
     const metrics = node('div', 'command-metrics');
     for (const [title, amount] of [['Requests', value.requests], ['Input tokens', value.reported_prompt_total], ['Output tokens', value.reported_output], ['Cache hit rate', value.reported_cache_hit_ratio == null ? null : `${(value.reported_cache_hit_ratio * 100).toFixed(1)}%`], ['Known cost', value.known_cost_subtotal_usd == null ? null : `$${value.known_cost_subtotal_usd.toFixed(4)}`]]) {
-      const card = node('div', 'command-metric'); card.append(node('span', 'quiet', title), node('strong', '', typeof amount === 'number' ? amount.toLocaleString() : display(amount))); metrics.append(card);
+      const card = node('div', 'command-metric'); card.append(node('span', 'command-metric-label', title), node('strong', '', typeof amount === 'number' ? amount.toLocaleString() : display(amount))); metrics.append(card);
     }
     root.append(metrics);
     if (value.scope) root.append(node('p', 'command-note', value.scope));

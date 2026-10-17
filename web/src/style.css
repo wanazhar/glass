@@ -2052,10 +2052,13 @@ dialog > header {
   border-radius: 8px;
 }
 #command-status {
-  min-height: 24px;
-  padding: 12px 20px;
+  min-width: 0;
+  max-height: 44px;
+  overflow: auto;
   color: var(--muted);
-  border-top: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .command-field select {
@@ -3111,13 +3114,21 @@ dialog > header {
 #command-form .command-field[hidden] { display: none; }
 @media(max-width: 500px) { .command-stat-wide { grid-template-columns: 1fr; } }
 
-/* Result arrivals never move the command controls or resize the footer. */
+/* Result arrivals never move the command controls or their status row. */
 #command-content { scrollbar-gutter: stable; }
 #command-form { margin-top: 0; margin-bottom: 22px; }
 #command-view .command-description { margin: 0 0 16px; }
 #command-result { min-height: 280px; }
-#command-status { flex: 0 0 64px; height: 64px; min-height: 64px; overflow: auto; box-sizing: border-box; }
+
 .command-skeleton { min-height: 280px; }
 .command-skeleton-row { display: grid; grid-template-columns: 32% 1fr; gap: 20px; padding: 18px 0; border-bottom: 1px solid var(--line); }
 .command-skeleton-row span { display: block; height: 12px; width: 70%; background: var(--line); border-radius: 4px; }
 .command-skeleton-row span:last-child { width: 85%; }
+
+.command-actions { display: flex; align-items: center; gap: 12px; min-height: 44px; height: 44px; }
+.command-actions > button { flex-shrink: 0; }
+.command-actions #command-status { flex: 1 1 0; padding: 0; border: 0; }
+#command-status:empty { visibility: hidden; }
+
+#command-status[data-error="true"] { color: var(--red); }
+.command-metric-label { color: var(--muted); font-size: 12px; }

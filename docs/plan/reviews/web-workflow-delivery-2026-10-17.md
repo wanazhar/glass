@@ -13,3 +13,7 @@ Physical iPhone Safari/PWA verification remains outstanding for keyboard geometr
 ## Activation follow-up
 
 The initial source pass missed three absent HTML nodes referenced by client handlers. This was corrected in `5ed1433`; the follow-up reviewer confirmed 73 literal ID references, 75 unique markup IDs, zero missing references or duplicate IDs, mobile action-row visibility, and consent/idle/stale-view guards for runtime updates. Final served markup and public capability reads pass; deployed shell is `e372e4ddcdfd`. No worker was restarted by the client deployment.
+
+## Backend runtime correction
+
+Live worker inspection found a second capability discovery bug beyond the control-event reset: the idle attachment replay omitted `web_workflows`, although both busy snapshots included it. The one-line native correction passed source review and release build. Final deployment verified all 19 real workers on the installed binary and all 19 idle replay responses advertising workflow support. The user-requested removal of runtime update UI passed complete DOM binding review; served HTML confirms it is absent. Native transcript files were retained through the update.

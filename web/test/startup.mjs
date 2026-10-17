@@ -141,6 +141,19 @@ try {
     return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
   });
   assert(contrast >= 4.5, "Light-mode error banner is unreadable");
+  assert.equal(await page.locator('meta[name="apple-mobile-web-app-status-bar-style"]').count(), 0);
+  for (const expected of ["dark", "light"]) {
+    await page.locator("#theme").click();
+    const colors = await page.evaluate(() => ({
+      scheme: getComputedStyle(document.documentElement).colorScheme,
+      root: getComputedStyle(document.documentElement).backgroundColor,
+      body: getComputedStyle(document.body).backgroundColor,
+      chrome: [...document.querySelectorAll('meta[name="theme-color"]')].map(n => n.content),
+    }));
+    assert.equal(colors.scheme, expected);
+    assert.equal(colors.body, colors.root);
+    assert(colors.chrome.every(color => color === (expected === "dark" ? "#141916" : "#f7f8f3")));
+  }
   await page.screenshot({ path: "/tmp/gc-web-tui-history-only.png" });
   await context.close();
   console.log("PASS TUI history remains readable when live attachment fails, without Load earlier");

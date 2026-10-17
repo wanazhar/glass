@@ -32,8 +32,16 @@ export function setToolInput(item, command, args) {
   item.inputHeading.textContent = hasArgs ? "Input" : item.name === "bash" ? "Command" : "Target";
 }
 export function refreshToolTime(item) {
-  if (item.startedAt !== null && item.state === "running")
-    item.time.textContent = elapsedLabel(performance.now() - item.startedAt);
+  if (item.startedAt !== null && item.state === "running") {
+    const elapsed = performance.now() - item.startedAt;
+    item.time.textContent = elapsedLabel(elapsed);
+    if (elapsed >= 10000 && item.output.textContent === "Waiting for output…") {
+      item.waitHint.hidden = false;
+      item.waitHint.textContent = item.name === "bash" && /\bfind\s/.test(item.command || "")
+        ? "The shell is still running with no output received. A broad find can scan large generated folders. Steer the task to search a specific project or exclude build and benchmark directories."
+        : "Still running; no output has arrived. You can steer the task or stop it using the conversation controls.";
+    }
+  }
 }
 export function createToolActivity({ name, command, args, saved, preview, copy, activity }) {
   const row = node("details", "tool-row"), summary = node("summary");
@@ -50,6 +58,8 @@ export function createToolActivity({ name, command, args, saved, preview, copy, 
   const inputHeading = node("div", "tool-section-label", "Input");
   const input = node("pre", "tool-input");
   const output = node("pre", "tool-output", saved ? "No result saved for this call." : "Waiting for output…");
+  const waitHint = node("p", "tool-wait-hint");
+  waitHint.hidden = true;
   const actions = node("div", "tool-actions");
   for (const [title, action] of [["Copy result", () => copy(output.textContent)], ["Expand output", () => preview(name, "Tool result", output.textContent, "text")], ["Agent activity", activity]]) {
     const button = node("button", "", title);
@@ -57,9 +67,9 @@ export function createToolActivity({ name, command, args, saved, preview, copy, 
     button.onclick = action;
     actions.append(button);
   }
-  panel.append(heading, inputHeading, input, node("div", "tool-section-label", "Result"), output, actions);
+  panel.append(heading, inputHeading, input, node("div", "tool-section-label", "Result"), output, waitHint, actions);
   row.append(summary, panel);
-  const item = { row, output, name, command, label, description, stateLabel, time, input, inputHeading, startedAt: saved ? null : performance.now(), state: saved ? "saved" : "running" };
+  const item = { row, output, waitHint, name, command, label, description, stateLabel, time, input, inputHeading, startedAt: saved ? null : performance.now(), state: saved ? "saved" : "running" };
   row.classList.toggle("running", !saved);
   row.dataset.state = item.state;
   setToolInput(item, command, args);
@@ -79,6 +89,7 @@ export function startToolActivity(item) {
 }
 export function finishToolActivity(item, failed) {
   refreshToolTime(item);
+  item.waitHint.hidden = true;
   item.state = failed ? "failed" : "completed";
   item.row.dataset.state = item.state;
   item.row.classList.remove("running");

@@ -10,14 +10,13 @@ Present a quiet, crafted Glass launch state immediately from the HTML. Use the e
 
     system status / safe area
 
-             small Glass cube
-             glass.
-             short architectural rule
-             Opening workspace
+          small cube   glass.
+          ------------------------
+          Opening workspace
 
     system home indicator / safe area
 
-Use generous negative space and restrained scale; composition should look intentional on both a phone and desktop. Motion should describe the cube/structure briefly and honor reduced motion. System light/dark styling must work on first paint before app initialization. Use existing fonts and inline SVG, without a new asset or animation library.
+Use a restrained horizontal lockup with left-aligned status and an architectural baseline. Use generous negative space and restrained scale; composition should look intentional on both a phone and desktop. Motion should describe the cube/structure briefly and honor reduced motion. System light/dark styling must work on first paint before app initialization. Use existing fonts and inline SVG, without a new asset or animation library.
 
 ## Lifecycle
 

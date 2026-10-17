@@ -449,3 +449,18 @@ browser context. Connected-page events can announce completion, failure or a
 request for input. Selecting an alert opens its thread. This does not provide
 background push delivery when the page is suspended or disconnected, including
 iPhone PWA background delivery.
+
+
+## Launch presentation
+
+Cold launches use the Glass cube and wordmark with a brief outline animation and
+a single opening status. Light/dark styling follows the system before application
+initialization. Reduced motion disables the animation. The screen disappears as
+soon as the initial workspace is ready; there is no minimum display time, fake
+progress, or delay for the animation. Reconnecting an already open page does not
+replay it.
+
+A small independent bootstrap exposes retry if the application cannot load.
+Startup assets are preloaded/versioned together; supported service-worker
+contexts retain the current and one previous shell cohort. Startup does not wait
+for optional renderers or service-worker registration.

@@ -259,7 +259,8 @@ the host through the same native handlers. Confirmation fields protect actions
 such as restores, publication, and configuration changes. Credential fields
 are masked and are not added to the conversation or sent as model prompts.
 
-Command controls stay above the results while data loads. The initial result
+Command controls stay above the results while data loads. A compact inline
+status beside the action buttons reports progress and errors without a footer. The initial result
 area reserves space with static placeholders; refresh keeps the current results
 visible and marks them busy until the replacement arrives.
 

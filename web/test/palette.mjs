@@ -13,6 +13,7 @@ const heldStatus = [];
 const selected = new Set((process.env.GC_PALETTE_COMMANDS || '').split(',').filter(Boolean));
 const included = command => !selected.size || selected.has(command.name);
 function result(name) {
+  if (name === 'usage') return { format: 'json', body: { requests: 9, reported_prompt_total: 45813, reported_output: 672, reported_cache_hit_ratio: 0.823, known_cost_subtotal_usd: null, cost_complete: false, scope: 'Recent requests only.' } };
   if (name === 'quote') return { format: 'json', body: [{ record: 9, excerpt: 'Quoted text' }] };
   if (name === 'context' || name === 'skill-doctor') return { format: 'text', body: 'Instructions\n\nLine one\nLine two' };
   if (['todo', 'review', 'recap'].includes(name)) return { format: 'markdown', body: '## Current state\n\n- Pending item' };
@@ -76,7 +77,7 @@ try {
         for (let n = 0; n < 200 && !heldStatus.length; n++) await new Promise(r => setTimeout(r, 10));
         assert(heldStatus.length, 'Expected held status request');
       };
-      const geometry = () => page.evaluate(() => ['#command-view', '#command-form', '#command-status'].map(selector => {
+      const geometry = () => page.evaluate(() => ['#command-view', '#command-form', '.command-actions'].map(selector => {
         const r = document.querySelector(selector).getBoundingClientRect(); return [r.top, r.height, r.width];
       }));
       await waitPending();
@@ -84,9 +85,11 @@ try {
       assert.equal(await page.locator('#command-result').getAttribute('class'), 'command-data');
       await page.locator('#command-view').evaluate(n => Promise.all(n.getAnimations().map(a => a.finished.catch(() => {}))));
       const before = await geometry();
+      assert.equal(await page.locator('#command-view > footer').count(), 0);
+      assert(await page.locator('.command-actions').evaluate(n => n.getBoundingClientRect().height <= 44));
       heldStatus.shift()();
       await page.locator('#command-result[aria-busy=false]').waitFor();
-      assert.deepEqual(await geometry(), before, 'Loading must not move controls, footer or dialog');
+      assert.deepEqual(await geometry(), before, 'Loading must not move controls, action row or dialog');
       await page.evaluate(() => window.previousResult = document.querySelector('#command-result').firstElementChild);
       await page.locator('#command-form .command-run').click();
       await waitPending();
@@ -113,6 +116,7 @@ try {
     for (const input of await page.locator('#command-form .command-field:visible input, #command-form .command-field:visible select, #command-form .command-field:visible textarea').all()) {
       assert.equal(await input.evaluate(n => getComputedStyle(n.parentElement).display), 'flex', 'Form fields must not inherit result grids');
     }
+    if (command.name === 'usage' && width === 390 && colorScheme === 'light') await page.screenshot({ path: '/tmp/gc-compact-command-status.png' });
     if (command.name === 'quote') {
       await page.getByText('Use this excerpt', { exact: true }).click();
       assert.equal(await page.locator('#command-form [name=args]').inputValue(), '9');

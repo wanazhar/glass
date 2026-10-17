@@ -3226,11 +3226,14 @@ async function openNativeCommand(command, initialArgs = "") {
     body = $("#command-result");
   $("#command-title").textContent = `/${command.name}`;
   $("#command-status").textContent = "";
+  $("#command-status").removeAttribute("data-error");
   body.replaceChildren();
   body.className = 'command-data';
   body.setAttribute('aria-busy', 'false');
   $('#command-content').scrollTop = 0;
-  form.replaceChildren();
+  const actions = form.querySelector('.command-actions') || el('div', 'command-actions');
+  actions.replaceChildren($('#command-status'));
+  form.replaceChildren(actions);
   modal.querySelector('.command-description')?.remove();
   if (command.description) form.before(el('p', 'command-description', command.description.replace(/ · local$/, '')));
   if (!modal.open) modal.showModal();
@@ -3284,7 +3287,7 @@ async function openNativeCommand(command, initialArgs = "") {
       input.autocapitalize = "off";
     }
     label.append(input);
-    form.append(label);
+    form.insertBefore(label, actions);
   }
   if (command.form?.confirm || command.name === "todo") {
     const label = el("label", "command-confirm", "Confirm this change");
@@ -3292,7 +3295,7 @@ async function openNativeCommand(command, initialArgs = "") {
     input.type = "checkbox";
     input.name = "confirmed";
     label.prepend(input);
-    form.append(label);
+    form.insertBefore(label, actions);
   }
   const variants = {
     model: { inspect: [], list: [], set: ["args"] },
@@ -3435,7 +3438,7 @@ async function openNativeCommand(command, initialArgs = "") {
     command.readonly ? "Refresh" : fields.length ? "Apply" : "Run",
   );
   button.type = "submit";
-  form.append(button);
+  actions.prepend(button);
   actionButton = button;
   updateFields();
   const cancel = el("button", "quiet", "Cancel command");
@@ -3449,10 +3452,11 @@ async function openNativeCommand(command, initialArgs = "") {
       $("#command-status").textContent = "Cancellation requested…";
     }
   };
-  form.append(cancel);
+  actions.insertBefore(cancel, $('#command-status'));
   const execute = async (inspect = false) => {
     const id = view.id;
     button.disabled = true;
+    $('#command-status').removeAttribute('data-error');
     body.setAttribute('aria-busy', 'true');
     if (!body.hasChildNodes()) {
       const placeholder = el('div', 'command-skeleton');
@@ -3541,6 +3545,7 @@ async function openNativeCommand(command, initialArgs = "") {
       if (version === commandViewVersion) {
         if (body.querySelector('.command-skeleton')) body.replaceChildren(el('p', 'command-empty', 'Results could not load. Try again using the command above.'));
         $("#command-status").textContent = error.message;
+        $("#command-status").dataset.error = 'true';
       }
     } finally {
       if (version === commandViewVersion) {

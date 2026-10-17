@@ -1,6 +1,6 @@
 # Web workflow delivery
 
-Status: implemented and source-reviewed; gateway activated, runtime-update affordance polish in progress. User authorized the complete Hermes/T3 gap delivery on 2026-10-16.
+Status: complete for implementation and gateway activation; physical iPhone validation remains outstanding. User authorized the complete Hermes/T3 gap delivery on 2026-10-16.
 Priorities: 1. performance 2. pretty. Preserve the Glass typography, palette and lightweight architecture.
 
 ## Objective and contract
@@ -64,3 +64,9 @@ Installed release binary and shell `de2f41fe348d` on 2026-10-17 without restarti
 User explicitly approved gateway-only restart. New gateway PID 2642030 runs the installed release; both `web_workflows` and `interactive_artifacts` report 1. Public `http://100.98.115.95:8080/api/status` returned HTTP 200 with those flags. All 22 preexisting served worker process identities and the launch security policy were preserved. The first readiness probe used a localhost Host header and was correctly rejected; the old gateway was restored before repeating the restart with the configured Host header. Existing routes and settings remained unchanged.
 
 Deployment exposed an older-worker affordance gap: portable command support may be present while `web_workflows` is absent. A focused client follow-up exposes explicit runtime update controls; no workers are automatically restarted.
+
+## Final activation correction
+
+Activation exposed three missing markup controls (Context, Work, Queue) that the earlier source review missed. Commit `5ed1433` restores them, makes the mobile action row visible, and exposes explicit Update runtime for older workers even when portable commands already work. Restart controls retain checkbox confirmation, idle/control checks, and captured thread/view guards; no workers were restarted automatically. The final static audit resolves all 73 literal ID references against 75 unique markup IDs.
+
+Final deployed shell is `e372e4ddcdfd`: app 40,299 bytes gzip, style 9,168 bytes gzip, lazy workflows 5,740 bytes gzip. Public build.json, served HTML binding audit, and API capability reads passed after installation. Gateway PID 2642030 remains active. These operational reads and source checks are not physical iPhone validation or a browser behavior test suite.

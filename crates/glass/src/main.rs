@@ -33,6 +33,7 @@ mod doctor;
 mod durable;
 mod egress;
 mod export;
+mod executable;
 mod ext;
 mod files;
 mod fs_scan;
@@ -273,7 +274,7 @@ fn main() {
                 .args(&args[1..])
                 .env(
                     "GC_BIN",
-                    std::env::current_exe().unwrap_or_else(|_| "glass-core".into()),
+                    crate::executable::path().unwrap_or_else(|_| "glass-core".into()),
                 )
                 .status();
             match status {

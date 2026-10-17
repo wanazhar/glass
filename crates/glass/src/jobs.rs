@@ -124,7 +124,7 @@ impl Jobs {
             .process_group(0);
         crate::sandbox::harden_command(&mut cmd, command, approvals, exception, false)?;
         crate::sandbox::scrub_env(&mut cmd);
-        if let Ok(exe) = std::env::current_exe() {
+        if let Ok(exe) = crate::executable::path() {
             cmd.env("GC_BIN", exe);
         }
         let mut child = cmd.spawn().map_err(err)?;

@@ -139,13 +139,13 @@ pub fn form(name: &str) -> Value {
         "neuralnets" => vec![
             (
                 "action",
-                "list | search | read | save | update | forget | restore | purge",
+                "mode | list | search | read | save | update | forget | restore | purge",
                 "text",
             ),
             ("id", "Memory ID", "text"),
             ("query", "Search query", "text"),
             ("kind", "preference | fact | procedure | lesson", "text"),
-            ("text", "Memory text", "textarea"),
+            ("text", "Memory text; for mode: auto | recall | off", "textarea"),
             ("expected", "Revision (update/remove/restore)", "number"),
         ],
         "profiles" => vec![

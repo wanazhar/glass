@@ -238,6 +238,7 @@ pub struct Agent<'a> {
     stream_factory: Option<crate::warmer::ProviderFactory>,
     recovering: bool,
     read_only: bool,
+    automatic_memory: bool,
     /// Pre-tool-use shell hook (wave E); None = no hook configured.
     pre_tool_hook: Option<crate::hooks_shell::PreToolUse>,
     /// Circuit breaker for paid summaries: three consecutive failures stop
@@ -368,6 +369,7 @@ impl<'a> Agent<'a> {
             stream_factory: None,
             recovering: false,
             read_only: false,
+            automatic_memory: true,
             checkpoint_tools: false,
             pre_tool_hook: None,
             breaker: compact::Breaker::default(),
@@ -393,7 +395,9 @@ impl<'a> Agent<'a> {
 
     /// Shared isolated-task setup. Callers still own providers, sessions,
     /// metering, cancellation and persistence; no permissions are broadened.
-    pub fn with_task_context(self, prompt: String, read_only: bool) -> Self {
+    pub fn with_task_context(mut self, prompt: String, read_only: bool) -> Self {
+        // Isolated tasks inherit their parent context; task text is not a user directive.
+        self.automatic_memory = false;
         self.with_prompt(prompt, None, None).with_plan_mode(read_only)
     }
 
@@ -1006,6 +1010,23 @@ impl<'a> Agent<'a> {
             return Err(provider::Error::Config(format!(
                 "session log is not writable; turn refused: {error}"
             )));
+        }
+        // Capture/recall once, then freeze the snapshot across tool rounds and retries.
+        if self.automatic_memory && self.hosted.is_none() {
+            let query = self.session.records.iter().rev().find_map(|r| match r {
+                Record::User(text) => Some(text.as_str()), _ => None,
+            }).unwrap_or("");
+            match crate::neuralnets::turn_context(self.workspace, query, &format!("session:{} user directive", self.session.id), self.read_only) {
+                Ok(memory) => {
+                    self.project_instructions = Some(crate::neuralnets::refresh_context(
+                        self.project_instructions.take().unwrap_or_default(), memory.as_deref()));
+                }
+                Err(error) => {
+                    self.project_instructions = Some(crate::neuralnets::refresh_context(
+                        self.project_instructions.take().unwrap_or_default(), None));
+                    self.emit(Progress::ProviderNotice(&format!("Memory unavailable: {error}")));
+                }
+            }
         }
         // Freeze completed results before recovery starts. Reuse is a one-time
         // replay of the interrupted batch, never a cache for newly run tools.

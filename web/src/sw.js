@@ -6,8 +6,9 @@ self.addEventListener("install", (event) =>
       .then((c) =>
         c.addAll([
           "/",
-          "/app.js",
-          "/style.css",
+          "/app.js?version=__VERSION__",
+          "/boot.js?version=__VERSION__",
+          "/style.css?version=__VERSION__",
           "/fonts/inter-latin.woff2",
           "/fonts/jetbrains-mono-latin.woff2",
           "/icon.svg",
@@ -26,7 +27,17 @@ self.addEventListener("activate", (event) =>
       .then((keys) =>
         Promise.all(
           keys
-            .filter((k) => k.startsWith("glass-shell-") && k !== CACHE)
+            .filter(
+              (k) =>
+                k.startsWith("glass-shell-") &&
+                k !== CACHE &&
+                k !==
+                  keys
+                    .filter(
+                      (key) => key.startsWith("glass-shell-") && key !== CACHE,
+                    )
+                    .at(-1),
+            )
             .map((k) => caches.delete(k)),
         ),
       )
@@ -41,6 +52,22 @@ self.addEventListener("fetch", (event) => {
     url.pathname.startsWith("/api/")
   )
     return;
+  const core =
+    event.request.mode === "navigate" ||
+    ["/app.js", "/boot.js", "/style.css"].includes(url.pathname);
+  if (core) {
+    event.respondWith(
+      caches.open(CACHE).then(async (cache) => {
+        const cached = await cache.match(
+          event.request.mode === "navigate" ? "/" : event.request,
+        );
+        return (
+          cached || (await caches.match(event.request)) || fetch(event.request)
+        );
+      }),
+    );
+    return;
+  }
   event.respondWith(
     fetch(event.request)
       .then((response) => {

@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 await rm("dist", { recursive: true, force: true });
 await mkdir("dist", { recursive: true });
 const result = await build({
-  entryPoints: ["src/app.js"],
+  entryPoints: ["src/app.js", "src/boot.js"],
   bundle: true,
   splitting: true,
   format: "esm",
@@ -50,8 +50,17 @@ await icons();
 const version = createHash("sha256")
   .update(await readFile("dist/app.js"))
   .update(await readFile("dist/style.css"))
+  .update(await readFile("dist/boot.js"))
+  .update(await readFile("src/index.html"))
+  .update(await readFile("src/sw.js"))
   .digest("hex")
   .slice(0, 12);
+for (const path of ["dist/index.html", "dist/boot.js"]) {
+  await writeFile(
+    path,
+    (await readFile(path, "utf8")).replaceAll("__SHELL_VERSION__", version),
+  );
+}
 await writeFile(
   "dist/sw.js",
   (await readFile("src/sw.js", "utf8")).replaceAll("__VERSION__", version),

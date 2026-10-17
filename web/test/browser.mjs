@@ -698,7 +698,7 @@ try {
       document.querySelector("#workspace-name").textContent === "project-two",
   );
   await page.locator("#details-toggle").click();
-  await page.getByRole("button", { name: "Context", exact: true }).click();
+  await page.locator('#details [data-tab="context"]').click();
   await page
     .locator("#detail-content")
     .getByText(/project-two/)
@@ -807,7 +807,7 @@ try {
   );
   const standaloneSpacing = await phone.evaluate(() => ({
     appHeight: document.querySelector(".app").getBoundingClientRect().height,
-    composerBottom: document.querySelector(".composer").getBoundingClientRect()
+    footerBottom: document.querySelector(".compose-foot").getBoundingClientRect()
       .bottom,
     menuTop: document.querySelector("#menu").getBoundingClientRect().top,
     height: innerHeight,
@@ -817,8 +817,8 @@ try {
     "Standalone must retain window-based sizing",
   );
   assert(
-    standaloneSpacing.height - standaloneSpacing.composerBottom <= 35,
-    "Standalone composer bottom spacing must stay compact",
+    standaloneSpacing.height - standaloneSpacing.footerBottom <= 35,
+    "Standalone quick actions must leave only the bottom safe area",
   );
   assert(
     standaloneSpacing.menuTop >= 55,
@@ -843,7 +843,7 @@ try {
   await phone.waitForTimeout(250);
   const installedGeometry = await phone.evaluate(() => ({
     height: document.querySelector(".app").getBoundingClientRect().height,
-    bottom: document.querySelector(".composer").getBoundingClientRect().bottom,
+    bottom: document.querySelector(".compose-foot").getBoundingClientRect().bottom,
     header: document.querySelector(".toolbar").getBoundingClientRect().height,
   }));
   assert.equal(
@@ -854,7 +854,7 @@ try {
   assert.equal(
     installedGeometry.bottom,
     898,
-    "Composer must leave exactly the 34px bottom safe area",
+    "Quick actions must leave exactly the 34px bottom safe area",
   );
   assert.equal(
     installedGeometry.header,
@@ -952,12 +952,12 @@ try {
     .getByRole("button", { name: "Inspect teammates", exact: true })
     .click();
   await page
-    .locator("#preview-body")
+    .locator(".workflow[open]")
     .getByText("No teammates have been created for this thread.", {
       exact: true,
     })
     .waitFor();
-  await page.locator("#preview-close").click();
+  await page.getByRole("button", { name: "Close Work & teammates", exact: true }).click();
   await page.unroute("**/api/agents?*");
   assert.deepEqual(errors, []);
   console.log(

@@ -11,7 +11,28 @@ if ("serviceWorker" in navigator)
   navigator.serviceWorker
     .register("/sw.js", { updateViaCache: "none" })
     .catch(() => {});
-retry.addEventListener("click", () => location.reload());
+retry.addEventListener("click", async () => {
+  retry.disabled = true;
+  try {
+    // Refresh explicitly: navigation reload does not bypass cached subresources.
+    // A failed/offline refresh keeps the existing shell available for recovery.
+    const assets = [appUrl, stylesheet?.href].filter(Boolean);
+    const responses = await Promise.all(assets.map(async url => {
+      try { return await fetch(url, { cache: "reload" }); } catch { return null; }
+    }));
+    if ("caches" in window) {
+      const names = (await caches.keys()).filter(name => name.startsWith("glass-shell-"));
+      await Promise.all(names.map(async name => {
+        const cache = await caches.open(name);
+        await Promise.all(assets.map(async (url, index) => {
+          if (responses[index]?.ok && await cache.match(url))
+            await cache.put(url, responses[index].clone());
+        }));
+      }));
+    }
+  } catch { /* A restricted cache must not disable normal reload. */ }
+  location.reload();
+});
 function failure(message) {
   if (complete) return;
   clearTimeout(watchdog);
@@ -37,7 +58,10 @@ const watchdog = setTimeout(() => {
 }, 15000);
 const appUrl = "/app.js?version=__SHELL_VERSION__";
 const stylesheet = document.querySelector('link[rel="stylesheet"]');
-if (!stylesheet?.sheet)
+// Some browsers expose an empty sheet even after a failed stylesheet fetch.
+const stylesReady = getComputedStyle(document.documentElement)
+  .getPropertyValue("--glass-ui-ready").trim() === "1";
+if (!stylesheet?.sheet || !stylesReady)
   failure("The interface styles could not load. Try again.");
 else
   import(appUrl)

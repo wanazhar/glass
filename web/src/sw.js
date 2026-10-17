@@ -61,11 +61,30 @@ self.addEventListener("fetch", (event) => {
         const cached = await cache.match(
           event.request.mode === "navigate" ? "/" : event.request,
         );
-        return (
-          cached || (await caches.match(event.request)) || fetch(event.request)
-        );
+        // A user retry must be able to escape a stale or damaged cached shell.
+        if (["reload", "no-cache"].includes(event.request.cache)) {
+          try {
+            const fresh = await fetch(event.request);
+            if (fresh.ok) {
+              event.waitUntil(cache.put(event.request.mode === "navigate" ? "/" : event.request, fresh.clone()).catch(() => {}));
+              return fresh;
+            }
+          } catch { /* Retain offline startup when the host cannot be reached. */ }
+        }
+        return cached || (await caches.match(event.request)) || fetch(event.request);
       }),
     );
+    return;
+  }
+  // Content-hashed renderers and cohort-local fonts need only one download.
+  if (/^\/(chunks|assets|fonts)\//.test(url.pathname)) {
+    event.respondWith(caches.open(CACHE).then(async (cache) => {
+      const cached = await cache.match(event.request);
+      if (cached) return cached;
+      const response = await fetch(event.request);
+      if (response.ok) event.waitUntil(cache.put(event.request, response.clone()).catch(() => {}));
+      return response;
+    }));
     return;
   }
   event.respondWith(

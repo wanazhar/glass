@@ -1331,6 +1331,7 @@ async function openThread(id, { resume = false } = {}) {
   document.title = (thread?.title || "Conversation") + " · Glass";
   window.history.replaceState(null, "", "/?thread=" + encodeURIComponent(id));
   renderThreads();
+  let historyLoaded = false;
   try {
     if (
       thread?.workspace_assigned === false ||
@@ -1343,10 +1344,14 @@ async function openThread(id, { resume = false } = {}) {
       follow();
       return { ok: true };
     }
+    // Saved history is useful even when the live worker cannot attach (for
+    // example, a TUI still owns its writer lock). Never hide it behind /open.
+    await history();
+    if (generation !== view.generation) return;
+    historyLoaded = true;
     await api("open", { id });
     if (generation !== view.generation) return;
     refreshContext();
-    await history();
     if (generation !== view.generation) return;
     follow();
     const source = new EventSource("/api/events?id=" + encodeURIComponent(id));
@@ -1406,10 +1411,11 @@ async function openThread(id, { resume = false } = {}) {
   } catch (e) {
     if (generation !== view.generation) return;
     $("#timeline .loading-surface")?.remove();
-    connection("Unavailable", false);
-    notice(e.message, true);
+    const savedHistory = historyLoaded;
+    connection(savedHistory ? "History only" : "Unavailable", false);
+    notice(savedHistory ? `Saved conversation loaded. Live connection unavailable: ${e.message}` : e.message, true);
     updateActivity(null);
-    return { ok: false, message: e.message };
+    return { ok: savedHistory, message: e.message };
   }
 }
 let threadListVersion = 0,
@@ -3834,7 +3840,8 @@ async function start() {
         location.pathname + location.search,
       );
     }
-    const status = await api("status");
+    // These reads are independent once the local token has been exchanged.
+    const [status] = await Promise.all([api("status"), loadThreads()]);
     view.hostWorkflows = status.web_workflows === 1;
     view.interactiveArtifacts = status.interactive_artifacts === 1;
     $("#host").textContent = location.hostname;
@@ -3842,7 +3849,6 @@ async function start() {
     $("#profile").textContent = status.profile;
     view.workspace = status.workspace;
     $(".sidebar-footer small").textContent = "";
-    await loadThreads();
     const id = new URLSearchParams(location.search).get("thread");
     if (id) {
       const opened = await openThread(id);
@@ -3854,10 +3860,6 @@ async function start() {
           }
         );
     } else connection("Connected");
-    if ("serviceWorker" in navigator)
-      navigator.serviceWorker
-        .register("/sw.js", { updateViaCache: "none" })
-        .catch(() => {});
     return { ok: true };
   } catch (e) {
     connection("Unavailable", false);

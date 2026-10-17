@@ -41,6 +41,10 @@ Independent source review required. Builds and syntax/compile checks permitted. 
 | File editor | Bounded text editing, stale revision refusal, writer control, unsaved edit handling | implementing |
 | Agent/task views | Visible-only refresh, bounded transcript, reopened parent works, assignment/status/results readable | implementing |
 | Attention/notifications | Needs-input/failure/completion visible; opt-in capability-detected alerts with clear foreground-only scope | implementing |
-| Artifacts | Consistent expansion; optional scripts explicitly started in isolated opaque sandbox without host access/network | implementing |
+| Artifacts | Consistent expansion; optional scripts explicitly started in isolated opaque sandbox without host API access, with resource and fetch restrictions | implementing |
 
 Baseline existing build: app.js.gz 36,400 bytes; style.css.gz 8,586 bytes. Bundle sizes are size measurements, not latency benchmarks. New workflow UI should be lazy-loaded rather than eagerly growing the initial shell. No competitive speed claim.
+
+## Resume checkpoint — 2026-10-17
+
+Native adapters merged as `d27ec4b` (source `1513771`). Frontend and isolated artifact follow-up remain in their preserved task worktrees. Independent source review resumes before integration. Scripted documents require an independent response policy because srcdoc inherits the app policy; CSP restricts resource loads and fetches but does not establish an absolute ban on frame self-navigation. No gateway or worker was restarted.

@@ -363,9 +363,11 @@ before capturing. The report includes a `settled` flag. Keyboard detection uses
 the layout viewport and last idle height because Safari can shrink both the
 window and visual viewport; its offset is applied while the keyboard is open.
 
-On iOS, the PWA uses the system-reserved status area instead of translucent
-status-bar mode. Standalone headers leave 24 px of space after the reported top
-inset. With the keyboard open, the command palette includes the visual viewport
+On iOS, the PWA declares a black, system-reserved native status bar in both
+page themes. This keeps the native time/battery strip dark when Glass is switched
+to dark mode on a light-mode device. It does not use translucent status-bar mode
+or change viewport sizing. Standalone headers leave 24 px of space after the
+reported top inset. With the keyboard open, the command palette includes the visual viewport
 offset and keeps its header, search field, and footer from shrinking.
 
 Standalone shell geometry is also selected through the CSS display-mode media

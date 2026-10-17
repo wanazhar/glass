@@ -2967,8 +2967,32 @@ dialog > header {
 .tool-input { border-bottom: 1px solid var(--line); }
 .tool-panel .tool-actions { border-top: 1px solid var(--line); margin: 0; padding: 7px 12px; gap: 4px 12px; flex-wrap: wrap; }
 .tool-actions button { min-height: 36px; font-size: 11px; }
-#preview-body.agent-console { background: #101512; color: #e4e9e2; }
-#preview-body.agent-console pre { background: transparent; color: inherit; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.8 var(--font-mono); }
+#preview-body.agent-console { background: var(--bg); color: var(--text); padding: 20px; }
+#preview-body.agent-console pre { color: var(--text); background: var(--surface); font: 14px/1.75 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; max-height: 360px; overflow: auto; tab-size: 4; }
+.activity-console-toolbar { margin-bottom: 20px; }
+.activity-console-count { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+.activity-console-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+.activity-console-controls button, .activity-console-controls select { min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--text); font-size: 12px; }
+.activity-entries { display: grid; gap: 14px; }
+.activity-entry { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); overflow: hidden; }
+.activity-entry[hidden], .activity-console-empty[hidden] { display: none; }
+.activity-entry-summary { display: flex; align-items: center; gap: 12px; padding: 16px; list-style: none; cursor: pointer; min-height: 70px; }
+.activity-entry-summary::-webkit-details-marker { display: none; }
+.activity-entry-heading { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.activity-entry-heading strong { color: var(--text); font-size: 15px; font-weight: 600; }
+.activity-entry-heading small { color: var(--muted); font-size: 12px; }
+.activity-entry-status { font-size: 11px; padding: 4px 8px; border-radius: 6px; background: var(--accent-bg); color: var(--text); white-space: nowrap; }
+.activity-entry[data-state="failed"] .activity-entry-status { color: var(--red); background: var(--bg); border: 1px solid var(--red); }
+.activity-entry-chevron { color: var(--muted); }
+.activity-entry[open] .activity-entry-chevron { transform: rotate(180deg); }
+.activity-entry-content { padding: 0 16px 16px; border-top: 1px solid var(--line); }
+.activity-entry-content h3 { font-size: 12px; color: var(--muted); font-weight: 500; margin: 16px 0 8px; }
+.activity-console-empty { color: var(--muted); padding: 20px 0; }
+@media (max-width: 700px) {
+  #preview-body.agent-console { padding: 14px; }
+  .activity-entry-summary { padding: 14px; }
+  .activity-entry-content { padding: 0 12px 12px; }
+}
 
 /* Reading and files share the chat's typography, with optional renderers lazy. */
 .message.assistant .prose { font-size: 16px; line-height: 1.8; }
@@ -3039,3 +3063,7 @@ dialog > header {
 .thought-body.prose { font-size: 13px; }
 .thought-chevron { color: var(--dim); }
 .thought-row[open] .thought-chevron { transform: rotate(180deg); }
+
+#preview-body.agent-console .activity-result { white-space: pre; overflow-wrap: normal; }
+#preview-body.agent-console.activity-wrap .activity-result { white-space: pre-wrap; overflow-wrap: anywhere; }
+.activity-console-controls button[aria-pressed="true"] { background: var(--accent-bg); border-color: var(--accent); }

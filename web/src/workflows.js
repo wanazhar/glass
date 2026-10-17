@@ -766,7 +766,9 @@ export function workflows({
                     card.append(transcript);
                   }
                   transcript.textContent = String(
-                    result.text || JSON.stringify(result, null, 2),
+                    typeof result.text === "string"
+                      ? result.text
+                      : "Transcript unavailable.",
                   ).slice(0, 262144);
                 } catch (e) {
                   if (current()) status.textContent = e.message;

@@ -712,7 +712,11 @@ function toolStatus(t, failed = false) {
   t.row.classList.toggle("failed", failed);
   t.row.querySelector(".tool-icon").textContent = failed ? "×" : "✓";
 }
+function privateProviderEntry(value) {
+  return value?.k === "custom" && value.c === "provider/chat-reasoning";
+}
 function record(r, target) {
+  if (privateProviderEntry(r)) return;
   switch (r.k) {
     case "user":
       message("user", r.t || "", target);
@@ -3009,6 +3013,7 @@ function renderCommandResult(root, value, format) {
   }
   let count = 0;
   function node(value, key, depth = 0) {
+    if (privateProviderEntry(value)) return document.createDocumentFragment();
     if (++count > 3000 || depth > 16)
       return el("p", "quiet", "Display limit reached. Narrow the query.");
     if (value && typeof value === "object") {

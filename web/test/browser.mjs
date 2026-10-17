@@ -959,6 +959,7 @@ try {
       exact: true,
     })
     .waitFor();
+  assert.equal(await page.locator(".workflow[open]").evaluate(n => getComputedStyle(n).borderTopLeftRadius), "16px");
   await page.getByRole("button", { name: "Close Work & teammates", exact: true }).click();
   await page.unroute("**/api/agents?*");
   assert.deepEqual(errors, []);

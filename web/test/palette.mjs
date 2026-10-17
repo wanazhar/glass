@@ -140,6 +140,7 @@ try {
         }
       }
     });
+    assert.equal(await page.locator('#command-view').evaluate(n => getComputedStyle(n).borderTopLeftRadius), command.name === 'git' ? '16px' : '0px');
     assert.equal(await page.locator('#command-result .command-section').count(), 0);
     assert(await page.locator('#command-view').evaluate(n => n.scrollWidth <= n.clientWidth + 1));
     await page.locator('#command-close').click();

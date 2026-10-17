@@ -2604,7 +2604,7 @@ dialog > header {
   }
 }
 @media (max-width: 700px) {
-  .standalone:not(.keyboard-open) dialog[open]:not(#commands) {
+  .standalone:not(.keyboard-open) dialog[open]:not(#commands):not(.floating-palette) {
     inset: 0;
     height: auto;
     max-height: none;
@@ -2645,7 +2645,7 @@ dialog > header {
 
 /* Fullscreen viewers share the toolbar's clearance below the iOS status blur. */
 @media (max-width: 700px) {
-  .standalone:not(.keyboard-open) dialog[open]:not(#commands) > header {
+  .standalone:not(.keyboard-open) dialog[open]:not(#commands):not(.floating-palette) > header {
     padding-top: calc(var(--safe-top) + 24px);
   }
 }
@@ -3137,7 +3137,32 @@ dialog > header {
 .help-command[hidden] { display: none; }
 .help-command:hover:not(:disabled) { color: var(--accent); }
 
-/* Full-screen surfaces stay square; floating command/workflow palettes stay rounded. */
-@media (max-width: 700px) {
-  dialog:not(#commands):not(.workflow) { border: 0; border-radius: 0; }
+/* Only command menus, Git/Changes and Work & teammates float. */
+dialog:not(#commands):not(.floating-palette) {
+  position: fixed;
+  inset: 0;
+  top: var(--viewport-top, 0px);
+  bottom: auto;
+  width: 100vw;
+  height: var(--app-height, 100dvh);
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
 }
+dialog.floating-palette {
+  position: fixed;
+  inset: auto;
+  top: calc(var(--viewport-top, 0px) + var(--app-height, 100dvh) * .5 + var(--safe-top, 0px) * .5 - var(--safe-bottom, 0px) * .5);
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  animation: none;
+  width: min(920px, calc(100vw - 24px));
+  height: min(850px, calc(var(--app-height, 100dvh) - var(--safe-top, 0px) - var(--safe-bottom, 0px) - 32px));
+  max-height: calc(var(--app-height, 100dvh) - var(--safe-top, 0px) - var(--safe-bottom, 0px) - 32px);
+  border: 1px solid var(--line);
+  border-radius: var(--overlay-radius);
+}
+#command-view.floating-palette { width: min(760px, calc(100vw - 24px)); }

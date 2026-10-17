@@ -445,7 +445,7 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
         .append(true)
         .open(log_path)
         .map_err(|e| e.to_string())?;
-    let mut command = Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+    let mut command = Command::new(crate::executable::path()?);
     command
         .args(["connect", "_serve"])
         .env("GC_CONNECT_SECURITY", settings.security.to_string())
@@ -698,7 +698,7 @@ fn bridge(app: &App, id: &str) -> Result<Arc<Bridge>, String> {
                 .append(true)
                 .open(crate::config::data_dir().join(format!("serve-{id}.log")))
                 .map_err(|e| e.to_string())?;
-            let mut command = Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+            let mut command = Command::new(crate::executable::path()?);
             command
                 .args(["serve", id])
                 .env("GC_CONNECT_SECURITY", app.settings.security.to_string())

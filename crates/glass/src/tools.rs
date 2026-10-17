@@ -206,7 +206,7 @@ pub fn bash_owned(
         return Outcome::err(format!("error: {error}"));
     }
     crate::sandbox::scrub_env(&mut builder);
-    if let Ok(exe) = std::env::current_exe() {
+    if let Ok(exe) = crate::executable::path() {
         builder.env("GC_BIN", exe);
     }
     builder.env_remove("GC_AGENT_OWNER");

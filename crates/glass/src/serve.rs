@@ -1517,7 +1517,7 @@ pub fn respawn(session_id: Option<&str>) -> Result<(), String> {
             stop(Some(id))?;
         }
     }
-    let exe = std::env::current_exe().map_err(|e| format!("cannot find glass-core: {e}"))?;
+    let exe = crate::executable::path()?;
     let mut cmd = Command::new(exe);
     cmd.arg("serve");
     if let Some(id) = &id {

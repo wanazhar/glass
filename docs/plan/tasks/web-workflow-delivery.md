@@ -1,6 +1,6 @@
 # Web workflow delivery
 
-Status: in-progress. User authorized the complete Hermes/T3 gap delivery on 2026-10-16.
+Status: implemented and source-reviewed; runtime activation pending. User authorized the complete Hermes/T3 gap delivery on 2026-10-16.
 Priorities: 1. performance 2. pretty. Preserve the Glass typography, palette and lightweight architecture.
 
 ## Objective and contract
@@ -33,18 +33,26 @@ Independent source review required. Builds and syntax/compile checks permitted. 
 
 | Deliverable | Acceptance | State |
 | --- | --- | --- |
-| Reader/history | Earlier reasoning appears while following is paused; older/newer windows bounded; concurrent prepend/refresh serialized; visible anchor survives prepends | implementing |
-| Mobile/expanded readers | Safe-area/keyboard layout preserved; text wraps; table presentation consistent; closing nested view renews parent lifecycle | implementing |
-| Drafts/context | Versioned bounded drafts per thread, restoration cannot overwrite another thread; explicit upload/reference chips; no auto-send | implementing |
-| Direct controls | Model/profile controls invoke native commands; queued message management uses durable native receipts; edit/retry preserve history | implementing |
-| Changes | Actual status/diffs; hunk actions require reviewed fingerprint and confirmation | implementing |
-| File editor | Bounded text editing, stale revision refusal, writer control, unsaved edit handling | implementing |
-| Agent/task views | Visible-only refresh, bounded transcript, reopened parent works, assignment/status/results readable | implementing |
-| Attention/notifications | Needs-input/failure/completion visible; opt-in capability-detected alerts with clear foreground-only scope | implementing |
-| Artifacts | Consistent expansion; optional scripts explicitly started in isolated opaque sandbox without host API access, with resource and fetch restrictions | implementing |
+| Reader/history | Earlier reasoning appears while following is paused; older/newer windows bounded; concurrent prepend/refresh serialized; visible anchor survives prepends | source-reviewed |
+| Mobile/expanded readers | Safe-area/keyboard layout preserved; text wraps; table presentation consistent; closing nested view renews parent lifecycle | source-reviewed |
+| Drafts/context | Versioned bounded drafts per thread, restoration cannot overwrite another thread; explicit upload/reference chips; no auto-send | source-reviewed |
+| Direct controls | Model/profile controls invoke native commands; queued message management uses durable native receipts; edit/retry preserve history | source-reviewed |
+| Changes | Actual status/diffs; hunk actions require reviewed fingerprint and confirmation | source-reviewed |
+| File editor | Bounded text editing, stale revision refusal, writer control, unsaved edit handling | source-reviewed |
+| Agent/task views | Visible-only refresh, bounded transcript, reopened parent works, assignment/status/results readable | source-reviewed |
+| Attention/notifications | Needs-input/failure/completion visible; opt-in capability-detected alerts with clear foreground-only scope | source-reviewed |
+| Artifacts | Consistent expansion; optional scripts explicitly started in isolated opaque sandbox without host API access, with resource and fetch restrictions | source-reviewed |
 
 Baseline existing build: app.js.gz 36,400 bytes; style.css.gz 8,586 bytes. Bundle sizes are size measurements, not latency benchmarks. New workflow UI should be lazy-loaded rather than eagerly growing the initial shell. No competitive speed claim.
 
 ## Resume checkpoint — 2026-10-17
 
 Native adapters merged as `d27ec4b` (source `1513771`). Frontend and isolated artifact follow-up remain in their preserved task worktrees. Independent source review resumes before integration. Scripted documents require an independent response policy because srcdoc inherits the app policy; CSP restricts resource loads and fetches but does not establish an absolute ban on frame self-navigation. No gateway or worker was restarted.
+
+## Delivery evidence — 2026-10-17
+
+Integrated native commits: `d27ec4b`, `26e09b8`, `a7355ed`. Integrated client: `1e3a093`. Independent reviewer workflow_verify reported source PASS after the final polish changes. Native cargo check and release build passed; client build, JavaScript syntax and whitespace checks passed. No tests were added or run. Physical iPhone keyboard, safe-area, touch scrolling and notification permission behavior remains unverified.
+
+Final main shell version `de2f41fe348d`: initial JavaScript 40,001 bytes gzip, CSS 9,131 bytes gzip, lazy workflows 5,711 bytes gzip. The shell increase is 3,601 compressed bytes over baseline. No new editor/terminal framework was introduced. Native release binary is 7,345,768 bytes, SHA256 `d886f3db2ae9f4792b646a8f4b25a3178a718df55312bf724434fad001fd58db`.
+
+Constraints: notifications require a supported secure context and an active page connection, with no background iOS push infrastructure. Context usage is unknown when unreported. Live follow-ups can be removed; saved follow-ups support editing/reordering. Large saved records above 8 MiB require export. Existing workers need an explicit idle runtime update for new native mutations; gateway activation must not interrupt those workers.

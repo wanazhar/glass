@@ -2992,3 +2992,49 @@ dialog > header {
     visibility: visible;
   }
 }
+
+/* Project disclosure remains native, with an explicit shape and grouped open state. */
+.project-heading {
+  justify-content: initial;
+  gap: 9px;
+  border-radius: 8px;
+}
+.project-heading > div {
+  flex: 1;
+}
+.project-disclosure {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 21px;
+  line-height: 1;
+  transform: rotate(0deg);
+}
+.project-group[open] > .project-heading {
+  background: var(--surface2);
+}
+.project-group[open] > .project-heading .project-disclosure {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+.project-threads {
+  margin: 5px 8px 8px 18px;
+  padding-left: 8px;
+  border-left: 1px solid var(--line);
+}
+.project-threads .thread {
+  width: 100%;
+  margin-left: 0;
+  margin-right: 0;
+}
+/* Avoid competing transforms while WebKit adjusts the first keyboard viewport. */
+#commands[open] {
+  animation: none;
+}
+#command-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}

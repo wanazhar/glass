@@ -176,7 +176,8 @@ function syncViewport() {
     const keyboard =
       viewport &&
       viewport.scale === 1 &&
-      focused &&
+      (focused ||
+        document.documentElement.classList.contains("keyboard-open")) &&
       Math.max(
         idleViewportHeight,
         document.documentElement.clientHeight,
@@ -1528,7 +1529,10 @@ function renderThreads() {
       el("strong", "", projectName(path)),
       el("small", "project-path", path || "Project was not recorded"),
     );
+    const disclosure = el("span", "project-disclosure", "›");
+    disclosure.setAttribute("aria-hidden", "true");
     summary.append(
+      disclosure,
       heading,
       el("span", "project-count", String(matches.length)),
     );
@@ -1537,6 +1541,7 @@ function renderThreads() {
       if (section.open) view.projectExpanded.add(path);
       else view.projectExpanded.delete(path);
     });
+    const threadGroup = el("div", "project-threads");
     for (const thread of matches) {
       const button = el(
         "button",
@@ -1568,8 +1573,9 @@ function renderThreads() {
       }
       button.append(small);
       button.onclick = () => openThread(thread.session);
-      section.append(button);
+      threadGroup.append(button);
     }
+    section.append(threadGroup);
     container.append(section);
   }
   $("#thread-count").textContent =
@@ -1700,7 +1706,7 @@ $("#prompt").onkeydown = (e) => {
 };
 $("#prompt").oninput = (e) => {
   saveDraft();
-  if (e.target.value.trim() === "/") openCommands();
+  if (e.target.value.trim() === "/") openCommands("", { focusSearch: true });
   e.target.style.height = "auto";
   e.target.style.height = Math.min(e.target.scrollHeight, 180) + "px";
 };
@@ -3499,7 +3505,10 @@ function openCommandTab(tab) {
   document.querySelector(`[data-tab="${tab}"]`).click();
   showPanel("#details", true, true);
 }
-async function openCommands(group = "") {
+async function openCommands(
+  group = "",
+  { focusSearch = !matchMedia("(pointer:coarse)").matches } = {},
+) {
   commandGroup = group;
   commandSelection = 0;
   if (!commands.length) {
@@ -3518,12 +3527,17 @@ async function openCommands(group = "") {
   }
   const modal = $("#commands");
   $("#command-search").value = "";
+  if (!focusSearch && document.activeElement instanceof HTMLElement)
+    document.activeElement.blur();
   if (!modal.open) modal.showModal();
   $("#command-help").textContent = group
     ? "↑ ↓ select · Enter choose · Esc back"
     : "↑ ↓ select · Enter choose · Esc close";
   renderCommands();
-  $("#command-search").focus({ preventScroll: true });
+  (focusSearch ? $("#command-search") : $("#commands-close")).focus({
+    preventScroll: true,
+  });
+  syncViewport();
 }
 function commandMatches() {
   const query = $("#command-search")
@@ -3541,52 +3555,72 @@ function commandMatches() {
         : c.primary,
   );
 }
-function renderCommands() {
+let commandListSignature = "";
+function renderCommands({ revealSelection = false } = {}) {
   const list = $("#command-list"),
     matches = commandMatches();
-  list.replaceChildren();
+  const signature = JSON.stringify(
+    matches.map((c) => [c.name, c.hint, c.description, c.primary, c.portable]),
+  );
+  const rebuild = signature !== commandListSignature;
+  if (rebuild) {
+    list.replaceChildren();
+    commandListSignature = signature;
+  }
   commandSelection = Math.max(
     0,
     Math.min(commandSelection, matches.length - 1),
   );
   $("#commands-title").textContent = commandGroup || "Commands";
-  matches.forEach((c, index) => {
-    const button = el("button", "command-choice");
-    button.type = "button";
-    button.setAttribute("role", "option");
-    button.setAttribute("aria-selected", String(index === commandSelection));
-    button.append(
-      el("strong", "", `/${c.name} ${c.hint || ""}`),
-      el(
-        "span",
-        "",
-        c.primary
-          ? {
-              conversations: "Resume or start a thread",
-              work: "Changes, tasks and agents",
-              settings: "Models and preferences",
-            }[c.name] || c.description
-          : c.description.replace(/ · local$/, ""),
-      ),
-    );
-    if (
-      !c.primary &&
-      !c.portable &&
-      !commandActions[c.name] &&
-      c.name !== "help"
-    )
-      button.append(el("small", "", "Terminal only"));
-    button.onclick = () => chooseCommand(c);
-    list.append(button);
-  });
-  if (!matches.length) list.append(el("p", "", "No matching commands."));
-  list
-    .querySelector('[aria-selected="true"]')
-    ?.scrollIntoView({ block: "nearest" });
+  if (rebuild)
+    matches.forEach((c, index) => {
+      const button = el("button", "command-choice");
+      button.type = "button";
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", String(index === commandSelection));
+      button.append(
+        el("strong", "", `/${c.name} ${c.hint || ""}`),
+        el(
+          "span",
+          "",
+          c.primary
+            ? {
+                conversations: "Resume or start a thread",
+                work: "Changes, tasks and agents",
+                settings: "Models and preferences",
+              }[c.name] || c.description
+            : c.description.replace(/ · local$/, ""),
+        ),
+      );
+      if (
+        !c.primary &&
+        !c.portable &&
+        !commandActions[c.name] &&
+        c.name !== "help"
+      )
+        button.append(el("small", "", "Terminal only"));
+      button.onclick = (event) =>
+        chooseCommand(commands.find((entry) => entry.name === c.name) || c, {
+          focusSearch: event.detail === 0 && event.pointerType !== "touch",
+        });
+      list.append(button);
+    });
+  if (rebuild && !matches.length)
+    list.append(el("p", "", "No matching commands."));
+  [...list.querySelectorAll(".command-choice")].forEach((button, index) =>
+    button.setAttribute("aria-selected", String(index === commandSelection)),
+  );
+  if (rebuild) list.scrollTop = 0;
+  if (revealSelection) {
+    const selected = list.querySelector('[aria-selected="true"]');
+    selected?.scrollIntoView({ block: "nearest" });
+    if (document.activeElement !== $("#command-search"))
+      selected?.focus({ preventScroll: true });
+  }
 }
-function chooseCommand(c) {
+function chooseCommand(c, { focusSearch = false } = {}) {
   if (c.primary) {
-    openCommands(c.name);
+    openCommands(c.name, { focusSearch });
     return;
   }
   if (!c.portable && !commandActions[c.name] && c.name !== "help") {
@@ -3597,7 +3631,7 @@ function chooseCommand(c) {
   closeCommands();
   if ($("#prompt").value.trim().startsWith("/")) $("#prompt").value = "";
   if (c.portable) openNativeCommand(c);
-  else if (c.name === "help") openCommands();
+  else if (c.name === "help") openCommands("", { focusSearch });
   else commandActions[c.name]();
 }
 async function inspectLayout() {
@@ -3746,7 +3780,7 @@ async function dispatchSlash(value) {
     notice(`/${c.name} is currently available in the terminal only.`, true);
     return;
   }
-  chooseCommand(c);
+  chooseCommand(c, { focusSearch: true });
 }
 $("#command-search").oninput = () => {
   commandSelection = 0;
@@ -3763,7 +3797,10 @@ $("#commands").addEventListener("close", () => {
 $("#commands-close").onclick = () => closeCommands();
 $("#commands").addEventListener("cancel", (e) => {
   e.preventDefault();
-  if (commandGroup) openCommands();
+  if (commandGroup)
+    openCommands("", {
+      focusSearch: document.activeElement === $("#command-search"),
+    });
   else closeCommands();
 });
 $("#commands").addEventListener("keydown", (e) => {
@@ -3773,11 +3810,11 @@ $("#commands").addEventListener("keydown", (e) => {
     if (count)
       commandSelection =
         (commandSelection + (e.key === "ArrowDown" ? 1 : count - 1)) % count;
-    renderCommands();
+    renderCommands({ revealSelection: true });
   } else if (e.key === "Enter" && e.target === $("#command-search")) {
     e.preventDefault();
     const c = commandMatches()[commandSelection];
-    if (c) chooseCommand(c);
+    if (c) chooseCommand(c, { focusSearch: true });
   }
 });
 

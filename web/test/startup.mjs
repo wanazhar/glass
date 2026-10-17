@@ -88,6 +88,51 @@ try {
   await slowPage.locator(".app").waitFor({ state: "visible" });
   await slowContext.close();
 
+  // A loaded/applied stylesheet is valid even if WebKit reports sheet=null.
+  const sheetContext = await browser.newContext({ serviceWorkers: "block" });
+  await sheetContext.addInitScript(() => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype, "sheet");
+    Object.defineProperty(HTMLLinkElement.prototype, "sheet", { configurable: true, get() {
+      return this.rel === "stylesheet" ? null : descriptor.get.call(this);
+    } });
+  });
+  const sheetPage = await sheetContext.newPage();
+  await sheetPage.goto(url);
+  await sheetPage.locator(".app").waitFor({ state: "visible" });
+  await sheetContext.close();
+
+  const delayedContext = await browser.newContext({ serviceWorkers: "block" });
+  await delayedContext.addInitScript(() => {
+    const get = CSSStyleDeclaration.prototype.getPropertyValue;
+    let probes = 0;
+    CSSStyleDeclaration.prototype.getPropertyValue = function(property) {
+      if (property === "--glass-ui-ready" && ++probes < 6) return "";
+      return get.call(this, property);
+    };
+  });
+  const delayedPage = await delayedContext.newPage();
+  let delayedRepairs = 0;
+  delayedPage.on("request", request => { if (new URL(request.url()).searchParams.has("recovery")) delayedRepairs++; });
+  await delayedPage.goto(url);
+  await delayedPage.locator(".app").waitFor({ state: "visible" });
+  assert.equal(delayedRepairs, 0, "Late readiness must not fetch healthy CSS again");
+  await delayedContext.close();
+
+  // A poisoned cached CSS response recovers without asking the user to retry.
+  const repairContext = await browser.newContext({ serviceWorkers: "block" });
+  const repairPage = await repairContext.newPage();
+  let repairs = 0;
+  await repairPage.route("**/style.css?*", async route => {
+    const request = new URL(route.request().url());
+    if (request.searchParams.has("recovery")) { repairs++; return route.continue(); }
+    await route.fulfill({ contentType: "text/css", body: "/* damaged cached stylesheet */" });
+  });
+  await repairPage.goto(url);
+  await repairPage.locator(".app").waitFor({ state: "visible" });
+  assert.equal(repairs, 1);
+  await repairContext.close();
+  console.log("PASS applied CSS with sheet=null and automatic damaged stylesheet recovery");
+
   for (const asset of ["style.css", "app.js"]) {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: "block" });
     const page = await context.newPage();

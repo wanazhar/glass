@@ -58,13 +58,53 @@ const watchdog = setTimeout(() => {
 }, 15000);
 const appUrl = "/app.js?version=__SHELL_VERSION__";
 const stylesheet = document.querySelector('link[rel="stylesheet"]');
-// Some browsers expose an empty sheet even after a failed stylesheet fetch.
-const stylesReady = getComputedStyle(document.documentElement)
+// The applied readiness marker is authoritative. CSSStyleSheet availability
+// alone is not a reliable signal across WebKit startup and cached restores.
+const stylesReady = () => getComputedStyle(document.documentElement)
   .getPropertyValue("--glass-ui-ready").trim() === "1";
-if (!stylesheet?.sheet || !stylesReady)
-  failure("The interface styles could not load. Try again.");
-else
-  import(appUrl)
+function waitForStyles(link, milliseconds) {
+  if (stylesReady()) return Promise.resolve(true);
+  return new Promise(resolve => {
+    const deadline = Date.now() + milliseconds;
+    let timer, settled = false;
+    const done = value => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      link?.removeEventListener("load", check);
+      link?.removeEventListener("error", failed);
+      resolve(value);
+    };
+    const check = () => {
+      if (settled) return;
+      clearTimeout(timer);
+      if (stylesReady()) return done(true);
+      if (Date.now() >= deadline) return done(false);
+      timer = setTimeout(check, 50);
+    };
+    const failed = () => done(stylesReady());
+    link?.addEventListener("load", check, { once: true });
+    link?.addEventListener("error", failed, { once: true });
+    check();
+  });
+}
+async function ensureStyles() {
+  if (await waitForStyles(stylesheet, 2000)) return true;
+  if (!stylesheet) return false;
+  // A unique URL escapes both an HTTP cache entry and an older shell's SW
+  // cache. Keep the existing link available for offline/late-load recovery.
+  const repaired = document.createElement("link");
+  repaired.rel = "stylesheet";
+  const url = new URL(stylesheet.href);
+  url.searchParams.set("recovery", Date.now().toString(36));
+  repaired.href = url.href;
+  const ready = waitForStyles(repaired, 8000);
+  document.head.append(repaired);
+  return ready;
+}
+ensureStyles().then(ready => {
+  if (!ready) return failure("The interface styles could not load. Try again.");
+  return import(appUrl)
     .then(async (app) => {
       const result = await app.initialReady;
       if (result?.ok !== true) {
@@ -79,3 +119,4 @@ else
       complete = true;
     })
     .catch((error) => failure(error?.message));
+}).catch(error => failure(error?.message));

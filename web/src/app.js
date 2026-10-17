@@ -3705,8 +3705,18 @@ async function inspectLayout() {
   };
   const v = window.visualViewport;
   const data = {
-    version: "layout-2",
+    version: "layout-3",
     settled,
+    shellVersion: new URL($('link[rel="modulepreload"]').href).searchParams.get("version"),
+    // These describe the loaded page, not the native chrome actually applied by iPadOS.
+    requestedStatusBarStyle: $('meta[name="apple-mobile-web-app-status-bar-style"]')?.content,
+    theme: {
+      colorScheme: getComputedStyle(document.documentElement).colorScheme,
+      pageBackground: getComputedStyle(document.documentElement).backgroundColor,
+      bodyBackground: getComputedStyle(document.body).backgroundColor,
+      chromeColors: [...document.querySelectorAll('meta[name="theme-color"]')].map(n => n.content),
+    },
+    userAgent: navigator.userAgent,
     layoutViewport: document.documentElement.clientHeight,
     standalone: Boolean(
       navigator.standalone || matchMedia("(display-mode: standalone)").matches,

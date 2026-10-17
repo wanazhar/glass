@@ -668,12 +668,16 @@ and desktop otherwise; `--tui-layout` can force a mode.
 First-run Agent onboarding is in the TUI. Trust-required projects first show
 `I` inspect, `O` open untrusted, `1` trust once, and `T` trust project. `T` may
 queue while a snapshot refresh holds the workspace lock. Agent typing or
-`Enter` opens the composer when Pi is ready; otherwise `:agent setup`
-installs/repairs the pinned runtime, `:agent setup login` opens Pi `/login`,
-and `:agent update` refreshes it. `Ctrl-L` opens the shared composer dock on
+`Enter` opens the composer when the resident engine is ready; otherwise Glass
+reports the exact repair step for the selected engine (install `glass-core`,
+set `GLASS_CORE_BINARY`, or connect a provider). Set `GLASS_AGENT_HARNESS=pi`
+to keep the legacy Pi backend, where `:agent setup` installs/repairs the pinned
+runtime, `:agent setup login` opens Pi `/login`, and `:agent update` refreshes
+it. `Ctrl-L` opens the shared composer dock on
 every surface. Default mode is Agent; `Ctrl-Shift-A` cycles Ask, Plan, and
 Agent. Composer `Enter` sends and stays open; `Esc` closes; failed sends keep
-the draft for retry. Mutations use one-use approval cards.
+the draft for retry. Mutations outside the session's authority use one-use
+approval cards.
 
 The Code file preview is read-only and wraps long lines on narrow terminals.
 Switching to Code queues the selected-file preview if the workspace is busy.
@@ -689,7 +693,7 @@ Glass quit confirmation from editor input; an already-open unsaved-exit prompt
 keeps its save/discard/stay choices.
 
 The native editor adds modal motions, operators, tree-sitter structural
-textobjects with lexical fallback, local or resident-Pi FIM ghosts, and LSP
+textobjects with lexical fallback, local or resident-agent FIM ghosts, and LSP
 hover, definition, references, symbols, and inlay hints. Gutter marks expose
 diagnostics, Git hunks, Agent carets, source-page links, proof results, and
 comments. Bounded Agent pair-apply proposals stream into the buffer for

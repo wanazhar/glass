@@ -295,11 +295,11 @@ in the card without releasing a different dialog. When the page or session
 closes the dialog externally, the overlay disappears on the next poll. A
 resize or focus-loss event does not silently dismiss the page dialog.
 
-### Native Pi slash-command modal
+### Resident engine slash-command modal
 
-The Agent surface has two command namespaces. `/` opens the Pi
-`AgentSession` command modal; `:` opens Glass workspace actions. The modal
-contains all 23 built-ins from the pinned Pi SDK: `/settings`, `/model`,
+The Agent surface has two command namespaces. `/` opens the resident engine's
+command modal; `:` opens Glass workspace actions. For legacy Pi sessions the
+modal contains all 23 built-ins from the pinned Pi SDK: `/settings`, `/model`,
 `/tree`, `/thinking`, `/scoped-models`, `/export`, `/import`, `/share`,
 `/copy`, `/name`, `/session`, `/changelog`, `/hotkeys`, `/fork`, `/clone`,
 `/trust`, `/login`, `/logout`, `/new`, `/compact`, `/resume`, `/reload`, and
@@ -334,13 +334,13 @@ and argument examples.
 
 ## First launch and agent composer
 
-On construction Glass reads workspace trust and Pi readiness without blocking on
+On construction Glass reads workspace trust and resident engine readiness without blocking on
 the full projection. A trust-required project starts on Trust. Otherwise Agent
-is selected: a ready Pi shows `Ready · describe a coding task`, while an
-unconfigured Pi shows `Pi setup required · press :actions or Enter to continue`.
-The `:actions` routes are `agent setup`, `agent update`, `agent setup login`, and
-`agent doctor`; login temporarily hands the terminal to Pi and resumes Glass.
-The resident Pi session is unrestricted by default because Glass Dev is a
+is selected: a ready engine shows `Ready · describe a coding task`, while an
+unconfigured engine shows `Agent setup required · press :actions or Enter to continue`.
+The `:actions` routes are `agent doctor`, `agent setup`, `agent update`, and
+`agent setup login`; the setup routes apply to the legacy Pi backend, while
+Glass Core readiness is reported with its repair step. The resident agent session is unrestricted by default because Glass Dev is a
 human-controlled development suite. `--yolo` is the process-wide switch for
 direct Glass/browser policy paths and Glass Dev project execution; it bypasses
 the workspace-trust execution gate for that process without persisting a trust

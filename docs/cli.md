@@ -624,9 +624,10 @@ The deterministic local harness is available through `agent hello` and
 `agent prompt`. `--harness local` uses Glass's local deterministic adapter.
 `--harness pi` selects the one-shot legacy `PiHarness` RPC adapter; it starts
 Pi with `--mode rpc --no-approve --no-builtin-tools` for this request. These
-commands are not the resident native Pi AgentSession. The resident
-`AgentRegistry`/Pi session is owned by the development TUI and is controlled
-with its agent routes; see [the runtime guide](development-runtime.md).
+commands are not the resident engine. The resident
+`AgentRegistry` session runs on Glass Core by default and is controlled
+with its agent routes; see [the runtime guide](development-runtime.md) and the
+[Glass Core resident harness](glass-core-harness.md).
 
 ```console
 glass agent hello --harness local --root .
@@ -635,22 +636,25 @@ glass agent hello --harness pi --root .
 glass agent prompt "Explain @diagnostic" --harness pi --root .
 ```
 
-Pi readiness is separate from the legacy request adapter. Run `glass agent
-doctor` or `glass agent status` to inspect Node, the pinned managed SDK,
-provider/authentication, and session readiness. `glass agent setup` installs
-the managed `@earendil-works/pi-coding-agent` SDK at the exact pinned version
-`0.84.4`; `glass agent setup --update` reinstalls it. Use `--sdk-entry FILE`
+`glass agent doctor` and `glass agent status` report the selected resident
+engine, its runtime protocol version, provider readiness, session storage, and
+ordered remediation. They never print credential values. When the selected
+engine is the legacy Pi backend, the same report includes Node, the pinned
+managed SDK, provider/authentication, and session readiness. `glass agent setup`
+installs the managed `@earendil-works/pi-coding-agent` SDK at the exact pinned version
+`0.84.4` for that backend; `glass agent setup --update` reinstalls it. Use `--sdk-entry FILE`
 to select an existing SDK entry and `--agent-dir DIR` with it to select an
 existing credential/model directory. `--login` opens Pi's provider login flow
 after setup. One-shot Pi requests wait for `agent_settled`; extension UI
 requests are denied because a one-shot caller has no interactive UI host.
 
-The resident Glass Dev TUI uses the native `AgentSession` path. On the Agent
-surface, `/` opens Pi's slash-command modal and `:` opens Glass's command
+The resident Glass Dev TUI uses the engine selected by `GLASS_AGENT_HARNESS`,
+which defaults to Glass Core. For legacy Pi sessions, `/` opens Pi's
+slash-command modal and `:` opens Glass's command
 palette. The modal covers all 23 official commands in the pinned SDK and
 accepts loaded extension, prompt-template, and skill commands by name. Slash
 results are emitted into the Agent transcript and More; `/login` hands the
-terminal to Pi for interactive authentication. See [Native Pi SDK runtime](pi-sdk-runtime.md).
+terminal to Pi for interactive authentication. See [Glass Core resident harness](glass-core-harness.md) and [Native Pi SDK runtime](pi-sdk-runtime.md).
 
 The standard Glass tool behavior is explicit and bounded. `read` accepts
 one-based `offset` and `limit`; `ls` accepts a path prefix and limit; `grep`

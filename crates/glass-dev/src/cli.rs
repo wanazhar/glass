@@ -17,7 +17,7 @@ type CliResult<T> = Result<T, Box<dyn std::error::Error>>;
 pub(crate) fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliResult<()> {
     match action {
         AgentCommand::Doctor | AgentCommand::Status => {
-            return print_json(&crate::pi_runtime::pi_readiness()?);
+            return print_json(&crate::resident_harness::resident_readiness()?);
         }
         AgentCommand::Setup {
             sdk_entry,

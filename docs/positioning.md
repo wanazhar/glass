@@ -1,10 +1,17 @@
 # Positioning: where Glass fits
 
-Glass is a local-first terminal development environment with an integrated
-browser intelligence runtime. `glass-dev` combines project inspection,
-editing, PTYs, diagnostics, agents, replay, graphs, remote cockpit views, and
-browser verification. `glass-browser` packages the focused browser CLI and
-Rust library for consumers that do not need the development workspace.
+Glass is a collaboration-first, local-first terminal development environment
+with an integrated browser intelligence runtime. `glass-dev` combines project
+inspection, editing, PTYs, diagnostics, a resident agent, replay, graphs, remote
+cockpit views, and browser verification. `glass-browser` packages the focused
+browser CLI and Rust library for consumers that do not need the development
+workspace.
+
+A human and an agent work the same project at the same time. Glass's job is to
+keep that collaboration legible: one revision history, attributed changes,
+evidence for every tool call, and a clear path to review or revert. It is not a
+permission maze, and it does not treat a trusted collaborator as untrusted
+input.
 
 Glass is not a hosted IDE, general operating-system sandbox, autonomous
 workflow generator, cross-browser test framework, or remote browser fleet.
@@ -15,7 +22,7 @@ workflow generator, cross-browser test framework, or remote browser fleet.
 |---|---|---|
 | Work on a project over a local or SSH terminal | `glass` TUI and Development Runtime | bounded project root; commands retain the user's OS authority |
 | Inspect and control Chrome/Chromium | browser workspace, CLI, MCP, Rust SDK | local browser; structured-first state; explicit privileged capture |
-| Connect an agent to project/browser tools | local harness and native Pi SDK session | Glass validates tool schemas and mutation authority; it does not trust model output |
+| Connect an agent to project/browser tools | resident agent on the Glass Core engine (legacy Pi backend available) | the engine gets no built-in tools; Glass executes every call and records the revision it ran against |
 | Automate from another local process | MCP plus repository TypeScript/Python clients | local stdio/socket transport; clients do not contain a browser runtime |
 | Resume or observe from an iPhone | mobile TUI, terminal graphics, SSH-forwarded Remote View | loopback-only services; no public hosted relay |
 | Build repeatable browser tasks | Task Protocol, workflows, checkpoints, replay | callers author intent and policy; Glass does not invent an unbounded workflow |

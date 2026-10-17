@@ -13,9 +13,30 @@ This is a Rust 2024 crate with a reusable library and `src/main.rs` binary entry
 
 Focused unit tests live beside the module under test; use `tests/` for end-to-end behavior and `examples/` for repeatable local tools.
 
+### Resident agent harness
+
+Resident agents run on the `glass-core` engine. The wiring is:
+
+- `crates/glass-dev/src/resident_harness.rs` selects the engine
+  (`GLASS_AGENT_HARNESS`, default `glass-core`) and adapts options for it.
+- `crates/glass-dev/src/core_runtime.rs` drives `glass-core runtime` over its
+  documented JSON-RPC 2.0 host protocol and executes every `tool/execute` call
+  through the governed router.
+- `crates/glass-dev/src/pi_runtime.rs` is the legacy Pi SDK backend, selected
+  only by `GLASS_AGENT_HARNESS=pi`.
+- `crates/glass-dev/tests/fixtures/fake_glass_core_runtime.py` is an offline
+  stand-in for the engine. Adapter tests use it, so they need no provider
+  account; they skip when `python3` is unavailable.
+
+Glass is collaboration-first. Keep product copy focused on what a human and an
+agent can do together, and keep safety text about legibility, revisions,
+attribution, and reversibility rather than about limiting a trusted
+collaborator.
+
 ## Build, Test, and Development Commands
 
 - `cargo check -p glass-browser --lib --locked` and `cargo check -p glass-dev --lib --bins --locked` are the fast package-scoped edit checks.
+- `cargo test -p glass-dev --lib core_runtime resident_harness --locked` runs the resident harness adapter tests, including the offline fake-engine fixture.
 - `cargo build -p glass-dev --bin glass --locked` builds the development TUI without examples or integration-test binaries.
 - `cargo build` compiles the selected workspace debug targets; use an explicit package and binary when iterating.
 - `cargo run -- --help` lists the implemented CLI options and subcommands.

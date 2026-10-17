@@ -1,14 +1,25 @@
-# Native Pi SDK runtime
+# Native Pi SDK runtime (legacy backend)
 
-**Status: Current 0.3.14 source behavior.** The resident Glass agent uses Pi's native `AgentSession` SDK. Glass does not start the Pi CLI or use the Pi compatibility protocol for this resident path. A Glass-owned Node child loads the SDK and exchanges private 4-byte big-endian length-prefixed JSON frames with Rust.
+**Status: Legacy backend, current 0.3.14 source behavior.** Resident agents now
+run on the [Glass Core harness](glass-core-harness.md) by default. This guide
+describes the Pi SDK backend, which remains selectable with
+`GLASS_AGENT_HARNESS=pi` for existing installations. Pi uses its native
+`AgentSession` SDK: Glass does not start the Pi CLI or use the Pi compatibility
+protocol for this resident path. A Glass-owned Node child loads the SDK and
+exchanges private 4-byte big-endian length-prefixed JSON frames with Rust.
 
 ```text
 AgentRegistry
-  └─ GlassPiRuntime (Rust worker and bounded IPC)
-       └─ pi-runtime.mjs (Glass-owned Node child)
-            └─ @earendil-works/pi-coding-agent AgentSession
-                 └─ Glass tools → resident workspace actor/router
+  └─ ResidentHarness (GLASS_AGENT_HARNESS=pi)
+       └─ GlassPiRuntime (Rust worker and bounded IPC)
+            └─ pi-runtime.mjs (Glass-owned Node child)
+                 └─ @earendil-works/pi-coding-agent AgentSession
+                      └─ Glass tools → resident workspace actor/router
 ```
+
+Read this guide for Pi-specific readiness, setup, and extension behavior. The
+authority model, approvals, and evidence rules are shared with Glass Core and
+are documented once in [Glass Core resident harness](glass-core-harness.md).
 
 This guide covers the native resident path. The one-shot CLI option
 `glass agent prompt --harness pi` still uses the compatibility Pi command adapter;

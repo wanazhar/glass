@@ -60,22 +60,24 @@ platform status, policy, profiles, daemon health, stores, and remediation. A
 `degraded` result identifies each missing dependency instead of partially
 starting a session.
 
-## Prepare Pi directly (optional)
+## Connect a resident agent
 
-The direct development-product commands are useful before opening the TUI:
+Resident agents run on the Glass Core engine. The direct commands are useful
+before opening the TUI:
 
 ```console
 glass agent doctor
 glass agent status
-glass agent setup
-glass agent setup --login
-glass agent setup --update
 ```
 
-`setup` installs or repairs the pinned managed SDK; `--login` opens Pi's
-provider login flow in the terminal, and `--update` forces a reinstall of that
-pinned version. Nothing is downloaded merely by starting Glass. The focused
-`glass-browser` package has no Pi or development-agent routes.
+`doctor` and `status` report the selected engine, its runtime protocol version,
+provider readiness, session storage, and ordered repair steps without printing
+secrets. `GLASS_CORE_BINARY` selects a specific engine executable. An existing
+Pi installation keeps working with `GLASS_AGENT_HARNESS=pi`, where
+`glass agent setup` installs or repairs the pinned managed SDK, `--login` opens
+Pi's provider login flow in the terminal, and `--update` forces a reinstall of
+that pinned version. Nothing is downloaded merely by starting Glass. The focused
+`glass-browser` package has no agent or development routes.
 
 The two packages intentionally compete for the `glass-browser` command in one
 Cargo root. Use the [package transition](installation.md#install-from-source)
@@ -158,17 +160,16 @@ glass
 The complete first-run path is:
 
 ```text
-glass → Trust (if required) → Agent → Pi setup/login → composer
+glass → Trust (if required) → Agent → engine readiness → composer
        └─ I inspect · O open · 1 trust once · T trust project
 ```
 
 An untrusted repository opens `Trust`; choose `I`, `O`, `1`, or `T` as shown
 in the footer. Until a local choice, repository-controlled execution remains
-blocked. On `Agent`, type a prompt or press `Enter`. If Pi is not ready,
-`:agent setup` queues installation/repair of the pinned runtime; approve with
-`Enter`/`Y` or cancel with `Esc`/`N`. Run `:agent setup login` to hand the
-terminal to Pi `/login` and exit Pi to return. `:agent update` refreshes the
-pinned runtime; `:agent doctor` and `:agent status` report readiness.
+blocked. On `Agent`, type a prompt or press `Enter`. If the engine is not
+ready, Glass reports the exact repair step: install `glass-core`, set
+`GLASS_CORE_BINARY`, or connect a provider for the engine. `:agent doctor` and
+`:agent status` report readiness at any time.
 
 Talk from any surface with `Ctrl-L`. Default composer mode is Agent.
 `Ctrl-Shift-A` cycles Ask, Plan, and Agent; Ask and Plan do not mutate. When
@@ -202,7 +203,7 @@ preserving syntax highlighting. In the editor, `Alt-W` toggles soft wrap
 (off by default); on, lines wrap at whitespace where possible with continuation
 gutters and synchronized cursor/selection/highlighting. Off horizontally
 scrolls source columns. `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y` undo/redo, and
-`Alt-A` asks Pi with focused path/cursor/selection and unsaved content attached,
+`Alt-A` asks the resident agent with focused path/cursor/selection and unsaved content attached,
 with an explicit do-not-edit request. The editor starts in INSERT. `Esc`
 returns to NORMAL. `Esc` from NORMAL on a clean buffer leaves the editor.
 Unsaved buffers still ask: `S` save, `D` discard, `Q` discard-and-quit, or
@@ -351,7 +352,8 @@ errors, and optional development-runtime APIs.
 |---|---|---|
 | `doctor` cannot find Chrome | No supported executable was discovered | Install system Chrome/Chromium, run `install-chromium` where supported, or pass `--chrome-path`. |
 | Chrome exits with profile status 21 | A confined browser cannot access a host profile path | Upgrade to 0.3.4 or newer; Glass automatically selects Snap Chromium's accessible persistent profile root. |
-| Pi not ready or setup/login fails | Node, the pinned SDK, or provider auth is unavailable | Run `glass agent doctor`, retry `glass agent setup`/`glass agent setup --login`, or update with `glass agent setup --update`; the TUI remains available. |
+| Agent engine not ready | `glass-core` is missing, incompatible, or has no provider | Run `glass agent doctor` and apply the reported step: install `glass-core`, set `GLASS_CORE_BINARY`, or connect a provider. Set `GLASS_AGENT_HARNESS=pi` to use the legacy Pi runtime instead. |
+| Legacy Pi not ready or setup/login fails | `GLASS_AGENT_HARNESS=pi` is set and Node, the pinned SDK, or provider auth is unavailable | Run `glass agent doctor`, retry `glass agent setup`/`glass agent setup --login`, or update with `glass agent setup --update`; the TUI remains available. |
 | Live backend unavailable or capture fails | Requested native graphics path or screenshot was not usable | Use `:browser view` with semantic-only state, choose explicit ANSI, or turn live mode off; semantic observation remains available. |
 | Port `9222` is occupied | Another process owns the preferred CDP port | In the TUI run `browser start`; the recovery sheet can attach to a verified endpoint, launch an isolated browser on a free local port, or retry `9222`. Project and agent state remain alive. |
 | Multiple targets found | More than one page is eligible | Run `browser targets` (optionally followed by a query), then select the intended target from the App surface. |

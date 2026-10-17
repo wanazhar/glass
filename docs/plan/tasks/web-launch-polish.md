@@ -1,6 +1,6 @@
 # Glass launch presentation
 
-Status: in-progress. User requested a distinctive, fast, theme-matched startup screen on 2026-10-17, within the broader UI/UX polish request.
+Status: implemented, source-reviewed, and deployed. User requested a distinctive, fast, theme-matched startup screen on 2026-10-17, within the broader UI/UX polish request.
 
 ## Objective
 
@@ -29,3 +29,11 @@ The app becomes visible and usable immediately on ready. Failure must stop motio
 Implementation: web/src/{index.html,style.css,app.js,boot.js,sw.js}, web/build.mjs as needed. Native runtime remains unchanged. Performance baseline: main JS 39,867 bytes gzip, CSS 9,168 bytes gzip. Record bootstrap size and startup request changes.
 
 Independent review covers complete DOM binding, bootstrap failures, readiness races, reconnect behavior, CSP, offline shell, theme, reduced motion, and asset versioning. Visual inspection screenshots are useful for design review; no tests are to be added or run unless requested. Builds/syntax checks are allowed. Physical iPhone verification must not be inferred from desktop emulation. Deploy reversible web assets after review without restarting workers or the gateway. Retain a concise delivery record and update current user documentation.
+
+## Delivery — 2026-10-17
+
+Integrated commit `c7e4ac2` (source `cd4f37c`). Deployed shell `4c3b7fc30486`; compressed app 40,049 bytes, independent boot 620 bytes, CSS 9,617 bytes, lazy workflows 5,710 bytes. No new dependencies or native changes. The bootstrap and additional main code add about 0.8 KB gzip; application preload starts in parallel, and no minimum display time or animation completion gate exists.
+
+Independent source review passed for startup/error/readiness lifecycle, complete DOM bindings, theme, reduced motion, CSP, exact preload/import URL matching, and versioned startup assets. The service worker retains the current and one previous shell cohort; this is not an unlimited compatibility guarantee for arbitrarily old open pages. Early update registration remains available when the application cannot initialize.
+
+Light/dark phone and desktop design previews were inspected. A read-only browser observation of the deployed root in ephemeral Chromium at 393x852, light and dark, observed the launch dismissed, shell visible and not inert, Connected status, and no console/page errors. No prompts, thread selections or application mutations were initiated. No regression tests were added or run. Physical iPhone Safari/PWA behavior remains unverified. Gateway and chat workers were not restarted.

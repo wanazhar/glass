@@ -24,7 +24,10 @@ await cp(
   "dist/pdf.worker.min.mjs",
 );
 await cp("dist/app.css", "dist/math.css");
-await cp("src/index.html", "dist/index.html");
+const launchCss = (await transform(await readFile("src/launch.css", "utf8"), {
+  loader: "css", minify: true, target: ["safari16.4", "chrome110"],
+})).code;
+await writeFile("dist/index.html", (await readFile("src/index.html", "utf8")).replace("__LAUNCH_CSS__", launchCss));
 await mkdir("dist/fonts", { recursive: true });
 await cp(
   "node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2",
@@ -51,7 +54,7 @@ const version = createHash("sha256")
   .update(await readFile("dist/app.js"))
   .update(await readFile("dist/style.css"))
   .update(await readFile("dist/boot.js"))
-  .update(await readFile("src/index.html"))
+  .update(await readFile("dist/index.html"))
   .update(await readFile("src/sw.js"))
   .digest("hex")
   .slice(0, 12);

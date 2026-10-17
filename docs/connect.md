@@ -470,7 +470,22 @@ replay it.
 A small independent bootstrap exposes retry if the application cannot load.
 Startup assets are preloaded/versioned together; supported service-worker
 contexts retain the current and one previous shell cohort. Startup does not wait
-for optional renderers or service-worker registration.
+for optional renderers or service-worker registration. Host status and thread-index
+reads run concurrently after authentication. The primary interface font is preloaded;
+optional renderers remain lazy and their hashed assets are reused from the shell cache.
+
+Launch geometry and system theme styles are inlined in the HTML, keeping the logo
+centered before JavaScript and preserving a usable retry surface when CSS fails.
+Status, slow-loading and recovery messages do not move the logo. Try again refreshes
+the current page's app and stylesheet explicitly before reload. Failed or offline
+refreshes preserve cached assets so the recovery surface remains available.
+
+Opening a saved conversation loads its history before attempting live attachment.
+If a TUI still owns the writer lock, or the worker cannot attach, the transcript
+remains readable with a History only indicator and disabled sending. Reconnect after
+the live runtime becomes available; no writer lock is stolen. Linux gateways also
+resolve the installed replacement executable when an update has unlinked their
+running binary, so new thread workers can start after installation.
 
 ## Provider reasoning replay
 

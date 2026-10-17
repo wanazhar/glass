@@ -3137,7 +3137,7 @@ dialog > header {
 .help-command[hidden] { display: none; }
 .help-command:hover:not(:disabled) { color: var(--accent); }
 
-/* Edge-to-edge readers have no floating-panel corners on phone layouts. */
+/* Full-screen surfaces stay square; floating command/workflow palettes stay rounded. */
 @media (max-width: 700px) {
-  #preview { border: 0; border-radius: 0; }
+  dialog:not(#commands):not(.workflow) { border: 0; border-radius: 0; }
 }

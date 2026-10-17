@@ -28,7 +28,7 @@ try {
     return styles;
   }, ids);
   for (const overlay of result) {
-    const reader = overlay.id === 'preview' && width <= 700;
+    const reader = !['commands', 'workflow'].includes(overlay.id) && width <= 700;
     assert.deepEqual(overlay.radius, Array(4).fill(reader ? '0px' : '16px'), `${overlay.id} ${width} ${mode}`);
     assert.equal(overlay.border, reader ? '0px' : '1px');
     if (!reader) assert.equal(overlay.color, result[0].color);

@@ -837,7 +837,11 @@ fn request(stream: &mut TcpStream) -> Result<Request, String> {
         .transpose()
         .map_err(|_| "Invalid body length")?
         .unwrap_or(0);
-    let limit = if method == "POST" && path.split('?').next() == Some("/api/upload") { 8 * 1024 * 1024 } else { MAX_BODY };
+    let limit = match (method.as_str(),path.split('?').next()) {
+        ("POST",Some("/api/upload"))=>8*1024*1024,
+        ("POST",Some("/api/artifact"))=>512*1024,
+        _=>MAX_BODY,
+    };
     if len > limit {
         return Err(format!("Input exceeds {} bytes", limit));
     }
@@ -1226,6 +1230,49 @@ fn disk_usage(settings: &Settings, path: &str) -> Result<Value, String> {
     }
     Ok(json!({"path":root,"bytes":bytes,"entries":count,"partial":partial}))
 }
+struct Artifact {created:Instant, html:Vec<u8>}
+fn artifacts() -> &'static Mutex<HashMap<String,Artifact>> {
+    static STORE:std::sync::OnceLock<Mutex<HashMap<String,Artifact>>>=std::sync::OnceLock::new();
+    STORE.get_or_init(Default::default)
+}
+fn create_artifact(id: &str, html:&[u8])->Result<Value,String> {
+    use ring::rand::SecureRandom;
+    thread_path(id)?;
+    if html.is_empty() || html.len()>512*1024 {return Err("Interactive HTML must be between 1 byte and 512 KiB".into());}
+    std::str::from_utf8(html).map_err(|_|"Interactive HTML must be UTF-8")?;
+    let mut random=[0u8;32];
+    ring::rand::SystemRandom::new().fill(&mut random).map_err(|_|"Artifact token unavailable")?;
+    let token=crate::workspace::hash(&random);
+    let mut store=artifacts().lock().map_err(|_|"Artifact storage unavailable")?;
+    store.retain(|_,v|v.created.elapsed()<Duration::from_secs(600));
+    while store.len()>=16 || store.values().map(|v|v.html.len()).sum::<usize>()+html.len()>4*1024*1024 {
+        let oldest=store.iter().min_by_key(|(_,v)|v.created).map(|(k,_)|k.clone());
+        if let Some(key)=oldest {store.remove(&key);} else {break;}
+    }
+    store.insert(token.clone(),Artifact{created:Instant::now(),html:html.to_vec()});
+    Ok(json!({"token":token,"url":format!("/api/artifact?token={token}"),"expiresIn":600}))
+}
+fn artifact_document(stream:&mut TcpStream,token:&str)->Result<(),String> {
+    let html={
+        let mut store=artifacts().lock().map_err(|_|"Artifact storage unavailable")?;
+        store.retain(|_,v|v.created.elapsed()<Duration::from_secs(600));
+        store.get(token).ok_or("Artifact expired; choose Run scripts again")?.html.clone()
+    };
+    // This response intentionally has its own policy, rather than trying to
+    // relax the app's CSP from srcdoc. Both header and iframe sandbox omit
+    // allow-same-origin: scripts receive an opaque origin, never host APIs.
+    // Navigation by the frame itself is not an absolute no-network guarantee.
+    write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nPermissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), clipboard-read=(), clipboard-write=()\r\nContent-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'\r\n\r\n",html.len()).map_err(|e|e.to_string())?;
+    stream.write_all(&html).map_err(|e|e.to_string())
+}
+fn context_attachments(id:&str)->Result<Value,String> {
+    thread_path(id)?;
+    // Context chips need metadata only, not a parse of the entire transcript.
+    let bytes=crate::requests::bounded(&crate::config::data_dir().join(format!("{id}.meta.json")),4*1024*1024)?;
+    let meta:crate::polish::Metadata=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
+    let attachments=meta.attachments.iter().take(128).map(|a|json!({"path":a.path,"source":a.source,"bytes":a.text.len()+a.data.as_ref().map(|d|d.len()*3/4).unwrap_or(0),"mediaType":a.media_type})).collect::<Vec<_>>();
+    Ok(json!({"attachments":attachments,"usage":null}))
+}
 // Upload storage is private, bounded per thread, and outside the project. An
 // upload alone never enters model context; the actor's attach command does that.
 fn upload(app: &App, query: &HashMap<String, String>, body: &[u8]) -> Result<Value, String> {
@@ -1460,6 +1507,13 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
         )
         .map_err(|e| e.to_string());
     }
+    if path == "/api/artifact" && r.method == "GET" {
+        let result=artifact_document(&mut stream,query.get("token").map(String::as_str).unwrap_or(""));
+        return match result {
+            Ok(())=>Ok(()),
+            Err(error)=>json_response(&mut stream,410,json!({"error":error})).map_err(|e|e.to_string()),
+        };
+    }
     if path == "/api/export" && r.method == "GET" {
         let result = (|| -> Result<Vec<u8>, String> {
             let path = thread_path(query.get("id").ok_or("Missing thread")?)?;
@@ -1512,7 +1566,7 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
     }
     let result: Result<Value, String> = (|| match (r.method.as_str(), path) {
         ("GET", "/api/status") => Ok(
-            json!({"workspace":app.settings.workspace,"remote":!app.settings.local,"name":"Glass","web_workflows":1,"profile":crate::sandbox::permission_profile_label(),"security":app.settings.security}),
+            json!({"workspace":app.settings.workspace,"remote":!app.settings.local,"name":"Glass","web_workflows":1,"interactive_artifacts":1,"profile":crate::sandbox::permission_profile_label(),"security":app.settings.security}),
         ),
         ("GET", "/api/commands") => Ok(json!({"commands":crate::web_commands::catalogue(None)})),
         ("POST", "/api/upgrade") => {
@@ -1587,6 +1641,8 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
             crate::web_commands::inspect_request(name, &value["values"], &session, &cfg)
                 .map(crate::web_commands::bounded_result)
         }
+        ("POST", "/api/artifact") => create_artifact(query.get("id").ok_or("Missing thread")?,&r.body),
+        ("GET", "/api/context") => context_attachments(query.get("id").ok_or("Missing thread")?),
         ("POST", "/api/upload") => upload(&app, &query, &r.body),
         ("GET", "/api/edit") => edit_file(query.get("id").ok_or("Missing thread")?, query.get("path").ok_or("Missing file path")?),
         ("GET", "/api/changes") => {

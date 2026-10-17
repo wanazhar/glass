@@ -1211,9 +1211,9 @@ pub(crate) fn changes(cfg: &config::Config) -> Result<Value, String> {
     value["files"] = json!(files);
     // Preserve the actor's fingerprint over HEAD + index while presenting the
     // index-to-worktree patch required by stage/revert hunk operations.
-    value["combined"] = value["diff"].clone();
     value["diff"] = json!(String::from_utf8(crate::workflows::git(&cfg.workspace,
         &["diff","--no-ext-diff","--no-textconv","--binary"],None)?).map_err(|e|e.to_string())?);
+    if value.to_string().len()>2_000_000 {return Err("Changes preview exceeds 2 MB; use native Git review or narrow the changes".into());}
     Ok(value)
 }
 

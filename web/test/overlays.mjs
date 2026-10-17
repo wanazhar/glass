@@ -1,4 +1,4 @@
-// Every native and lazy workflow overlay shares the palette's border treatment.
+// Floating overlays share palette borders; edge-to-edge phone readers stay square.
 import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -28,9 +28,10 @@ try {
     return styles;
   }, ids);
   for (const overlay of result) {
-    assert.deepEqual(overlay.radius, ['16px', '16px', '16px', '16px'], `${overlay.id} ${width} ${mode}`);
-    assert.equal(overlay.border, '1px');
-    assert.equal(overlay.color, result[0].color);
+    const reader = overlay.id === 'preview' && width <= 700;
+    assert.deepEqual(overlay.radius, Array(4).fill(reader ? '0px' : '16px'), `${overlay.id} ${width} ${mode}`);
+    assert.equal(overlay.border, reader ? '0px' : '1px');
+    if (!reader) assert.equal(overlay.color, result[0].color);
     assert.equal(overlay.overflow, 'hidden');
   }
   console.log(`PASS ${result.length} overlay borders ${width}px ${theme} ${mode || 'browser'}`);

@@ -154,7 +154,24 @@ try {
     const choice = page.locator('.command-choice').filter({ has: page.locator('strong', { hasText: new RegExp('^/' + command.name + '(?:\\s|$)') }) });
     assert.equal(await choice.count(), 1);
     await choice.click();
-    if (command.primary || command.name === 'help') assert(await page.locator('#commands').isVisible());
+    if (command.primary) assert(await page.locator('#commands').isVisible());
+    if (command.name === 'help') {
+      assert.equal(await page.locator('#commands').isVisible(), false);
+      assert.equal(await page.locator('#preview-title').innerText(), 'Help');
+      assert.match(await page.locator('#preview-body').innerText(), /Using Glass/);
+      const requestsBefore = sent.length;
+      await page.getByRole('searchbox', { name: 'Search help commands' }).fill('/usage');
+      const usage = page.locator('.help-command:visible').filter({ has: page.locator('strong', { hasText: /^\/usage$/ }) });
+      assert.equal(await usage.count(), 1);
+      await usage.click();
+      assert.equal(await page.locator('#command-title').innerText(), '/usage');
+      assert.equal(sent.length, requestsBefore, 'Help and usage inspection do not send model work');
+      await page.locator('#command-close').click();
+      await page.locator('#prompt').fill('/help');
+      await page.locator('#prompt').press('Enter');
+      await page.locator('#preview').waitFor({ state: 'visible' });
+      assert.equal(await page.locator('#preview-title').innerText(), 'Help');
+    }
     if (['outputs', 'thinking'].includes(command.name)) assert(await page.locator('#details').isVisible());
     if (command.name === 'editor') assert(await page.locator('#draft-editor').isVisible());
     if (command.name === 'animation') assert(await page.locator('#animations').isVisible());

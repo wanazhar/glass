@@ -3132,3 +3132,8 @@ dialog > header {
 
 #command-status[data-error="true"] { color: var(--red); }
 .command-metric-label { color: var(--muted); font-size: 12px; }
+
+.help-command { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; width: 100%; text-align: left; padding: 12px 0; border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--text); }
+.help-command span { color: var(--muted); font-size: 13px; }
+.help-command[hidden] { display: none; }
+.help-command:hover:not(:disabled) { color: var(--accent); }

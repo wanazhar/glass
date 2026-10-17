@@ -279,6 +279,8 @@ Opening the palette and inspecting local state do not use model tokens.
 Commands that request model work, such as compaction, planning, and code review,
 run only after submission and provide cancellation. Mutations submitted during
 a running turn wait for a safe boundary; inspection remains available.
+`/help` opens a local help page with keyboard shortcuts and a searchable command
+reference. Entries open their command views directly.
 Unknown slash commands produce a local notice and are never sent as chat text.
 
 Models receive an explicit teammate CLI recipe when their session has a managed

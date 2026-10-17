@@ -3602,7 +3602,48 @@ async function openNativeCommand(command, initialArgs = "") {
 }
 $("#command-close").onclick = () => $("#command-view").close();
 
+function openHelp() {
+  preview('Help', 'Glass', `## Using Glass
+
+Type **/** to browse commands, or search by name and description. Choose a command to inspect its current state and fill in its controls. Use its action button to submit a change.
+
+- **Enter** sends a message; **Shift Enter** adds a line.
+- **⌘/Ctrl K** finds a conversation.
+- **Escape** closes a view or returns to the previous palette category.
+- Take control before changing a shared conversation.
+
+Opening help and inspecting local state do not use model tokens. Commands that ask the model to work run after submission.
+
+## Command reference
+
+Filter the current command catalogue below. Choose an entry to open it.`, 'markdown');
+  const body = $('#preview-body');
+  const search = el('input', 'command-filter');
+  search.type = 'search';
+  search.placeholder = 'Find a command…';
+  search.setAttribute('aria-label', 'Search help commands');
+  const count = el('p', 'command-list-count'); count.setAttribute('role', 'status');
+  const list = el('div', 'help-command-list');
+  const entries = commands.filter(c => !c.primary && c.name !== 'help');
+  for (const command of entries) {
+    const button = el('button', 'help-command'); button.type = 'button';
+    button.append(el('strong', '', '/' + command.name), el('span', '', command.description.replace(/ · local$/, '')));
+    button.dataset.search = [command.name, command.description, command.keywords, ...(command.aliases || [])].join(' ').toLowerCase();
+    const supported = command.portable || Boolean(commandActions[command.name]);
+    if (!supported) { button.append(el('small', '', 'Terminal only')); button.disabled = true; }
+    button.onclick = () => { closePreview(); chooseCommand(command); };
+    list.append(button);
+  }
+  search.oninput = () => {
+    const query = search.value.trim().toLowerCase().replace(/^\//, ''); let shown = 0;
+    for (const item of list.children) { item.hidden = !item.dataset.search.includes(query); if (!item.hidden) shown++; }
+    count.textContent = shown ? `${shown} commands` : 'No matching commands.';
+  };
+  search.oninput(); body.append(search, count, list);
+}
+
 const commandActions = {
+  help: () => openHelp(),
   layout: () => inspectLayout(),
   clear: () => newThread(),
   tools: () => {
@@ -3775,7 +3816,6 @@ function chooseCommand(c, { focusSearch = false } = {}) {
   closeCommands();
   if ($("#prompt").value.trim().startsWith("/")) $("#prompt").value = "";
   if (c.portable) openNativeCommand(c);
-  else if (c.name === "help") openCommands("", { focusSearch });
   else commandActions[c.name]();
 }
 async function inspectLayout() {

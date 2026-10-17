@@ -29,6 +29,7 @@ fn message_hash(m: &glass_mod_api::Message) -> String {
     let (tag, fields, count): (&str, [&str; 3], usize) = match m {
         Message::User(t) => ("user", [t, "", ""], 1),
         Message::Assistant(t) => ("assistant", [t, "", ""], 1),
+        Message::ChatReasoning{content,assistant_hash,..}=>("chat_reasoning",[content.as_deref().unwrap_or(""),assistant_hash.as_deref().unwrap_or(""),""],2),
         Message::System(t) => ("system", [t, "", ""], 1),
         Message::ToolCall {
             id,
@@ -46,6 +47,9 @@ fn message_hash(m: &glass_mod_api::Message) -> String {
     for field in fields.into_iter().take(count) {
         digest.update(&(field.len() as u64).to_le_bytes());
         digest.update(field.as_bytes());
+    }
+    if let Message::ChatReasoning{tool_call_ids,..}=m {
+        for id in tool_call_ids {digest.update(&(id.len() as u64).to_le_bytes());digest.update(id.as_bytes());}
     }
     crate::hashing::hex(digest.finish().as_ref())
 }
@@ -398,6 +402,7 @@ mod tests {
                 Message::ToolCall{id,name,arguments}=>("call",vec![id,name,arguments]),
                 Message::ToolResult{call_id,name,body}=>("result",vec![call_id,name,body]),
                 Message::Image{media_type,data}=>("image",vec![media_type,data]),
+                Message::ChatReasoning{content,assistant_hash,..}=>("chat_reasoning",vec![content.as_deref().unwrap_or(""),assistant_hash.as_deref().unwrap_or("")]),
             };
             let mut digest=ring::digest::Context::new(&ring::digest::SHA256);
             digest.update(tag.as_bytes());

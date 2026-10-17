@@ -90,33 +90,66 @@ impl OpenAiCompat {
 fn build_messages(system: &str, messages: &[glass_mod_api::Message]) -> Vec<Value> {
     use glass_mod_api::Message;
     let mut out = vec![json!({ "role": "system", "content": system })];
-    for m in messages {
+    let mut reasoning: Option<&str> = None;
+    let mut assistant_hash: Option<&str> = None;
+    let mut pending = false;
+    let mut batch=Vec::new();
+    let mut emitted=std::collections::HashSet::new();
+    for (index,m) in messages.iter().enumerate() {
         match m {
-            Message::User(s) => out.push(json!({ "role": "user", "content": s })),
-            Message::Image { media_type, data } => out.push(json!({
+            Message::User(s) => {reasoning=None;assistant_hash=None;batch.clear();emitted.clear();pending=false;out.push(json!({ "role": "user", "content": s }));},
+            Message::Image { media_type, data } => {reasoning=None;assistant_hash=None;batch.clear();emitted.clear();pending=false;out.push(json!({
                 "role": "user",
                 "content": [{
                     "type": "image_url",
                     "image_url": { "url": format!("data:{media_type};base64,{data}") }
                 }]
-            })),
-            Message::Assistant(s) => out.push(json!({ "role": "assistant", "content": s })),
+            }));},
+            Message::ChatReasoning {content,assistant_hash:hash,tool_call_ids} => {
+                reasoning=content.as_deref();assistant_hash=hash.as_deref();let ids=tool_call_ids;pending=true;
+                emitted.clear();batch.clear();
+                for (relative,next) in messages[index+1..].iter().enumerate() {
+                    match next {
+                        Message::ChatReasoning{..}|Message::User(_)=>break,
+                        Message::ToolCall{id,name,arguments} if ids.contains(id)=>batch.push((index+1+relative,json!({"id":id,"type":"function","function":{"name":name,"arguments":crate::tool_repair::wire_arguments(arguments)}}))),
+                        Message::ToolCall{..}=>break,
+                        _=>{},
+                    }
+                    if batch.len()>=ids.len() {break;}
+                }
+            }
+            Message::Assistant(s) => {
+                let mut value=json!({"role":"assistant","content":s});
+                if pending && assistant_hash==Some(crate::workspace::hash(s.as_bytes()).as_str()) {
+                    if let Some(text)=reasoning {value["reasoning_content"]=json!(text);}
+                } else {reasoning=None;batch.clear();emitted.clear();}
+                pending=false;
+                out.push(value);
+            },
             Message::ToolCall {
                 id,
                 name,
                 arguments,
             } => {
+                if emitted.contains(&index) {continue;}
+                let associated=batch.iter().any(|(position,_)|*position==index);
                 let call = json!({"id":id,"type":"function","function":{"name":name,"arguments":crate::tool_repair::wire_arguments(arguments)}});
-                if let Some(last) = out.last_mut().filter(|v| v["role"] == "assistant") {
-                    if !last["tool_calls"].is_array() {
-                        last["tool_calls"] = json!([]);
-                    }
-                    last["tool_calls"].as_array_mut().unwrap().push(call);
+                let calls=if associated {
+                    batch.iter().map(|(position,call)|{emitted.insert(*position);call.clone()}).collect::<Vec<_>>()
+                } else {vec![call]};
+                let merge=!pending && out.last().is_some_and(|v|v["role"]=="assistant" && (associated || v.get("reasoning_content").is_none()));
+                if merge {
+                    let last=out.last_mut().unwrap();
+                    if !last["tool_calls"].is_array() {last["tool_calls"]=json!([]);}
+                    last["tool_calls"].as_array_mut().unwrap().extend(calls);
                 } else {
-                    out.push(json!({"role":"assistant", "tool_calls":[call]}));
+                    let mut value=json!({"role":"assistant","tool_calls":calls});
+                    if associated && let Some(text)=reasoning {value["reasoning_content"]=json!(text);}
+                    out.push(value);
                 }
+                pending=false;
             }
-            Message::System(s) => out.push(json!({ "role": "system", "content": s })),
+            Message::System(s) => {if pending {pending=false;reasoning=None;batch.clear();emitted.clear();} out.push(json!({ "role": "system", "content": s }));},
             Message::ToolResult {
                 call_id,
                 name,
@@ -136,7 +169,7 @@ fn responses_input(messages: &[glass_mod_api::Message]) -> Vec<Value> {
     use glass_mod_api::Message;
     messages
         .iter()
-        .map(|m| match m {
+        .filter_map(|m| if matches!(m,Message::ChatReasoning{..}) {None} else {Some(match m {
             Message::ToolCall {
                 id,
                 name,
@@ -155,7 +188,8 @@ fn responses_input(messages: &[glass_mod_api::Message]) -> Vec<Value> {
             }),
             Message::Assistant(s) => json!({"role":"assistant", "content":s}),
             Message::System(s) => json!({"role":"developer", "content":s}),
-        })
+            Message::ChatReasoning{..}=>unreachable!(),
+        })})
         .collect()
 }
 
@@ -186,6 +220,9 @@ impl Provider for OpenAiCompat {
         "openai"
     }
 
+    fn estimate_tokens(&self,messages:&[glass_mod_api::Message])->u32 {
+        super::default_estimate_for(messages,self.flavour==Flavour::ChatCompletions)
+    }
     fn context_window(&self) -> u32 {
         Self::window_for(&self.model)
     }
@@ -359,6 +396,7 @@ fn extract_error(body: &str) -> String {
 struct Accum {
     text: String,
     reasoning: String,
+    chat_response: bool,
     summaries: std::collections::BTreeMap<(String, u64), String>,
     tools: std::collections::BTreeMap<usize, Partial>,
     usage: Option<Usage>,
@@ -449,6 +487,7 @@ impl<R: Read> StreamEvents<R> {
             return;
         }
         self.acc.sealed = true;
+        if self.acc.chat_response {self.outbox.push_back(Event::ChatResponse);}
 
         if let Some(u) = self.acc.usage.take() {
             self.outbox.push_back(Event::Usage(u));
@@ -691,6 +730,10 @@ impl<R: Read> StreamEvents<R> {
                 .join(",");
         }
 
+        self.acc.chat_response = true;
+        if let Some(t)=delta.and_then(|d|d.get("reasoning_content").or_else(||d.get("reasoning"))).and_then(Value::as_str) {
+            self.outbox.push_back(Event::ChatReasoning(t.into()));
+        }
         if let Some(t) = delta
             .and_then(|d| d.get("reasoning_content").and_then(Value::as_str))
             .or_else(|| {

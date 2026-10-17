@@ -71,6 +71,7 @@ pub fn markdown(session: &Session, thinking: bool, records: &[Record]) -> String
                 }
                 out.push_str("\n</details>\n\n");
             }
+            Record::Custom {kind,..} if kind==crate::reasoning::KIND=>{},
             Record::Custom { kind, data } => {
                 out.push_str(&format!(
                     "<details><summary>extension entry: {kind}</summary>\n\n{}\n</details>\n\n",

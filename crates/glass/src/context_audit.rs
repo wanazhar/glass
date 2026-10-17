@@ -112,7 +112,7 @@ pub fn capture(
             Message::ToolResult { .. } => results += 1,
             Message::ToolCall { .. } => calls += 1,
             Message::Image { .. } => images += 1,
-            Message::System(_) => {}
+            Message::System(_) | Message::ChatReasoning{..} => {}
         }
     }
     let schema_bytes = req

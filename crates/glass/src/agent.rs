@@ -57,6 +57,8 @@ pub struct TurnOutput {
     /// Latest model request input, separate from aggregated turn usage.
     pub last_input: Option<u32>,
     pub warnings: Vec<String>,
+    chat_reasoning: Option<String>,
+    chat_response: bool,
 }
 
 /// Why the loop stopped.
@@ -825,6 +827,8 @@ impl<'a> Agent<'a> {
             usage: None,
             last_input: None,
             warnings: Vec::new(),
+            chat_reasoning: None,
+            chat_response: false,
         };
 
         loop {
@@ -884,6 +888,7 @@ impl<'a> Agent<'a> {
             }
             if self.steer.as_deref() == Some("") {
                 if !out.text.is_empty() {
+                    if out.chat_response {self.session.append(crate::reasoning::record(out.chat_reasoning.as_deref(),&out.text,&[]));}
                     self.session.append(Record::Assistant(out.text.clone()));
                 }
                 self.session.append(Record::Meta("Response cancelled; streamed output was preserved and pending tools were not executed.".into()));
@@ -903,6 +908,15 @@ impl<'a> Agent<'a> {
                 }
                 // Reasoning is captured but not rendered by default: it is
                 // noise in a terminal and costs context to replay.
+                Event::ChatResponse => out.chat_response=true,
+                Event::ChatReasoning(t) => {
+                    out.chat_response=true;
+                    let content=out.chat_reasoning.get_or_insert_with(String::new);
+                    if content.len()+t.len()>crate::reasoning::MAX_BYTES {
+                        return Err(provider::Error::Transport("Provider reasoning exceeds the 2 MiB replay bound; no tools executed".into()));
+                    }
+                    content.push_str(&t);
+                }
                 Event::Reasoning(t) => {
                     self.session.append(Record::Reasoning(t.clone()));
                     self.emit(Progress::Reasoning(&t));
@@ -933,7 +947,8 @@ impl<'a> Agent<'a> {
                         if let Some(status) = status { return Err(provider::Error::Status(status, format!("stream rejection: {e}"))); }
                     }
                     if !out.text.is_empty() {
-                        self.session.append(Record::Assistant(out.text.clone()));
+                        if out.chat_response {self.session.append(crate::reasoning::record(out.chat_reasoning.as_deref(),&out.text,&[]));}
+                    self.session.append(Record::Assistant(out.text.clone()));
                     }
                     if !out.text.trim().is_empty() || !out.tool_calls.is_empty() {
                         // A Meta record is only honest when something survived;
@@ -949,6 +964,9 @@ impl<'a> Agent<'a> {
                 }
                 Event::Done => break,
             }
+        }
+        if out.tool_calls.len()>256 {
+            return Err(provider::Error::Transport("Provider returned more than 256 tool calls; none executed".into()));
         }
         let mut identities = std::collections::HashSet::new();
         if out.tool_calls.iter().any(|call| {
@@ -1017,6 +1035,8 @@ impl<'a> Agent<'a> {
             usage: None,
             last_input: None,
             warnings: Vec::new(),
+            chat_reasoning: None,
+            chat_response: false,
         };
 
         if let Some(live) = self.live.as_mut() {
@@ -1100,12 +1120,15 @@ impl<'a> Agent<'a> {
             last.warnings.clone_from(&out.warnings);
             last.tool_calls = out.tool_calls.clone();
 
-            if !out.text.trim().is_empty() {
-                self.session.append(Record::Assistant(out.text.clone()));
-            }
             for w in &out.warnings {
                 self.session
                     .append(Record::System(format!("provider: {w}")));
+            }
+            if out.chat_response {
+                self.session.append(crate::reasoning::record(out.chat_reasoning.as_deref(),&out.text,&out.tool_calls));
+            }
+            if !out.text.trim().is_empty() {
+                self.session.append(Record::Assistant(out.text.clone()));
             }
 
             // Give mods a look at the finished turn.

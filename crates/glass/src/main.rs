@@ -79,6 +79,7 @@ mod recap;
 mod recovery;
 mod reminders;
 mod requests;
+mod reasoning;
 mod requirements;
 mod resume_picker;
 mod rewind;

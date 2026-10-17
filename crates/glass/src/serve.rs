@@ -863,6 +863,7 @@ pub fn serve(
                     "security":crate::connect::security(&cfg),
                     "commands":crate::web_commands::catalogue(Some(&extensions)),
                     "command_transport":true,
+                    "web_workflows":1,
                     "client":sender_id,"owner":owner.get(),"can_write":sender_id.is_some()&&sender_id==owner.get(),
                     "session": session.id,
                     "entries": entries,

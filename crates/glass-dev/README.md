@@ -86,11 +86,12 @@ glass agent prompt "read README.md" --root .
 On first run, an untrusted project opens the Trust surface: `I` inspects, `O`
 opens untrusted, `1` trusts once, and `T` trusts the project. Repository
 execution remains blocked until a local decision. On Agent, type a prompt or
-press `Enter`; if Pi is unready, use `:agent setup`, approve its one-use
-confirmation with `Enter`/`Y`, then use `:agent setup login` for Pi `/login`.
-`:agent update` refreshes the pinned runtime; `:agent doctor` and `:agent
-status` report readiness. A setup/login failure leaves the workspace available
-for retry.
+press `Enter`; when the resident engine is not ready, Glass reports the exact
+repair step — install `glass-core`, set `GLASS_CORE_BINARY`, or connect a
+provider. `:agent doctor` and `:agent status` report readiness at any time, and
+`:agent setup` installs the pinned runtime for the legacy Pi backend
+(`GLASS_AGENT_HARNESS=pi`), with `:agent setup login` for Pi `/login`. A
+setup/login failure leaves the workspace available for retry.
 
 Talk from any surface. `Ctrl-L` opens the shared composer dock (not a redraw).
 `Alt-A` docks from the editor. Default mode is Agent. `Ctrl-Shift-A` cycles
@@ -139,7 +140,7 @@ off by default; on, lines wrap at whitespace where possible, continuation rows
 retain gutter alignment, and cursor/selection/highlighting stay synchronized.
 Off uses horizontal source-column scrolling. Arrows move, `Shift`+arrows
 select, `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y` undo/redo, and `Alt-A` sends the
-focused path, cursor, selection, and unsaved content to Pi with a do-not-edit
+focused path, cursor, selection, and unsaved content to the resident agent with a do-not-edit
 prompt. The editor starts in INSERT. `Esc` returns to NORMAL. `Esc` from
 NORMAL on a clean buffer leaves the editor. Unsaved work still asks: `S` save,
 `D` discard, `Q` discard and quit, or `Esc`/`N` stay. `Ctrl-C` opens Glass
@@ -198,10 +199,13 @@ or PyPI in the `0.3.14` line.
 ## Agents
 
 The deterministic local harness supports hello, prompt, steering, and bounded
-tool calls. The native Pi SDK runtime adds model selection, thinking level,
-follow-up, abort, persistent sessions, resume/fork/compact, and event streaming.
-Pi starts with its built-in tools disabled; its only executable capability is
-Glass's schema-validating gateway into the authoritative workspace actor.
+tool calls. Resident agents run on the Glass Core engine: Glass starts
+`glass-core runtime`, registers its governed tool catalog with the session, and
+executes every tool call itself. The engine adds model selection, thinking
+level, follow-up, abort, persistent sessions, resume/fork/compact, and event
+streaming, and it starts with no built-in tools of its own. The Pi SDK runtime
+is the legacy backend and behaves the same way; select it with
+`GLASS_AGENT_HARNESS=pi`.
 
 The same workspace exposes the fixed external-harness catalog to both clients:
 `glass harness list` and `:harness list` report PATH availability, while

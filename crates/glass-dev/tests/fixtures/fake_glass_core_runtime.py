@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""Offline stand-in for `glass-core runtime`.
+
+Speaks the documented newline-delimited JSON-RPC 2.0 host runtime so Glass Dev's
+resident harness adapter can be exercised without a provider account, a model
+call, or a network. It mirrors the real engine's ordering:
+
+* `initialize` reports protocol v1 with host tool ownership.
+* `session/new` returns a fixed session id.
+* `turn/prompt` emits `turn_start`, requests exactly one host tool, waits for
+  the host result, streams text, and only then answers the prompt request.
+
+Usage: `python3 fake_glass_core_runtime.py runtime` (the `runtime` argument is
+accepted and ignored so the fixture matches the real argv shape).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+SESSION_ID = "fixture-session"
+RUNTIME_VERSION = "0.1.0"
+
+
+def send(message: dict) -> None:
+    sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def reply(identifier, result: dict) -> None:
+    send({"jsonrpc": "2.0", "id": identifier, "result": result})
+
+
+def event(kind: str, data: dict, turn: str) -> None:
+    send(
+        {
+            "jsonrpc": "2.0",
+            "method": "runtime/event",
+            "params": {"sessionId": SESSION_ID, "turnId": turn, "type": kind, "data": data},
+        }
+    )
+
+
+def request_tool(call_id: str, name: str, arguments: dict) -> dict:
+    """Send one host tool request and return the matching result object."""
+    frame_id = f"host:{SESSION_ID}:1:{call_id}"
+    send(
+        {
+            "jsonrpc": "2.0",
+            "id": frame_id,
+            "method": "tool/execute",
+            "params": {
+                "sessionId": SESSION_ID,
+                "turnId": "turn-1",
+                "callId": call_id,
+                "name": name,
+                "arguments": arguments,
+            },
+        }
+    )
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            raise SystemExit(0)
+        line = line.strip()
+        if not line:
+            continue
+        message = json.loads(line)
+        if message.get("id") == frame_id and "method" not in message:
+            return message.get("result", {})
+
+
+def run_turn(identifier, params: dict) -> None:
+    text = str(params.get("text", ""))
+    turn = "turn-1"
+    event("turn_start", {}, turn)
+    if "write" in text:
+        result = request_tool(
+            "call-write",
+            "glass.file.write",
+            {"path": "notes.md", "content": "fixture\n"},
+        )
+    else:
+        result = request_tool(
+            "call-read",
+            "glass.file.read",
+            {"path": "README.md"},
+        )
+    tool_error = bool(result.get("isError"))
+    event("tool_end", {"callId": "call-1", "isError": tool_error}, turn)
+    event("text", {"text": f"handled {text.strip() or 'the request'}"}, turn)
+    event("usage", {"input": 12, "output": 8}, turn)
+    event("settled", {"reason": "completed"}, turn)
+    reply(identifier, {"sessionId": SESSION_ID, "settled": True})
+
+
+def main() -> None:
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        method = message.get("method")
+        identifier = message.get("id")
+        params = message.get("params") or {}
+        if method == "initialize":
+            if params.get("protocolVersion") != 1:
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": identifier,
+                        "error": {"code": -32602, "message": "protocolVersion must be 1"},
+                    }
+                )
+                continue
+            reply(
+                identifier,
+                {
+                    "protocolVersion": 1,
+                    "runtime": {"name": "glass-core", "version": RUNTIME_VERSION},
+                    "capabilities": {"hostTools": True, "steering": True, "cancel": True},
+                    "limits": {"frameBytes": 1024 * 1024, "toolResultBytes": 512 * 1024},
+                    "storageDir": params.get("storageDir"),
+                },
+            )
+        elif method == "auth/status":
+            reply(
+                identifier,
+                {
+                    "connected": True,
+                    "provider": "fixture",
+                    "model": "fixture-model",
+                    "detail": "fixture provider configuration",
+                },
+            )
+        elif method == "session/new":
+            reply(identifier, {"sessionId": SESSION_ID})
+        elif method == "session/resume":
+            # The real engine returns the stored id. The fixture prefixes it so
+            # a test can tell resume apart from a fresh session/new.
+            reply(
+                identifier,
+                {"sessionId": f"resumed-{params.get('sessionId', SESSION_ID)}"},
+            )
+        elif method == "session/name":
+            reply(identifier, {})
+        elif method == "session/list":
+            # Mirrors the real shape: ascending page plus an optional cursor.
+            reply(
+                identifier,
+                {
+                    "sessions": [
+                        {
+                            "sessionId": SESSION_ID,
+                            "open": True,
+                            "name": "fixture",
+                            "cwd": os.getcwd(),
+                            "toolMode": "host",
+                        }
+                    ],
+                    "nextAfterSessionId": None,
+                },
+            )
+        elif method == "session/describe":
+            reply(
+                identifier,
+                {
+                    "sessionId": SESSION_ID,
+                    "cwd": params.get("cwd"),
+                    "toolMode": "host",
+                },
+            )
+        elif method in ("turn/prompt", "turn/followUp"):
+            run_turn(identifier, params)
+        elif method == "turn/steer":
+            reply(identifier, {"accepted": True})
+        elif method == "turn/cancel":
+            reply(identifier, {"accepted": False, "reason": "idle"})
+        elif method == "shutdown":
+            reply(identifier, {})
+            return
+        else:
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": identifier,
+                    "error": {"code": -32601, "message": f"method not found: {method}"},
+                }
+            )
+
+
+if __name__ == "__main__":
+    main()

@@ -1536,6 +1536,16 @@ fn handle_herdr_event(state: &mut DevTuiState, visual: &mut VisualRuntime, event
 }
 
 fn run_agent_login(state: &mut DevTuiState, guard: &mut TerminalGuard) {
+    if crate::resident_harness::ResidentHarnessKind::from_env()
+        == crate::resident_harness::ResidentHarnessKind::GlassCore
+    {
+        // Glass Core owns its own provider login; Glass does not hand the
+        // terminal to the legacy Pi CLI for it.
+        state.agent_login_provider = None;
+        state.status = "Glass Core owns provider login · run `glass-core` and use /login, or set a provider API key"
+            .into();
+        return;
+    }
     if let Err(error) = guard.suspend() {
         state.status = format!("Could not hand the terminal to Pi: {error}");
         return;

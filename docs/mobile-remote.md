@@ -49,8 +49,8 @@ The phone layout uses the same keyboard and authority rules as desktop:
 | More Routes | click selects; `Enter` or double-click runs the selected route |
 | `?` | open scrollable keyboard help in navigation mode |
 | `j`/`k`, arrows, mouse wheel | scroll content; App `j`/`k` moves semantic selection |
-| printable text on Agent | open the composer and insert the text when Pi is ready |
-| `Enter` on Agent | open the composer or queue Pi setup when unready |
+| printable text on Agent | open the composer and insert the text when the resident engine is ready |
+| `Enter` on Agent | open the composer or report the engine repair step when unready |
 | `Enter` on Code/App | open a file or activate the selected browser entity |
 | `d` on Git | queue and display the inline diff |
 | `:browser view` | toggle the selected Herdr, Kitty, or ANSI live backend |
@@ -66,7 +66,7 @@ In the full-screen Code editor, `Alt-W` toggles soft wrapping (off by default);
 on, lines wrap at whitespace where possible with continuation gutters and
 synchronized cursor/selection/highlighting; off horizontally scrolls source
 columns. `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y` undo/redo, and `Alt-A` sends the
-focused editor context to Pi with a do-not-edit prompt. The editor starts in
+focused editor context to the resident agent with a do-not-edit prompt. The editor starts in
 INSERT. `Esc` returns to NORMAL. `Esc` from NORMAL on a clean buffer leaves the
 editor. Unsaved buffers offer `S` save, `D` discard, `Q` discard-and-quit, or
 `Esc`/`N` stay. `Ctrl-C` opens Glass quit confirmation from editor input; an
@@ -81,9 +81,11 @@ Mouse input is optional. The TUI can select navigation entries and semantic
 browser entities when the terminal forwards mouse events. A mobile SSH client
 that does not forward mouse events still has complete printable-key access.
 On first run, if Trust is required, choose the footer action before repository
-execution. On Agent, type or press `Enter`; `:agent setup` installs/repairs
-the pinned Pi runtime, `:agent setup login` opens Pi `/login`, and `:agent
-update` refreshes it. Setup mutations use the one-use confirmation card.
+execution. On Agent, type or press `Enter`; when the resident engine is not
+ready, Glass reports the exact repair step for the selected harness. The legacy
+Pi backend (`GLASS_AGENT_HARNESS=pi`) keeps `:agent setup` to install/repair the
+pinned Pi runtime, `:agent setup login` for Pi `/login`, and `:agent update` to
+refresh it. Setup mutations use the one-use confirmation card.
 Composer `Enter` sends and stays open; `Esc` closes. A failed send keeps the
 draft for retry, and background work does not silently discard typed text.
 
@@ -95,7 +97,7 @@ projection. `SnapshotWorker` then hydrates files, conversation, tasks, Git,
 processes, browser state, and other resident surfaces. Refresh requests and
 conversation requests are coalesced, and the latest versioned snapshot wins.
 
-Git diffs, Pi runtime setup, browser recovery, agent composer operations,
+Git diffs, legacy Pi runtime setup, browser recovery, agent composer operations,
 embedded screenshots, and governed tool calls do not run on the terminal input
 loop. TUI workspace callbacks use non-blocking lock attempts. When the actor is
 busy, Glass reports a wait state rather than freezing input. Active bounded

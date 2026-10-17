@@ -806,8 +806,8 @@ impl DevTuiState {
             && trust == crate::WorkspaceTrust::Untrusted
             && trust_inspection.iter().any(|item| item.trust_required);
         drop(locked);
-        let agent_readiness = crate::pi_runtime::pi_readiness()
-            .map(|readiness| format_pi_readiness(&readiness))
+        let agent_readiness = crate::resident_harness::resident_readiness()
+            .map(|readiness| format_resident_readiness(&readiness))
             .unwrap_or_else(|error| format!("Agent unavailable · {error}"));
         let initial_status = if trust_prompt {
             "Trust required · I inspect · O untrusted · 1 once · T project".to_string()
@@ -816,7 +816,7 @@ impl DevTuiState {
         } else if agent_readiness.starts_with("✓ Ready") {
             "Ready · Enter chat · Ctrl-P files · : commands · ? help".to_string()
         } else {
-            "Pi setup required · press :actions or Enter to continue".to_string()
+            "Agent setup required · press :actions or Enter to continue".to_string()
         };
         let mut state = Self {
             workspace,
@@ -2985,19 +2985,24 @@ impl DevTuiState {
             self.status = "Trust this workspace before starting the Glass Agent · T or 1".into();
             return;
         }
-        match crate::pi_runtime::pi_readiness() {
+        match crate::resident_harness::resident_readiness() {
             Ok(readiness) if readiness.ready => self.open_composer(),
-            Ok(readiness)
-                if readiness.node.state != crate::pi_runtime::PiReadinessState::Ready
-                    || readiness.sdk.state != crate::pi_runtime::PiReadinessState::Ready =>
-            {
-                self.request_agent_setup();
-            }
-            Ok(_) => {
-                let _ = self.request_agent_login();
+            Ok(readiness) => {
+                self.status = format!(
+                    "{} · {}",
+                    readiness.detail,
+                    readiness
+                        .remediation
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "use :agent setup".into())
+                );
+                if readiness.selected == crate::ResidentHarnessKind::Pi {
+                    self.request_agent_setup();
+                }
             }
             Err(error) => {
-                self.status = format!("Pi readiness unavailable · use :agent setup: {error}");
+                self.status = format!("Agent readiness unavailable · use :agent setup: {error}");
             }
         }
     }
@@ -3490,18 +3495,47 @@ impl DevTuiState {
 
     /// Queue the managed Pi SDK install behind the same one-use confirmation
     /// sheet used by every other mutating TUI action.
+    ///
+    /// Glass Core is an executable rather than a managed Node runtime, so this
+    /// reports the selected engine's repair step instead of installing one.
     pub fn request_agent_setup(&mut self) {
-        self.request_agent_setup_mode(false);
+        self.request_agent_setup_mode(crate::ResidentHarnessKind::from_env(), false);
     }
 
     /// Queue a forced reinstall of the pinned managed Pi SDK.
     pub fn request_agent_update(&mut self) {
-        self.request_agent_setup_mode(true);
+        self.request_agent_setup_mode(crate::ResidentHarnessKind::from_env(), true);
     }
 
-    fn request_agent_setup_mode(&mut self, update: bool) {
+    /// Engine-explicit setup action.
+    ///
+    /// Taking the engine as an argument keeps both branches deterministic and
+    /// testable without mutating process environment.
+    pub(crate) fn request_agent_setup_mode(
+        &mut self,
+        kind: crate::ResidentHarnessKind,
+        update: bool,
+    ) {
         if self.background_action_running() {
             self.status = "Another background action is still running".into();
+            return;
+        }
+        if kind == crate::ResidentHarnessKind::GlassCore {
+            // Glass Core is installed as an executable, not as a managed
+            // Node runtime, so repair is reported instead of installed.
+            let next = crate::resident_harness::resident_readiness()
+                .map(|readiness| {
+                    readiness
+                        .remediation
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| readiness.detail)
+                })
+                .unwrap_or_else(|error| error.to_string());
+            self.surface = DevSurface::Agent;
+            self.status = format!(
+                "Glass Core is the resident engine · {next} · set GLASS_AGENT_HARNESS=pi for the legacy Pi setup"
+            );
             return;
         }
         let (call, context) = match self.tool_request(
@@ -10115,9 +10149,10 @@ impl DevTuiState {
     }
 
     pub fn refresh_agent_readiness(&mut self) -> Result<bool, String> {
-        let readiness = crate::pi_runtime::pi_readiness().map_err(|error| error.to_string())?;
+        let readiness =
+            crate::resident_harness::resident_readiness().map_err(|error| error.to_string())?;
         let ready = readiness.ready;
-        self.agent_readiness = format_pi_readiness(&readiness);
+        self.agent_readiness = format_resident_readiness(&readiness);
         Ok(ready)
     }
 }
@@ -10456,6 +10491,64 @@ fn format_pi_readiness(readiness: &crate::PiReadiness) -> String {
         format!(
             "{state_line}\nprovider {provider} · {session}{remediation}\n\nUse `:agent setup` to repair the pinned runtime · `:agent update` to refresh it · `:agent setup login` to open Pi `/login`"
         )
+    }
+}
+
+/// Status line for the engine that actually runs resident agents.
+fn format_resident_readiness(readiness: &crate::ResidentReadiness) -> String {
+    let selected = readiness.selected;
+    match selected {
+        crate::ResidentHarnessKind::GlassCore => {
+            let core = &readiness.glass_core;
+            let engine = core
+                .binary
+                .version
+                .as_deref()
+                .map(|version| format!("glass-core {version}"))
+                .unwrap_or_else(|| "engine missing".into());
+            let state_line = format!(
+                "{} · {} · runtime {} · provider {}",
+                if readiness.ready {
+                    "✓ Ready"
+                } else {
+                    "○ Needs setup"
+                },
+                engine,
+                core_component_label(&core.protocol),
+                core_component_label(&core.authentication),
+            );
+            if readiness.ready {
+                let provider = core.provider.as_deref().unwrap_or("not selected");
+                format!("{state_line}\nprovider {provider} · Glass-owned tools and approvals")
+            } else {
+                let remediation = readiness
+                    .remediation
+                    .first()
+                    .map(|item| format!(" · next: {item}"))
+                    .unwrap_or_default();
+                format!(
+                    "{state_line}{remediation}\n\nInstall `glass-core` or set `GLASS_CORE_BINARY`; set `GLASS_AGENT_HARNESS=pi` to use the legacy Pi runtime"
+                )
+            }
+        }
+        crate::ResidentHarnessKind::Pi => match readiness.pi.as_ref() {
+            Some(pi) => format!(
+                "{} · legacy backend\n{}",
+                selected.label(),
+                format_pi_readiness(pi)
+            ),
+            None => format!("{} · Pi readiness unavailable", selected.label()),
+        },
+    }
+}
+
+fn core_component_label(component: &crate::CoreReadinessComponent) -> String {
+    match component.state {
+        crate::CoreReadinessState::Ready => "✓".into(),
+        crate::CoreReadinessState::Missing => "× missing".into(),
+        crate::CoreReadinessState::Incompatible => "! incompatible".into(),
+        crate::CoreReadinessState::Unauthenticated => "! no provider".into(),
+        crate::CoreReadinessState::Unknown => "? unknown".into(),
     }
 }
 

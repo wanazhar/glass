@@ -7,6 +7,7 @@ export function workflows({
   notice,
   saveDraft,
   onAttached,
+  requestUpdate,
 }) {
   let modal,
     controller,
@@ -69,8 +70,12 @@ export function workflows({
   async function mutate(current, status, name, values, refresh) {
     if (!current() || modal.dataset.pending) return;
     if (!view.workerWorkflows && ["file", "git"].includes(name)) {
-      status.textContent =
-        "This action needs the updated thread runtime. Restart it when idle.";
+      status.replaceChildren(
+        document.createTextNode(
+          "This action needs the updated thread runtime. ",
+        ),
+        button("Update runtime", requestUpdate),
+      );
       return;
     }
     if (!view.control) {
@@ -99,17 +104,22 @@ export function workflows({
     return n;
   };
   function requireHost(writer = false) {
-    if (!view.hostWorkflows || (writer && !view.workerWorkflows))
-      throw Error(
-        "This feature needs the updated Glass gateway" +
-          (writer ? " and thread runtime" : "") +
-          ". Restart them when the host is idle.",
-      );
+    if (!view.hostWorkflows)
+      throw Error("This feature needs the updated Glass gateway.");
+    if (writer && !view.workerWorkflows) {
+      const error = Error("This feature needs the updated thread runtime.");
+      error.runtimeUpdate = true;
+      throw error;
+    }
   }
   async function attach(files) {
     try {
       requireHost(true);
     } catch (e) {
+      if (e.runtimeUpdate) {
+        requestUpdate();
+        return;
+      }
       notice(e.message, true);
       return;
     }

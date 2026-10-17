@@ -2835,3 +2835,23 @@ dialog > header {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+/* Keep daily actions reachable on phones without the desktop keyboard hint. */
+@media (max-width: 700px) {
+  .compose-foot {
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 6px;
+    overflow-x: auto;
+  }
+  .compose-foot .quiet {
+    flex: none;
+    font-size: 11px;
+    padding: 4px 6px;
+    min-height: 30px;
+  }
+  .compose-foot .keyboard-hint {
+    display: none;
+  }
+}

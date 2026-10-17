@@ -32,6 +32,7 @@ pub const STALE_READ_CALLS: u64 = 25;
 #[derive(Default)]
 pub struct ReadSet {
     seen: HashSet<String>,
+    native_revisions: HashMap<String, String>,
     /// Tool-call index of the most recent read per canonical path, for the
     /// staleness hint. Absent means never read (but `seen` is the authority).
     last_read: HashMap<String, u64>,
@@ -40,6 +41,38 @@ pub struct ReadSet {
 impl ReadSet {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Remember only successful native results, before extension/mod rewriting.
+    pub fn observe_native(&mut self, call: &glass_mod_api::ToolCall, body: &str, workspace: &Path, call_index: u64) {
+        if !matches!(call.name.as_str(), "read" | "edit" | "write")
+            || call.arg_raw("preview").as_deref() == Some("true") { return; }
+        let Some(path) = call.arg_str("path") else { return; };
+        if call.name == "read" || !self.contains(&workspace.join(&path)) {
+            self.mark_at(&workspace.join(&path), call_index);
+        }
+        let Some(header) = body.lines().next().filter(|line| line.starts_with("[file ")) else { return; };
+        let Some((_, rest)) = header.rsplit_once(" · revision ") else { return; };
+        let revision: String = rest.chars().take(64).collect();
+        if revision.len() == 64 && revision.bytes().all(|b| b.is_ascii_hexdigit()) {
+            self.native_revisions.insert(super::concurrency::canonical_key(&workspace.join(path)), revision);
+        }
+    }
+
+    /// Supply the last observed revision, never a fresh disk revision. Explicit
+    /// revisions retain their original semantics; absent writes are create-only.
+    pub fn native_call(&self, call: &glass_mod_api::ToolCall, workspace: &Path) -> glass_mod_api::ToolCall {
+        let mut result = call.clone();
+        if !matches!(call.name.as_str(), "edit" | "write") { return result; }
+        let Ok(mut args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else { return result; };
+        if args.get("expected").is_some() { return result; }
+        if let Some(path) = call.arg_str("path") {
+            let revision = self.native_revisions.get(&super::concurrency::canonical_key(&workspace.join(path)));
+            if let Some(revision) = revision { args["expected"] = serde_json::json!(revision); }
+            else if call.name == "write" { args["expected"] = serde_json::Value::Null; }
+        }
+        result.arguments = args.to_string();
+        result
     }
 
     /// Record a file the model has read, without an index (fresh by definition).
@@ -650,5 +683,33 @@ mod tests {
         rs.observe(&format!("echo new > {}", f.display()), "", &d);
         assert!(!rs.contains(&f), "writing must not count as reading");
         std::fs::remove_dir_all(&d).ok();
+    }
+}
+
+#[cfg(test)]
+mod native_revision_tests {
+    use super::*;
+    use glass_mod_api::ToolCall;
+    use serde_json::json;
+    fn call(name: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall { id: "revision-test".into(), name: name.into(), arguments: args.to_string() }
+    }
+    #[test]
+    fn revisions_are_observed_not_resampled_and_explicit_values_win() {
+        let root = Path::new("/tmp");
+        let mut reads = ReadSet::new();
+        let read = call("read", json!({"path":"gc-revision-test"}));
+        let rev = "a".repeat(64);
+        reads.observe_native(&read, &format!("[file gc-revision-test · revision {rev} · lines 1/1]\n1|hello"), root, 0);
+        let edit = call("edit", json!({"path":"gc-revision-test","edits":[{"old":"hello","new":"bye"}]}));
+        assert_eq!(reads.native_call(&edit, root).arg_str("expected"), Some(rev.clone()));
+        let explicit = call("write", json!({"path":"gc-revision-test","expected":null,"text":"new"}));
+        assert_eq!(reads.native_call(&explicit, root).arg_raw("expected").as_deref(), Some("null"));
+        let preview = call("edit", json!({"path":"gc-revision-test","preview":true}));
+        reads.observe_native(&preview, &format!("[file gc-revision-test · preview · revision {}]", "b".repeat(64)), root, 0);
+        assert_eq!(reads.native_call(&edit, root).arg_str("expected"), Some(rev));
+        assert!(ReadSet::new().native_call(&edit, root).arg_raw("expected").is_none());
+        let create = call("write", json!({"path":"unseen","text":"new"}));
+        assert_eq!(reads.native_call(&create, root).arg_raw("expected").as_deref(), Some("null"));
     }
 }

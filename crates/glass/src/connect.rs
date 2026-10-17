@@ -1025,6 +1025,57 @@ fn activity_location(id: &str, requested: usize) -> Result<Value, String> {
     }
     Err("Activity no longer exists at this byte cursor; reload history".into())
 }
+struct ActivityText {created:Instant,text:String,kind:String,revision:String}
+fn activity_texts()->&'static Mutex<HashMap<String,ActivityText>> {
+    static STORE:std::sync::OnceLock<Mutex<HashMap<String,ActivityText>>>=std::sync::OnceLock::new();
+    STORE.get_or_init(Default::default)
+}
+fn activity_text(id:&str,record_offset:usize,offset:usize,expected:&str)->Result<Value,String> {
+    use std::io::BufRead;
+    thread_path(id)?;
+    if offset>0 && expected.is_empty() {return Err("Text continuation requires its previous revision".into());}
+    let key=format!("{id}:{record_offset}:{expected}");
+    let page=|entry:&ActivityText|->Result<Value,String> {
+        if offset>entry.text.len() || !entry.text.is_char_boundary(offset) {return Err("Invalid UTF-8 text cursor".into());}
+        let mut end=(offset+128*1024).min(entry.text.len());
+        while !entry.text.is_char_boundary(end) {end-=1;}
+        Ok(json!({"recordOffset":record_offset,"offset":offset,"text":&entry.text[offset..end],"nextOffset":end,"eof":end==entry.text.len(),"totalBytes":entry.text.len(),"kind":entry.kind,"revision":entry.revision}))
+    };
+    {
+        let mut store=activity_texts().lock().map_err(|_|"Activity reader unavailable")?;
+        store.retain(|_,entry|entry.created.elapsed()<Duration::from_secs(120));
+        if offset>0 && let Some(entry)=store.get(&key) {return page(entry);}
+    }
+    let mut file=std::fs::File::open(thread_path(id)?).map_err(|e|e.to_string())?;
+    if record_offset>0 {
+        file.seek(SeekFrom::Start(record_offset as u64-1)).map_err(|e|e.to_string())?;
+        let mut previous=[0];file.read_exact(&mut previous).map_err(|e|e.to_string())?;
+        if previous[0]!=b'\n' {return Err("recordOffset must identify a record boundary".into());}
+    }
+    file.seek(SeekFrom::Start(record_offset as u64)).map_err(|e|e.to_string())?;
+    let mut bytes=Vec::new();
+    std::io::BufReader::new(file.take(8*1024*1024+1)).read_until(b'\n',&mut bytes).map_err(|e|e.to_string())?;
+    if bytes.len()>8*1024*1024 {return Err("Activity exceeds 8 MiB; export the transcript".into());}
+    if !bytes.ends_with(b"\n") {return Err("Activity is incomplete; retry after it settles".into());}
+    let value:Value=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
+    let kind=value["k"].as_str().ok_or("Activity kind unavailable")?.to_string();
+    let text=value["t"].as_str().or_else(||value["out"].as_str()).or_else(||value["summary"].as_str())
+        .ok_or("This activity has no text body; use its normal viewer or transcript export")?.to_string();
+    let revision=crate::workspace::hash(text.as_bytes());
+    if !expected.is_empty() && revision!=expected {return Err("Activity changed; reopen the reader".into());}
+    let entry=ActivityText{created:Instant::now(),text,kind,revision};
+    let result=page(&entry)?;
+    let key=format!("{id}:{record_offset}:{}",entry.revision);
+    let mut store=activity_texts().lock().map_err(|_|"Activity reader unavailable")?;
+    store.retain(|_,entry|entry.created.elapsed()<Duration::from_secs(120));
+    store.remove(&key);
+    while store.len()>=16 || store.values().map(|v|v.text.len()).sum::<usize>()+entry.text.len()>16*1024*1024 {
+        let oldest=store.iter().min_by_key(|(_,v)|v.created).map(|(k,_)|k.clone());
+        if let Some(key)=oldest {store.remove(&key);} else {break;}
+    }
+    store.insert(key,entry);
+    Ok(result)
+}
 fn history_record(id: &str, record_offset: usize, offset: usize) -> Result<Value, String> {
     use base64::Engine;
     if offset >= 8*1024*1024 {return Err("Large activity exceeds the 8 MiB reader limit; export the transcript".into());}
@@ -1671,6 +1722,9 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
         }
         ("GET", "/api/activity-location") => activity_location(query.get("id").ok_or("Missing thread")?,
             query.get("recordOffset").and_then(|v|v.parse().ok()).ok_or("Missing recordOffset")?),
+        ("GET", "/api/activity-text") => activity_text(query.get("id").ok_or("Missing thread")?,
+            query.get("recordOffset").and_then(|v|v.parse().ok()).ok_or("Missing recordOffset")?,
+            query.get("offset").and_then(|v|v.parse().ok()).unwrap_or(0),query.get("expected").map(String::as_str).unwrap_or("")),
         ("GET", "/api/history-record") => history_record(query.get("id").ok_or("Missing thread")?,
             query.get("recordOffset").and_then(|v|v.parse().ok()).ok_or("Missing recordOffset")?,
             query.get("offset").and_then(|v|v.parse().ok()).unwrap_or(0)),

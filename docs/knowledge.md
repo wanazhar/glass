@@ -16,6 +16,41 @@ not grant permissions or override current instructions. Save durable facts,
 procedures and verified corrections rather than task progress, raw transcripts,
 credentials or guesses about preferences.
 
+### Automatic recall and learning policy
+
+Native memory has a project-local mode, persisted across sessions:
+
+```sh
+gc neuralnets mode auto    # default: recall and agent learning
+gc neuralnets mode recall  # recall without agent writes
+gc neuralnets mode off     # exclude native memory and block model memory access
+```
+
+The `/memory` or `/neuralnets` browser exposes these settings. Only human interfaces
+may change modes. Explicit human inspection/editing remains available in every mode.
+`gc memory enable|disable` still controls pinned facts separately; native mode `off`
+also excludes those facts. Optional extension memory has separate controls.
+
+At turn start the host ranks active learning by shared words with the latest user
+message, using a bounded local scan of the existing small store. Unrelated learning
+is omitted; an empty query retains the recent-entry fallback. Retrieval remains
+capped at 8 entries / 2 KiB and the snapshot stays fixed across tool rounds/retries.
+No embeddings, model downloads, background inference, or dedicated extraction requests
+are introduced. Agent-initiated memory tools still use ordinary tool rounds. Pinned
+facts retain their existing separate context budget.
+
+In automatic mode the host supplies a short checkpoint instruction in the existing
+request: save reusable corrections and verified lessons before finishing or compacting,
+update existing entries, or save nothing when there is no durable learning. This
+improves prompting but does not guarantee that every model extracts every lesson.
+A single-line `remember: TEXT` (or `Remember: TEXT`), with up to 1 KiB after the prefix,
+is saved directly as a user-attributed fact before inference, without depending on a
+model tool call. Use this directive only for information intended for persistent
+storage; never include credentials. Ordinary messages are not copied into memory.
+Read-only turns never capture directives. Duplicate direct captures do not grow the
+store; removed memories are not automatically restored. Full stores report an error
+rather than evicting existing knowledge silently.
+
 Model API examples:
 
 ```json

@@ -43,7 +43,7 @@ for size in [None,(20,8),(40,24),(80,30)]:
             if size:
                 t=Terminal(root,env,size)
                 try:
-                    t.idle(); t.send('remember a verified learning\r'); t.wait('NN_DONE',20);t.collect(.3)
+                    t.idle(); t.send('remember a verified learning with bounded reads\r'); t.wait('NN_DONE',20);t.collect(.3)
                     t.send('/guidance\r');t.collect(.5);t.send('\x1b');t.collect(.2);t.send('\x1b');t.collect(.2)
                     t.send('/neuralnets\r');t.collect(.5)
                     assert 'Neuralnets' in t.vt.text(),t.vt.text()
@@ -52,7 +52,7 @@ for size in [None,(20,8),(40,24),(80,30)]:
                     t.send('\x1b');t.collect(.2)
                 finally:t.close()
             else:
-                p=subprocess.run([str(BIN),'run','--json','remember a verified learning'],cwd=root,env=env,text=True,capture_output=True,timeout=20)
+                p=subprocess.run([str(BIN),'run','--json','remember a verified learning with bounded reads'],cwd=root,env=env,text=True,capture_output=True,timeout=20)
                 assert p.returncode==0 and 'NN_DONE' in p.stdout,(p.stdout,p.stderr)
             assert len(server.requests)==8,len(server.requests)
             systems=[json.dumps([m for m in r['messages'] if m['role']=='system']) for r in server.requests]

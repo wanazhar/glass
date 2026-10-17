@@ -7,7 +7,6 @@ export function workflows({
   notice,
   saveDraft,
   onAttached,
-  requestUpdate,
 }) {
   let modal,
     controller,
@@ -70,12 +69,8 @@ export function workflows({
   async function mutate(current, status, name, values, refresh) {
     if (!current() || modal.dataset.pending) return;
     if (!view.workerWorkflows && ["file", "git"].includes(name)) {
-      status.replaceChildren(
-        document.createTextNode(
-          "This action needs the updated thread runtime. ",
-        ),
-        button("Update runtime", requestUpdate),
-      );
+      status.textContent =
+        "This thread runtime is incompatible with these controls. The host backend needs an update.";
       return;
     }
     if (!view.control) {
@@ -107,19 +102,15 @@ export function workflows({
     if (!view.hostWorkflows)
       throw Error("This feature needs the updated Glass gateway.");
     if (writer && !view.workerWorkflows) {
-      const error = Error("This feature needs the updated thread runtime.");
-      error.runtimeUpdate = true;
-      throw error;
+      throw Error(
+        "This thread runtime is incompatible with these controls. The host backend needs an update.",
+      );
     }
   }
   async function attach(files) {
     try {
       requireHost(true);
     } catch (e) {
-      if (e.runtimeUpdate) {
-        requestUpdate();
-        return;
-      }
       notice(e.message, true);
       return;
     }

@@ -146,10 +146,6 @@ function updateActivity(label) {
   if (key === activityKey) return;
   activityKey = key;
   view.active = Boolean(label);
-  $("#runtime-update").classList.toggle(
-    "hidden",
-    !view.id || !view.hostWorkflows || view.workerWorkflows,
-  );
   $("#activity").classList.toggle("working", view.active);
   $("#activity-text").textContent = label || "Ready";
   $("#stop").classList.toggle("hidden", !view.active);
@@ -596,8 +592,9 @@ function message(role, source, target = $("#timeline")) {
       if (!view.control)
         return notice("Take control before changing this conversation.");
       if (!view.hostWorkflows || !view.workerWorkflows)
-        return offerRuntimeUpdate(
-          "Message actions need the updated thread runtime.",
+        return notice(
+          "This thread runtime is incompatible with these controls. The host backend needs an update.",
+          true,
         );
       const id = view.id,
         generation = view.generation;
@@ -3074,7 +3071,7 @@ function commandTransport(name, values, inspect = false) {
   if (!view.commandTransportReady)
     return Promise.reject(
       new Error(
-        "This thread uses an older runtime. Restart it below to enable browser commands.",
+        "This thread runtime is incompatible with browser commands. The host backend needs an update.",
       ),
     );
   if (!view.control && !inspect)
@@ -3118,73 +3115,14 @@ async function openNativeCommand(command, initialArgs = "") {
   body.replaceChildren();
   form.replaceChildren();
   if (!modal.open) modal.showModal();
-  if (
-    command.name === "runtime-update" ||
-    (!view.commandTransportReady && !command.readonly)
-  ) {
-    const targetId = view.id,
-      generation = view.generation;
-    const current = () =>
-      view.id === targetId &&
-      view.generation === generation &&
-      version === commandViewVersion &&
-      modal.open;
-    const note = el(
-      "p",
-      "quiet",
-      "This saved thread uses an older runtime. Restarting preserves its transcript and stops its owned background jobs and teammates. Active work must finish first.",
+  if (!view.commandTransportReady && !command.readonly) {
+    body.append(
+      el(
+        "p",
+        "quiet",
+        "This thread runtime is incompatible with browser commands. The host backend needs an update.",
+      ),
     );
-    const label = el(
-      "label",
-      "command-confirm",
-      "Restart this thread runtime and its owned background work",
-    );
-    const consent = el("input");
-    consent.type = "checkbox";
-    label.prepend(consent);
-    const upgrade = el("button", "command-run", "Restart runtime");
-    upgrade.type = "button";
-    upgrade.onclick = async () => {
-      if (!consent.checked) {
-        $("#command-status").textContent = "Confirm the restart first.";
-        return;
-      }
-      if (!current()) return;
-      if (view.active || view.interaction) {
-        $("#command-status").textContent =
-          "Finish or cancel active work before updating the runtime.";
-        return;
-      }
-      if (!view.control) {
-        $("#command-status").textContent =
-          "Take control before updating the runtime.";
-        return;
-      }
-      upgrade.disabled = true;
-      try {
-        await api("upgrade", { id: targetId, confirmed: true });
-        if (!current()) return;
-        modal.close();
-        await openThread(targetId, { resume: true });
-        if (
-          view.id !== targetId ||
-          view.generation !== generation + 1 ||
-          version !== commandViewVersion
-        )
-          return;
-        if (command.name === "runtime-update")
-          notice(
-            "Runtime updated. Your transcript is preserved. Retry the action you selected.",
-          );
-        else await openNativeCommand(command, initialArgs);
-      } catch (error) {
-        if (current()) {
-          $("#command-status").textContent = error.message;
-          upgrade.disabled = false;
-        }
-      }
-    };
-    form.append(note, label, upgrade);
     return;
   }
   const fields = command.form?.fields || [];
@@ -3943,7 +3881,6 @@ function workflow() {
       notice,
       saveDraft,
       onAttached: () => refreshContext(),
-      requestUpdate: openRuntimeUpdate,
     }),
   ));
 }
@@ -4046,7 +3983,6 @@ async function openWorkflow(name, ...args) {
     if (!view.id) return notice("Open a thread first.");
     return await (await workflow())[name](...args);
   } catch (e) {
-    if (e.runtimeUpdate) return openRuntimeUpdate();
     notice(e.message, true);
   }
 }
@@ -4061,20 +3997,3 @@ $(".brand-home").addEventListener("click", async (event) => {
     location.href = "/";
   }
 });
-
-function openRuntimeUpdate() {
-  if (!view.id) return notice("Open a thread first.");
-  if (view.workerWorkflows)
-    return notice("This thread runtime is already updated.");
-  return openNativeCommand({ name: "runtime-update", readonly: false });
-}
-function offerRuntimeUpdate(message) {
-  notice(message);
-  if (view.hostWorkflows && view.id && !view.workerWorkflows) {
-    const button = el("button", "quiet", "Update runtime");
-    button.type = "button";
-    button.onclick = openRuntimeUpdate;
-    $("#notice").append(button);
-  }
-}
-$("#runtime-update").onclick = openRuntimeUpdate;

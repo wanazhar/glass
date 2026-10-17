@@ -390,7 +390,9 @@ active-context inspection, saved-queue management, and a Work view. These use
 the native session commands and their completion receipts. Mutations require
 input ownership. An older gateway or worker is identified explicitly; unsupported
 workflow controls explain that an update is needed. Updating assets does not
-restart an existing runtime.
+restart an existing runtime. Older threads show **Update runtime**. Select it
+only when the thread is idle, then confirm the restart; its owned background
+jobs and teammates stop, while its transcript is retained.
 
 Choose files from the device or paste image files into the composer. Uploads
 remain outside the project and become active snapshots only after the native

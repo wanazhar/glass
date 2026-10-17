@@ -259,6 +259,10 @@ the host through the same native handlers. Confirmation fields protect actions
 such as restores, publication, and configuration changes. Credential fields
 are masked and are not added to the conversation or sent as model prompts.
 
+Command controls stay above the results while data loads. The initial result
+area reserves space with static placeholders; refresh keeps the current results
+visible and marks them busy until the replacement arrives.
+
 All native palette result views share labeled rows, readable empty states and
 compact sections. Lists retain item IDs and provide a local filter for larger
 results; multiline output and diffs use the full reading width. Quote sources

@@ -3227,6 +3227,9 @@ async function openNativeCommand(command, initialArgs = "") {
   $("#command-title").textContent = `/${command.name}`;
   $("#command-status").textContent = "";
   body.replaceChildren();
+  body.className = 'command-data';
+  body.setAttribute('aria-busy', 'false');
+  $('#command-content').scrollTop = 0;
   form.replaceChildren();
   modal.querySelector('.command-description')?.remove();
   if (command.description) form.before(el('p', 'command-description', command.description.replace(/ · local$/, '')));
@@ -3450,6 +3453,17 @@ async function openNativeCommand(command, initialArgs = "") {
   const execute = async (inspect = false) => {
     const id = view.id;
     button.disabled = true;
+    body.setAttribute('aria-busy', 'true');
+    if (!body.hasChildNodes()) {
+      const placeholder = el('div', 'command-skeleton');
+      placeholder.setAttribute('aria-hidden', 'true');
+      for (let row = 0; row < 5; row++) {
+        const line = el('div', 'command-skeleton-row');
+        line.append(el('span'), el('span'));
+        placeholder.append(line);
+      }
+      body.append(placeholder);
+    }
     $("#command-status").textContent = inspect
       ? "Loading…"
       : command.form?.model_request
@@ -3524,10 +3538,13 @@ async function openNativeCommand(command, initialArgs = "") {
         body.prepend(download);
       }
     } catch (error) {
-      if (version === commandViewVersion)
+      if (version === commandViewVersion) {
+        if (body.querySelector('.command-skeleton')) body.replaceChildren(el('p', 'command-empty', 'Results could not load. Try again using the command above.'));
         $("#command-status").textContent = error.message;
+      }
     } finally {
       if (version === commandViewVersion) {
+        body.setAttribute('aria-busy', 'false');
         button.disabled = false;
         cancel.hidden = true;
         $("#command-status").dataset.working = "false";

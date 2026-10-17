@@ -1,3 +1,4 @@
+import { createToolActivity, setToolInput, finishToolActivity, startToolActivity, refreshToolTime, activitySnapshot } from "./activity.js";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { draftStore } from "./drafts.js";
@@ -24,6 +25,7 @@ const view = {
   control: false,
   follow: true,
   reasoning: "",
+  thought: null,
   reasoningBefore: 0,
   tools: new Map(),
   group: null,
@@ -400,6 +402,20 @@ function prepareBlock(node, streaming, context) {
   for (const a of node.querySelectorAll("a")) {
     a.rel = "noopener noreferrer";
     a.target = "_blank";
+    const href = a.getAttribute("href") || "";
+    const extension = /\.(pdf|docx?|xlsx?|pptx?|csv|zip|md|txt)(?:[?#].*)?$/i.exec(href)?.[1];
+    if (!streaming && extension && !/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(href)
+        && a.parentElement?.tagName === "P" && a.parentElement.textContent.trim() === a.textContent.trim()
+        && a.parentElement.children.length === 1 && !a.dataset.fileCard) {
+      a.dataset.fileCard = "true";
+      a.classList.add("document-card");
+      const title = a.textContent;
+      const words = el("span", "document-card-words");
+      words.append(el("strong", "", title), el("small", "", extension.toUpperCase() + " · Open file"));
+      const icon = el("span", "document-card-icon", "▤");
+      icon.setAttribute("aria-hidden", "true");
+      a.replaceChildren(icon, words, el("span", "document-card-arrow", "↗"));
+    }
   }
   for (const img of node.querySelectorAll("img")) {
     if (img.dataset.assetPrepared) continue;
@@ -513,6 +529,42 @@ function markdown(node, source, streaming = false) {
       );
   } else cap?.remove();
 }
+function thought(delta, target = $("#timeline"), saved = false) {
+  if (!view.thought) {
+    finishStream();
+    view.group = null;
+    const row = el("details", "thought-row"), summary = el("summary");
+    const label = el("span", "thought-label", saved ? "Thoughts" : "Thinking");
+    const excerpt = el("span", "thought-excerpt");
+    const body = el("div", "prose thought-body");
+    const card = { row, body, label, excerpt, source: "", capped: false, saved };
+    summary.append(el("span", "thought-icon", "◌"), label, excerpt, el("span", "thought-chevron", "⌄"));
+    row.append(summary, body);
+    row.addEventListener("toggle", () => renderThought(card));
+    target.append(row);
+    view.thought = card;
+  }
+  const card = view.thought;
+  if (!saved) { card.saved = false; card.label.textContent = "Thinking"; }
+  card.capped ||= card.source.length + delta.length > 65536;
+  card.source = text(card.source + delta, 65536);
+  card.excerpt.textContent = card.source.replace(/\s+/g, " ").slice(0, 120);
+}
+function renderThought(card) {
+  if (!card.row.open || !card.row.isConnected) return;
+  markdownContexts.set(card.body, { id: view.id });
+  markdown(card.body, card.source, !card.saved);
+  if (card.capped && !card.row.querySelector(".thought-cap"))
+    card.row.append(el("p", "quiet thought-cap", "Preview capped · open Reasoning in thread details for more."));
+}
+function finishThought() {
+  const card = view.thought;
+  if (!card) return;
+  card.saved = true;
+  card.label.textContent = "Thoughts";
+  renderThought(card);
+  view.thought = null;
+}
 function finishStream() {
   if (!view.stream) return;
   const node = view.stream;
@@ -550,6 +602,7 @@ async function enhance(n) {
   }
 }
 function message(role, source, target = $("#timeline")) {
+  finishThought();
   view.group = null;
   finishStream();
   const retained = view.reuseMessages?.get(role + "\0" + text(source))?.shift();
@@ -667,50 +720,69 @@ function message(role, source, target = $("#timeline")) {
 function group(target = $("#timeline")) {
   if (!view.group) {
     view.group = el("details", "work-group");
+    view.group.open = true;
     const summary = el("summary", "", "Working");
     view.group.append(summary);
     target.append(view.group);
   }
   return view.group;
 }
-function tool(id, name, command = "", target = $("#timeline")) {
-  if (id && view.tools.has(id)) return view.tools.get(id);
+let toolClock, activityPreviewThread = null;
+function refreshToolActivity() {
+  const running = [...view.tools.values()].filter(t => t.state === "running" && t.row.isConnected);
+  if (!running.length || document.hidden) {
+    clearInterval(toolClock);
+    toolClock = undefined;
+  } else {
+    for (const t of running) refreshToolTime(t);
+    if (!toolClock) toolClock = setInterval(refreshToolActivity, 1000);
+  }
+}
+document.addEventListener("visibilitychange", refreshToolActivity);
+function openAgentActivity() {
+  preview("Agent activity", "Read-only · updates at tool events", activitySnapshot(view.tools.values()), "text");
+  activityPreviewThread = view.id;
+  $("#preview-body").classList.add("agent-console");
+  $("#preview-body").scrollTop = $("#preview-body").scrollHeight;
+}
+function refreshAgentActivity() {
+  if (activityPreviewThread !== view.id || !$("#preview").open) return;
+  const body = $("#preview-body"), pre = body.querySelector("pre");
+  if (!pre || !body.classList.contains("agent-console")) return;
+  const following = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+  const snapshot = activitySnapshot(view.tools.values());
+  pre.textContent = snapshot;
+  if (previewBlob) URL.revokeObjectURL(previewBlob);
+  previewBlob = URL.createObjectURL(new Blob([snapshot], { type: "text/plain" }));
+  if (following) body.scrollTop = body.scrollHeight;
+}
+$("#agent-activity").onclick = openAgentActivity;
+function tool(id, name, command = "", target = $("#timeline"), args, saved = false) {
+  finishThought();
+  if (id && view.tools.has(id)) {
+    const item = view.tools.get(id);
+    setToolInput(item, command, args);
+    if (!saved) startToolActivity(item);
+    refreshToolActivity();
+    refreshAgentActivity();
+    return item;
+  }
   finishStream();
   const parent = group(target);
-  const row = el("details", "tool-row running");
-  const summary = el("summary");
-  summary.append(
-    el("span", "tool-icon", "◇"),
-    el("span", "tool-label", name || "Tool"),
-    el("span", "tool-description", command),
-  );
-  row.append(summary);
-  const output = el("pre", "tool-output", command || "Waiting for output…");
-  row.append(output);
-  const actions = el("div", "tool-actions");
-  const expand = el("button", "", "Expand output");
-  expand.onclick = () =>
-    preview(
-      name || "Tool output",
-      "Tool output",
-      text(output.textContent, limits.preview),
-      "text",
-    );
-  const copy = el("button", "", "Copy");
-  copy.onclick = () => copyText(output.textContent);
-  actions.append(expand, copy);
-  row.append(actions);
-  parent.append(row);
-  parent.firstChild.textContent = `${parent.children.length - 1} tool ${parent.children.length === 2 ? "call" : "calls"}`;
-  const item = { row, output, name, command };
+  const item = createToolActivity({ name: name || "tool", command, args, saved, preview, copy: copyText, activity: openAgentActivity });
+  if (id) item.row.dataset.callId = id;
+  parent.append(item.row);
+  const count = parent.children.length - 1;
+  parent.firstChild.textContent = `${count} ${count === 1 ? "step" : "steps"}`;
   if (id) view.tools.set(id, item);
+  refreshToolActivity();
+  refreshAgentActivity();
   return item;
 }
 function toolStatus(t, failed = false) {
-  t.row.classList.remove("running");
-  t.row.classList.add("completed");
-  t.row.classList.toggle("failed", failed);
-  t.row.querySelector(".tool-icon").textContent = failed ? "×" : "✓";
+  finishToolActivity(t, failed);
+  refreshToolActivity();
+  refreshAgentActivity();
 }
 function privateProviderEntry(value) {
   return value?.k === "custom" && value.c === "provider/chat-reasoning";
@@ -726,6 +798,7 @@ function record(r, target) {
       break;
     case "reasoning":
       view.reasoning = (view.reasoning + (r.t || "")).slice(-limits.reasoning);
+      thought(r.t || "", target, true);
       break;
     case "call":
     case "tool_call": {
@@ -735,19 +808,19 @@ function record(r, target) {
       } catch {
         args = {};
       }
-      tool(r.id, r.name, args.command || args.path || "", target);
+      tool(r.id, r.name, args.command || args.path || "", target, args, true);
       break;
     }
     case "bash": {
-      const t = tool(r.id, "bash", r.cmd, target);
+      const t = tool(r.id, "bash", r.cmd, target, undefined, true);
       t.output.textContent = text("$ " + r.cmd + "\n" + r.out, limits.preview);
       toolStatus(t, r.code !== 0 && r.code != null);
       break;
     }
     case "tool": {
-      const t = tool(r.id, r.name, "", target);
+      const t = tool(r.id, r.name, "", target, undefined, true);
       t.output.textContent = text(r.t, limits.preview);
-      toolStatus(t, /^error:/i.test(r.t || ""));
+      toolStatus(t, /^(?:error:|\[exit [1-9]\d*\]|\[(?:killed|timed out|cancelled))/i.test(r.t || ""));
       break;
     }
     case "meta":
@@ -814,14 +887,15 @@ async function historyNow(older = false) {
       .filter(([, t]) => t.row.open)
       .map(([id]) => id),
   );
-  const expandedGroups = new Set(
+  const expandedGroups = new Map(
     (older
       ? []
-      : [...document.querySelectorAll("#timeline .work-group[open]")]
-    ).map((n) => n.dataset.recordIndex),
+      : [...document.querySelectorAll("#timeline .work-group")]
+    ).map((n) => [n.querySelector(".tool-row")?.dataset.callId || n.dataset.recordIndex, n.open]),
   );
   if (!older) {
     view.tools.clear();
+    refreshToolActivity();
     view.reasoning = "";
   }
   const fragment = older
@@ -855,6 +929,8 @@ async function historyNow(older = false) {
   const savedGroup = view.group;
   const liveStream = view.stream;
   const savedReasoning = view.reasoning;
+  const savedThought = view.thought;
+  view.thought = null;
   const savedTasks = view.tasks;
   if (older) view.stream = null;
   view.group = null;
@@ -862,8 +938,7 @@ async function historyNow(older = false) {
   for (const item of h.records) {
     if (
       older &&
-      (item.record.k === "reasoning" ||
-        item.record.k === "state" ||
+      (item.record.k === "state" ||
         (item.record.k === "custom" && item.record.c === "state/todo"))
     )
       continue;
@@ -908,6 +983,8 @@ async function historyNow(older = false) {
     $("#timeline").prepend(fragment);
     view.group = savedGroup;
     view.stream = liveStream;
+    finishThought();
+    view.thought = savedThought;
     view.reasoning = savedReasoning;
     view.tasks = savedTasks;
   }
@@ -929,7 +1006,10 @@ async function historyNow(older = false) {
   for (const group of older
     ? []
     : $("#timeline").querySelectorAll(".work-group"))
-    if (expandedGroups.has(group.dataset.recordIndex)) group.open = true;
+    {
+      const key = group.querySelector(".tool-row")?.dataset.callId || group.dataset.recordIndex;
+      if (expandedGroups.has(key)) group.open = expandedGroups.get(key);
+    }
   if (older || !view.follow) {
     const restored = older
       ? anchor
@@ -998,6 +1078,7 @@ function schedule() {
       requestAnimationFrame(() => {
         if (view.stream) markdown(view.stream, view.streamText, true);
         if (view.tab === "reasoning") details();
+        if (view.thought) renderThought(view.thought);
         follow();
       });
     },
@@ -1123,8 +1204,10 @@ function event(m) {
       break;
     case "reasoning":
       {
+        thought(m.delta || "");
         if (view.reasoningWindows.length) {
           updateActivity("Reasoning");
+          schedule();
           break;
         }
         const next = (view.reasoning + (m.delta || "")).slice(
@@ -1145,11 +1228,10 @@ function event(m) {
       follow();
       break;
     case "tool_end": {
-      const t = tool(m.call_id, "tool");
+      const t = tool(m.call_id, "tool", "", $("#timeline"), undefined, true);
       t.output.textContent =
         text(
-          (t.command ? "$ " + t.command + "\n" : "") +
-            (m.output || m.summary || ""),
+          m.output || m.summary || "",
           limits.preview,
         ) +
         (m.truncated
@@ -1234,6 +1316,7 @@ function event(m) {
     case "done":
       notifyAttention("Glass finished working", view.id);
       clearNotice();
+      finishThought();
       finishStream();
       view.streamText = "";
       view.group = null;
@@ -1265,6 +1348,8 @@ async function openThread(id, { resume = false } = {}) {
   $("#older").textContent = "↑ Load earlier activity";
   $("#older").removeAttribute("aria-busy");
   if (view.id !== id) {
+    if (activityPreviewThread !== null && $("#preview").open) $("#preview").close();
+    activityPreviewThread = null;
     ++fileVersion;
     fileAbort?.abort();
     view.directory = null;
@@ -1278,7 +1363,9 @@ async function openThread(id, { resume = false } = {}) {
     restoreDraft();
     $("#context-chips").replaceChildren();
   }
+  view.thought = null;
   view.tools.clear();
+  refreshToolActivity();
   view.tailPruned = false;
   view.group = null;
   view.stream = null;
@@ -1390,7 +1477,6 @@ async function openThread(id, { resume = false } = {}) {
             await history();
             if (generation !== view.generation) return;
             for (const m of data.live || []) {
-              if (m.t === "tool" && view.tools.has(m.call_id)) continue;
               await event(m);
             }
             interaction();
@@ -1746,12 +1832,21 @@ function interaction() {
     panel.append(el("p", "", "Take control to answer this request."));
     return;
   }
+  let submitting = false;
   const submit = async (answer) => {
+    if (submitting) return;
+    submitting = true;
+    const controls = [...panel.querySelectorAll("button, input, textarea")];
+    controls.forEach(n => n.disabled = true);
+    panel.setAttribute("aria-busy", "true");
     try {
       await send({ t: "answer", id: m.id, answer });
-      panel.querySelectorAll("button").forEach((b) => (b.disabled = true));
     } catch (e) {
+      submitting = false;
+      controls.forEach(n => n.disabled = false);
       notice(e.message, true);
+    } finally {
+      panel.removeAttribute("aria-busy");
     }
   };
   if (r.kind === "approval") {
@@ -1776,6 +1871,8 @@ function interaction() {
     for (const [i, q] of (r.request.questions || []).entries()) {
       const field = el("fieldset");
       field.append(el("legend", "", q.question));
+      field.append(el("small", "question-number", `Question ${i + 1} of ${r.request.questions.length}${q.multiSelect ? " · Choose any" : " · Choose one"}`));
+
       for (const option of q.options || []) {
         const label = el("label"),
           input = el("input");
@@ -1790,6 +1887,8 @@ function interaction() {
       }
       const custom = el("textarea");
       custom.name = "custom" + i;
+      custom.rows = 1;
+      custom.setAttribute("aria-label", "Written answer: " + q.question);
       custom.placeholder = "Or write your own answer…";
       custom.maxLength = 4096;
       field.append(custom);
@@ -1805,6 +1904,7 @@ function interaction() {
     form.append(actions);
     form.onsubmit = (e) => {
       e.preventDefault();
+      if (submitting) return;
       const data = new FormData(form);
       const answers = r.request.questions.map((q, i) => {
         const custom = String(data.get("custom" + i) || "").trim();
@@ -2626,6 +2726,8 @@ function preview(
   context,
   replace = false,
 ) {
+  const previousActivityThread = activityPreviewThread;
+  activityPreviewThread = null;
   const dialog = $("#preview");
   if (dialog.open && !replace) {
     const body = $("#preview-body");
@@ -2634,6 +2736,7 @@ function preview(
       className: body.className,
       top: body.scrollTop,
       left: body.scrollLeft,
+      activityThread: previousActivityThread,
       title: $("#preview-title").textContent,
       kind: $("#preview-kind").textContent,
       blob: previewBlob,
@@ -2826,6 +2929,7 @@ function preview(
   if (!dialog.open) dialog.showModal();
 }
 function closePreview() {
+  activityPreviewThread = null;
   if (!previewStack.length) {
     $("#preview").close();
     return;
@@ -2839,6 +2943,7 @@ function closePreview() {
     body = $("#preview-body");
   body.replaceChildren(...parent.nodes);
   body.className = parent.className;
+  activityPreviewThread = parent.activityThread ?? null;
   $("#preview-title").textContent = parent.title;
   $("#preview-kind").textContent = parent.kind;
   $("#download").onclick = parent.download;
@@ -2857,6 +2962,7 @@ $("#preview").addEventListener("cancel", (event) => {
   closePreview();
 });
 $("#preview").addEventListener("close", () => {
+  activityPreviewThread = null;
   ++fileVersion;
   fileAbort?.abort();
   previewController?.abort();

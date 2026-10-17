@@ -366,13 +366,15 @@ before capturing. The report includes a `settled` flag. Keyboard detection uses
 the layout viewport and last idle height because Safari can shrink both the
 window and visual viewport; its offset is applied while the keyboard is open.
 
-On iOS, the page requests a black, system-reserved native status bar in both
-page themes. A device report still shows a white native strip after this change;
-server metadata and browser checks alone do not verify native iPadOS appearance.
-The setting does not request translucent status-bar mode or change viewport
-sizing. Standalone headers leave 24 px of space after the reported top inset. With
-the keyboard open, the command palette includes the visual viewport offset and
-keeps its header, search field, and footer from shrinking.
+On iOS, the page leaves native status-bar styling to the system and gives both
+its root and body the active theme background. WebKit's current guidance is to
+remove the legacy Apple status-bar-style override so the system can match the
+webpage color: https://www2.webkit.org/show_bug.cgi?id=317153#c2.
+Browser checks verify page colors and metadata; native iPadOS appearance still
+requires device confirmation. Standalone headers leave 24 px of space after the
+reported top inset. With the keyboard open, the command palette includes the
+visual viewport offset and keeps its header, search field, and footer from
+shrinking.
 
 Standalone shell geometry is also selected through the CSS display-mode media
 query. Its first frame therefore uses the same header spacing, fixed edges, and

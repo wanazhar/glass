@@ -70,3 +70,11 @@ Deployment exposed an older-worker affordance gap: portable command support may 
 Activation exposed three missing markup controls (Context, Work, Queue) that the earlier source review missed. Commit `5ed1433` restores them, makes the mobile action row visible, and exposes explicit Update runtime for older workers even when portable commands already work. Restart controls retain checkbox confirmation, idle/control checks, and captured thread/view guards; no workers were restarted automatically. The final static audit resolves all 73 literal ID references against 75 unique markup IDs.
 
 Final deployed shell is `e372e4ddcdfd`: app 40,299 bytes gzip, style 9,168 bytes gzip, lazy workflows 5,740 bytes gzip. Public build.json, served HTML binding audit, and API capability reads passed after installation. Gateway PID 2642030 remains active. These operational reads and source checks are not physical iPhone validation or a browser behavior test suite.
+
+## Backend-managed runtime completion
+
+User explicitly requested updating all runtimes from the backend and removing the per-thread update feature. `7230b9e` preserves capability state when control events omit it; `77be129` removes update buttons, forms, handlers and frontend upgrade calls; `5e4db47` advertises workflow support on idle attachment replay as well as both busy replay paths. The initial deployment missed that idle replay field.
+
+Installed final native binary SHA256 `d0ace1333459f995509b31aeec738a55e13eccb2b03ac9479f2b42ee59f45f04`; gateway and all 19 running real chat workers now use it. Every worker was verified through direct native replay with `web_workflows:1`, and transcript files were retained without truncation during the final update. No old running worker remains. Three obsolete smoke-fixture processes with deleted workspaces were stopped. Dormant conversations use the installed runtime when opened.
+
+Final public shell `fd4964afdc69` serves no runtime-update button. Compressed app 39,867 bytes, CSS 9,168 bytes, lazy workflow chunk 5,710 bytes. Independent source review and syntax/build checks passed; public API/build/markup reads and native worker capability reads passed. No test suites were added or run.

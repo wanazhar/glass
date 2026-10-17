@@ -937,12 +937,14 @@ try {
   await page.waitForFunction(
     () => !document.querySelector("#older").hasAttribute("aria-busy"),
   );
-  assert(
-    await page
-      .locator("#older")
-      .evaluate((n) => n.classList.contains("hidden")),
-    "Internal-only earlier pages must advance to the beginning",
-  );
+  assert(await page.locator(".thought-row").filter({ hasText: "Archived thought" }).count(),
+    "Earlier public reasoning must appear as collapsed conversation steps");
+  for (let pageNumber = 0; pageNumber < 12 && await page.locator("#older").isVisible(); pageNumber++) {
+    await page.locator("#older").click();
+    await page.waitForFunction(() => !document.querySelector("#older").hasAttribute("aria-busy"));
+  }
+  assert(await page.locator("#older").evaluate(n => n.classList.contains("hidden")),
+    "Public reasoning pages must paginate to the beginning");
   await page.locator("#details-toggle").click();
   await page.getByRole("button", { name: "Activity", exact: true }).click();
   await page.route("**/api/agents?*", (route) =>

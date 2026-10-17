@@ -107,9 +107,33 @@ continue to apply.
 ## Reading and previews
 
 The conversation distinguishes user messages, model responses, tool activity,
-and failures. Consecutive tool calls form expandable groups. Reasoning exposed
-by the provider, activity, context, and checklist information live in a details
-drawer. Teammate transcripts load when requested.
+and failures. Consecutive tool calls form open groups of collapsed activity rows.
+Each row shows its action, target, status, and browser-observed elapsed time for
+live calls. Expand a row to inspect input/target and result separately, copy the
+result, or open its full preview. Saved calls do not invent durations. Complete
+arguments are available when replaying saved calls; live starts currently expose
+only their command or target.
+
+The `›_` toolbar button opens **Agent activity**, a read-only execution log built
+from existing tool events. It updates at start/completion boundaries, follows new
+output only when already at the bottom, and offers a snapshot download. This is
+not an interactive shell or byte-by-byte terminal stream. Log snapshots retain
+up to 128K characters of recent output; individual steps retain their existing previews.
+
+Public reasoning appears as collapsed Thinking/Thoughts rows between steps.
+Their 64K-character previews render Markdown only when expanded. The Reasoning tab
+retains its existing fuller reading windows. Private provider continuation data
+remains excluded. Activity, context, and checklist information also live in the
+details drawer. Teammate transcripts load when requested.
+
+Questions and approvals appear inside conversation flow, with native radio or
+checkbox choices, descriptions, and a written-answer field. Pending submissions
+are disabled immediately to prevent duplicate answers. Standalone local links to
+documents such as PDFs, Markdown, and spreadsheets appear as file cards. Cards
+reuse host file previews and downloads, fetch no metadata ahead of a click, and
+do not claim that a linked file has been verified. Diagrams keep their existing
+lazy rendering, source view, and expanded viewer. No extra model request or new
+frontend dependency is required for these presentations.
 
 Previews include:
 

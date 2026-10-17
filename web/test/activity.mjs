@@ -7,7 +7,10 @@ import { existsSync } from "node:fs";
 import { resolve, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../dist/", import.meta.url));
-const streams = new Set(), answers = [], requests = [];
+const streams = new Set(), answers = [], requests = [], imagePaths = [];
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC", "base64");
+const sharedPath = "shots/ui #1 (é).png";
+const sharedResult = "[display image]\n" + JSON.stringify({ kind: "image_display", path: sharedPath, width: 1, height: 1, bytes: PNG.length, media_type: "image/png", markdown: "![Image](shots/ui%20%231%20%28%C3%A9%29.png)" }) + "\nShown to the user only. No pixels supplied to the model.";
 const { activitySnapshot } = await import("../src/activity.js");
 const bounded = activitySnapshot([{ state: "completed", name: "bash", time: { textContent: "" }, command: "build", output: { textContent: "x".repeat(200000) + "FINAL_BUILD_ERROR" } }]);
 assert(bounded.length < 132000 && bounded.endsWith("FINAL_BUILD_ERROR"), "Activity snapshots must stay bounded and retain the latest output");
@@ -20,6 +23,8 @@ const records = [
   { k: "call", id: "saved-failure", name: "bash", args: JSON.stringify({ command: "false" }) },
   { k: "bash", id: "saved-failure", cmd: "false", out: "Intended fixture error", code: 1 },
   { k: "tool", id: "saved-failure", name: "bash", t: "[exit 1]\nIntended fixture error" },
+  { k: "call", id: "saved-image", name: "display_image", args: JSON.stringify({ path: sharedPath }) },
+  { k: "tool", id: "saved-image", name: "display_image", t: sharedResult },
   { k: "assistant", t: "## Your project guide\n\nA readable response with **clear emphasis**, a short list, and a diagram.\n\n- Review the source\n- Run the checks\n\n[Project guide](docs/guide.md)\n\n```mermaid\nflowchart TD\n  A[Source code] --> B[Build]\n  B --> C[Browser]\n```\n\n[External PDF](https://example.com/remote.pdf)\n\n[Unsafe](javascript:alert(1))\n" },
   { k: "call", id: "resumed", name: "bash", args: JSON.stringify({ command: "sleep 1" }) },
 ];
@@ -32,6 +37,12 @@ const server = createServer(async (request, response) => {
     streams.add(response);
     response.write(`data: ${JSON.stringify({ reset: true, control: { can_write: true, web_workflows: 1, commands: [] }, live: [{ t: "tool", call_id: "resumed", name: "bash", command: "sleep 1" }], active: true })}\n\n`);
     request.on("close", () => streams.delete(response));
+    return;
+  }
+  if (path === "/api/file" && url.searchParams.get("path")?.endsWith(".png")) {
+    imagePaths.push(url.searchParams.get("path"));
+    response.writeHead(200, { "Content-Type": "image/png" });
+    response.end(PNG);
     return;
   }
   if (path === "/api/file") {
@@ -83,6 +94,17 @@ try {
     await page.locator(".app").waitFor({ state: "visible" });
     await page.waitForFunction(() => document.querySelector("#ownership").textContent === "Release control");
     await page.locator('.tool-row[data-call-id="resumed"][data-state="running"]').waitFor();
+    const shared = page.locator(".shared-image-card").first();
+    await shared.scrollIntoViewIfNeeded();
+    await page.waitForFunction(() => document.querySelector(".shared-image-card img")?.naturalWidth === 1);
+    assert.match(await shared.textContent(), /Shared without model vision/);
+    assert(imagePaths.includes(sharedPath), "Image paths with spaces, Unicode and fragment characters must survive sharing");
+    await shared.getByRole("button").click();
+    await page.locator("#preview-body > img").waitFor();
+    assert.equal(await page.locator("#preview-title").textContent(), sharedPath);
+    await page.locator("#preview-close").click();
+    emit([{ t: "tool", call_id: "live-display", name: "display_image", command: sharedPath }, { t: "tool_end", call_id: "live-display", output: sharedResult, summary: "Shared image" }]);
+    await page.waitForFunction(() => document.querySelectorAll(".shared-image-card").length === 2);
     const savedThought = page.locator(".thought-row").first();
     assert.equal(await savedThought.locator(".thought-body").textContent(), "", "Collapsed reasoning must stay lazily rendered");
     await savedThought.locator("summary").click();

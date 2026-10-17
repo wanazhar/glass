@@ -4,7 +4,7 @@ use serde_json::{Value,json};
 use std::collections::BTreeMap;
 
 fn values(c:&config::Config)->BTreeMap<String,Value> {
-    let value=json!({"provider":c.provider,"model":c.model,"connection":c.connection,
+    let value=json!({"provider":c.provider,"model":c.model,"image_input":c.image_input,"connection":c.connection,
         "base_url_fingerprint":crate::workspace::hash(c.base_url.as_bytes()),
         "adaptive_pacing":c.adaptive_pacing,"max_tokens":c.max_tokens,"reasoning_budget":c.reasoning_budget,"cost_limit":c.cost_limit,
         "mods":c.mods,"extension_fingerprints":c.extensions.iter().map(|s|crate::workspace::hash(s.as_bytes())).collect::<Vec<_>>(),

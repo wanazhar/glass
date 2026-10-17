@@ -10,6 +10,7 @@ const verbs = {
   read: ["Reading", "Read", "▤"],
   edit: ["Editing", "Edited", "✎"],
   write: ["Writing", "Wrote", "▧"],
+  display_image: ["Sharing image", "Shared image", "▣"],
   view_image: ["Inspecting image", "Inspected image", "▣"],
   ask_user_question: ["Asking a question", "Asked a question", "?"],
 };

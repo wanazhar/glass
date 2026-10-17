@@ -98,8 +98,8 @@ def main():
             disabled = subprocess.run(
                 [str(f.BINARY), 'run', '--json', '--attach', 'shot.png', 'look at this'],
                 cwd=repo, env=env, text=True, capture_output=True, timeout=120)
-            assert 'Image input is disabled' in disabled.stdout + disabled.stderr, disabled
-            assert Endpoint.calls == calls, 'disabled vision dispatched a provider request'
+            assert disabled.returncode == 0 and 'NO-IMAGE' in disabled.stdout, disabled
+            assert Endpoint.calls == calls + 1, 'text-only input did not continue exactly once'
         finally:
             server.shutdown()
     print(

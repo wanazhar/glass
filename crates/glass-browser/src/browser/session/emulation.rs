@@ -5,6 +5,7 @@
 //! extension methods.
 
 use super::*;
+pub use glass_browser_core::contracts::{GeoLocation, NetworkConditions};
 
 /// Options for page PDF generation via CDP `Page.printToPDF`.
 ///
@@ -50,61 +51,6 @@ impl PdfOptions {
             paper_height: Some(11.0),
             print_background: Some(true),
             ..Default::default()
-        }
-    }
-}
-
-/// Geolocation coordinates for CDP emulation.
-///
-/// Pass to [`CdpBrowserSession::set_geolocation`] to override the
-/// browser's reported position.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct GeoLocation {
-    /// Latitude in decimal degrees (-90 to 90).
-    pub latitude: f64,
-    /// Longitude in decimal degrees (-180 to 180).
-    pub longitude: f64,
-    /// Accuracy radius in meters. Defaults to 100 when omitted.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub accuracy: Option<f64>,
-}
-
-/// Named or explicit network emulation settings for one session.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct NetworkConditions {
-    pub offline: bool,
-    pub latency_ms: f64,
-    pub download_throughput_bytes: f64,
-    pub upload_throughput_bytes: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub connection_type: Option<String>,
-}
-
-impl NetworkConditions {
-    pub fn preset(name: &str) -> BrowserResult<Self> {
-        match name {
-            "slow-3g" => Ok(Self {
-                offline: false,
-                latency_ms: 400.0,
-                download_throughput_bytes: 50_000.0,
-                upload_throughput_bytes: 50_000.0,
-                connection_type: Some("cellular3g".to_string()),
-            }),
-            "fast-3g" => Ok(Self {
-                offline: false,
-                latency_ms: 100.0,
-                download_throughput_bytes: 1_500_000.0,
-                upload_throughput_bytes: 750_000.0,
-                connection_type: Some("cellular3g".to_string()),
-            }),
-            "offline" => Ok(Self {
-                offline: true,
-                latency_ms: 0.0,
-                download_throughput_bytes: 0.0,
-                upload_throughput_bytes: 0.0,
-                connection_type: Some("none".to_string()),
-            }),
-            _ => Err("network preset must be slow-3g, fast-3g, or offline".into()),
         }
     }
 }

@@ -38,6 +38,7 @@ default = ["native-engine"]
 visual-compare = []
 fuzzing = []
 native-engine = [
+    "glass-browser-core/native-engine",
     "dep:fontdue",
     "dep:flate2",
     "dep:harfrust",
@@ -53,6 +54,7 @@ native-engine = [
 ]
 
 [dependencies]
+glass-browser-core = { version = "=0.3.14", path = "../glass-browser-core", default-features = false }
 base64 = "0.22"
 flate2 = { version = "1.1.9", optional = true, default-features = false, features = ["rust_backend"] }
 fontdue = { version = "0.9.4", optional = true, default-features = false, features = ["simd", "std"] }

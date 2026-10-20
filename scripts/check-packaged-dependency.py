@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate glass-dev's normalized package dependency contract."""
+"""Validate the normalized Glass package dependency chain."""
 
 import argparse
 import pathlib
@@ -17,14 +17,28 @@ def main() -> None:
             name for name in archive.getnames() if name.endswith("/Cargo.toml")
         )
         manifest = tomllib.loads(archive.extractfile(manifest_name).read().decode())
-    dependency = manifest["dependencies"]["glass-browser"]
+    product = manifest["package"]["name"]
+    dependency_name = {
+        "glass-dev": "glass-browser",
+        "glass-browser": "glass-browser-core",
+    }.get(product)
+    if dependency_name is None:
+        raise SystemExit(f"unsupported package dependency contract: {product}")
+    dependency = manifest["dependencies"][dependency_name]
     if dependency.get("version") != f"={args.version}":
-        raise SystemExit(f"expected exact glass-browser ={args.version}, got {dependency!r}")
+        raise SystemExit(
+            f"expected exact {dependency_name} ={args.version}, got {dependency!r}"
+        )
     if "path" in dependency:
-        raise SystemExit("packaged glass-dev manifest retained a local path dependency")
-    if dependency.get("features") not in (None, []):
-        raise SystemExit("packaged glass-dev must use ordinary glass-browser APIs")
-    print(f"packaged glass-dev resolves glass-browser exactly at {args.version}")
+        raise SystemExit(f"packaged {product} retained a local path dependency")
+    expected_features = ["native-engine"] if product == "glass-dev" else []
+    if dependency.get("features", []) != expected_features:
+        raise SystemExit(
+            f"packaged {product} must request {expected_features!r} on {dependency_name}"
+        )
+    if product == "glass-browser" and dependency.get("default-features") is not False:
+        raise SystemExit("packaged glass-browser must disable core default features")
+    print(f"packaged {product} resolves {dependency_name} exactly at {args.version}")
 
 
 if __name__ == "__main__":

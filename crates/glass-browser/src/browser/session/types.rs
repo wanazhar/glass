@@ -38,7 +38,7 @@ use crate::browser::profile::{ProfileLock, ProfileManager};
 /// Convenience alias for fallible browser operations. All session methods
 /// return this type so callers can propagate errors with `?` without boxing
 /// at every call site.
-pub type BrowserResult<T> = Result<T, Box<dyn Error>>;
+pub use glass_browser_core::contracts::{BrowserResult, DownloadOutcome, PendingDialog};
 
 /// Maximum number of steps in a single batch operation.
 pub const MAX_BATCH_STEPS: usize = 32;
@@ -460,8 +460,7 @@ pub(crate) const COMPACT_PAGE_STATE_EXPRESSION: &str = r#"(() => {
 pub(crate) const OWNED_BROWSER_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const AMBIGUOUS_CANDIDATE_LIMIT: usize = 8;
 pub(crate) const CANDIDATE_LABEL_MAX_BYTES: usize = 160;
-pub(crate) const TOPOLOGY_MAX_TARGETS: usize = 32;
-pub(crate) const TOPOLOGY_MAX_FRAMES: usize = 128;
+pub(crate) use glass_browser_core::limits::{TOPOLOGY_MAX_FRAMES, TOPOLOGY_MAX_TARGETS};
 pub(crate) const TOPOLOGY_ID_MAX_BYTES: usize = 256;
 pub(crate) const TOPOLOGY_TEXT_MAX_BYTES: usize = 1024;
 pub(crate) const TOPOLOGY_MAX_EVENTS: usize = 64;
@@ -942,21 +941,6 @@ pub(crate) struct TopologyRegistry {
     pub(crate) destroyed_targets: VecDeque<DestroyedPageTarget>,
     /// Most recently opened JavaScript dialog, if any.
     pub(crate) pending_dialog: Option<PendingDialog>,
-}
-
-/// JavaScript dialog content surfaced to agents before resolution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingDialog {
-    /// `alert`, `confirm`, `prompt`, or `beforeunload`.
-    #[serde(rename = "type")]
-    pub dialog_type: String,
-    /// Dialog message text (bounded to 256 bytes).
-    pub message: String,
-    /// Default prompt value (only for `prompt` dialogs).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_value: Option<String>,
-    /// Page URL that opened the dialog.
-    pub url: String,
 }
 
 /// An interactive element discovered in the accessibility tree.
@@ -1626,21 +1610,6 @@ pub struct NetworkEvidence {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub safe_header_names: Vec<String>,
     pub redirect_count: u16,
-}
-
-/// Outcome of a completed download lifecycle.
-#[derive(Debug, Clone, Serialize)]
-pub struct DownloadOutcome {
-    pub guid: String,
-    pub suggested_filename: String,
-    pub state: String,
-    pub received_bytes: u64,
-    pub total_bytes: u64,
-    pub target_id: String,
-    pub frame_id: String,
-    /// SHA-256 hash of the downloaded file content, if the download completed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sha256: Option<String>,
 }
 
 /// Stable machine-readable category for [`DownloadError`].

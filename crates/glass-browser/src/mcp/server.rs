@@ -8,23 +8,27 @@
 use base64::Engine;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
+#[cfg(feature = "native-engine")]
+use std::sync::atomic::AtomicU64;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
-    future::Future,
     io,
     path::Path,
-    pin::Pin,
     sync::{
         Arc, Mutex as StdMutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
+#[cfg(feature = "native-engine")]
+use std::{future::Future, pin::Pin};
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
-use tokio::sync::{Mutex, Notify, Semaphore, mpsc, oneshot};
+#[cfg(feature = "native-engine")]
+use tokio::sync::Notify;
+use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
 use tracing::{debug, info};
 
 use crate::browser::cdp::CdpError;
@@ -36,12 +40,14 @@ use crate::browser::native_engine::{
 use crate::browser::policy::{BrowserPolicy, PolicyError};
 use crate::browser::profile::ProfileManager;
 use crate::browser::runtime::BrowserRuntimeSession;
+#[cfg(feature = "native-engine")]
+use crate::browser::session::KnowledgeLookupContext;
 use crate::browser::session::{
     ActionContractError, ActionKind, ActionOutcome, ActionVerificationError, BatchMode, BatchStep,
     BrowserResult, CdpBrowserSession, CheckpointV1, DownloadError, KnowledgeConfidence,
-    KnowledgeLookupContext, KnowledgeLookupOptions, KnowledgeObservationMode,
-    KnowledgeObservationReport, KnowledgeProfileScope, KnowledgeStore, Locator, PopupClickError,
-    PreflightAction, ReconciliationOptions, SemanticIntentExecutionRequest, SemanticIntentRequest,
+    KnowledgeLookupOptions, KnowledgeObservationMode, KnowledgeObservationReport,
+    KnowledgeProfileScope, KnowledgeStore, Locator, PopupClickError, PreflightAction,
+    ReconciliationOptions, SemanticIntentExecutionRequest, SemanticIntentRequest,
     SemanticObservationLevel, SessionOptions, SessionSnapshotStore, StructuredExtractionRequest,
     TargetError, VerificationPredicate, VisualCaptureOptions, VisualClip, VisualFormat,
     WaitCondition, WaitTimeout, default_knowledge_store_path, default_session_snapshot_path,
@@ -75,9 +81,13 @@ const MAX_ERROR_MESSAGE_BYTES: usize = 512;
 const MAX_CONCURRENT_REQUESTS: usize = 8;
 const MAX_QUEUED_RESPONSES: usize = 16;
 const FRAME_BODY_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(feature = "native-engine")]
 const MCP_DIALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-const MCP_CANCELLATION_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(feature = "native-engine")]
+const MCP_CANCELLATION_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(feature = "native-engine")]
 const MCP_PERSISTENT_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(100);
+#[cfg(feature = "native-engine")]
 const MCP_DIALOG_PROMPT_MAX_BYTES: usize = 256;
 
 #[derive(Debug, Deserialize)]
@@ -519,6 +529,7 @@ struct Outbound {
 
 enum OutboundPayload {
     Response(JsonRpcResponse),
+    #[cfg(feature = "native-engine")]
     Json(Value),
 }
 
@@ -529,8 +540,10 @@ enum CancellationKey {
 }
 
 type CancellationMap = Arc<StdMutex<HashMap<CancellationKey, oneshot::Sender<()>>>>;
+#[cfg(feature = "native-engine")]
 type PendingServerResponses = Arc<StdMutex<HashMap<String, oneshot::Sender<Value>>>>;
 
+#[cfg(feature = "native-engine")]
 #[derive(Clone)]
 struct McpServerTransport {
     outbound: mpsc::Sender<Outbound>,
@@ -539,6 +552,7 @@ struct McpServerTransport {
     next_request_id: Arc<AtomicU64>,
 }
 
+#[cfg(feature = "native-engine")]
 #[derive(Clone)]
 struct McpElicitationClient {
     transport: McpServerTransport,
@@ -547,6 +561,8 @@ struct McpElicitationClient {
     parent_cancelled: Arc<AtomicBool>,
     supports_form: bool,
 }
+#[cfg(not(feature = "native-engine"))]
+struct McpElicitationClient;
 
 #[cfg(feature = "native-engine")]
 #[derive(Debug)]
@@ -564,6 +580,7 @@ impl std::fmt::Display for NativeMcpFormElicitationRequired {
 #[cfg(feature = "native-engine")]
 impl std::error::Error for NativeMcpFormElicitationRequired {}
 
+#[cfg(feature = "native-engine")]
 struct PendingServerResponseCleanup {
     key: String,
     pending_responses: PendingServerResponses,
@@ -575,6 +592,7 @@ struct PendingServerResponseCleanup {
     cancel_on_drop: bool,
 }
 
+#[cfg(feature = "native-engine")]
 impl Drop for PendingServerResponseCleanup {
     fn drop(&mut self) {
         self.pending_responses
@@ -598,6 +616,7 @@ impl Drop for PendingServerResponseCleanup {
     }
 }
 
+#[cfg(feature = "native-engine")]
 impl McpServerTransport {
     async fn request(
         &self,
@@ -627,11 +646,12 @@ impl McpServerTransport {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let cancellation_key = CancellationKey::Request(key.clone());
-            if cancellations.contains_key(&cancellation_key) {
-                true
-            } else {
-                cancellations.insert(cancellation_key, cancel_tx);
-                false
+            match cancellations.entry(cancellation_key) {
+                std::collections::hash_map::Entry::Occupied(_) => true,
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(cancel_tx);
+                    false
+                }
             }
         };
         if duplicate_cancellation_id {
@@ -810,6 +830,7 @@ where
     let policy = crate::cli::runner::policy_from_cli(cli)?;
     let mut reader = reader;
     let cancellations: CancellationMap = Arc::new(StdMutex::new(HashMap::new()));
+    #[cfg(feature = "native-engine")]
     let server_request_cancellations: CancellationMap = Arc::new(StdMutex::new(HashMap::new()));
     let permits = lease_context
         .as_ref()
@@ -819,7 +840,9 @@ where
         .as_ref()
         .map(|context| Arc::clone(&context.client_request_permits));
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Outbound>(MAX_QUEUED_RESPONSES);
+    #[cfg(feature = "native-engine")]
     let pending_server_responses: PendingServerResponses = Arc::new(StdMutex::new(HashMap::new()));
+    #[cfg(feature = "native-engine")]
     let server_transport = McpServerTransport {
         outbound: outbound_tx.clone(),
         pending_responses: Arc::clone(&pending_server_responses),
@@ -833,6 +856,7 @@ where
                 OutboundPayload::Response(response) => {
                     write_response(&mut writer, &response, outbound.format).await?;
                 }
+                #[cfg(feature = "native-engine")]
                 OutboundPayload::Json(message) => {
                     write_json_message(&mut writer, &message, outbound.format).await?;
                 }
@@ -842,6 +866,7 @@ where
     });
     let mut next_internal_cancellation_id = 1_u64;
     let mut lifecycle = Lifecycle::Uninitialized;
+    #[cfg(feature = "native-engine")]
     let mut client_supports_form_elicitation = false;
     let native_session = Arc::new(Mutex::new(None));
     let persistent_native_session = if native_runtime {
@@ -865,9 +890,15 @@ where
         if message.get("method").is_none()
             && (message.get("result").is_some() || message.get("error").is_some())
         {
+            #[cfg(feature = "native-engine")]
             if !route_server_response(&message, &pending_server_responses) {
                 debug!(body_bytes, "MCP server-request response was not correlated");
             }
+            #[cfg(not(feature = "native-engine"))]
+            debug!(
+                body_bytes,
+                "unexpected MCP server-request response was ignored"
+            );
             continue;
         }
         let request: JsonRpcRequest = match serde_json::from_value(message) {
@@ -941,12 +972,15 @@ where
             );
             if response.error.is_none() {
                 lifecycle = Lifecycle::Negotiated;
-                client_supports_form_elicitation = request
-                    .params
-                    .get("protocolVersion")
-                    .and_then(Value::as_str)
-                    == Some(MCP_PROTOCOL_VERSION_ELICITATION)
-                    && client_declares_form_elicitation(&request);
+                #[cfg(feature = "native-engine")]
+                {
+                    client_supports_form_elicitation = request
+                        .params
+                        .get("protocolVersion")
+                        .and_then(Value::as_str)
+                        == Some(MCP_PROTOCOL_VERSION_ELICITATION)
+                        && client_declares_form_elicitation(&request);
+                }
             }
             send_response(&outbound_tx, response, format).await?;
             continue;
@@ -1156,9 +1190,13 @@ where
         let task_persistent_native_session = persistent_native_session.clone();
         let task_outbound = outbound_tx.clone();
         let task_cancellations = Arc::clone(&cancellations);
+        #[cfg(feature = "native-engine")]
         let task_elicitation_cancellation = native_runtime.then(|| Arc::new(Notify::new()));
+        #[cfg(feature = "native-engine")]
         let task_parent_cancelled = native_runtime.then(|| Arc::new(AtomicBool::new(false)));
+        #[cfg(feature = "native-engine")]
         let persistent_dialog_host = task_persistent_native_session.is_some();
+        #[cfg(feature = "native-engine")]
         let task_elicitation = (native_runtime
             && (client_supports_form_elicitation || persistent_dialog_host))
             .then(|| McpElicitationClient {
@@ -1176,6 +1214,8 @@ where
                 ),
                 supports_form: client_supports_form_elicitation,
             });
+        #[cfg(not(feature = "native-engine"))]
+        let task_elicitation: Option<McpElicitationClient> = None;
         let native_session_owned = Arc::new(AtomicBool::new(false));
         let task_native_session_owned = Arc::clone(&native_session_owned);
         tokio::task::spawn_local(async move {
@@ -1253,8 +1293,10 @@ where
 
     // EOF cancels in-flight client and server requests so a modal browser
     // operation cannot strand the stdio writer or owned browser session.
+    #[cfg(feature = "native-engine")]
     drop(server_transport);
     cancel_active_requests(&cancellations);
+    #[cfg(feature = "native-engine")]
     cancel_active_requests(&server_request_cancellations);
     drop(outbound_tx);
     writer.await??;
@@ -1636,6 +1678,7 @@ async fn send_response(
         .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "MCP output task stopped"))
 }
 
+#[cfg(feature = "native-engine")]
 async fn send_json(
     sender: &mpsc::Sender<Outbound>,
     message: Value,
@@ -1670,6 +1713,7 @@ fn request_id_key(id: &Value) -> Option<String> {
     matches!(id, Value::String(_) | Value::Number(_)).then(|| id.to_string())
 }
 
+#[cfg(feature = "native-engine")]
 fn route_server_response(message: &Value, pending_responses: &PendingServerResponses) -> bool {
     if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
         || message.get("result").is_some() == message.get("error").is_some()
@@ -1779,6 +1823,7 @@ fn initialize_response_in_mode(
     )
 }
 
+#[cfg(feature = "native-engine")]
 fn client_declares_form_elicitation(request: &JsonRpcRequest) -> bool {
     let Some(capabilities) = request
         .params
@@ -1831,7 +1876,7 @@ async fn handle_request_with_viewport(
     knowledge_store_path: Option<&Path>,
     _development_sessions: &DevelopmentSessionStore,
     host_backend: Option<&dyn HostMcpToolBackend>,
-    elicitation: Option<&McpElicitationClient>,
+    _elicitation: Option<&McpElicitationClient>,
 ) -> Option<JsonRpcResponse> {
     if request.id.is_notification() && request.method == "notifications/initialized" {
         return None;
@@ -1961,7 +2006,7 @@ async fn handle_request_with_viewport(
             viewport,
             knowledge_store_path,
             _development_sessions,
-            elicitation,
+            _elicitation,
         ))
         .await
         {
@@ -2197,7 +2242,7 @@ async fn call_tool(
     viewport: Option<(i64, i64)>,
     knowledge_store_path: Option<&Path>,
     _development_sessions: &DevelopmentSessionStore,
-    elicitation: Option<&McpElicitationClient>,
+    _elicitation: Option<&McpElicitationClient>,
 ) -> BrowserResult<Value> {
     let response_mode = response_mode_from_params(&request.params)?;
     let invocation = parse_tool_invocation(&request.params)?;
@@ -2339,7 +2384,7 @@ async fn call_tool(
                 );
                 return run_native_persistent_mcp_dialog_host(
                     name,
-                    elicitation,
+                    _elicitation,
                     operation,
                     navigation_timeout_ms,
                 )
@@ -2348,12 +2393,14 @@ async fn call_tool(
             return Box::pin(call_native_tool(
                 invocation,
                 _native_session,
-                viewport,
-                &options.profile,
-                options.incognito,
-                policy,
-                response_mode,
-                elicitation,
+                NativeToolCallContext {
+                    viewport,
+                    profile: &options.profile,
+                    incognito: options.incognito,
+                    policy,
+                    response_mode,
+                    elicitation: _elicitation,
+                },
             ))
             .await;
         }
@@ -3775,32 +3822,43 @@ fn parse_tool_invocation(params: &Value) -> BrowserResult<ToolInvocation<'_>> {
 }
 
 #[cfg(feature = "native-engine")]
+struct NativeToolCallContext<'a> {
+    viewport: Option<(i64, i64)>,
+    profile: &'a str,
+    incognito: bool,
+    policy: &'a BrowserPolicy,
+    response_mode: ResponseMode,
+    elicitation: Option<&'a McpElicitationClient>,
+}
+
+#[cfg(feature = "native-engine")]
 async fn call_native_tool(
     invocation: ToolInvocation<'_>,
     native_session: &mut Option<BrowserRuntimeSession>,
-    viewport: Option<(i64, i64)>,
-    profile: &str,
-    incognito: bool,
-    policy: &BrowserPolicy,
-    response_mode: ResponseMode,
-    elicitation: Option<&McpElicitationClient>,
+    context: NativeToolCallContext<'_>,
 ) -> BrowserResult<Value> {
-    let modal_dialogs = elicitation.is_some();
+    let modal_dialogs = context.elicitation.is_some();
     let navigation_timeout_ms = match &invocation {
         ToolInvocation::Navigate { timeout_ms, .. } if modal_dialogs => Some(*timeout_ms),
         _ => None,
     };
-    let session =
-        ensure_native_session(native_session, viewport, profile, incognito, modal_dialogs).await?;
+    let session = ensure_native_session(
+        native_session,
+        context.viewport,
+        context.profile,
+        context.incognito,
+        modal_dialogs,
+    )
+    .await?;
     let operation = call_native_tool_on_session(
         invocation,
         session,
-        profile,
-        policy,
-        response_mode,
+        context.profile,
+        context.policy,
+        context.response_mode,
         modal_dialogs,
     );
-    let (result, discard_session) = match elicitation {
+    let (result, discard_session) = match context.elicitation {
         Some(elicitation) => {
             let (result, discard_session) = run_native_mcp_dialog_host(
                 session.native_dialog_controller()?,
@@ -7665,6 +7723,7 @@ async fn write_response<W: AsyncWrite + Unpin>(
     write_framed_message(writer, &body, format).await
 }
 
+#[cfg(feature = "native-engine")]
 async fn write_json_message<W: AsyncWrite + Unpin>(
     writer: &mut W,
     message: &Value,
@@ -8392,7 +8451,10 @@ mod tests {
     async fn native_mcp_routes_core_browser_tools_without_chromium_inner() {
         let mut session = None;
         let mut native_session = None;
-        let options = SessionOptions::default();
+        let options = SessionOptions {
+            incognito: true,
+            ..SessionOptions::default()
+        };
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
         let url = "data:text/html,%3Ctitle%3EMCP%3C%2Ftitle%3E%3Cbutton%20id%3D%22save%22%3ESave%3C%2Fbutton%3E%3Cinput%20id%3D%22name%22%3E";
 
@@ -8802,7 +8864,10 @@ mod tests {
     async fn native_mcp_routes_shared_semantic_contracts_without_chromium_inner() {
         let mut session = None;
         let mut native_session = None;
-        let options = SessionOptions::default();
+        let options = SessionOptions {
+            incognito: true,
+            ..SessionOptions::default()
+        };
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
         let url = "data:text/html,%3Ctitle%3ESemantic%20MCP%3C%2Ftitle%3E%3Cmain%3E%3Clabel%20for%3D%22name%22%3EName%3C%2Flabel%3E%3Cinput%20id%3D%22name%22%3E%3Cbutton%3ESave%3C%2Fbutton%3E%3C%2Fmain%3E";
 
@@ -9002,7 +9067,10 @@ mod tests {
     async fn native_mcp_routes_target_lifecycle_without_chromium_inner() {
         let mut session = None;
         let mut native_session = None;
-        let options = SessionOptions::default();
+        let options = SessionOptions {
+            incognito: true,
+            ..SessionOptions::default()
+        };
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
         let first = invoke_native_mcp_tool(
             "navigate",
@@ -9131,7 +9199,10 @@ mod tests {
     async fn native_mcp_routes_dialog_lifecycle_without_chromium_inner() {
         let mut session = None;
         let mut native_session = None;
-        let options = SessionOptions::default();
+        let options = SessionOptions {
+            incognito: true,
+            ..SessionOptions::default()
+        };
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
 
         let navigate = invoke_native_mcp_tool(
@@ -9231,8 +9302,6 @@ mod tests {
 
     #[cfg(feature = "native-engine")]
     async fn native_mcp_stdio_elicitation_inner() {
-        use clap::Parser as _;
-
         let html = "<!doctype html><title>Dialog</title><body><script>var name=prompt('Name','Ada');var accepted=confirm('Save?');document.title='Saved '+name+' '+accepted;document.body.textContent=document.title;alert('Saved '+name);</script></body>";
         let single_dialog_html = "<!doctype html><title>Single dialog</title><body><script>var answer=prompt('Single prompt','');document.body.textContent='Prompt dismissed '+(answer===null);</script></body>";
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -9259,7 +9328,8 @@ mod tests {
             }
         });
 
-        let cli = Cli::try_parse_from(["glass", "--mcp"]).unwrap();
+        let cli =
+            Cli::try_parse_from_on_dedicated_stack(["glass", "--mcp", "--incognito"]).unwrap();
         assert_eq!(
             cli.browser_runtime,
             crate::browser::runtime::BrowserRuntime::Native
@@ -9311,7 +9381,7 @@ mod tests {
         )
         .await;
 
-        let response = tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             let mut observed_dialogs = Vec::new();
             let mut delayed_human_reply = false;
             loop {
@@ -9353,7 +9423,6 @@ mod tests {
         })
         .await
         .expect("native MCP dialog sequence should finish");
-        let _ = response;
         write_test_mcp_message(
             &mut client_to_server,
             &json!({
@@ -9377,12 +9446,12 @@ mod tests {
                 "jsonrpc":"2.0","id":"deadline","method":"tools/call",
                 "params":{"name":"navigate","arguments":{
                     "url":format!("http://{address}/single"),
-                    "timeoutMs":5_000
+                    "timeoutMs":15_000
                 }}
             }),
         )
         .await;
-        let deadline_elicitation = tokio::time::timeout(Duration::from_secs(15), async {
+        let deadline_elicitation = tokio::time::timeout(Duration::from_secs(45), async {
             loop {
                 let message = read_test_mcp_message(&mut client_from_server).await;
                 if message.get("method").and_then(Value::as_str) == Some("elicitation/create") {
@@ -9402,7 +9471,7 @@ mod tests {
                 .unwrap()
                 .contains("prompt dialog")
         );
-        tokio::time::sleep(Duration::from_millis(5_100)).await;
+        tokio::time::sleep(Duration::from_millis(15_100)).await;
         write_test_mcp_message(
             &mut client_to_server,
             &json!({
@@ -9419,7 +9488,8 @@ mod tests {
         client_to_server.shutdown().await.unwrap();
         server.await.unwrap().unwrap();
 
-        let cli = Cli::try_parse_from(["glass", "--mcp"]).unwrap();
+        let cli =
+            Cli::try_parse_from_on_dedicated_stack(["glass", "--mcp", "--incognito"]).unwrap();
         let (mut client_to_server, mut client_from_server, server) =
             start_native_test_mcp_connection(cli);
         initialize_native_test_mcp_connection(&mut client_to_server, &mut client_from_server).await;
@@ -9428,12 +9498,12 @@ mod tests {
             &json!({
                 "jsonrpc":"2.0","id":"cancel-me","method":"tools/call",
                 "params":{"name":"navigate","arguments":{
-                    "url":format!("http://{address}/single"),"timeoutMs":10_000
+                    "url":format!("http://{address}/single"),"timeoutMs":30_000
                 }}
             }),
         )
         .await;
-        let elicitation = tokio::time::timeout(Duration::from_secs(15), async {
+        let elicitation = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let message = read_test_mcp_message(&mut client_from_server).await;
                 if message.get("method").and_then(Value::as_str) == Some("elicitation/create") {
@@ -9468,11 +9538,12 @@ mod tests {
         let after_cancel = read_test_mcp_message(&mut client_from_server).await;
         assert_eq!(after_cancel["id"], "after-cancel");
         assert_ne!(after_cancel["result"]["isError"], true, "{after_cancel}");
+        let after_cancel_text = after_cancel["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap();
         assert!(
-            after_cancel["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("Prompt dismissed true")
+            after_cancel_text.contains("Prompt dismissed true"),
+            "cancelled prompt should resume page script, got {after_cancel}"
         );
         client_to_server.shutdown().await.unwrap();
         tokio::time::timeout(Duration::from_secs(10), server)
@@ -9481,7 +9552,8 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let cli = Cli::try_parse_from(["glass", "--mcp"]).unwrap();
+        let cli =
+            Cli::try_parse_from_on_dedicated_stack(["glass", "--mcp", "--incognito"]).unwrap();
         let (mut client_to_server, mut client_from_server, server) =
             start_native_test_mcp_connection(cli);
         initialize_native_test_mcp_connection(&mut client_to_server, &mut client_from_server).await;
@@ -9490,12 +9562,12 @@ mod tests {
             &json!({
                 "jsonrpc":"2.0","id":"eof-me","method":"tools/call",
                 "params":{"name":"navigate","arguments":{
-                    "url":format!("http://{address}/single"),"timeoutMs":10_000
+                    "url":format!("http://{address}/single"),"timeoutMs":30_000
                 }}
             }),
         )
         .await;
-        tokio::time::timeout(Duration::from_secs(15), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let message = read_test_mcp_message(&mut client_from_server).await;
                 if message.get("method").and_then(Value::as_str) == Some("elicitation/create") {
@@ -9592,8 +9664,6 @@ mod tests {
         session_name: String,
         storage_path: std::path::PathBuf,
     ) {
-        use clap::Parser as _;
-
         let dialog_html = r#"<!doctype html><title>Persistent dialog</title><body><script>
 window.dialogTrace = ["before"];
 window.dialogTrace.push("confirm:" + confirm("continue?"));
@@ -9694,15 +9764,7 @@ document.body.textContent = window.dialogTrace.join("|");
         assert!(idle_status.pending_dialog.is_none());
         assert!(idle_status.active_navigation_revision.is_none());
 
-        let cli = Cli::try_parse_from([
-            "glass",
-            "--browser-runtime",
-            "native",
-            "--session",
-            session_name.as_str(),
-            "--mcp",
-        ])
-        .unwrap();
+        let cli = native_mcp_cli_with_session(&session_name);
         assert_eq!(
             cli.browser_runtime,
             crate::browser::runtime::BrowserRuntime::Native
@@ -9748,13 +9810,13 @@ document.body.textContent = window.dialogTrace.join("|");
             &json!({
                 "jsonrpc":"2.0","id":"navigate","method":"tools/call",
                 "params":{"name":"navigate","arguments":{
-                    "url":format!("http://{address}/dialogs"),"timeoutMs":5_000,
+                    "url":format!("http://{address}/dialogs"),"timeoutMs":15_000,
                     "includeTrace":true
                 }}
             }),
         )
         .await;
-        let navigate = tokio::time::timeout(Duration::from_secs(25), async {
+        let navigate = tokio::time::timeout(Duration::from_secs(40), async {
             let mut observed = Vec::new();
             let mut owner_status = None;
             loop {
@@ -9780,7 +9842,7 @@ document.body.textContent = window.dialogTrace.join("|");
                                 .unwrap();
                         assert!(status.pending_dialog.is_some());
                         assert!(status.active_navigation_revision.is_some());
-                        tokio::time::sleep(Duration::from_millis(5_100)).await;
+                        tokio::time::sleep(Duration::from_millis(15_100)).await;
                         json!({"action":"accept","content":{"response":"Grace"}})
                     } else {
                         observed.push("alert");
@@ -9837,15 +9899,7 @@ document.body.textContent = window.dialogTrace.join("|");
         client_to_server.shutdown().await.unwrap();
         server.await.unwrap().unwrap();
 
-        let old_client_cli = Cli::try_parse_from([
-            "glass",
-            "--browser-runtime",
-            "native",
-            "--session",
-            session_name.as_str(),
-            "--mcp",
-        ])
-        .unwrap();
+        let old_client_cli = native_mcp_cli_with_session(&session_name);
         let (mut old_client_to_server, mut old_client_from_server, old_server) =
             start_native_test_mcp_connection(old_client_cli);
         let initialize = json!({
@@ -9916,15 +9970,7 @@ document.body.textContent = window.dialogTrace.join("|");
         old_client_to_server.shutdown().await.unwrap();
         old_server.await.unwrap().unwrap();
 
-        let cli = Cli::try_parse_from([
-            "glass",
-            "--browser-runtime",
-            "native",
-            "--session",
-            session_name.as_str(),
-            "--mcp",
-        ])
-        .unwrap();
+        let cli = native_mcp_cli_with_session(&session_name);
         let (mut cancel_to_server, mut cancel_from_server, cancel_server) =
             start_native_test_mcp_connection(cli);
         initialize_native_test_mcp_connection(&mut cancel_to_server, &mut cancel_from_server).await;
@@ -9938,7 +9984,7 @@ document.body.textContent = window.dialogTrace.join("|");
             }),
         )
         .await;
-        let elicitation = tokio::time::timeout(Duration::from_secs(15), async {
+        let elicitation = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let message = read_test_mcp_message(&mut cancel_from_server).await;
                 if message.get("method").and_then(Value::as_str) == Some("elicitation/create") {
@@ -10004,15 +10050,7 @@ document.body.textContent = window.dialogTrace.join("|");
         cancel_to_server.shutdown().await.unwrap();
         cancel_server.await.unwrap().unwrap();
 
-        let cli = Cli::try_parse_from([
-            "glass",
-            "--browser-runtime",
-            "native",
-            "--session",
-            session_name.as_str(),
-            "--mcp",
-        ])
-        .unwrap();
+        let cli = native_mcp_cli_with_session(&session_name);
         let (mut eof_to_server, mut eof_from_server, eof_server) =
             start_native_test_mcp_connection(cli);
         initialize_native_test_mcp_connection(&mut eof_to_server, &mut eof_from_server).await;
@@ -10026,7 +10064,7 @@ document.body.textContent = window.dialogTrace.join("|");
             }),
         )
         .await;
-        tokio::time::timeout(Duration::from_secs(15), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let message = read_test_mcp_message(&mut eof_from_server).await;
                 if message.get("method").and_then(Value::as_str) == Some("elicitation/create") {
@@ -10073,8 +10111,21 @@ document.body.textContent = window.dialogTrace.join("|");
     }
 
     #[cfg(feature = "native-engine")]
+    fn native_mcp_cli_with_session(session_name: &str) -> Box<Cli> {
+        Cli::try_parse_from_on_dedicated_stack(vec![
+            "glass".to_owned(),
+            "--browser-runtime".to_owned(),
+            "native".to_owned(),
+            "--session".to_owned(),
+            session_name.to_owned(),
+            "--mcp".to_owned(),
+        ])
+        .expect("native MCP test CLI arguments must parse")
+    }
+
+    #[cfg(feature = "native-engine")]
     fn start_native_test_mcp_connection(
-        cli: Cli,
+        cli: Box<Cli>,
     ) -> (
         tokio::io::DuplexStream,
         BufReader<tokio::io::DuplexStream>,
@@ -10125,7 +10176,7 @@ document.body.textContent = window.dialogTrace.join("|");
         .await;
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "native-engine"))]
     async fn write_test_mcp_message<W: AsyncWrite + Unpin>(writer: &mut W, message: &Value) {
         writer
             .write_all(serde_json::to_string(message).unwrap().as_bytes())
@@ -10135,7 +10186,7 @@ document.body.textContent = window.dialogTrace.join("|");
         writer.flush().await.unwrap();
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "native-engine"))]
     async fn read_test_mcp_message<R: AsyncBufRead + Unpin>(reader: &mut R) -> Value {
         let (body, format) = read_message(reader).await.unwrap().unwrap();
         assert_eq!(format, FrameFormat::Newline);
@@ -11416,6 +11467,7 @@ document.body.textContent = window.dialogTrace.join("|");
         assert!(encoded.ends_with(r#"{"jsonrpc":"2.0","result":{"ok":true},"id":1}"#));
     }
 
+    #[cfg(feature = "native-engine")]
     #[test]
     fn negotiates_legacy_and_elicitation_mcp_versions() {
         let policy = BrowserPolicy::development(std::env::current_dir().unwrap()).unwrap();
@@ -11461,6 +11513,7 @@ document.body.textContent = window.dialogTrace.join("|");
         assert!(!client_declares_form_elicitation(&url_only));
     }
 
+    #[cfg(feature = "native-engine")]
     #[tokio::test]
     async fn routes_mcp_server_request_responses_by_id() {
         tokio::task::LocalSet::new()

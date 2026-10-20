@@ -5,41 +5,8 @@
 //! operations require the `PersistentProfile` policy capability.
 
 use super::*;
+pub use glass_browser_core::contracts::Cookie;
 use serde::{Deserialize, Serialize};
-
-/// A browser cookie as returned by CDP `Network.getCookies`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Cookie {
-    /// Cookie name.
-    pub name: String,
-    /// Cookie value.
-    pub value: String,
-    /// Domain the cookie belongs to.
-    pub domain: String,
-    /// Path the cookie is scoped to.
-    pub path: String,
-    /// Expiration time as a Unix timestamp in seconds.
-    #[serde(default)]
-    pub expires: f64,
-    /// Whether the cookie is HTTP-only (inaccessible to JavaScript).
-    #[serde(default, rename = "httpOnly")]
-    pub http_only: bool,
-    /// Whether the cookie is only sent over HTTPS.
-    #[serde(default)]
-    pub secure: bool,
-    /// SameSite attribute: `"Strict"`, `"Lax"`, or `"None"`.
-    #[serde(default, rename = "sameSite")]
-    pub same_site: Option<String>,
-    /// Whether this is a session cookie (deleted when the browser closes).
-    #[serde(default, rename = "session")]
-    pub is_session: bool,
-    /// Approximate size of the cookie in bytes.
-    #[serde(default)]
-    pub size: Option<i64>,
-    /// Cookie priority: `"Low"`, `"Medium"`, or `"High"`.
-    #[serde(default, rename = "priority")]
-    pub priority: Option<String>,
-}
 
 /// Key-value snapshot of DOM storage (localStorage or sessionStorage).
 #[derive(Debug, Clone, Serialize, Deserialize)]

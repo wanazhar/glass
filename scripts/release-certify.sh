@@ -31,11 +31,16 @@ python3 scripts/check-public-readonly-adapters.py
 python3 scripts/check-web-ir-corpus.py --baseline benchmarks/results/web-ir-v1.json
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --locked --no-deps
 
-cargo package --package glass-browser --locked --allow-dirty --no-verify
+cargo package --package glass-browser-core --locked --allow-dirty --no-verify
+cargo package --package glass-browser --locked --allow-dirty --no-verify \
+  --config 'patch.crates-io.glass-browser-core.path="crates/glass-browser-core"'
 cargo package --package glass-dev --locked --allow-dirty --no-verify \
-  --config 'patch.crates-io.glass-browser.path="crates/glass-browser"'
+  --config 'patch.crates-io.glass-browser.path="crates/glass-browser"' \
+  --config 'patch.crates-io.glass-browser-core.path="crates/glass-browser-core"'
 version="$(cargo metadata --no-deps --locked --format-version 1 \
   | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "glass-dev"))')"
+python3 scripts/check-packaged-dependency.py \
+  "target/package/glass-browser-${version}.crate" --version "$version"
 python3 scripts/check-packaged-dependency.py \
   "target/package/glass-dev-${version}.crate" --version "$version"
 

@@ -72,6 +72,7 @@ pub use agent::{
     StructuredExtractionRecord, StructuredExtractionRequest, StructuredExtractionResult,
     recover_run,
 };
+#[cfg(feature = "native-engine")]
 pub(crate) use agent::{
     extract_structured_from_observation, extraction_request_requires_sensitive_access,
 };

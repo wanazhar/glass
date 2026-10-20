@@ -906,12 +906,11 @@ mod tests {
         );
 
         assert!(state.browser_visual_live);
-        assert_eq!(
+        assert!(
             state
                 .take_browser_visual_request()
                 .expect("pointer browser visual request")
-                .live,
-            true
+                .live
         );
         assert_eq!(
             state.status,

@@ -2746,13 +2746,13 @@ impl DevTuiState {
             entries = parse_conversation_view(&self.agent_conversation);
         }
         for message in &self.pending_chat_messages {
-            if message.state != ChatMessageState::Failed {
-                if entries.iter().any(|entry| {
+            if message.state != ChatMessageState::Failed
+                && entries.iter().any(|entry| {
                     entry.kind == super::projection::ConversationKind::User
                         && entry.client_message_id.as_deref() == Some(message.message_id.as_str())
-                }) {
-                    continue;
-                }
+                })
+            {
+                continue;
             }
             let suffix = match message.state {
                 ChatMessageState::Sending => "· sending…",
@@ -3529,7 +3529,7 @@ impl DevTuiState {
                         .remediation
                         .first()
                         .cloned()
-                        .unwrap_or_else(|| readiness.detail)
+                        .unwrap_or(readiness.detail)
                 })
                 .unwrap_or_else(|error| error.to_string());
             self.surface = DevSurface::Agent;
@@ -6556,12 +6556,12 @@ impl DevTuiState {
             return;
         };
         let path = buffer.path.clone();
-        if code == crossterm::event::KeyCode::Tab {
-            if let Some(ghost) = self.editor_engine.ghost.take() {
-                let text = ghost.text.clone();
-                self.accept_ghost_text(ghost, &text);
-                return;
-            }
+        if code == crossterm::event::KeyCode::Tab
+            && let Some(ghost) = self.editor_engine.ghost.take()
+        {
+            let text = ghost.text.clone();
+            self.accept_ghost_text(ghost, &text);
+            return;
         }
         if matches!(
             code,

@@ -16,11 +16,13 @@ use super::native_engine::{
 };
 #[cfg(feature = "native-engine")]
 use super::policy::BrowserPolicy;
+#[cfg(feature = "native-engine")]
+use crate::browser_backend::BrowserBackendError;
 use crate::browser_backend::{
-    ActionRequest, ActionResult, BackendProfile, BrowserBackendDispatcher, BrowserBackendError,
-    BrowsingContext, CaptureFormat, CaptureRequest, CaptureResult, ContextRequest, EffectsRequest,
-    EffectsResult, EvidenceLevel, EvidenceRequest, EvidenceResult, NavigationRequest,
-    NavigationResult, ScriptRequest, ScriptResult, SemanticAction, StorageRequest, StorageResult,
+    ActionRequest, ActionResult, BackendProfile, BrowserBackendDispatcher, BrowsingContext,
+    CaptureFormat, CaptureRequest, CaptureResult, ContextRequest, EffectsRequest, EffectsResult,
+    EvidenceLevel, EvidenceRequest, EvidenceResult, NavigationRequest, NavigationResult,
+    ScriptRequest, ScriptResult, SemanticAction, StorageRequest, StorageResult,
 };
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};

@@ -282,20 +282,20 @@ impl GlassCoreRuntime {
     }
 
     fn open_session(&mut self, root: &Path, options: &CoreRuntimeOptions) -> DevelopmentResult<()> {
-        if options.resume {
-            if let Some(session) = self.newest_workspace_session(root)? {
-                let id = self.send_request(
-                    "session/resume",
-                    json!({"sessionId": session, "expectedToolMode": "host"}),
-                )?;
-                let result = self.wait_response(&id, STARTUP_TIMEOUT)?;
-                self.session_id = result
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&session)
-                    .to_string();
-                return Ok(());
-            }
+        if options.resume
+            && let Some(session) = self.newest_workspace_session(root)?
+        {
+            let id = self.send_request(
+                "session/resume",
+                json!({"sessionId": session, "expectedToolMode": "host"}),
+            )?;
+            let result = self.wait_response(&id, STARTUP_TIMEOUT)?;
+            self.session_id = result
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .unwrap_or(&session)
+                .to_string();
+            return Ok(());
         }
         let id = self.send_request("session/new", self.session_params(root, options))?;
         let result = self.wait_response(&id, STARTUP_TIMEOUT)?;

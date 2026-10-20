@@ -102,6 +102,7 @@ silently enter the TUI/MCP/Chromium lifecycle shown above.
 ## Module index
 
 - [Browser data plane](browser.md)
+- [Browser core crate](browser-core.md)
 - [Native browser engine](native-engine.md)
 - [Automation contracts](automation.md)
 - [Semantic execution](../semantic-execution.md)

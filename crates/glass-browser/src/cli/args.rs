@@ -200,6 +200,39 @@ pub struct Cli {
 }
 
 impl Cli {
+    /// Parse process arguments on the dedicated stack used for Clap's large
+    /// derived command graph. The resulting CLI is boxed to keep it compact
+    /// when returned to the caller's normal stack.
+    pub fn parse_process_args() -> Result<Box<Self>, clap::Error> {
+        Self::try_parse_from_on_dedicated_stack(std::env::args_os().collect::<Vec<_>>())
+    }
+
+    pub(crate) fn try_parse_from_on_dedicated_stack<I, T>(args: I) -> Result<Box<Self>, clap::Error>
+    where
+        I: IntoIterator<Item = T> + Send + 'static,
+        I::IntoIter: Send + 'static,
+        T: Into<std::ffi::OsString> + Clone + Send + 'static,
+    {
+        std::thread::Builder::new()
+            .name("glass-cli-parse".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || Self::try_parse_from(args).map(Box::new))
+            .expect("CLI parser thread must start")
+            .join()
+            .expect("CLI parser thread must not overflow its stack")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn command_on_dedicated_stack() -> Box<clap::Command> {
+        std::thread::Builder::new()
+            .name("glass-cli-command-graph".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| Box::new(<Self as clap::CommandFactory>::command()))
+            .expect("CLI command graph thread must start")
+            .join()
+            .expect("CLI command graph thread must not overflow its stack")
+    }
+
     pub(crate) fn session_cli_flags(&self) -> Vec<String> {
         let mut args = Vec::new();
         push_enum_flag(&mut args, "--policy", self.policy);
@@ -261,10 +294,13 @@ impl Cli {
         args
     }
 
-    pub(crate) fn mcp_cli(&self) -> Self {
+    pub(crate) fn mcp_cli(&self) -> Box<Self> {
         let mut argv = vec!["glass".into(), "--mcp".into()];
         argv.extend(self.session_cli_flags());
-        Self::parse_from(argv)
+        // The derived Clap graph is deep enough to overflow Tokio's 4 MiB
+        // worker stack. Parse off-worker with a bounded, explicit stack.
+        Self::try_parse_from_on_dedicated_stack(argv)
+            .expect("MCP CLI forwarding arguments must remain valid")
     }
 }
 
@@ -1742,7 +1778,7 @@ mod tests {
                         "--yes",
                     ],
                 ] {
-                    let cli = Cli::try_parse_from(args).unwrap();
+                    let cli = try_parse_cli(args).unwrap();
                     assert!(matches!(
                         cli.command,
                         Some(Commands::Project {
@@ -1758,6 +1794,21 @@ mod tests {
             .unwrap();
     }
 
+    // Clap builds the complete derived command graph during every parse. Give
+    // that generated graph the same generous stack budget in all CLI tests.
+    fn try_parse_cli<I, T>(args: I) -> Result<Box<Cli>, clap::Error>
+    where
+        I: IntoIterator<Item = T> + Send + 'static,
+        I::IntoIter: Send + 'static,
+        T: Into<std::ffi::OsString> + Clone + Send + 'static,
+    {
+        Cli::try_parse_from_on_dedicated_stack(args)
+    }
+
+    fn cli_command() -> Box<clap::Command> {
+        Cli::command_on_dedicated_stack()
+    }
+
     fn flag_pair(flags: &[String], flag: &str, value: &str) -> bool {
         flags
             .windows(2)
@@ -1766,7 +1817,7 @@ mod tests {
 
     #[test]
     fn default_invocation_is_promptless_and_commandless() {
-        let cli = Cli::try_parse_from(["glass"]).unwrap();
+        let cli = try_parse_cli(["glass"]).unwrap();
 
         assert!(cli.prompt.is_none());
         assert!(cli.command.is_none());
@@ -1775,29 +1826,37 @@ mod tests {
     #[cfg(feature = "native-engine")]
     #[test]
     fn native_engine_is_the_default_browser_runtime() {
-        let cli = Cli::try_parse_from(["glass"]).unwrap();
+        let cli = try_parse_cli(["glass"]).unwrap();
         assert_eq!(cli.browser_runtime, BrowserRuntime::Native);
     }
 
     #[cfg(not(feature = "native-engine"))]
     #[test]
     fn chromium_is_the_default_browser_runtime_without_native_engine() {
-        let cli = Cli::try_parse_from(["glass"]).unwrap();
+        let cli = try_parse_cli(["glass"]).unwrap();
         assert_eq!(cli.browser_runtime, BrowserRuntime::Chromium);
     }
 
     #[test]
     fn alternative_runtime_endpoint_flags_parse_and_forward() {
-        let cli = Cli::try_parse_from([
-            "glass",
-            "--browser-runtime",
-            "firefox",
-            "--browser-endpoint",
-            "ws://127.0.0.1:9222/session",
-            "navigate",
-            "https://example.test",
-        ])
-        .unwrap();
+        let cli = std::thread::Builder::new()
+            .name("cli-args-alternative-runtime".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                try_parse_cli([
+                    "glass",
+                    "--browser-runtime",
+                    "firefox",
+                    "--browser-endpoint",
+                    "ws://127.0.0.1:9222/session",
+                    "navigate",
+                    "https://example.test",
+                ])
+                .unwrap()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
 
         assert_eq!(cli.browser_runtime, BrowserRuntime::Firefox);
         assert_eq!(
@@ -1816,7 +1875,7 @@ mod tests {
     #[cfg(feature = "native-engine")]
     #[test]
     fn native_runtime_flag_parses_and_forwards() {
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "--browser-runtime",
             "native",
@@ -1833,12 +1892,12 @@ mod tests {
     #[cfg(not(feature = "native-engine"))]
     #[test]
     fn native_runtime_flag_is_absent_from_default_build() {
-        assert!(Cli::try_parse_from(["glass", "--browser-runtime", "native", "text"]).is_err());
+        assert!(try_parse_cli(["glass", "--browser-runtime", "native", "text"]).is_err());
     }
 
     #[test]
     fn session_cli_flags_forward_policy_profile_and_port() {
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "--policy",
             "hardened",
@@ -1876,24 +1935,24 @@ mod tests {
     #[test]
     fn tui_is_discoverable_as_an_explicit_command() {
         assert!(matches!(
-            Cli::try_parse_from(["glass", "tui"]).unwrap().command,
+            try_parse_cli(["glass", "tui"]).unwrap().command,
             Some(Commands::Tui)
         ));
     }
 
     #[test]
     fn browser_and_session_onboarding_commands_parse() {
-        let browser = Cli::try_parse_from(["glass", "browser"]).unwrap();
+        let browser = try_parse_cli(["glass", "browser"]).unwrap();
         assert!(matches!(
             browser.command,
             Some(Commands::Browser { action: None })
         ));
 
-        let session = Cli::try_parse_from(["glass", "--session", "work", "observe"]).unwrap();
+        let session = try_parse_cli(["glass", "--session", "work", "observe"]).unwrap();
         assert_eq!(session.session.as_deref(), Some("work"));
         assert!(matches!(session.command, Some(Commands::Observe { .. })));
 
-        let start = Cli::try_parse_from(["glass", "session", "start", "work"]).unwrap();
+        let start = try_parse_cli(["glass", "session", "start", "work"]).unwrap();
         assert!(matches!(
             start.command,
             Some(Commands::Session {
@@ -1903,7 +1962,7 @@ mod tests {
     }
     #[test]
     fn update_options_are_explicit_and_browser_free() {
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "update",
             "--dry-run",
@@ -1927,7 +1986,7 @@ mod tests {
 
     #[test]
     fn tui_layout_defaults_to_auto_and_accepts_mobile_override() {
-        let default = Cli::try_parse_from(["glass", "tui"]).unwrap();
+        let default = try_parse_cli(["glass", "tui"]).unwrap();
         assert!(!default.yolo);
         assert_eq!(default.tui_layout, TuiLayout::Auto);
         assert_eq!(default.tui_live, TuiLiveMode::Off);
@@ -1935,7 +1994,7 @@ mod tests {
         assert_eq!(default.tui_live_quality, TuiLiveQuality::Balanced);
         assert_eq!(default.tui_live_fit, TuiLiveFit::Contain);
 
-        let mobile = Cli::try_parse_from([
+        let mobile = try_parse_cli([
             "glass",
             "--tui-layout",
             "mobile",
@@ -1959,13 +2018,9 @@ mod tests {
 
     #[test]
     fn yolo_is_an_explicit_global_opt_in() {
+        assert!(try_parse_cli(["glass", "--yolo", "tui"]).unwrap().yolo);
         assert!(
-            Cli::try_parse_from(["glass", "--yolo", "tui"])
-                .unwrap()
-                .yolo
-        );
-        assert!(
-            Cli::try_parse_from(["glass", "agent", "hello", "--yolo"])
+            try_parse_cli(["glass", "agent", "hello", "--yolo"])
                 .unwrap()
                 .yolo
         );
@@ -1973,50 +2028,57 @@ mod tests {
 
     #[test]
     fn agent_readiness_commands_are_explicit() {
-        assert!(matches!(
-            Cli::try_parse_from(["glass", "agent", "doctor"])
-                .unwrap()
-                .command,
-            Some(Commands::Agent {
-                action: AgentCommand::Doctor
+        // Clap derives the full command graph for every parse. Keep this test
+        // on the same 8 MiB stack used by the binary's main thread instead of
+        // the smaller 2 MiB stack the Rust test harness assigns to each test.
+        std::thread::Builder::new()
+            .name("cli-args-agent-readiness".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                assert!(matches!(
+                    try_parse_cli(["glass", "agent", "doctor"]).unwrap().command,
+                    Some(Commands::Agent {
+                        action: AgentCommand::Doctor
+                    })
+                ));
+                assert!(matches!(
+                    try_parse_cli([
+                        "glass",
+                        "agent",
+                        "setup",
+                        "--sdk-entry",
+                        "/opt/pi/dist/index.js",
+                        "--agent-dir",
+                        "/opt/pi/config",
+                        "--update"
+                    ])
+                    .unwrap()
+                    .command,
+                    Some(Commands::Agent {
+                        action: AgentCommand::Setup {
+                            sdk_entry: Some(_),
+                            agent_dir: Some(_),
+                            update: true,
+                            login: false,
+                        }
+                    })
+                ));
             })
-        ));
-        assert!(matches!(
-            Cli::try_parse_from([
-                "glass",
-                "agent",
-                "setup",
-                "--sdk-entry",
-                "/opt/pi/dist/index.js",
-                "--agent-dir",
-                "/opt/pi/config",
-                "--update"
-            ])
-            .unwrap()
-            .command,
-            Some(Commands::Agent {
-                action: AgentCommand::Setup {
-                    sdk_entry: Some(_),
-                    agent_dir: Some(_),
-                    update: true,
-                    login: false,
-                }
-            })
-        ));
+            .expect("CLI parser thread must spawn")
+            .join()
+            .expect("CLI argument parsing must not panic");
     }
 
     #[test]
     fn external_harness_commands_are_available_to_the_cli() {
         assert!(matches!(
-            Cli::try_parse_from(["glass", "harness", "list"])
-                .unwrap()
-                .command,
+            try_parse_cli(["glass", "harness", "list"]).unwrap().command,
             Some(Commands::Harness {
                 action: HarnessCommand::List
             })
         ));
         assert!(matches!(
-            Cli::try_parse_from(["glass", "harness", "start", "codex", "--root", "/tmp/project"])
+            try_parse_cli(["glass", "harness", "start", "codex", "--root", "/tmp/project"])
                 .unwrap()
                 .command,
             Some(Commands::Harness {
@@ -2027,7 +2089,7 @@ mod tests {
 
     #[test]
     fn observation_and_human_interaction_are_defaults() {
-        let cli = Cli::try_parse_from(["glass", "observe"]).unwrap();
+        let cli = try_parse_cli(["glass", "observe"]).unwrap();
 
         assert_eq!(cli.interaction, InteractionMode::Human);
         assert!(matches!(
@@ -2045,8 +2107,7 @@ mod tests {
     #[test]
     fn screenshot_and_fast_interaction_require_explicit_flags() {
         let cli =
-            Cli::try_parse_from(["glass", "--interaction", "fast", "observe", "--screenshot"])
-                .unwrap();
+            try_parse_cli(["glass", "--interaction", "fast", "observe", "--screenshot"]).unwrap();
 
         assert_eq!(cli.interaction, InteractionMode::Fast);
         assert!(matches!(
@@ -2063,7 +2124,7 @@ mod tests {
 
     #[test]
     fn deep_dom_requires_an_explicit_observation_flag() {
-        let cli = Cli::try_parse_from(["glass", "observe", "--deep-dom"]).unwrap();
+        let cli = try_parse_cli(["glass", "observe", "--deep-dom"]).unwrap();
 
         assert!(matches!(
             cli.command,
@@ -2079,7 +2140,7 @@ mod tests {
 
     #[test]
     fn semantic_observation_level_and_region_are_explicit() {
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "observe",
             "--level",
@@ -2097,12 +2158,12 @@ mod tests {
             }) if level == "interactive" && region == "region_main"
         ));
 
-        assert!(Cli::try_parse_from(["glass", "observe", "--level", "verbose"]).is_err());
+        assert!(try_parse_cli(["glass", "observe", "--level", "verbose"]).is_err());
     }
 
     #[test]
     fn screenshot_remains_a_separate_explicit_command() {
-        let cli = Cli::try_parse_from(["glass", "screenshot", "--output", "page.png"]).unwrap();
+        let cli = try_parse_cli(["glass", "screenshot", "--output", "page.png"]).unwrap();
 
         assert!(matches!(
             cli.command,
@@ -2112,7 +2173,7 @@ mod tests {
 
     #[test]
     fn double_click_is_an_explicit_action_command() {
-        let cli = Cli::try_parse_from(["glass", "double-click", "r7:b42"]).unwrap();
+        let cli = try_parse_cli(["glass", "double-click", "r7:b42"]).unwrap();
 
         assert!(matches!(
             cli.command,
@@ -2122,7 +2183,7 @@ mod tests {
 
     #[test]
     fn click_expect_popup_is_an_explicit_action_command() {
-        let cli = Cli::try_parse_from(["glass", "click-expect-popup", "css=#popup"]).unwrap();
+        let cli = try_parse_cli(["glass", "click-expect-popup", "css=#popup"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::ClickExpectPopup { target, .. }) if target == "css=#popup"
@@ -2133,9 +2194,7 @@ mod tests {
     fn click_command_accepts_explicit_modifier_flags() {
         let cli = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
-            .spawn(|| {
-                Cli::try_parse_from(["glass", "click", "id=open", "--control", "--shift"]).unwrap()
-            })
+            .spawn(|| try_parse_cli(["glass", "click", "id=open", "--control", "--shift"]).unwrap())
             .unwrap()
             .join()
             .unwrap();
@@ -2155,7 +2214,7 @@ mod tests {
     fn click_at_command_accepts_explicit_modifier_flags() {
         let cli = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
-            .spawn(|| Cli::try_parse_from(["glass", "click-at", "10", "20", "--meta"]).unwrap())
+            .spawn(|| try_parse_cli(["glass", "click-at", "10", "20", "--meta"]).unwrap())
             .unwrap()
             .join()
             .unwrap();
@@ -2172,7 +2231,7 @@ mod tests {
 
     #[test]
     fn wait_has_an_explicit_condition_and_bounded_default() {
-        let cli = Cli::try_parse_from(["glass", "wait", "text=Ready"]).unwrap();
+        let cli = try_parse_cli(["glass", "wait", "text=Ready"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Wait { condition, timeout_ms: 10_000 }) if condition == "text=Ready"
@@ -2182,10 +2241,10 @@ mod tests {
     #[test]
     fn topology_commands_are_explicit() {
         assert!(matches!(
-            Cli::try_parse_from(["glass", "targets"]).unwrap().command,
+            try_parse_cli(["glass", "targets"]).unwrap().command,
             Some(Commands::Targets)
         ));
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "--target-id",
             "page-1",
@@ -2198,7 +2257,7 @@ mod tests {
         assert_eq!(cli.target_id.as_deref(), Some("page-1"));
         assert_eq!(cli.frame_id.as_deref(), Some("frame-1"));
         assert!(matches!(
-            Cli::try_parse_from(["glass", "select-frame", "frame-1"])
+            try_parse_cli(["glass", "select-frame", "frame-1"])
                 .unwrap()
                 .command,
             Some(Commands::SelectFrame { id }) if id == "frame-1"
@@ -2207,14 +2266,12 @@ mod tests {
 
     #[test]
     fn archive_targets_accepts_optional_workspace_output() {
-        let stdout = Cli::try_parse_from(["glass", "archive-targets"])
-            .unwrap()
-            .command;
+        let stdout = try_parse_cli(["glass", "archive-targets"]).unwrap().command;
         assert!(matches!(
             stdout,
             Some(Commands::ArchiveTargets { output: None })
         ));
-        let file = Cli::try_parse_from(["glass", "archive-targets", "--output", "targets.json"])
+        let file = try_parse_cli(["glass", "archive-targets", "--output", "targets.json"])
             .unwrap()
             .command;
         assert!(matches!(
@@ -2228,19 +2285,19 @@ mod tests {
     #[test]
     fn complete_input_commands_are_explicit() {
         assert!(matches!(
-            Cli::try_parse_from(["glass", "drag", "css=#from", "css=#to"])
+            try_parse_cli(["glass", "drag", "css=#from", "css=#to"])
                 .unwrap()
                 .command,
             Some(Commands::Drag { source, destination, .. }) if source == "css=#from" && destination == "css=#to"
         ));
         assert!(matches!(
-            Cli::try_parse_from(["glass", "shortcut", "Control+A"])
+            try_parse_cli(["glass", "shortcut", "Control+A"])
                 .unwrap()
                 .command,
             Some(Commands::Shortcut { shortcut, .. }) if shortcut == "Control+A"
         ));
         assert!(matches!(
-            Cli::try_parse_from([
+            try_parse_cli([
                 "glass",
                 "fill-form",
                 "--fields",
@@ -2259,12 +2316,12 @@ mod tests {
 
     #[test]
     fn rejects_unknown_interaction_modes() {
-        assert!(Cli::try_parse_from(["glass", "--interaction", "instant", "observe"]).is_err());
+        assert!(try_parse_cli(["glass", "--interaction", "instant", "observe"]).is_err());
     }
 
     #[test]
     fn attach_and_target_id_are_explicit_global_options() {
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "--attach",
             "--port",
@@ -2282,7 +2339,7 @@ mod tests {
 
     #[test]
     fn workflow_command_accepts_optional_json_input() {
-        let cli = Cli::try_parse_from(["glass", "workflow", "workflow.json"]).unwrap();
+        let cli = try_parse_cli(["glass", "workflow", "workflow.json"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Workflow {
@@ -2291,7 +2348,7 @@ mod tests {
             })
                 if path.as_os_str() == "workflow.json"
         ));
-        let cli = Cli::try_parse_from(["glass", "workflow", "validate", "workflow.yaml"]).unwrap();
+        let cli = try_parse_cli(["glass", "workflow", "validate", "workflow.yaml"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Workflow {
@@ -2299,7 +2356,7 @@ mod tests {
                 input: None,
             }) if input.as_os_str() == "workflow.yaml"
         ));
-        let cli = Cli::try_parse_from(["glass", "workflow", "preview", "workflow.yaml"]).unwrap();
+        let cli = try_parse_cli(["glass", "workflow", "preview", "workflow.yaml"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Workflow {
@@ -2307,7 +2364,7 @@ mod tests {
                 input: None,
             }) if input.as_os_str() == "workflow.yaml"
         ));
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "workflow",
             "record",
@@ -2328,7 +2385,7 @@ mod tests {
 
     #[test]
     fn certify_release_command_accepts_versioned_evidence_paths() {
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "certify",
             "release",
@@ -2357,7 +2414,7 @@ mod tests {
 
     #[test]
     fn certify_plan_command_accepts_scenario_and_fixture_paths() {
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "certify",
             "plan",
@@ -2377,7 +2434,7 @@ mod tests {
 
     #[test]
     fn certify_replay_command_accepts_scenario_and_bundle_paths() {
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "certify",
             "replay",
@@ -2397,7 +2454,7 @@ mod tests {
 
     #[test]
     fn certify_replay_diff_command_accepts_two_bundle_paths() {
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "certify",
             "replay-diff",
@@ -2421,7 +2478,7 @@ mod tests {
 
     #[test]
     fn workflow_resume_command_accepts_checkpoint_and_inputs() {
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "workflow-resume",
             "workflow.json",
@@ -2444,29 +2501,29 @@ mod tests {
 
     #[test]
     fn resolve_intent_command_accepts_optional_json_input() {
-        let cli = Cli::try_parse_from(["glass", "resolve-intent", "intent.json"]).unwrap();
+        let cli = try_parse_cli(["glass", "resolve-intent", "intent.json"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::ResolveIntent { input: Some(path) })
                 if path.as_os_str() == "intent.json"
         ));
-        assert!(Cli::try_parse_from(["glass", "resolve-intent"]).is_ok());
+        assert!(try_parse_cli(["glass", "resolve-intent"]).is_ok());
     }
 
     #[test]
     fn execute_intent_command_accepts_optional_json_input() {
-        let cli = Cli::try_parse_from(["glass", "execute-intent", "intent.json"]).unwrap();
+        let cli = try_parse_cli(["glass", "execute-intent", "intent.json"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::ExecuteIntent { input: Some(path) })
                 if path.as_os_str() == "intent.json"
         ));
-        assert!(Cli::try_parse_from(["glass", "execute-intent"]).is_ok());
+        assert!(try_parse_cli(["glass", "execute-intent"]).is_ok());
     }
 
     #[test]
     fn reliability_run_command_requires_fixture_url_and_sources() {
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "certify",
             "run",
@@ -2506,20 +2563,19 @@ mod tests {
 
     #[test]
     fn capabilities_command_is_explicitly_offline() {
-        let cli = Cli::try_parse_from(["glass", "capabilities"]).unwrap();
+        let cli = try_parse_cli(["glass", "capabilities"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Capabilities)));
     }
 
     #[test]
     fn experimental_extensions_require_an_explicit_global_opt_in() {
-        let cli =
-            Cli::try_parse_from(["glass", "--experimental-extensions", "capabilities"]).unwrap();
+        let cli = try_parse_cli(["glass", "--experimental-extensions", "capabilities"]).unwrap();
         assert!(cli.experimental_extensions);
     }
 
     #[test]
     fn daemon_lifecycle_commands_accept_explicit_local_paths() {
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "daemon",
             "start",
@@ -2540,7 +2596,7 @@ mod tests {
 
     #[test]
     fn doctor_command_is_available_without_starting_a_browser() {
-        let cli = Cli::try_parse_from(["glass", "doctor"]).unwrap();
+        let cli = try_parse_cli(["glass", "doctor"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Doctor { json: false })
@@ -2549,21 +2605,21 @@ mod tests {
 
     #[test]
     fn knowledge_management_commands_parse_without_browser_startup() {
-        let cli = Cli::try_parse_from(["glass", "knowledge", "list"]).unwrap();
+        let cli = try_parse_cli(["glass", "knowledge", "list"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Knowledge {
                 action: KnowledgeCommand::List
             })
         ));
-        let cli = Cli::try_parse_from(["glass", "knowledge", "explain", "record-1"]).unwrap();
+        let cli = try_parse_cli(["glass", "knowledge", "explain", "record-1"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Knowledge {
                 action: KnowledgeCommand::Explain { .. }
             })
         ));
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "--knowledge-store",
             "knowledge.json",
@@ -2582,9 +2638,7 @@ mod tests {
     }
     #[test]
     fn task_compile_command_is_explicitly_offline() {
-        use clap::CommandFactory;
-
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "task",
             "compile",
@@ -2595,7 +2649,7 @@ mod tests {
             "--explain",
         ])
         .unwrap();
-        assert!(Cli::command().find_subcommand("task").is_some());
+        assert!(cli_command().find_subcommand("task").is_some());
         assert!(matches!(
             cli.command,
             Some(Commands::Task {
@@ -2614,9 +2668,7 @@ mod tests {
 
     #[test]
     fn task_execute_help_advertises_supported_families() {
-        use clap::CommandFactory;
-
-        let mut command = Cli::command();
+        let mut command = cli_command();
         let execute = command
             .find_subcommand_mut("task")
             .and_then(|task| task.find_subcommand_mut("execute"))
@@ -2630,7 +2682,7 @@ mod tests {
     }
     #[test]
     fn task_validate_command_is_explicitly_offline() {
-        let cli = Cli::try_parse_from(["glass", "task", "validate", "task.json"]).unwrap();
+        let cli = try_parse_cli(["glass", "task", "validate", "task.json"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Task {
@@ -2640,7 +2692,7 @@ mod tests {
     }
     #[test]
     fn ir_commands_are_explicitly_offline() {
-        let cli = Cli::try_parse_from(["glass", "ir", "inspect", "draft.json"]).unwrap();
+        let cli = try_parse_cli(["glass", "ir", "inspect", "draft.json"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Ir {
@@ -2648,8 +2700,7 @@ mod tests {
             }) if input.as_os_str() == "draft.json"
         ));
 
-        let cli =
-            Cli::try_parse_from(["glass", "ir", "diff", "before.json", "after.json"]).unwrap();
+        let cli = try_parse_cli(["glass", "ir", "diff", "before.json", "after.json"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Ir {
@@ -2663,7 +2714,7 @@ mod tests {
                 && !summary
         ));
 
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "ir",
             "diff",
@@ -2685,7 +2736,7 @@ mod tests {
                 && summary
         ));
 
-        let cli = Cli::try_parse_from([
+        let cli = try_parse_cli([
             "glass",
             "ir",
             "continuity",
@@ -2707,7 +2758,7 @@ mod tests {
                 && entity_id == "field-1"
         ));
 
-        let cli = Cli::try_parse_from(["glass", "ir", "validate", "draft.json"]).unwrap();
+        let cli = try_parse_cli(["glass", "ir", "validate", "draft.json"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Ir {
@@ -2715,7 +2766,7 @@ mod tests {
             }) if input.as_os_str() == "draft.json"
         ));
 
-        let cli = Cli::try_parse_from(["glass", "ir", "canonical", "draft.json"]).unwrap();
+        let cli = try_parse_cli(["glass", "ir", "canonical", "draft.json"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Ir {
@@ -2725,7 +2776,7 @@ mod tests {
     }
     #[test]
     fn browser_first_and_persistent_session_commands_parse() {
-        let cli = Cli::try_parse_from(["glass", "browser", "tui"]).unwrap();
+        let cli = try_parse_cli(["glass", "browser", "tui"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Browser {
@@ -2733,11 +2784,11 @@ mod tests {
             })
         ));
 
-        let cli = Cli::try_parse_from(["glass", "--session", "work", "observe"]).unwrap();
+        let cli = try_parse_cli(["glass", "--session", "work", "observe"]).unwrap();
         assert_eq!(cli.session.as_deref(), Some("work"));
         assert!(matches!(cli.command, Some(Commands::Observe { .. })));
 
-        let cli = Cli::try_parse_from(["glass", "session", "status", "work"]).unwrap();
+        let cli = try_parse_cli(["glass", "session", "status", "work"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Commands::Session {

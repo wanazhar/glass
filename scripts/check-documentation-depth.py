@@ -91,6 +91,10 @@ DEPTH_CONTRACTS = {
         "## Documentation contract", "## Add or change a document",
         "## Validation", "## Review and ownership",
     ),
+    "docs/architecture/browser-core.md": (
+        "## Purpose and boundary", "## Features and integration surface",
+        "## Module ownership", "## Validation",
+    ),
     "docs/architecture/native-engine.md": (
         "## Purpose and boundary", "## Cargo and public entry points",
         "## Configuration and limits", "## Lifecycle and state ownership",

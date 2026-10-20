@@ -3,15 +3,17 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 /// Stable suffix: also upgrades resumed sessions whose compaction saved an older prompt.
 /// Detailed recipes stay on demand; no filesystem or provider request is needed here.
-const MODEL_PROTOCOL: &str = "[GC workflow protocol 3]
-For multi-step work create state.todo before substantive work; skip simple conversation.
-Resume todo:{} using existing IDs. Batch progress, keep the current task in_progress,
-record blockers and reconcile before the final report. Completed does not mean verified.
-Discover workflows with state {guidance:{action:search,query}} then {guidance:{action:read,topic}}.
+const MODEL_PROTOCOL: &str = "[GC workflow protocol 4]
+For multi-step work create state.todo; reuse IDs, batch progress and record blockers.
+Verify before completion. Resume todo:{} after context loss.
+Share images with display_image; view_image inspects pixels. Try a supplied path
+relative to the workspace first. Search only after not-found, within likely folders;
+exclude generated/build/benchmark trees. Never scan all of home or / by default.
+Discover recipes with state {guidance:{action:search,query}} then {guidance:{action:read,topic}}.
 Topics: checklist, files, background, agents, context, learning, workspace, research,
-integrations, sessions, delivery, extensions, recovery, ui. Use advertised schemas;
-find configured tools with state {capabilities:{search:query}}. CLI syntax: quoted
-\"$GC_BIN\" <command> --help. Slash menus and login are human controls.";
+integrations, sessions, delivery, extensions, recovery, ui. Discover tools with
+state {capabilities:{search:query}}. CLI: \"$GC_BIN\" <command> --help.
+Slash menus and login are human controls.";
 
 /// Replace a generated paragraph without accumulating old versions after resume.
 /// Only paragraph-aligned markers are recognized; surrounding instructions stay intact.
@@ -95,7 +97,7 @@ const RECIPES: &[(&str, &str)] = &[
     ),
     (
         "files",
-        "Prefer native read/edit/write: bounded reads return revisions; edits and replacing writes require expected. preview:true shows proposed changes; validate:true requires supported syntax checks. gc file --help exposes the same engine. Read before editing; retain the returned revision. Use gc structure --help for lazy AST edits. Verify changed content before reporting success.",
+        "For image sharing, call display_image with the supplied path relative to the workspace first; it reports missing files without sending pixels. Use view_image only for visual inspection. Do not recursively search home or / for a named file before trying its direct path. If missing, check likely folders and bound searches; exclude build, dependency, cache and benchmark trees. Prefer native read/edit/write: bounded reads return revisions; edits and replacing writes require expected. preview:true shows proposed changes; validate:true requires supported syntax checks. gc file --help exposes the same engine. Read before editing; retain the returned revision. Use gc structure --help for lazy AST edits. Verify changed content before reporting success.",
     ),
     (
         "background",

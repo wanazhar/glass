@@ -648,6 +648,14 @@ pub(crate) fn project_filtered(
     records: &[Record],
     active: Option<&std::collections::HashSet<&str>>,
 ) -> Vec<Message> {
+    project_filtered_for_model(records, active, true)
+}
+
+pub(crate) fn project_filtered_for_model(
+    records: &[Record],
+    active: Option<&std::collections::HashSet<&str>>,
+    image_input: bool,
+) -> Vec<Message> {
     let calls = records
         .iter()
         .filter_map(|r| {
@@ -742,7 +750,7 @@ pub(crate) fn project_filtered(
     {
         earlier.push(Message::System(context));
     }
-    crate::images::expand(earlier)
+    crate::images::expand_for_model(earlier, image_input)
 }
 
 #[cfg(test)]

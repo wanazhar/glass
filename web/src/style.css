@@ -14,6 +14,7 @@
 }
 :root {
   --glass-ui-ready: 1;
+  --overlay-radius: 16px;
   color-scheme: dark;
   --bg: #141916;
   --sidebar: #101512;
@@ -930,7 +931,7 @@ dialog {
   height: min(850px, 90dvh);
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 13px;
+  border-radius: var(--overlay-radius);
   color: var(--text);
   padding: 0;
   box-shadow: var(--shadow);
@@ -1201,8 +1202,6 @@ dialog > header > div:last-child {
     max-width: none;
     max-height: none;
     margin: 0;
-    border: 0;
-    border-radius: 0;
   }
   dialog > header {
     padding-top: max(16px, env(safe-area-inset-top));
@@ -2052,10 +2051,13 @@ dialog > header {
   border-radius: 8px;
 }
 #command-status {
-  min-height: 24px;
-  padding: 12px 20px;
+  min-width: 0;
+  max-height: 44px;
+  overflow: auto;
   color: var(--muted);
-  border-top: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .command-field select {
@@ -2172,7 +2174,7 @@ dialog > header {
     calc(100% - var(--safe-top) - var(--safe-bottom) - 48px)
   );
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: var(--overlay-radius);
   padding: 0;
   box-shadow: var(--shadow);
 }
@@ -2602,7 +2604,7 @@ dialog > header {
   }
 }
 @media (max-width: 700px) {
-  .standalone:not(.keyboard-open) dialog[open]:not(#commands) {
+  .standalone:not(.keyboard-open) dialog[open]:not(#commands):not(.floating-palette) {
     inset: 0;
     height: auto;
     max-height: none;
@@ -2643,7 +2645,7 @@ dialog > header {
 
 /* Fullscreen viewers share the toolbar's clearance below the iOS status blur. */
 @media (max-width: 700px) {
-  .standalone:not(.keyboard-open) dialog[open]:not(#commands) > header {
+  .standalone:not(.keyboard-open) dialog[open]:not(#commands):not(.floating-palette) > header {
     padding-top: calc(var(--safe-top) + 24px);
   }
 }
@@ -2913,3 +2915,254 @@ dialog > header {
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
 }
+
+/* Conversation activity: compact summaries, detailed source only on disclosure. */
+.work-group {
+  margin: 8px 0 24px 8px;
+  padding-left: 18px;
+  border-left: 1px solid var(--line);
+}
+.work-group > summary { font-size: 12px; padding: 8px 0; }
+.tool-row { padding: 5px 0; font-size: 13px; }
+.tool-row > summary {
+  display: grid;
+  grid-template-columns: 22px auto minmax(0, 1fr) auto 12px;
+  align-items: center;
+  min-height: 38px;
+  gap: 8px;
+}
+.tool-label { font-weight: 500; color: var(--muted); }
+.tool-description { font-size: inherit; color: var(--muted); min-width: 0; }
+.tool-time { color: var(--dim); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tool-chevron { color: var(--dim); transition: transform .15s; }
+.tool-row[open] > summary .tool-chevron { transform: rotate(180deg); }
+.tool-state { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.tool-row.failed .tool-label { color: var(--red); }
+.tool-panel {
+  margin: 8px 0 12px 28px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.tool-panel-heading {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  font: 12px var(--font-mono);
+  color: var(--muted);
+}
+.tool-section-label { color: var(--dim); font-size: 10px; padding: 12px 16px 0; text-transform: uppercase; letter-spacing: .06em; }
+.tool-input, .tool-panel .tool-output {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  margin: 0;
+  padding: 10px 16px 16px;
+  max-height: 340px;
+  overflow: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+  font: 12px/1.7 var(--font-mono);
+  tab-size: 4;
+}
+.tool-input { border-bottom: 1px solid var(--line); }
+.tool-panel .tool-actions { border-top: 1px solid var(--line); margin: 0; padding: 7px 12px; gap: 4px 12px; flex-wrap: wrap; }
+.tool-actions button { min-height: 36px; font-size: 11px; }
+#preview-body.agent-console { background: var(--bg); color: var(--text); padding: 20px; }
+#preview-body.agent-console pre { color: var(--text); background: var(--surface); font: 14px/1.75 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; max-height: 360px; overflow: auto; tab-size: 4; }
+.activity-console-toolbar { margin-bottom: 20px; }
+.activity-console-count { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+.activity-console-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+.activity-console-controls button, .activity-console-controls select { min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--text); font-size: 12px; }
+.activity-entries { display: grid; gap: 14px; }
+.activity-entry { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); overflow: hidden; }
+.activity-entry[hidden], .activity-console-empty[hidden] { display: none; }
+.activity-entry-summary { display: flex; align-items: center; gap: 12px; padding: 16px; list-style: none; cursor: pointer; min-height: 70px; }
+.activity-entry-summary::-webkit-details-marker { display: none; }
+.activity-entry-heading { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.activity-entry-heading strong { color: var(--text); font-size: 15px; font-weight: 600; }
+.activity-entry-heading small { color: var(--muted); font-size: 12px; }
+.activity-entry-status { font-size: 11px; padding: 4px 8px; border-radius: 6px; background: var(--accent-bg); color: var(--text); white-space: nowrap; }
+.activity-entry[data-state="failed"] .activity-entry-status { color: var(--red); background: var(--bg); border: 1px solid var(--red); }
+.activity-entry-chevron { color: var(--muted); }
+.activity-entry[open] .activity-entry-chevron { transform: rotate(180deg); }
+.activity-entry-content { padding: 0 16px 16px; border-top: 1px solid var(--line); }
+.activity-entry-content h3 { font-size: 12px; color: var(--muted); font-weight: 500; margin: 16px 0 8px; }
+.activity-console-empty { color: var(--muted); padding: 20px 0; }
+@media (max-width: 700px) {
+  #preview-body.agent-console { padding: 14px; }
+  .activity-entry-summary { padding: 14px; }
+  .activity-entry-content { padding: 0 12px 12px; }
+}
+
+/* Reading and files share the chat's typography, with optional renderers lazy. */
+.message.assistant .prose { font-size: 16px; line-height: 1.8; }
+.message.assistant .prose p { margin-bottom: 18px; }
+.message.user { width: fit-content; max-width: 85%; margin-left: auto; border-radius: 22px 22px 6px 22px; padding: 16px 20px; }
+.message.user .prose { font-size: 15px; line-height: 1.7; }
+.prose .document-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  min-height: 96px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+}
+.document-card-words { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: 4px; }
+.document-card-words strong { color: var(--text); font-size: 15px; overflow-wrap: anywhere; }
+.document-card-words small { color: var(--muted); font-size: 12px; }
+.document-card-icon { display: grid; place-items: center; width: 48px; height: 56px; flex: none; color: var(--accent); background: var(--accent-bg); border: 1px solid var(--line); border-radius: 10px; font-size: 24px; }
+.document-card-arrow { color: var(--dim); }
+.prose .diagram-block { border-radius: 18px; overflow: hidden; margin: 24px 0; background: var(--surface); }
+.prose .diagram-render { padding: 20px; }
+.prose img { border-radius: 14px; }
+
+/* Pending questions belong to conversation flow, keeping the composer usable. */
+#interaction.interaction {
+  max-width: 840px;
+  max-height: none;
+  overflow: visible;
+  margin: 12px auto 28px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--surface);
+}
+#interaction h3 { font-size: 16px; margin-bottom: 20px; color: var(--text); }
+#interaction fieldset { margin-bottom: 20px; padding-bottom: 20px; min-width: 0; }
+#interaction legend { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+.question-number { display: block; color: var(--dim); margin-bottom: 12px; font-size: 11px; }
+#interaction label { align-items: center; min-height: 52px; padding: 12px; margin: 6px 0; border: 1px solid var(--line); border-radius: 12px; gap: 12px; cursor: pointer; font-size: 14px; }
+#interaction label:has(input:checked) { border-color: var(--accent); background: var(--accent-bg); }
+#interaction label small { font-size: 12px; margin-top: 4px; line-height: 1.5; }
+#interaction input[type="radio"], #interaction input[type="checkbox"] { flex: none; width: 20px; height: 20px; accent-color: var(--accent); }
+#interaction textarea { margin-top: 8px; min-height: 44px; padding: 12px; font-size: 16px; }
+#interaction .decision-actions { justify-content: flex-end; }
+#interaction .decision-actions button { min-height: 44px; padding: 10px 20px; border-radius: 12px; }
+#interaction .decision-actions .primary { flex: 1; }
+@media (max-width: 700px) {
+  .work-group { padding-left: 12px; margin-left: 2px; }
+  .tool-row > summary { grid-template-columns: 18px auto minmax(0, 1fr) auto 10px; gap: 6px; font-size: 12px; }
+  .tool-panel { margin-left: 0; }
+  .tool-input, .tool-panel .tool-output { font-size: 11px; padding: 10px 12px 14px; }
+  .message.user { max-width: 92%; padding: 14px 18px; }
+  #interaction.interaction { padding: 18px; }
+  .prose .document-card { padding: 14px; gap: 12px; }
+}
+@media (prefers-reduced-motion: reduce) { .tool-chevron { transition: none; } }
+
+.thought-row { color: var(--muted); margin: 10px 0 18px; font-size: 12px; }
+.thought-row > summary { display: flex; gap: 10px; align-items: center; cursor: pointer; list-style: none; min-height: 40px; }
+.thought-label { flex: none; font-weight: 500; }
+.thought-excerpt { min-width: 0; flex: 1; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thought-body { padding: 14px 18px; margin: 6px 0; border-left: 1px solid var(--line); color: var(--muted); }
+.thought-body.prose { font-size: 13px; }
+.thought-chevron { color: var(--dim); }
+.thought-row[open] .thought-chevron { transform: rotate(180deg); }
+
+#preview-body.agent-console .activity-result { white-space: pre; overflow-wrap: normal; }
+#preview-body.agent-console.activity-wrap .activity-result { white-space: pre-wrap; overflow-wrap: anywhere; }
+.activity-console-controls button[aria-pressed="true"] { background: var(--accent-bg); border-color: var(--accent); }
+
+.shared-image-card { max-width: 640px; margin: 12px 0 22px 28px; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: var(--surface); }
+.shared-image-open { display: block; width: 100%; padding: 0; }
+.shared-image-card img { display: block; width: 100%; height: auto; max-height: 480px; object-fit: contain; background: var(--bg); }
+.shared-image-card figcaption, .shared-image-error { padding: 12px 16px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .shared-image-card { margin-left: 0; } }
+
+/* Command summaries share one reading surface instead of nested JSON boxes. */
+.command-data { line-height: 1.55; }
+.command-group { min-width: 0; margin: 0 0 22px; }
+.command-group h3 { font-size: 14px; margin: 18px 0 10px; color: var(--text); }
+.command-fields { margin: 0; }
+.command-stat { display: grid; grid-template-columns: minmax(100px, 32%) minmax(0, 1fr); gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.command-stat dt { color: var(--muted); }
+.command-stat dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.command-list-item { padding: 15px 0; border-bottom: 1px solid var(--line); }
+.command-list-item h3, .command-list-item h4 { margin: 0 0 5px; font-size: 15px; overflow-wrap: anywhere; }
+.command-list-item p { margin: 0; font-size: 14px; }
+.command-list-item .command-group { margin: 0; }
+.command-list-text { display: inline-block; margin: 4px 8px 4px 0; padding: 4px 10px; border-radius: 6px; background: var(--surface); font-size: 13px; }
+.command-filter { width: 100%; margin: 12px 0 4px; }
+.command-intro, .command-note { font-size: 14px; margin: 0 0 16px; overflow-wrap: anywhere; }
+.command-note { color: var(--muted); }
+.command-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.command-metric { padding: 14px; border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; gap: 7px; }
+.command-metric strong { font-size: 20px; font-weight: 600; overflow-wrap: anywhere; }
+.command-diagnostics { border-top: 1px solid var(--line); padding-top: 14px; }
+.command-diagnostics > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+@media(max-width: 500px) { .command-stat { grid-template-columns: minmax(95px, 38%) minmax(0, 1fr); gap: 12px; } }
+.tool-wait-hint { font-size: 13px; line-height: 1.5; padding: 12px 16px; margin: 0; color: var(--muted); border-top: 1px solid var(--line); }
+.command-description { margin: 14px 20px 0; font-size: 14px; color: var(--muted); line-height: 1.5; }
+.command-stat-wide { grid-template-columns: 1fr; gap: 6px; }
+.command-literal { margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.command-badge { display: inline-block; border-radius: 6px; padding: 2px 9px; background: var(--surface2); color: var(--text); font-size: 12px; }
+.command-empty { color: var(--muted); font-size: 14px; padding: 14px 0; }
+.command-message { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.command-short-item { display: inline-block; margin: 4px 8px 4px 0; padding: 5px 10px; border: 0; border-radius: 6px; background: var(--surface); }
+.command-list-count { color: var(--muted); font-size: 12px; margin: 5px 0; }
+.command-list-item[hidden] { display: none; }
+.command-list-item > p { white-space: pre-wrap; overflow-wrap: anywhere; }
+#command-form .command-field { display: flex; flex-direction: column; padding: 0; border: 0; }
+#command-form .command-field[hidden] { display: none; }
+@media(max-width: 500px) { .command-stat-wide { grid-template-columns: 1fr; } }
+
+/* Result arrivals never move the command controls or their status row. */
+#command-content { scrollbar-gutter: stable; }
+#command-form { margin-top: 0; margin-bottom: 22px; }
+#command-view .command-description { margin: 0 0 16px; }
+#command-result { min-height: 280px; }
+
+.command-skeleton { min-height: 280px; }
+.command-skeleton-row { display: grid; grid-template-columns: 32% 1fr; gap: 20px; padding: 18px 0; border-bottom: 1px solid var(--line); }
+.command-skeleton-row span { display: block; height: 12px; width: 70%; background: var(--line); border-radius: 4px; }
+.command-skeleton-row span:last-child { width: 85%; }
+
+.command-actions { display: flex; align-items: center; gap: 12px; min-height: 44px; height: 44px; }
+.command-actions > button { flex-shrink: 0; }
+.command-actions #command-status { flex: 1 1 0; padding: 0; border: 0; }
+#command-status:empty { visibility: hidden; }
+
+#command-status[data-error="true"] { color: var(--red); }
+.command-metric-label { color: var(--muted); font-size: 12px; }
+
+.help-command { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; width: 100%; text-align: left; padding: 12px 0; border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--text); }
+.help-command span { color: var(--muted); font-size: 13px; }
+.help-command[hidden] { display: none; }
+.help-command:hover:not(:disabled) { color: var(--accent); }
+
+/* Only command menus, Git/Changes and Work & teammates float. */
+dialog:not(#commands):not(.floating-palette) {
+  position: fixed;
+  inset: 0;
+  top: var(--viewport-top, 0px);
+  bottom: auto;
+  width: 100vw;
+  height: var(--app-height, 100dvh);
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+dialog.floating-palette {
+  position: fixed;
+  inset: auto;
+  top: calc(var(--viewport-top, 0px) + var(--app-height, 100dvh) * .5 + var(--safe-top, 0px) * .5 - var(--safe-bottom, 0px) * .5);
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  animation: none;
+  width: min(920px, calc(100vw - 24px));
+  height: min(850px, calc(var(--app-height, 100dvh) - var(--safe-top, 0px) - var(--safe-bottom, 0px) - 32px));
+  max-height: calc(var(--app-height, 100dvh) - var(--safe-top, 0px) - var(--safe-bottom, 0px) - 32px);
+  border: 1px solid var(--line);
+  border-radius: var(--overlay-radius);
+}
+#command-view.floating-palette { width: min(760px, calc(100vw - 24px)); }

@@ -1,3 +1,5 @@
+import { renderCommandData } from "./command-results.js";
+import { createToolActivity, setToolInput, finishToolActivity, startToolActivity, refreshToolTime, activitySnapshot, renderActivityConsole } from "./activity.js";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { draftStore } from "./drafts.js";
@@ -24,6 +26,7 @@ const view = {
   control: false,
   follow: true,
   reasoning: "",
+  thought: null,
   reasoningBefore: 0,
   tools: new Map(),
   group: null,
@@ -400,6 +403,20 @@ function prepareBlock(node, streaming, context) {
   for (const a of node.querySelectorAll("a")) {
     a.rel = "noopener noreferrer";
     a.target = "_blank";
+    const href = a.getAttribute("href") || "";
+    const extension = /\.(pdf|docx?|xlsx?|pptx?|csv|zip|md|txt)(?:[?#].*)?$/i.exec(href)?.[1];
+    if (!streaming && extension && !/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(href)
+        && a.parentElement?.tagName === "P" && a.parentElement.textContent.trim() === a.textContent.trim()
+        && a.parentElement.children.length === 1 && !a.dataset.fileCard) {
+      a.dataset.fileCard = "true";
+      a.classList.add("document-card");
+      const title = a.textContent;
+      const words = el("span", "document-card-words");
+      words.append(el("strong", "", title), el("small", "", extension.toUpperCase() + " · Open file"));
+      const icon = el("span", "document-card-icon", "▤");
+      icon.setAttribute("aria-hidden", "true");
+      a.replaceChildren(icon, words, el("span", "document-card-arrow", "↗"));
+    }
   }
   for (const img of node.querySelectorAll("img")) {
     if (img.dataset.assetPrepared) continue;
@@ -412,10 +429,9 @@ function prepareBlock(node, streaming, context) {
         !/^(?:https?:|\/\/)/i.test(src) &&
         (context?.workspace || context?.id || view.id)
       ) {
-        const path =
-          !src.startsWith("/") && context?.base
-            ? context.base + "/" + src
-            : src;
+        let decoded;
+        try { decoded = decodeURIComponent(src); } catch { decoded = src; }
+        const path = !decoded.startsWith("/") && context?.base ? context.base + "/" + decoded : decoded;
         img.src =
           "/api/file?" +
           (context?.workspace
@@ -513,6 +529,42 @@ function markdown(node, source, streaming = false) {
       );
   } else cap?.remove();
 }
+function thought(delta, target = $("#timeline"), saved = false) {
+  if (!view.thought) {
+    finishStream();
+    view.group = null;
+    const row = el("details", "thought-row"), summary = el("summary");
+    const label = el("span", "thought-label", saved ? "Thoughts" : "Thinking");
+    const excerpt = el("span", "thought-excerpt");
+    const body = el("div", "prose thought-body");
+    const card = { row, body, label, excerpt, source: "", capped: false, saved };
+    summary.append(el("span", "thought-icon", "◌"), label, excerpt, el("span", "thought-chevron", "⌄"));
+    row.append(summary, body);
+    row.addEventListener("toggle", () => renderThought(card));
+    target.append(row);
+    view.thought = card;
+  }
+  const card = view.thought;
+  if (!saved) { card.saved = false; card.label.textContent = "Thinking"; }
+  card.capped ||= card.source.length + delta.length > 65536;
+  card.source = text(card.source + delta, 65536);
+  card.excerpt.textContent = card.source.replace(/\s+/g, " ").slice(0, 120);
+}
+function renderThought(card) {
+  if (!card.row.open || !card.row.isConnected) return;
+  markdownContexts.set(card.body, { id: view.id });
+  markdown(card.body, card.source, !card.saved);
+  if (card.capped && !card.row.querySelector(".thought-cap"))
+    card.row.append(el("p", "quiet thought-cap", "Preview capped · open Reasoning in thread details for more."));
+}
+function finishThought() {
+  const card = view.thought;
+  if (!card) return;
+  card.saved = true;
+  card.label.textContent = "Thoughts";
+  renderThought(card);
+  view.thought = null;
+}
 function finishStream() {
   if (!view.stream) return;
   const node = view.stream;
@@ -550,6 +602,7 @@ async function enhance(n) {
   }
 }
 function message(role, source, target = $("#timeline")) {
+  finishThought();
   view.group = null;
   finishStream();
   const retained = view.reuseMessages?.get(role + "\0" + text(source))?.shift();
@@ -667,50 +720,99 @@ function message(role, source, target = $("#timeline")) {
 function group(target = $("#timeline")) {
   if (!view.group) {
     view.group = el("details", "work-group");
+    view.group.open = true;
     const summary = el("summary", "", "Working");
     view.group.append(summary);
     target.append(view.group);
   }
   return view.group;
 }
-function tool(id, name, command = "", target = $("#timeline")) {
-  if (id && view.tools.has(id)) return view.tools.get(id);
+let toolClock, activityPreviewThread = null;
+function refreshToolActivity() {
+  const running = [...view.tools.values()].filter(t => t.state === "running" && t.row.isConnected);
+  if (!running.length || document.hidden) {
+    clearInterval(toolClock);
+    toolClock = undefined;
+  } else {
+    for (const t of running) refreshToolTime(t);
+    if (!toolClock) toolClock = setInterval(refreshToolActivity, 1000);
+  }
+}
+document.addEventListener("visibilitychange", refreshToolActivity);
+function openAgentActivity() {
+  preview("Agent activity", "Read-only · updates at tool events", activitySnapshot(view.tools.values()), "activity");
+  activityPreviewThread = view.id;
+  $("#preview-body").classList.add("agent-console");
+  $("#preview-body").scrollTop = $("#preview-body").scrollHeight;
+}
+function refreshAgentActivity() {
+  if (activityPreviewThread !== view.id || !$("#preview").open) return;
+  const body = $("#preview-body");
+  if (!body.classList.contains("agent-console")) return;
+  const following = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+  const snapshot = activitySnapshot(view.tools.values());
+  renderActivityConsole(body, view.tools.values());
+  if (previewBlob) URL.revokeObjectURL(previewBlob);
+  previewBlob = URL.createObjectURL(new Blob([snapshot], { type: "text/plain" }));
+  if (following) body.scrollTop = body.scrollHeight;
+}
+$("#agent-activity").onclick = openAgentActivity;
+function tool(id, name, command = "", target = $("#timeline"), args, saved = false) {
+  finishThought();
+  if (id && view.tools.has(id)) {
+    const item = view.tools.get(id);
+    setToolInput(item, command, args);
+    if (!saved) startToolActivity(item);
+    refreshToolActivity();
+    refreshAgentActivity();
+    return item;
+  }
   finishStream();
   const parent = group(target);
-  const row = el("details", "tool-row running");
-  const summary = el("summary");
-  summary.append(
-    el("span", "tool-icon", "◇"),
-    el("span", "tool-label", name || "Tool"),
-    el("span", "tool-description", command),
-  );
-  row.append(summary);
-  const output = el("pre", "tool-output", command || "Waiting for output…");
-  row.append(output);
-  const actions = el("div", "tool-actions");
-  const expand = el("button", "", "Expand output");
-  expand.onclick = () =>
-    preview(
-      name || "Tool output",
-      "Tool output",
-      text(output.textContent, limits.preview),
-      "text",
-    );
-  const copy = el("button", "", "Copy");
-  copy.onclick = () => copyText(output.textContent);
-  actions.append(expand, copy);
-  row.append(actions);
-  parent.append(row);
-  parent.firstChild.textContent = `${parent.children.length - 1} tool ${parent.children.length === 2 ? "call" : "calls"}`;
-  const item = { row, output, name, command };
+  const item = createToolActivity({ name: name || "tool", command, args, saved, preview, copy: copyText, activity: openAgentActivity });
+  if (id) item.row.dataset.callId = id;
+  parent.append(item.row);
+  const count = parent.querySelectorAll(":scope > .tool-row").length;
+  parent.firstChild.textContent = `${count} ${count === 1 ? "step" : "steps"}`;
   if (id) view.tools.set(id, item);
+  refreshToolActivity();
+  refreshAgentActivity();
   return item;
 }
+function sharedImage(t) {
+  if (t.name !== "display_image" || t.sharedImage || !t.output.textContent.startsWith("[display image]\n")) return;
+  let value;
+  try { value = JSON.parse(t.output.textContent.split("\n")[1]); } catch { return; }
+  if (value.kind !== "image_display" || typeof value.path !== "string" || value.path.length > 4096
+      || !/^image\/(png|jpeg|gif|webp)$/.test(value.media_type)
+      || !Number.isInteger(value.width) || !Number.isInteger(value.height)
+      || value.width <= 0 || value.height <= 0 || value.width * value.height > 32000000) return;
+  const figure = el("figure", "shared-image-card"), open = el("button", "shared-image-open");
+  open.type = "button";
+  const image = el("img");
+  const filename = value.path.split("/").pop();
+  image.alt = "Shared image: " + filename;
+  image.loading = "lazy";
+  image.decoding = "async";
+  image.width = value.width;
+  image.height = value.height;
+  image.src = "/api/file?id=" + encodeURIComponent(view.id) + "&path=" + encodeURIComponent(value.path);
+  image.onerror = () => {
+    image.hidden = true;
+    if (!figure.querySelector(".shared-image-error")) figure.append(el("p", "shared-image-error", "Image preview unavailable. Open the file to check its location and permissions."));
+  };
+  open.append(image);
+  open.onclick = () => openFile(value.path, undefined, true);
+  open.setAttribute("aria-label", "Open shared image " + filename);
+  figure.append(open, el("figcaption", "", `${filename} · ${value.width} × ${value.height} · Shared without model vision`));
+  t.row.after(figure);
+  t.sharedImage = figure;
+}
 function toolStatus(t, failed = false) {
-  t.row.classList.remove("running");
-  t.row.classList.add("completed");
-  t.row.classList.toggle("failed", failed);
-  t.row.querySelector(".tool-icon").textContent = failed ? "×" : "✓";
+  if (!failed) sharedImage(t);
+  finishToolActivity(t, failed);
+  refreshToolActivity();
+  refreshAgentActivity();
 }
 function privateProviderEntry(value) {
   return value?.k === "custom" && value.c === "provider/chat-reasoning";
@@ -726,6 +828,7 @@ function record(r, target) {
       break;
     case "reasoning":
       view.reasoning = (view.reasoning + (r.t || "")).slice(-limits.reasoning);
+      thought(r.t || "", target, true);
       break;
     case "call":
     case "tool_call": {
@@ -735,19 +838,19 @@ function record(r, target) {
       } catch {
         args = {};
       }
-      tool(r.id, r.name, args.command || args.path || "", target);
+      tool(r.id, r.name, args.command || args.path || "", target, args, true);
       break;
     }
     case "bash": {
-      const t = tool(r.id, "bash", r.cmd, target);
+      const t = tool(r.id, "bash", r.cmd, target, undefined, true);
       t.output.textContent = text("$ " + r.cmd + "\n" + r.out, limits.preview);
       toolStatus(t, r.code !== 0 && r.code != null);
       break;
     }
     case "tool": {
-      const t = tool(r.id, r.name, "", target);
+      const t = tool(r.id, r.name, "", target, undefined, true);
       t.output.textContent = text(r.t, limits.preview);
-      toolStatus(t, /^error:/i.test(r.t || ""));
+      toolStatus(t, /^(?:error:|\[exit [1-9]\d*\]|\[(?:killed|timed out|cancelled))/i.test(r.t || ""));
       break;
     }
     case "meta":
@@ -814,14 +917,15 @@ async function historyNow(older = false) {
       .filter(([, t]) => t.row.open)
       .map(([id]) => id),
   );
-  const expandedGroups = new Set(
+  const expandedGroups = new Map(
     (older
       ? []
-      : [...document.querySelectorAll("#timeline .work-group[open]")]
-    ).map((n) => n.dataset.recordIndex),
+      : [...document.querySelectorAll("#timeline .work-group")]
+    ).map((n) => [n.querySelector(".tool-row")?.dataset.callId || n.dataset.recordIndex, n.open]),
   );
   if (!older) {
     view.tools.clear();
+    refreshToolActivity();
     view.reasoning = "";
   }
   const fragment = older
@@ -855,6 +959,8 @@ async function historyNow(older = false) {
   const savedGroup = view.group;
   const liveStream = view.stream;
   const savedReasoning = view.reasoning;
+  const savedThought = view.thought;
+  view.thought = null;
   const savedTasks = view.tasks;
   if (older) view.stream = null;
   view.group = null;
@@ -862,8 +968,7 @@ async function historyNow(older = false) {
   for (const item of h.records) {
     if (
       older &&
-      (item.record.k === "reasoning" ||
-        item.record.k === "state" ||
+      (item.record.k === "state" ||
         (item.record.k === "custom" && item.record.c === "state/todo"))
     )
       continue;
@@ -908,6 +1013,8 @@ async function historyNow(older = false) {
     $("#timeline").prepend(fragment);
     view.group = savedGroup;
     view.stream = liveStream;
+    finishThought();
+    view.thought = savedThought;
     view.reasoning = savedReasoning;
     view.tasks = savedTasks;
   }
@@ -929,7 +1036,10 @@ async function historyNow(older = false) {
   for (const group of older
     ? []
     : $("#timeline").querySelectorAll(".work-group"))
-    if (expandedGroups.has(group.dataset.recordIndex)) group.open = true;
+    {
+      const key = group.querySelector(".tool-row")?.dataset.callId || group.dataset.recordIndex;
+      if (expandedGroups.has(key)) group.open = expandedGroups.get(key);
+    }
   if (older || !view.follow) {
     const restored = older
       ? anchor
@@ -998,6 +1108,7 @@ function schedule() {
       requestAnimationFrame(() => {
         if (view.stream) markdown(view.stream, view.streamText, true);
         if (view.tab === "reasoning") details();
+        if (view.thought) renderThought(view.thought);
         follow();
       });
     },
@@ -1123,8 +1234,10 @@ function event(m) {
       break;
     case "reasoning":
       {
+        thought(m.delta || "");
         if (view.reasoningWindows.length) {
           updateActivity("Reasoning");
+          schedule();
           break;
         }
         const next = (view.reasoning + (m.delta || "")).slice(
@@ -1145,11 +1258,10 @@ function event(m) {
       follow();
       break;
     case "tool_end": {
-      const t = tool(m.call_id, "tool");
+      const t = tool(m.call_id, "tool", "", $("#timeline"), undefined, true);
       t.output.textContent =
         text(
-          (t.command ? "$ " + t.command + "\n" : "") +
-            (m.output || m.summary || ""),
+          m.output || m.summary || "",
           limits.preview,
         ) +
         (m.truncated
@@ -1234,6 +1346,7 @@ function event(m) {
     case "done":
       notifyAttention("Glass finished working", view.id);
       clearNotice();
+      finishThought();
       finishStream();
       view.streamText = "";
       view.group = null;
@@ -1265,6 +1378,8 @@ async function openThread(id, { resume = false } = {}) {
   $("#older").textContent = "↑ Load earlier activity";
   $("#older").removeAttribute("aria-busy");
   if (view.id !== id) {
+    if (activityPreviewThread !== null && $("#preview").open) $("#preview").close();
+    activityPreviewThread = null;
     ++fileVersion;
     fileAbort?.abort();
     view.directory = null;
@@ -1278,7 +1393,9 @@ async function openThread(id, { resume = false } = {}) {
     restoreDraft();
     $("#context-chips").replaceChildren();
   }
+  view.thought = null;
   view.tools.clear();
+  refreshToolActivity();
   view.tailPruned = false;
   view.group = null;
   view.stream = null;
@@ -1390,7 +1507,6 @@ async function openThread(id, { resume = false } = {}) {
             await history();
             if (generation !== view.generation) return;
             for (const m of data.live || []) {
-              if (m.t === "tool" && view.tools.has(m.call_id)) continue;
               await event(m);
             }
             interaction();
@@ -1746,12 +1862,21 @@ function interaction() {
     panel.append(el("p", "", "Take control to answer this request."));
     return;
   }
+  let submitting = false;
   const submit = async (answer) => {
+    if (submitting) return;
+    submitting = true;
+    const controls = [...panel.querySelectorAll("button, input, textarea")];
+    controls.forEach(n => n.disabled = true);
+    panel.setAttribute("aria-busy", "true");
     try {
       await send({ t: "answer", id: m.id, answer });
-      panel.querySelectorAll("button").forEach((b) => (b.disabled = true));
     } catch (e) {
+      submitting = false;
+      controls.forEach(n => n.disabled = false);
       notice(e.message, true);
+    } finally {
+      panel.removeAttribute("aria-busy");
     }
   };
   if (r.kind === "approval") {
@@ -1776,6 +1901,8 @@ function interaction() {
     for (const [i, q] of (r.request.questions || []).entries()) {
       const field = el("fieldset");
       field.append(el("legend", "", q.question));
+      field.append(el("small", "question-number", `Question ${i + 1} of ${r.request.questions.length}${q.multiSelect ? " · Choose any" : " · Choose one"}`));
+
       for (const option of q.options || []) {
         const label = el("label"),
           input = el("input");
@@ -1790,6 +1917,8 @@ function interaction() {
       }
       const custom = el("textarea");
       custom.name = "custom" + i;
+      custom.rows = 1;
+      custom.setAttribute("aria-label", "Written answer: " + q.question);
       custom.placeholder = "Or write your own answer…";
       custom.maxLength = 4096;
       field.append(custom);
@@ -1805,6 +1934,7 @@ function interaction() {
     form.append(actions);
     form.onsubmit = (e) => {
       e.preventDefault();
+      if (submitting) return;
       const data = new FormData(form);
       const answers = r.request.questions.map((q, i) => {
         const custom = String(data.get("custom" + i) || "").trim();
@@ -2528,8 +2658,8 @@ $("#welcome-files").onclick = showFiles;
 $("#files-toggle").onclick = showFiles;
 let fileVersion = 0,
   fileAbort;
-async function openFile(path, workspace) {
-  try {
+async function openFile(path, workspace, rawPath = false) {
+  if (!rawPath) try {
     path = decodeURIComponent(path.split("#")[0]);
   } catch {
     path = path.split("#")[0];
@@ -2626,6 +2756,8 @@ function preview(
   context,
   replace = false,
 ) {
+  const previousActivityThread = activityPreviewThread;
+  activityPreviewThread = null;
   const dialog = $("#preview");
   if (dialog.open && !replace) {
     const body = $("#preview-body");
@@ -2634,6 +2766,7 @@ function preview(
       className: body.className,
       top: body.scrollTop,
       left: body.scrollLeft,
+      activityThread: previousActivityThread,
       title: $("#preview-title").textContent,
       kind: $("#preview-kind").textContent,
       blob: previewBlob,
@@ -2679,7 +2812,10 @@ function preview(
     a.download = title.replace(/[^a-z0-9._-]/gi, "-");
     a.click();
   };
-  if (format === "html") {
+  if (format === "activity") {
+    body.className = "agent-console";
+    renderActivityConsole(body, view.tools.values());
+  } else if (format === "html") {
     const iframe = el("iframe");
     iframe.setAttribute("sandbox", "");
     iframe.referrerPolicy = "no-referrer";
@@ -2826,6 +2962,7 @@ function preview(
   if (!dialog.open) dialog.showModal();
 }
 function closePreview() {
+  activityPreviewThread = null;
   if (!previewStack.length) {
     $("#preview").close();
     return;
@@ -2839,6 +2976,7 @@ function closePreview() {
     body = $("#preview-body");
   body.replaceChildren(...parent.nodes);
   body.className = parent.className;
+  activityPreviewThread = parent.activityThread ?? null;
   $("#preview-title").textContent = parent.title;
   $("#preview-kind").textContent = parent.kind;
   $("#download").onclick = parent.download;
@@ -2857,6 +2995,7 @@ $("#preview").addEventListener("cancel", (event) => {
   closePreview();
 });
 $("#preview").addEventListener("close", () => {
+  activityPreviewThread = null;
   ++fileVersion;
   fileAbort?.abort();
   previewController?.abort();
@@ -3011,59 +3150,13 @@ document.addEventListener("click", async (e) => {
     }
   }
 });
-function renderCommandResult(root, value, format) {
+function renderCommandResult(root, value, format, command, onSelect) {
   if (format === "markdown") {
     root.classList.add("prose");
     markdown(root, String(value || ""));
     return;
   }
-  let count = 0;
-  function node(value, key, depth = 0) {
-    if (privateProviderEntry(value)) return document.createDocumentFragment();
-    if (++count > 3000 || depth > 16)
-      return el("p", "quiet", "Display limit reached. Narrow the query.");
-    if (value && typeof value === "object") {
-      const section = el("details", "command-section");
-      section.open = depth < 2;
-      section.append(
-        el(
-          "summary",
-          "",
-          `${key || "Result"}${Array.isArray(value) ? ` · ${value.length}` : ""}`,
-        ),
-      );
-      for (const [name, item] of Object.entries(value)) {
-        if (count >= 3000) {
-          section.append(
-            el("p", "quiet", "Display limit reached. Narrow the query."),
-          );
-          break;
-        }
-        section.append(node(item, name, depth + 1));
-      }
-      return section;
-    }
-    const row = el("div", "command-value");
-    if (key) row.append(el("span", "command-key", key.replaceAll("_", " ")));
-    if (
-      ["proposal", "draft", "answer", "text", "diff", "preview"].includes(
-        key,
-      ) &&
-      typeof value === "string"
-    ) {
-      const content = el("div", "prose");
-      markdown(
-        content,
-        key === "diff" || key === "preview"
-          ? "```diff\n" + value + "\n```"
-          : value,
-      );
-      row.append(content);
-    } else
-      row.append(el("span", "", value === null ? "—" : String(value ?? "")));
-    return row;
-  }
-  root.append(node(value, ""));
+  renderCommandData(root, value, { command, markdown, privateEntry: privateProviderEntry, onSelect });
 }
 function openDraftEditor() {
   const modal = $("#draft-editor");
@@ -3131,10 +3224,19 @@ async function openNativeCommand(command, initialArgs = "") {
   const modal = $("#command-view"),
     form = $("#command-form"),
     body = $("#command-result");
+  modal.classList.toggle("floating-palette", command.name === "git");
   $("#command-title").textContent = `/${command.name}`;
   $("#command-status").textContent = "";
+  $("#command-status").removeAttribute("data-error");
   body.replaceChildren();
-  form.replaceChildren();
+  body.className = 'command-data';
+  body.setAttribute('aria-busy', 'false');
+  $('#command-content').scrollTop = 0;
+  const actions = form.querySelector('.command-actions') || el('div', 'command-actions');
+  actions.replaceChildren($('#command-status'));
+  form.replaceChildren(actions);
+  modal.querySelector('.command-description')?.remove();
+  if (command.description) form.before(el('p', 'command-description', command.description.replace(/ · local$/, '')));
   if (!modal.open) modal.showModal();
   if (!view.commandTransportReady && !command.readonly) {
     body.append(
@@ -3150,7 +3252,7 @@ async function openNativeCommand(command, initialArgs = "") {
   for (const field of fields) {
     const label = el("label", "command-field", field.label);
     const choices =
-      field.key === "action" && field.label.includes("|")
+      ["action", "kind"].includes(field.key) && field.kind === "text" && field.label.includes("|")
         ? field.label.split("|").map((s) => s.trim().split(/\s/)[0])
         : null;
     const input = el(
@@ -3158,7 +3260,7 @@ async function openNativeCommand(command, initialArgs = "") {
     );
     if (choices)
       for (const choice of choices) {
-        const option = el("option", "", choice);
+        const option = el("option", "", choice.replaceAll("-", " ").replaceAll("_", " "));
         option.value = choice;
         input.append(option);
       }
@@ -3186,7 +3288,7 @@ async function openNativeCommand(command, initialArgs = "") {
       input.autocapitalize = "off";
     }
     label.append(input);
-    form.append(label);
+    form.insertBefore(label, actions);
   }
   if (command.form?.confirm || command.name === "todo") {
     const label = el("label", "command-confirm", "Confirm this change");
@@ -3194,9 +3296,13 @@ async function openNativeCommand(command, initialArgs = "") {
     input.type = "checkbox";
     input.name = "confirmed";
     label.prepend(input);
-    form.append(label);
+    form.insertBefore(label, actions);
   }
   const variants = {
+    model: { inspect: [], list: [], set: ["args"] },
+    extensions: { list: [], enable: ["args"], disable: ["args"], reload: [] },
+    job: { poll: ["id"], stop: ["id"], input: ["id", "text"] },
+    todo: { add: ["args"], complete: ["args"], start: ["args"], block: ["args"], remove: ["args"], clear: [] },
     handoff: {
       inspect: [],
       save: ["args"],
@@ -3250,6 +3356,7 @@ async function openNativeCommand(command, initialArgs = "") {
       create: ["title", "body_file", "base", "expected"],
     },
     neuralnets: {
+      mode: ["text"],
       list: [],
       search: ["query"],
       read: ["id"],
@@ -3308,6 +3415,7 @@ async function openNativeCommand(command, initialArgs = "") {
       advanced: ["args"],
     },
   };
+  let actionButton;
   const updateFields = () => {
     const action = form.elements.namedItem("action")?.value;
     const visible = variants[command.name]?.[action];
@@ -3318,6 +3426,8 @@ async function openNativeCommand(command, initialArgs = "") {
       input.disabled = label.hidden;
       if (label.hidden && input.name === "secret") input.value = "";
     }
+    if (actionButton) actionButton.textContent = command.readonly || ['inspect', 'list', 'status', 'poll'].includes(action)
+      ? 'Refresh' : action ? action.replaceAll('-', ' ').replace(/^./, c => c.toUpperCase()) : fields.length ? 'Apply' : 'Run';
     const confirmed = form.elements.namedItem("confirmed");
     if (confirmed) confirmed.checked = false;
   };
@@ -3329,7 +3439,9 @@ async function openNativeCommand(command, initialArgs = "") {
     command.readonly ? "Refresh" : fields.length ? "Apply" : "Run",
   );
   button.type = "submit";
-  form.append(button);
+  actions.prepend(button);
+  actionButton = button;
+  updateFields();
   const cancel = el("button", "quiet", "Cancel command");
   cancel.type = "button";
   cancel.hidden = true;
@@ -3341,10 +3453,22 @@ async function openNativeCommand(command, initialArgs = "") {
       $("#command-status").textContent = "Cancellation requested…";
     }
   };
-  form.append(cancel);
+  actions.insertBefore(cancel, $('#command-status'));
   const execute = async (inspect = false) => {
     const id = view.id;
     button.disabled = true;
+    $('#command-status').removeAttribute('data-error');
+    body.setAttribute('aria-busy', 'true');
+    if (!body.hasChildNodes()) {
+      const placeholder = el('div', 'command-skeleton');
+      placeholder.setAttribute('aria-hidden', 'true');
+      for (let row = 0; row < 5; row++) {
+        const line = el('div', 'command-skeleton-row');
+        line.append(el('span'), el('span'));
+        placeholder.append(line);
+      }
+      body.append(placeholder);
+    }
     $("#command-status").textContent = inspect
       ? "Loading…"
       : command.form?.model_request
@@ -3371,7 +3495,13 @@ async function openNativeCommand(command, initialArgs = "") {
       if (version !== commandViewVersion || id !== view.id) return;
       body.replaceChildren();
       body.className = "command-data";
-      renderCommandResult(body, result.body, result.format);
+      renderCommandResult(body, result.body, result.format, command.name, item => {
+        if (command.name !== 'quote') return;
+        form.elements.namedItem('args').value = String(item.record);
+        form.elements.namedItem('text').value = item.excerpt || '';
+        $('#command-status').textContent = 'Excerpt selected. Review it, then choose Apply to attach it.';
+        form.elements.namedItem('text').focus({ preventScroll: false });
+      });
       for (const key of ["expected", "draft", "attempt"]) {
         const target = form.elements.namedItem(
           key === "draft" ? "text" : key === "attempt" ? "args" : key,
@@ -3413,10 +3543,14 @@ async function openNativeCommand(command, initialArgs = "") {
         body.prepend(download);
       }
     } catch (error) {
-      if (version === commandViewVersion)
+      if (version === commandViewVersion) {
+        if (body.querySelector('.command-skeleton')) body.replaceChildren(el('p', 'command-empty', 'Results could not load. Try again using the command above.'));
         $("#command-status").textContent = error.message;
+        $("#command-status").dataset.error = 'true';
+      }
     } finally {
       if (version === commandViewVersion) {
+        body.setAttribute('aria-busy', 'false');
         button.disabled = false;
         cancel.hidden = true;
         $("#command-status").dataset.working = "false";
@@ -3460,7 +3594,7 @@ async function openNativeCommand(command, initialArgs = "") {
     ].includes(command.name)
   )
     await execute(true);
-  else if ((initialArgs || !fields.length) && !command.form?.confirm)
+  else if (initialArgs && !command.form?.confirm)
     await execute();
   else
     $("#command-status").textContent = command.form?.model_request
@@ -3469,7 +3603,48 @@ async function openNativeCommand(command, initialArgs = "") {
 }
 $("#command-close").onclick = () => $("#command-view").close();
 
+function openHelp() {
+  preview('Help', 'Glass', `## Using Glass
+
+Type **/** to browse commands, or search by name and description. Choose a command to inspect its current state and fill in its controls. Use its action button to submit a change.
+
+- **Enter** sends a message; **Shift Enter** adds a line.
+- **⌘/Ctrl K** finds a conversation.
+- **Escape** closes a view or returns to the previous palette category.
+- Take control before changing a shared conversation.
+
+Opening help and inspecting local state do not use model tokens. Commands that ask the model to work run after submission.
+
+## Command reference
+
+Filter the current command catalogue below. Choose an entry to open it.`, 'markdown');
+  const body = $('#preview-body');
+  const search = el('input', 'command-filter');
+  search.type = 'search';
+  search.placeholder = 'Find a command…';
+  search.setAttribute('aria-label', 'Search help commands');
+  const count = el('p', 'command-list-count'); count.setAttribute('role', 'status');
+  const list = el('div', 'help-command-list');
+  const entries = commands.filter(c => !c.primary && c.name !== 'help');
+  for (const command of entries) {
+    const button = el('button', 'help-command'); button.type = 'button';
+    button.append(el('strong', '', '/' + command.name), el('span', '', command.description.replace(/ · local$/, '')));
+    button.dataset.search = [command.name, command.description, command.keywords, ...(command.aliases || [])].join(' ').toLowerCase();
+    const supported = command.portable || Boolean(commandActions[command.name]);
+    if (!supported) { button.append(el('small', '', 'Terminal only')); button.disabled = true; }
+    button.onclick = () => { closePreview(); chooseCommand(command); };
+    list.append(button);
+  }
+  search.oninput = () => {
+    const query = search.value.trim().toLowerCase().replace(/^\//, ''); let shown = 0;
+    for (const item of list.children) { item.hidden = !item.dataset.search.includes(query); if (!item.hidden) shown++; }
+    count.textContent = shown ? `${shown} commands` : 'No matching commands.';
+  };
+  search.oninput(); body.append(search, count, list);
+}
+
 const commandActions = {
+  help: () => openHelp(),
   layout: () => inspectLayout(),
   clear: () => newThread(),
   tools: () => {
@@ -3642,7 +3817,6 @@ function chooseCommand(c, { focusSearch = false } = {}) {
   closeCommands();
   if ($("#prompt").value.trim().startsWith("/")) $("#prompt").value = "";
   if (c.portable) openNativeCommand(c);
-  else if (c.name === "help") openCommands("", { focusSearch });
   else commandActions[c.name]();
 }
 async function inspectLayout() {

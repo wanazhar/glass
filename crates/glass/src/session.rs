@@ -1333,6 +1333,10 @@ impl Session {
 
     /// The conversation as the model should see it.
     pub fn messages(&self) -> Vec<Message> {
+        self.messages_with_images(true)
+    }
+
+    pub fn messages_with_images(&self, image_input: bool) -> Vec<Message> {
         match self.context_edits() {
             // Turn numbers must match `/branch` and the transcript, which both
             // count raw log turns; edits therefore apply to the raw records
@@ -1361,22 +1365,22 @@ impl Session {
                     self.project_messages(&bounded_edited_context(
                         &apply_checkpoint_projection(raw),
                         &edits,
-                    ))
+                    ), image_input)
                 } else {
                     let edited = apply_edits(&raw, &edits);
                     let (projected, _) = apply_projection(edited);
-                    self.project_messages(&projected)
+                    self.project_messages(&projected, image_input)
                 }
             }
-            None => self.project_messages(&apply_checkpoint_projection(self.records.clone())),
+            None => self.project_messages(&apply_checkpoint_projection(self.records.clone()), image_input),
         }
     }
 
-    fn project_messages(&self, records: &[Record]) -> Vec<Message> {
+    fn project_messages(&self, records: &[Record], image_input: bool) -> Vec<Message> {
         // Legacy image records stay in the transcript. The attachment sidecar
         // decides which of those snapshots may enter a future request.
         if !self.path.with_extension("meta.json").exists() {
-            return crate::compact::project(records);
+            return crate::compact::project_filtered_for_model(records, None, image_input);
         }
         let meta = crate::polish::metadata(self);
         let active: std::collections::HashSet<&str> = meta
@@ -1384,7 +1388,13 @@ impl Session {
             .iter()
             .filter_map(|a| a.data.as_deref())
             .collect();
-        let mut messages = crate::compact::project_filtered(records, Some(&active));
+        let mut messages = crate::compact::project_filtered_for_model(records, Some(&active), image_input);
+        if !image_input {
+            if !active.is_empty() {
+                messages.push(Message::User("[Image attachments remain available to the user but are omitted from this text-only model's input. Their visual contents are unknown.]".into()));
+            }
+            return messages;
+        }
         // Compaction may summarize the original image turn. Active snapshots
         // remain attachments, just as text snapshots do, until explicitly removed.
         let mut restored_bytes = 0usize;

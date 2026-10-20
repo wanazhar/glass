@@ -281,7 +281,7 @@ fn execute_cancellable(
     if cancelled() {
         return Err("File operation cancelled before execution".into());
     }
-    if !matches!(action, "read" | "check" | "edit" | "write" | "view_image") {
+    if !matches!(action, "read" | "check" | "edit" | "write" | "view_image" | "display_image") {
         return Err("action must be read, edit, write, or check".into());
     }
     if !approved() && let Some(reason) = crate::sandbox::refusal() { return Err(reason.to_string()); }
@@ -323,7 +323,11 @@ fn execute_cancellable(
         .as_ref()
         .map(|(b, _)| b.as_slice())
         .unwrap_or_default();
-    if action == "view_image" {
+    if action == "view_image" || action == "display_image" {
+        if action == "display_image" {
+            if existing.is_none() { return Err("image file does not exist".into()); }
+            return crate::images::share(bytes, &target.label);
+        }
         if existing.is_none() { return Err("image file does not exist".into()); }
         return crate::images::prepare(bytes, &target.label, cancelled);
     }
@@ -688,15 +692,15 @@ pub fn command(args: &[String]) -> Result<(), String> {
     if args.is_empty() || args[0] == "--help" {
         crate::cli::text(
             "Files",
-            "Usage:\n  gc file [--json] image PATH | read PATH [OFFSET LIMIT] [--byte-offset N --expected SHA256] | check PATH | edit|write < JSON\n\nEdit request:\n {\"path\":\"a.rs\",\"expected\":\"SHA256 from read\",\"edits\":[{\"start\":2,\"end\":3,\"text\":\"replacement\"}]}\nExact edit: {\"old\":\"unique text\",\"new\":\"replacement\"}; insertion: end=start-1.\n\nWrite request:\n {\"path\":\"a.rs\",\"expected\":null,\"text\":\"new file\"} (null=create-only). Optional validate:true requires a passing supported syntax check. preview:true validates and returns a proposed result without writing.\n\nSafety:\nText operations: UTF-8 regular files only, 8 MiB maximum; image prepares PNG/JPEG/GIF/WebP with bounded dimensions and a private JPEG artifact; Paths follow the active permission profile: unrestricted permits absolute outside-workspace paths; restrictive profiles confine native files. No symlinks. JSON results are bounded; revisions cover the entire file. Truncated reads include next_read with a byte cursor and expected revision. Byte continuation requires --expected; restart a line read when stale. Atomic replacement preserves mode bits, not ownership or extended attributes; locks coordinate GC writers, not arbitrary external writers.",
+            "Usage:\n  gc file [--json] image|display PATH | read PATH [OFFSET LIMIT] [--byte-offset N --expected SHA256] | check PATH | edit|write < JSON\n\nEdit request:\n {\"path\":\"a.rs\",\"expected\":\"SHA256 from read\",\"edits\":[{\"start\":2,\"end\":3,\"text\":\"replacement\"}]}\nExact edit: {\"old\":\"unique text\",\"new\":\"replacement\"}; insertion: end=start-1.\n\nWrite request:\n {\"path\":\"a.rs\",\"expected\":null,\"text\":\"new file\"} (null=create-only). Optional validate:true requires a passing supported syntax check. preview:true validates and returns a proposed result without writing.\n\nSafety:\nText operations: UTF-8 regular files only, 8 MiB maximum; image prepares PNG/JPEG/GIF/WebP with bounded dimensions and a private JPEG artifact; Paths follow the active permission profile: unrestricted permits absolute outside-workspace paths; restrictive profiles confine native files. No symlinks. JSON results are bounded; revisions cover the entire file. Truncated reads include next_read with a byte cursor and expected revision. Byte continuation requires --expected; restart a line read when stale. Atomic replacement preserves mode bits, not ownership or extended attributes; locks coordinate GC writers, not arbitrary external writers.",
         );
         return Ok(());
     }
-    let action = if args[0] == "image" { "view_image".to_string() } else { args[0].clone() };
-    if !matches!(action.as_str(), "read" | "check" | "edit" | "write" | "view_image") {
+    let action = if args[0] == "image" { "view_image".to_string() } else if args[0] == "display" { "display_image".to_string() } else { args[0].clone() };
+    if !matches!(action.as_str(), "read" | "check" | "edit" | "write" | "view_image" | "display_image") {
         return Err("action must be read, edit, write, or check; see file --help".into());
     }
-    let v = if matches!(action.as_str(), "read" | "check" | "view_image") {
+    let v = if matches!(action.as_str(), "read" | "check" | "view_image" | "display_image") {
         let path = args.get(1).ok_or("path required")?;
         let mut request = json!({"path":path});
         let mut positional = 0;
@@ -768,7 +772,7 @@ pub(crate) fn read_workspace_bytes(root: &Path, path: &str) -> Result<Vec<u8>, S
 }
 
 pub fn is_tool(name: &str) -> bool {
-    matches!(name, "read" | "edit" | "write" | "view_image")
+    matches!(name, "read" | "edit" | "write" | "view_image" | "display_image")
 }
 
 pub fn schemas() -> Vec<(String, String, String)> {
@@ -794,6 +798,7 @@ pub fn schemas() -> Vec<(String, String, String)> {
         {"type":"object","additionalProperties":false,"required":["start","end","text"],"properties":{"start":{"type":"integer","minimum":1},"end":{"type":"integer","minimum":0},"text":{"type":"string"}}}
     ]}});
     vec![
+        ("display_image".into(), "Show a local PNG/JPEG/GIF/WebP to the user in web chat without sending pixels to the model. Returns dimensions and Markdown only; does not inspect visual contents. For a supplied filename, try this tool directly relative to the workspace before searching. Only search after not-found; scope searches to likely folders and exclude generated/build/benchmark trees. Prefer this for sharing, including text-only models. No symlinks; max 8 MiB, 32 million pixels.".into(), json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string"}}}).to_string()),
         ("view_image".into(), "Inspect a PNG, JPEG, GIF or WebP as an image, including browser screenshots. Returns source, dimensions and a reusable image reference; image pixels reach vision-capable models. No symlinks; input max 8 MiB, 32 million pixels; bounded resize and metadata removal.".into(), json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string"}}}).to_string()),
         ("read".into(),"Read a UTF-8 file allowed by the active permission profile with line numbers and whole-file revision. Defaults: offset=1, limit=200. Follow next_read for truncated output; byte_offset requires expected. No symlinks; max 8 MiB.".into(),read.to_string()),
         ("edit".into(),"Edit a previously read file. Omit expected to use the session’s last native read/write revision; explicit expected overrides it. edits use unique old/new text or original 1-based start/end/text ranges (insert: end=start-1). Atomic; preview returns a diff without writing; validate requires supported syntax checks.".into(),mutation.to_string()),
@@ -844,6 +849,7 @@ pub fn display(out: &Value) -> String {
 fn display_inner(out: &Value, cli_continuation: bool) -> String {
     match out["kind"].as_str() {
         Some("image_view") => crate::images::display(out),
+        Some("image_display") => crate::images::display_shared(out),
         Some("file_read") => format!(
             "[file {} · revision {} · lines {}/{}]\n{}{}",
             out["path"].as_str().unwrap(),
@@ -882,7 +888,7 @@ mod direct_tool_tests {
             let schema: Value = serde_json::from_str(&schema).unwrap();
             let args = match name.as_str() {
                 "read" => json!({"path":"a","limit":20}),
-                "view_image" => json!({"path":"a"}),
+                "view_image" | "display_image" => json!({"path":"a"}),
                 "write" => json!({"path":"a","expected":null,"text":"x"}),
                 _ => json!({"path":"a","expected":"revision","edits":[{"old":"x","new":"y"}]}),
             };

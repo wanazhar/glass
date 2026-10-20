@@ -75,10 +75,11 @@ Create an isolated host-controlled conversation:
 ```
 
 The response contains `sessionId`. The workspace must be an existing absolute
-directory. Tools use unique ASCII alphanumeric, underscore, or hyphen names.
-Schemas must describe JSON objects. GC validates the structural JSON Schema
-subset used by its existing tool-repair mechanism; the host must validate any
-additional constraints before execution.
+directory. Host sessions can register up to 512 tools. Names must use unique
+ASCII alphanumeric, underscore, hyphen, or period characters. Schemas must
+describe JSON objects. GC validates the structural JSON Schema subset used by
+its existing tool-repair mechanism; the host must validate any additional
+constraints before execution.
 
 Optional session settings:
 

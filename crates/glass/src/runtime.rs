@@ -100,13 +100,14 @@ fn valid_id(id: &str) -> bool {
         && id.len() <= 128
         && id
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 fn schemas(value: &Value) -> Result<Schemas, String> {
+    const MAX_HOST_TOOLS: usize = 512;
     let entries = value.as_array().ok_or("tools must be an array")?;
     let mut out: Schemas = Vec::new();
-    if entries.len() > 128 {
-        return Err("at most 128 tools may be registered".into());
+    if entries.len() > MAX_HOST_TOOLS {
+        return Err(format!("at most {MAX_HOST_TOOLS} tools may be registered"));
     }
     for entry in entries {
         let name = string(entry, "name")?;
@@ -1505,11 +1506,30 @@ mod tests {
         assert!(schemas(&json!([{"name":"x","inputSchema":{"type":"object"}},{"name":"x","inputSchema":{"type":"object"}}])).is_err());
         assert!(schemas(&json!([{"name":"x","inputSchema":{}}])).is_err());
     }
+
     #[test]
-    fn session_identifiers_cannot_escape_storage() {
-        for id in ["../x", "/tmp/x", "a/b", "x.jsonl", ""] {
+    fn host_schema_catalog_accepts_large_workspace_tool_sets_with_a_fixed_bound() {
+        let descriptor = |index| {
+            json!({
+                "name": format!("glass.tool_{index}.run"),
+                "inputSchema": {"type":"object"}
+            })
+        };
+        let catalog = (0..512).map(descriptor).collect::<Vec<_>>();
+        assert_eq!(schemas(&Value::Array(catalog)).unwrap().len(), 512);
+
+        let oversized = (0..513).map(descriptor).collect::<Vec<_>>();
+        assert_eq!(
+            schemas(&Value::Array(oversized)).unwrap_err(),
+            "at most 512 tools may be registered"
+        );
+    }
+    #[test]
+    fn host_tool_names_allow_namespaces_without_path_separators() {
+        for id in ["../x", "/tmp/x", "a/b", ""] {
             assert!(!valid_id(id));
         }
         assert!(valid_id("session-01_abc"));
+        assert!(valid_id("glass.file.read"));
     }
 }

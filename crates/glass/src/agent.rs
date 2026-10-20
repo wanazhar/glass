@@ -484,7 +484,7 @@ impl<'a> Agent<'a> {
         let snapshot = CacheSnapshot {
             session_path: Some(self.session.path.clone()),
             system: self.effective_system(),
-            messages: self.session.messages(),
+            messages: self.session.messages_with_images(self.image_input),
             tools,
         };
         warmer.schedule(policy, snapshot);
@@ -612,16 +612,14 @@ impl<'a> Agent<'a> {
                 "session log is not writable; no provider request was made: {error}"
             )));
         }
-        let mut messages = self.session.messages();
-        if !self.image_input && messages.iter().any(|m| matches!(m, glass_mod_api::Message::Image {..})) {
-            return Err(provider::Error::Config("Image input is disabled for this model (image_input=false). Remove image attachments in /context or select a vision-capable model.".into()));
-        }
+        let mut messages = self.session.messages_with_images(self.image_input);
+
         let context_epoch = self.session.log_len();
         self.ensure_context_fits(&messages)?;
         // Compaction updates records; send that projection, not the stale
         // pre-compaction request. Avoid rebuilding on ordinary requests.
         if self.session.log_len() != context_epoch {
-            messages = self.session.messages();
+            messages = self.session.messages_with_images(self.image_input);
         }
 
         let mut tools = self.tool_set();
@@ -1088,6 +1086,13 @@ impl<'a> Agent<'a> {
                     self.emit(Progress::ProviderNotice("Provider cooldown · provider rejected stream; preserving completed tools and retrying after cooldown."));
                     continue;
                 }
+                Err(ref error) if self.image_input && crate::images::text_only_rejection(error) => {
+                    self.image_input = false;
+                    let detail = "Provider confirmed text-only input. Retrying once without pixels; completed tools and original images are preserved. Use display_image to share images without inspecting them.";
+                    self.session.append(Record::Meta(detail.into()));
+                    self.emit(Progress::ProviderNotice(detail));
+                    self.turn(&mut pump)?
+                }
                 // A refusal that names an overflow can be recovered once: the
                 // harness caused it by under-estimating, and the right answer
                 // is to truncate — never to re-send the history that just did
@@ -1154,7 +1159,7 @@ impl<'a> Agent<'a> {
 
             // Give mods a look at the finished turn.
             let model = self.provider.model().to_string();
-            let current = self.session.messages();
+            let current = self.session.messages_with_images(self.image_input);
             let ctx = TurnContext {
                 messages: &current,
                 model: &model,
@@ -2144,7 +2149,7 @@ impl<'a> Agent<'a> {
                 .flat_map(|m| m.tools())
                 .map(|(n, _, _)| n)
                 .collect();
-            let mut avail = vec!["read".into(),"edit".into(),"write".into(),"view_image".into(),"bash".into(), "state".into()];
+            let mut avail = vec!["read".into(),"edit".into(),"write".into(),"display_image".into(),"view_image".into(),"bash".into(), "state".into()];
             avail.extend(extra);
             outcome.body = format!(
                 "error: no tool named `{}`. Available tools: {}.",
@@ -2470,7 +2475,7 @@ impl<'a> Agent<'a> {
                 dropped: evicted,
             });
         }
-        if provider::pressure(self.provider, &self.session.messages()) >= compact::COMPACT_AT {
+        if provider::pressure(self.provider, &self.session.messages_with_images(self.image_input)) >= compact::COMPACT_AT {
             changed |= compact::fallback(self.session, self.state, "context overflow").is_ok();
         }
         changed

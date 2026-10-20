@@ -500,9 +500,9 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn builtin_surface_has_six_compact_tools() {
+    fn builtin_surface_has_seven_compact_tools() {
         let tools = builtin_tools();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 7);
         assert!(
             tools
                 .iter()
@@ -542,7 +542,7 @@ mod tests {
         let tools = builtin_tools();
         let bash: Value = serde_json::from_str(&tools[0].2).unwrap();
         let state: Value = serde_json::from_str(&tools[1].2).unwrap();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 7);
         assert_eq!(bash["anyOf"][0]["required"][0], "command");
         assert_eq!(bash["anyOf"][1]["required"][0], "job");
         assert_eq!(bash["properties"]["job"]["required"][0], "action");
@@ -573,7 +573,7 @@ mod tests {
             vec![
                 "bash",
                 "state",
-                "view_image",
+                "display_image", "view_image",
                 "read",
                 "edit",
                 "write",

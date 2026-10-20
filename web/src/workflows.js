@@ -19,7 +19,7 @@ export function workflows({
       event.returnValue = "";
     }
   });
-  function open(title) {
+  function open(title, floating = false) {
     if (mayLeave && !mayLeave())
       throw Error("The file editor still has unsaved changes.");
     mayLeave = null;
@@ -34,6 +34,7 @@ export function workflows({
       id === view.id &&
       !own.signal.aborted;
     modal ||= document.body.appendChild(el("dialog", "workflow"));
+    modal.classList.toggle("floating-palette", floating);
     modal.oncancel = null;
     delete modal.dataset.pending;
     modal.replaceChildren();
@@ -290,7 +291,7 @@ export function workflows({
   }
   async function changes() {
     requireHost(false);
-    const { body, status, signal, current, run } = open("Changes");
+    const { body, status, signal, current, run } = open("Changes", true);
     const id = view.id;
     async function refresh() {
       status.textContent = "Reading Git state…";
@@ -645,7 +646,7 @@ export function workflows({
     }
   }
   async function work() {
-    const { body, status, signal, current, run } = open("Work & teammates");
+    const { body, status, signal, current, run } = open("Work & teammates", true);
     const id = view.id,
       tasks = el("section"),
       agents = el("section"),

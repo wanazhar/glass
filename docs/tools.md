@@ -188,7 +188,15 @@ are not reattached on resume.
 
 For foreground bash calls, `cwd` selects the directory used by execution, read-before-write checks, and verification. Failed reads do not authorize later writes. Job control rejects `cwd` rather than silently ignoring it; use explicit paths in background commands.
 
-## Image viewing
+## Image sharing and viewing
+
+`display_image {"path":"screenshots/result.png"}` shares a local image in web
+chat without sending pixels to the model. It returns dimensions, file size and
+Markdown; the browser loads the file separately. The model cannot infer its
+contents from this metadata. PNG, JPEG, GIF and WebP files up to 8 MiB and
+32 million pixels are supported, using the same file permission boundaries as
+`view_image`. Header validation does not decode or re-encode pixels or create
+vision artifacts. `gc file display PATH` provides the same metadata locally.
 
 For a local preview and artifact metadata, run `gc file image PATH` or
 `gc file --json image PATH`. This prepares pixels without a model request.
@@ -214,8 +222,11 @@ provider context and may incur charges; local cache hits do not make vision free
 
 A compatible API does not prove model vision support. Set `image_input = false`
 in the main configuration for a text-only model: foreground, served and ACP agents
-omit `view_image`, reject fabricated calls and report existing image context before
-sending a request. The default is true so unknown compatible vision models can be
+omit `view_image`, reject fabricated viewing calls and replace existing pixels
+with an explicit text notice before sending a request. Original images remain
+in session storage. `display_image` remains available. An explicit upstream
+400 rejection stating that image input is unsupported triggers one retry without
+pixels for the current agent instance, preserving completed tools. The default is true so unknown compatible vision models can be
 used without an allowlist. Independently configured delegated models must support
 images when their tasks require them.
 

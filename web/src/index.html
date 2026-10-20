@@ -137,6 +137,7 @@
             ><strong id="thread-name">New thread</strong>
           </div>
           <div class="toolbar-actions">
+            <button type="button" id="agent-activity" class="icon-button" aria-label="Agent activity" title="Agent activity">›_</button>
             <button
               type="button"
               id="changes-toggle"
@@ -200,11 +201,11 @@
             </div>
           </section>
           <div id="timeline" class="timeline" aria-label="Conversation"></div>
+          <div id="interaction" class="interaction hidden" aria-label="Your input is needed"></div>
         </div>
         <button id="latest" class="latest hidden">↓ Back to latest</button>
         <section class="compose-zone">
           <div id="notice" class="notice hidden" role="status"></div>
-          <div id="interaction" class="interaction hidden"></div>
           <div id="activity" class="activity">
             <span class="activity-dot"></span
             ><span id="activity-text">Ready</span
@@ -374,10 +375,9 @@
         </button>
       </header>
       <div id="command-content">
-        <div id="command-result"></div>
-        <form id="command-form"></form>
+        <form id="command-form"><div class="command-actions"><div id="command-status" role="status" aria-atomic="true" tabindex="0"></div></div></form>
+        <div id="command-result" class="command-data" role="region" aria-label="Command results" aria-busy="false"></div>
       </div>
-      <footer id="command-status" role="status"></footer>
     </dialog>
     <dialog id="preview">
       <header>

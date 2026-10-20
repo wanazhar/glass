@@ -66,6 +66,8 @@ jobs:
         run: cargo test --package glass-dev --test development_runtime --locked windows_named_pipe_daemon_lifecycle_reconnect_and_permissions -- --nocapture
       - name: Run glass-browser browser-free contract tests
         run: cargo test --package glass-browser --tests --no-default-features --locked
+      - name: Run browser-core shared contract tests
+        run: cargo test --package glass-browser-core --no-default-features --lib --locked
 
   native-engine:
     name: Native engine core
@@ -88,7 +90,9 @@ jobs:
             ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-
             ${{ runner.os }}-cargo-${{ github.job }}-
       - name: Check native engine feature
-        run: cargo check --package glass-browser --features native-engine --locked
+        run: |
+          cargo check --package glass-browser-core --all-targets --features native-engine --locked
+          cargo check --package glass-browser --features native-engine --locked
       - name: Install native-engine sandbox prerequisite
         run: |
           sudo apt-get update
@@ -96,9 +100,13 @@ jobs:
       - name: Build native content worker test prerequisite
         run: cargo build --package glass-browser --features native-engine --bin glass-native-content-worker --locked
       - name: Test native engine feature
-        run: cargo test --package glass-browser --features native-engine --tests --locked
+        run: |
+          cargo test --package glass-browser-core --features native-engine --all-targets --locked
+          cargo test --package glass-browser --features native-engine --tests --locked
       - name: Lint native engine feature
-        run: cargo clippy --package glass-browser --features native-engine --all-targets --locked -- -D warnings
+        run: |
+          cargo clippy --package glass-browser-core --features native-engine --all-targets --locked -- -D warnings
+          cargo clippy --package glass-browser --features native-engine --all-targets --locked -- -D warnings
 
   test:
     runs-on: ubuntu-latest

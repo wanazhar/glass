@@ -185,6 +185,7 @@ current user instructions.
 - [Browser Host RFC](browser-host-rfc.md) and
   [backend capability matrix](backend-capability-matrix.json) — backend
   registration, capability evidence, BiDi boundary, and survivability.
+- [Browser core crate](architecture/browser-core.md) — engine ownership, the one-way crate boundary, feature gating, and integration surface.
 - [Native browser engine](architecture/native-engine.md) — the Glass-owned
   engine kernel, browser-complete expansion, runtime limits, and promotion
   gates for issue #40. Its versioned contract is the [Glass Core Web

@@ -5,6 +5,10 @@
 //! transport, but transport identifiers and command/domain types must not cross
 //! this boundary.
 
+pub use glass_browser_core::contracts::{
+    PromptDecision, PromptResult, StorageOperation, StorageScope,
+};
+
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -14,23 +18,12 @@ use std::future::Future;
 use std::pin::Pin;
 
 pub const BROWSER_BACKEND_SCHEMA_VERSION: u32 = 1;
-pub const MAX_BACKEND_ID_BYTES: usize = 128;
-pub const MAX_VERSION_BYTES: usize = 128;
-pub const MAX_BROWSER_FAMILY_BYTES: usize = 64;
-pub const MAX_CAPABILITIES: usize = 32;
-pub const MAX_DEPENDENCIES: usize = 16;
-pub const MAX_LIMITATIONS: usize = 16;
-pub const MAX_LIMITATION_BYTES: usize = 256;
-pub const MAX_SELECTION_REQUIREMENTS: usize = 32;
-pub const MAX_BACKEND_CANDIDATES: usize = 32;
-pub const MAX_DIAGNOSTIC_BYTES: usize = 512;
-pub const MAX_CONTEXTS: usize = 64;
-pub const MAX_STORAGE_ENTRIES: usize = 128;
-pub const MAX_DOWNLOADS: usize = 64;
-pub const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
-pub const MAX_JSON_BYTES: usize = 64 * 1024;
-pub const MAX_JSON_DEPTH: usize = 16;
-pub const MAX_TEXT_BYTES: usize = 16 * 1024;
+pub use glass_browser_core::limits::{
+    MAX_BACKEND_CANDIDATES, MAX_BACKEND_ID_BYTES, MAX_BROWSER_FAMILY_BYTES, MAX_CAPABILITIES,
+    MAX_CAPTURE_BYTES, MAX_CONTEXTS, MAX_DEPENDENCIES, MAX_DIAGNOSTIC_BYTES, MAX_DOWNLOADS,
+    MAX_JSON_BYTES, MAX_JSON_DEPTH, MAX_LIMITATION_BYTES, MAX_LIMITATIONS,
+    MAX_SELECTION_REQUIREMENTS, MAX_STORAGE_ENTRIES, MAX_TEXT_BYTES, MAX_VERSION_BYTES,
+};
 
 fn validate_text(field: &str, value: &str, max: usize) -> Result<(), BrowserBackendError> {
     if value.is_empty() {
@@ -1852,6 +1845,7 @@ impl ClickModifiers {
         !(self.alt || self.control || self.meta || self.shift)
     }
 
+    #[cfg(feature = "native-engine")]
     pub(crate) const fn native_mask(self) -> u8 {
         (self.alt as u8)
             | ((self.control as u8) << 1)
@@ -1927,30 +1921,6 @@ pub struct CaptureResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum StorageScope {
-    Cookies,
-    Local,
-    Session,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum StorageOperation {
-    Read,
-    /// Write one key/value pair. For [`StorageScope::Cookies`], this is a
-    /// current-origin `document.cookie` assignment and cannot express
-    /// metadata such as HttpOnly, SameSite, or an explicit domain/path.
-    Write {
-        #[serde(deserialize_with = "deserialize_bounded_string")]
-        key: String,
-        #[serde(deserialize_with = "deserialize_bounded_string")]
-        value: String,
-    },
-    Clear,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StorageRequest {
     #[serde(deserialize_with = "deserialize_bounded_string")]
@@ -1964,13 +1934,6 @@ pub struct StorageRequest {
 pub struct StorageResult {
     #[serde(deserialize_with = "deserialize_bounded_string_map")]
     pub entries: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PromptDecision {
-    Accept,
-    Dismiss,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2239,12 +2202,6 @@ impl BackendProfile {
     ) -> Result<(), BrowserBackendError> {
         self.require(operation.capability(), minimum)
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PromptResult {
-    pub handled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

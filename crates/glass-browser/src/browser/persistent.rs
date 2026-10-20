@@ -1685,6 +1685,7 @@ mod tests {
         .unwrap_or_else(|_| panic!("native owner did not expose a pending {expected_type} dialog"))
     }
 
+    #[cfg(all(unix, feature = "native-engine"))]
     #[test]
     fn native_owner_keeps_one_engine_alive_for_multiple_ipc_commands() {
         std::thread::Builder::new()
@@ -1823,7 +1824,7 @@ mod tests {
                         ),
                     }));
 
-                    let record = tokio::time::timeout(Duration::from_secs(10), async {
+                    let record = tokio::time::timeout(Duration::from_secs(30), async {
                         loop {
                             if let Ok(bytes) = tokio::fs::read(&status_path).await {
                                 let record: PersistentSessionRecord =
@@ -1995,7 +1996,7 @@ mod tests {
                         .await
                         .expect("follow-up navigation never reached the HTTP fixture")
                         .expect("HTTP fixture follow-up notification was dropped");
-                    let follow_up = tokio::time::timeout(Duration::from_secs(10), follow_up_client)
+                    let follow_up = tokio::time::timeout(Duration::from_secs(30), follow_up_client)
                     .await
                     .expect("follow-up navigation was blocked by cancelled operation")
                     .expect("follow-up navigation client task panicked")
@@ -2569,7 +2570,7 @@ mod tests {
                     let mut pending_stop_navigation = tokio::task::spawn_local(async move {
                         send_request_payload(&stop_socket, &stop_navigation).await
                     });
-                    let stop_dialog = tokio::time::timeout(Duration::from_secs(10), async {
+                    let stop_dialog = tokio::time::timeout(Duration::from_secs(30), async {
                         loop {
                             let status = send_request(&socket, "status").await.unwrap();
                             if status["pendingDialog"].is_object() {

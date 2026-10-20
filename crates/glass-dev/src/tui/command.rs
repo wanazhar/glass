@@ -54,10 +54,12 @@ pub fn resolve_palette_submission(
         return PaletteResolution::SelectedAction(action);
     }
 
-    if one_word_root || is_tui_command_root(root) || selected.is_none() {
+    if one_word_root || is_tui_command_root(root) {
         PaletteResolution::TypedCommand(normalized)
+    } else if let Some(action) = selected {
+        PaletteResolution::SelectedAction(action)
     } else {
-        PaletteResolution::SelectedAction(selected.expect("checked selected action"))
+        PaletteResolution::TypedCommand(normalized)
     }
 }
 

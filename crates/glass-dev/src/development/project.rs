@@ -2385,7 +2385,7 @@ mod tests {
         ));
         assert_eq!(project.revision(), before_revision);
         assert_eq!(project.buffer("src/main.rs"), Some(&before));
-        assert!(project.undo.get("src/main.rs").is_none());
+        assert!(!project.undo.contains_key("src/main.rs"));
         assert_eq!(project.redo["src/main.rs"], vec!["stale redo"]);
         assert!(project.tree_cache.lock().unwrap().is_some());
         assert_eq!(project.timeline().events().len(), prior_event_count);
@@ -2402,7 +2402,7 @@ mod tests {
         assert_eq!(project.revision(), before_revision + 1);
         assert_eq!(project.buffer("src/main.rs"), Some(&buffer));
         assert_eq!(project.undo["src/main.rs"], vec![before.content]);
-        assert!(project.redo.get("src/main.rs").is_none());
+        assert!(!project.redo.contains_key("src/main.rs"));
         assert!(project.tree_cache.lock().unwrap().is_none());
         let persisted_timeline = Timeline::open(&timeline_path).unwrap();
         let event = persisted_timeline.events().last().unwrap();
@@ -2723,8 +2723,8 @@ mod tests {
         assert_eq!(restored, vec![main.clone(), other.clone()]);
         assert_eq!(project.undo["src/main.rs"], vec![before_main]);
         assert_eq!(project.undo["src/other.rs"], vec![before_other]);
-        assert!(project.redo.get("src/main.rs").is_none());
-        assert!(project.redo.get("src/other.rs").is_none());
+        assert!(!project.redo.contains_key("src/main.rs"));
+        assert!(!project.redo.contains_key("src/other.rs"));
         assert!(project.tree_cache.lock().unwrap().is_none());
         let timeline = Timeline::open(&timeline_path).unwrap();
         let event = timeline.events().last().unwrap();

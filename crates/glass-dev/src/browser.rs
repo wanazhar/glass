@@ -154,7 +154,7 @@ type Reply = SyncSender<DevelopmentResult<Value>>;
 /// One resident browser connection. Native is the default product path;
 /// Chromium is retained only behind the explicit attach/migration command.
 enum ResidentBrowserSession {
-    Native(BrowserRuntimeSession),
+    Native(Box<BrowserRuntimeSession>),
     Chromium(Box<CdpBrowserSession>),
 }
 
@@ -655,7 +655,7 @@ impl BrowserWorker {
                     .await
                     .map_err(browser_error)?
             };
-            ResidentBrowserSession::Native(runtime)
+            ResidentBrowserSession::Native(Box::new(runtime))
         };
         self.revision = Some(1);
         self.session = Some(session);

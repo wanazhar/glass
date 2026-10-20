@@ -440,6 +440,7 @@ pub(crate) fn extract_structured_from_observation(
     )
 }
 
+#[cfg(feature = "native-engine")]
 pub(crate) fn extraction_request_requires_sensitive_access(
     request: &StructuredExtractionRequest,
 ) -> bool {

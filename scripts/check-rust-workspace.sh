@@ -5,10 +5,13 @@ action="${1:-test}"
 
 case "$action" in
   fast-check)
+    cargo check --package glass-browser-core --no-default-features --lib --locked
     cargo check --package glass-browser --lib --locked
     cargo check --package glass-dev --lib --bins --locked
     ;;
   fast-test)
+    cargo build --package glass-browser --features native-engine --bin glass-native-content-worker --locked
+    cargo test --package glass-browser-core --features native-engine --lib --locked
     cargo test --package glass-browser --lib --locked
     cargo test --package glass-dev --lib --locked
     ;;
@@ -16,6 +19,7 @@ case "$action" in
     cargo build --package glass-dev --bin glass --locked
     ;;
   check)
+    cargo check --package glass-browser-core --all-targets --features native-engine --locked
     cargo check --package glass-browser --all-targets --all-features --locked
     cargo check --package glass-dev --all-targets --all-features --locked
     ;;
@@ -23,10 +27,12 @@ case "$action" in
     # Native-engine tests spawn this dependency-package process; cargo test
     # does not build binaries from a dependency package on its own.
     cargo build --package glass-browser --features native-engine --bin glass-native-content-worker --locked
+    cargo test --package glass-browser-core --all-targets --all-features --locked
     cargo test --package glass-browser --all-targets --all-features --locked
     cargo test --package glass-dev --all-targets --all-features --locked
     ;;
   clippy)
+    cargo clippy --package glass-browser-core --all-targets --all-features --locked -- -D warnings
     cargo clippy --package glass-browser --all-targets --all-features --locked -- -D warnings
     cargo clippy --package glass-dev --all-targets --all-features --locked -- -D warnings
     ;;

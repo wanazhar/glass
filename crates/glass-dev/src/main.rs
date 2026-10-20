@@ -1,5 +1,3 @@
-use clap::Parser;
-
 type MainResult = Result<(), Box<dyn std::error::Error>>;
 const RUNTIME_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024;
 
@@ -18,6 +16,9 @@ fn main() -> MainResult {
 }
 
 fn run() -> MainResult {
+    let cli =
+        glass_browser::cli::args::Cli::parse_process_args().unwrap_or_else(|error| error.exit());
+
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
@@ -30,5 +31,5 @@ fn run() -> MainResult {
         .thread_stack_size(RUNTIME_THREAD_STACK_SIZE)
         .enable_all()
         .build()?
-        .block_on(glass_dev::dispatch(glass_browser::cli::args::Cli::parse()))
+        .block_on(glass_dev::dispatch(*cli))
 }

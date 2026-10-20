@@ -4571,7 +4571,6 @@ fn compact_json<T: Serialize + ?Sized>(value: &T) -> BrowserResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
 
     #[test]
     fn default_dispatch_requires_both_terminal_streams_for_tui() {
@@ -4593,12 +4592,11 @@ mod tests {
                 prompt_value: None,
             }
         );
-        assert_eq!(
-            parse_native_cli_dialog_response("confirm", Some("n"))
+        assert!(
+            !parse_native_cli_dialog_response("confirm", Some("n"))
                 .unwrap()
                 .unwrap()
-                .accepted,
-            false
+                .accepted
         );
         assert!(
             parse_native_cli_dialog_response("confirm", Some("maybe"))
@@ -4632,12 +4630,11 @@ mod tests {
                 .prompt_value,
             None
         );
-        assert_eq!(
-            parse_native_cli_dialog_response("prompt", None)
+        assert!(
+            !parse_native_cli_dialog_response("prompt", None)
                 .unwrap()
                 .unwrap()
-                .accepted,
-            false
+                .accepted
         );
         assert!(
             parse_native_cli_dialog_response(
@@ -4691,7 +4688,7 @@ mod tests {
 
     #[test]
     fn alternative_runtime_rejects_flags_that_would_be_ignored() {
-        let cli = Cli::try_parse_from([
+        let cli = Cli::try_parse_from_on_dedicated_stack([
             "glass",
             "--browser-runtime",
             "firefox",
@@ -4710,7 +4707,7 @@ mod tests {
 
     #[test]
     fn alternative_runtime_rejects_unsupported_commands_before_connecting() {
-        let cli = Cli::try_parse_from([
+        let cli = Cli::try_parse_from_on_dedicated_stack([
             "glass",
             "--browser-runtime",
             "safari",
@@ -4731,7 +4728,7 @@ mod tests {
     #[cfg(feature = "native-engine")]
     #[test]
     fn native_runtime_rejects_endpoint_before_startup() {
-        let cli = Cli::try_parse_from([
+        let cli = Cli::try_parse_from_on_dedicated_stack([
             "glass",
             "--browser-runtime",
             "native",
@@ -4749,9 +4746,14 @@ mod tests {
     #[cfg(feature = "native-engine")]
     #[test]
     fn native_runtime_accepts_script_before_startup() {
-        let cli =
-            Cli::try_parse_from(["glass", "--browser-runtime", "native", "evaluate", "1 + 1"])
-                .unwrap();
+        let cli = Cli::try_parse_from_on_dedicated_stack([
+            "glass",
+            "--browser-runtime",
+            "native",
+            "evaluate",
+            "1 + 1",
+        ])
+        .unwrap();
         validate_alternative_runtime_command(cli.command.as_ref().unwrap(), cli.browser_runtime)
             .unwrap();
     }
@@ -4786,7 +4788,7 @@ mod tests {
             .name("native-cli-config-test".into())
             .stack_size(8 * 1024 * 1024)
             .spawn(|| {
-                let cli = Cli::try_parse_from([
+                let cli = Cli::try_parse_from_on_dedicated_stack([
                     "glass",
                     "--browser-runtime",
                     "native",
@@ -4804,7 +4806,7 @@ mod tests {
                     "glass/native-profiles/work/storage.json"
                 )));
 
-                let incognito = Cli::try_parse_from([
+                let incognito = Cli::try_parse_from_on_dedicated_stack([
                     "glass",
                     "--browser-runtime",
                     "native",
@@ -4866,7 +4868,7 @@ mod tests {
                 "1",
             ],
         ] {
-            let cli = Cli::try_parse_from(arguments).unwrap();
+            let cli = Cli::try_parse_from_on_dedicated_stack(arguments).unwrap();
             validate_alternative_runtime_command(
                 cli.command.as_ref().unwrap(),
                 cli.browser_runtime,
@@ -4950,7 +4952,7 @@ mod tests {
                 "intent.json",
             ],
         ] {
-            let cli = Cli::try_parse_from(arguments).unwrap();
+            let cli = Cli::try_parse_from_on_dedicated_stack(arguments).unwrap();
             validate_alternative_runtime_command(
                 cli.command.as_ref().unwrap(),
                 cli.browser_runtime,
@@ -4958,7 +4960,7 @@ mod tests {
             .unwrap();
         }
 
-        let cli = Cli::try_parse_from([
+        let cli = Cli::try_parse_from_on_dedicated_stack([
             "glass",
             "--browser-runtime",
             "firefox",
@@ -4976,7 +4978,7 @@ mod tests {
             .is_err()
         );
 
-        let cli = Cli::try_parse_from([
+        let cli = Cli::try_parse_from_on_dedicated_stack([
             "glass",
             "--browser-runtime",
             "firefox",
@@ -5011,7 +5013,7 @@ mod tests {
 
     #[test]
     fn yolo_allows_capabilities_without_confirmation() {
-        let cli = Cli::try_parse_from([
+        let cli = Cli::try_parse_from_on_dedicated_stack([
             "glass",
             "--yolo",
             "--policy",
@@ -5038,7 +5040,7 @@ mod tests {
             .name("glass-cli-policy-test".into())
             .stack_size(8 * 1024 * 1024)
             .spawn(|| {
-                let cli = Cli::try_parse_from([
+                let cli = Cli::try_parse_from_on_dedicated_stack([
                     "glass",
                     "--policy",
                     "development",

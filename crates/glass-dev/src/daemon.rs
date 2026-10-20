@@ -2944,17 +2944,13 @@ mod tests {
                     DevelopmentOperationState::Indeterminate,
                 )
                 .await;
-                let registry = lock_operations(&operations);
-                let record = &registry.records[&operation.id];
-                assert!(record.indeterminate);
-                assert!(
-                    record
-                        .failure_reason
-                        .as_deref()
-                        .unwrap()
-                        .contains("worker failed")
-                );
-                drop(registry);
+                let (indeterminate, failure_reason) = {
+                    let registry = lock_operations(&operations);
+                    let record = &registry.records[&operation.id];
+                    (record.indeterminate, record.failure_reason.clone().unwrap())
+                };
+                assert!(indeterminate);
+                assert!(failure_reason.contains("worker failed"));
 
                 let tasks = workspace_tool(
                     handle.clone(),

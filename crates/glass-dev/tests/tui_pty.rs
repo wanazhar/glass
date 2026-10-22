@@ -1069,6 +1069,7 @@ fn follow_up_queue_edits_persist_without_automatic_dispatch() {
         "only the retained row should remain: {registry}"
     );
     assert_eq!(queue[0]["text"], "edited queued follow-up");
+    assert_eq!(queue[0]["mode"], "followUp");
     assert_eq!(queue[0]["state"], "ready");
 
     // Queue edits are local preparation. Only Enter on a selected ready row dispatches.
@@ -1084,6 +1085,41 @@ fn follow_up_queue_edits_persist_without_automatic_dispatch() {
                 })
         }),
         "editing a queue must not dispatch a prompt"
+    );
+    session.settle(Duration::from_millis(300));
+    session.send(b"\r");
+    assert!(
+        session.wait_for("awaiting acknowledgement", Duration::from_secs(8)),
+        "explicit Enter did not begin delivery\n{}",
+        session.output_tail()
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        if registry["threads"][0]["followUpQueue"][0]["state"] == "accepted"
+            || Instant::now() >= deadline
+        {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    assert_eq!(
+        registry["threads"][0]["followUpQueue"][0]["state"], "accepted",
+        "the row should change only after a positive send acknowledgement: {registry}"
+    );
+    let requests = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+        .expect("fake Core request log is present");
+    assert!(
+        requests.lines().any(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .is_some_and(|request| {
+                    request["method"] == "turn/prompt"
+                        && request["params"]["text"] == "edited queued follow-up"
+                })
+        }),
+        "explicit dispatch did not reach the owning Core session"
     );
     session.kill();
     let _ = std::fs::remove_file(fake_core);

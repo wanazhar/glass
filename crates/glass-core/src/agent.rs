@@ -775,6 +775,7 @@ impl<'a> Agent<'a> {
                 tools.push((n, d, s));
             }
         }
+        let provider_tool_names = provider_tool_aliases(&mut tools);
         if !diff.added.is_empty() || !diff.removed.is_empty() {
             let mut note = String::from("tool set frozen for prompt-cache stability");
             if !diff.added.is_empty() {
@@ -1104,7 +1105,7 @@ impl<'a> Agent<'a> {
                     arguments,
                 } => out.tool_calls.push(ToolCall {
                     id,
-                    name,
+                    name: provider_tool_names.get(&name).cloned().unwrap_or(name),
                     arguments,
                 }),
                 Event::Usage(u) => {
@@ -3076,6 +3077,39 @@ impl<'a> Agent<'a> {
     }
 }
 
+/// Replace tool identifiers rejected by common provider APIs with stable,
+/// request-local wire names. The agent restores the original identifier before
+/// validation, logging, or execution, so host tool namespaces remain intact.
+fn provider_tool_aliases(
+    tools: &mut [(String, String, String)],
+) -> std::collections::HashMap<String, String> {
+    let mut occupied = tools
+        .iter()
+        .map(|(name, _, _)| name.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let mut aliases = std::collections::HashMap::new();
+    let mut next = 0_u64;
+    for (name, _, _) in tools {
+        if name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            continue;
+        }
+        let original = name.clone();
+        let alias = loop {
+            let candidate = format!("glass_tool_{next}");
+            next = next.saturating_add(1);
+            if occupied.insert(candidate.clone()) {
+                break candidate;
+            }
+        };
+        *name = alias.clone();
+        aliases.insert(alias, original);
+    }
+    aliases
+}
+
 fn latest_system_checkpoint(records: &[Record]) -> Option<String> {
     records
         .iter()
@@ -3097,6 +3131,140 @@ mod warm_integration {
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn provider_tool_aliases_keep_host_namespaces_round_trippable() {
+        let mut tools = vec![
+            ("bash".into(), "shell".into(), "{}".into()),
+            (
+                "glass_tool_0".into(),
+                "reserved native name".into(),
+                "{}".into(),
+            ),
+            (
+                "glass.workspace.list".into(),
+                "List workspace".into(),
+                "{}".into(),
+            ),
+        ];
+
+        let aliases = provider_tool_aliases(&mut tools);
+
+        assert_eq!(tools[0].0, "bash");
+        assert_eq!(tools[1].0, "glass_tool_0");
+        assert_eq!(tools[2].0, "glass_tool_1");
+        assert_eq!(
+            aliases.get("glass_tool_1").map(String::as_str),
+            Some("glass.workspace.list")
+        );
+        assert!(tools.iter().all(|(name, _, _)| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        }));
+    }
+
+    #[test]
+    fn mixed_host_provider_alias_is_restored_before_execution() {
+        struct ProviderSpy {
+            request_tools: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+            requests: AtomicU64,
+        }
+        impl Provider for ProviderSpy {
+            fn id(&self) -> &str {
+                "mixed-alias-spy"
+            }
+            fn stream(
+                &self,
+                request: &Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+                let names = request
+                    .tools
+                    .iter()
+                    .map(|(name, _, _)| name.clone())
+                    .collect::<Vec<_>>();
+                self.request_tools.lock().unwrap().push(names.clone());
+                let event = if self.requests.fetch_add(1, Ordering::SeqCst) == 0 {
+                    let alias = names
+                        .iter()
+                        .find(|name| name.starts_with("glass_tool_"))
+                        .expect("provider request includes a host alias")
+                        .clone();
+                    Event::ToolCall {
+                        id: "host-call".into(),
+                        name: alias,
+                        arguments: "{}".into(),
+                    }
+                } else {
+                    Event::Text("finished".into())
+                };
+                Ok(Box::new(vec![event, Event::Done].into_iter()))
+            }
+            fn context_window(&self) -> u32 {
+                200_000
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("gc-mixed-alias-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let provider = ProviderSpy {
+            request_tools: Arc::new(std::sync::Mutex::new(Vec::new())),
+            requests: AtomicU64::new(0),
+        };
+        let host_calls = Arc::new(AtomicU64::new(0));
+        let observed = host_calls.clone();
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("inspect the workspace".into()));
+        let mut state = State::new();
+        let mods = Vec::new();
+        let mut extensions = Registry::empty();
+        let mut agent = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &dir,
+        )
+        .with_mixed_host_tools(
+            vec![(
+                "glass.workspace.list".into(),
+                "List Glass workspaces".into(),
+                r#"{"type":"object"}"#.into(),
+            )],
+            Box::new(move |call, _, _| {
+                assert_eq!(call.name, "glass.workspace.list");
+                observed.fetch_add(1, Ordering::SeqCst);
+                HostToolOutcome::plain(tools::Outcome::ok("workspace listed".into()))
+            }),
+        );
+
+        let (_, stop) = agent.run_turn(no_pump).unwrap();
+        assert_eq!(stop, Stop::Finished);
+        assert_eq!(host_calls.load(Ordering::SeqCst), 1);
+        let requests = provider.request_tools.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|names| names.contains(&"glass_tool_0".into()))
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|names| !names.iter().any(|name| name.contains('.')))
+        );
+        drop(requests);
+        drop(agent);
+        assert!(session.history_records().iter().any(|record| matches!(
+            record,
+            Record::ToolCall { name, .. } if name == "glass.workspace.list"
+        )));
+        drop(session);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn latest_checkpoint_including_none_is_authoritative() {

@@ -55,6 +55,19 @@ is reported as incompatible; Glass does not silently fall back to a
 host-exclusive catalog. Core's standalone `local` mode and generic `host` mode
 retain their existing behavior.
 
+Core adapts namespaced integration identifiers to provider-compatible function
+names on model requests and restores the original `glass.*` name before
+validating or executing a returned call. This preserves the host protocol's
+namespace while supporting provider APIs whose function-name syntax excludes
+periods.
+
+Glass composer attachments are bounded `glass.agent-context.v1` JSON objects.
+At the Core runtime boundary, Glass sends each attachment as one typed `json`
+context block (`{"type":"json","value":...}`), matching Core's
+`turn/prompt`, `turn/steer`, and `turn/followUp` contract. The attachment is
+recorded in Core's session context; it does not replace the prompt text or
+grant additional tools.
+
 ## Selecting the engine
 
 | Setting | Effect |

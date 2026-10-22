@@ -74,12 +74,27 @@ Glass composer.
 A later diagnostic attempt recorded only sanitized protocol metadata in the
 isolated test project: the exact prompt request ID matched the failed send
 attempt and response, Core returned code `-32000` with kind `operation` and
-`retryable=false`, and no runtime events followed. The Glass composer still
-produced no file and the PTY did not observe the safe failure bubble within
-five seconds. The raw Core error message and prompt were never written to the
-trace. The offline correlated-response PTY now uses the same `operation` class
-and confirms that it is rendered and retry still requires confirmation. This
-leaves a live Core/runtime-to-TUI observation discrepancy; the provider's
-underlying reason remains unknown because its raw message is intentionally not
-retained. No retry was attempted. A sanitized trace-wrapper fixture, all 34
-PTY tests, and strict PTY Clippy passed.
+`retryable=false`, and no runtime events followed. A temporary file with
+private permissions was used to inspect the raw error locally, then deleted.
+The cause was that Glass sent its context attachment as an object while Core's
+runtime protocol requires an array of typed data blocks. Glass now wraps the
+attachment in a `json` block, with a request-mapping regression test and updated
+protocol documentation.
+
+The next bounded live run reached the configured provider, which rejected
+namespaced `glass.*` tool names because periods are not allowed in its function
+names. Core now sends provider-safe request-local aliases and restores the
+original `glass.*` name before validation, logging, or execution. A unit test
+exercises this round trip and verifies that the registered Glass integration
+receives the restored name.
+
+After both fixes, one live composer run created the requested fixture file with
+the exact expected 26 bytes using Core's native bash tool. It did not finish the
+turn within the existing 90-second verification window: the trace showed tool
+start/end, text, and usage events, but no correlated JSON-RPC response, and the
+send remained waiting. This proves the live coding tool path reached and
+executed the operation, but the complete live turn-settlement journey remains
+unverified. No further provider request or retry was made. The raw diagnostic
+file and temporary project were removed. Offline context/alias regressions and
+the complete Glass Dev and Core unit suites pass; the earlier sanitized trace
+wrapper test also passes.

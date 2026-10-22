@@ -44,13 +44,16 @@ per-thread editable follow-up queues are tracked in the
 [durable follow-up queue task](tasks/issue63-durable-followup-queue-001.md).
 The discoverable project-local thread picker is tracked in the
 [thread picker task](tasks/issue64-project-thread-picker-001.md).
+Task-created conversations now show their task ID and title in both picker
+projections, while manually spawned agents keep their role label; see the
+[task-thread identity task](tasks/issue64-task-thread-labels-001.md).
 The [attention inbox](tasks/issue63-attention-inbox-001.md) and its allocated
 PTY journey are complete. Project-local thread navigation and the bounded
 per-send attempt record with conservative restart handling are also complete;
 see the [thread picker task](tasks/issue64-project-thread-picker-001.md) and
 [send-attempt recovery task](tasks/issue64-send-attempt-recovery-001.md).
-Issue #64 remains active for follow-up queue delivery and the broader combined
-homespace journeys, including attention, review, and recovery workflows.
+Issue #64 remains active for the combined project/task/thread workflows,
+durable task recovery, and broader attention/review journeys.
 The completed [attention keyboard journey](tasks/issue64-attention-keyboard-journey-001.md)
 covers uncertain-delivery recovery, proposal review, and confirmed exit at
 desktop and compact terminal sizes. The completed
@@ -58,10 +61,9 @@ desktop and compact terminal sizes. The completed
 exercises three concurrently active fake-Core conversations with distinct
 drafts and cursors, then settles one in the background while a different
 conversation remains selected. Issue #64 remains active for follow-up queue
-delivery and the remaining combined homespace journeys.
-The follow-up queue's old-run block, explicit retarget, and confirmed
-`NeedsReview` retry path is tracked in the
-[queue retarget/retry journey](tasks/issue64-queue-retarget-retry-001.md).
+delivery and the remaining combined homespace journeys. The queue's old-run
+block, explicit retarget, and confirmed `NeedsReview` retry are now complete;
+see the [queue retarget/retry journey](tasks/issue64-queue-retarget-retry-001.md).
 
 ## Current source line: Glass 0.3.14
 

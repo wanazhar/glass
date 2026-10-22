@@ -1578,6 +1578,118 @@ fn attention_inbox_keyboard_journey_keeps_composer_and_opens_proposal_context() 
 }
 
 #[test]
+fn attention_review_keyboard_journey_preserves_uncertain_send_and_exits_cleanly() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+
+    let prompt = "attention retry marker";
+    for (cols, rows) in [(80, 24), (50, 16)] {
+        let root = git_workspace_root();
+        let data_home = root.join(".glass/xdg-data");
+        seed_attention_proposal(&root, &data_home);
+        let fixture_state = root.join(".glass");
+        std::fs::create_dir_all(&fixture_state).unwrap();
+        std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+        seed_uncertain_send_attempt(&root, prompt);
+        let fake_core = fake_core_binary(&root);
+        let mut session = Session::start_with_data_home_options(
+            &binary(),
+            &root,
+            cols,
+            rows,
+            "glass-core",
+            Some(&fake_core),
+            Some(&data_home),
+        );
+        assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+        if cols <= 50 {
+            session.trust_project_with_probe("trusted project");
+        } else {
+            session.trust_project();
+        }
+        assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+
+        send_ctrl_shift_a(&mut session);
+        assert!(
+            session.wait_for("ATTENTION INBOX", Duration::from_secs(5)),
+            "inbox did not open at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        let inbox = session.visible_output();
+        assert!(
+            inbox.contains("Message delivery uncertain") && inbox.contains("Review · inbox-review"),
+            "uncertain send and proposal did not appear together at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        assert!(
+            inbox.contains(prompt),
+            "inbox omitted the saved message at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        // Proposal sorts before the uncertain send; move to the latter.
+        session.send(b"\x1b[B");
+        session.send(b"\r");
+        assert!(session.wait_for("Message delivery is uncertain", Duration::from_secs(5)));
+        assert!(session.wait_for(prompt, Duration::from_secs(3)));
+        let registry_path = fixture_state.join("threads/registry.json");
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        assert_eq!(
+            registry["threads"][0]["sendAttempts"][0]["status"], "uncertain",
+            "opening the attention item must preserve its uncertain ledger state"
+        );
+        let requests = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+            .expect("fake Core request log is present");
+        assert!(
+            !requests.contains("\"method\":\"turn/prompt\""),
+            "opening an uncertain send must not replay the prompt at {cols}x{rows}: {requests}"
+        );
+
+        send_ctrl_shift_a(&mut session);
+        assert!(session.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
+        assert!(session.wait_for("Review · inbox-review", Duration::from_secs(5)));
+        session.send(b"\x1b[A");
+        session.send(b"\r");
+        assert!(session.wait_for("pair-apply", Duration::from_secs(5)));
+        let owning_file_probe = "a-first.txt";
+        assert!(
+            session.wait_for_raw(owning_file_probe, Duration::from_secs(5)),
+            "proposal context did not focus its file at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+
+        session.send(b"\x03");
+        assert!(
+            session.wait_for("UNSAVED CHANGES", Duration::from_secs(5)),
+            "Ctrl-C did not open the review editor's exit confirmation at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        assert!(!session.wait_for_exit(Duration::from_millis(300)));
+        session.clear_output();
+        session.send(b"\x1b");
+        assert!(!session.wait_for_exit(Duration::from_millis(300)));
+        session.clear_output();
+        session.send(b"\x03");
+        assert!(session.wait_for("UNSAVED CHANGES", Duration::from_secs(3)));
+        session.send(b"q");
+        assert!(
+            session.wait_for("UNSAVED EDITOR CHANGES", Duration::from_secs(3)),
+            "Q did not open final discard-and-quit confirmation at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        session.send(b"\r");
+        assert!(
+            session.wait_for_exit(Duration::from_secs(5)),
+            "confirmed exit did not finish cleanly at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        let _ = std::fs::remove_file(fake_core);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn project_thread_picker_is_discoverable_at_desktop_and_compact_sizes() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;

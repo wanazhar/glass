@@ -1,7 +1,7 @@
 ---
 id: issue64-send-attempt-recovery-001
 scope: issue-64-durable-send-attempt-recovery
-status: in-progress
+status: complete
 depends-on: [issue63-run-phase-recovery-001, issue63-attention-inbox-001]
 ---
 
@@ -63,7 +63,7 @@ matches that run.
 
 - [x] Every user prompt, follow-up, and steer has a stable client message ID and
       a unique persisted attempt ID before dispatch on supported hosts.
-- [ ] Queue rejection and runtime errors update only the matching attempt;
+- [x] Queue rejection and runtime errors update only the matching attempt;
       successful responses use exact engine request-ID correlation.
 - [x] Run-level wait/settled events never falsely settle an ambiguous attempt.
 - [x] Reopen converts unresolved attempts to uncertain, exposes them in the
@@ -73,7 +73,7 @@ matches that run.
       replaying the prompt.
 - [x] Bounds, invalid transitions, response correlation, reopen behavior,
       platform privacy behavior, and attention selection have focused tests.
-- [ ] Relevant package tests, formatting, strict scoped Clippy, docs coverage,
+- [x] Relevant package tests, formatting, strict scoped Clippy, docs coverage,
       depth, links, and diff review pass.
 
 ## Evidence
@@ -111,5 +111,11 @@ the offline runtime fixture, not a provider-backed timing test.
 The lifecycle unit test also registers a steer with a stable client ID and
 unique dispatching attempt ID, then applies a runtime failure to that attempt
 and verifies the two unrelated settled attempts remain unchanged. The remaining
-unchecked criteria cover queue-full rejection behavior and the task-level final
-package/documentation review.
+queue-capacity test fills the worker channel, proves the new attempt is recorded
+as `failed`, and verifies an older queued command was not replaced. The only
+task-level final package/documentation review passed: all 633 `glass-dev` library
+tests passed; the focused queue, live-interruption, uncertain-reopen, retry, and
+concurrent-thread PTY journeys passed; strict package-scoped Clippy, formatting,
+fixture syntax, documentation coverage/depth/release-truth/shortcut checks, and
+diff validation passed. An independent read-only review found no additional
+issues after a follow-up fix added panic-safe cleanup for the fake runtime.

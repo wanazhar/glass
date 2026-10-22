@@ -24,6 +24,42 @@ struct Session {
     buffer: Vec<u8>,
 }
 
+struct FixtureChildGuard {
+    pid_path: std::path::PathBuf,
+    armed: bool,
+}
+
+impl FixtureChildGuard {
+    fn new(pid_path: std::path::PathBuf) -> Self {
+        Self {
+            pid_path,
+            armed: true,
+        }
+    }
+
+    fn terminate(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.armed = false;
+        let Ok(pid) = std::fs::read_to_string(&self.pid_path) else {
+            return;
+        };
+        let Ok(pid) = pid.trim().parse::<i32>() else {
+            return;
+        };
+        // SAFETY: this PID is written by the scoped fake runtime launched for
+        // this test; the guard exists only inside the Unix PTY test process.
+        let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+}
+
+impl Drop for FixtureChildGuard {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
 impl Session {
     fn start(binary: &str, root: &std::path::Path, cols: u16, rows: u16) -> Self {
         Self::start_with_options(binary, root, cols, rows, "glass-core", None)
@@ -1352,6 +1388,7 @@ fn live_core_response_crash_reopens_as_uncertain_without_replay() {
     std::fs::create_dir_all(&fixture_state).unwrap();
     std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
     std::fs::write(fixture_state.join("e2e-core-recovery-gate"), "enabled").unwrap();
+    let mut fixture_child = FixtureChildGuard::new(fixture_state.join("e2e-core-recovery-pid"));
     let fake_core = fake_core_binary(&root);
     let prompt = "live-response-crash-window";
     let mut session = Session::start_with_core_binary(&binary(), &root, 80, 24, Some(&fake_core));
@@ -1398,15 +1435,15 @@ fn live_core_response_crash_reopens_as_uncertain_without_replay() {
         working_registry["threads"][0]["sendAttempts"][0]["status"], "working",
         "the interruption must happen after Glass persisted an active delivery"
     );
-    let runtime_pid = std::fs::read_to_string(fixture_state.join("e2e-core-recovery-pid"))
-        .expect("fixture recorded its exact child pid");
-    let runtime_pid = runtime_pid.trim();
-    assert!(runtime_pid.parse::<u32>().is_ok());
+    assert!(
+        fixture_state.join("e2e-core-recovery-pid").exists(),
+        "fixture recorded its exact child pid"
+    );
 
     // Kill the Glass UI first, leaving the runtime blocked before its response;
     // then stop only this test's fake Core child so it cannot outlive the case.
     session.kill();
-    let _ = Command::new("kill").args(["-9", runtime_pid]).status();
+    fixture_child.terminate();
 
     let mut reopened = Session::start_with_core_binary(&binary(), &root, 80, 24, Some(&fake_core));
     assert!(reopened.wait_for("GLASS", Duration::from_secs(8)));

@@ -22,6 +22,9 @@ negotiated Core-coding/Glass-integration runtime slice is documented in the
 External Core edits to already-open Glass buffers are tracked in the
 [buffer reconciliation analysis](analysis/editor-buffer-external-reconcile.md)
 and [acceptance task](tasks/editor-buffer-reconcile-001.md).
+Core-owned provider authentication and model controls in the Glass TUI are
+tracked in the [provider-controls analysis](analysis/core-provider-controls.md)
+and [acceptance task](tasks/core-provider-controls-001.md).
 
 ## Current source line: Glass 0.3.14
 

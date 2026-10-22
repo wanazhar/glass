@@ -66,7 +66,7 @@ matches that run.
 - [ ] Queue rejection and runtime errors update only the matching attempt;
       successful responses use exact engine request-ID correlation.
 - [ ] Run-level wait/settled events never falsely settle an ambiguous attempt.
-- [ ] Reopen converts unresolved attempts to uncertain, exposes them in the
+- [x] Reopen converts unresolved attempts to uncertain, exposes them in the
       owning thread's attention context, and never resends them.
 - [ ] Retry can reuse a client message ID while receiving a new attempt ID.
 - [ ] Bounds, invalid transitions, response correlation, reopen behavior,
@@ -76,7 +76,19 @@ matches that run.
 
 ## Evidence
 
-Current implementation is uncommitted on local `main`; the source checkpoint
-before this task is `aa17506f`. Store attempt, lifecycle, exact-session reopen,
-and attention-inbox focused tests currently pass. A review and final task-level
-verification remain before marking this task complete.
+The store and agent lifecycle implementation is recorded in
+`c2610d3f` (`feat: persist resident send attempts`), with Windows opaque-field
+preservation in `a8d923a3`. Store tests cover transition bounds, reopen
+classification, and pruning; agent tests cover pre-dispatch persistence,
+stable client IDs, unique attempt IDs, exact engine request correlation, and
+run-level events that must not settle an ambiguous attempt.
+
+`uncertain_send_opens_attention_without_replaying_after_restart` now exercises
+the release TUI with a persisted unresolved send at 80×24 and 50×16. Reopening
+classifies it as uncertain, the attention item exposes its message and routes
+to the owning conversation with inspect-before-retry guidance, the IDs and
+single attempt remain unchanged, and the fake Core request log records no
+`turn/prompt` replay. This scenario starts from an unresolved ledger record;
+the live crash-during-response timing path and explicit retry interaction still
+need end-to-end coverage. The task remains open for those journeys and final
+task-level review.

@@ -30,6 +30,10 @@ def log_request(method: str, params: dict) -> None:
         return
     with open(os.path.join(STORAGE_DIR, "fixture-requests.jsonl"), "a", encoding="utf-8") as log:
         log.write(json.dumps({"method": method, "params": params}, separators=(",", ":")) + "\n")
+    workspace_log = os.path.join(os.getcwd(), ".glass", "e2e-core-requests.jsonl")
+    if os.path.exists(os.path.join(os.getcwd(), ".glass", "e2e-core-request-log")):
+        with open(workspace_log, "a", encoding="utf-8") as log:
+            log.write(json.dumps({"method": method, "params": params}, separators=(",", ":")) + "\n")
 
 
 def send(message: dict) -> None:

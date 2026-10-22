@@ -488,6 +488,52 @@ fn seed_project_threads(root: &std::path::Path) {
     .unwrap();
 }
 
+fn seed_uncertain_send_attempt(root: &std::path::Path, text: &str) {
+    use std::os::unix::fs::MetadataExt;
+
+    let canonical_root = std::fs::canonicalize(root).unwrap();
+    let metadata = std::fs::metadata(&canonical_root).unwrap();
+    let directory = root.join(".glass/threads");
+    std::fs::create_dir_all(&directory).unwrap();
+    let registry = serde_json::json!({
+        "version": 1,
+        "projectIdentity": {
+            "canonicalRoot": canonical_root,
+            "device": metadata.dev(),
+            "inode": metadata.ino()
+        },
+        "threads": [{
+            "threadId": "thread-00000000000000000000000000000001",
+            "title": "Uncertain delivery",
+            "role": "assistant",
+            "createdAtMs": 1,
+            "runs": [{
+                "runId": "run-00000000000000000000000000000001",
+                "engine": "glass-core",
+                "coreSessionId": "fixture-session",
+                "classification": "working"
+            }],
+            "sendAttempts": [{
+                "attemptId": "attempt-00000000000000000000000000000001",
+                "clientMessageId": "client-e2e-uncertain",
+                "targetRunId": "run-00000000000000000000000000000001",
+                "mode": "prompt",
+                "text": text,
+                "status": "working",
+                "engineRequestId": "fixture-request-1",
+                "createdAtMs": 2
+            }],
+            "composerDraft": null,
+            "followUpQueue": null
+        }]
+    });
+    std::fs::write(
+        directory.join("registry.json"),
+        serde_json::to_vec_pretty(&registry).unwrap(),
+    )
+    .unwrap();
+}
+
 #[test]
 fn ctrl_c_requires_confirmation_from_every_input_mode() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
@@ -882,6 +928,94 @@ fn project_thread_picker_is_discoverable_at_desktop_and_compact_sizes() {
         );
         session.send(b"\x1b");
         session.settle(Duration::from_millis(200));
+        session.kill();
+        let _ = std::fs::remove_file(fake_core);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn uncertain_send_opens_attention_without_replaying_after_restart() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+
+    let prompt = "inspect marker";
+    for (cols, rows) in [(80, 24), (50, 16)] {
+        let root = git_workspace_root();
+        let data_home = root.join(".glass/xdg-data");
+        let fixture_state = root.join(".glass");
+        std::fs::create_dir_all(&fixture_state).unwrap();
+        std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+        seed_uncertain_send_attempt(&root, prompt);
+        let fake_core = fake_core_binary(&root);
+        let mut session = Session::start_with_data_home_options(
+            &binary(),
+            &root,
+            cols,
+            rows,
+            "glass-core",
+            Some(&fake_core),
+            Some(&data_home),
+        );
+        assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+        if cols <= 50 {
+            session.trust_project_with_probe("trusted project");
+        } else {
+            session.trust_project();
+        }
+        assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+        send_ctrl_shift_a(&mut session);
+        assert!(
+            session.wait_for("ATTENTION INBOX", Duration::from_secs(5)),
+            "reopened unresolved attempt was not reachable from the attention inbox at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        assert!(
+            session.wait_for("Message delivery uncertain", Duration::from_secs(8)),
+            "uncertain delivery was not shown after restart at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        assert!(
+            session.wait_for(prompt, Duration::from_secs(5)),
+            "attention item omitted the message needed for inspection at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        session.send(b"\r");
+        assert!(
+            session.wait_for("Message delivery is uncertain", Duration::from_secs(5)),
+            "activating the attention item did not select its owning conversation at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+
+        let registry: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(fixture_state.join("threads/registry.json")).unwrap(),
+        )
+        .unwrap();
+        let attempts = registry["threads"][0]["sendAttempts"].as_array().unwrap();
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0]["attemptId"],
+            "attempt-00000000000000000000000000000001"
+        );
+        assert_eq!(attempts[0]["clientMessageId"], "client-e2e-uncertain");
+        assert_eq!(attempts[0]["text"], prompt);
+        assert_eq!(attempts[0]["status"], "uncertain");
+
+        if let Ok(log) = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl")) {
+            let requests = log
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| request["method"] == "turn/prompt")
+                    .count(),
+                0,
+                "opening an uncertain attempt must never replay the prompt"
+            );
+        }
         session.kill();
         let _ = std::fs::remove_file(fake_core);
         let _ = std::fs::remove_dir_all(root);

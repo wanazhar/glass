@@ -7,7 +7,10 @@
 use crate::development::{DevelopmentError, DevelopmentResult};
 use crate::pi_runtime::PiSessionRequest;
 use crate::resident_harness::{AgentToolExecutor, ResidentHarness, ResidentHarnessOptions};
-use crate::thread_store::{RunClassification, RunRecord, ThreadRecord, ThreadStore};
+use crate::thread_store::{
+    RunClassification, RunRecord, SendAttemptMode, SendAttemptRecord, SendAttemptStatus,
+    ThreadRecord, ThreadStore,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -218,6 +221,7 @@ pub struct AgentEvent {
 #[derive(Debug)]
 enum WorkerCommand {
     Request {
+        attempt_id: Option<String>,
         request: PiSessionRequest,
         started: Option<SyncSender<Result<String, String>>>,
     },
@@ -231,7 +235,8 @@ enum WorkerCommand {
 #[derive(Debug)]
 enum WorkerEvent {
     Ready(AgentId),
-    RequestStarted(AgentId, String, bool),
+    RequestStarted(AgentId, String, bool, Option<String>),
+    RequestFailed(AgentId, String, String),
     Engine(AgentId, Value),
     Failed(AgentId, String),
     Stopped(AgentId),
@@ -520,6 +525,7 @@ impl AgentRegistry {
             created_at_ms: now,
             composer_draft: None,
             follow_up_queue: None,
+            send_attempts: Vec::new(),
             runs: vec![RunRecord {
                 run_id: run_id.clone(),
                 engine: harness.id().into(),
@@ -603,10 +609,11 @@ impl AgentRegistry {
     /// Return one refreshed agent snapshot or a not-found error.
     pub fn snapshot(&mut self, id: &AgentId) -> DevelopmentResult<AgentSnapshot> {
         self.refresh()?;
-        self.records
+        let record = self
+            .records
             .get(id)
-            .map(|record| record.snapshot.clone())
-            .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))
+            .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))?;
+        Ok(record.snapshot.clone())
     }
 
     #[cfg(unix)]
@@ -875,6 +882,7 @@ impl AgentRegistry {
             })?;
             sender
                 .try_send(WorkerCommand::Request {
+                    attempt_id: None,
                     request,
                     started: Some(started_tx),
                 })
@@ -937,6 +945,7 @@ impl AgentRegistry {
         }
         if let Some(sender) = &self.record_mut(id)?.command {
             let _ = sender.try_send(WorkerCommand::Request {
+                attempt_id: None,
                 request: PiSessionRequest::Abort,
                 started: None,
             });
@@ -1008,6 +1017,35 @@ impl AgentRegistry {
         client_message_id: Option<&str>,
     ) -> DevelopmentResult<()> {
         self.refresh()?;
+        let attempt_mode_and_text = if cfg!(unix) {
+            match &request {
+                PiSessionRequest::Prompt { text, .. } => {
+                    Some((SendAttemptMode::Prompt, text.clone()))
+                }
+                PiSessionRequest::FollowUp { text, .. } => {
+                    Some((SendAttemptMode::FollowUp, text.clone()))
+                }
+                PiSessionRequest::Steer { text, .. } => {
+                    Some((SendAttemptMode::Steer, text.clone()))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let message_id = if matches!(
+            &request,
+            PiSessionRequest::Prompt { .. }
+                | PiSessionRequest::FollowUp { .. }
+                | PiSessionRequest::Steer { .. }
+        ) {
+            Some(match client_message_id {
+                Some(message_id) => message_id.to_string(),
+                None => crate::thread_store::random_id("message")?,
+            })
+        } else {
+            None
+        };
         let mut user_event = match &request {
             PiSessionRequest::Prompt { text, context } => Some(
                 serde_json::json!({"text": text, "mode": "prompt", "contextAttached": context.is_some()}),
@@ -1021,14 +1059,14 @@ impl AgentRegistry {
             _ => None,
         };
         if let (Some(message_id), Some(Value::Object(payload))) =
-            (client_message_id, user_event.as_mut())
+            (message_id.as_deref(), user_event.as_mut())
         {
             payload.insert(
                 "clientMessageId".into(),
                 Value::String(message_id.to_string()),
             );
         }
-        {
+        let (thread_id, run_id, sender) = {
             let record = self.record_mut(id)?;
             if record.snapshot.status.terminal()
                 || matches!(
@@ -1038,24 +1076,55 @@ impl AgentRegistry {
             {
                 return Err(agent_request_blocked(id, record.snapshot.status));
             }
-            let sender = record.command.as_ref().ok_or_else(|| {
+            let sender = record.command.as_ref().cloned().ok_or_else(|| {
                 DevelopmentError::Conflict(format!("agent {} is still starting", id.as_str()))
             })?;
-            sender
-                .try_send(WorkerCommand::Request {
-                    request,
-                    started: None,
-                })
-                .map_err(|error| match error {
-                    TrySendError::Full(_) => DevelopmentError::Conflict(format!(
-                        "agent {} command queue is full",
-                        id.as_str()
-                    )),
-                    TrySendError::Disconnected(_) => DevelopmentError::Process(format!(
-                        "agent {} command channel closed",
-                        id.as_str()
-                    )),
-                })?;
+            (record.thread_id.clone(), record.run_id.clone(), sender)
+        };
+        let attempt_id = if let (Some((mode, text)), Some(message_id)) =
+            (attempt_mode_and_text, message_id.as_ref())
+        {
+            let attempt_id = crate::thread_store::random_id("attempt")?;
+            self.thread_store.create_send_attempt(
+                &thread_id,
+                SendAttemptRecord {
+                    attempt_id: attempt_id.clone(),
+                    client_message_id: message_id.clone(),
+                    target_run_id: run_id,
+                    mode,
+                    text,
+                    status: SendAttemptStatus::Dispatching,
+                    engine_request_id: None,
+                    created_at_ms: now_ms(),
+                },
+            )?;
+            Some(attempt_id)
+        } else {
+            None
+        };
+        if let Err(error) = sender.try_send(WorkerCommand::Request {
+            attempt_id: attempt_id.clone(),
+            request,
+            started: None,
+        }) {
+            if let Some(attempt_id) = attempt_id {
+                self.thread_store.update_send_attempt(
+                    &thread_id,
+                    &attempt_id,
+                    SendAttemptStatus::Failed,
+                    None,
+                )?;
+            }
+            return Err(match error {
+                TrySendError::Full(_) => DevelopmentError::Conflict(format!(
+                    "agent {} command queue is full",
+                    id.as_str()
+                )),
+                TrySendError::Disconnected(_) => DevelopmentError::Process(format!(
+                    "agent {} command channel closed",
+                    id.as_str()
+                )),
+            });
         }
         if let Some(payload) = user_event {
             self.record_event(id, "user", payload);
@@ -1234,6 +1303,7 @@ impl AgentRegistry {
             if let Some(record) = self.records.get_mut(&id) {
                 if let Some(sender) = record.command.take() {
                     let _ = sender.try_send(WorkerCommand::Request {
+                        attempt_id: None,
                         request: PiSessionRequest::Abort,
                         started: None,
                     });
@@ -1262,7 +1332,19 @@ impl AgentRegistry {
                 }
                 self.record_event(&id, "ready", Value::Null);
             }
-            WorkerEvent::RequestStarted(id, request_id, waits_for_agent) => {
+            WorkerEvent::RequestStarted(id, request_id, waits_for_agent, attempt_id) => {
+                if let Some(attempt_id) = attempt_id {
+                    self.persist_send_attempt(
+                        &id,
+                        &attempt_id,
+                        if waits_for_agent {
+                            SendAttemptStatus::Working
+                        } else {
+                            SendAttemptStatus::Accepted
+                        },
+                        Some(request_id.clone()),
+                    )?;
+                }
                 self.persist_run_phase(&id, RunClassification::Working)?;
                 if let Some(record) = self.records.get_mut(&id)
                     && !record.snapshot.status.terminal()
@@ -1273,6 +1355,14 @@ impl AgentRegistry {
                     record.snapshot.updated_at_ms = now_ms();
                 }
                 self.record_event(&id, "requestStarted", Value::String(request_id));
+            }
+            WorkerEvent::RequestFailed(id, attempt_id, error) => {
+                self.persist_send_attempt(&id, &attempt_id, SendAttemptStatus::Failed, None)?;
+                self.record_event(
+                    &id,
+                    "requestFailed",
+                    serde_json::json!({"attemptId":attempt_id,"error":error}),
+                );
             }
             WorkerEvent::Engine(id, value) => {
                 let event_type = value.get("type").and_then(Value::as_str);
@@ -1291,6 +1381,11 @@ impl AgentRegistry {
                 };
                 if let Some(phase) = phase {
                     self.persist_run_phase(&id, phase)?;
+                }
+                if event_type == Some("waiting") {
+                    self.persist_unambiguous_active_send_attempt(&id, SendAttemptStatus::Waiting)?;
+                } else if event_type == Some("response") {
+                    self.persist_send_attempt_response(&id, &value)?;
                 }
                 if let Some(record) = self.records.get_mut(&id) {
                     if let Some(file) = value
@@ -1332,6 +1427,7 @@ impl AgentRegistry {
                 self.record_event(&id, &kind, value);
             }
             WorkerEvent::Failed(id, error) => {
+                self.mark_inflight_attempts_uncertain(&id)?;
                 if let Some(record) = self.records.get(&id) {
                     self.thread_store.classify_run(
                         &record.thread_id,
@@ -1506,6 +1602,128 @@ impl AgentRegistry {
             .classify_run(&record.thread_id, &record.run_id, phase)
     }
 
+    fn persist_send_attempt(
+        &self,
+        id: &AgentId,
+        attempt_id: &str,
+        status: SendAttemptStatus,
+        engine_request_id: Option<String>,
+    ) -> DevelopmentResult<()> {
+        if !cfg!(unix) {
+            return Ok(());
+        }
+        let record = self
+            .records
+            .get(id)
+            .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))?;
+        self.thread_store.update_send_attempt(
+            &record.thread_id,
+            attempt_id,
+            status,
+            engine_request_id,
+        )
+    }
+
+    fn persist_unambiguous_active_send_attempt(
+        &self,
+        id: &AgentId,
+        status: SendAttemptStatus,
+    ) -> DevelopmentResult<()> {
+        let record = self
+            .records
+            .get(id)
+            .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))?;
+        let targets = self
+            .thread_store
+            .list()?
+            .into_iter()
+            .find(|thread| thread.thread_id == record.thread_id)
+            .map(|thread| {
+                thread
+                    .send_attempts
+                    .into_iter()
+                    .filter(|attempt| {
+                        attempt.target_run_id == record.run_id
+                            && matches!(
+                                attempt.status,
+                                SendAttemptStatus::Accepted
+                                    | SendAttemptStatus::Working
+                                    | SendAttemptStatus::Waiting
+                            )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if let [attempt] = targets.as_slice() {
+            self.persist_send_attempt(id, &attempt.attempt_id, status, None)?;
+        }
+        Ok(())
+    }
+
+    fn persist_send_attempt_response(
+        &self,
+        id: &AgentId,
+        response: &Value,
+    ) -> DevelopmentResult<()> {
+        let Some(request_id) = response.get("id").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        let record = self
+            .records
+            .get(id)
+            .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))?;
+        let attempt = self
+            .thread_store
+            .send_attempts(&record.thread_id)?
+            .into_iter()
+            .find(|attempt| {
+                attempt.engine_request_id.as_deref() == Some(request_id)
+                    && matches!(
+                        attempt.status,
+                        SendAttemptStatus::Accepted
+                            | SendAttemptStatus::Working
+                            | SendAttemptStatus::Waiting
+                    )
+            });
+        if let Some(attempt) = attempt {
+            let status = if response.get("ok").and_then(Value::as_bool) == Some(true) {
+                SendAttemptStatus::Settled
+            } else {
+                SendAttemptStatus::Failed
+            };
+            self.persist_send_attempt(id, &attempt.attempt_id, status, None)?;
+        }
+        Ok(())
+    }
+
+    fn mark_inflight_attempts_uncertain(&self, id: &AgentId) -> DevelopmentResult<()> {
+        let Some(record) = self.records.get(id) else {
+            return Ok(());
+        };
+        let thread_id = record.thread_id.clone();
+        let run_id = record.run_id.clone();
+        let attempts = self
+            .thread_store
+            .list()?
+            .into_iter()
+            .find(|thread| thread.thread_id == thread_id)
+            .map(|thread| thread.send_attempts)
+            .unwrap_or_default();
+        for attempt in attempts.into_iter().filter(|attempt| {
+            attempt.target_run_id == run_id
+                && matches!(
+                    attempt.status,
+                    SendAttemptStatus::Dispatching
+                        | SendAttemptStatus::Accepted
+                        | SendAttemptStatus::Working
+                        | SendAttemptStatus::Waiting
+                )
+        }) {
+            self.persist_send_attempt(id, &attempt.attempt_id, SendAttemptStatus::Uncertain, None)?;
+        }
+        Ok(())
+    }
+
     fn record_event(&mut self, id: &AgentId, kind: &str, payload: Value) {
         if self.history.len() == HISTORY_CAPACITY {
             self.history.pop_front();
@@ -1604,7 +1822,11 @@ fn run_worker(
     loop {
         loop {
             match commands.try_recv() {
-                Ok(WorkerCommand::Request { request, started }) => {
+                Ok(WorkerCommand::Request {
+                    attempt_id,
+                    request,
+                    started,
+                }) => {
                     let waits_for_agent = matches!(
                         request,
                         PiSessionRequest::Prompt { .. }
@@ -1622,12 +1844,23 @@ fn run_worker(
                                     id.clone(),
                                     request_id,
                                     waits_for_agent,
+                                    attempt_id,
                                 ),
                             );
                         }
                         Err(error) => {
                             if let Some(started) = started {
                                 let _ = started.send(Err(error.to_string()));
+                            }
+                            if let Some(attempt_id) = attempt_id {
+                                send_critical_worker_event(
+                                    &events,
+                                    WorkerEvent::RequestFailed(
+                                        id.clone(),
+                                        attempt_id,
+                                        error.to_string(),
+                                    ),
+                                );
                             }
                             send_critical_worker_event(
                                 &events,
@@ -1909,6 +2142,23 @@ mod tests {
             .clone()
             .unwrap();
         let thread_id = original.thread_id.clone();
+        let pending_attempt_id = crate::thread_store::random_id("attempt").unwrap();
+        first
+            .thread_store
+            .create_send_attempt(
+                &thread_id,
+                SendAttemptRecord {
+                    attempt_id: pending_attempt_id.clone(),
+                    client_message_id: "message-recovery-check".into(),
+                    target_run_id: original_run.clone(),
+                    mode: SendAttemptMode::FollowUp,
+                    text: "This request was sent near process shutdown".into(),
+                    status: SendAttemptStatus::Dispatching,
+                    engine_request_id: None,
+                    created_at_ms: now_ms(),
+                },
+            )
+            .unwrap();
         drop(first);
 
         let mut recovered = AgentRegistry::new(&root).unwrap();
@@ -1917,6 +2167,17 @@ mod tests {
         assert_eq!(
             recovered.snapshot(&recovered_id).unwrap().status,
             AgentStatus::RecoveryPending
+        );
+        assert_eq!(
+            recovered
+                .thread_store
+                .send_attempts(&thread_id)
+                .unwrap()
+                .into_iter()
+                .find(|attempt| attempt.attempt_id == pending_attempt_id)
+                .unwrap()
+                .status,
+            SendAttemptStatus::Uncertain
         );
         recovered.resume(&recovered_id).unwrap();
         assert!(recovered.prompt(&recovered_id, "must wait").is_err());
@@ -2030,6 +2291,7 @@ mod tests {
                 created_at_ms: now,
                 composer_draft: None,
                 follow_up_queue: None,
+                send_attempts: Vec::new(),
                 runs: vec![RunRecord {
                     run_id: run_id.clone(),
                     engine: "glass-core".into(),
@@ -2086,6 +2348,7 @@ mod tests {
                     WorkerCommand::Request {
                         request: PiSessionRequest::Complete { .. },
                         started: Some(started),
+                        ..
                     } => {
                         started.send(Ok("glass-request-17".into())).unwrap();
                     }
@@ -2156,6 +2419,7 @@ mod tests {
                 created_at_ms: 1,
                 composer_draft: None,
                 follow_up_queue: None,
+                send_attempts: Vec::new(),
                 runs: vec![RunRecord {
                     run_id: crate::thread_store::random_id("run").unwrap(),
                     engine: "glass-core".into(),
@@ -2289,6 +2553,7 @@ mod tests {
                 id.clone(),
                 "request-1".into(),
                 true,
+                None,
             ))
             .unwrap();
         assert_eq!(run(&registry).classification, RunClassification::Working);
@@ -2314,6 +2579,183 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn sends_persist_attempt_before_dispatch_and_correlate_lifecycle() {
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let id = AgentId::parse("agent-durable-send").unwrap();
+        let (command, commands) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let worker = thread::spawn(move || {
+            while let Ok(command) = commands.recv() {
+                if matches!(command, WorkerCommand::Shutdown) {
+                    break;
+                }
+            }
+        });
+        insert_test_worker(&mut registry, id.clone(), command, worker);
+        registry
+            .send_with_context_and_client_message_id(
+                &id,
+                "prompt",
+                "Inspect the project and report the next step",
+                None,
+                Some("message-stable-1"),
+            )
+            .unwrap();
+        let (thread_id, run_id) = {
+            let record = registry.records.get(&id).unwrap();
+            (record.thread_id.clone(), record.run_id.clone())
+        };
+        let attempt = registry
+            .thread_store
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|thread| thread.thread_id == thread_id)
+            .unwrap()
+            .send_attempts
+            .into_iter()
+            .find(|attempt| attempt.client_message_id == "message-stable-1")
+            .unwrap();
+        assert_eq!(attempt.status, SendAttemptStatus::Dispatching);
+        assert_eq!(attempt.target_run_id, run_id);
+        let attempt_id = attempt.attempt_id.clone();
+        registry
+            .send_with_context_and_client_message_id(
+                &id,
+                "followUp",
+                "Also check the existing tests",
+                None,
+                Some("message-stable-2"),
+            )
+            .unwrap();
+        let second_attempt_id = registry
+            .thread_store
+            .send_attempts(&thread_id)
+            .unwrap()
+            .into_iter()
+            .find(|attempt| attempt.client_message_id == "message-stable-2")
+            .unwrap()
+            .attempt_id;
+        registry
+            .apply_worker_event(WorkerEvent::RequestStarted(
+                id.clone(),
+                "core-request-1".into(),
+                true,
+                Some(attempt_id.clone()),
+            ))
+            .unwrap();
+        registry
+            .apply_worker_event(WorkerEvent::RequestStarted(
+                id.clone(),
+                "core-request-2".into(),
+                true,
+                Some(second_attempt_id.clone()),
+            ))
+            .unwrap();
+        let accepted = registry
+            .thread_store
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|thread| thread.thread_id == thread_id)
+            .unwrap()
+            .send_attempts
+            .into_iter()
+            .find(|attempt| attempt.attempt_id == attempt_id)
+            .unwrap();
+        assert_eq!(accepted.status, SendAttemptStatus::Working);
+        assert_eq!(
+            accepted.engine_request_id.as_deref(),
+            Some("core-request-1")
+        );
+        registry
+            .apply_worker_event(WorkerEvent::Engine(
+                id.clone(),
+                serde_json::json!({"type":"waiting"}),
+            ))
+            .unwrap();
+        let status = registry
+            .thread_store
+            .send_attempts(&thread_id)
+            .unwrap()
+            .into_iter()
+            .find(|attempt| attempt.attempt_id == attempt_id)
+            .unwrap()
+            .status;
+        assert_eq!(status, SendAttemptStatus::Working);
+        registry
+            .apply_worker_event(WorkerEvent::Engine(
+                id.clone(),
+                serde_json::json!({"type":"agent_settled"}),
+            ))
+            .unwrap();
+        let status = registry
+            .thread_store
+            .send_attempts(&thread_id)
+            .unwrap()
+            .into_iter()
+            .find(|attempt| attempt.attempt_id == attempt_id)
+            .unwrap()
+            .status;
+        assert_eq!(status, SendAttemptStatus::Working);
+        registry
+            .apply_worker_event(WorkerEvent::Engine(
+                id.clone(),
+                serde_json::json!({
+                    "type":"response",
+                    "id":"core-request-1",
+                    "ok":true,
+                }),
+            ))
+            .unwrap();
+        let status = registry
+            .thread_store
+            .send_attempts(&thread_id)
+            .unwrap()
+            .into_iter()
+            .find(|attempt| attempt.attempt_id == attempt_id)
+            .unwrap()
+            .status;
+        assert_eq!(status, SendAttemptStatus::Settled);
+        assert_eq!(
+            registry
+                .thread_store
+                .send_attempts(&thread_id)
+                .unwrap()
+                .into_iter()
+                .find(|attempt| attempt.attempt_id == second_attempt_id)
+                .unwrap()
+                .status,
+            SendAttemptStatus::Working
+        );
+        registry
+            .apply_worker_event(WorkerEvent::Engine(
+                id.clone(),
+                serde_json::json!({
+                    "type":"response",
+                    "id":"core-request-2",
+                    "ok":true,
+                }),
+            ))
+            .unwrap();
+        assert_eq!(
+            registry
+                .thread_store
+                .send_attempts(&thread_id)
+                .unwrap()
+                .into_iter()
+                .find(|attempt| attempt.attempt_id == second_attempt_id)
+                .unwrap()
+                .status,
+            SendAttemptStatus::Settled
+        );
+        registry.cancel(&id).unwrap();
+        drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn worker_persists_core_session_before_ready_notification() {
         let root = test_root();
@@ -2328,6 +2770,7 @@ mod tests {
                 created_at_ms: 1,
                 composer_draft: None,
                 follow_up_queue: None,
+                send_attempts: Vec::new(),
                 runs: vec![RunRecord {
                     run_id: run_id.clone(),
                     engine: "glass-core".into(),

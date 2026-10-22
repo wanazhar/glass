@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 const VERSION: u32 = 1;
 const MAX_BYTES: u64 = 256 * 1024;
 const MAX_THREADS: usize = 256;
+const MAX_SEND_ATTEMPTS: usize = 32;
+const MAX_SEND_ATTEMPT_TEXT_BYTES: usize = 16 * 1024;
 #[cfg(unix)]
 const MAX_DRAFT_BYTES: usize = 64 * 1024;
 #[cfg(unix)]
@@ -24,6 +26,8 @@ pub(crate) struct ThreadRecord {
     pub role: String,
     pub created_at_ms: u128,
     pub runs: Vec<RunRecord>,
+    #[serde(default)]
+    pub send_attempts: Vec<SendAttemptRecord>,
     #[cfg(unix)]
     #[serde(default)]
     pub composer_draft: Option<ComposerDraftRecord>,
@@ -36,6 +40,39 @@ pub(crate) struct ThreadRecord {
     #[cfg(windows)]
     #[serde(default)]
     pub follow_up_queue: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SendAttemptMode {
+    Prompt,
+    FollowUp,
+    Steer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SendAttemptStatus {
+    Dispatching,
+    Accepted,
+    Working,
+    Waiting,
+    Settled,
+    Failed,
+    Uncertain,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SendAttemptRecord {
+    pub attempt_id: String,
+    pub client_message_id: String,
+    pub target_run_id: String,
+    pub mode: SendAttemptMode,
+    pub text: String,
+    pub status: SendAttemptStatus,
+    pub engine_request_id: Option<String>,
+    pub created_at_ms: u128,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,12 +199,71 @@ impl ThreadStore {
             path,
             identity,
         };
+        #[cfg(unix)]
+        let loaded = store.load()?;
+        #[cfg(not(unix))]
         let _ = store.load()?;
+        #[cfg(unix)]
+        {
+            if loaded
+                .threads
+                .iter()
+                .flat_map(|thread| &thread.send_attempts)
+                .any(|attempt| {
+                    matches!(
+                        attempt.status,
+                        SendAttemptStatus::Dispatching
+                            | SendAttemptStatus::Accepted
+                            | SendAttemptStatus::Working
+                            | SendAttemptStatus::Waiting
+                    )
+                })
+            {
+                store.mutate(|doc| {
+                    for attempt in doc
+                        .threads
+                        .iter_mut()
+                        .flat_map(|thread| &mut thread.send_attempts)
+                    {
+                        if matches!(
+                            attempt.status,
+                            SendAttemptStatus::Dispatching
+                                | SendAttemptStatus::Accepted
+                                | SendAttemptStatus::Working
+                                | SendAttemptStatus::Waiting
+                        ) {
+                            attempt.status = SendAttemptStatus::Uncertain;
+                        }
+                    }
+                    Ok(())
+                })?;
+            }
+        }
         Ok(store)
     }
 
     pub(crate) fn list(&self) -> DevelopmentResult<Vec<ThreadRecord>> {
         Ok(self.load()?.threads)
+    }
+
+    pub(crate) fn send_attempts(
+        &self,
+        thread_id: &str,
+    ) -> DevelopmentResult<Vec<SendAttemptRecord>> {
+        #[cfg(unix)]
+        {
+            self.load()?
+                .threads
+                .into_iter()
+                .find(|thread| thread.thread_id == thread_id)
+                .map(|thread| thread.send_attempts)
+                .ok_or_else(|| config("send attempt thread was not found"))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = thread_id;
+            Ok(Vec::new())
+        }
     }
 
     #[cfg(unix)]
@@ -356,6 +452,95 @@ impl ThreadStore {
                 .ok_or_else(|| config("thread run disappeared before lifecycle persistence"))?;
             run.classification = classification;
             validate_run(run)
+        })
+    }
+
+    pub(crate) fn create_send_attempt(
+        &self,
+        thread_id: &str,
+        attempt: SendAttemptRecord,
+    ) -> DevelopmentResult<()> {
+        self.mutate(|doc| {
+            let thread = doc
+                .threads
+                .iter_mut()
+                .find(|t| t.thread_id == thread_id)
+                .ok_or_else(|| config("send attempt thread was not found"))?;
+            validate_send_attempt(&attempt, &thread.runs)?;
+            if attempt.status != SendAttemptStatus::Dispatching {
+                return Err(config("new send attempts must start in dispatching state"));
+            }
+            if thread
+                .send_attempts
+                .iter()
+                .any(|existing| existing.attempt_id == attempt.attempt_id)
+            {
+                return Err(config("duplicate send attempt identifier"));
+            }
+            let mut aggregate_text_bytes = thread
+                .send_attempts
+                .iter()
+                .map(|existing| existing.text.len())
+                .sum::<usize>();
+            while thread.send_attempts.len() >= MAX_SEND_ATTEMPTS
+                || aggregate_text_bytes + attempt.text.len() > MAX_SEND_ATTEMPT_TEXT_BYTES
+            {
+                let Some(terminal_index) = thread.send_attempts.iter().position(|existing| {
+                    matches!(
+                        existing.status,
+                        SendAttemptStatus::Settled | SendAttemptStatus::Failed
+                    )
+                }) else {
+                    return Err(config(
+                        "unresolved send attempts reached their storage limit",
+                    ));
+                };
+                let removed = thread.send_attempts.remove(terminal_index);
+                aggregate_text_bytes = aggregate_text_bytes.saturating_sub(removed.text.len());
+            }
+            thread.send_attempts.push(attempt);
+            Ok(())
+        })
+    }
+
+    pub(crate) fn update_send_attempt(
+        &self,
+        thread_id: &str,
+        attempt_id: &str,
+        status: SendAttemptStatus,
+        engine_request_id: Option<String>,
+    ) -> DevelopmentResult<()> {
+        self.mutate(|doc| {
+            let thread = doc
+                .threads
+                .iter_mut()
+                .find(|t| t.thread_id == thread_id)
+                .ok_or_else(|| config("send attempt thread was not found"))?;
+            let attempt = thread
+                .send_attempts
+                .iter_mut()
+                .find(|a| a.attempt_id == attempt_id)
+                .ok_or_else(|| config("send attempt was not found"))?;
+            if !valid_attempt_transition(attempt.status, status) {
+                return Err(config("invalid send attempt status transition"));
+            }
+            if let Some(id) = &engine_request_id {
+                if id.is_empty() || id.len() > 256 || id.chars().any(char::is_control) {
+                    return Err(config("engine returned an invalid request identifier"));
+                }
+                if attempt
+                    .engine_request_id
+                    .as_ref()
+                    .is_some_and(|existing| existing != id)
+                {
+                    return Err(config("engine request identifier cannot be replaced"));
+                }
+            }
+            attempt.status = status;
+            if engine_request_id.is_some() {
+                attempt.engine_request_id = engine_request_id;
+            }
+            Ok(())
         })
     }
 
@@ -667,11 +852,79 @@ fn validate_thread(thread: &ThreadRecord) -> DevelopmentResult<()> {
     if let Some(queue) = &thread.follow_up_queue {
         validate_follow_up_queue(queue, &thread.runs)?;
     }
+    validate_send_attempts(&thread.send_attempts, &thread.runs)?;
     for run in &thread.runs {
         validate_id(&run.run_id, "run")?;
         validate_run(run)?;
     }
     Ok(())
+}
+
+fn validate_send_attempts(
+    attempts: &[SendAttemptRecord],
+    runs: &[RunRecord],
+) -> DevelopmentResult<()> {
+    if attempts.len() > MAX_SEND_ATTEMPTS {
+        return Err(config("thread send attempts reached their limit"));
+    }
+    let mut attempt_ids = std::collections::BTreeSet::new();
+    let mut aggregate = 0usize;
+    for attempt in attempts {
+        validate_send_attempt(attempt, runs)?;
+        if !attempt_ids.insert(attempt.attempt_id.as_str()) {
+            return Err(config("duplicate send attempt identifier"));
+        }
+        aggregate = aggregate
+            .checked_add(attempt.text.len())
+            .ok_or_else(|| config("thread send attempts exceed their aggregate limit"))?;
+    }
+    if aggregate > MAX_SEND_ATTEMPT_TEXT_BYTES {
+        return Err(config("thread send attempts exceed their aggregate limit"));
+    }
+    Ok(())
+}
+
+fn validate_send_attempt(attempt: &SendAttemptRecord, runs: &[RunRecord]) -> DevelopmentResult<()> {
+    validate_id(&attempt.attempt_id, "attempt")?;
+    if attempt.client_message_id.is_empty()
+        || attempt.client_message_id.len() > 128
+        || !attempt
+            .client_message_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+    {
+        return Err(config("send attempt client message identifier is invalid"));
+    }
+    validate_id(&attempt.target_run_id, "run")?;
+    if !runs.iter().any(|run| run.run_id == attempt.target_run_id) {
+        return Err(config("send attempt target run is not in its thread"));
+    }
+    if attempt.text.is_empty()
+        || attempt.text.len() > MAX_SEND_ATTEMPT_TEXT_BYTES
+        || attempt.text.contains('\0')
+        || attempt.text.trim().is_empty()
+    {
+        return Err(config("send attempt text exceeds its field limits"));
+    }
+    if attempt
+        .engine_request_id
+        .as_ref()
+        .is_some_and(|id| id.is_empty() || id.len() > 256 || id.chars().any(char::is_control))
+    {
+        return Err(config("send attempt engine request identifier is invalid"));
+    }
+    Ok(())
+}
+
+fn valid_attempt_transition(from: SendAttemptStatus, to: SendAttemptStatus) -> bool {
+    use SendAttemptStatus::*;
+    match from {
+        Dispatching => matches!(to, Accepted | Working | Failed | Uncertain),
+        Accepted => matches!(to, Working | Waiting | Settled | Failed | Uncertain),
+        Working => matches!(to, Waiting | Settled | Failed | Uncertain),
+        Waiting => matches!(to, Working | Settled | Failed | Uncertain),
+        Settled | Failed | Uncertain => false,
+    }
 }
 
 #[cfg(unix)]
@@ -811,6 +1064,7 @@ mod tests {
             created_at_ms: 1,
             composer_draft: None,
             follow_up_queue: None,
+            send_attempts: Vec::new(),
             runs: vec![RunRecord {
                 run_id: random_id("run").unwrap(),
                 engine: "glass-core".into(),
@@ -1001,6 +1255,162 @@ mod tests {
             writer.join().unwrap();
         }
         assert_eq!(store.list().unwrap().len(), 8);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn attempt(run_id: String) -> SendAttemptRecord {
+        SendAttemptRecord {
+            attempt_id: random_id("attempt").unwrap(),
+            client_message_id: random_id("message").unwrap(),
+            target_run_id: run_id,
+            mode: SendAttemptMode::FollowUp,
+            text: "Please continue with the implementation".into(),
+            status: SendAttemptStatus::Dispatching,
+            engine_request_id: None,
+            created_at_ms: 42,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn send_attempt_round_trip_and_status_transitions() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        let mut row = record();
+        let thread_id = row.thread_id.clone();
+        let mut send = attempt(row.runs[0].run_id.clone());
+        let attempt_id = send.attempt_id.clone();
+        row.send_attempts.clear();
+        store.create(row).unwrap();
+        store.create_send_attempt(&thread_id, send.clone()).unwrap();
+        let mut retry = send.clone();
+        retry.attempt_id = random_id("attempt").unwrap();
+        store.create_send_attempt(&thread_id, retry).unwrap();
+        store
+            .update_send_attempt(
+                &thread_id,
+                &attempt_id,
+                SendAttemptStatus::Accepted,
+                Some("req-17".into()),
+            )
+            .unwrap();
+        send.status = SendAttemptStatus::Accepted;
+        send.engine_request_id = Some("req-17".into());
+        assert_eq!(store.send_attempts(&thread_id).unwrap().len(), 2);
+        assert_eq!(store.send_attempts(&thread_id).unwrap()[0], send);
+        assert!(
+            store
+                .update_send_attempt(
+                    &thread_id,
+                    &attempt_id,
+                    SendAttemptStatus::Dispatching,
+                    None
+                )
+                .is_err()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unresolved_send_attempt_becomes_uncertain_on_reopen() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        let mut row = record();
+        let thread_id = row.thread_id.clone();
+        let send = attempt(row.runs[0].run_id.clone());
+        let attempt_id = send.attempt_id.clone();
+        row.send_attempts.clear();
+        store.create(row).unwrap();
+        store.create_send_attempt(&thread_id, send).unwrap();
+        assert_eq!(
+            ThreadStore::open(&root).unwrap().list().unwrap()[0].send_attempts[0].status,
+            SendAttemptStatus::Uncertain
+        );
+        assert!(
+            store
+                .update_send_attempt(&thread_id, &attempt_id, SendAttemptStatus::Accepted, None)
+                .is_err()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn send_attempt_validation_rejects_limits_and_wrong_target_without_overwrite() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        let row = record();
+        let thread_id = row.thread_id.clone();
+        let run_id = row.runs[0].run_id.clone();
+        store.create(row).unwrap();
+        let before = fs::read(&store.path).unwrap();
+        let mut oversized = attempt(run_id);
+        oversized.text = "x".repeat(MAX_SEND_ATTEMPT_TEXT_BYTES + 1);
+        assert!(store.create_send_attempt(&thread_id, oversized).is_err());
+        let mut wrong_target = attempt(random_id("run").unwrap());
+        wrong_target.text = "message".into();
+        assert!(
+            store
+                .create_send_attempt(&thread_id, wrong_target)
+                .unwrap_err()
+                .to_string()
+                .contains("target run")
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn completed_attempts_are_pruned_but_unresolved_attempts_are_preserved() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        let mut thread = record();
+        let thread_id = thread.thread_id.clone();
+        let run_id = thread.runs[0].run_id.clone();
+        let mut oldest_completed_id = String::new();
+        for index in 0..MAX_SEND_ATTEMPTS {
+            let mut completed = attempt(run_id.clone());
+            completed.client_message_id = format!("completed-{index}");
+            completed.status = SendAttemptStatus::Settled;
+            if index == 0 {
+                oldest_completed_id.clone_from(&completed.attempt_id);
+            }
+            thread.send_attempts.push(completed);
+        }
+        store.create(thread).unwrap();
+        let next = attempt(run_id.clone());
+        let next_id = next.attempt_id.clone();
+        store.create_send_attempt(&thread_id, next).unwrap();
+        let retained = store.send_attempts(&thread_id).unwrap();
+        assert_eq!(retained.len(), MAX_SEND_ATTEMPTS);
+        assert!(
+            !retained
+                .iter()
+                .any(|attempt| attempt.attempt_id == oldest_completed_id)
+        );
+        assert!(retained.iter().any(|attempt| attempt.attempt_id == next_id));
+
+        let mut unresolved_thread = record();
+        let unresolved_thread_id = unresolved_thread.thread_id.clone();
+        let unresolved_run_id = unresolved_thread.runs[0].run_id.clone();
+        for _ in 0..MAX_SEND_ATTEMPTS {
+            let mut unresolved = attempt(unresolved_run_id.clone());
+            unresolved.status = SendAttemptStatus::Uncertain;
+            unresolved_thread.send_attempts.push(unresolved);
+        }
+        store.create(unresolved_thread).unwrap();
+        let before = fs::read(&store.path).unwrap();
+        let overflow = attempt(unresolved_run_id);
+        assert!(
+            store
+                .create_send_attempt(&unresolved_thread_id, overflow)
+                .unwrap_err()
+                .to_string()
+                .contains("unresolved send attempts")
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), before);
         let _ = fs::remove_dir_all(root);
     }
     #[test]

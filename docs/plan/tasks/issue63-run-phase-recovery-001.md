@@ -31,6 +31,6 @@ phase is context only and never claims that a process is live or replays work.
 ## Limits
 
 `RunId` identifies a worker incarnation, not an individual submitted turn.
-Dispatch/acceptance/settlement for each send is still ephemeral. A later task
-must add stable attempt IDs and conservative reconciliation without replaying
-uncertain sends. A settled engine event is not verification or review approval.
+Per-send dispatch and exact-response tracking is being added by the
+[send-attempt recovery task](issue64-send-attempt-recovery-001.md).
+A run-level settled engine event is not verification or review approval.

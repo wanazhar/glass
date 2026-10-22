@@ -200,7 +200,14 @@ def main() -> None:
             # The real engine returns the stored id. The fixture prefixes it so
             # a test can tell resume apart from a fresh session/new.
             resumed = params.get("sessionId", SESSION_ID)
-            reply(identifier, {"sessionId": "different-session" if mode == "resume-mismatch" else (f"resumed-{resumed}" if mode == "mixed" else resumed)})
+            preserve_resume_id = os.path.exists(
+                os.path.join(os.getcwd(), ".glass", "e2e-core-preserve-resume-session")
+            )
+            if mode == "resume-mismatch":
+                resumed = "different-session"
+            elif mode == "mixed" and not preserve_resume_id:
+                resumed = f"resumed-{resumed}"
+            reply(identifier, {"sessionId": resumed})
         elif method == "session/name":
             reply(identifier, {})
         elif method == "session/list":

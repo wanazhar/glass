@@ -438,6 +438,17 @@ struct FollowUpQueueSnapshot {
     send_attempts: Vec<crate::thread_store::SendAttemptRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SendAttemptRetryTarget {
+    pub(super) agent_id: crate::AgentId,
+    pub(super) thread_id: String,
+    pub(super) attempt_id: String,
+    client_message_id: String,
+    mode: crate::thread_store::SendAttemptMode,
+    text: String,
+    pub(super) preview: String,
+}
+
 #[cfg(unix)]
 enum FollowUpQueueCommand {
     Save {
@@ -1447,6 +1458,8 @@ pub struct DevTuiState {
     pub attention_inbox_open: bool,
     pub attention_selection: usize,
     pub(crate) attention_items: Vec<AttentionItem>,
+    send_attempt_retry_candidate: Option<SendAttemptRetryTarget>,
+    pub(super) send_attempt_retry_confirmation: Option<SendAttemptRetryTarget>,
     pub follow_up_queue_open: bool,
     pub follow_up_queue_selection: usize,
     pub follow_up_queue_edit_text: String,
@@ -1849,6 +1862,8 @@ impl DevTuiState {
             attention_inbox_open: false,
             attention_selection: 0,
             attention_items: Vec::new(),
+            send_attempt_retry_candidate: None,
+            send_attempt_retry_confirmation: None,
             follow_up_queue_open: false,
             follow_up_queue_selection: 0,
             follow_up_queue_edit_text: String::new(),
@@ -4352,6 +4367,177 @@ impl DevTuiState {
         self.attention_inbox_open = false;
     }
 
+    pub fn request_uncertain_send_retry(&mut self) {
+        let Some(target) = self.send_attempt_retry_candidate.clone() else {
+            self.status =
+                "Select an uncertain delivery from Attention Inbox before retrying".into();
+            return;
+        };
+        if self.selected_agent.as_ref() != Some(&target.agent_id) {
+            self.status = "Open the conversation that owns this uncertain delivery first".into();
+            return;
+        }
+        if !self.refresh_follow_up_queue_run(&target.agent_id) {
+            self.status =
+                "Could not verify the selected conversation · inspect it before retrying".into();
+            return;
+        }
+        let attempt = self
+            .follow_up_queue_snapshots
+            .get(&target.agent_id)
+            .filter(|snapshot| snapshot.thread_id == target.thread_id)
+            .and_then(|snapshot| {
+                snapshot.send_attempts.iter().find(|attempt| {
+                    attempt.attempt_id == target.attempt_id
+                        && attempt.status == crate::thread_store::SendAttemptStatus::Uncertain
+                        && attempt.client_message_id == target.client_message_id
+                        && attempt.mode == target.mode
+                        && attempt.text == target.text
+                })
+            });
+        if attempt.is_none() {
+            self.send_attempt_retry_candidate = None;
+            self.status = "This delivery is no longer uncertain · inbox refreshed".into();
+            self.refresh_attention_items();
+            return;
+        }
+        let Some(agent_status) = self
+            .workspace
+            .try_lock()
+            .ok()
+            .and_then(|mut workspace| workspace.agents().snapshot(&target.agent_id).ok())
+            .map(|snapshot| snapshot.status)
+        else {
+            self.status =
+                "Could not verify the current conversation · resume it before retrying".into();
+            return;
+        };
+        if !matches!(
+            agent_status,
+            crate::AgentStatus::Idle | crate::AgentStatus::Working | crate::AgentStatus::Waiting
+        ) {
+            self.status =
+                "Resume this recovery-pending conversation before retrying its message".into();
+            return;
+        }
+        if attempt.is_some_and(|attempt| {
+            attempt.mode == crate::thread_store::SendAttemptMode::Steer
+                && agent_status != crate::AgentStatus::Working
+        }) {
+            self.status =
+                "This steer targets a run that is no longer active · review it instead".into();
+            return;
+        }
+        self.send_attempt_retry_confirmation = Some(target);
+        self.status =
+            "Retry may duplicate a message already accepted by Core · confirm explicitly".into();
+    }
+
+    pub fn cancel_uncertain_send_retry(&mut self) {
+        self.send_attempt_retry_confirmation = None;
+    }
+
+    pub fn confirm_uncertain_send_retry(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some(target) = self.send_attempt_retry_confirmation.take() else {
+            return;
+        };
+        if self.selected_agent.as_ref() != Some(&target.agent_id)
+            || !self.refresh_follow_up_queue_run(&target.agent_id)
+        {
+            self.status = "Conversation changed · inspect the uncertain delivery again".into();
+            return;
+        }
+        let retry = self
+            .follow_up_queue_snapshots
+            .get(&target.agent_id)
+            .filter(|snapshot| snapshot.thread_id == target.thread_id)
+            .and_then(|snapshot| {
+                let attempt = snapshot.send_attempts.iter().find(|attempt| {
+                    attempt.attempt_id == target.attempt_id
+                        && attempt.status == crate::thread_store::SendAttemptStatus::Uncertain
+                        && attempt.client_message_id == target.client_message_id
+                        && attempt.mode == target.mode
+                        && attempt.text == target.text
+                })?;
+                Some((attempt.clone(), snapshot.current_run_id.clone()))
+            });
+        let Some((attempt, current_run_id)) = retry else {
+            self.send_attempt_retry_candidate = None;
+            self.status = "This delivery changed before retry · inbox refreshed".into();
+            self.refresh_attention_items();
+            return;
+        };
+        let Some(agent_status) = self
+            .workspace
+            .try_lock()
+            .ok()
+            .and_then(|mut workspace| workspace.agents().snapshot(&target.agent_id).ok())
+            .map(|snapshot| snapshot.status)
+        else {
+            self.status = "Could not verify the current conversation · retry was not sent".into();
+            return;
+        };
+        if !matches!(
+            agent_status,
+            crate::AgentStatus::Idle | crate::AgentStatus::Working | crate::AgentStatus::Waiting
+        ) || (attempt.mode == crate::thread_store::SendAttemptMode::Steer
+            && agent_status != crate::AgentStatus::Working)
+        {
+            self.status =
+                "Conversation state changed · retry was not sent; inspect it again".into();
+            return;
+        }
+        if current_run_id.is_empty() {
+            self.status =
+                "No current run is available · resume this conversation before retrying".into();
+            return;
+        }
+        let mode = match attempt.mode {
+            crate::thread_store::SendAttemptMode::Prompt => "prompt",
+            crate::thread_store::SendAttemptMode::FollowUp => "follow-up",
+            crate::thread_store::SendAttemptMode::Steer => "steer",
+        };
+        let arguments = serde_json::json!({
+            "agentId": target.agent_id.as_str(),
+            "text": attempt.text.clone(),
+            "mode": mode,
+            "clientMessageId": attempt.client_message_id.clone(),
+            "expectedRunId": current_run_id,
+            "context": {
+                "source": "uncertain-send-retry",
+                "previousAttemptId": attempt.attempt_id.clone(),
+            },
+        });
+        let (call, context) = match self.tool_request("glass.agent.send", arguments, true) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status =
+                    format!("Retry not sent · uncertain attempt kept for review · {error}");
+                return;
+            }
+        };
+        match worker.submit_tool(call, context) {
+            Ok(job_id) => {
+                self.pending_chat_messages.push(PendingChatMessage {
+                    agent_id: Some(target.agent_id.clone()),
+                    message_id: attempt.client_message_id,
+                    text: attempt.text,
+                    state: ChatMessageState::Sending,
+                    job_id: Some(job_id),
+                    error: None,
+                });
+                self.agent_send_job = Some(job_id);
+                self.send_attempt_retry_candidate = None;
+                self.surface = DevSurface::Agent;
+                self.status = "Retry submitted with the same message ID · a new delivery attempt is being tracked".into();
+            }
+            Err(error) => {
+                self.status =
+                    format!("Retry not sent · uncertain attempt kept for review · {error}");
+            }
+        }
+    }
+
     pub fn move_attention_selection(&mut self, delta: i32) {
         if self.attention_items.is_empty() {
             self.attention_selection = 0;
@@ -4499,15 +4685,33 @@ impl DevTuiState {
                     self.attention_status_stale();
                     return;
                 };
-                let preview = attempt.text.lines().next().unwrap_or_default();
-                let detail = preview.chars().take(96).collect::<String>();
+                let retry_target = SendAttemptRetryTarget {
+                    agent_id: owner.clone(),
+                    thread_id: thread_id.clone(),
+                    attempt_id: attempt.attempt_id.clone(),
+                    client_message_id: attempt.client_message_id.clone(),
+                    mode: attempt.mode,
+                    text: attempt.text.clone(),
+                    preview: attempt
+                        .text
+                        .chars()
+                        .rev()
+                        .take(120)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect(),
+                };
+                let detail = retry_target.preview.chars().take(96).collect::<String>();
                 if !self.select_agent(Some(owner)) {
                     return;
                 }
+                self.send_attempt_retry_candidate = Some(retry_target);
+                self.send_attempt_retry_confirmation = None;
                 self.surface = DevSurface::Agent;
                 self.attention_inbox_open = false;
                 self.status = format!(
-                    "Message delivery is uncertain · inspect the conversation before retrying · {detail}"
+                    "Message delivery is uncertain · inspect it, then :agent retry requests confirmation · {detail}"
                 );
             }
         }

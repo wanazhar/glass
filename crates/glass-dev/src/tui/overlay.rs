@@ -24,6 +24,7 @@ pub(super) enum ActiveOverlay {
     BrowserRecovery = 15,
     AttentionInbox = 16,
     ThreadPicker = 17,
+    SendAttemptRetryConfirmation = 18,
 }
 
 impl ActiveOverlay {
@@ -40,6 +41,8 @@ impl ActiveOverlay {
 pub(super) fn active_overlay(state: &DevTuiState) -> Option<ActiveOverlay> {
     if state.quit_confirmation {
         Some(ActiveOverlay::QuitConfirmation)
+    } else if state.send_attempt_retry_confirmation.is_some() {
+        Some(ActiveOverlay::SendAttemptRetryConfirmation)
     } else if state.editor_exit_prompt.is_some() {
         Some(ActiveOverlay::EditorExitPrompt)
     } else if state.browser_dialog.is_some() {

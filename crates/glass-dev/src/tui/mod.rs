@@ -551,6 +551,18 @@ pub(crate) fn run_with_browser_policy(
                             KeyCode::Esc | KeyCode::Char('n' | 'N') => state.cancel_quit(),
                             _ => {}
                         }
+                    } else if active_overlay
+                        == Some(overlay::ActiveOverlay::SendAttemptRetryConfirmation)
+                    {
+                        match key.code {
+                            KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
+                                state.confirm_uncertain_send_retry(&mut worker)
+                            }
+                            KeyCode::Esc | KeyCode::Char('n' | 'N') => {
+                                state.cancel_uncertain_send_retry()
+                            }
+                            _ => {}
+                        }
                     } else if active_overlay == Some(overlay::ActiveOverlay::EditorExitPrompt) {
                         state.handle_editor_exit_key(key.code);
                     } else if key.code == KeyCode::Char('c')
@@ -1518,6 +1530,7 @@ fn terminal_overlay_mask(state: &DevTuiState) -> u32 {
             let bit = match active {
                 overlay::ActiveOverlay::AttentionInbox => 30,
                 overlay::ActiveOverlay::ThreadPicker => 29,
+                overlay::ActiveOverlay::SendAttemptRetryConfirmation => 28,
                 _ => 16 + active as u32,
             };
             1_u32 << bit

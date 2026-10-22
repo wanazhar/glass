@@ -395,7 +395,14 @@ attempt tied to its engine request ID. Exact engine responses settle or fail
 that attempt; run-level waiting or settled events cannot settle an ambiguous
 message. Unresolved attempts reopen as uncertain and link from the attention
 inbox to their owning thread. These message records remain process-local on
-Windows while the project ledger inherits workspace ACLs; see the
+Windows while the project ledger inherits workspace ACLs. After resuming the
+exact Core session, select the uncertain attempt from the inbox and run
+`:agent retry`. Glass verifies the same thread still owns an uncertain attempt
+and that its current run can accept the saved mode, then asks for explicit
+confirmation because Core may already have accepted the original. Confirming
+resends the stored text with the original client message ID and records a new
+attempt ID against the current run. Cancel leaves the uncertain attempt intact;
+neither inbox navigation nor opening the retry prompt sends anything. See the
 [send-attempt recovery task](../plan/tasks/issue64-send-attempt-recovery-001.md).
 Workspace-local todos
 (`glass.todo.*`) persist at `.glass/todos/session.json` and form the Agent

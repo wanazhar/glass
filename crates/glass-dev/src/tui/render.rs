@@ -574,6 +574,10 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
             render_quit_confirmation(frame, state, area);
             return;
         }
+        Some(ActiveOverlay::SendAttemptRetryConfirmation) => {
+            render_send_attempt_retry_confirmation(frame, state, area);
+            return;
+        }
         Some(ActiveOverlay::EditorExitPrompt) => {
             if state.code_edit_mode {
                 render_fullscreen_editor(frame, state, area);
@@ -633,6 +637,51 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
         Some(ActiveOverlay::AttentionInbox) => render_attention_inbox(frame, state, area),
         _ => {}
     }
+}
+
+fn render_send_attempt_retry_confirmation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let width = area.width.saturating_sub(4).min(92);
+    let height = area.height.saturating_sub(2).clamp(1, 9);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .title(" RETRY UNCERTAIN DELIVERY ")
+        .title_style(Style::default().fg(WARNING).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(WARNING))
+        .bg(PANEL_BACKGROUND)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(modal);
+    let preview = state
+        .send_attempt_retry_confirmation
+        .as_ref()
+        .map(|target| format!("Saved message: {}", target.preview))
+        .unwrap_or_else(|| "Saved message unavailable".into());
+    let lines = vec![
+        palette_fixed_line(
+            "Core may already have accepted the previous request; retry can duplicate work.",
+            inner.width,
+            Style::default().fg(TEXT),
+        ),
+        palette_fixed_line(
+            "This resends the stored text with the same client message ID and a new attempt ID.",
+            inner.width,
+            Style::default().fg(TEXT),
+        ),
+        palette_fixed_line(&preview, inner.width, Style::default().fg(MUTED)),
+        palette_fixed_line(
+            "Enter or y retry · Esc or n keep it for review",
+            inner.width,
+            Style::default().fg(MUTED),
+        ),
+    ];
+    frame.render_widget(Clear, modal);
+    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), modal);
 }
 
 fn render_attention_inbox(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -6006,9 +6055,12 @@ mod tests {
         state.toggle_help();
         let help = rendered(&state, 48, 18);
         assert!(help.contains("DO THIS"));
-        assert!(help.contains("App"));
         state.scroll_help(16);
         assert!(state.help_scroll <= 16);
+        assert!(
+            rendered(&state, 48, 18).contains("App"),
+            "small-screen help must expose the remaining surface list after scrolling"
+        );
 
         state.help_open = false;
         state.surface = DevSurface::Git;

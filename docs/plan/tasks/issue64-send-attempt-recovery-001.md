@@ -68,7 +68,7 @@ matches that run.
 - [ ] Run-level wait/settled events never falsely settle an ambiguous attempt.
 - [x] Reopen converts unresolved attempts to uncertain, exposes them in the
       owning thread's attention context, and never resends them.
-- [ ] Retry can reuse a client message ID while receiving a new attempt ID.
+- [x] Retry can reuse a client message ID while receiving a new attempt ID.
 - [ ] Bounds, invalid transitions, response correlation, reopen behavior,
       platform privacy behavior, and attention selection have focused tests.
 - [ ] Relevant package tests, formatting, strict scoped Clippy, docs coverage,
@@ -89,6 +89,13 @@ classifies it as uncertain, the attention item exposes its message and routes
 to the owning conversation with inspect-before-retry guidance, the IDs and
 single attempt remain unchanged, and the fake Core request log records no
 `turn/prompt` replay. This scenario starts from an unresolved ledger record;
-the live crash-during-response timing path and explicit retry interaction still
-need end-to-end coverage. The task remains open for those journeys and final
-task-level review.
+it does not kill Core during a live response.
+
+`uncertain_send_retry_requires_confirmation_and_reuses_client_message_id`
+exercises explicit retry after exact-session resume. It first opens the retry
+confirmation and cancels, proving no new attempt or prompt request is created.
+It then confirms, checks that fake Core receives the stored text, and verifies
+the original uncertain attempt remains while a second settled attempt uses the
+same client message ID and a different attempt ID. The implementation
+revalidates ownership, uncertain status, and current run before sending. The
+true kill-during-response timing path and final task-level review remain open.

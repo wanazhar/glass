@@ -705,6 +705,14 @@ session or replays the previous prompt. These controls require an active
 resident session except for explicit recovery. The TUI asks its normal
 confirmation once for the resume action; after recovery, conversation follows
 the existing session interaction flow without per-tool-call confirmation.
+If an earlier send reopens as uncertain, inspect it in the Attention Inbox and
+resume its owning conversation first. `:agent retry` then opens a separate
+duplicate-risk confirmation. Confirming resends the saved text with the same
+client message ID and creates a new attempt ID; cancel leaves the original
+uncertain attempt unchanged. Glass refuses the retry if the attempt changed,
+the conversation is not active, or its current run cannot accept the saved
+steering mode. This persisted retry is available on Unix, where the attempt
+ledger has private file permissions.
 
 The standard Glass tool behavior is explicit and bounded. `read` accepts
 one-based `offset` and `limit`; `ls` accepts a path prefix and limit; `grep`

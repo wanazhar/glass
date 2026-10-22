@@ -1302,6 +1302,139 @@ fn uncertain_send_opens_attention_without_replaying_after_restart() {
         let _ = std::fs::remove_dir_all(root);
     }
 }
+
+#[test]
+fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let prompt = "inspect marker before retry";
+    let root = git_workspace_root();
+    let data_home = root.join(".glass/xdg-data");
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    std::fs::write(
+        fixture_state.join("e2e-core-preserve-resume-session"),
+        "enabled",
+    )
+    .unwrap();
+    seed_uncertain_send_attempt(&root, prompt);
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_data_home_options(
+        &binary(),
+        &root,
+        80,
+        24,
+        "glass-core",
+        Some(&fake_core),
+        Some(&data_home),
+    );
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.trust_project();
+    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    send_ctrl_shift_a(&mut session);
+    assert!(session.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
+    assert!(session.wait_for(prompt, Duration::from_secs(8)));
+    session.send(b"\r");
+    assert!(session.wait_for("Message delivery is uncertain", Duration::from_secs(5)));
+
+    session.send(b":agent resume\r");
+    assert!(
+        session.wait_for("CONFIRMATION", Duration::from_secs(5)),
+        "resuming the exact Core session did not ask for its normal confirmation\n{}",
+        session.output_tail()
+    );
+    session.send(b"\r");
+    let registry_path = fixture_state.join("threads/registry.json");
+    let deadline = Instant::now() + Duration::from_secs(12);
+    let registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let latest_is_idle = registry["threads"][0]["runs"]
+            .as_array()
+            .and_then(|runs| runs.last())
+            .is_some_and(|run| run["classification"] == "idle");
+        if latest_is_idle || Instant::now() >= deadline {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    assert_eq!(
+        registry["threads"][0]["runs"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["classification"],
+        "idle",
+        "Core session did not become ready for an explicit retry: {registry}"
+    );
+
+    session.send(b":agent retry\r");
+    assert!(
+        session.wait_for("RETRY UNCERTAIN DELIVERY", Duration::from_secs(5)),
+        "retry did not show duplicate-risk confirmation\n{}",
+        session.output_tail()
+    );
+    assert!(session.wait_for("same client message ID", Duration::from_secs(5)));
+    session.send(b"\x1b");
+    let requests_path = fixture_state.join("e2e-core-requests.jsonl");
+    let requests = std::fs::read_to_string(&requests_path).unwrap();
+    assert_eq!(requests.matches("\"method\":\"turn/prompt\"").count(), 0);
+    let before_retry: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+    assert_eq!(
+        before_retry["threads"][0]["sendAttempts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    session.send(b":agent retry\r");
+    assert!(session.wait_for("RETRY UNCERTAIN DELIVERY", Duration::from_secs(5)));
+    session.send(b"\r");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let after_retry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let attempts = registry["threads"][0]["sendAttempts"].as_array().unwrap();
+        if attempts.len() == 2 && attempts[1]["status"] == "settled" || Instant::now() >= deadline {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    let attempts = after_retry["threads"][0]["sendAttempts"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        attempts.len(),
+        2,
+        "retry creates a distinct delivery record"
+    );
+    assert_eq!(attempts[0]["status"], "uncertain");
+    assert_eq!(attempts[1]["status"], "settled");
+    assert_eq!(
+        attempts[0]["clientMessageId"],
+        attempts[1]["clientMessageId"]
+    );
+    assert_ne!(attempts[0]["attemptId"], attempts[1]["attemptId"]);
+    assert_eq!(attempts[1]["text"], prompt);
+    assert!(
+        attempts[1]["engineRequestId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
+    let requests = std::fs::read_to_string(requests_path).unwrap();
+    assert_eq!(requests.matches("\"method\":\"turn/prompt\"").count(), 1);
+    assert!(
+        requests.contains(prompt),
+        "Core did not receive the saved retry text"
+    );
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
 #[test]
 fn palette_and_help_survive_real_key_sequences() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {

@@ -555,6 +555,11 @@ fn compute_snapshot(
         .unwrap_or_default();
     snapshot.harnesses = crate::harness::summary();
     let agent_snapshots = locked.agents().list();
+    let task_snapshots = locked.tasks();
+    let picker_tasks = task_snapshots
+        .as_ref()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     snapshot.pending_agent_approvals =
         super::state::pending_agent_approvals(agent_snapshots.as_ref().ok());
     snapshot.editor_proposals = locked.project().editor_proposals();
@@ -569,16 +574,7 @@ fn compute_snapshot(
         .unwrap_or_default();
     snapshot.thread_picker_items = agent_snapshots
         .as_ref()
-        .map(|agents| {
-            agents
-                .iter()
-                .map(|agent| super::state::ThreadPickerItem {
-                    agent_id: agent.id.clone(),
-                    title: agent.role.clone(),
-                    status: agent.status.label().to_owned(),
-                })
-                .collect()
-        })
+        .map(|agents| super::state::project_thread_picker_items(agents, picker_tasks))
         .unwrap_or_default();
     snapshot.agent_chrome = agent_snapshots
         .as_ref()
@@ -643,7 +639,7 @@ fn compute_snapshot(
         }
         Err(error) => format!("Conversation unavailable: {error}"),
     };
-    snapshot.tasks = match locked.tasks() {
+    snapshot.tasks = match task_snapshots {
         Ok(tasks) if tasks.is_empty() => "No tasks. :task create ID TITLE".into(),
         Ok(tasks) => tasks
             .iter()

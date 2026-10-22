@@ -5878,7 +5878,6 @@ impl DevTuiState {
     pub fn open_composer(&mut self) {
         self.close_file_picker();
         self.composer_mode = true;
-        self.composer_cursor = self.composer_input.len();
         self.status = format!(
             "{} on {} · Esc back · Enter sends · Tab mention · Shift-Enter newline",
             self.composer_run_mode.label(),
@@ -15712,6 +15711,8 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(reopened.composer_input, "resume this λ");
+        assert_eq!(reopened.composer_cursor, "resume ".len());
+        reopened.open_composer();
         assert_eq!(reopened.composer_cursor, "resume ".len());
         drop(reopened);
         std::fs::remove_dir_all(root).unwrap();

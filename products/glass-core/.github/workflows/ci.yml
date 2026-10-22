@@ -1,0 +1,133 @@
+name: Build and verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm --prefix web ci --ignore-scripts
+      - run: npm --prefix web run build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PTY test dependency
+        run: python3 -m pip install pyte==0.8.2
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo build --release --locked --package glass-core --bin glass-core
+      - name: Browser workspace checks
+        if: runner.os == 'Linux'
+        env:
+          GLASS_CORE_TEST_BINARY: ${{ github.workspace }}/target/release/glass-core
+        run: |
+          web/node_modules/.bin/playwright-core install --with-deps chromium
+          python3 scripts/smoke-connect.py
+          python3 scripts/smoke-connect-lifecycle.py
+      - name: Installer and offline PTY checks
+        env:
+          GLASS_CORE_TEST_BINARY: ${{ github.workspace }}/target/release/glass-core
+        run: |
+          python3 scripts/smoke-install.py
+          python3 scripts/smoke-features.py
+          python3 scripts/smoke-onboarding.py
+          python3 scripts/smoke-polish.py
+          python3 scripts/smoke-workflows.py
+          python3 scripts/smoke-mobile.py
+          python3 scripts/smoke-chat.py
+          python3 scripts/smoke-motion.py
+          python3 scripts/smoke-typescript.py
+          python3 scripts/smoke-auth-back.py
+          python3 scripts/smoke-round2-recovery.py
+          python3 scripts/smoke-busy-palette.py
+          python3 scripts/smoke-provider-tls.py
+          python3 scripts/smoke-live.py
+          python3 scripts/smoke-navigation.py
+          python3 scripts/smoke-inline-scroll.py
+          python3 scripts/smoke-scroll-submit.py
+          python3 scripts/smoke-context.py
+          python3 scripts/smoke-blocks.py
+          python3 scripts/smoke-rendering-audit.py
+          python3 scripts/smoke-native-files-jobs.py
+          python3 scripts/smoke-job-unicode.py
+          python3 scripts/smoke-tool-repair.py
+          python3 scripts/smoke-agents.py
+          python3 scripts/smoke-agent-limits.py
+          python3 scripts/smoke-empty-response.py
+          python3 scripts/smoke-presentation.py
+          python3 scripts/smoke-help.py
+          python3 scripts/smoke-cli.py
+          python3 scripts/smoke-reader.py
+          python3 scripts/smoke-doctor.py
+          python3 scripts/smoke-trust.py
+          python3 scripts/smoke-sandbox.py
+          python3 scripts/smoke-security.py
+          python3 scripts/smoke-permissions-pty.py
+          python3 scripts/smoke-init.py
+          python3 scripts/smoke-web.py
+          python3 scripts/smoke-mcp.py
+          python3 scripts/smoke-elicitation-pty.py
+          python3 scripts/smoke-acp.py
+          python3 scripts/smoke-runtime.py
+          python3 scripts/conformance-runtime.py
+          cargo test -p glass-runtime-client --test runtime -- --ignored
+          npm run test --workspace @glass-core/runtime-client
+          python3 scripts/smoke-serve.py
+          python3 scripts/smoke-verify.py
+          python3 scripts/smoke-memory.py
+          python3 scripts/smoke-image.py
+          python3 scripts/smoke-plugin.py
+          python3 scripts/smoke-plugin-integrity.py
+          python3 scripts/smoke-oracle.py
+          python3 scripts/smoke-worktree.py
+          python3 scripts/smoke-loop.py
+          python3 scripts/smoke-inbox.py
+          python3 scripts/smoke-index.py
+          python3 scripts/smoke-lsp.py
+          python3 scripts/smoke-workflow-next.py
+          python3 scripts/smoke-browser.py
+          python3 scripts/smoke-recovery.py
+          python3 scripts/smoke-reliability.py
+          python3 scripts/smoke-editcontext.py
+          python3 scripts/smoke-status.py
+          python3 scripts/smoke-round3.py
+      - name: Clean install and upgrade
+        run: python3 scripts/smoke-upgrade.py
+      - name: Package binary
+        run: |
+          mkdir -p dist/package
+          cp target/release/glass-core dist/package/
+          ln -s glass-core dist/package/gc
+          cp README.md LICENSE THIRD_PARTY.md dist/package/
+          python3 -c 'import platform; print("glass-core-" + platform.system().lower() + "-" + platform.machine())' > dist/name
+          tar -czf "dist/$(cat dist/name).tar.gz" -C dist/package .
+          tar -czf dist/glass-core-web-assets.tar.gz -C web/dist .
+          python3 -c 'import hashlib,pathlib; [(p.with_suffix(p.suffix+".sha256").write_text(hashlib.sha256(p.read_bytes()).hexdigest()+"  "+p.name+"\n")) for p in pathlib.Path("dist").glob("*.tar.gz")]'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: glass-core-${{ matrix.os }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error

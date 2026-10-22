@@ -1,0 +1,610 @@
+//! Inline conversation reader for the owned chat body region.
+use glass_tui::{
+    Entry, Transcript,
+    crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind},
+    ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend, layout::Rect},
+    theme::TerminalWriter,
+};
+use std::collections::{HashMap, HashSet};
+use std::io::{self, Write};
+
+type Tui = Terminal<CrosstermBackend<TerminalWriter<io::Stdout>>>;
+
+pub enum Action {
+    Handled,
+    Close,
+    CloseAndPass,
+    PassThrough,
+}
+
+pub struct Reader {
+    terminal: Tui,
+    pub(crate) transcript: Transcript,
+    unread: usize,
+    search: Option<String>,
+    match_count: usize,
+    entries: Vec<Entry>,
+    expanded_cards: HashSet<(usize, String)>,
+    selected_card: Option<(usize, String)>,
+    loaded_spills: LoadedSpills,
+    fullscreen: bool,
+    title: String,
+    reasoning_streaming: bool,
+}
+
+impl Reader {
+    pub fn new(entries: Vec<Entry>, page_up: bool) -> io::Result<Self> {
+        Self::create(entries, page_up, false, "Conversation")
+    }
+    pub fn overlay(entries: Vec<Entry>, title: &str) -> io::Result<Self> {
+        Self::create(entries, false, true, title)
+    }
+    fn create(
+        entries: Vec<Entry>,
+        page_up: bool,
+        fullscreen: bool,
+        title: &str,
+    ) -> io::Result<Self> {
+        let rect = viewport(fullscreen);
+        let terminal = make_clean_terminal(rect)?;
+        let loaded_spills = HashMap::new();
+        let mut transcript =
+            Transcript::new(render_entries(&entries, &HashSet::new(), &loaded_spills));
+        let content = Transcript::content_rect(reasoning_area(rect, title));
+        transcript.set_width(content.width);
+        transcript.follow_tail(content.height);
+        if page_up {
+            transcript.page(-1, content.height);
+        }
+        let mut reader = Self {
+            terminal,
+            transcript,
+            unread: 0,
+            search: None,
+            match_count: 0,
+            entries,
+            expanded_cards: HashSet::new(),
+            selected_card: None,
+            loaded_spills,
+            fullscreen,
+            title: title.into(),
+            reasoning_streaming: false,
+        };
+        reader.draw()?;
+        Ok(reader)
+    }
+
+    fn area(&self) -> Rect {
+        viewport(self.fullscreen)
+    }
+    fn layout_area(&self) -> Rect {
+        reasoning_area(self.area(), &self.title)
+    }
+    pub fn searching(&self) -> bool {
+        self.search.is_some()
+    }
+    /// Refresh a parked live panel before its first frame, avoiding an old-position flash.
+    pub fn reopen_latest(&mut self, entries: Vec<Entry>, streaming: bool) -> io::Result<()> {
+        self.entries = entries;
+        self.transcript.replace_entries(render_entries(&self.entries, &self.expanded_cards, &self.loaded_spills));
+        self.reasoning_streaming = streaming;
+        self.terminal = make_clean_terminal(self.area())?;
+        self.follow_latest()
+    }
+    /// Opening reasoning always returns to the live tail, even after a parked search.
+    pub fn follow_latest(&mut self) -> io::Result<()> {
+        self.search = None;
+        self.transcript.search("");
+        self.match_count = 0;
+        self.selected_card = None;
+        self.unread = 0;
+        let area = Transcript::content_rect(self.layout_area());
+        self.transcript.set_width(area.width);
+        self.transcript.follow_tail(area.height);
+        self.draw()
+    }
+    pub fn set_reasoning_streaming(&mut self, streaming: bool) -> io::Result<()> {
+        if self.reasoning_streaming != streaming {
+            self.reasoning_streaming = streaming;
+            self.draw()?;
+        }
+        Ok(())
+    }
+    pub fn hide_cursor(&mut self) {
+        let _ = self.terminal.hide_cursor();
+    }
+    pub fn update(&mut self, entries: Vec<Entry>) -> io::Result<()> {
+        let following = self.transcript.follow;
+        self.entries = entries;
+        if !self.transcript.replace_entries(render_entries(
+            &self.entries,
+            &self.expanded_cards,
+            &self.loaded_spills,
+        )) {
+            return Ok(());
+        }
+        if let Some(query) = self.search.clone() {
+            self.search_matches(&query, false);
+        }
+        if following {
+            self.unread = 0;
+        } else {
+            self.unread = self.unread.saturating_add(1);
+        }
+        self.draw()
+    }
+
+    /// Repaint after an overlay has written directly to the same body rows.
+    pub fn restore_after_overlay(&mut self) -> io::Result<()> {
+        self.terminal = make_clean_terminal(self.area())?;
+        self.draw()
+    }
+
+    pub fn resize(&mut self) -> io::Result<()> {
+        self.terminal = make_clean_terminal(self.area())?;
+        self.draw()
+    }
+
+    pub fn event(&mut self, event: &Event, composer_has_draft: bool) -> io::Result<Action> {
+        let area = Transcript::content_rect(self.layout_area());
+        let draw;
+        match event {
+            Event::Resize(_, _) => {
+                self.resize()?;
+                return Ok(Action::Handled);
+            }
+            Event::Key(key) => {
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                if let Some(query) = self.search.as_mut() {
+                    let mut refresh_search = false;
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.search = None;
+                            self.match_count = 0;
+                        }
+                        KeyCode::Enter | KeyCode::Down => {
+                            self.transcript.search_next(false, area.height);
+                        }
+                        KeyCode::Up => {
+                            self.transcript.search_next(true, area.height);
+                        }
+                        KeyCode::Backspace => {
+                            query.pop();
+                            refresh_search = true;
+                        }
+                        KeyCode::Char(c) if !ctrl => {
+                            query.push(c);
+                            refresh_search = true;
+                        }
+                        _ => return Ok(Action::Handled),
+                    }
+                    if refresh_search {
+                        let query = self.search.clone().unwrap_or_default();
+                        self.search_matches(&query, true);
+                    }
+                    draw = true;
+                    if draw {
+                        self.draw()?;
+                    }
+                    return Ok(Action::Handled);
+                }
+                // The composer remains editable while reading. Submitting its
+                // draft must resume the normal send/queue path, not expand a card.
+                if key.code == KeyCode::Enter && composer_has_draft {
+                    return Ok(Action::CloseAndPass);
+                }
+                match key.code {
+                    KeyCode::Esc => return Ok(Action::Close),
+                    KeyCode::Char('f') if self.fullscreen && !ctrl => {
+                        self.transcript.follow_tail(area.height);
+                    }
+                    KeyCode::End => {
+                        self.transcript.follow_tail(area.height);
+                    }
+                    KeyCode::Enter => {
+                        let index = self.selected_tool_card_index();
+                        if let Some(index) = index
+                            && let Some(card) = self.entries[index].tool_card.as_ref()
+                        {
+                            let key = (self.entries[index].turn, card.call_id.clone());
+                            if !self.expanded_cards.insert(key.clone()) {
+                                self.expanded_cards.remove(&key);
+                            }
+                            self.transcript.replace_entries(render_entries(
+                                &self.entries,
+                                &self.expanded_cards,
+                                &self.loaded_spills,
+                            ));
+                            if let Some(line) = self.transcript.layout.line_for_entry(index) {
+                                self.transcript.scroll = line;
+                                self.transcript.follow = false;
+                            }
+                            self.draw()?;
+                            return Ok(Action::Handled);
+                        }
+                        return Ok(Action::Close);
+                    }
+                    KeyCode::Char('l') if !composer_has_draft => {
+                        if let Some(index) = self.selected_tool_card_index()
+                            && let Some(card) = self.entries[index].tool_card.as_ref()
+                            && let Some(path) = card.spill.as_deref()
+                        {
+                            let key = (self.entries[index].turn, card.call_id.clone());
+                            self.loaded_spills
+                                .entry(key.clone())
+                                .or_insert_with(|| crate::polish::load_spill(path));
+                            self.selected_card = Some(key.clone());
+                            self.expanded_cards.insert(key);
+                            self.transcript.replace_entries(render_entries(
+                                &self.entries,
+                                &self.expanded_cards,
+                                &self.loaded_spills,
+                            ));
+                            self.align_selected_card_end(area.height);
+                            self.draw()?;
+                            return Ok(Action::Handled);
+                        }
+                        return Ok(Action::PassThrough);
+                    }
+                    KeyCode::Char('f') if ctrl => {
+                        self.search = Some(String::new());
+                        self.match_count = 0;
+                    }
+                    KeyCode::Char('g' | 't') if ctrl => return Ok(Action::CloseAndPass),
+                    KeyCode::Home if ctrl || self.fullscreen => self.transcript.top(),
+                    KeyCode::Up => self.transcript.step(-1, area.height),
+                    KeyCode::Down => self.transcript.step(1, area.height),
+                    KeyCode::PageUp => self.transcript.step(-(area.height as isize), area.height),
+                    KeyCode::PageDown => self.transcript.step(area.height as isize, area.height),
+                    KeyCode::Char('b') if ctrl => {
+                        self.transcript.step(-(area.height as isize), area.height)
+                    }
+                    KeyCode::Char('f') if ctrl => {
+                        self.transcript.step(area.height as isize, area.height)
+                    }
+                    _ => return Ok(Action::PassThrough),
+                }
+                draw = true;
+            }
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    self.transcript.step(-3, area.height);
+                    draw = true;
+                }
+                MouseEventKind::ScrollDown => {
+                    self.transcript.step(3, area.height);
+                    draw = true;
+                }
+                _ => return Ok(Action::Handled),
+            },
+            Event::Paste(_) => return Ok(Action::PassThrough),
+            _ => return Ok(Action::Handled),
+        }
+        if draw {
+            self.draw()?;
+        }
+        Ok(Action::Handled)
+    }
+
+    fn draw(&mut self) -> io::Result<()> {
+        let hint = if let Some(query) = &self.search {
+            format!(
+                "/{}  · {} matches · Enter/↓ next · ↑ previous · Esc cancel",
+                query, self.match_count
+            )
+        } else if self.selected_card.is_some()
+            && let Some(index) = self.selected_tool_card_index()
+        {
+            let entry = &self.entries[index];
+            let card = entry.tool_card.as_ref().unwrap();
+            let key = (entry.turn, card.call_id.clone());
+            if card.spill.is_some() && !self.loaded_spills.contains_key(&key) {
+                "L load full output (64 KiB cap)".to_string()
+            } else if let Some(loaded) = self.loaded_spills.get(&key) {
+                match loaded {
+                    Ok((_, false)) => "Full output loaded · Enter collapse · Esc back",
+                    Ok((_, true)) => "Output loaded (64 KiB cap) · Esc back",
+                    Err(_) => "Output load failed · /details · Esc back",
+                }
+                .to_string()
+            } else {
+                "Selected output · Enter expand/collapse · Esc back".to_string()
+            }
+        } else if self.title == "Provider reasoning" {
+            if !self.transcript.follow { "End latest · Esc back".to_string() }
+            else if self.reasoning_streaming { "Live · Esc back".to_string() }
+            else { "Latest · Esc back".to_string() }
+        } else if self.transcript.follow {
+            String::new()
+        } else if self.unread == 0 {
+            "Enter send draft · End/Esc bottom".to_string()
+        } else {
+            format!("End / Esc bottom · {} new updates", self.unread)
+        };
+        self.transcript.set_inline_hint(Some(hint));
+        // Publish a complete frame, including cursor restoration, together.
+        // Otherwise phone/SSH terminals can show intermediate differential rows.
+        let mut stdout = io::stdout();
+        stdout.write_all(b"\x1b[?2026h")?;
+        stdout.flush()?;
+        let result = self.terminal.draw(|frame| {
+            if self.title == "Provider reasoning" {
+                use glass_tui::ratatui::{style::{Color, Style}, widgets::Block};
+                let area = frame.area();
+                frame.render_widget(Block::default().style(Style::default().bg(Color::Reset).fg(Color::Gray)), area);
+                let label = if self.reasoning_streaming { "Reasoning · live" } else { "Reasoning" };
+                self.transcript.draw_in(frame, &[], label, reasoning_area(area, &self.title));
+            } else {
+                self.transcript.draw(frame, &[], &self.title);
+            }
+        });
+        if !self.fullscreen {
+            crate::surface::restore_composer_cursor();
+        }
+        stdout.write_all(b"\x1b[?2026l")?;
+        stdout.flush()?;
+        result?;
+        if !self.fullscreen {
+            crate::surface::reader_drawn();
+        }
+        Ok(())
+    }
+
+    fn visible_tool_card_index(&self) -> Option<usize> {
+        let area = Transcript::content_rect(self.layout_area());
+        let first = self.transcript.layout.entry_at_line(self.transcript.scroll);
+        if self
+            .entries
+            .get(first)
+            .is_some_and(|entry| entry.tool_card.is_some())
+        {
+            return Some(first);
+        }
+        let end = self.transcript.scroll.saturating_add(area.height as usize);
+        (first..self.entries.len()).find(|candidate| {
+            self.entries[*candidate].tool_card.is_some()
+                && self
+                    .transcript
+                    .layout
+                    .line_for_entry(*candidate)
+                    .is_some_and(|line| (self.transcript.scroll..end).contains(&line))
+        })
+    }
+
+    fn selected_tool_card_index(&self) -> Option<usize> {
+        self.selected_card
+            .as_ref()
+            .and_then(|(turn, call_id)| {
+                self.entries.iter().position(|entry| {
+                    entry.turn == *turn
+                        && entry
+                            .tool_card
+                            .as_ref()
+                            .is_some_and(|card| card.call_id == *call_id)
+                })
+            })
+            .or_else(|| self.visible_tool_card_index())
+    }
+
+    fn align_selected_card_end(&mut self, height: u16) {
+        let Some(index) = self.selected_tool_card_index() else {
+            return;
+        };
+        let end = self
+            .transcript
+            .layout
+            .line_for_entry(index + 1)
+            .unwrap_or_else(|| self.transcript.layout.total_lines());
+        let last = end.saturating_sub(1);
+        let page = height.max(1) as usize;
+        let max_scroll = self.transcript.layout.total_lines().saturating_sub(page);
+        self.transcript.scroll = last.saturating_sub(page.saturating_sub(1)).min(max_scroll);
+        self.transcript.follow = false;
+    }
+
+    fn search_matches(&mut self, query: &str, navigate: bool) {
+        if !query.is_empty() {
+            let needle = query.to_lowercase();
+            if navigate {
+                self.selected_card = None;
+            }
+            for entry in &self.entries {
+                if let Some(card) = &entry.tool_card
+                    && (card.command.to_lowercase().contains(&needle)
+                        || card.output.to_lowercase().contains(&needle)
+                        || self
+                            .loaded_spills
+                            .get(&(entry.turn, card.call_id.clone()))
+                            .and_then(|spill| spill.as_ref().ok())
+                            .is_some_and(|(text, _)| text.to_lowercase().contains(&needle)))
+                {
+                    self.expanded_cards
+                        .insert((entry.turn, card.call_id.clone()));
+                    if self.selected_card.is_none() {
+                        self.selected_card = Some((entry.turn, card.call_id.clone()));
+                    }
+                }
+            }
+            self.transcript.replace_entries(render_entries(
+                &self.entries,
+                &self.expanded_cards,
+                &self.loaded_spills,
+            ));
+        }
+        if navigate {
+            self.match_count = self.transcript.search(query);
+            self.transcript
+                .search_next(false, Transcript::content_rect(self.layout_area()).height);
+        } else {
+            self.match_count = self.transcript.refresh_search(query);
+        }
+    }
+}
+
+type LoadedSpills = HashMap<(usize, String), Result<(String, bool), String>>;
+
+fn render_entries(
+    entries: &[Entry],
+    expanded: &HashSet<(usize, String)>,
+    loaded_spills: &LoadedSpills,
+) -> Vec<Entry> {
+    entries
+        .iter()
+        .cloned()
+        .map(|mut entry| {
+            if let Some(card) = &entry.tool_card {
+                let key = (entry.turn, card.call_id.clone());
+                let is_expanded = expanded.contains(&key);
+                let mut rendered = card.clone();
+                rendered.expanded = is_expanded;
+                match loaded_spills.get(&key) {
+                    Some(Ok((text, truncated))) => {
+                        rendered.output.push_str("\n[loaded spill continuation]\n");
+                        rendered.output.push_str(text);
+                        if *truncated {
+                            rendered
+                                .output
+                                .push_str("\n[spill display capped at 64 KiB]");
+                        }
+                        rendered.spill = None;
+                        rendered.truncated = false;
+                    }
+                    Some(Err(error)) => {
+                        rendered
+                            .output
+                            .push_str(&format!("\n[spill load failed: {error}]"));
+                    }
+                    None => {}
+                }
+                entry.text = crate::session::tool_card_text(&rendered, is_expanded);
+                entry.tool_card = Some(rendered);
+            }
+            entry
+        })
+        .collect()
+}
+
+fn reasoning_area(area: Rect, title: &str) -> Rect {
+    if title == "Provider reasoning" && area.width >= 30 && area.height >= 10 {
+        area.inner(glass_tui::ratatui::layout::Margin::new(2, 1))
+    } else { area }
+}
+
+fn viewport(fullscreen: bool) -> Rect {
+    if fullscreen {
+        let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+        Rect::new(0, 0, w.saturating_sub(1).max(1), h.max(1))
+    } else {
+        body_rect()
+    }
+}
+fn body_rect() -> Rect {
+    let (x, y, width, height) = crate::surface::body_rect();
+    // Keep the physical rightmost column untouched on SSH terminals that wrap
+    // immediately when the bottom-right scroll-region cell is painted.
+    Rect::new(x, y, width.saturating_sub(1).max(1), height.max(1))
+}
+
+fn make_terminal(rect: Rect) -> io::Result<Tui> {
+    Terminal::with_options(
+        CrosstermBackend::new(TerminalWriter::new(io::stdout())),
+        TerminalOptions {
+            viewport: Viewport::Fixed(rect),
+        },
+    )
+}
+
+fn make_clean_terminal(rect: Rect) -> io::Result<Tui> {
+    if rect.y > 0 || rect.height < glass_tui::crossterm::terminal::size().unwrap_or((80, 24)).1 {
+        crate::surface::clear_body_rect()?;
+    } else {
+        glass_tui::crossterm::execute!(
+            io::stdout(),
+            glass_tui::crossterm::terminal::Clear(glass_tui::crossterm::terminal::ClearType::All)
+        )?;
+    }
+    make_terminal(rect)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spill_content_is_absent_until_exact_card_is_explicitly_loaded() {
+        let entries = vec![Entry {
+            role: glass_tui::Role::Bash,
+            text: String::new(),
+            turn: 7,
+            tool_card: Some(glass_tui::ToolCard {
+                expanded: false,
+                call_id: "exact-call".into(),
+                command: "echo output".into(),
+                output: "inline preview".into(),
+                status: "exit 0".into(),
+                elapsed_ms: None,
+                spill: Some("spill.log".into()),
+                truncated: true,
+            }),
+        }];
+        let expanded = HashSet::from([(7, "exact-call".to_string())]);
+        let unloaded = render_entries(&entries, &expanded, &HashMap::new());
+        assert!(!unloaded[0].text.contains("SPILL_ONLY_SEARCH_MARKER"));
+        assert!(unloaded[0].text.contains("spill available"));
+
+        let loaded = HashMap::from([(
+            (7, "exact-call".to_string()),
+            Ok(("spill-only-search-marker".to_string(), false)),
+        )]);
+        let rendered = render_entries(&entries, &expanded, &loaded);
+        assert!(rendered[0].text.contains("spill-only-search-marker"));
+        assert!(rendered[0].text.contains("loaded spill continuation"));
+    }
+
+    #[test]
+    fn spill_search_text_is_visible_only_after_a_successful_explicit_load() {
+        let entries = vec![Entry {
+            role: glass_tui::Role::Bash,
+            text: String::new(),
+            turn: 2,
+            tool_card: Some(glass_tui::ToolCard {
+                expanded: false,
+                call_id: "call-2".into(),
+                command: "echo inline".into(),
+                output: "inline output".into(),
+                status: "exit 0".into(),
+                elapsed_ms: None,
+                spill: Some("spill.log".into()),
+                truncated: true,
+            }),
+        }];
+        let unloaded: HashMap<(usize, String), Result<(String, bool), String>> = HashMap::new();
+        let query = "spill-only-search-marker";
+        assert!(
+            !entries[0]
+                .tool_card
+                .as_ref()
+                .unwrap()
+                .output
+                .to_lowercase()
+                .contains(query)
+        );
+        assert!(!unloaded.contains_key(&(2, "call-2".to_string())));
+        assert!(
+            !render_entries(&entries, &HashSet::new(), &unloaded)[0]
+                .text
+                .to_lowercase()
+                .contains(query)
+        );
+        let loaded = HashMap::from([(
+            (2, "call-2".to_string()),
+            Ok(("spill-only-search-marker".to_string(), false)),
+        )]);
+        let rows = render_entries(
+            &entries,
+            &HashSet::from([(2, "call-2".to_string())]),
+            &loaded,
+        );
+        assert!(rows[0].text.to_lowercase().contains(query));
+    }
+}

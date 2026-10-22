@@ -1,0 +1,1092 @@
+//! Reusable modal flows, sharing the application's single input reader.
+use crate::input::KeyReader;
+use glass_tui::{
+    Edit, Editor,
+    crossterm::event::{Event, KeyCode, KeyModifiers},
+};
+use std::io::Write;
+use std::time::Duration;
+
+thread_local! { static BACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+pub fn take_back() -> bool {
+    BACK.with(|back| back.replace(false))
+}
+
+pub struct Screen {
+    managed: bool,
+}
+impl Screen {
+    pub fn new() -> Self {
+        take_back();
+        let mut out = std::io::stdout();
+        let managed = crate::surface::managed();
+        if managed {
+            crate::surface::overlay(true).ok();
+            let _ = write!(out, "\x1b[r\x1b[2J\x1b[H\x1b[?25l");
+        } else {
+            let _ = write!(out, "\x1b[?1049h\x1b[?25l");
+        }
+        let _ = out.flush();
+        Self { managed }
+    }
+    pub fn draw(&self, title: &str, lines: &[String], footer: &str, offset: usize) {
+        self.draw_rows(title, lines, footer, offset, false, false);
+    }
+
+    pub fn draw_team(&self, title: &str, lines: &[String], footer: &str, offset: usize) {
+        self.draw_rows(title, lines, footer, offset, false, true);
+    }
+
+    fn draw_diff(&self, title: &str, lines: &[String], footer: &str, offset: usize) {
+        self.draw_rows(title, lines, footer, offset, true, false);
+    }
+
+    fn draw_rows(
+        &self,
+        title: &str,
+        lines: &[String],
+        footer: &str,
+        offset: usize,
+        diff_rows: bool,
+        team_rows: bool,
+    ) {
+        let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+        let w = usize::from(w.max(1));
+        let h = usize::from(h.max(1));
+        let framed = w >= 24 && h >= 12;
+        let width = if framed {
+            w.saturating_sub(6).clamp(1, 100)
+        } else {
+            w
+        };
+        let capacity = if framed { h.saturating_sub(4) } else { h };
+        let left = if framed {
+            w.saturating_sub(width + 4) / 2 + 1
+        } else {
+            1
+        };
+        let mut rows = vec![title.to_string()];
+        if capacity > 10 {
+            rows.push(String::new());
+        }
+        rows.extend(
+            lines
+                .iter()
+                .skip(offset)
+                .take(capacity.saturating_sub(rows.len() + 1))
+                .cloned(),
+        );
+        if rows.len() < capacity {
+            rows.push(footer.into());
+        }
+        let top = if framed {
+            h.saturating_sub(rows.len() + 2) / 2 + 1
+        } else {
+            1
+        };
+        let mut out = glass_tui::theme::TerminalWriter::new(std::io::stdout().lock());
+        let _ = write!(out, "\x1b[?2026h\x1b[2J\x1b[H\x1b[?25l");
+        if framed {
+            let _ = write!(
+                out,
+                "\x1b[{top};{left}H{}╭{}╮\x1b[0m",
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Border),
+                "─".repeat(width + 2)
+            );
+        }
+        for (i, line) in rows.iter().enumerate().take(capacity) {
+            let clean = glass_tui::text::clip(line, width);
+            let padding = width.saturating_sub(glass_tui::text::width(&clean));
+            let row = top + i + usize::from(framed);
+            let selected = line.starts_with("› ");
+            let style = if i == 0 {
+                glass_tui::theme::accent()
+            } else if !diff_rows && (line.starts_with("│ ") || line.starts_with("Preview ·")) {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Secondary)
+            } else if diff_rows {
+                glass_tui::theme::ansi(diff_line_tone(line))
+            } else if selected {
+                glass_tui::theme::selected()
+            } else if team_rows
+                && (line.starts_with("human →")
+                    || line.starts_with("main →")
+                    || line.starts_with("›"))
+            {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Accent)
+            } else if team_rows && line.contains("→ main") {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Success)
+            } else if team_rows
+                && (line.starts_with('$') || line.starts_with('◌') || line.starts_with('◆'))
+            {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Secondary)
+            } else if team_rows && line.starts_with('!') {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Error)
+            } else if let Some(frame) = line
+                .chars()
+                .next()
+                .and_then(glass_tui::theme::activity_glyph_tick)
+            {
+                glass_tui::theme::activity_color(frame)
+            } else if line.starts_with('+') && !line.starts_with("+++") {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Success)
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Error)
+            } else if line.starts_with("@@") {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Secondary)
+            } else if i == rows.len() - 1 {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Muted)
+            } else {
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Body)
+            };
+            let _ = write!(out, "\x1b[{row};{left}H{style}");
+            if framed {
+                let _ = write!(out, "│ {}{} │", clean, " ".repeat(padding));
+            } else {
+                let _ = write!(out, "{clean}");
+            }
+            let _ = write!(out, "\x1b[0m");
+        }
+        if framed {
+            let _ = write!(
+                out,
+                "\x1b[{};{left}H{}╰{}╯\x1b[0m",
+                top + rows.len() + 1,
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Border),
+                "─".repeat(width + 2)
+            );
+        }
+        let _ = write!(out, "\x1b[?2026l");
+        let _ = out.flush();
+    }
+}
+
+fn diff_line_tone(line: &str) -> glass_tui::theme::Tone {
+    if line.starts_with("+++") || line.starts_with("---") {
+        glass_tui::theme::Tone::Muted
+    } else {
+        match line.as_bytes().first().copied() {
+            Some(b'+') => glass_tui::theme::Tone::Success,
+            Some(b'-') => glass_tui::theme::Tone::Error,
+            Some(b'@') => glass_tui::theme::Tone::Secondary,
+            Some(b' ') => glass_tui::theme::Tone::Body,
+            _ => glass_tui::theme::Tone::Muted,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiffHunk {
+    heading: String,
+    lines: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiffFile {
+    label: String,
+    hunks: Vec<DiffHunk>,
+}
+
+/// Browse a read-only checkpoint diff by file, then by hunk. The final pager
+/// supports both axes so long source lines stay inspectable on SSH terminals.
+pub fn diff(keys: &KeyReader, title: &str, patch: &str) {
+    let files = parse_diff(patch);
+    if files.is_empty() {
+        info(
+            keys,
+            title,
+            if patch.trim().is_empty() {
+                "No changes"
+            } else {
+                patch
+            },
+        );
+        return;
+    }
+    let labels = files
+        .iter()
+        .map(|file| file.label.clone())
+        .collect::<Vec<_>>();
+    let searchable = files
+        .iter()
+        .map(|file| {
+            format!(
+                "{}\n{}",
+                file.label,
+                file.hunks
+                    .iter()
+                    .flat_map(|h| &h.lines)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        })
+        .collect::<Vec<_>>();
+    while let Some(file_index) =
+        choose_search(keys, title, "Select a changed file", &labels, &searchable)
+    {
+        let file = &files[file_index];
+        let hunks = if file.hunks.is_empty() {
+            vec![DiffHunk {
+                heading: "File metadata".into(),
+                lines: vec![file.label.clone()],
+            }]
+        } else {
+            file.hunks.clone()
+        };
+        let hunk_labels = hunks.iter().map(|h| h.heading.clone()).collect::<Vec<_>>();
+        while let Some(hunk_index) = choose(keys, &file.label, "Select a diff hunk", &hunk_labels) {
+            diff_pager(keys, &file.label, &hunks[hunk_index].lines);
+        }
+    }
+}
+
+fn parse_diff(patch: &str) -> Vec<DiffFile> {
+    let mut files: Vec<DiffFile> = Vec::new();
+    for line in patch.lines() {
+        if line.starts_with("diff --git ") {
+            let label = line
+                .split_once(" b/")
+                .map(|(_, path)| path.to_string())
+                .unwrap_or_else(|| line.to_string());
+            files.push(DiffFile {
+                label,
+                hunks: Vec::new(),
+            });
+            continue;
+        }
+        let Some(file) = files.last_mut() else {
+            continue;
+        };
+        if line.starts_with("@@") {
+            file.hunks.push(DiffHunk {
+                heading: line.into(),
+                lines: vec![line.into()],
+            });
+        } else if let Some(hunk) = file.hunks.last_mut() {
+            hunk.lines.push(line.into());
+        }
+    }
+    files
+}
+
+fn diff_pager(keys: &KeyReader, title: &str, lines: &[String]) {
+    let screen = Screen::new();
+    let mut y = 0usize;
+    let mut x = 0usize;
+    loop {
+        let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+        let framed = w >= 24 && h >= 12;
+        let width = usize::from(if framed { w.saturating_sub(6) } else { w }).max(1);
+        let capacity = usize::from(if framed { h.saturating_sub(4) } else { h })
+            .saturating_sub(3)
+            .max(1);
+        let visible = lines
+            .iter()
+            .skip(y)
+            .take(capacity)
+            .map(|line| skip_columns(line, x))
+            .collect::<Vec<_>>();
+        let mut page = vec![format!("{}  line {} · column {}", title, y + 1, x + 1)];
+        page.extend(visible);
+        screen.draw_diff(
+            title,
+            &page,
+            "↑↓/PgUp/PgDn scroll · ←→ horizontal · Esc back",
+            0,
+        );
+        match keys.next_blocking() {
+            Some(Event::Key(k)) if cancelled(k.code, k.modifiers) || k.code == KeyCode::Enter => {
+                return;
+            }
+            Some(Event::Key(k)) => match k.code {
+                KeyCode::Up => y = y.saturating_sub(1),
+                KeyCode::Down => y = (y + 1).min(lines.len().saturating_sub(1)),
+                KeyCode::PageUp => y = y.saturating_sub(capacity),
+                KeyCode::PageDown => y = (y + capacity).min(lines.len().saturating_sub(1)),
+                KeyCode::Home => {
+                    y = 0;
+                    x = 0;
+                }
+                KeyCode::End => y = lines.len().saturating_sub(capacity),
+                KeyCode::Left => x = x.saturating_sub((width / 2).max(1)),
+                KeyCode::Right => x = x.saturating_add((width / 2).max(1)),
+                _ => {}
+            },
+            None => return,
+            _ => {}
+        }
+    }
+}
+
+fn skip_columns(text: &str, columns: usize) -> String {
+    let mut skipped = 0usize;
+    let mut start = 0usize;
+    for (index, ch) in text.char_indices() {
+        let width = glass_tui::text::char_width(ch);
+        if skipped + width > columns {
+            start = index;
+            break;
+        }
+        skipped += width;
+        start = index + ch.len_utf8();
+    }
+    text[start..].to_string()
+}
+impl Drop for Screen {
+    fn drop(&mut self) {
+        if self.managed {
+            crate::surface::overlay(false).ok();
+            let _ = write!(std::io::stdout(), "\x1b[?25h");
+        } else {
+            let _ = write!(std::io::stdout(), "\x1b[?1049l\x1b[?25h");
+        }
+        let _ = std::io::stdout().flush();
+    }
+}
+pub(crate) fn cancelled(code: KeyCode, mods: KeyModifiers) -> bool {
+    let cancel = code == KeyCode::Esc
+        || (mods.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('c' | 'd')));
+    if cancel {
+        BACK.with(|back| back.set(code == KeyCode::Esc));
+    }
+    cancel
+}
+pub fn choose(keys: &KeyReader, title: &str, note: &str, items: &[String]) -> Option<usize> {
+    choose_search(keys, title, note, items, items)
+}
+
+/// Search recorded content separately from the concise displayed labels.
+pub fn choose_search(
+    keys: &KeyReader,
+    title: &str,
+    note: &str,
+    items: &[String],
+    searchable: &[String],
+) -> Option<usize> {
+    choose_inner(keys, title, note, items, searchable, false)
+}
+
+pub fn choose_question(
+    keys: &KeyReader,
+    title: &str,
+    question: &str,
+    items: &[String],
+) -> Option<usize> {
+    choose_inner(keys, title, question, items, items, true)
+}
+fn choose_inner(
+    keys: &KeyReader,
+    title: &str,
+    note: &str,
+    items: &[String],
+    searchable: &[String],
+    question: bool,
+) -> Option<usize> {
+    let normalized = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| searchable.get(i).unwrap_or(item).to_lowercase())
+        .collect::<Vec<_>>();
+    let mut screen = Screen::new();
+    let mut query = Editor::new();
+    let mut selected = 0usize;
+    loop {
+        let needle = query.text().to_lowercase();
+        let matches: Vec<_> = items
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| normalized[*i].contains(&needle))
+            .collect();
+        selected = selected.min(matches.len().saturating_sub(1));
+        let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+        let compact = h < 14 || w < 56;
+        let framed = w >= 24 && h >= 12;
+        let overhead = if compact { 3 } else { 8 }
+            + if framed { 4 } else { 0 }
+            + if question && compact { 3 } else { 0 };
+        let preview_rows = if !compact { 4 } else { 0 };
+        let visible = usize::from(h)
+            .saturating_sub(overhead + preview_rows)
+            .max(1);
+        let start = selected.saturating_sub(visible - 1);
+        let mut lines = if compact {
+            vec![format!("Find: {}", query.text())]
+        } else {
+            vec![
+                note.into(),
+                format!("Search: {}", query.text()),
+                String::new(),
+            ]
+        };
+        if question && compact {
+            let note = glass_tui::markdown::sanitize(note);
+            let note_width = usize::from(w.saturating_sub(if framed { 6 } else { 1 }).max(1));
+            let mut question_lines = glass_tui::text::wrap_words(&note, note_width)
+                .into_iter()
+                .take(2)
+                .collect::<Vec<_>>();
+            question_lines.push("F2 full question".into());
+            lines.splice(0..0, question_lines);
+        }
+        lines.extend(
+            matches
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(visible)
+                .map(|(i, (_, s))| format!("{} {s}", if i == selected { "›" } else { " " })),
+        );
+        if matches.is_empty() {
+            lines.push("No matches. Change your search.".into());
+        }
+        if !compact {
+            if let Some((index, item)) = matches.get(selected) {
+                let width = usize::from(w.saturating_sub(6)).clamp(1, 100);
+                let detail = searchable.get(*index).unwrap_or(item);
+                lines.push("Preview · F1 to read in full".into());
+                lines.extend(
+                    glass_tui::text::wrap_words(
+                        &glass_tui::markdown::sanitize(detail),
+                        width.saturating_sub(2).max(1),
+                    )
+                    .into_iter()
+                    .take(preview_rows - 1)
+                    .map(|line| format!("│ {line}")),
+                );
+            }
+            lines.push(format!("{} choices · F1/→ full text", matches.len()));
+        }
+        screen.draw(
+            title,
+            &lines,
+            if compact {
+                "↵ · Esc · → details"
+            } else {
+                "↑↓ select · Enter choose · Esc back · F1 details"
+            },
+            0,
+        );
+        match keys.next_blocking()? {
+            Event::Key(k) if cancelled(k.code, k.modifiers) => return None,
+            Event::Key(k) => match k.code {
+                KeyCode::Up if !matches.is_empty() => {
+                    selected = (selected + matches.len() - 1) % matches.len()
+                }
+                KeyCode::Down if !matches.is_empty() => selected = (selected + 1) % matches.len(),
+                KeyCode::F(2) if question => {
+                    drop(screen);
+                    info(keys, "Full question", note);
+                    screen = Screen::new();
+                }
+                KeyCode::F(1) | KeyCode::Right => {
+                    if let Some((index, item)) = matches.get(selected) {
+                        drop(screen);
+                        info(
+                            keys,
+                            "Selection details",
+                            searchable.get(*index).unwrap_or(item),
+                        );
+                        screen = Screen::new();
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some((i, _)) = matches.get(selected) {
+                        return Some(*i);
+                    }
+                }
+                _ => {
+                    query.key(k);
+                    selected = 0;
+                }
+            },
+            Event::Paste(s) => {
+                query.insert_str(&s.replace(['\r', '\n'], ""));
+                selected = 0;
+            }
+            _ => {}
+        }
+    }
+}
+pub fn field(
+    keys: &KeyReader,
+    title: &str,
+    label: &str,
+    initial: &str,
+    secret: bool,
+) -> Option<String> {
+    validated_field(keys, title, label, initial, secret, |_| Ok(()))
+}
+pub fn validated_field(
+    keys: &KeyReader,
+    title: &str,
+    label: &str,
+    initial: &str,
+    secret: bool,
+    validate: impl Fn(&str) -> Result<(), String>,
+) -> Option<String> {
+    let screen = Screen::new();
+    let mut editor = Editor::new();
+    editor.set_text(initial);
+    let mut error = String::new();
+    loop {
+        let shown = if secret {
+            "•".repeat(editor.text().chars().count())
+        } else {
+            editor.text().into()
+        };
+        let width = usize::from(
+            glass_tui::crossterm::terminal::size()
+                .unwrap_or((80, 24))
+                .0
+                .saturating_sub(10),
+        )
+        .max(1);
+        let caret = if secret {
+            editor.text()[..editor.cursor()].chars().count()
+        } else {
+            editor.cursor()
+        };
+        let mut shown = shown.to_string();
+        // Masked text has multibyte bullets, so convert the character offset to bytes.
+        let caret = if secret {
+            shown
+                .char_indices()
+                .nth(caret)
+                .map_or(shown.len(), |(i, _)| i)
+        } else {
+            caret
+        };
+        shown.insert(caret, '│');
+        let before = glass_tui::text::width(&shown[..caret]);
+        let skip = before.saturating_sub(width.saturating_sub(1));
+        let mut used = 0;
+        let tail = shown
+            .chars()
+            .skip_while(|c| {
+                let w = glass_tui::text::char_width(*c);
+                let skip_char = used + w <= skip;
+                used += w;
+                skip_char
+            })
+            .collect::<String>();
+        let shown = glass_tui::text::clip(&tail, width);
+        screen.draw(
+            title,
+            &[
+                label.into(),
+                String::new(),
+                format!("❯ {shown}"),
+                error.clone(),
+            ],
+            "Enter continue · Esc back",
+            0,
+        );
+        match keys.next_blocking()? {
+            Event::Key(k) if cancelled(k.code, k.modifiers) => return None,
+            Event::Key(k) => {
+                if let Edit::Submit(s) = editor.key(k) {
+                    let value = s.trim();
+                    match if value.is_empty() {
+                        Err("Enter a value.".into())
+                    } else {
+                        validate(value)
+                    } {
+                        Ok(()) => return Some(value.into()),
+                        Err(e) => {
+                            error = e;
+                            editor.set_text(&s);
+                        }
+                    }
+                }
+            }
+            Event::Paste(s) => editor.insert_str(&s.replace(['\r', '\n'], "")),
+            _ => {}
+        }
+    }
+}
+pub fn info(keys: &KeyReader, title: &str, text: &str) {
+    let screen = Screen::new();
+    let mut offset = 0usize;
+    let clean = glass_tui::markdown::sanitize(text);
+    let mut layout_width = 0;
+    let mut lines = Vec::new();
+    loop {
+        let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+        let framed = w >= 24 && h >= 12;
+        let width = if framed {
+            usize::from(w.saturating_sub(6)).clamp(1, 100)
+        } else {
+            usize::from(w.max(1))
+        };
+        let capacity = usize::from(if framed { h.saturating_sub(4) } else { h });
+        let page = capacity
+            .saturating_sub(2 + usize::from(capacity > 10))
+            .max(1);
+        if layout_width != width {
+            lines = glass_tui::text::wrap_words(&clean, width);
+            layout_width = width;
+        }
+        offset = offset.min(lines.len().saturating_sub(page));
+        screen.draw(
+            title,
+            &lines,
+            "↑↓ scroll · PgUp/PgDn page · Enter/Esc close",
+            offset,
+        );
+        match keys.next_blocking() {
+            Some(Event::Key(k)) => match k.code {
+                KeyCode::Enter => return,
+                _ if cancelled(k.code, k.modifiers) => return,
+                KeyCode::Down => offset = (offset + 1).min(lines.len().saturating_sub(1)),
+                KeyCode::Up => offset = offset.saturating_sub(1),
+                KeyCode::PageDown => offset = (offset + page).min(lines.len().saturating_sub(1)),
+                KeyCode::PageUp => offset = offset.saturating_sub(page.max(1)),
+                KeyCode::Home => offset = 0,
+                KeyCode::End => offset = lines.len().saturating_sub(page),
+                _ => {}
+            },
+            None => return,
+            _ => {}
+        }
+    }
+}
+pub fn work<T: Send + 'static>(
+    keys: &KeyReader,
+    title: &str,
+    task: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Option<Result<T, String>> {
+    let screen = Screen::new();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(task());
+    });
+    let mut tick = 0;
+    let started = std::time::Instant::now();
+    loop {
+        match rx.try_recv() {
+            Ok(result) => return Some(result),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Some(Err("connection worker stopped".into()));
+            }
+            _ => {}
+        }
+        screen.draw(
+            title,
+            &[format!(
+                "{} Connecting · {:.1}s",
+                glass_tui::theme::frame(tick),
+                started.elapsed().as_secs_f32()
+            )],
+            "Esc cancel",
+            0,
+        );
+        tick += 1;
+        if let Some(Event::Key(k)) = keys.next_timeout(Duration::from_millis(
+            glass_tui::theme::ACTIVITY_INTERVAL_MS,
+        )) && cancelled(k.code, k.modifiers)
+        {
+            return None;
+        }
+    }
+}
+
+/// Cancellable local worker. Cancellation does not undo a provider's remote work.
+pub fn task<T: Send + 'static>(
+    keys: &KeyReader,
+    title: &str,
+    task: impl FnOnce(
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::sync::Arc<std::sync::Mutex<String>>,
+    ) -> Result<T, String>
+    + Send
+    + 'static,
+) -> Option<Result<T, String>> {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    let cancel = Arc::new(AtomicBool::new(false));
+    struct Cancel(Arc<AtomicBool>);
+    impl Drop for Cancel {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let _cancel = Cancel(cancel.clone());
+    let status = Arc::new(Mutex::new("Working…".to_string()));
+    let worker_status = status.clone();
+    let screen = Screen::new();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(task(cancel, worker_status));
+    });
+    let mut tick = 0;
+    let started = std::time::Instant::now();
+    loop {
+        match rx.try_recv() {
+            Ok(result) => return Some(result),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Some(Err("Worker stopped unexpectedly".into()));
+            }
+            _ => {}
+        }
+        let text = status
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_else(|_| "Working…".into());
+        screen.draw(
+            title,
+            &[format!(
+                "{} {text} · {:.1}s",
+                glass_tui::theme::frame(tick),
+                started.elapsed().as_secs_f32()
+            )],
+            "Esc cancel",
+            0,
+        );
+        tick += 1;
+        if let Some(Event::Key(k)) = keys.next_timeout(Duration::from_millis(
+            glass_tui::theme::ACTIVITY_INTERVAL_MS,
+        )) && cancelled(k.code, k.modifiers)
+        {
+            return None;
+        }
+    }
+}
+
+pub fn markdown(keys: &KeyReader, title: &str, text: &str) {
+    rich_info(keys, title, text);
+}
+
+/// Native Markdown information panel. Layout is rebuilt only after a resize;
+/// scrolling paints the visible cached rows with the same renderer as chat.
+pub fn rich_info(keys: &KeyReader, title: &str, text: &str) {
+    let _ = rich_actions(keys, title, text, &[]);
+}
+
+/// One cached native item inspector. Actions return to the owning domain handler.
+pub fn rich_actions(
+    keys: &KeyReader,
+    title: &str,
+    text: &str,
+    actions: &[(char, &str)],
+) -> Option<char> {
+    let title = glass_tui::markdown::sanitize(title).replace(['\n', '\r'], " ");
+    let _screen = Screen::new();
+    let mut offset = 0usize;
+    let mut cached_width = 0usize;
+    let mut lines = Vec::new();
+    loop {
+        let (w, h) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+        let width = usize::from(w.saturating_sub(2).max(1));
+        let page = usize::from(h.saturating_sub(3));
+        if width != cached_width {
+            lines = glass_tui::markdown::lines(text, width);
+            cached_width = width;
+        }
+        offset = offset.min(lines.len().saturating_sub(page));
+        let mut out = glass_tui::theme::TerminalWriter::new(std::io::stdout().lock());
+        let _ = write!(
+            out,
+            "\x1b[?2026h\x1b[2J\x1b[H\x1b[?25l{}{}\x1b[0m",
+            glass_tui::theme::accent(),
+            glass_tui::text::clip(&title, usize::from(w.saturating_sub(1).max(1)))
+        );
+        for (i, line) in lines.iter().skip(offset).take(page).enumerate() {
+            let _ = write!(out, "\x1b[{};1H", i + 2);
+            glass_tui::markdown::write_ansi(&mut out, line);
+        }
+        if h > 2 {
+            let mut footer = format!(
+                "Esc back · {}–{}/{} · ↑↓ PgUp/PgDn",
+                offset + 1,
+                (offset + page).min(lines.len()),
+                lines.len()
+            );
+            if !actions.is_empty() {
+                footer = format!(
+                    "Esc back · {}",
+                    actions
+                        .iter()
+                        .map(|(key, label)| format!("{key} {label}"))
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                );
+                if w < 40 {
+                    footer = format!(
+                        "Esc · {}",
+                        actions
+                            .iter()
+                            .map(|(key, _)| key.to_string())
+                            .collect::<Vec<_>>()
+                            .join("/")
+                    );
+                }
+            }
+            let _ = write!(
+                out,
+                "\x1b[{};1H{}{}\x1b[0m",
+                h,
+                glass_tui::theme::ansi(glass_tui::theme::Tone::Muted),
+                glass_tui::text::clip(&footer, usize::from(w.saturating_sub(1).max(1)))
+            );
+        }
+        let _ = write!(out, "\x1b[?2026l");
+        let _ = out.flush();
+        drop(out);
+        match keys.next_blocking() {
+            Some(Event::Key(k)) if cancelled(k.code, k.modifiers) || k.code == KeyCode::Enter => {
+                return None;
+            }
+            Some(Event::Key(k))
+                if page >= 3
+                    && w >= 16
+                    && matches!(k.code, KeyCode::Char(c) if actions.iter().any(|(key,_)| *key==c))
+                    && !k
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                if let KeyCode::Char(c) = k.code {
+                    return Some(c);
+                }
+            }
+            Some(Event::Key(k)) => match k.code {
+                KeyCode::Up => offset = offset.saturating_sub(1),
+                KeyCode::Down => offset = offset.saturating_add(1),
+                KeyCode::PageUp => offset = offset.saturating_sub(page.max(1)),
+                KeyCode::PageDown => offset = offset.saturating_add(page.max(1)),
+                KeyCode::Home => offset = 0,
+                KeyCode::End => offset = lines.len().saturating_sub(page),
+                _ => {}
+            },
+            Some(Event::Mouse(m)) => match m.kind {
+                glass_tui::crossterm::event::MouseEventKind::ScrollUp => {
+                    offset = offset.saturating_sub(3)
+                }
+                glass_tui::crossterm::event::MouseEventKind::ScrollDown => {
+                    offset = offset.saturating_add(3)
+                }
+                _ => {}
+            },
+            None => return None,
+            _ => {}
+        }
+    }
+}
+
+/// Preview activity frames without launching a model or repainting the transcript.
+pub fn animation(keys: &KeyReader) -> Option<usize> {
+    let screen = Screen::new();
+    let mut selected = glass_tui::theme::current_animation();
+    let started = std::time::Instant::now();
+    loop {
+        let tick = (started.elapsed().as_millis()
+            / u128::from(glass_tui::theme::ACTIVITY_INTERVAL_MS)) as usize;
+        let rows: Vec<_> = glass_tui::theme::ANIMATION_NAMES
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                format!(
+                    "{} {} {name}{}",
+                    if i == selected { "›" } else { " " },
+                    glass_tui::theme::animation_frame(i, tick),
+                    if i == 0 { " · Charm" } else { "" }
+                )
+            })
+            .collect();
+        let (_, height) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+        let framed =
+            height >= 12 && glass_tui::crossterm::terminal::size().unwrap_or((80, 24)).0 >= 24;
+        let page = usize::from(height)
+            .saturating_sub(if framed { 7 } else { 2 })
+            .max(1);
+        let offset = selected.saturating_sub(page - 1);
+        screen.draw("Activity animation", &rows, "↑↓ ↵ · Esc back", offset);
+        if let Some(Event::Key(key)) = keys.next_timeout(Duration::from_millis(
+            glass_tui::theme::ACTIVITY_INTERVAL_MS,
+        )) {
+            if cancelled(key.code, key.modifiers) {
+                return None;
+            }
+            match key.code {
+                KeyCode::Up => selected = (selected + rows.len() - 1) % rows.len(),
+                KeyCode::Down => selected = (selected + 1) % rows.len(),
+                KeyCode::Enter => return Some(selected),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Ctrl-D confirmation preserves the caller's composer and conversation.
+pub fn confirm_exit(keys: &KeyReader, editor:&glass_tui::Editor, busy:bool) -> bool {
+    take_back();
+    let managed = crate::surface::managed();
+    if managed {
+        crate::surface::overlay(true).ok();
+    } else {
+        let _ = write!(std::io::stdout(), "\x1b[?1049h");
+    }
+    let screen = Screen { managed };
+    loop {
+        if managed {
+            // Repaint the chat and draft before relocating the compact dialog.
+            crate::surface::overlay(false).ok();
+            crate::surface::composer(editor,false,busy);
+            crate::surface::overlay(true).ok();
+        }
+        let (width, height) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+        let dialog = exit_dialog(width as usize, height as usize);
+        let mut out = glass_tui::theme::TerminalWriter::new(std::io::stdout().lock());
+        let _ = write!(out, "\x1b[?2026h\x1b[?25l");
+        for (index, row) in dialog.rows.iter().enumerate() {
+            let color = if index == 0 || index + 1 == dialog.rows.len() {
+                glass_tui::theme::Tone::Warning
+            } else {
+                glass_tui::theme::Tone::Body
+            };
+            let _ = write!(
+                out,
+                "\x1b[{};{}H{}{}\x1b[0m",
+                dialog.top + index + 1,
+                dialog.left + 1,
+                glass_tui::theme::ansi(color),
+                row
+            );
+        }
+        let _ = write!(out, "\x1b[?2026l");
+        let _ = out.flush();
+        drop(out);
+        match keys.next_blocking() {
+            Some(Event::Key(key)) => match key.code {
+                KeyCode::Enter => {
+                    drop(screen);
+                    return true;
+                }
+                KeyCode::Esc => return false,
+                _ if cancelled(key.code, key.modifiers) => return false,
+                _ => {}
+            },
+            None => return false,
+            _ => {}
+        }
+    }
+}
+struct ExitDialog {
+    left: usize,
+    top: usize,
+    rows: Vec<String>,
+}
+fn exit_dialog(width: usize, height: usize) -> ExitDialog {
+    let width = width.max(1);
+    let height = height.max(1);
+    let span = width
+        .saturating_sub(if width >= 24 { 4 } else { 0 })
+        .clamp(1, 64);
+    let inner = span.saturating_sub(4).max(1);
+    let lines = if span >= 28 {
+        vec![
+            "Quit glass-core?",
+            "Saved conversation stays.",
+            "Unsent draft is discarded.",
+            "Enter quit · Esc stay",
+        ]
+    } else {
+        vec![
+            "Quit glass-core?",
+            "Saved chat stays",
+            "Draft is lost",
+            "↵ exit · Esc back",
+        ]
+    };
+    let mut rows = Vec::new();
+    if span >= 6 && height >= 6 {
+        let title = glass_tui::text::clip(" EXIT · confirm ", span - 2);
+        rows.push(format!(
+            "╭{}{}╮",
+            title,
+            "─".repeat(span - 2 - glass_tui::text::width(&title))
+        ));
+        for line in lines {
+            let line = glass_tui::text::clip(line, inner);
+            rows.push(format!(
+                "│ {line}{} │",
+                " ".repeat(inner - glass_tui::text::width(&line))
+            ));
+        }
+        rows.push(format!("╰{}╯", "─".repeat(span - 2)));
+    } else {
+        rows.extend(
+            ["Quit?", "↵ exit", "Esc stay"]
+                .iter()
+                .take(height)
+                .map(|line| glass_tui::text::clip(line, span)),
+        );
+    }
+    ExitDialog {
+        left: (width - span) / 2,
+        top: height.saturating_sub(rows.len()) / 2,
+        rows,
+    }
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::*;
+    #[test]
+    fn confirmation_is_compact_centered_and_bounded() {
+        for (w, h) in [(80, 30), (40, 24), (20, 8), (8, 3), (1, 1)] {
+            let panel = exit_dialog(w, h);
+            assert!(panel.rows.len() <= h);
+            assert!(
+                panel
+                    .rows
+                    .iter()
+                    .all(|line| glass_tui::text::width(line) + panel.left <= w)
+            );
+            assert!(panel.top + panel.rows.len() <= h);
+            if w >= 40 {
+                assert!(panel.rows.join(" ").contains("Enter quit · Esc stay"));
+                assert!(panel.rows.len() < h);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+
+    #[test]
+    fn diff_browser_model_keeps_files_hunks_and_long_lines_navigable() {
+        let patch = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@ fn first\n-old\n+new\n@@ -8 +8 @@ fn second\n-old2\n+new2\ndiff --git a/src/b.rs b/src/b.rs\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1 +1 @@\n-short\n+".to_owned() + &"x".repeat(300);
+        let files = parse_diff(&patch);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].label, "src/a.rs");
+        assert_eq!(files[0].hunks.len(), 2);
+        assert_eq!(files[1].hunks.len(), 1);
+        assert!(skip_columns(&files[1].hunks[0].lines[2], 200).len() < 120);
+        assert!(
+            files[0].hunks[0]
+                .lines
+                .iter()
+                .any(|line| line.starts_with('+'))
+        );
+        assert!(
+            files[0].hunks[0]
+                .lines
+                .iter()
+                .any(|line| line.starts_with('-'))
+        );
+    }
+
+    #[test]
+    fn diff_rows_use_distinct_semantic_tones_for_add_remove_hunk_and_context() {
+        use glass_tui::theme::Tone;
+        assert!(matches!(diff_line_tone("+added"), Tone::Success));
+        assert!(matches!(diff_line_tone("-removed"), Tone::Error));
+        assert!(matches!(diff_line_tone("@@ -1 +1 @@"), Tone::Secondary));
+        assert!(matches!(diff_line_tone(" context"), Tone::Body));
+    }
+}

@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = ["crates/glass-mod-api", "crates/glass-runtime-client", "crates/glass-tui", "crates/glass"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+glass-mod-api = { path = "crates/glass-mod-api" }
+glass-tui = { path = "crates/glass-tui" }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

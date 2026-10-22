@@ -1,0 +1,69 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'primaryColor': '#e8f0e6', 'primaryTextColor': '#1a1a1a' } } }%%
+flowchart LR
+    subgraph Workspace["Workspace"]
+        direction TB
+        subgraph Crates["Rust crates (workspace members)"]
+            ModAPI["glass-mod-api<br/>zero-dep hook surface<br/>Message, ToolCall, TurnContext, Mod_"]
+            TUI["glass-tui<br/>terminal rendering + input<br/>editor, transcript, layout, theme"]
+            Core["glass-core<br/>agent loop, providers, tools,<br/>session, config, extension host"]
+            RTClient["glass-runtime-client<br/>bounded subprocess client<br/>protocol, RuntimeClient"]
+        end
+
+        subgraph Packages["TypeScript packages"]
+            ExtSDK["packages/extension-sdk<br/>typed extension client (Node stdlib)"]
+            RtcTS["packages/runtime-client<br/>host runtime client (events, toolRequest)"]
+        end
+    end
+
+    Core -->|"uses glass_mod_api::Message / Mod_"| ModAPI
+    Core -->|"uses glass_tui::Editor / transcript"| TUI
+    RTClient -->|"JSON-RPC frames to"| Core
+    ExtSDK -->|"spawned subprocess speaks JSONL"| Core
+        RtcTS -->|"spawns gc runtime process"| RTClient
+
+    subgraph CoreInternals["glass-core internal runtime components"]
+        direction TB
+        CLI["cli.rs / main.rs<br/>command dispatch (run/resume/runtime/acp/serve/...)"]
+        Config["config.rs<br/>TOML + env, providers, profiles, budgets"]
+        Agent["agent.rs<br/>the agent loop: stream → tools → feed back"]
+        Session["session.rs<br/>append-only JSONL session log<br/>source of truth for both renderers"]
+        Provider["provider/<br/>Provider trait + adapters"]
+        Anthropic["provider/anthropic.rs<br/>Messages API, thinking, cache_control"]
+        OpenAI["provider/openai.rs<br/>Chat Completions / Responses<br/>chain.rs, pacing, cancellable"]
+        Transport["transport/<br/>request id + reset identity"]
+        Tools["tools.rs<br/>bash, read, edit, write, state, view_image<br/>output bounds + spill files"]
+        ExtHost["ext/ (host + protocol)<br/>subprocess extension registry<br/>JSONL, timeouts, lineage"]
+        Mods["mods.rs<br/>in-process named mods<br/>noisy, redact"]
+        Subagent["subagent.rs<br/>delegated tasks, wave scheduler<br/>max 4 concurrent"]
+        Sandbox["sandbox.rs<br/>Landlock / sandbox-exec<br/>off, workspace, strict"]
+        Serve["serve.rs / attach<br/>Unix-socket session, 4 clients"]
+        ACP["acp.rs<br/>Agent Client Protocol server<br/>session/new, prompt, cancel"]
+        Runtime["runtime.rs<br/>host-neutral JSON-RPC over stdio<br/>one turn per process"]
+    end
+
+    CLI --> Config
+    CLI -->|"interactive / headless / serve"| Agent
+    Agent -->|"streams Progress events"| Session
+    Agent --> Provider
+    Agent --> Tools
+    Agent --> ExtHost
+    Agent --> Subagent
+    Provider --> Anthropic
+    Provider --> OpenAI
+    Provider --> Transport
+    Tools --> Sandbox
+    ExtHost -->|"spawns + JSONL"| ExtSubprocess["external extensions<br/>web, mcp-bridge, lsp, browser,<br/>typescript, verify, subagent, ..."]
+    ExtHost --> Mods
+    Subagent -->|"nested Agent per task"| Agent
+    Session -->|"replay + live stream"| TUI
+    Session -->|"replay + live stream"| Serve
+    Serve -->|"Unix socket (0600)"| Attach["attach client (terminal)"]
+    Runtime -->|"JSON-RPC over stdio"| Host["host environment<br/>editor / agent / script"]
+    Host -->|"toolRequest → toolResult"| Runtime
+    ACP -->|"JSON-RPC over stdio"| Editor["editor (Zed, etc.)"]
+    TUI -->|"crossterm + ratatui"| Term["terminal (tty)"]
+
+    Anthropic -->|"HTTPS Messages API"| AnthropicAPI["Anthropic API"]
+    OpenAI -->|"HTTPS chat/responses"| OpenAIAPI["OpenAI + compatible local runtimes"]
+    Tools --> FS["workspace filesystem"]
+    Tools -->|"child processes"| Shell["shell / subprocesses"]

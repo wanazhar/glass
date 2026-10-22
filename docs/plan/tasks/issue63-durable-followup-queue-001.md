@@ -73,6 +73,9 @@ journey through the project thread picker and queue dialog. It creates two rows,
 edits one, reorders the rows, removes the other, and checks the owning thread's
 ledger after asynchronous writes settle. The retained row remains `ready`, and
 the fake Core request log contains no prompt for it, demonstrating that queue
-preparation does not dispatch work. This journey covers the interactive queue
-lifecycle; the focused store tests remain the coverage for reopening and
-cross-platform persistence policy.
+preparation does not dispatch work. The retained row keeps its `followUp` mode.
+A subsequent Enter dispatches it to the selected Core session (which is idle in
+this journey, so Glass uses the session's prompt operation), and the row changes
+to `accepted` only after the positive Glass send acknowledgement. This journey
+covers the interactive queue lifecycle; the focused store tests remain the
+coverage for reopening and cross-platform persistence policy.

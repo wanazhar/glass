@@ -35,9 +35,13 @@ follow-up queues. Draft persistence remains pending until TUI edit paths can
 flush changes reliably; a schema field alone does not count as implemented
 draft recovery.
 
-Writes use a private `0600` sidecar lock and same-directory temporary file,
-flush and sync the complete serialized document, and atomically replace the
-registry, following the existing workspace-trust-store pattern. Read/parse/schema/workspace-identity/write failures
+On Unix, writes use a private `0600` sidecar lock and same-directory temporary
+file, flush and sync the complete serialized document, atomically replace the
+registry, then sync the parent directory. If that last sync fails, the new
+registry is already visible and the error explicitly reports uncertain
+durability. Windows files inherit workspace ACLs; this checkpoint does not
+strengthen ACL privacy and reopened rows remain unavailable until protected
+ACL support exists. Read/parse/schema/workspace-identity/write failures
 are surfaced; they never silently replace an unreadable registry with an empty
 one. Thread creation persists the durable ID before the runtime starts. The
 Core session ID is captured from the initialized runtime, then persisted before

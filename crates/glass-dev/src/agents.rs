@@ -317,23 +317,31 @@ impl AgentRegistry {
             registry.next_agent = registry.next_agent.saturating_add(1);
             let now = now_ms();
             let spec = AgentSpec::new(thread.role.clone(), "");
-            let status = match run.classification {
-                RunClassification::Queued => AgentStatus::Unavailable,
-                RunClassification::Starting if run.core_session_id.is_none() => {
-                    AgentStatus::Unavailable
+            let status = if cfg!(windows) {
+                AgentStatus::Unavailable
+            } else {
+                match run.classification {
+                    RunClassification::Queued => AgentStatus::Unavailable,
+                    RunClassification::Starting if run.core_session_id.is_none() => {
+                        AgentStatus::Unavailable
+                    }
+                    RunClassification::RecoveryPending | RunClassification::Starting => {
+                        AgentStatus::RecoveryPending
+                    }
+                    RunClassification::Completed => AgentStatus::Completed,
+                    RunClassification::Failed => AgentStatus::Failed,
+                    RunClassification::Cancelled => AgentStatus::Cancelled,
                 }
-                RunClassification::RecoveryPending | RunClassification::Starting => {
-                    AgentStatus::RecoveryPending
-                }
-                RunClassification::Completed => AgentStatus::Completed,
-                RunClassification::Failed => AgentStatus::Failed,
-                RunClassification::Cancelled => AgentStatus::Cancelled,
             };
-            let last_error = match status {
+            let last_error = if cfg!(windows) {
+                Some("Durable thread recovery is unavailable on Windows until protected registry ACL support is available; registry files inherit workspace ACLs.".into())
+            } else {
+                match status {
                 AgentStatus::RecoveryPending => Some("This resident session needs explicit Core recovery before it can accept messages.".into()),
                 AgentStatus::Unavailable if run.classification == RunClassification::Queued => Some("This thread was queued but never initialized; it will not resume or replay automatically.".into()),
                 AgentStatus::Unavailable => Some("The prior run stopped before an engine session reference was initialized and cannot be resumed.".into()),
                 _ => None,
+                }
             };
             registry.records.insert(
                 id.clone(),
@@ -1621,7 +1629,7 @@ mod tests {
                 created_at_ms: now,
                 runs: vec![RunRecord {
                     run_id: run_id.clone(),
-                    engine: "test".into(),
+                    engine: "glass-core".into(),
                     core_session_id: Some("fixture".into()),
                     classification: RunClassification::RecoveryPending,
                 }],
@@ -1741,6 +1749,22 @@ mod tests {
         let mut reopened = AgentRegistry::new(&root).unwrap();
         let snapshots = reopened.list().unwrap();
         assert_eq!(snapshots.len(), 4);
+        if cfg!(windows) {
+            assert!(
+                snapshots
+                    .iter()
+                    .all(|snapshot| snapshot.status == AgentStatus::Unavailable)
+            );
+            assert!(snapshots.iter().all(|snapshot| {
+                snapshot
+                    .last_error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("workspace ACLs"))
+            }));
+            drop(reopened);
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
         assert_eq!(
             snapshots
                 .iter()
@@ -1869,7 +1893,11 @@ mod tests {
         let reopened = AgentRegistry::new(&root).unwrap();
         assert_eq!(
             reopened.records.values().next().unwrap().snapshot.status,
-            AgentStatus::Cancelled
+            if cfg!(windows) {
+                AgentStatus::Unavailable
+            } else {
+                AgentStatus::Cancelled
+            }
         );
         let record = reopened
             .thread_store

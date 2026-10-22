@@ -97,8 +97,11 @@ by the result. AgentId and these drafts are process-local: they are not restored
 after Glass restarts and are not durable project thread identities.
 
 Glass also records random, project-scoped ThreadId and RunId values plus the
-actual initialized Glass Core session ID in the private
-`.glass/threads/registry.json` ledger. Reopened rows with initialized Core
+actual initialized Glass Core session ID in the
+`.glass/threads/registry.json` ledger. On Unix the registry, lock, and parent
+directories use private modes. On Windows files inherit workspace ACLs; this
+checkpoint does not strengthen those ACLs, so reopened rows remain unavailable
+there until protected ACL support is implemented. Reopened rows with initialized Core
 sessions appear as `recovery pending`; runs that never initialized, including
 work still queued at shutdown, appear as `unavailable`. Both reject sends.
 This ledger does not reattach to Core sessions or replay prompts; exact-session

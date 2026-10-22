@@ -373,7 +373,9 @@ the matching context, and late send results remain attached to their submitting
 thread without changing the selected thread's focus or draft. AgentId and its
 draft state are process-local and do not survive TUI restart. Glass persists
 random ThreadId/RunId identity and actual Core session references in the
-project's private `.glass/threads/registry.json`; reopened entries with Core
+project's `.glass/threads/registry.json`; on Unix its files use private modes.
+On Windows the files inherit workspace ACLs and reopened rows remain unavailable
+until protected ACL support is implemented. Reopened entries with Core
 session references are labelled `recovery pending`, while work queued or
 stopped before initialization is `unavailable`. Both reject sends. This
 checkpoint does not reattach to Core, replay prompts, or persist drafts,

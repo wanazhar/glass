@@ -175,6 +175,11 @@ impl ThreadStore {
                 .find(|t| t.thread_id == thread_id)
                 .and_then(|t| t.runs.iter_mut().find(|r| r.run_id == run_id))
                 .ok_or_else(|| config("thread run disappeared before session persistence"))?;
+            if run.engine != "glass-core" {
+                return Err(config(
+                    "only glass-core runs may store a Core session reference",
+                ));
+            }
             if run
                 .core_session_id
                 .as_deref()
@@ -186,7 +191,7 @@ impl ThreadStore {
             }
             run.core_session_id = Some(session_id.to_owned());
             run.classification = RunClassification::RecoveryPending;
-            Ok(())
+            validate_run(run)
         })
     }
 
@@ -204,7 +209,7 @@ impl ThreadStore {
                 .and_then(|t| t.runs.iter_mut().find(|r| r.run_id == run_id))
                 .ok_or_else(|| config("thread run disappeared before lifecycle persistence"))?;
             run.classification = classification;
-            Ok(())
+            validate_run(run)
         })
     }
 
@@ -331,11 +336,7 @@ impl ThreadStore {
         let _cleanup = TemporaryFile(temporary.clone());
         file.write_all(&bytes)?;
         file.sync_all()?;
-        replace_file(&temporary, &self.path)?;
-        #[cfg(unix)]
-        {
-            OpenOptions::new().read(true).open(parent)?.sync_all()?;
-        }
+        replace_then_sync(&temporary, &self.path, parent, sync_directory)?;
         Ok(())
     }
 }
@@ -434,6 +435,34 @@ fn replace_file(source: &Path, destination: &Path) -> DevelopmentResult<()> {
     Ok(())
 }
 
+fn replace_then_sync(
+    source: &Path,
+    destination: &Path,
+    parent: &Path,
+    sync: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> DevelopmentResult<()> {
+    replace_file(source, destination)?;
+    #[cfg(unix)]
+    sync(parent).map_err(|error| {
+        config(format!(
+            "thread registry replacement already occurred, but parent-directory sync failed; durability is uncertain: {error}"
+        ))
+    })?;
+    #[cfg(not(unix))]
+    let _ = (parent, sync);
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    OpenOptions::new().read(true).open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 #[cfg(not(windows))]
 fn replace_file(source: &Path, destination: &Path) -> DevelopmentResult<()> {
     fs::rename(source, destination)?;
@@ -500,6 +529,29 @@ fn validate_run(run: &RunRecord) -> DevelopmentResult<()> {
     {
         return Err(config("thread registry run is invalid"));
     }
+    let has_session = run.core_session_id.is_some();
+    if has_session && run.engine != "glass-core" {
+        return Err(config(
+            "only glass-core runs may store a Core session reference",
+        ));
+    }
+    if run.classification == RunClassification::RecoveryPending
+        && (run.engine != "glass-core" || !has_session)
+    {
+        return Err(config(
+            "recovery-pending runs require an actual Core session reference",
+        ));
+    }
+    if has_session
+        && matches!(
+            run.classification,
+            RunClassification::Queued | RunClassification::Starting
+        )
+    {
+        return Err(config(
+            "queued or starting runs cannot have a Core session reference",
+        ));
+    }
     Ok(())
 }
 fn config(message: impl Into<String>) -> DevelopmentError {
@@ -529,7 +581,7 @@ mod tests {
                 run_id: random_id("run").unwrap(),
                 engine: "glass-core".into(),
                 core_session_id: None,
-                classification: RunClassification::RecoveryPending,
+                classification: RunClassification::Starting,
             }],
         }
     }
@@ -677,6 +729,63 @@ mod tests {
             row.runs[0].classification,
             RunClassification::RecoveryPending
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn invalid_session_classification_is_rejected_without_overwriting_registry() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        store.create(record()).unwrap();
+        let path = root.join(".glass/threads/registry.json");
+        let original = fs::read(&path).unwrap();
+        let invalid_runs = [
+            serde_json::json!({
+                "runId": random_id("run").unwrap(),
+                "engine": "glass-core",
+                "coreSessionId": null,
+                "classification": "recoveryPending"
+            }),
+            serde_json::json!({
+                "runId": random_id("run").unwrap(),
+                "engine": "pi",
+                "coreSessionId": "not-a-core-session",
+                "classification": "completed"
+            }),
+            serde_json::json!({
+                "runId": random_id("run").unwrap(),
+                "engine": "glass-core",
+                "coreSessionId": "session-too-early",
+                "classification": "starting"
+            }),
+        ];
+        for invalid_run in invalid_runs {
+            let mut value: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            value["threads"][0]["runs"][0] = invalid_run;
+            fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+            let invalid_bytes = fs::read(&path).unwrap();
+            assert!(ThreadStore::open(&root).is_err());
+            assert_eq!(fs::read(&path).unwrap(), invalid_bytes);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reports_uncertain_durability_when_directory_sync_fails_after_replace() {
+        let root = root();
+        let source = root.join("registry.tmp");
+        let destination = root.join("registry.json");
+        fs::write(&source, b"new registry").unwrap();
+        fs::write(&destination, b"old registry").unwrap();
+        let error = replace_then_sync(&source, &destination, &root, |_| {
+            Err(std::io::Error::other("injected directory sync failure"))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("replacement already occurred"));
+        assert!(error.to_string().contains("durability is uncertain"));
+        assert_eq!(fs::read(destination).unwrap(), b"new registry");
+        assert!(!source.exists());
         let _ = fs::remove_dir_all(root);
     }
 }

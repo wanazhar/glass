@@ -1,7 +1,7 @@
 ---
 id: issue63-durable-followup-queue-001
 scope: issue-63-durable-followup-queue
-status: in-progress
+status: complete
 depends-on: [issue63-durable-threads-001, issue63-core-session-resume-001, issue63-durable-composer-drafts-001]
 ---
 
@@ -45,18 +45,25 @@ through unrelated registry mutations.
 
 ## Acceptance
 
-- [ ] User can add, edit, reorder, remove, and explicitly dispatch a queue row
+- [x] User can add, edit, reorder, remove, and explicitly dispatch a queue row
       from the owning thread; steering requires an explicitly selected active
       RunId.
-- [ ] Restart-like reopen restores rows by ThreadId and preserves RunId/mode;
+- [x] Restart-like reopen restores rows by ThreadId and preserves RunId/mode;
       rows are never automatically replayed.
-- [ ] Store validation, aggregate limits, write-failure preservation, and
+- [x] Store validation, aggregate limits, write-failure preservation, and
       Windows opaque-field behavior have focused tests.
-- [ ] UI queue reads/writes are nonblocking and stale completions cannot
+- [x] UI queue reads/writes are nonblocking and stale completions cannot
       replace edits made after a load began.
-- [ ] Focused tests, fmt, strict scoped Clippy, documentation validators, and
+- [x] Focused tests, fmt, strict scoped Clippy, documentation validators, and
       an independent diff review pass; record the local Conventional Commit.
 
 ## Verification
 
-Pending implementation.
+Implemented in local `main` at `f64873e0` (`feat: add durable per-thread
+follow-up queue`). The isolated implementation branch passed 16 queue-focused
+tests plus the expected-RunId, NeedsReview duplicate-risk confirmation, and
+cross-owner save-failure regressions. Strict scoped Clippy, formatting, and an
+independent read-only diff review passed. Current documentation coverage,
+depth, release-truth, and TUI-shortcut checks passed after refreshing the live
+MCP schema measurement in `7e3c8a6a`. The issue remains open for the attention
+inbox and broader orchestration/review journeys.

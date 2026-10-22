@@ -993,10 +993,14 @@ mod tests {
         assert!(first.worktree.exists());
         assert!(second.worktree.exists());
         assert!(third.worktree.exists());
-        let pi_available = Command::new("pi")
-            .arg("--version")
-            .output()
-            .is_ok_and(|output| output.status.success());
+        // Launching Pi may contact a provider or depend on the caller's
+        // installed Pi protocol version. Keep the unit test deterministic and
+        // offline unless the caller explicitly opts into that integration.
+        let pi_available = std::env::var_os("GLASS_PI_EXPERIMENT_E2E").is_some()
+            && Command::new("pi")
+                .arg("--version")
+                .output()
+                .is_ok_and(|output| output.status.success());
         let mut agents = AgentRegistry::new(&root).unwrap();
         let mut assigned = Vec::new();
         if pi_available {

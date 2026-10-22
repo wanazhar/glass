@@ -2087,9 +2087,10 @@ mod tests {
             },
         )
         .unwrap();
-        // The fixture prefixes resumed ids, so this asserts that the stored
-        // session for this workspace was listed and resumed.
+        // The fixture marks workspace reuse by prefixing the resumed session
+        // id, so this distinguishes session/resume from session/new.
         assert_eq!(runtime.session_id(), "resumed-fixture-session");
+        drop(runtime);
         let _ = fs::remove_dir_all(&root);
     }
 

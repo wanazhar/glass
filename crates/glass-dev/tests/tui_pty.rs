@@ -815,6 +815,191 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
 }
 
 #[test]
+fn three_fake_core_tasks_complete_without_stealing_selected_thread() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    std::fs::write(fixture_state.join("e2e-core-concurrency"), "enabled").unwrap();
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.trust_project();
+    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+
+    for (role, task, expected_id) in [
+        ("alpha", "alpha task", "agent-0001"),
+        ("beta", "beta task", "agent-0002"),
+        ("gamma", "gamma task", "agent-0003"),
+    ] {
+        session.send(format!(":agent spawn {role} {task}\r").as_bytes());
+        assert!(
+            session.wait_for(&format!("Spawned {expected_id}"), Duration::from_secs(5)),
+            "resident agent {role} was not created\n{}",
+            session.output_tail()
+        );
+        send_ctrl_shift_t(&mut session);
+        assert!(session.wait_for_visible("PROJECT THREADS", Duration::from_secs(5)));
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while !session
+            .visible_output()
+            .lines()
+            .any(|line| line.contains(role) && line.contains("idle"))
+            && Instant::now() < deadline
+        {
+            session.settle(Duration::from_millis(100));
+        }
+        assert!(
+            session
+                .visible_output()
+                .lines()
+                .any(|line| line.contains(role) && line.contains("idle")),
+            "resident agent {role} never became idle\n{}",
+            session.output_tail()
+        );
+        session.send(b"\x1b");
+    }
+
+    for (index, tag) in ["alpha-job", "beta-job", "gamma-job"]
+        .into_iter()
+        .enumerate()
+    {
+        send_ctrl_shift_t(&mut session);
+        assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
+        if index > 0 {
+            let down = b"\x1b[B".repeat(index);
+            session.send(&down);
+        }
+        session.send(b"\r\r");
+        assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+        session.send(tag.as_bytes());
+        session.send(b"\r");
+        let started = fixture_state.join(format!("e2e-core-started-{tag}"));
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while !started.exists() && Instant::now() < deadline {
+            session.settle(Duration::from_millis(50));
+        }
+        assert!(
+            started.exists(),
+            "fake Core did not start {tag}\n{}",
+            session.output_tail()
+        );
+    }
+
+    let registry_path = fixture_state.join("threads/registry.json");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let all_working = registry["threads"].as_array().is_some_and(|threads| {
+            threads.len() == 3
+                && threads
+                    .iter()
+                    .all(|thread| thread["sendAttempts"][0]["status"] == "working")
+        });
+        if all_working || Instant::now() >= deadline {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    let threads = registry["threads"].as_array().unwrap();
+    assert_eq!(
+        threads.len(),
+        3,
+        "three spawned agents need separate threads"
+    );
+    let mut client_ids = std::collections::BTreeSet::new();
+    for (tag, role) in [
+        ("alpha-job", "alpha"),
+        ("beta-job", "beta"),
+        ("gamma-job", "gamma"),
+    ] {
+        let thread = threads
+            .iter()
+            .find(|thread| thread["role"] == role)
+            .unwrap_or_else(|| panic!("missing {role} thread: {registry}"));
+        let attempts = thread["sendAttempts"].as_array().unwrap();
+        assert_eq!(attempts.len(), 1, "each thread owns one active attempt");
+        assert_eq!(
+            attempts[0]["status"], "working",
+            "{role} should still be gated"
+        );
+        assert!(attempts[0]["text"].as_str().unwrap().contains(tag));
+        client_ids.insert(attempts[0]["clientMessageId"].as_str().unwrap().to_owned());
+        assert!(
+            attempts[0]["engineRequestId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+        );
+    }
+    assert_eq!(
+        client_ids.len(),
+        3,
+        "each message needs a distinct client ID"
+    );
+
+    std::fs::write(fixture_state.join("e2e-core-release-alpha-job"), "release").unwrap();
+    let alpha_completed = fixture_state.join("e2e-core-completed-alpha-job");
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while !alpha_completed.exists() && Instant::now() < deadline {
+        session.settle(Duration::from_millis(50));
+    }
+    assert!(
+        alpha_completed.exists(),
+        "alpha did not finish after release"
+    );
+    session.settle(Duration::from_millis(300));
+    let visible = session.visible_output();
+    assert!(
+        visible.contains("gamma"),
+        "the selected gamma conversation disappeared after alpha completed\n{visible}"
+    );
+    assert!(
+        !visible.contains("handled alpha-job"),
+        "alpha's background response replaced the selected gamma conversation\n{visible}"
+    );
+    for tag in ["beta-job", "gamma-job"] {
+        std::fs::write(
+            fixture_state.join(format!("e2e-core-release-{tag}")),
+            "release",
+        )
+        .unwrap();
+    }
+    for tag in ["beta-job", "gamma-job"] {
+        let completed = fixture_state.join(format!("e2e-core-completed-{tag}"));
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while !completed.exists() && Instant::now() < deadline {
+            session.settle(Duration::from_millis(50));
+        }
+        assert!(completed.exists(), "{tag} did not complete after release");
+    }
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let all_settled = registry["threads"].as_array().is_some_and(|threads| {
+            threads.len() == 3
+                && threads
+                    .iter()
+                    .all(|thread| thread["sendAttempts"][0]["status"] == "settled")
+        });
+        if all_settled || Instant::now() >= deadline {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    for thread in registry["threads"].as_array().unwrap() {
+        assert_eq!(thread["sendAttempts"][0]["status"], "settled", "{registry}");
+    }
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn agent_update_route_requires_confirmation_in_tui() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;

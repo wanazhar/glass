@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
 SESSION_ID = "fixture-session"
 STORAGE_DIR = None
@@ -88,6 +89,16 @@ def run_turn(identifier, params: dict) -> None:
     text = str(params.get("text", ""))
     turn = "turn-1"
     event("turn_start", {}, turn)
+    gate_root = os.path.join(os.getcwd(), ".glass")
+    gate_tag = next((tag for tag in ("alpha-job", "beta-job", "gamma-job") if tag in text), None)
+    if gate_tag and os.path.exists(os.path.join(gate_root, "e2e-core-concurrency")):
+        with open(os.path.join(gate_root, f"e2e-core-started-{gate_tag}"), "w", encoding="utf-8") as marker:
+            marker.write("started")
+        deadline = time.monotonic() + 30
+        while not os.path.exists(os.path.join(gate_root, f"e2e-core-release-{gate_tag}")):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"timed out waiting to release {gate_tag}")
+            time.sleep(0.02)
     if "write" in text:
         result = request_tool(
             "call-write",
@@ -106,6 +117,9 @@ def run_turn(identifier, params: dict) -> None:
     event("usage", {"input": 12, "output": 8}, turn)
     event("settled", {"reason": "completed"}, turn)
     reply(identifier, {"sessionId": SESSION_ID, "settled": True})
+    if gate_tag and os.path.exists(os.path.join(gate_root, "e2e-core-concurrency")):
+        with open(os.path.join(gate_root, f"e2e-core-completed-{gate_tag}"), "w", encoding="utf-8") as marker:
+            marker.write("completed")
 
 
 def main() -> None:

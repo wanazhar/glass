@@ -51,9 +51,13 @@ see the [thread picker task](tasks/issue64-project-thread-picker-001.md) and
 [send-attempt recovery task](tasks/issue64-send-attempt-recovery-001.md).
 Issue #64 remains active for follow-up queue delivery and the broader combined
 homespace journeys, including attention, review, and recovery workflows.
-The next keyboard acceptance slice exercises uncertain-delivery recovery,
-proposal review, and confirmed exit at desktop and compact terminal sizes in the
-[attention keyboard journey](tasks/issue64-attention-keyboard-journey-001.md).
+The completed [attention keyboard journey](tasks/issue64-attention-keyboard-journey-001.md)
+covers uncertain-delivery recovery, proposal review, and confirmed exit at
+desktop and compact terminal sizes. The next combined project-thread acceptance
+slice exercises three concurrently active fake-Core conversations with distinct
+drafts and cursors, then settles one in the background while a different
+conversation remains selected; see the
+[three-thread homespace journey](tasks/issue64-three-thread-journey-001.md).
 
 ## Current source line: Glass 0.3.14
 

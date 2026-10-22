@@ -96,6 +96,16 @@ with the AgentId captured at submission, including a first-send agent created
 by the result. AgentId and these drafts are process-local: they are not restored
 after Glass restarts and are not durable project thread identities.
 
+Glass also records random, project-scoped ThreadId and RunId values plus the
+actual initialized Glass Core session ID in the private
+`.glass/threads/registry.json` ledger. Reopened rows with initialized Core
+sessions appear as `recovery pending`; runs that never initialized, including
+work still queued at shutdown, appear as `unavailable`. Both reject sends.
+This ledger does not reattach to Core sessions or replay prompts; exact-session
+describe/resume is a separate capability. Composer drafts, transcripts, and
+follow-up queues are not persisted, and these rows must not be treated as live
+workers.
+
 Every governed tool carries expected workspace generation and project revision. A stale call fails with `Conflict`; reread state and issue a new call. Mutations also require a trusted workspace, actor attribution, and the applicable mutation authority or confirmation.
 
 ## Project files and tree

@@ -30,8 +30,11 @@ Live-agent transcript and composer isolation is tracked in the
 [acceptance task](tasks/issue63-thread-isolation-001.md). The current
 AgentId-based thread identity is process-local; durable thread/run identity and
 restart recovery are tracked in the [durable thread analysis](analysis/issue63-durable-project-threads.md)
-and [acceptance task](tasks/issue63-durable-threads-001.md). Exact Core session
-reattachment, editable queues, and the attention inbox remain subsequent tasks.
+and [acceptance task](tasks/issue63-durable-threads-001.md). The first ledger
+checkpoint stores stable IDs and actual Core session references, then restores
+prior runs as recovery-pending or unavailable rows without replay. Exact Core
+session reattachment, draft/queue persistence, editable queues, and the attention
+inbox remain subsequent tasks.
 
 ## Current source line: Glass 0.3.14
 

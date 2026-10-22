@@ -7,6 +7,7 @@
 use crate::development::{DevelopmentError, DevelopmentResult};
 use crate::pi_runtime::PiSessionRequest;
 use crate::resident_harness::{AgentToolExecutor, ResidentHarness, ResidentHarnessOptions};
+use crate::thread_store::{RunClassification, RunRecord, ThreadRecord, ThreadStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -66,6 +67,10 @@ pub enum AgentStatus {
     Queued,
     /// Worker process is being started.
     Starting,
+    /// A prior Glass run exists but its exact Core session is not yet resumed.
+    RecoveryPending,
+    /// Prior run has no initialized engine session reference and cannot resume.
+    Unavailable,
     /// Worker is ready for a request.
     Idle,
     /// Worker is processing a request.
@@ -82,7 +87,10 @@ pub enum AgentStatus {
 
 impl AgentStatus {
     fn terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Cancelled | Self::Unavailable
+        )
     }
 
     /// Human-readable label for terminal and TUI surfaces.
@@ -90,6 +98,8 @@ impl AgentStatus {
         match self {
             Self::Queued => "queued",
             Self::Starting => "starting",
+            Self::RecoveryPending => "recovery pending",
+            Self::Unavailable => "unavailable",
             Self::Idle => "idle",
             Self::Working => "working",
             Self::Waiting => "waiting",
@@ -234,6 +244,8 @@ struct AgentRecord {
     worker: Option<thread::JoinHandle<()>>,
     awaiting_agent_settle: bool,
     dropped_events: Arc<AtomicU64>,
+    thread_id: String,
+    run_id: String,
 }
 
 struct WorkerRuntime {
@@ -243,6 +255,9 @@ struct WorkerRuntime {
     sessions_dir: PathBuf,
     broker: Option<ResidentAgentBroker>,
     additional_system_prompt: Option<String>,
+    thread_id: String,
+    run_id: String,
+    thread_store: ThreadStore,
 }
 
 /// Registry and scheduler for independent resident agent processes.
@@ -267,16 +282,18 @@ pub(crate) struct AgentRegistry {
     default_model: Option<String>,
     default_thinking: Option<String>,
     default_unrestricted: bool,
+    thread_store: ThreadStore,
 }
 
 impl AgentRegistry {
     /// Create a registry rooted at the canonical project directory.
     pub(crate) fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
         let root = std::fs::canonicalize(root)?;
+        let thread_store = ThreadStore::open(&root)?;
         let sessions_dir = root.join(".glass").join("pi-sessions");
         let (events_tx, events_rx) = mpsc::sync_channel(EVENT_CAPACITY);
-        Ok(Self {
-            root,
+        let mut registry = Self {
+            root: root.clone(),
             sessions_dir,
             records: BTreeMap::new(),
             events_tx,
@@ -290,7 +307,68 @@ impl AgentRegistry {
             default_model: None,
             default_thinking: None,
             default_unrestricted: false,
-        })
+            thread_store,
+        };
+        for thread in registry.thread_store.list()? {
+            let Some(run) = thread.runs.last() else {
+                continue;
+            };
+            let id = AgentId(format!("agent-{:04}", registry.next_agent));
+            registry.next_agent = registry.next_agent.saturating_add(1);
+            let now = now_ms();
+            let spec = AgentSpec::new(thread.role.clone(), "");
+            let status = match run.classification {
+                RunClassification::Queued => AgentStatus::Unavailable,
+                RunClassification::Starting if run.core_session_id.is_none() => {
+                    AgentStatus::Unavailable
+                }
+                RunClassification::RecoveryPending | RunClassification::Starting => {
+                    AgentStatus::RecoveryPending
+                }
+                RunClassification::Completed => AgentStatus::Completed,
+                RunClassification::Failed => AgentStatus::Failed,
+                RunClassification::Cancelled => AgentStatus::Cancelled,
+            };
+            let last_error = match status {
+                AgentStatus::RecoveryPending => Some("This resident session needs explicit Core recovery before it can accept messages.".into()),
+                AgentStatus::Unavailable if run.classification == RunClassification::Queued => Some("This thread was queued but never initialized; it will not resume or replay automatically.".into()),
+                AgentStatus::Unavailable => Some("The prior run stopped before an engine session reference was initialized and cannot be resumed.".into()),
+                _ => None,
+            };
+            registry.records.insert(
+                id.clone(),
+                AgentRecord {
+                    snapshot: AgentSnapshot {
+                        id: id.clone(),
+                        role: thread.role,
+                        task: format!("{} · {}", thread.title, status.label()),
+                        status,
+                        dependencies: Vec::new(),
+                        model: None,
+                        thinking: None,
+                        worktree: root.clone(),
+                        session_file: None,
+                        unrestricted: false,
+                        created_at_ms: thread.created_at_ms,
+                        started_at_ms: None,
+                        updated_at_ms: now,
+                        event_count: 0,
+                        dropped_event_count: 0,
+                        last_error,
+                        last_response_id: None,
+                        evidence: Vec::new(),
+                    },
+                    spec,
+                    command: None,
+                    worker: None,
+                    awaiting_agent_settle: false,
+                    dropped_events: Arc::new(AtomicU64::new(0)),
+                    thread_id: thread.thread_id,
+                    run_id: run.run_id.clone(),
+                },
+            );
+        }
+        Ok(registry)
     }
 
     /// Configure the authenticated broker used for resident-agent requests.
@@ -394,6 +472,25 @@ impl AgentRegistry {
             .checked_add(1)
             .ok_or_else(|| DevelopmentError::Conflict("agent identifier space exhausted".into()))?;
         let now = now_ms();
+        let thread_id = crate::thread_store::random_id("thread")?;
+        let run_id = crate::thread_store::random_id("run")?;
+        let harness = crate::resident_harness::ResidentHarnessKind::from_env();
+        self.thread_store.create(ThreadRecord {
+            thread_id: thread_id.clone(),
+            title: spec.role.clone(),
+            role: spec.role.clone(),
+            created_at_ms: now,
+            runs: vec![RunRecord {
+                run_id: run_id.clone(),
+                engine: harness.id().into(),
+                core_session_id: None,
+                classification: if spec.dependencies.is_empty() {
+                    RunClassification::Starting
+                } else {
+                    RunClassification::Queued
+                },
+            }],
+        })?;
         let worktree = spec.worktree.clone().unwrap_or_else(|| self.root.clone());
         let status = if spec.dependencies.is_empty() {
             AgentStatus::Starting
@@ -428,6 +525,8 @@ impl AgentRegistry {
                 worker: None,
                 awaiting_agent_settle: false,
                 dropped_events: Arc::new(AtomicU64::new(0)),
+                thread_id,
+                run_id,
             },
         );
         if status == AgentStatus::Starting {
@@ -440,7 +539,7 @@ impl AgentRegistry {
     pub(crate) fn refresh(&mut self) -> DevelopmentResult<()> {
         loop {
             match self.events_rx.try_recv() {
-                Ok(event) => self.apply_worker_event(event),
+                Ok(event) => self.apply_worker_event(event)?,
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     return Err(DevelopmentError::Process(
@@ -452,9 +551,9 @@ impl AgentRegistry {
         for record in self.records.values_mut() {
             record.snapshot.dropped_event_count = record.dropped_events.load(Ordering::Relaxed);
         }
-        self.reap_finished_workers();
-        self.enforce_budgets();
-        self.fail_blocked_dependents();
+        self.reap_finished_workers()?;
+        self.enforce_budgets()?;
+        self.fail_blocked_dependents()?;
         self.start_ready_agents()?;
         Ok(())
     }
@@ -614,12 +713,13 @@ impl AgentRegistry {
         let (started_tx, started_rx) = mpsc::sync_channel(1);
         {
             let record = self.record_mut(id)?;
-            if record.snapshot.status.terminal() || record.snapshot.status == AgentStatus::Queued {
-                return Err(DevelopmentError::Conflict(format!(
-                    "agent {} cannot accept requests while {:?}",
-                    id.as_str(),
-                    record.snapshot.status
-                )));
+            if record.snapshot.status.terminal()
+                || matches!(
+                    record.snapshot.status,
+                    AgentStatus::Queued | AgentStatus::Starting | AgentStatus::RecoveryPending
+                )
+            {
+                return Err(agent_request_blocked(id, record.snapshot.status));
             }
             let sender = record.command.as_ref().ok_or_else(|| {
                 DevelopmentError::Conflict(format!("agent {} is still starting", id.as_str()))
@@ -655,6 +755,11 @@ impl AgentRegistry {
     /// Mark a non-terminal agent complete after its worker settles.
     pub(crate) fn complete(&mut self, id: &AgentId) -> DevelopmentResult<()> {
         self.refresh()?;
+        if self.record_mut(id)?.snapshot.status == AgentStatus::RecoveryPending {
+            return Err(DevelopmentError::Conflict(
+                "a recovery-pending thread is not a live worker".into(),
+            ));
+        }
         if self.record_mut(id)?.snapshot.status.terminal() {
             return Err(DevelopmentError::Conflict(format!(
                 "agent {} is already terminal",
@@ -673,6 +778,11 @@ impl AgentRegistry {
     /// Cancel a non-terminal agent and stop its worker.
     pub(crate) fn cancel(&mut self, id: &AgentId) -> DevelopmentResult<()> {
         self.refresh()?;
+        if self.record_mut(id)?.snapshot.status == AgentStatus::RecoveryPending {
+            return Err(DevelopmentError::Conflict(
+                "a recovery-pending thread is not a live worker".into(),
+            ));
+        }
         if self.record_mut(id)?.snapshot.status.terminal() {
             return Ok(());
         }
@@ -686,7 +796,7 @@ impl AgentRegistry {
         self.record_mut(id)?.command = None;
         self.join_worker(id, AgentStatus::Cancelled)?;
         self.record_event(id, "cancelled", Value::Null);
-        self.fail_blocked_dependents();
+        self.fail_blocked_dependents()?;
         Ok(())
     }
     /// Restart a failed or cancelled session under the same agent identity.
@@ -714,8 +824,21 @@ impl AgentRegistry {
         // A failure event can be observed just before the worker thread
         // exits. Join it here instead of making the user retry a second time.
         self.join_worker(id, previous_status)?;
+        let new_run_id = crate::thread_store::random_id("run")?;
+        let engine = crate::resident_harness::ResidentHarnessKind::from_env();
+        let thread_id = self.record_mut(id)?.thread_id.clone();
+        self.thread_store.append_run(
+            &thread_id,
+            RunRecord {
+                run_id: new_run_id.clone(),
+                engine: engine.id().into(),
+                core_session_id: None,
+                classification: RunClassification::Starting,
+            },
+        )?;
         {
             let record = self.record_mut(id)?;
+            record.run_id = new_run_id;
             record.snapshot.last_error = None;
             record.snapshot.last_response_id = None;
             record.awaiting_agent_settle = false;
@@ -758,12 +881,13 @@ impl AgentRegistry {
         }
         {
             let record = self.record_mut(id)?;
-            if record.snapshot.status.terminal() || record.snapshot.status == AgentStatus::Queued {
-                return Err(DevelopmentError::Conflict(format!(
-                    "agent {} cannot accept requests while {:?}",
-                    id.as_str(),
-                    record.snapshot.status
-                )));
+            if record.snapshot.status.terminal()
+                || matches!(
+                    record.snapshot.status,
+                    AgentStatus::Queued | AgentStatus::Starting | AgentStatus::RecoveryPending
+                )
+            {
+                return Err(agent_request_blocked(id, record.snapshot.status));
             }
             let sender = record.command.as_ref().ok_or_else(|| {
                 DevelopmentError::Conflict(format!("agent {} is still starting", id.as_str()))
@@ -791,16 +915,28 @@ impl AgentRegistry {
     }
 
     fn spawn(&mut self, id: &AgentId) -> DevelopmentResult<()> {
+        let (thread_id, run_id) = {
+            let record = self
+                .records
+                .get(id)
+                .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))?;
+            (record.thread_id.clone(), record.run_id.clone())
+        };
+        self.thread_store
+            .classify_run(&thread_id, &run_id, RunClassification::Starting)?;
         let sessions_dir = self.sessions_dir.clone();
         let events = self.events_tx.clone();
         let broker = self.broker.clone();
         let additional_system_prompt = self.additional_system_prompt.clone();
         let local_tool_executor = self.local_tool_executor.clone();
+        let thread_store = self.thread_store.clone();
         let record = self.record_mut(id)?;
         let dropped_events = Arc::clone(&record.dropped_events);
         let spec = record.spec.clone();
         let worktree = record.snapshot.worktree.clone();
         let fork_from = record.spec.fork_from.clone();
+        let thread_id = record.thread_id.clone();
+        let run_id = record.run_id.clone();
         let worker_id = id.clone();
         let (commands_tx, commands_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         record.command = Some(commands_tx);
@@ -820,6 +956,9 @@ impl AgentRegistry {
                         sessions_dir,
                         broker,
                         additional_system_prompt,
+                        thread_id,
+                        run_id,
+                        thread_store,
                     },
                     commands_rx,
                     events,
@@ -852,7 +991,7 @@ impl AgentRegistry {
         Ok(())
     }
 
-    fn fail_blocked_dependents(&mut self) {
+    fn fail_blocked_dependents(&mut self) -> DevelopmentResult<()> {
         let terminal_failures: BTreeSet<_> = self
             .records
             .iter()
@@ -878,6 +1017,12 @@ impl AgentRegistry {
             .map(|(id, _)| id.clone())
             .collect();
         for id in blocked {
+            let (thread_id, run_id) = {
+                let record = self.record_mut(&id)?;
+                (record.thread_id.clone(), record.run_id.clone())
+            };
+            self.thread_store
+                .classify_run(&thread_id, &run_id, RunClassification::Failed)?;
             if let Some(record) = self.records.get_mut(&id) {
                 record.snapshot.status = AgentStatus::Failed;
                 record.snapshot.last_error = Some("a required agent did not complete".into());
@@ -889,9 +1034,10 @@ impl AgentRegistry {
                 Value::String("a required agent did not complete".into()),
             );
         }
+        Ok(())
     }
 
-    fn enforce_budgets(&mut self) {
+    fn enforce_budgets(&mut self) -> DevelopmentResult<()> {
         let now = now_ms();
         let exceeded: Vec<_> = self
             .records
@@ -913,6 +1059,12 @@ impl AgentRegistry {
             .map(|(id, _)| id.clone())
             .collect();
         for id in exceeded {
+            let (thread_id, run_id) = {
+                let record = self.record_mut(&id)?;
+                (record.thread_id.clone(), record.run_id.clone())
+            };
+            self.thread_store
+                .classify_run(&thread_id, &run_id, RunClassification::Failed)?;
             if let Some(record) = self.records.get_mut(&id) {
                 if let Some(sender) = record.command.take() {
                     let _ = sender.try_send(WorkerCommand::Request {
@@ -927,9 +1079,10 @@ impl AgentRegistry {
             }
             self.record_event(&id, "budgetExceeded", Value::Null);
         }
+        Ok(())
     }
 
-    fn apply_worker_event(&mut self, event: WorkerEvent) {
+    fn apply_worker_event(&mut self, event: WorkerEvent) -> DevelopmentResult<()> {
         match event {
             WorkerEvent::Ready(id) => {
                 if let Some(record) = self.records.get_mut(&id)
@@ -988,6 +1141,13 @@ impl AgentRegistry {
                 self.record_event(&id, &kind, value);
             }
             WorkerEvent::Failed(id, error) => {
+                if let Some(record) = self.records.get(&id) {
+                    self.thread_store.classify_run(
+                        &record.thread_id,
+                        &record.run_id,
+                        RunClassification::Failed,
+                    )?;
+                }
                 if let Some(record) = self.records.get_mut(&id)
                     && !record.snapshot.status.terminal()
                 {
@@ -1005,6 +1165,7 @@ impl AgentRegistry {
                 self.record_event(&id, "stopped", Value::Null);
             }
         }
+        Ok(())
     }
 
     fn join_worker(&mut self, id: &AgentId, terminal: AgentStatus) -> DevelopmentResult<()> {
@@ -1013,6 +1174,12 @@ impl AgentRegistry {
             && worker.join().is_err()
         {
             let error = format!("agent {} worker panicked", id.as_str());
+            let (thread_id, run_id) = {
+                let record = self.record_mut(id)?;
+                (record.thread_id.clone(), record.run_id.clone())
+            };
+            self.thread_store
+                .classify_run(&thread_id, &run_id, RunClassification::Failed)?;
             let record = self.record_mut(id)?;
             record.command = None;
             record.snapshot.status = AgentStatus::Failed;
@@ -1025,6 +1192,22 @@ impl AgentRegistry {
             );
             return Err(DevelopmentError::Process(error));
         }
+        let (thread_id, run_id) = {
+            let record = self.record_mut(id)?;
+            (record.thread_id.clone(), record.run_id.clone())
+        };
+        let classification = match terminal {
+            AgentStatus::Completed => RunClassification::Completed,
+            AgentStatus::Failed => RunClassification::Failed,
+            AgentStatus::Cancelled => RunClassification::Cancelled,
+            _ => {
+                return Err(DevelopmentError::Conflict(
+                    "invalid terminal agent status".into(),
+                ));
+            }
+        };
+        self.thread_store
+            .classify_run(&thread_id, &run_id, classification)?;
         let record = self.record_mut(id)?;
         record.command = None;
         record.snapshot.status = terminal;
@@ -1032,7 +1215,7 @@ impl AgentRegistry {
         Ok(())
     }
 
-    fn reap_finished_workers(&mut self) {
+    fn reap_finished_workers(&mut self) -> DevelopmentResult<()> {
         let finished = self
             .records
             .iter()
@@ -1050,6 +1233,18 @@ impl AgentRegistry {
                 .get_mut(&id)
                 .and_then(|record| record.worker.take());
             let panicked = worker.is_some_and(|worker| worker.join().is_err());
+            let should_fail = panicked
+                || self
+                    .records
+                    .get(&id)
+                    .is_some_and(|record| !record.snapshot.status.terminal());
+            if should_fail && let Some(record) = self.records.get(&id) {
+                self.thread_store.classify_run(
+                    &record.thread_id,
+                    &record.run_id,
+                    RunClassification::Failed,
+                )?;
+            }
             let mut event = None;
             if let Some(record) = self.records.get_mut(&id) {
                 record.command = None;
@@ -1082,6 +1277,7 @@ impl AgentRegistry {
                 self.record_event(&id, kind, payload);
             }
         }
+        Ok(())
     }
 
     fn record_event(&mut self, id: &AgentId, kind: &str, payload: Value) {
@@ -1155,7 +1351,24 @@ fn run_worker(
             return;
         }
     };
-    send_critical_worker_event(&events, WorkerEvent::Ready(id.clone()));
+    let session_id = harness.core_session_id().map(str::to_owned);
+    if let Err(error) = announce_worker_ready(
+        &events,
+        id.clone(),
+        &runtime.thread_store,
+        &runtime.thread_id,
+        &runtime.run_id,
+        session_id.as_deref(),
+    ) {
+        send_critical_worker_event(
+            &events,
+            WorkerEvent::Failed(
+                id,
+                format!("failed to persist Core session ID before accepting prompts: {error}"),
+            ),
+        );
+        return;
+    }
     loop {
         loop {
             match commands.try_recv() {
@@ -1231,6 +1444,21 @@ fn run_worker(
     }
 }
 
+fn announce_worker_ready(
+    events: &SyncSender<WorkerEvent>,
+    id: AgentId,
+    store: &ThreadStore,
+    thread_id: &str,
+    run_id: &str,
+    session_id: Option<&str>,
+) -> DevelopmentResult<()> {
+    if let Some(session_id) = session_id {
+        store.set_session(thread_id, run_id, session_id)?;
+    }
+    send_critical_worker_event(events, WorkerEvent::Ready(id));
+    Ok(())
+}
+
 fn send_lossy_worker_event(
     events: &SyncSender<WorkerEvent>,
     event: WorkerEvent,
@@ -1243,6 +1471,19 @@ fn send_lossy_worker_event(
 
 fn send_critical_worker_event(events: &SyncSender<WorkerEvent>, event: WorkerEvent) {
     let _ = events.send(event);
+}
+
+fn agent_request_blocked(id: &AgentId, status: AgentStatus) -> DevelopmentError {
+    let reason = match status {
+        AgentStatus::RecoveryPending => "explicit Core session recovery is required",
+        AgentStatus::Unavailable => "the prior run was never initialized and will not replay",
+        _ => "the agent is not ready to accept requests",
+    };
+    DevelopmentError::Conflict(format!(
+        "agent {} cannot accept requests while {:?}: {reason}",
+        id.as_str(),
+        status
+    ))
 }
 
 fn validate_spec(
@@ -1369,6 +1610,23 @@ mod tests {
     ) {
         let spec = AgentSpec::new("lifecycle-test", "prove worker ownership");
         let now = now_ms();
+        let thread_id = crate::thread_store::random_id("thread").unwrap();
+        let run_id = crate::thread_store::random_id("run").unwrap();
+        registry
+            .thread_store
+            .create(ThreadRecord {
+                thread_id: thread_id.clone(),
+                title: spec.role.clone(),
+                role: spec.role.clone(),
+                created_at_ms: now,
+                runs: vec![RunRecord {
+                    run_id: run_id.clone(),
+                    engine: "test".into(),
+                    core_session_id: Some("fixture".into()),
+                    classification: RunClassification::RecoveryPending,
+                }],
+            })
+            .unwrap();
         registry.records.insert(
             id.clone(),
             AgentRecord {
@@ -1397,6 +1655,8 @@ mod tests {
                 worker: Some(worker),
                 awaiting_agent_settle: false,
                 dropped_events: Arc::new(AtomicU64::new(0)),
+                thread_id,
+                run_id,
             },
         );
     }
@@ -1435,6 +1695,191 @@ mod tests {
         assert_eq!(request_id, "glass-request-17");
         registry.cancel(&id).unwrap();
         drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reopened_thread_rows_are_truthful_and_never_accept_prompts() {
+        let root = test_root();
+        let registry = AgentRegistry::new(&root).unwrap();
+        let mut rows = Vec::new();
+        for (title, classification, session_id) in [
+            (
+                "prior active",
+                RunClassification::RecoveryPending,
+                Some("actual-core-session".to_string()),
+            ),
+            ("not initialized", RunClassification::Starting, None),
+            (
+                "waiting in dependency queue",
+                RunClassification::Queued,
+                None,
+            ),
+            (
+                "finished",
+                RunClassification::Completed,
+                Some("finished-session".to_string()),
+            ),
+        ] {
+            rows.push(ThreadRecord {
+                thread_id: crate::thread_store::random_id("thread").unwrap(),
+                title: title.into(),
+                role: "builder".into(),
+                created_at_ms: 1,
+                runs: vec![RunRecord {
+                    run_id: crate::thread_store::random_id("run").unwrap(),
+                    engine: "glass-core".into(),
+                    core_session_id: session_id,
+                    classification,
+                }],
+            });
+        }
+        for row in rows {
+            registry.thread_store.create(row).unwrap();
+        }
+        drop(registry);
+        let mut reopened = AgentRegistry::new(&root).unwrap();
+        let snapshots = reopened.list().unwrap();
+        assert_eq!(snapshots.len(), 4);
+        assert_eq!(
+            snapshots
+                .iter()
+                .filter(|s| s.status == AgentStatus::RecoveryPending)
+                .count(),
+            1
+        );
+        assert_eq!(
+            snapshots
+                .iter()
+                .filter(|s| s.status == AgentStatus::Unavailable)
+                .count(),
+            2
+        );
+        assert_eq!(
+            snapshots
+                .iter()
+                .filter(|s| s.status == AgentStatus::Completed)
+                .count(),
+            1
+        );
+        let pending = snapshots
+            .iter()
+            .find(|s| s.status == AgentStatus::RecoveryPending)
+            .unwrap()
+            .id
+            .clone();
+        let err = reopened
+            .request(
+                &pending,
+                PiSessionRequest::Prompt {
+                    text: "must not replay".into(),
+                    context: None,
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("explicit Core session recovery"));
+        let never_started = snapshots
+            .iter()
+            .find(|s| s.task.contains("waiting in dependency queue"))
+            .unwrap()
+            .id
+            .clone();
+        let err = reopened
+            .request(
+                &never_started,
+                PiSessionRequest::Prompt {
+                    text: "do not replay queued task".into(),
+                    context: None,
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("will not replay"));
+        assert!(
+            reopened
+                .history(0)
+                .unwrap()
+                .iter()
+                .all(|event| event.kind != "user")
+        );
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn worker_persists_core_session_before_ready_notification() {
+        let root = test_root();
+        let store = ThreadStore::open(&root).unwrap();
+        let thread_id = crate::thread_store::random_id("thread").unwrap();
+        let run_id = crate::thread_store::random_id("run").unwrap();
+        store
+            .create(ThreadRecord {
+                thread_id: thread_id.clone(),
+                title: "test".into(),
+                role: "builder".into(),
+                created_at_ms: 1,
+                runs: vec![RunRecord {
+                    run_id: run_id.clone(),
+                    engine: "glass-core".into(),
+                    core_session_id: None,
+                    classification: RunClassification::Starting,
+                }],
+            })
+            .unwrap();
+        let (events, received) = mpsc::sync_channel(1);
+        let agent_id = AgentId::parse("agent-ready-order").unwrap();
+        announce_worker_ready(
+            &events,
+            agent_id.clone(),
+            &store,
+            &thread_id,
+            &run_id,
+            Some("actual-core-session"),
+        )
+        .unwrap();
+        assert!(matches!(received.recv().unwrap(), WorkerEvent::Ready(id) if id == agent_id));
+        let record = store.list().unwrap().remove(0);
+        assert_eq!(
+            record.runs[0].core_session_id.as_deref(),
+            Some("actual-core-session")
+        );
+        assert_eq!(
+            record.runs[0].classification,
+            RunClassification::RecoveryPending
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_cancel_classification_survives_registry_reopen() {
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let id = AgentId::parse("agent-terminal-reopen").unwrap();
+        let (command, commands) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let worker = thread::spawn(move || {
+            while let Ok(command) = commands.recv() {
+                if matches!(command, WorkerCommand::Shutdown) {
+                    break;
+                }
+            }
+        });
+        insert_test_worker(&mut registry, id.clone(), command, worker);
+        let original_thread = registry.records.values().next().unwrap().thread_id.clone();
+        registry.cancel(&id).unwrap();
+        drop(registry);
+        let reopened = AgentRegistry::new(&root).unwrap();
+        assert_eq!(
+            reopened.records.values().next().unwrap().snapshot.status,
+            AgentStatus::Cancelled
+        );
+        let record = reopened
+            .thread_store
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.thread_id == original_thread)
+            .unwrap();
+        assert_eq!(record.runs[0].classification, RunClassification::Cancelled);
+        drop(reopened);
         std::fs::remove_dir_all(root).unwrap();
     }
 

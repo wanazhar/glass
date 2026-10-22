@@ -235,7 +235,6 @@ impl GlassCoreRuntime {
     ///
     /// Resident session state reaches the terminal through conversation
     /// events; this accessor exists for the adapter contract tests.
-    #[cfg(test)]
     pub(crate) fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -1810,7 +1809,9 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let runtime = harness_mode(&root, true, None, "older-version-v2");
         assert_eq!(runtime.session_id(), "fixture-session");
-        drop(runtime);
+        let harness = crate::resident_harness::ResidentHarness::GlassCore(runtime);
+        assert_eq!(harness.core_session_id(), Some("fixture-session"));
+        drop(harness);
         let _ = fs::remove_dir_all(root);
     }
 

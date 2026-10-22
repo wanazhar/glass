@@ -44,13 +44,15 @@ Core session ID is captured from the initialized runtime, then persisted before
 the agent can accept a prompt. If that write fails, the agent remains
 unavailable and no prompt is delivered.
 
-On reopen, prior nonterminal runs are classified `recoveryPending`; Glass
-regenerates ephemeral `AgentId` values for recovered rows and shows those rows
-through the existing Agent picker. A recovered row is not treated as idle or
-working, and attempts to send fail with an explicit message until a later
-checkpoint implements verified Core `session/describe` plus explicit
-`session/resume`. A missing Core session stays visible as unavailable; Glass
-does not create a replacement or replay a prior turn.
+On reopen, prior runs with an actual Core session ID are shown as
+`recoveryPending`; a run that crashed during initialization or remained in a
+dependency queue is shown as unavailable, with queued work identified as never
+started. Completed, failed, and cancelled rows retain their terminal
+classification. Glass regenerates ephemeral `AgentId` values for all rows and
+shows them through the existing Agent picker. A recovered row is not treated as
+idle or working, and attempts to send fail with an explicit message until a
+later checkpoint implements verified Core `session/describe` plus explicit
+`session/resume`. Glass does not create a replacement or replay a prior turn.
 
 ## State flow
 
@@ -69,8 +71,8 @@ active in-memory AgentId ── Glass exits/crashes ──► recoveryPending ro
 
 The first checkpoint proves ledger atomicity/version rejection, captures a real
 Core runtime session reference through the adapter boundary, and proves
-restart-like registry reopen produces the same ThreadId/RunId/session reference
-as recovery-pending without dispatching another prompt. It does not yet promise
+restart-like registry reopen retains the ThreadId/RunId/session reference and
+classifies each row truthfully without dispatching another prompt. It does not yet promise
 conversation reattachment or draft recovery; those are follow-up tasks. Editable
 follow-up queues and an attention inbox follow after thread/run identity and
 verified resume exist.
@@ -80,7 +82,7 @@ verified resume exist.
 | Boundary | Contract | Evidence |
 |---|---|---|
 | `thread_store` ↔ project `.glass` | Versioned private ledger; serialized mutations; fail closed on invalid state | Store tests for round-trip, concurrent mutation, schema/workspace mismatch, and write failure |
-| `AgentRegistry` ↔ store | Generate stable IDs; persist before worker effects; store actual engine session ID; reconstruct only as recovery-pending | Restart-like registry test; no prompt replay |
+| `AgentRegistry` ↔ store | Generate stable IDs; persist before worker effects; store actual engine session ID; reconstruct as pending, unavailable, or terminal | Restart-like registry test; no prompt replay |
 | `ResidentHarness` ↔ Core runtime | Expose the session ID returned by initialize/open; no synthetic ID | Fake Core runtime adapter test |
 | snapshot ↔ TUI Agent picker | Show recovered rows without labelling them live; reject sends while pending recovery | State/projection tests |
 

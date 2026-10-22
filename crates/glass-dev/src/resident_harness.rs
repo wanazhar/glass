@@ -213,6 +213,14 @@ impl ResidentHarness {
         }
     }
 
+    /// Return the actual initialized Core session ID; legacy Pi has no compatible reference.
+    pub(crate) fn core_session_id(&self) -> Option<&str> {
+        match self {
+            Self::GlassCore(runtime) => Some(runtime.session_id()),
+            Self::Pi(_) => None,
+        }
+    }
+
     /// Poll for the next Glass conversation event.
     pub(crate) fn recv_event_timeout(
         &mut self,

@@ -1,7 +1,7 @@
 ---
 id: issue63-durable-threads-001
 scope: issue-63-durable-project-threads
-status: in-progress
+status: complete
 depends-on: [issue63-thread-isolation-001]
 ---
 
@@ -66,16 +66,19 @@ Do not touch protocol/TUI ownership behavior or perform broad formatting.
       initialized nonterminal runs as recovery-pending, shows uninitialized runs
       and never-started queued work as unavailable, and preserves terminal rows;
       no work is replayed.
-- [x] This checkpoint does not yet persist drafts or reconnect to a Core
-      session; task docs and UI must say so clearly.
+- [x] At this checkpoint, drafts and exact Core session reattachment were not
+      delivered; the checkpoint's docs/UI made that limitation explicit. Draft
+      persistence and exact-session recovery were delivered later in the
+      [composer draft task](issue63-durable-composer-drafts-001.md) and
+      [Core session recovery task](issue63-core-session-resume-001.md).
 - [x] Recovered rows appear in the existing Agent picker; send attempts fail
       explicitly while recovery is pending, without creating a new session.
 - [x] Focused tests cover round-trip/reopen, concurrent writes, atomic/failure,
       schema/identity behavior, private paths, adapter session ID capture,
       pending-state projection, terminal rows, and no prompt replay.
-- [x] Current TUI/runtime docs distinguish durable Glass identity from
-      ephemeral AgentId and state that exact Core session reattachment is not
-      delivered by this task.
+- [x] The checkpoint documented durable Glass identity separately from
+      ephemeral AgentId and described exact Core reattachment as future work;
+      the later recovery task owns the current exact-session behavior.
 - [x] Focused `glass-dev` tests, format, strict scoped Clippy, docs validators,
       and diff review pass using the existing shared target.
 - [x] Commit locally with a Conventional Commit; do not push, release, tag,
@@ -99,4 +102,9 @@ Passed using shared target `/home/ubuntu/work/glass/.worktrees/issue63-mixed-too
   `scripts/check-documentation-depth.py`, and
   `scripts/check-release-documentation.py`
 
-Independent review remains with the parent agent. No broad suite was run.
+Independent review found no implementation blocker. It requested that the
+documentation acceptance describe the checkpoint historically because the
+dependent session-recovery task now provides exact reattachment; this record
+and the review are updated accordingly. No broad suite was run.
+
+Review: [durable thread checkpoint review](../reviews/issue63-durable-threads-001-01.md).

@@ -1,15 +1,15 @@
 # glass-browser
 
-`glass-browser` is Glass's standalone browser intelligence runtime and Rust
+`glass-browser` is Glass's standalone browser-control program and Rust
 library. Its canonical `BrowserSession` starts the Glass-owned native runtime
 directly; `CdpBrowserSession` is the explicit full Chrome/Chromium CDP migration
 API. Its portable semantic session can connect to Firefox WebDriver BiDi or
 SafariDriver W3C WebDriver endpoints. It does not bundle a browser, host a
 remote browser service, or infer an autonomous action plan.
 
-**Status: Current 0.3.14 source behavior.** This is the browser-only package;
-the complete development TUI, project runtime, Pi Agent, editor, PTYs, and
-Remote View belong to `glass-dev` and are not exported here.
+**Status: Current 0.3.14 source behavior.** This is the browser-only package.
+The complete development TUI, project runtime, resident-agent harness, editor,
+PTYs, and Remote View belong to `glass-dev` and are not exported here.
 
 
 The package provides:

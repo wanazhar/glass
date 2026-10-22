@@ -1,6 +1,8 @@
 # Autonomous task DAGs
 
-**Status: Current 0.3.14 source behavior.** The task scheduler is a Glass-owned orchestration layer above resident agents. It is not a general workflow engine and it does not persist task records across a workspace restart.
+**Status: Current source behavior.** The task scheduler assigns work to
+resident agents and checks their results. It is not a general workflow engine.
+Task records stay in memory and do not survive a workspace restart.
 
 ```text
 TaskSpec (goal, prompt, policy, verifier, budget)
@@ -9,20 +11,27 @@ TaskSpec (goal, prompt, policy, verifier, budget)
 TaskScheduler ── dependency and retry state
        │
        ▼
-AgentRegistry ── one AgentSpec / worker / Pi session
+AgentRegistry ── one AgentSpec / worker / selected resident engine
        │
        ▼
-Pi turn ── bounded events and attributed evidence
+agent turn ── bounded events and attributed evidence
        │
        ▼
 verification ── command or governed resident evidence
 ```
 
-`DevelopmentWorkspace` owns one `TaskScheduler` and one `AgentRegistry`. The daemon workspace actor ticks the scheduler every 50 ms even when no client is connected. Tasks remain live while that actor and workspace remain alive. A daemon restart or workspace eviction loses in-memory task records, while any Pi session files and timeline evidence have their own persistence rules. See [Development Runtime](development-runtime.md), [Native Pi SDK runtime](pi-sdk-runtime.md), and [Local daemon](daemon.md).
+`DevelopmentWorkspace` owns one `TaskScheduler` and one `AgentRegistry`. The
+daemon checks the scheduler every 50 ms, even when no client is connected.
+Tasks remain active while the workspace actor is alive. A daemon restart or
+workspace eviction clears task records. Agent session files and timeline
+evidence have separate persistence rules. Glass Core is the default resident
+engine; the legacy Pi backend is optional. See [Development Runtime](development-runtime.md),
+[Glass Core resident harness](glass-core-harness.md), [Native Pi SDK runtime](pi-sdk-runtime.md),
+and [Local daemon](daemon.md).
 
 ## Entry points and trust
 
-The TUI exposes `:task` commands. The governed router exposes these names to MCP, Pi, and other resident clients:
+The TUI exposes `:task` commands. MCP and resident agents use these tool names:
 
 ```text
 glass.task.create          glass.task.list
@@ -97,7 +106,9 @@ The task snapshot includes ID, title, goal, full prompt, role, dependencies, ass
 
 ## Verification policies
 
-Agent settlement is evidence that the Pi turn ended. It is not implementation proof. The default `inferred` policy resolves when the task is created:
+Agent settlement proves that the selected engine ended the turn. It does not
+prove that the agent completed the task. The default `inferred` policy resolves
+when the task is created:
 
 | Project evidence at creation | Inferred verifier |
 |---|---|
@@ -145,13 +156,22 @@ A task worktree must canonicalize successfully. The root or a Git worktree is ac
 | Resident evidence missing | Task remains `waiting` | Run the governed LSP/browser/debugger/Git/custom operation and submit matching evidence |
 | Task paused | Assigned agent is cancelled; task becomes `paused` | Resume to queue a new attempt |
 | Task cancelled | Assigned agent is cancelled; descendants become blocked | Create a new task or retry only if cancellation was intentional and state is safe |
-| Scheduler/daemon closes | In-memory tasks stop; persisted Pi/timeline artifacts remain separate | Recreate tasks after reopening; inspect artifacts before resuming work |
+| Scheduler/daemon closes | In-memory tasks stop; agent sessions and timeline artifacts have separate persistence | Recreate tasks after reopening; inspect artifacts before resuming work |
 
 A retry resets assignment, completion time, last error, and retry deadline. It does not erase bounded evidence or reset the task ID. `reassign` cancels a current agent, changes role/model/thinking, and queues the task again. Terminal tasks cannot be paused or reassigned.
 
 ## State ownership and security
 
-The task prompt, worktree, authority policy, model, thinking level, unrestricted flag, and budgets are copied into the assigned `AgentSpec`. The agent owns its Pi process and session. The scheduler owns only task state and does not bypass the agent's tool gateway. Mutating tools still require actor attribution, revision guards, path confinement, and browser leases; normal mode additionally requires workspace trust and confirmation. An explicit process-local `--yolo` run may activate an untrusted workspace without persisting that decision. Task evidence records who supplied it and from which service; callers cannot turn an untrusted or stale claim into proof.
+The assigned `AgentSpec` receives the task prompt, worktree, authority policy,
+model, thinking level, unrestricted flag, and budgets. The selected resident
+engine owns the agent session. The scheduler owns task state and does not
+bypass the agent tool gateway. Every tool call records its actor and checks
+the current project or browser revision. File operations stay inside the
+project root. Browser mutations use the current browser lease. Workspace trust
+and confirmation depend on the task's authority settings. An explicit
+process-local `--yolo` run can enable repository configuration without saving a
+trust decision. Task evidence records its source. An agent claim cannot
+replace missing or stale evidence.
 
 `unrestricted` is explicit task policy and reaches the assigned agent. It does
 not remove path checks, revision checks, protocol bounds, process limits, or
@@ -173,7 +193,8 @@ The daemon workspace actor test `daemon::tests::workspace_actors_do_not_serializ
 ## Related guides
 
 - [Development Runtime](development-runtime.md)
-- [Native Pi SDK runtime](pi-sdk-runtime.md)
+- [Glass Core resident harness](glass-core-harness.md)
+- [Native Pi SDK runtime](pi-sdk-runtime.md) (legacy backend)
 - [Coding harness architecture](harness-architecture.md)
 - [Development Graph and replay](development-graph.md)
 - [Experiments](experiments.md)

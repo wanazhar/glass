@@ -26,10 +26,10 @@ actor attribution, bounded-result rules, and revision/confirmation policy.
 
 | Family | Exact tools | Scope |
 |---|---|---|
-| `glass.agent` | `glass.agent.abort`, `glass.agent.approve`, `glass.agent.clone-session`, `glass.agent.compact`, `glass.agent.delegate`, `glass.agent.entries`, `glass.agent.follow-up`, `glass.agent.fork`, `glass.agent.hello`, `glass.agent.list`, `glass.agent.messages`, `glass.agent.model`, `glass.agent.models`, `glass.agent.name`, `glass.agent.new-session`, `glass.agent.prompt`, `glass.agent.rewind`, `glass.agent.send`, `glass.agent.sessions`, `glass.agent.setup`, `glass.agent.slash`, `glass.agent.spawn`, `glass.agent.stats`, `glass.agent.steer`, `glass.agent.switch-session`, `glass.agent.thinking`, `glass.agent.tree` | Persistent Pi sessions, background composer delivery, governed runtime setup, steering, lifecycle, model state, tool-call approval, and evidence. `slash` dispatches the human-controlled native Pi command surface; `rewind` branches a Pi session from an earlier entry and requires trusted-workspace mutation authority plus per-call confirmation; `sessions` lists resumable sessions and `tree` exposes branchable entries without mutation or confirmation. |
+| `glass.agent` | `glass.agent.abort`, `glass.agent.approve`, `glass.agent.clone-session`, `glass.agent.compact`, `glass.agent.delegate`, `glass.agent.entries`, `glass.agent.follow-up`, `glass.agent.fork`, `glass.agent.hello`, `glass.agent.list`, `glass.agent.messages`, `glass.agent.model`, `glass.agent.models`, `glass.agent.name`, `glass.agent.new-session`, `glass.agent.prompt`, `glass.agent.rewind`, `glass.agent.send`, `glass.agent.sessions`, `glass.agent.setup`, `glass.agent.slash`, `glass.agent.spawn`, `glass.agent.stats`, `glass.agent.steer`, `glass.agent.switch-session`, `glass.agent.thinking`, `glass.agent.tree` | Resident agent sessions. Glass Core is the default engine; set `GLASS_AGENT_HARNESS=pi` to use the legacy Pi engine. `slash` and entry-based `rewind`/`fork` are Pi-specific. Glass Core reports unsupported runtime operations instead of silently ignoring them. The family also provides background message delivery, lifecycle, model state, approvals, and evidence. Use `tools/list` to check which operations the selected engine supports. |
 | `glass.browser` | `glass.browser.act`, `glass.browser.attach`, `glass.browser.diff`, `glass.browser.navigate`, `glass.browser.observe`, `glass.browser.reconnect`, `glass.browser.remote-view.open`, `glass.browser.remote-view.revoke`, `glass.browser.remote-view.status`, `glass.browser.screenshot`, `glass.browser.semantic`, `glass.browser.snapshot`, `glass.browser.start`, `glass.browser.state`, `glass.browser.stop`, `glass.browser.target.select`, `glass.browser.targets`, `glass.browser.verify`, `glass.browser.web_ir` | Resident native-browser lifecycle, revision-safe actions, observations, bounded live Web IR evidence, targets, explicit loopback Remote View, and evidence. `glass.browser.attach` explicitly selects the Chromium/CDP migration backend; ordinary `glass.browser.start` uses native. |
 | `glass.capabilities` | `glass.capabilities.inspect` | Effective resident-tool availability and unavailable reasons. |
-| `glass.command` | `glass.command.run` | Bounded foreground command execution attributed to the Pi actor. |
+| `glass.command` | `glass.command.run` | Bounded foreground command execution attributed to the requesting workspace actor. |
 | `glass.daemon` | `glass.daemon.doctor`, `glass.daemon.logs`, `glass.daemon.start`, `glass.daemon.status`, `glass.daemon.stop` | Resident daemon lifecycle, health, logs, and recovery controls. |
 | `glass.debug` | `glass.debug.attach`, `glass.debug.breakpoint.remove`, `glass.debug.breakpoint.set`, `glass.debug.configuration_done`, `glass.debug.continue`, `glass.debug.disconnect`, `glass.debug.evaluate`, `glass.debug.events`, `glass.debug.exception.set`, `glass.debug.inspect`, `glass.debug.launch`, `glass.debug.pause`, `glass.debug.processes`, `glass.debug.restart`, `glass.debug.scopes`, `glass.debug.stack`, `glass.debug.start`, `glass.debug.step`, `glass.debug.stop`, `glass.debug.terminate`, `glass.debug.threads`, `glass.debug.variables` | Resident DAP lifecycle, configuration, breakpoints, execution, watches, reverse-request processes, and inspection. |
 | `glass.diagnostics` | `glass.diagnostics.run` | Bounded shared language-server diagnostics. |
@@ -109,9 +109,9 @@ project root, retained content is bounded, and mutations remain attributed.
 | `agent.prompt` | Run one bounded deterministic local-harness prompt. |
 | `agent.steer` | Send a steering event to the local harness. |
 
-Project mutation through a daemon-bound client requires the current mutation
-lease. Read-only inspection does not start a browser runtime. Pi-specific control remains
-behind the Glass harness; these MCP tools do not expose Pi's private SDK IPC.
+Project mutations through a daemon client require the current mutation lease.
+Read-only project tools do not start a browser runtime. Agent tools use the
+selected resident engine. Glass does not expose the Pi SDK's private IPC.
 
 ## Task Protocol and Web IR
 

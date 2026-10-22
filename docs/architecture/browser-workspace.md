@@ -8,7 +8,7 @@ Status: Current 0.3.14 source behavior
 focused `glass-browser` TUI and Glass Dev's embedded `App` surface. It owns
 bounded presentation state, selection, focus, browser input ownership, and
 recovery hints. It does **not** own Chrome, CDP, project files, editor buffers,
-PTYs, Pi sessions, or workflow execution.
+PTYs, resident-agent sessions, or workflow execution.
 
 The two products use different execution adapters:
 
@@ -20,7 +20,7 @@ standalone glass-browser                         glass (Glass Dev)
 │  BrowserWorkspaceController  │                 │   ├─ BrowserService      │
 │  Browser-only pages           │                 │   │   └─ BrowserWorker    │
 └──────────────┬───────────────┘                 │   ├─ ProjectWorkspace    │
-               │                                  │   ├─ agents / Pi          │
+               │                                  │   ├─ resident agents     │
                v                                  │   └─ processes, Git, LSP  │
        browser semantic + visual                  │  BrowserWorkspaceController│
                                                   └─────────────┬────────────┘

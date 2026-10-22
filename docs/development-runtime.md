@@ -1,11 +1,11 @@
 # Development Runtime
 
-**Status: Current 0.3.14 source behavior.** This guide describes the
-`glass-dev` development workspace, not the browser-only crate. It owns one
-canonical project root, bounded files and editor buffers, PTY processes,
-language services, graph and timeline evidence, resident agents, tasks, and
-optional browser context. The TUI, MCP, daemon, and Rust clients use these
-Rust-owned services; they do not maintain separate project state.
+**Status: Current source behavior.** This guide describes the `glass-dev`
+workspace. It does not describe the browser-only product. The workspace owns
+one project root and the project's files, editor buffers, terminal processes,
+language services, event history, agents, tasks, and optional browser session.
+The TUI, MCP server, daemon, and Rust API use the same services. They do not
+keep separate copies of project state.
 
 See [Architecture overview](architecture/README.md) for module ownership. See [CLI reference](cli.md) for installed syntax and [Native Pi SDK runtime](pi-sdk-runtime.md) for agent lifecycle.
 
@@ -19,9 +19,26 @@ cd /path/to/project
 glass project inspect --root .
 ```
 
-`ProjectWorkspace::open` canonicalizes the root, detects project markers, loads `glass.toml` (preferred) or `.glass.toml`, opens the bounded timeline, and initializes resident services. Detection does not execute a detected command. `glass update --dry-run` and `glass update` update the existing Cargo-installed owner; see [Installation and operations](installation.md#update-a-cargo-installation).
+`ProjectWorkspace::open` resolves the canonical project root, detects project
+files, loads `glass.toml` or `.glass.toml`, opens the bounded event history,
+and starts resident services. Detection does not run commands from the
+project. Use `glass update --dry-run` to inspect an update before applying it.
+See [Installation and operations](installation.md#update-a-cargo-installation)
+for package ownership and recovery details.
 
-A new or changed filesystem identity opens as `Untrusted`. Inspection, static reads, search, Git metadata, and manual browser operations remain available. In the normal process, project hooks, skills, configured tools, tests, language-server overrides, Pi project execution, kernels, experiments, and task execution require a local trust decision. Glass Dev's human-controlled resident Pi command surface can still inspect and manage its own session before that decision. `--yolo` is the explicit process-local override for Glass Dev: it activates repository-controlled configuration and bypasses the workspace-trust execution gate without persisting trust. Root, revision, lease, protocol, timeout, and result bounds remain active. See [Workspace trust](workspace-trust.md).
+A project with a new or changed filesystem identity opens as `Untrusted`.
+Inspection, static reads, search, Git metadata, and manual browser actions are
+available. Project hooks, configured tools and tests, language-server
+overrides, kernels, experiments, and task execution need a local trust
+decision. The default Glass Core agent uses the same workspace tool router.
+The legacy Pi backend follows the same workspace authority rules. Glass does
+not trust a project because its configuration requests trust.
+
+`--yolo` is a process-local Glass Dev option. It enables repository
+configuration and bypasses the workspace-trust execution gate for that
+process. It does not save a trust decision. Root confinement, revisions,
+leases, protocol limits, timeouts, and result bounds still apply. See
+[Workspace trust](workspace-trust.md).
 
 The one-shot CLI opens and closes a workspace for one request. A resident TUI owns one workspace until exit. A stdio MCP server keeps a bounded registry for its process. The daemon shares workspaces between authenticated local clients. Registries hold at most eight projects and evict an idle project after 30 minutes. Closing a workspace terminates owned services and processes; it never deletes project files.
 
@@ -35,7 +52,8 @@ DevelopmentWorkspace (generation + trust)
  ├─ ProjectWorkspace (tree, buffers, editor revisions, timeline, graph)
  ├─ ProcessManager (owned PTY trees)
  ├─ LanguageService / TestService / Debugger sessions
- ├─ AgentRegistry ── one worker + one Pi session per resident agent
+ ├─ AgentRegistry ── one worker per resident agent
+ │                   └─ Glass Core by default; Pi is an explicit legacy backend
  ├─ TaskScheduler ── task records above AgentRegistry
  ├─ DevelopmentToolRouter (revision, trust, actor, confirmation)
  └─ BrowserService (optional attached browser context)
@@ -43,7 +61,15 @@ DevelopmentWorkspace (generation + trust)
         └─ TUI SnapshotWorker (display projections only; never state owner)
 ```
 
-`DevelopmentWorkspace` owns the generation and resident service registries. `ProjectWorkspace` owns project files, in-memory buffers, editor revisions, actor attribution, comments, proposals, checkpoints, timeline, and graph. `AgentRegistry` owns worker threads and Pi child processes. `TaskScheduler` owns task records but is currently in-memory; the daemon ticks it while its workspace actor is alive. Pi session files and timeline/checkpoint files are separate persisted artifacts. A worker, TUI snapshot, or external harness cannot become the project authority.
+`DevelopmentWorkspace` owns the workspace generation and resident-service
+registries. `ProjectWorkspace` owns files, in-memory buffers, editor revisions,
+actor attribution, comments, proposals, checkpoints, event history, and graph
+data. `AgentRegistry` owns resident agent workers and the selected engine
+runtime. Glass Core is the default. Set `GLASS_AGENT_HARNESS=pi` to use the
+legacy Pi runtime. The task scheduler keeps task records in memory while the
+daemon workspace actor is alive. Agent session files, timeline events, and
+editor checkpoints have separate storage. A worker, TUI snapshot, or external
+harness does not own the project.
 
 `project inspect` reports detected LSP executable names and configured browser
 URL hints as discovery metadata. Those values are informational: Glass does not
@@ -143,12 +169,14 @@ Glass has four distinct agent paths:
 | Path | Ownership and behavior | Entry point |
 |---|---|---|
 | Deterministic local harness | Synchronous, browser-independent `glass.harness.v1` reducer. It resolves bounded references and scripted prompts such as `read PATH`, `files`, `process list`, and `diff`; it has no model provider or persistent session. | `glass agent hello/prompt --harness local --root .` |
-| Resident agent (Glass Core) | `AgentRegistry` worker with a persistent engine session over the host runtime protocol, governed Glass tools, and optional browser context. | TUI Agent surface; `glass.agent.*`; see [Glass Core resident harness](glass-core-harness.md) |
-| Resident agent (legacy Pi) | The same registry worker and governed tools with a native Pi `AgentSession`, selected by `GLASS_AGENT_HARNESS=pi`. | TUI Agent surface; [Native Pi SDK runtime](pi-sdk-runtime.md) |
+| Resident agent (default) | `AgentRegistry` worker with a persistent Glass Core session, Glass-owned tools, and optional browser context. | TUI Agent surface; `glass.agent.*`; see [Glass Core resident harness](glass-core-harness.md) |
+| Resident agent (legacy Pi) | The same registry worker uses the Pi `AgentSession` when `GLASS_AGENT_HARNESS=pi`. | TUI Agent surface; [Native Pi SDK runtime](pi-sdk-runtime.md) |
 | External harness handoff | Fixed executable names discovered on `PATH`; Glass hands the terminal to the selected interactive program and resumes after exit. It does not emulate or register that program. | `glass harness list`; `glass harness start NAME --root .` |
 | One-shot delegation | Temporary Codex, Claude, or OpenCode child. Read-only is default; output and errors are bounded; no resident identity or session is created. | `glass agent delegate HARNESS PROMPT --root .` |
 
-`glass agent prompt --harness pi` is the compatibility Pi command adapter for a one-shot CLI request. It is not the resident engine path. Use the TUI or daemon-backed resident agent for steering, follow-up, approvals, and persistent ownership.
+`glass agent prompt --harness pi` is a one-shot compatibility command. It is
+not the resident agent. Use the TUI or daemon-backed agent for steering,
+follow-up messages, and a persistent session.
 
 The trusted resident tool gateway provides read, list, search, edit, write, process, test, LSP, Git, browser, workflow, debugger, and task capabilities according to availability. The resident engine receives this catalog once, when its session opens, and Glass executes every call; a mutation is checked again at execution time, where stale revisions, leases, path confinement, and confirmation still apply. See [MCP integration](mcp.md) for transport semantics.
 
@@ -160,7 +188,7 @@ The trusted resident tool gateway provides read, list, search, edit, write, proc
 | External disk change or stale proposal | Save/accept fails with `Conflict`; disk is unchanged | Reread, compare, reopen or recreate proposal, then retry |
 | Explicit write-claim overlap | New claim fails; existing buffers remain | Release/reconcile the actor claim and claim a non-overlapping range |
 | PTY poll, process, or LSP failure | State is failed/degraded; retained output/evidence remains | Inspect, stop/restart the owned service, or install the missing executable |
-| Agent worker/Pi process exits | Agent becomes `failed`; dependent agents/tasks do not become success | Inspect `lastError`, restart a failed/cancelled agent or create a new session |
+| Resident agent worker or engine exits | Agent becomes `failed`; dependent tasks do not become successful | Inspect `lastError`, restart the agent or create a new session |
 | Browser disconnect or recovery | Browser tools and revisions become unavailable; project remains alive | Reconnect/attach or continue in semantic-only mode |
 | Workspace generation/revision conflict | Tool is rejected before execution | Inspect current workspace and issue a fresh call |
 | TUI exit with unsaved buffer | Exit prompt blocks discard | Save, or explicitly choose the discard path |

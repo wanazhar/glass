@@ -71,7 +71,7 @@ remain enforced by the store. A stale revision, active owner, or unknown ID
 fails closed; the CLI does not silently retry or adopt another workspace.
 
 The experience command itself owns only its local read/write operation. It does
-not claim ownership of Chrome, a terminal pane, a Pi session, a development
+not claim ownership of Chrome, a terminal pane, a resident-agent session, a development
 process, or a live browser target. The interactive TUI owns those UI resources;
 its command-palette result is a compact status string and updates the selected
 surface, editor projection, or terminal pane rather than printing an experience

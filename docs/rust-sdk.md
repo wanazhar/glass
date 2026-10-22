@@ -2,12 +2,15 @@
 
 Status: Current 0.3.14 source behavior (including current-source work in this checkout)
 
-The workspace publishes two Rust packages with different boundaries:
+The workspace has two user-facing Rust packages and one engine implementation
+crate:
 
 * `glass-browser` (`glass_browser`) is the browser-control library and
   browser-only CLI product.
-* `glass-dev` (`glass_dev`) is the development runtime, resident agent/Pi
-  integration, project/editor/process tooling, and the `glass` CLI product.
+* `glass-dev` (`glass_dev`) is the development runtime, resident-agent
+  integration, project/editor/process tools, and the `glass` CLI product.
+* `glass-browser-core` contains the native browser engine and shared bounded
+  data contracts. Most applications should use `glass-browser` instead.
 
 The public `browser_workspace` module provides the bounded, revision-safe
 controller, state, intent, action, capability, entity, target, layout, focus,
@@ -52,9 +55,10 @@ separate package:
 glass-dev = "0.3"
 ```
 
-Use `glass_dev::…` for project/editor/process/LSP, resident Pi, harness,
+Use `glass_dev::…` for project, editor, process, LSP, resident-agent, harness,
 collaboration, workspace-local Agent todos, Ask/Plan/Agent turn mode, and TUI
-APIs.
+APIs. Glass Core is the default resident engine. The Pi SDK remains an
+explicit legacy backend.
 `glass-dev` depends on `glass-browser`; the browser crate does not depend on
 `glass-dev`, so browser-only embeddings do not acquire the development runtime.
 
@@ -64,15 +68,16 @@ APIs.
 | `fuzzing` | no | Fuzz-only hooks; do not enable in normal applications |
 | `native-engine` | yes | Glass-owned native runtime and canonical public `BrowserSession`; enabled by default |
 
-docs.rs builds all features. The native engine remains inside
-`glass-browser`; development runtime dependencies such as PTY integration are
-in `glass-dev`, not optional browser features.
+docs.rs builds all features. `glass-browser` provides the public session and
+backend adapter. `glass-browser-core` owns the native browser implementation.
+Development dependencies such as PTY integration belong to `glass-dev`.
 
 ### Native engine
 
-The native engine is the default local backend inside `glass-browser` and the
-canonical public Rust session. `BrowserSession` is the `BrowserRuntimeSession`
-type under the standard API name. `BrowserSession::start(config)` and
+The native engine is the default local backend for feature-enabled
+`glass-browser` builds. The public session API lives in `glass-browser`;
+engine implementation lives in `glass-browser-core`. `BrowserSession` is the
+standard name for `BrowserRuntimeSession`. `BrowserSession::start(config)` and
 `BrowserSession::start_default()` construct the native backend directly through
 `BackendFactory::native`; they never probe for Chrome, connect to CDP, or fall
 back to another runtime. `BrowserRuntimeSession::connect_native` remains an
@@ -857,8 +862,9 @@ Knowledge records never retain executable target references. Historical
 fingerprints can explain or rank current candidates but cannot authorize a
 mutation.
 
-The focused `glass-browser` crate does not export the Development Runtime;
-project files, PTYs, LSP, Pi, and Neovim ownership remain in `glass-dev`.
+The focused `glass-browser` crate does not export the Development Runtime.
+Project files, PTYs, LSP, resident agents, and Neovim ownership remain in
+`glass-dev`.
 
 
 ## Development Runtime
@@ -894,14 +900,14 @@ The internal `AgentToolGateway` validates its descriptor catalog, call
 envelope, JSON schema, authorization, and confirmation. Audit events store
 argument byte count/digest and result metadata, not argument values.
 
-### Managed Pi boundary
+### Legacy Pi runtime boundary
 
 `glass_dev::pi_runtime` exposes `PiReadiness`, `PiReadinessComponent`,
 `PiReadinessState`, `PiSessionRequest`, and `PINNED_PI_SDK_VERSION`
 (`0.84.4`). `PiReadiness` checks Node (currently 22.19.0 or newer), the
 managed SDK, authentication, provider, and session state. `PiSessionRequest`
-is the native resident-session protocol used by the development agent runtime;
-it is distinct from the CLI's legacy one-shot `PiHarness` RPC adapter.
+describes the legacy Pi resident session. It is distinct from the default
+Glass Core runtime protocol and from the CLI's one-shot `PiHarness` adapter.
 
 `AgentTurnMode` is the per-turn composer personality: Ask, Plan, or Agent
 (default Agent). Ask and Plan are fail-closed for mutations. `SessionTodo`,
@@ -988,7 +994,7 @@ Pi, Neovim, Git, and collaboration belong to `glass-dev`.
 
 | Module | Contract |
 |---|---|
-| `agents` | Resident Pi scheduling, lifecycle, evidence, and approval state |
+| `agents` | Resident-agent scheduling, lifecycle, evidence, and approval state |
 | `browser` | Development-browser service configuration, state, and worker handle |
 | `cli` | `glass` command dispatch for development routes |
 | `customization` | User/project configuration, skills, and custom commands |

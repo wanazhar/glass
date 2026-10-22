@@ -4,55 +4,53 @@ Status: Current workspace architecture.
 
 ## Purpose and boundary
 
-`glass-browser-core` is the owner of Glass's native browser engine and of the
-small bounded contracts shared by browser adapters. `glass-browser` remains
-the product-facing browser package: it owns browser sessions, browser backend
-selection, CLI integration, MCP integration, and compatibility re-exports.
-The development product depends on `glass-browser`; it does not reach into the
-engine crate directly.
+`glass-browser-core` contains the native browser engine and the small bounded
+contracts shared by browser adapters. `glass-browser` is the user-facing
+browser package. It owns browser sessions, backend selection, CLI and MCP
+integration, and compatibility re-exports. The development product depends on
+`glass-browser`; it does not depend directly on the engine crate.
 
 ```text
 glass-dev -> glass-browser -> glass-browser-core
 ```
 
 Dependencies point in one direction. The engine does not depend on the session
-adapter or product packages. Resource caps used by both sides live in the core
-contract module, with compatibility re-exports retained in `glass-browser` so
-existing imports continue to compile.
+adapter or product packages. Shared resource limits live in the core contracts
+module. `glass-browser` re-exports older paths so existing Rust imports still
+compile.
+
+This crate is separate from the `glass-core` program. `glass-core` runs resident
+agent sessions. `glass-browser-core` implements browser behavior.
 
 ## Features and integration surface
 
-The default `glass-browser-core` feature set compiles the shared serialized
-contracts and limit constants without pulling in the native engine's heavy
-runtime dependencies. `native-engine` enables those dependencies and the
-engine implementation. The browser package's `native-engine` feature forwards
-to the core feature, so existing applications continue to select the native
-runtime from the browser package.
+The default `glass-browser-core` feature set compiles only the shared data
+contracts and limit constants. It does not compile the native engine's runtime
+dependencies. The `native-engine` feature adds those dependencies and the
+engine implementation. `glass-browser` forwards its `native-engine` feature
+to this crate.
 
-Engine modules are private implementation details. A curated, doc-hidden
-integration surface connects `glass-browser`'s native backend to the core;
-this is an internal crate boundary, not a promise that every engine helper or
-state field is a supported public API. Shared DTO serialization and bounded
-string deserialization preserve their established field names, bounds, and
-rejection behavior.
+Engine modules are private implementation details. A small, doc-hidden
+integration surface connects the browser adapter to the engine. It does not
+make every helper or state field a supported public API. Shared data types
+keep their existing serialized field names, size limits, and rejection
+behavior.
 
 ## Module ownership
 
-The native engine is organized under `native_engine` by browser responsibility:
-DOM parsing and mutation, CSS parsing/cascade/stylesheet processing, JavaScript
-runtime and host bindings, resource loading, content-process IPC and worker
-execution, layout, paint, rasterization, lifecycle, and service-worker state.
-Large subsystems use child modules for cohesive responsibilities (for example,
-CSS cascade and stylesheet handling, DOM tokenization and tree construction,
-JavaScript runtime/profile storage, and content-process IPC/worker lifecycle).
-Embedded scripts are kept in domain-named source modules. These boundaries
-allow each implementation area to evolve without moving adapter policy into
-the engine. Process-backed page and Worker HTTP(S) Fetch remains parent-brokered:
-the parent owns cookies and returns a bounded completed response body over IPC.
-The child exposes that body through its ReadableStream interface, while
-socket-level incremental delivery and transport cancellation are not provided
-across this broker path. The direct loader stream transport retains demand and
-cancel handling and is covered separately from brokered Fetch behavior.
+The `native_engine` modules follow browser responsibilities: DOM, CSS,
+JavaScript, resource loading, content processes, layout, painting, raster
+images, navigation lifecycle, and service workers. Large areas use child
+modules for separate jobs. For example, CSS cascade and property parsing are
+separate, as are DOM tokenization and tree construction. Embedded JavaScript
+assets are grouped by browser feature.
+
+For process-backed page and Worker `fetch()`, the parent process owns cookies
+and sends a bounded, complete response body over IPC. The child exposes that
+body as a `ReadableStream`. This brokered path does not stream bytes from the
+socket or cancel the socket request when the child stops reading. The direct
+resource loader has separate demand and cancellation behavior; its tests do
+not imply those features exist in the process-brokered path.
 
 ## Validation
 

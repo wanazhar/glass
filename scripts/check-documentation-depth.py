@@ -11,10 +11,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 DEPTH_CONTRACTS = {
     "README.md": (
-        "## Choose the product", "## Five-minute development loop",
-        "## Terminal workspace", "## Browser verification",
-        "## Agents and collaboration", "## SSH, Mosh, Herdr, and iPhone",
-        "## State, privacy, and ownership", "## Support and evidence",
+        "**EARLY ALPHA**", "## What Glass does", "## Choose a package",
+        "## Get started", "## Documentation", "## Current source and release evidence",
     ),
     "docs/getting-started.md": (
         "## Path A: inspect and run a project", "## Path B: use the terminal workspace",

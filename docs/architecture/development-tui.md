@@ -134,14 +134,14 @@ a second keybinding or state owner.
 | Surface | Authoritative projection | Guided empty/loading behavior |
 |---|---|---|
 | Trust | trust label and exact inspection items | starts here when project trust is required; `I` inspect, `O` open untrusted, `1` trust once, `T` trust project |
-| Agent | readiness, conversation bubbles, event/tool cards, approval | `START HERE` when Pi is ready; `SETUP` directs to `:actions` when Pi is unavailable |
+| Agent | selected-engine readiness, conversation bubbles, event/tool cards, approval | shows `START HERE` when the selected engine is ready; otherwise `:actions` offers the available setup and repair steps |
 | Code | bounded files, focused buffer, cursor/dirty state, review comments/proposals/checkpoints, LSP | no files/file open messages direct to selection and Enter; no diagnostics is a valid state |
 | App | embedded `BrowserWorkspaceController`: connection, target, semantic entities, workflow, visual path | detached/no page/loading/failed/recovery/semantic-only states stay visible |
 | Terminal | managed process rows with health, PID, command and detected URL | `s` starts the detected suite; `a` opens actions; no process is an empty state |
 | Tasks | workspace-local Agent checklist plus overnight DAG rows | empty todos direct to Plan accept or `glass.todo.write`; empty DAG directs to `a` or `:task create TITLE PROMPT` |
 | Git | branch/change rows, selected file and inline diff | opening Git loads the selected diff; loading is visible and off-thread |
 | Debug | debugger sessions and test evidence | no sessions is one start panel (`:debug start NAME COMMAND`) |
-| More | Pi/readiness, kernels, experiments/replay, harnesses and routes | `j/k` or click selects a route; Enter/double-click runs it; results stay on More |
+| More | agent-engine readiness, kernels, experiments/replay, harnesses and routes | `j/k` or click selects a route; Enter/double-click runs it; results stay on More |
 
 ## Navigation and modal routing
 
@@ -149,7 +149,7 @@ One active-overlay resolver owns keyboard, mouse, and terminal-overlay
 precedence. From highest priority to lowest it selects quit confirmation,
 editor exit prompt, native browser JavaScript dialog, help, command-center menu,
 browser target picker, file picker, session picker, agent approval, mutation
-confirmation, full-screen editor, Pi slash-command modal, composer dock, Glass
+confirmation, full-screen editor, legacy Pi slash-command modal, composer dock, Glass
 command palette, and browser recovery. Recovery is the lowest-priority overlay
 so it cannot replace an already active modal or editor. If no modal is active,
 ordinary surface input owns the event, including Git workbench keys. Ctrl-C
@@ -192,7 +192,7 @@ mouse, paste, or surface input while a higher-priority overlay is active.
 | Up/Down, `j`/`k` | focused list movement; otherwise the current surface scrolls |
 | PageUp/PageDown, Home/End | surface scroll/page or bounds |
 | `a` outside Agent | open the current surface command center; `:` opens the filtered palette |
-| `/` on Agent | open Pi's slash-command modal, including while a composer draft is non-empty; `:` remains the Glass command palette |
+| `/` on Agent | open the slash-command modal; Glass aliases work with either engine, while Pi built-ins require the legacy Pi engine; `:` opens Glass commands |
 | `Ctrl-L` | open the shared composer dock on the current surface |
 | `Ctrl-P` | open the file picker; in the composer or palette, it keeps its local history behavior |
 | `Ctrl-K` / `Ctrl-Shift-P` | open the command palette from the normal surface view |
@@ -295,11 +295,14 @@ in the card without releasing a different dialog. When the page or session
 closes the dialog externally, the overlay disappears on the next poll. A
 resize or focus-loss event does not silently dismiss the page dialog.
 
-### Resident engine slash-command modal
+### Slash-command modal
 
-The Agent surface has two command namespaces. `/` opens the resident engine's
-command modal; `:` opens Glass workspace actions. For legacy Pi sessions the
-modal contains all 23 built-ins from the pinned Pi SDK: `/settings`, `/model`,
+The Agent surface has two command namespaces. `/` opens the slash-command
+modal; `:` opens Glass workspace actions. Glass Core does not provide native
+slash commands. Glass-level aliases such as `/ask`, `/plan`, `/agent`,
+`/todo`, `/stats`, `/sessions`, and `/think` work with the default engine.
+Pi built-ins and extension commands require the legacy Pi engine. Its modal
+contains these 23 built-ins from the pinned Pi SDK: `/settings`, `/model`,
 `/tree`, `/thinking`, `/scoped-models`, `/export`, `/import`, `/share`,
 `/copy`, `/name`, `/session`, `/changelog`, `/hotkeys`, `/fork`, `/clone`,
 `/trust`, `/login`, `/logout`, `/new`, `/compact`, `/resume`, `/reload`, and
@@ -323,14 +326,12 @@ confirmation temporarily owns input; denying the confirmation returns to the
 same composer draft and cursor. Typed and pasted modal input is capped at 4 KiB;
 the UI reports when additional input exceeds that limit.
 
-The TUI queues native commands on the resident Pi worker so the input loop
-stays responsive. Pi emits a structured slash-result event; Glass renders it
-in the Agent transcript and keeps the detailed result on More. Extension
-commands, prompt templates, and enabled skill commands are accepted when typed
-after their resources load. `/login` temporarily gives the terminal to Pi for
-its interactive provider flow, and `/quit` enters the normal Glass quit path.
-See the [native runtime guide](../pi-sdk-runtime.md) for the runtime protocol
-and argument examples.
+For Pi commands, the TUI sends the request to the legacy Pi worker. Pi returns
+a structured result. Glass shows a short status in the Agent transcript and
+keeps details on More. The modal accepts extension, prompt-template, and
+enabled skill commands after Pi loads those resources. `/login` gives the
+terminal to Pi for provider login. `/quit` uses the normal Glass quit path.
+See the [legacy Pi runtime guide](../pi-sdk-runtime.md) for command details.
 
 ## First launch and agent composer
 

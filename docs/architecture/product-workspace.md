@@ -19,7 +19,8 @@ DevelopmentWorkspace (resident authority)
 │  ├─ CollaborationBus (claims + bounded subscribers)
 │  ├─ Git, source/runtime graph, timeline, LSP
 │  └─ ProcessManager / PTYs
-├─ agent workers and pinned Pi runtime
+├─ agent workers
+│  └─ Glass Core by default; Pi is an explicit legacy backend
 ├─ BrowserService → one BrowserWorker → optional browser runtime session
 ├─ task/workflow, kernel, debugger, experiment, replay state
 └─ trust, policy, customization, GitHub configuration
@@ -74,8 +75,10 @@ confirmation/recovery overlays own focus until accepted, denied, or dismissed.
 Opening a project detects project metadata without executing a detected command.
 The workspace starts untrusted unless its filesystem identity matches the local
 trust store. Static inspection, Git metadata, configuration review, and manual
-browser use remain possible; project hooks, Pi, skills, tools, tests, LSP/DAP
-overrides, kernels, and experiments wait for a trust decision.
+browser use remain possible. Project hooks, configured tools and tests,
+language-server overrides, kernels, and experiments wait for a trust decision.
+Resident agents use Glass Core by default; the legacy Pi backend follows the
+same workspace authority rules.
 
 Glass renders an initial cockpit before the full refresh. `SnapshotWorker` then
 refreshes resident projections, agent conversation, browser screenshots, and
@@ -154,16 +157,18 @@ their revisions and authorities are independent.
 
 ## Agent, trust, and mutation authority
 
-The ordinary Agent composer addresses the current resident conversation without
-requiring an agent ID. Pi readiness and authentication are explicit setup
-states. A prompt is held when another background action is active, and transport
-failure preserves the draft for edit-and-retry. Browser, editor, Git, process,
-workflow, and agent mutations all pass the governed worker/authorization path;
-confirmation is one-use for the relevant frozen call. Raw JSON is an explicit
-Inspect/export mode, not the default product surface.
+The Agent composer sends messages to the current resident conversation without
+requiring an agent ID. `glass agent doctor` and `glass agent status` report
+Glass Core readiness. Pi setup applies only when the legacy Pi backend is
+selected. If another background action is active, Glass keeps new text in the
+composer. If sending fails, Glass restores the draft for editing and retry.
+Browser, editor, Git, process, workflow, and agent changes use the shared
+workspace router and retain actor and revision information. Raw JSON is
+available through explicit inspection and export commands; it is not the
+default interface.
 
 ```text
-untrusted / Pi not ready ──> inspect or remediate ──> trusted + ready
+untrusted / engine not ready ──> inspect or configure ──> trusted + ready
                                                        │
                          ┌─────────────────────────────┴───────────────────────┐
                          │ human Code edits       Agent proposes browser/editor │

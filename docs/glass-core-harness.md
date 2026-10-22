@@ -1,9 +1,10 @@
 # Glass Core resident harness
 
-**Status: Current source behavior.** Resident agents in Glass Dev run on the
-`glass-core` engine. Glass starts `glass-core runtime` as a subprocess, speaks
-its documented JSON-RPC 2.0 host protocol over stdin/stdout, and executes every
-tool call itself.
+**Status: Current source behavior.** Glass Dev uses the standalone `glass-core`
+program for resident agents by default. This is separate from the
+`glass-browser-core` Rust crate, which contains the native browser engine.
+Glass starts `glass-core runtime`, sends JSON-RPC 2.0 messages over
+stdin/stdout, and runs every requested tool call inside the Glass workspace.
 
 ```text
 AgentRegistry
@@ -14,18 +15,16 @@ AgentRegistry
                                        └─ workspace · browser · process authority
 ```
 
-The Pi SDK runtime is still present as a legacy backend. Nothing about Glass's
-authority model changes between engines: Glass owns the workspace, the tool
-schemas, the approvals, and the evidence in both cases.
+The Pi SDK runtime remains available as a legacy backend. Changing the engine
+does not move workspace ownership: Glass owns the project, tools, authority
+checks, and tool evidence for both engines.
 
 ## Why the engine changed
 
-Glass previously drove Pi's `AgentSession` SDK through a Glass-owned Node child.
-That kept two runtimes in one product: a Node toolchain for the model loop and
-the Rust workspace for everything else. Running the model loop on `glass-core`
-removes the Node dependency from the resident path, keeps session records in one
-format, and lets Glass register its tool catalog directly instead of describing
-it to a foreign extension host.
+Glass previously ran the resident model loop through Pi's `AgentSession` SDK in
+a Node child process. That added a Node runtime beside the Rust workspace.
+The default `glass-core` runtime removes Node from the resident path. It also
+uses one session-record format and accepts Glass's tool catalog directly.
 
 The engine owns exactly four things:
 
@@ -36,10 +35,11 @@ The engine owns exactly four things:
 | Tool schemas, execution, approvals, evidence | Glass |
 | Workspace revisions, leases, browser authority | Glass |
 
-`glass-core runtime` is started in host tool mode, which exposes no built-in
-filesystem, shell, state, memory, browser, or extension tools. The complete tool
-catalog in the session is the frozen list Glass registered, so there is no path
-for the model to bypass the governed router.
+Glass starts `glass-core runtime` in host-tool mode. In this mode, the engine
+does not add its own filesystem, shell, memory, browser, or extension tools.
+The session receives the tool list that Glass registered. Glass handles each
+tool request, so the engine does not access the workspace through a second
+route.
 
 ## Selecting the engine
 
@@ -50,11 +50,11 @@ for the model to bypass the governed router.
 | `GLASS_AGENT_HARNESS=pi` | Legacy Pi SDK backend. |
 | `GLASS_CORE_BINARY=/path/to/glass-core` | Use a specific engine executable. |
 
-Without an explicit path, Glass resolves `glass-core` on `PATH`, then `gc`, and
-reports the result of `glass-core --version`. `glass agent doctor` and
-`glass agent status` print the selected engine, its protocol version, provider
-readiness, session storage directory, and ordered remediation. They never print
-credential values.
+Glass does not install the engine when it starts. Without an explicit path, it
+looks for `glass-core` on `PATH`, then `gc`, and reads its version. Run
+`glass agent doctor` or `glass agent status` to see the selected engine,
+protocol version, provider readiness, session directory, and repair steps.
+These commands do not print credentials.
 
 ## Session lifecycle
 

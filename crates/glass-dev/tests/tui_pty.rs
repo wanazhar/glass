@@ -1678,6 +1678,301 @@ fn active_run_queue_steer_reaches_its_run_and_settles_truthfully() {
 }
 
 #[test]
+fn follow_up_queue_old_run_retarget_and_review_retry_are_explicit() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+
+    let root = workspace_root();
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.trust_project();
+    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    session.send(b":agent spawn queue-owner retarget-and-review\r");
+    assert!(
+        session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
+        "queue owner did not spawn\n{}",
+        session.output_tail()
+    );
+    send_ctrl_shift_t(&mut session);
+    assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
+    assert!(
+        session.wait_for("queue-owner", Duration::from_secs(5)),
+        "queue owner did not appear in the project picker\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for("idle", Duration::from_secs(12)),
+        "queue owner did not reach its current idle run\n{}",
+        session.output_tail()
+    );
+    session.send(b"\r\r");
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+
+    let registry_path = fixture_state.join("threads/registry.json");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        if registry["threads"].as_array().is_some_and(|threads| {
+            threads.len() == 1
+                && threads[0]["runs"]
+                    .as_array()
+                    .is_some_and(|runs| !runs.is_empty())
+        }) || Instant::now() >= deadline
+        {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    let thread = &mut registry["threads"][0];
+    let current_run_id = thread["runs"][0]["runId"]
+        .as_str()
+        .expect("the current queue destination has a persisted RunId")
+        .to_owned();
+    let old_run_id = "run-00000000000000000000000000000000";
+    assert_ne!(current_run_id, old_run_id);
+    thread["runs"]
+        .as_array_mut()
+        .expect("run history is persisted")
+        .push(serde_json::json!({
+            "runId": old_run_id,
+            "engine": "glass-core",
+            "coreSessionId": null,
+            "classification": "completed"
+        }));
+    thread["followUpQueue"] = serde_json::json!([
+        {
+            "entryId": "queue-00000000000000000000000000000001",
+            "targetRunId": old_run_id,
+            "mode": "followUp",
+            "text": "old-run row must be retargeted",
+            "state": "ready"
+        },
+        {
+            "entryId": "queue-00000000000000000000000000000002",
+            "targetRunId": current_run_id,
+            "mode": "followUp",
+            "text": "review this retry exactly once",
+            "state": "needsReview"
+        }
+    ]);
+    thread["sendAttempts"] = serde_json::json!([{
+        "attemptId": "attempt-00000000000000000000000000000001",
+        "clientMessageId": "queue-00000000000000000000000000000002",
+        "targetRunId": current_run_id,
+        "mode": "followUp",
+        "text": "review this retry exactly once",
+        "status": "uncertain",
+        "engineRequestId": "fixture-prior-request",
+        "createdAtMs": 2
+    }]);
+    std::fs::write(
+        &registry_path,
+        serde_json::to_vec_pretty(&registry).unwrap(),
+    )
+    .unwrap();
+
+    session.send(b"\x11");
+    assert!(
+        session.wait_for("THREAD FOLLOW-UP QUEUE", Duration::from_secs(5)),
+        "the persisted queue did not open\n{}",
+        session.output_tail()
+    );
+    assert!(session.wait_for("old-run row must be retargeted", Duration::from_secs(5)));
+
+    // A stale destination is visible but Enter cannot create an attempt or
+    // reach Core. Retargeting is a separate, explicit user action.
+    session.send(b"\r");
+    assert!(
+        session.wait_for("older run · press t", Duration::from_secs(5)),
+        "dispatch to the old RunId was not blocked\n{}",
+        session.output_tail()
+    );
+    session.settle(Duration::from_millis(300));
+    let blocked: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+    assert_eq!(
+        blocked["threads"][0]["followUpQueue"][0]["targetRunId"],
+        old_run_id
+    );
+    assert_eq!(
+        blocked["threads"][0]["followUpQueue"][0]["state"], "ready",
+        "blocked dispatch must leave the old-run row ready for explicit retargeting"
+    );
+    assert_eq!(
+        blocked["threads"][0]["sendAttempts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "the stale row must not create another attempt"
+    );
+    let requests_path = fixture_state.join("e2e-core-requests.jsonl");
+    let requests = std::fs::read_to_string(&requests_path).unwrap_or_default();
+    assert!(
+        !requests.contains("old-run row must be retargeted"),
+        "a stale queue row reached Core"
+    );
+
+    session.send(b"t");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let retargeted = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        if registry["threads"][0]["followUpQueue"][0]["targetRunId"] == current_run_id
+            && registry["threads"][0]["followUpQueue"][0]["state"] == "ready"
+        {
+            break registry;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "explicit retarget did not persist: {registry}"
+        );
+        session.settle(Duration::from_millis(100));
+    };
+    assert_eq!(
+        retargeted["threads"][0]["followUpQueue"][0]["targetRunId"],
+        current_run_id
+    );
+    assert_eq!(
+        retargeted["threads"][0]["followUpQueue"][0]["state"],
+        "ready"
+    );
+
+    // The second row models a prior dispatch whose runtime acceptance is
+    // unknown. Canceling its duplicate-risk confirmation leaves both the row
+    // and attempt ledger untouched; only the later confirmation sends it.
+    session.send(b"j");
+    session.send(b"\r");
+    assert!(
+        session.wait_for("RETRY UNRESOLVED DELIVERY?", Duration::from_secs(5)),
+        "NeedsReview did not open its retry confirmation\n{}",
+        session.output_tail()
+    );
+    session.clear_output();
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(300));
+    session.send(b"k");
+    session.send(b"j");
+    assert!(session.wait_for("review this retry exactly once", Duration::from_secs(5)));
+    assert!(
+        !session
+            .visible_output()
+            .contains("RETRY UNRESOLVED DELIVERY?"),
+        "Escape must close retry confirmation before another key is handled"
+    );
+    let cancelled: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+    assert_eq!(
+        cancelled["threads"][0]["followUpQueue"][1]["state"],
+        "needsReview"
+    );
+    assert_eq!(
+        cancelled["threads"][0]["sendAttempts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        cancelled["threads"][0]["sendAttempts"][0]["status"], "uncertain",
+        "cancel leaves the existing unresolved attempt intact"
+    );
+    let requests = std::fs::read_to_string(&requests_path).unwrap_or_default();
+    assert!(
+        !requests.contains("review this retry exactly once"),
+        "canceling retry confirmation sent a Core request"
+    );
+
+    session.send(b"\r");
+    assert!(session.wait_for("RETRY UNRESOLVED DELIVERY?", Duration::from_secs(5)));
+    session.send(b"\r");
+    assert!(
+        session.wait_for("awaiting acknowledgement", Duration::from_secs(8)),
+        "confirmed retry did not dispatch\n{}",
+        session.output_tail()
+    );
+    let deadline = Instant::now() + Duration::from_secs(12);
+    let settled = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let accepted = registry["threads"][0]["followUpQueue"][1]["state"] == "accepted";
+        let attempt_settled = registry["threads"][0]["sendAttempts"]
+            .as_array()
+            .is_some_and(|attempts| {
+                attempts.len() == 2
+                    && attempts[0]["status"] == "uncertain"
+                    && attempts[1]["targetRunId"] == current_run_id
+                    && attempts[1]["text"] == "review this retry exactly once"
+                    && attempts[1]["status"] == "settled"
+            });
+        let queue_target_current =
+            registry["threads"][0]["followUpQueue"][1]["targetRunId"] == current_run_id;
+        if accepted && attempt_settled && queue_target_current {
+            break registry;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "confirmed retry did not settle exactly: {registry}"
+        );
+        session.settle(Duration::from_millis(100));
+    };
+    let attempts = settled["threads"][0]["sendAttempts"]
+        .as_array()
+        .expect("retry attempt remains in its thread ledger");
+    assert_eq!(attempts.len(), 2, "cancel did not create an extra attempt");
+    assert_eq!(
+        attempts[0]["attemptId"],
+        "attempt-00000000000000000000000000000001"
+    );
+    assert_ne!(attempts[0]["attemptId"], attempts[1]["attemptId"]);
+    assert_eq!(
+        attempts[0]["clientMessageId"],
+        attempts[1]["clientMessageId"]
+    );
+    assert_eq!(attempts[0]["status"], "uncertain");
+    assert_eq!(attempts[1]["mode"], "prompt");
+    assert_eq!(attempts[1]["targetRunId"], current_run_id);
+    assert_eq!(
+        settled["threads"][0]["followUpQueue"][1]["targetRunId"],
+        current_run_id
+    );
+    assert_eq!(
+        settled["threads"][0]["followUpQueue"][1]["mode"],
+        "followUp"
+    );
+    let requests = std::fs::read_to_string(&requests_path).unwrap();
+    let retried_requests = requests
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|request| {
+            matches!(
+                request["method"].as_str(),
+                Some("turn/prompt" | "turn/followUp")
+            ) && request["params"]["text"] == "review this retry exactly once"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        retried_requests.len(),
+        1,
+        "only the confirmed retry reaches Core"
+    );
+    assert_eq!(
+        retried_requests[0]["params"]["sessionId"],
+        "fixture-session"
+    );
+
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn agent_update_route_requires_confirmation_in_tui() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;

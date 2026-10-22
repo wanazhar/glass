@@ -45,8 +45,12 @@ The engine owns exactly four things:
 Glass negotiates runtime protocol v2 and requires the `mixedTools`
 capability. The session uses `toolMode: "mixed"`: Core keeps its native
 coding tools and Glass registers only its namespaced `glass.*` integrations.
-Core executes its own tools; only Glass integration calls cross `tool/execute`
-and receive Glass-side authorization and evidence. A v1-only or older runtime
+Core executes its own coding tools; Glass registers browser and Git tools,
+workspace/project inspection, read-only editor and language-server context,
+non-writing editor proposals, and Glass project-task APIs. Editor writes,
+generic commands, process controls, and Glass agent/model/session controls are
+not exposed in the mixed catalog. Only registered Glass integrations cross
+`tool/execute` and receive Glass-side authorization and evidence. A v1-only or older runtime
 is reported as incompatible; Glass does not silently fall back to a
 host-exclusive catalog. Core's standalone `local` mode and generic `host` mode
 retain their existing behavior.

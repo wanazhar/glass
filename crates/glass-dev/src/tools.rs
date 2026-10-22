@@ -1906,7 +1906,48 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
 /// Glass-owned integrations offered to Core's negotiated mixed-tool runtime.
 /// Core retains its native coding catalog and executes it locally.
 pub(crate) fn integration_tool_catalog() -> Vec<ToolDescriptor> {
+    const PREFIXES: &[&str] = &["glass.browser.", "glass.git.", "glass.task."];
+    const ALLOWED: &[&str] = &[
+        "glass.github.review",
+        "glass.project.attach",
+        "glass.workspace.list",
+        "glass.workspace.inspect",
+        "glass.workspace.trust.status",
+        "glass.workspace.trust.inspect",
+        "glass.editor.open",
+        "glass.editor.selection",
+        "glass.editor.diff",
+        "glass.editor.buffers",
+        "glass.editor.comments",
+        "glass.editor.proposals",
+        "glass.editor.fim",
+        "glass.editor.comment.add",
+        "glass.editor.comment.resolve",
+        "glass.editor.proposal.create",
+        "glass.lsp.diagnostics",
+        "glass.lsp.list",
+        "glass.lsp.events",
+        "glass.lsp.hover",
+        "glass.lsp.completion",
+        "glass.lsp.definition",
+        "glass.lsp.declaration",
+        "glass.lsp.implementation",
+        "glass.lsp.references",
+        "glass.lsp.document_symbols",
+        "glass.lsp.workspace_symbols",
+        "glass.lsp.inlay_hints",
+        "glass.lsp.signature_help",
+        "glass.lsp.semantic_tokens",
+    ];
     service_descriptors()
+        .into_iter()
+        .filter(|descriptor| {
+            ALLOWED.contains(&descriptor.name.as_str())
+                || PREFIXES
+                    .iter()
+                    .any(|prefix| descriptor.name.starts_with(prefix))
+        })
+        .collect()
 }
 
 pub(crate) fn is_integration_tool(name: &str) -> bool {

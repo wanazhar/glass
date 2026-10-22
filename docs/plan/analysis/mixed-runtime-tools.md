@@ -43,6 +43,13 @@ and continue through Glass authorization, evidence, cancellation, and result
 handling. Session metadata reports both catalogs and their owners. Existing
 host-only execution and host-neutral standalone operation remain supported.
 
+The mixed catalog is an explicit subset of Glass services: browser and Git,
+workspace/project inspection, read-only editor and language-server context,
+non-writing editor proposals, and Glass project-task APIs. It excludes direct
+editor writes, command execution, process controls, and every `glass.agent.*`
+tool. Those paths either duplicate Core's coding/provider/session ownership or
+would keep Glass in the direct coding-edit loop.
+
 ## Compatibility and legacy engine
 
 Protocol compatibility is negotiated, not inferred from package version. The

@@ -5,7 +5,10 @@ standalone product: its `glass-core` package, `gc` command alias, terminal
 interface, optional web assets, installer, and license notices remain usable
 without installing Glass Dev or its browser packages. Glass negotiates runtime
 protocol v2 with the `mixedTools` capability; the standalone runtime keeps its
-local and generic host modes.
+local and generic host modes. Its Glass catalog is limited to Glass-owned
+browser, Git, workspace/project, review, language-server context, and project
+task integrations; it omits direct editor writes, generic commands, process
+controls, and duplicate Core agent/model/session controls.
 
 The Rust packages live under [`crates/`](../crates/glass-core/Cargo.toml) in
 the root Cargo workspace. They share the root package version, currently

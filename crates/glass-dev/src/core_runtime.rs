@@ -1642,8 +1642,32 @@ mod tests {
             assert_eq!(tool.input_schema["type"], "object", "{}", tool.name);
         }
         assert!(crate::tools::is_integration_tool("glass.workspace.list"));
+        assert!(crate::tools::is_integration_tool("glass.browser.navigate"));
+        assert!(crate::tools::is_integration_tool("glass.git.status"));
+        assert!(crate::tools::is_integration_tool(
+            "glass.editor.proposal.create"
+        ));
+        assert!(crate::tools::is_integration_tool("glass.task.create"));
         assert!(!crate::tools::is_integration_tool("glass.file.read"));
         assert!(!crate::tools::is_integration_tool("glass.not_registered"));
+        for excluded in [
+            "glass.editor.replace",
+            "glass.editor.replace_selection",
+            "glass.editor.save",
+            "glass.editor.proposal.accept",
+            "glass.editor.checkpoint.restore",
+            "glass.command.run",
+            "glass.process.start",
+            "glass.process.input",
+            "glass.agent.models",
+            "glass.agent.new-session",
+            "glass.agent.prompt",
+        ] {
+            assert!(
+                !crate::tools::is_integration_tool(excluded),
+                "unexpected Core mixed catalog entry {excluded}"
+            );
+        }
     }
 
     #[test]

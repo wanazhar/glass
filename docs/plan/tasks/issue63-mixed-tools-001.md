@@ -16,6 +16,8 @@ Preserve standalone Core behavior and explicit legacy Pi selection.
       session authority in Core; do not duplicate credentials in Glass.
 - [x] Register only Glass-owned integrations from Glass and route only those
       calls through Glass authorization/evidence.
+- [x] Keep the mixed catalog narrow: omit direct editor writes, generic
+      commands, process controls, and duplicate Core agent/model/session tools.
 - [x] Execute Core-native coding tools inside Core in the same session.
 - [x] Reject schema/name collisions and preserve correlation, results,
       progress, and cancellation for Glass calls.

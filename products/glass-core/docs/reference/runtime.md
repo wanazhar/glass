@@ -51,6 +51,13 @@ are rejected when the session is created. Provider selection, credentials,
 model configuration, and session state remain in Core. Hosts may select a
 model, but must not send provider credential values.
 
+Glass's mixed catalog is intentionally narrower than Glass's complete service
+registry. It includes browser and Git integrations, workspace/project
+inspection, read-only editor and language-server context, non-writing editor
+proposals, and Glass project-task APIs. It excludes direct editor writes,
+generic command execution, process controls, and `glass.agent.*` model/session
+controls, which would overlap Core's provider and session authority.
+
 Protocol v1 host and local sessions retain their original exclusive semantics.
 Standalone `gc` continues to use Core's local tools and configured execution
 policy. The negotiated mixed mode does not make Core depend on a host.

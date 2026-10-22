@@ -72,3 +72,5 @@ Scoped validation passed: `cargo clippy -p glass-dev --test tui_pty --locked --
 -D warnings`, `cargo fmt --all -- --check`, Python fixture syntax validation,
 documentation coverage/depth/release-truth/TUI-shortcut validators, and
 `git diff --check`.
+
+Independent review passed with no findings: [review record](../reviews/issue64-attention-keyboard-journey-001-01.md).

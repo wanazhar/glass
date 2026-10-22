@@ -214,9 +214,22 @@ pub struct PendingAgentApproval {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum AttentionItemKey {
-    Approval { agent_id: String, frame_id: String },
-    EditorProposal { proposal_id: String, path: String },
-    FollowUp { thread_id: String, entry_id: String },
+    Approval {
+        agent_id: String,
+        frame_id: String,
+    },
+    EditorProposal {
+        proposal_id: String,
+        path: String,
+    },
+    FollowUp {
+        thread_id: String,
+        entry_id: String,
+    },
+    SendAttempt {
+        thread_id: String,
+        attempt_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -415,6 +428,7 @@ struct FollowUpQueueSnapshot {
     thread_id: String,
     current_run_id: String,
     entries: Vec<crate::thread_store::FollowUpQueueRecord>,
+    send_attempts: Vec<crate::thread_store::SendAttemptRecord>,
 }
 
 #[cfg(unix)]
@@ -450,6 +464,7 @@ fn load_all_follow_up_queues(
                 let (store, thread_id, current_run_id) =
                     workspace.agents().follow_up_queue_target(&agent.id)?;
                 let mut entries = store.follow_up_queue(&thread_id)?;
+                let send_attempts = store.send_attempts(&thread_id)?;
                 for entry in &mut entries {
                     if entry.state == crate::thread_store::FollowUpQueueState::Dispatching {
                         entry.state = crate::thread_store::FollowUpQueueState::NeedsReview;
@@ -461,6 +476,7 @@ fn load_all_follow_up_queues(
                         thread_id,
                         current_run_id,
                         entries,
+                        send_attempts,
                     },
                 ));
             }
@@ -575,6 +591,7 @@ impl FollowUpQueueWriter {
                                                 .agents()
                                                 .follow_up_queue_target(&agent_id)?;
                                             let mut entries = store.follow_up_queue(&thread_id)?;
+                                            let send_attempts = store.send_attempts(&thread_id)?;
                                             for entry in &mut entries {
                                                 if entry.state
                                                     == crate::thread_store::FollowUpQueueState::Dispatching
@@ -586,6 +603,7 @@ impl FollowUpQueueWriter {
                                                 thread_id,
                                                 current_run_id: run_id,
                                                 entries,
+                                                send_attempts,
                                             })
                                         })
                                         .map_err(|error| error.to_string());
@@ -615,6 +633,7 @@ impl FollowUpQueueWriter {
                                 let (store, thread_id, run_id) =
                                     workspace.agents().follow_up_queue_target(&agent_id)?;
                                 let mut entries = store.follow_up_queue(&thread_id)?;
+                                let send_attempts = store.send_attempts(&thread_id)?;
                                 for entry in &mut entries {
                                     if entry.state
                                         == crate::thread_store::FollowUpQueueState::Dispatching
@@ -627,6 +646,7 @@ impl FollowUpQueueWriter {
                                     thread_id,
                                     current_run_id: run_id,
                                     entries,
+                                    send_attempts,
                                 })
                             })
                             .map_err(|error| error.to_string());
@@ -4224,6 +4244,7 @@ impl DevTuiState {
                             thread_id,
                             current_run_id,
                             entries: Vec::new(),
+                            send_attempts: Vec::new(),
                         },
                     );
                     self.status = "Queue is available for this session only on Windows".into();
@@ -4390,6 +4411,40 @@ impl DevTuiState {
                 self.follow_up_queue_selection = index;
                 self.status = "Unresolved follow-up selected · review before retry".into();
             }
+            AttentionItemKey::SendAttempt {
+                thread_id,
+                attempt_id,
+            } => {
+                let Some(owner) = item.owner_agent_id.clone() else {
+                    self.attention_status_stale();
+                    return;
+                };
+                let attempt = self
+                    .follow_up_queue_snapshots
+                    .get(&owner)
+                    .filter(|snapshot| snapshot.thread_id == thread_id)
+                    .and_then(|snapshot| {
+                        snapshot.send_attempts.iter().find(|attempt| {
+                            attempt.attempt_id == attempt_id
+                                && attempt.status
+                                    == crate::thread_store::SendAttemptStatus::Uncertain
+                        })
+                    });
+                let Some(attempt) = attempt else {
+                    self.attention_status_stale();
+                    return;
+                };
+                let preview = attempt.text.lines().next().unwrap_or_default();
+                let detail = preview.chars().take(96).collect::<String>();
+                if !self.select_agent(Some(owner)) {
+                    return;
+                }
+                self.surface = DevSurface::Agent;
+                self.attention_inbox_open = false;
+                self.status = format!(
+                    "Message delivery is uncertain · inspect the conversation before retrying · {detail}"
+                );
+            }
         }
     }
 
@@ -4444,6 +4499,26 @@ impl DevTuiState {
                 items.entry(key.clone()).or_insert_with(|| AttentionItem {
                     key,
                     title: "Follow-up delivery needs review".into(),
+                    detail: format!(
+                        "{} · {}",
+                        agent_id.as_str(),
+                        preview.chars().take(72).collect::<String>()
+                    ),
+                    owner_agent_id: Some(agent_id.clone()),
+                });
+            }
+            for attempt in &snapshot.send_attempts {
+                if attempt.status != crate::thread_store::SendAttemptStatus::Uncertain {
+                    continue;
+                }
+                let key = AttentionItemKey::SendAttempt {
+                    thread_id: snapshot.thread_id.clone(),
+                    attempt_id: attempt.attempt_id.clone(),
+                };
+                let preview = attempt.text.lines().next().unwrap_or_default();
+                items.entry(key.clone()).or_insert_with(|| AttentionItem {
+                    key,
+                    title: "Message delivery uncertain".into(),
                     detail: format!(
                         "{} · {}",
                         agent_id.as_str(),
@@ -14125,6 +14200,16 @@ mod tests {
             FollowUpQueueSnapshot {
                 thread_id: "thread-0001".into(),
                 current_run_id: "run-0001".into(),
+                send_attempts: vec![crate::thread_store::SendAttemptRecord {
+                    attempt_id: "attempt-1".into(),
+                    client_message_id: "message-1".into(),
+                    target_run_id: "run-old".into(),
+                    mode: crate::thread_store::SendAttemptMode::Prompt,
+                    text: "Inspect the failed run and summarize the blocker".into(),
+                    status: crate::thread_store::SendAttemptStatus::Uncertain,
+                    engine_request_id: None,
+                    created_at_ms: 1,
+                }],
                 entries: vec![crate::thread_store::FollowUpQueueRecord {
                     entry_id: "entry-1".into(),
                     target_run_id: "run-old".into(),
@@ -14135,7 +14220,15 @@ mod tests {
             },
         );
         state.refresh_attention_items();
-        assert_eq!(state.attention_items.len(), 5);
+        assert_eq!(state.attention_items.len(), 6);
+        assert!(state.attention_items.iter().any(|item| {
+            item.key
+                == (AttentionItemKey::SendAttempt {
+                    thread_id: "thread-0001".into(),
+                    attempt_id: "attempt-1".into(),
+                })
+                && item.title == "Message delivery uncertain"
+        }));
         assert!(
             state
                 .attention_items
@@ -14162,7 +14255,7 @@ mod tests {
             .entries[0]
             .state = crate::thread_store::FollowUpQueueState::Accepted;
         state.refresh_attention_items();
-        assert_eq!(state.attention_items.len(), 4);
+        assert_eq!(state.attention_items.len(), 5);
         assert!(
             !state
                 .attention_items
@@ -14557,6 +14650,7 @@ mod tests {
             created_at_ms: 1,
             composer_draft: None,
             follow_up_queue: None,
+            send_attempts: Vec::new(),
             runs: vec![crate::thread_store::RunRecord {
                 run_id: crate::thread_store::random_id("run").unwrap(),
                 engine: "glass-core".into(),
@@ -14647,6 +14741,7 @@ mod tests {
                 }],
                 composer_draft: None,
                 follow_up_queue: None,
+                send_attempts: Vec::new(),
             })
             .unwrap();
         store
@@ -14722,6 +14817,7 @@ mod tests {
                 }],
                 composer_draft: None,
                 follow_up_queue: None,
+                send_attempts: Vec::new(),
             })
             .unwrap();
         let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop).unwrap();
@@ -14807,6 +14903,7 @@ mod tests {
                 }],
                 composer_draft: None,
                 follow_up_queue: None,
+                send_attempts: Vec::new(),
             })
             .unwrap();
 
@@ -14948,6 +15045,7 @@ mod tests {
             }],
             composer_draft: None,
             follow_up_queue: None,
+            send_attempts: Vec::new(),
         };
         let agent_thread = make_thread("agent A");
         let other_thread = make_thread("agent B");
@@ -15044,6 +15142,7 @@ mod tests {
             created_at_ms: 1,
             composer_draft: None,
             follow_up_queue: None,
+            send_attempts: Vec::new(),
             runs: vec![crate::thread_store::RunRecord {
                 run_id: crate::thread_store::random_id("run").unwrap(),
                 engine: "glass-core".into(),
@@ -15254,6 +15353,7 @@ mod tests {
                 }],
                 composer_draft: None,
                 follow_up_queue: None,
+                send_attempts: Vec::new(),
             })
             .unwrap();
         store
@@ -18397,6 +18497,7 @@ mod tests {
             FollowUpQueueSnapshot {
                 thread_id: "thread-0001".into(),
                 current_run_id: run_id.clone(),
+                send_attempts: Vec::new(),
                 entries: vec![crate::thread_store::FollowUpQueueRecord {
                     entry_id: entry_id.clone(),
                     target_run_id: run_id,

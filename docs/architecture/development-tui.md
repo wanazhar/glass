@@ -387,6 +387,13 @@ checkpoint does not reattach to Core, replay prompts, or persist transcripts.
 Durable editable follow-up queues, with explicit run destinations and no
 automatic restart replay, are tracked in the
 [follow-up queue task](../plan/tasks/issue63-durable-followup-queue-001.md).
+On Unix, each submitted prompt, follow-up, or steer also has a durable send
+attempt tied to its engine request ID. Exact engine responses settle or fail
+that attempt; run-level waiting or settled events cannot settle an ambiguous
+message. Unresolved attempts reopen as uncertain and link from the attention
+inbox to their owning thread. These message records remain process-local on
+Windows while the project ledger inherits workspace ACLs; see the
+[send-attempt recovery task](../plan/tasks/issue64-send-attempt-recovery-001.md).
 Workspace-local todos
 (`glass.todo.*`) persist at `.glass/todos/session.json` and form the Agent
 checklist shown on Agent and Tasks; they are not the overnight task DAG.

@@ -2,7 +2,8 @@
 
 ## Active plan: shared Glass and Glass Core workspace
 
-Issue [#63](https://github.com/wanazhar/glass/issues/63) now makes the
+Replacement issue [#64](https://github.com/wanazhar/glass/issues/64), which
+supersedes the closed planning issue [#63](https://github.com/wanazhar/glass/issues/63), makes the
 repository's root Cargo workspace the shared package boundary for Glass and
 Glass Core. The shared Rust package version follows Glass's current source
 version, `0.3.14`; historical Core versions and tags remain historical. The
@@ -15,10 +16,10 @@ commits for inherited Core test expectations, Core formatting, and shared
 target-path handling. The [workspace design](analysis/shared-workspace.md) and
 [implementation task](tasks/workspace-glass-core-001.md) record the result and
 verification. Mixed runtime tools and the collaboration TUI remain subsequent
-issue #63 slices, with their own contracts and acceptance evidence. The
+issue #64 slices, with their own contracts and acceptance evidence. The
 negotiated Core-coding/Glass-integration runtime slice is documented in the
 [mixed-runtime analysis](analysis/mixed-runtime-tools.md) and tracked in the
-[issue #63 task checklist](tasks/issue63-mixed-tools-001.md).
+[mixed-tools task checklist](tasks/issue63-mixed-tools-001.md).
 External Core edits to already-open Glass buffers are tracked in the
 [buffer reconciliation analysis](analysis/editor-buffer-external-reconcile.md)
 and [acceptance task](tasks/editor-buffer-reconcile-001.md).
@@ -43,7 +44,9 @@ per-thread editable follow-up queues are tracked in the
 [durable follow-up queue task](tasks/issue63-durable-followup-queue-001.md).
 The [attention inbox](tasks/issue63-attention-inbox-001.md) and its allocated
 PTY journey are complete. Per-send crash reconciliation and project-centered
-thread navigation remain open issue #63 work.
+thread navigation remain open issue #64 work. The bounded per-send attempt
+record and conservative restart handling are in progress in the
+[send-attempt recovery task](tasks/issue64-send-attempt-recovery-001.md).
 
 ## Current source line: Glass 0.3.14
 

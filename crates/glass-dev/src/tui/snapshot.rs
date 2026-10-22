@@ -1062,6 +1062,7 @@ mod tests {
                 created_at_ms: 1,
                 composer_draft: None,
                 follow_up_queue: None,
+                send_attempts: Vec::new(),
                 runs: vec![crate::thread_store::RunRecord {
                     run_id: crate::thread_store::random_id("run").unwrap(),
                     engine: "glass-core".into(),

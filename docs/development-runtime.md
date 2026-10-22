@@ -116,10 +116,16 @@ stored Core session. Glass verifies the returned session ID, mixed tool mode,
 and canonical project directory, then restores bounded user/assistant history
 from Core session entries before enabling sends. Missing or mismatched sessions
 remain recovery-pending with an error; Glass does not create a replacement or
-replay a prompt. Only ThreadId, RunId, and the opaque Core session reference are
-stored by the Glass ledger; provider configuration and credentials remain Core
-owned. Follow-up queues are not persisted, and reopened rows are not live
-workers until an explicit resume succeeds. See the
+replay a prompt. The Glass ledger stores project-scoped orchestration state and
+an opaque Core session reference; provider configuration and credentials remain
+Core owned. On Unix, editable follow-up queues and individual send attempts are
+persisted by ThreadId. A send records dispatch, the exact engine request ID,
+and its response outcome; a run-level settled event alone does not confirm an
+individual message. Unresolved attempts reopen as uncertain and appear in the
+attention inbox for inspection; they are never resent automatically. Windows
+keeps queue and send-attempt content process-local because the registry does
+not yet apply private ACLs there. Reopened rows are not live workers until an
+explicit resume succeeds. See the
 [exact-session recovery contract](plan/analysis/issue63-core-session-resume.md).
 The TUI uses its ordinary confirmation for the resume action; subsequent
 conversation follows the existing session flow without per-tool-call

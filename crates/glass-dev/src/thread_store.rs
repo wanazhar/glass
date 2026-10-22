@@ -146,6 +146,19 @@ impl ThreadStore {
         })
     }
 
+    #[cfg(unix)]
+    pub(crate) fn clear_composer_draft(&self, thread_id: &str) -> DevelopmentResult<()> {
+        self.mutate(|doc| {
+            let thread = doc
+                .threads
+                .iter_mut()
+                .find(|thread| thread.thread_id == thread_id)
+                .ok_or_else(|| config("composer draft thread was not found"))?;
+            thread.composer_draft = None;
+            Ok(())
+        })
+    }
+
     pub(crate) fn create(&self, thread: ThreadRecord) -> DevelopmentResult<()> {
         validate_thread(&thread)?;
         self.mutate(|doc| {

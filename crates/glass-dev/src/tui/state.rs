@@ -359,7 +359,15 @@ enum ComposerDraftWrite {
         reply: std::sync::mpsc::Sender<Result<Option<ComposerDraft>, String>>,
     },
     Flush(std::sync::mpsc::Sender<Result<(), String>>),
-    DiscardAndShutdown,
+    DiscardAgent {
+        workspace: crate::workspace::SharedDevelopmentWorkspace,
+        agent_id: crate::AgentId,
+    },
+    #[cfg(test)]
+    DiscardThread {
+        store: crate::thread_store::ThreadStore,
+        thread_id: String,
+    },
     Shutdown,
     #[cfg(test)]
     Delay(std::time::Duration),
@@ -382,6 +390,7 @@ enum ComposerDraftTarget {
 enum ComposerDraftWriterEvent {
     SaveFailed(String),
     SaveSucceeded,
+    DiscardComplete(Result<(), String>),
 }
 
 #[cfg(unix)]
@@ -455,8 +464,23 @@ impl ComposerDraftWriter {
                                 Ok(ComposerDraftWrite::Shutdown) => {
                                     return;
                                 }
-                                Ok(ComposerDraftWrite::DiscardAndShutdown) => {
-                                    return;
+                                Ok(ComposerDraftWrite::DiscardAgent {
+                                    workspace,
+                                    agent_id,
+                                }) => {
+                                    let result =
+                                        Self::discard_agent(&mut pending, &workspace, &agent_id);
+                                    let _ = events_tx
+                                        .send(ComposerDraftWriterEvent::DiscardComplete(result));
+                                }
+                                #[cfg(test)]
+                                Ok(ComposerDraftWrite::DiscardThread { store, thread_id }) => {
+                                    pending.remove(&format!("thread:{thread_id}"));
+                                    let result = store
+                                        .clear_composer_draft(&thread_id)
+                                        .map_err(|error| error.to_string());
+                                    let _ = events_tx
+                                        .send(ComposerDraftWriterEvent::DiscardComplete(result));
                                 }
                                 #[cfg(test)]
                                 Ok(ComposerDraftWrite::Delay(duration)) => {
@@ -502,8 +526,20 @@ impl ComposerDraftWriter {
                     Ok(ComposerDraftWrite::Shutdown) => {
                         return;
                     }
-                    Ok(ComposerDraftWrite::DiscardAndShutdown) => {
-                        return;
+                    Ok(ComposerDraftWrite::DiscardAgent {
+                        workspace,
+                        agent_id,
+                    }) => {
+                        let result = Self::discard_agent(&mut pending, &workspace, &agent_id);
+                        let _ = events_tx.send(ComposerDraftWriterEvent::DiscardComplete(result));
+                    }
+                    #[cfg(test)]
+                    Ok(ComposerDraftWrite::DiscardThread { store, thread_id }) => {
+                        pending.remove(&format!("thread:{thread_id}"));
+                        let result = store
+                            .clear_composer_draft(&thread_id)
+                            .map_err(|error| error.to_string());
+                        let _ = events_tx.send(ComposerDraftWriterEvent::DiscardComplete(result));
                     }
                     #[cfg(test)]
                     Ok(ComposerDraftWrite::Delay(duration)) => {
@@ -591,8 +627,17 @@ impl ComposerDraftWriter {
         self.events.try_recv().ok()
     }
 
-    fn discard_and_shutdown(&self) {
-        let _ = self.tx.send(ComposerDraftWrite::DiscardAndShutdown);
+    fn enqueue_discard_agent(
+        &self,
+        workspace: crate::workspace::SharedDevelopmentWorkspace,
+        agent_id: crate::AgentId,
+    ) -> Result<(), String> {
+        self.tx
+            .send(ComposerDraftWrite::DiscardAgent {
+                workspace,
+                agent_id,
+            })
+            .map_err(|error| error.to_string())
     }
 
     #[cfg(test)]
@@ -673,6 +718,32 @@ impl ComposerDraftWriter {
             }
         }
         failed.into_iter().next().map_or(Ok(()), Err)
+    }
+
+    fn discard_agent(
+        pending: &mut std::collections::BTreeMap<String, (ComposerDraftTarget, ComposerDraft)>,
+        workspace: &crate::workspace::SharedDevelopmentWorkspace,
+        agent_id: &crate::AgentId,
+    ) -> Result<(), String> {
+        pending.remove(&format!("agent:{}", agent_id.as_str()));
+        let (store, thread_id) = workspace
+            .lock()
+            .and_then(|mut workspace| workspace.agents().composer_draft_target(agent_id))
+            .map_err(|error| error.to_string())?;
+        store
+            .clear_composer_draft(&thread_id)
+            .map_err(|error| error.to_string())
+    }
+
+    #[cfg(test)]
+    fn discard_thread(
+        &self,
+        store: crate::thread_store::ThreadStore,
+        thread_id: String,
+    ) -> Result<(), String> {
+        self.tx
+            .send(ComposerDraftWrite::DiscardThread { store, thread_id })
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -935,6 +1006,8 @@ pub struct DevTuiState {
     composer_draft_save_failed: bool,
     #[cfg(unix)]
     composer_draft_failure: Option<String>,
+    #[cfg(unix)]
+    composer_draft_discard_pending: bool,
     #[cfg(unix)]
     composer_draft_edit_generations: std::collections::BTreeMap<crate::AgentId, u64>,
     #[cfg(unix)]
@@ -1298,6 +1371,8 @@ impl DevTuiState {
             #[cfg(unix)]
             composer_draft_failure: None,
             #[cfg(unix)]
+            composer_draft_discard_pending: false,
+            #[cfg(unix)]
             composer_draft_edit_generations: std::collections::BTreeMap::new(),
             #[cfg(unix)]
             pending_composer_draft_loads: std::collections::BTreeMap::new(),
@@ -1534,20 +1609,44 @@ impl DevTuiState {
             return;
         }
         #[cfg(unix)]
-        let discarding_composer_draft = self.composer_draft_save_failed;
+        if self.composer_draft_discard_pending {
+            self.quit_confirmation = true;
+            self.status = "Discarding composer draft · waiting for storage".into();
+            return;
+        }
         #[cfg(unix)]
-        if discarding_composer_draft && let Some(writer) = self.composer_draft_writer.as_ref() {
-            writer.discard_and_shutdown();
+        if self.composer_draft_save_failed {
+            let (Some(agent_id), Some(writer)) = (
+                self.selected_agent.clone(),
+                self.composer_draft_writer.as_ref(),
+            ) else {
+                self.quit_confirmation = true;
+                self.status =
+                    "Could not clear the unsaved composer draft · retry or Esc to keep editing"
+                        .into();
+                return;
+            };
+            match writer.enqueue_discard_agent(self.workspace.clone(), agent_id) {
+                Ok(()) => {
+                    self.composer_draft_discard_pending = true;
+                    self.quit_confirmation = true;
+                    self.status = "Discarding composer draft · waiting for storage".into();
+                }
+                Err(error) => {
+                    self.quit_confirmation = true;
+                    self.composer_draft_failure = Some(error.clone());
+                    self.status = format!(
+                        "Could not queue composer draft discard: {error} · retry or Esc to keep editing"
+                    );
+                }
+            }
+            return;
         }
         self.quit_confirmation = false;
         self.quit = true;
         #[cfg(unix)]
         {
-            self.status = if discarding_composer_draft {
-                "Closing Glass Dev · unsaved composer draft discarded".into()
-            } else {
-                "Closing Glass Dev".into()
-            };
+            self.status = "Closing Glass Dev".into();
         }
         #[cfg(not(unix))]
         {
@@ -3702,8 +3801,32 @@ impl DevTuiState {
                         changed = true;
                     }
                     ComposerDraftWriterEvent::SaveSucceeded => {
+                        if !self.composer_draft_discard_pending {
+                            self.composer_draft_save_failed = false;
+                            self.composer_draft_failure = None;
+                        }
+                    }
+                    ComposerDraftWriterEvent::DiscardComplete(Ok(())) => {
+                        self.composer_draft_discard_pending = false;
                         self.composer_draft_save_failed = false;
                         self.composer_draft_failure = None;
+                        self.thread_drafts.remove(&self.selected_agent);
+                        self.composer_input.clear();
+                        self.composer_cursor = 0;
+                        self.quit_confirmation = false;
+                        self.quit = true;
+                        self.status = "Closing Glass Dev · unsaved composer draft discarded".into();
+                        changed = true;
+                    }
+                    ComposerDraftWriterEvent::DiscardComplete(Err(error)) => {
+                        self.composer_draft_discard_pending = false;
+                        self.composer_draft_save_failed = true;
+                        self.composer_draft_failure = Some(error.clone());
+                        self.quit_confirmation = true;
+                        self.status = format!(
+                            "Could not clear composer draft: {error} · Enter retries · Esc keeps editing"
+                        );
+                        changed = true;
                     }
                 }
             }
@@ -12668,6 +12791,80 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn timed_out_flush_discards_after_in_flight_write_completes() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-tui-draft-discard-timeout-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = crate::thread_store::ThreadStore::open(&root).unwrap();
+        let thread_id = crate::thread_store::random_id("thread").unwrap();
+        store
+            .create(crate::thread_store::ThreadRecord {
+                thread_id: thread_id.clone(),
+                title: "discard target".into(),
+                role: "assistant".into(),
+                created_at_ms: 1,
+                runs: vec![crate::thread_store::RunRecord {
+                    run_id: crate::thread_store::random_id("run").unwrap(),
+                    engine: "glass-core".into(),
+                    core_session_id: None,
+                    classification: crate::thread_store::RunClassification::Starting,
+                }],
+                composer_draft: None,
+            })
+            .unwrap();
+        store
+            .set_composer_draft(
+                &thread_id,
+                crate::thread_store::ComposerDraftRecord {
+                    text: "previously committed".into(),
+                    cursor: 10,
+                },
+            )
+            .unwrap();
+
+        let writer = ComposerDraftWriter::spawn();
+        writer
+            .block_for_test(std::time::Duration::from_millis(2_100))
+            .unwrap();
+        writer
+            .save(
+                store.clone(),
+                thread_id.clone(),
+                ComposerDraft {
+                    text: "write still in flight".into(),
+                    cursor: 5,
+                },
+            )
+            .unwrap();
+        assert!(writer.flush().is_err(), "the bounded flush must time out");
+
+        writer
+            .discard_thread(store.clone(), thread_id.clone())
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut discarded = false;
+        while std::time::Instant::now() < deadline {
+            if let Some(ComposerDraftWriterEvent::DiscardComplete(result)) = writer.try_event() {
+                result.unwrap();
+                discarded = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(discarded, "discard should be acknowledged after the write");
+        assert_eq!(store.composer_draft(&thread_id).unwrap(), None);
+        drop(writer);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn composer_draft_reopens_by_thread_id_after_agent_id_changes() {
         let root = std::env::temp_dir().join(format!(
             "glass-tui-durable-draft-{}-{}",
@@ -12791,8 +12988,13 @@ mod tests {
         state.request_quit();
         assert!(state.quit_confirmation);
         state.confirm_quit();
-        assert!(state.quit);
-        assert!(state.status.contains("unsaved composer draft discarded"));
+        assert!(!state.quit);
+        assert!(state.quit_confirmation);
+        assert!(
+            state
+                .status
+                .contains("Could not queue composer draft discard")
+        );
         drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }

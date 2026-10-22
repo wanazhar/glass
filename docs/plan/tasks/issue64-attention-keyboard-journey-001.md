@@ -9,9 +9,10 @@ depends-on: [issue63-attention-inbox-001, issue64-project-thread-picker-001]
 
 ## Objective
 
-Verify that an operator can inspect and resolve the exact resident-agent tool
-approval from the shared Attention Inbox, continue to a pending editor proposal,
-and cancel then confirm application exit using the keyboard alone.
+Verify that an operator can inspect an uncertain delivery from the shared
+Attention Inbox, cancel its explicit retry confirmation without resending,
+continue to a pending editor proposal, and cancel then confirm application exit
+using the keyboard alone.
 
 ## Context
 
@@ -23,18 +24,17 @@ and cancel then confirm application exit using the keyboard alone.
 
 ## Paths
 
-- `crates/glass-dev/tests/fixtures/fake_glass_core_runtime.py`
 - `crates/glass-dev/tests/tui_pty.rs`
 - `docs/plan/README.md`
 
 ## Acceptance
 
-- [ ] At 80×24 and 50×16, an offline Core tool request and seeded editor
-      proposal appear together in the Attention Inbox.
-- [ ] The approval row exposes its owner and exact frame; activation opens the
-      matching tool and arguments for inspection.
-- [ ] A keyboard denial resolves only that approval, removes it from the inbox,
-      and preserves the unrelated proposal.
+- [ ] At 80×24 and 50×16, a seeded uncertain delivery and editor proposal
+      appear together in the Attention Inbox.
+- [ ] Activating the uncertain item opens its owning conversation with the
+      saved message; requesting retry shows the duplicate-risk confirmation.
+- [ ] Escape cancels that confirmation, leaves the attempt uncertain, and sends
+      no `turn/prompt`; the unrelated proposal remains available.
 - [ ] Activating the remaining proposal opens its exact file review context.
 - [ ] Ctrl-C opens quit confirmation from the review context; Escape cancels,
       and a later Ctrl-C plus confirmation exits cleanly.

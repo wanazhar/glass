@@ -1039,14 +1039,17 @@ impl ProjectWorkspace {
     ) -> DevelopmentResult<EditorBuffer> {
         let content = self.read_file(path)?;
         let (_, relative) = self.resolve_path(path, false)?;
-        let actor = if self.buffers.contains_key(&relative) {
-            super::Actor::unknown_external()
-        } else {
-            actor
-        };
+        let identity = hash(&content);
+        let actor = self.buffers.get(&relative).map_or(actor, |buffer| {
+            if buffer.original_exists && buffer.original_hash == identity {
+                buffer.actor.clone()
+            } else {
+                super::Actor::unknown_external()
+            }
+        });
         let buffer = EditorBuffer {
             path: relative.clone(),
-            original_hash: hash(&content),
+            original_hash: identity,
             original_exists: true,
             external_change: None,
             content,
@@ -2552,6 +2555,36 @@ mod tests {
         serialized.as_object_mut().unwrap().remove("originalExists");
         let restored: EditorBuffer = serde_json::from_value(serialized).unwrap();
         assert!(restored.original_exists);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reloading_unchanged_disk_identity_preserves_buffer_attribution() {
+        let root = fixture();
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+        project
+            .open_buffer("src/main.rs", Actor::embedded())
+            .unwrap();
+        project
+            .edit_buffer("src/main.rs", "fn local() {}\n".into(), Actor::local())
+            .unwrap();
+
+        let reloaded = project
+            .reload_buffer_from_disk("src/main.rs", Actor::unknown_external())
+            .unwrap();
+
+        assert_eq!(reloaded.content, "fn main() {}\n");
+        assert_eq!(reloaded.actor, Actor::local());
+
+        fs::write(root.join("src/main.rs"), "fn external() {}\n").unwrap();
+        let externally_reloaded = project
+            .reload_buffer_from_disk("src/main.rs", Actor::local())
+            .unwrap();
+        assert_eq!(externally_reloaded.content, "fn external() {}\n");
+        assert_eq!(
+            externally_reloaded.actor.kind,
+            super::super::events::ActorKind::Unknown
+        );
         let _ = fs::remove_dir_all(root);
     }
 

@@ -10678,48 +10678,196 @@ fn bounded_line_diff(local: &str, external: &str) -> String {
     const MAX_LINE_CHARS: usize = 100;
     let left = local.lines().collect::<Vec<_>>();
     let right = external.lines().collect::<Vec<_>>();
-    let total = left.len().max(right.len());
-    let mut shown = 0;
+    let operations = pair_adjacent_changes(aligned_line_operations(&left, &right));
+    let changed_count = operations
+        .iter()
+        .map(|operation| match operation {
+            LineOperation::Keep => 0,
+            LineOperation::Replace(_, _) => 2,
+            LineOperation::Delete(_) | LineOperation::Insert(_) => 1,
+        })
+        .sum::<usize>();
+    if changed_count == 0 {
+        return "no line differences".into();
+    }
     let mut diff = vec![
         "--- local buffer".to_string(),
         "+++ external disk snapshot".to_string(),
     ];
-    for index in 0..total {
-        let old = left.get(index).copied();
-        let new = right.get(index).copied();
-        if old == new {
-            continue;
+    let (mut old_line, mut new_line, mut shown) = (1usize, 1usize, 0usize);
+    for operation in operations {
+        match operation {
+            LineOperation::Keep => {
+                old_line += 1;
+                new_line += 1;
+            }
+            LineOperation::Delete(line) => {
+                if shown == MAX_CHANGED_LINES {
+                    break;
+                }
+                diff.push(format!("@@ -{old_line} +{new_line} @@"));
+                diff.push(format!(
+                    "-{}",
+                    bounded_preview(&line.chars().take(MAX_LINE_CHARS).collect::<String>())
+                ));
+                old_line += 1;
+                shown += 1;
+            }
+            LineOperation::Insert(line) => {
+                if shown == MAX_CHANGED_LINES {
+                    break;
+                }
+                diff.push(format!("@@ -{old_line} +{new_line} @@"));
+                diff.push(format!(
+                    "+{}",
+                    bounded_preview(&line.chars().take(MAX_LINE_CHARS).collect::<String>())
+                ));
+                new_line += 1;
+                shown += 1;
+            }
+            LineOperation::Replace(old, new) => {
+                if shown + 2 > MAX_CHANGED_LINES {
+                    break;
+                }
+                diff.push(format!("@@ -{old_line} +{new_line} @@"));
+                diff.push(format!(
+                    "-{}",
+                    bounded_preview(&old.chars().take(MAX_LINE_CHARS).collect::<String>())
+                ));
+                diff.push(format!(
+                    "+{}",
+                    bounded_preview(&new.chars().take(MAX_LINE_CHARS).collect::<String>())
+                ));
+                old_line += 1;
+                new_line += 1;
+                shown += 2;
+            }
         }
-        if shown >= MAX_CHANGED_LINES {
-            break;
-        }
-        diff.push(format!("@@ -{} +{} @@", index + 1, index + 1));
-        if let Some(line) = old {
-            diff.push(format!(
-                "-{}",
-                bounded_preview(&line.chars().take(MAX_LINE_CHARS).collect::<String>())
-            ));
-        }
-        if let Some(line) = new {
-            diff.push(format!(
-                "+{}",
-                bounded_preview(&line.chars().take(MAX_LINE_CHARS).collect::<String>())
-            ));
-        }
-        shown += 1;
     }
-    if shown == 0 {
-        return "no line differences".into();
-    }
-    let truncated = total > 0
-        && (0..total)
-            .filter(|index| left.get(*index).copied() != right.get(*index).copied())
-            .count()
-            > MAX_CHANGED_LINES;
-    if truncated {
+    if changed_count > MAX_CHANGED_LINES {
         diff.push("… diff truncated".into());
     }
     diff.join("\n")
+}
+
+enum LineOperation<'a> {
+    Keep,
+    Delete(&'a str),
+    Insert(&'a str),
+    Replace(&'a str, &'a str),
+}
+
+fn pair_adjacent_changes<'a>(operations: Vec<LineOperation<'a>>) -> Vec<LineOperation<'a>> {
+    let mut paired = Vec::with_capacity(operations.len());
+    let mut index = 0;
+    while index < operations.len() {
+        if matches!(operations[index], LineOperation::Keep) {
+            paired.push(LineOperation::Keep);
+            index += 1;
+            continue;
+        }
+        let end = operations[index..]
+            .iter()
+            .position(|operation| matches!(operation, LineOperation::Keep))
+            .map_or(operations.len(), |offset| index + offset);
+        let mut deleted = Vec::new();
+        let mut inserted = Vec::new();
+        for operation in &operations[index..end] {
+            match operation {
+                LineOperation::Delete(line) => deleted.push(*line),
+                LineOperation::Insert(line) => inserted.push(*line),
+                LineOperation::Keep | LineOperation::Replace(_, _) => unreachable!(),
+            }
+        }
+        paired.extend(
+            deleted
+                .iter()
+                .zip(&inserted)
+                .map(|(old, new)| LineOperation::Replace(old, new)),
+        );
+        paired.extend(
+            deleted[inserted.len().min(deleted.len())..]
+                .iter()
+                .copied()
+                .map(LineOperation::Delete),
+        );
+        paired.extend(
+            inserted[deleted.len().min(inserted.len())..]
+                .iter()
+                .copied()
+                .map(LineOperation::Insert),
+        );
+        index = end;
+    }
+    paired
+}
+
+/// Align common lines before applying the display bound. The dynamic-programming
+/// table is capped; unusually large inputs fall back to a common-prefix/suffix
+/// replacement block so the work and memory remain bounded.
+fn aligned_line_operations<'a>(left: &[&'a str], right: &[&'a str]) -> Vec<LineOperation<'a>> {
+    const MAX_LCS_CELLS: usize = 1_000_000;
+    let cells = left.len().saturating_mul(right.len());
+    if cells > MAX_LCS_CELLS {
+        let prefix = left
+            .iter()
+            .zip(right)
+            .take_while(|(old, new)| old == new)
+            .count();
+        let suffix = left[prefix..]
+            .iter()
+            .rev()
+            .zip(right[prefix..].iter().rev())
+            .take_while(|(old, new)| old == new)
+            .count();
+        let mut operations = Vec::new();
+        operations.extend((0..prefix).map(|_| LineOperation::Keep));
+        operations.extend(
+            left[prefix..left.len() - suffix]
+                .iter()
+                .copied()
+                .map(LineOperation::Delete),
+        );
+        operations.extend(
+            right[prefix..right.len() - suffix]
+                .iter()
+                .copied()
+                .map(LineOperation::Insert),
+        );
+        operations.extend((0..suffix).map(|_| LineOperation::Keep));
+        return operations;
+    }
+
+    let columns = right.len() + 1;
+    let mut lcs = vec![0_u32; (left.len() + 1).saturating_mul(columns)];
+    for old in (0..left.len()).rev() {
+        for new in (0..right.len()).rev() {
+            let index = old * columns + new;
+            lcs[index] = if left[old] == right[new] {
+                lcs[(old + 1) * columns + new + 1] + 1
+            } else {
+                lcs[(old + 1) * columns + new].max(lcs[old * columns + new + 1])
+            };
+        }
+    }
+    let (mut old, mut new) = (0, 0);
+    let mut operations = Vec::with_capacity(left.len() + right.len());
+    while old < left.len() && new < right.len() {
+        if left[old] == right[new] {
+            operations.push(LineOperation::Keep);
+            old += 1;
+            new += 1;
+        } else if lcs[(old + 1) * columns + new] >= lcs[old * columns + new + 1] {
+            operations.push(LineOperation::Delete(left[old]));
+            old += 1;
+        } else {
+            operations.push(LineOperation::Insert(right[new]));
+            new += 1;
+        }
+    }
+    operations.extend(left[old..].iter().copied().map(LineOperation::Delete));
+    operations.extend(right[new..].iter().copied().map(LineOperation::Insert));
+    operations
 }
 
 fn diagnostic_matches_path(
@@ -11541,6 +11689,40 @@ mod tests {
         assert!(diff.contains("+disk 0"));
         assert!(diff.contains("diff truncated"));
         assert!(!diff.contains("-local 9"));
+    }
+
+    #[test]
+    fn external_compare_aligns_insertions_before_bounding_changed_lines() {
+        let local = (0..12)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        let mut external_lines = (0..12)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>();
+        external_lines.insert(0, "inserted header".into());
+        external_lines[11] = "changed line 10".into();
+        let external = format!("{}\n", external_lines.join("\n"));
+
+        let diff = bounded_line_diff(&local, &external);
+
+        assert!(diff.contains("+inserted header"));
+        assert!(diff.contains("-line 10"));
+        assert!(diff.contains("+changed line 10"));
+        assert!(!diff.contains("diff truncated"));
+
+        let many_changes = bounded_line_diff(
+            &(0..20)
+                .map(|line| format!("old {line}\n"))
+                .collect::<String>(),
+            &format!(
+                "inserted\n{}",
+                (0..20)
+                    .map(|line| format!("new {line}\n"))
+                    .collect::<String>()
+            ),
+        );
+        assert!(many_changes.contains("+inserted"));
+        assert!(many_changes.contains("diff truncated"));
     }
 
     #[test]

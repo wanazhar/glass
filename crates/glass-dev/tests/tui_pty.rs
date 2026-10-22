@@ -29,6 +29,47 @@ struct FixtureChildGuard {
     armed: bool,
 }
 
+struct TemporaryProjectGuard(std::path::PathBuf);
+
+impl Drop for TemporaryProjectGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+struct LiveCoreProcessGuard {
+    pid_path: std::path::PathBuf,
+    binary: std::path::PathBuf,
+}
+
+impl LiveCoreProcessGuard {
+    fn terminate(&self) {
+        let Ok(pid) = std::fs::read_to_string(&self.pid_path) else {
+            return;
+        };
+        let Ok(pid) = pid.trim().parse::<i32>() else {
+            return;
+        };
+        // Only signal the process if it is still the source-built Core binary
+        // started by this test. Glass shutdown normally closes its runtime
+        // pipe first; this is a bounded cleanup for an orphaned runtime.
+        let Ok(executable) = std::fs::canonicalize(format!("/proc/{pid}/exe")) else {
+            return;
+        };
+        if executable == self.binary {
+            // SAFETY: the PID marker is private to this test and /proc confirms
+            // it still names the source-built Core executable.
+            let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    }
+}
+
+impl Drop for LiveCoreProcessGuard {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
 impl FixtureChildGuard {
     fn new(pid_path: std::path::PathBuf) -> Self {
         Self {
@@ -155,6 +196,17 @@ impl Session {
         while Instant::now() < deadline {
             self.settle(Duration::from_millis(200));
             if self.visible_output().contains(probe) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn wait_for_composer_text(&mut self, probe: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            self.settle(Duration::from_millis(200));
+            if self.visible_output().replace('▌', "").contains(probe) {
                 return true;
             }
         }
@@ -877,9 +929,16 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
         session.output_tail()
     );
     session.send(b"\r");
-    session.send(b"\r");
     assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
-    session.send(b"offline prompt round trip");
+    session.clear_output();
+    session.send(b"\r");
+    assert!(session.wait_for("▌", Duration::from_secs(5)));
+    session.send_slowly(b"offline prompt round trip", Duration::from_millis(5));
+    assert!(
+        session.wait_for_composer_text("offline prompt round trip", Duration::from_secs(5)),
+        "typed prompt was not visible before submission\n{}",
+        session.output_tail()
+    );
     session.send(b"\r");
     assert!(
         session.wait_for(
@@ -2100,6 +2159,209 @@ fn task_thread_queue_restart_requires_explicit_core_recovery() {
     resumed_fixture_child.terminate();
     let _ = std::fs::remove_file(fake_core);
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn live_provider_composer_writes_and_verifies_workspace_file() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1")
+        || std::env::var("GLASS_LIVE_PROVIDER").ok().as_deref() != Some("1")
+    {
+        return;
+    }
+
+    let core_binary = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/debug/glass-core")
+        .canonicalize()
+        .expect("source-built target/debug/glass-core is available");
+    let core_version = Command::new(&core_binary)
+        .arg("--version")
+        .output()
+        .expect("read source-built Core version");
+    assert!(
+        core_version.status.success(),
+        "source-built Core version check failed"
+    );
+    let core_version = String::from_utf8_lossy(&core_version.stdout)
+        .trim()
+        .to_owned();
+
+    let root = workspace_root();
+    let _project_cleanup = TemporaryProjectGuard(root.clone());
+    let fixture_state = root.join(".glass");
+    let data_home = root.join(".glass/xdg-data");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    let pid_path = fixture_state.join("live-provider-core-pid");
+    let wrapper = fixture_state.join("glass-core-live-wrapper");
+    let wrapper_body = format!(
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exec '{}' \"$@\"; fi\nprintf '%s\\n' \"$$\" > '{}'\nexec '{}' \"$@\"\n",
+        core_binary.display(),
+        pid_path.display(),
+        core_binary.display(),
+    );
+    std::fs::write(&wrapper, wrapper_body).unwrap();
+    let mut wrapper_permissions = std::fs::metadata(&wrapper).unwrap().permissions();
+    wrapper_permissions.set_mode(0o755);
+    std::fs::set_permissions(&wrapper, wrapper_permissions).unwrap();
+    let core_guard = LiveCoreProcessGuard {
+        pid_path,
+        binary: core_binary.clone(),
+    };
+
+    // The existing global XDG_CONFIG_HOME and environment are inherited for
+    // provider selection and auth. Only Core's writable data home is isolated.
+    let probe = Command::new(&core_binary)
+        .args(["doctor", "--probe", "--json"])
+        .current_dir(&root)
+        .env("XDG_DATA_HOME", &data_home)
+        .output()
+        .expect("run configured Core doctor probe");
+    let probe_text = String::from_utf8_lossy(&probe.stdout);
+    let probe_json = serde_json::from_str::<serde_json::Value>(&probe_text).unwrap_or_default();
+    let diagnostic = format!(
+        "{}\n{}\n{}",
+        probe_text,
+        probe_json["error"].as_str().unwrap_or_default(),
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    let diagnostic_lower = diagnostic.to_ascii_lowercase();
+    assert!(
+        !diagnostic_lower.contains("429") && !diagnostic_lower.contains("too many requests"),
+        "configured Core doctor probe returned HTTP 429; stopping without retry or provider switch"
+    );
+    assert!(
+        probe.status.success() && probe_json["status"] == "ok",
+        "configured Core doctor probe failed; details are intentionally suppressed"
+    );
+    let diagnostic_text = probe_json["text"].as_str().unwrap_or_default();
+    let value_for = |prefix: &str| {
+        diagnostic_text
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let provider = value_for("Connection:")
+        .split(" · ")
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let model = value_for("Model:");
+    assert!(
+        !provider.is_empty()
+            && !model.is_empty()
+            && diagnostic_text.contains("Streaming: completed"),
+        "configured Core doctor probe did not report provider, model, and completed streaming"
+    );
+
+    let mut session = Session::start_with_data_home_options(
+        &binary(),
+        &root,
+        100,
+        30,
+        "glass-core",
+        Some(&wrapper),
+        Some(&data_home),
+    );
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.trust_project();
+    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    session.send(b":agent spawn assistant live provider smoke\r");
+    assert!(
+        session.wait_for("Spawned agent-0001", Duration::from_secs(8)),
+        "resident agent did not start before the live prompt"
+    );
+    send_ctrl_shift_t(&mut session);
+    assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
+    assert!(
+        session.wait_for("agent-0001", Duration::from_secs(8)),
+        "spawned live-provider thread did not appear in the picker"
+    );
+    assert!(
+        session.wait_for("idle", Duration::from_secs(12)),
+        "spawned live-provider agent did not become idle"
+    );
+    session.send(b"\r");
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    session.clear_output();
+    session.send(b"\r");
+    assert!(
+        session.wait_for("▌", Duration::from_secs(5)),
+        "composer did not open on the selected resident-agent conversation"
+    );
+
+    let prompt = "Use the bash tool to create exactly one file named provider-smoke.txt in this project. Its exact content must be `glass live provider smoke` followed by one newline. Then use the bash tool to read the file back and verify its bytes match exactly. Do not change any other files. After verification, respond briefly.";
+    session.send_slowly(prompt.as_bytes(), Duration::from_millis(2));
+    assert!(session.wait_for_composer_text("respond briefly.", Duration::from_secs(5)));
+    session.send(b"\r");
+
+    let file_path = root.join("provider-smoke.txt");
+    let expected = b"glass live provider smoke\n";
+    let registry_path = fixture_state.join("threads/registry.json");
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut completed = false;
+    let mut observed_429 = false;
+    let mut run_classification = "missing".to_owned();
+    let mut send_status = "missing".to_owned();
+    while Instant::now() < deadline {
+        session.settle(Duration::from_millis(200));
+        let terminal_output = session.output().to_ascii_lowercase();
+        observed_429 = terminal_output.contains("429")
+            || terminal_output.contains("too many requests")
+            || terminal_output.contains("rate limit exceeded");
+        if observed_429 {
+            break;
+        }
+
+        let registry = std::fs::read(&registry_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        if let Some(threads) = registry
+            .as_ref()
+            .and_then(|value| value["threads"].as_array())
+            && let Some((classification, status)) = threads.iter().rev().find_map(|thread| {
+                let attempt = thread["sendAttempts"].as_array()?.last()?;
+                let target_run_id = attempt["targetRunId"].as_str()?;
+                let run = thread["runs"]
+                    .as_array()?
+                    .iter()
+                    .find(|run| run["runId"].as_str() == Some(target_run_id))?;
+                Some((
+                    run["classification"].as_str()?.to_owned(),
+                    attempt["status"].as_str()?.to_owned(),
+                ))
+            })
+        {
+            run_classification = classification;
+            send_status = status;
+        }
+
+        if send_status == "failed" {
+            break;
+        }
+
+        if run_classification == "idle"
+            && send_status == "settled"
+            && std::fs::read(&file_path).is_ok_and(|content| content == expected)
+        {
+            completed = true;
+            break;
+        }
+    }
+    let file_content = std::fs::read(&file_path).ok();
+    let file_exists = file_content.is_some();
+    let file_length = file_content.as_ref().map_or(0, Vec::len);
+    assert!(
+        completed,
+        "live provider verification incomplete: file_exists={file_exists}, file_length={file_length}, run_classification={run_classification}, send_status={send_status}, observed_429={observed_429}; no retry was attempted"
+    );
+    assert_eq!(std::fs::read(&file_path).unwrap(), expected);
+
+    session.kill();
+    core_guard.terminate();
+    println!(
+        "live provider composer smoke passed: provider={provider}; model={model}; Core={core_version}; file content verified"
+    );
 }
 
 #[test]

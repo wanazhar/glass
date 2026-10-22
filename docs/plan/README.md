@@ -63,7 +63,10 @@ drafts and cursors, then settles one in the background while a different
 conversation remains selected. The queue's old-run block, explicit retarget,
 and confirmed `NeedsReview` retry are also complete; see the [queue
 retarget/retry journey](tasks/issue64-queue-retarget-retry-001.md). The
-combined TaskScheduler workflow and durable task recovery remain open.
+Task state now checkpoints durably and assigned work is classified
+recovery-pending after restart; see the [durable scheduler recovery
+slice](tasks/issue64-task-scheduler-recovery-001.md). Combined
+task/queue/thread recovery journeys remain open.
 The completed [TaskScheduler project-thread journey](tasks/issue64-task-thread-journey-001.md)
 verifies that task creation, task snapshots, task-labeled conversations, and
 durable thread drafts are connected in the live TUI, including cursor

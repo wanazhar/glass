@@ -2332,6 +2332,7 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
             "invalid_input",
             "busy",
             "limit",
+            "operation",
             "unsupported_method",
             "request",
         ] {

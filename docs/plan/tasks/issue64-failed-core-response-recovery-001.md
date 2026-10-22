@@ -56,3 +56,18 @@ new settled attempt retain distinct attempt IDs and a shared client message ID.
 The offline projection test proves that a raw fixture provider message is
 omitted. Focused glass-dev tests, PTY compilation and journeys, strict scoped
 Clippy, formatting, and diff checks pass.
+
+The live-provider composer journey remains incomplete and is tracked separately
+from the offline recovery proof. An earlier integrated attempt ended in HTTP
+429 capacity retries before a tool call or file edit. A later bounded attempt
+reported a correlated send attempt as `failed`, its run as `idle`, no output
+file, and no observed HTTP 429; at that time the safe error was not visible in
+the PTY. After the error projection and class detector were updated, one more
+bounded attempt again reported `failed`/`idle`, a correlated request ID, no
+file, and no observed 429, while the PTY detector still reported no recognized
+safe class. The attempts are separate observations; the later non-429 result
+does not identify the cause of the earlier capacity failure. No automatic
+retry was attempted. The direct Core readiness/provider probe and a direct
+Core response had succeeded earlier, but they do not prove coding through the
+Glass composer. The current live failure class and cause remain unknown; the
+offline fixture proves only the host error-projection and recovery behavior.

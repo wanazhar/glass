@@ -743,7 +743,19 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     let kind = error
                         .pointer("/data/kind")
                         .and_then(Value::as_str)
-                        .filter(|kind| !kind.is_empty())
+                        .filter(|kind| {
+                            matches!(
+                                *kind,
+                                "authentication"
+                                    | "provider"
+                                    | "protocol"
+                                    | "unsupported_method"
+                                    | "invalid_input"
+                                    | "busy"
+                                    | "limit"
+                                    | "operation"
+                            )
+                        })
                         .unwrap_or("request");
                     let code = error
                         .get("code")
@@ -1093,6 +1105,29 @@ mod tests {
         let rendered = conversation(&[event]);
         assert!(rendered.contains("Core prompt failed: provider · -32000 · not marked retryable"));
         assert!(!rendered.contains("raw provider response"));
+    }
+
+    #[test]
+    fn failed_core_turn_falls_back_for_unrecognized_error_class() {
+        let event = crate::AgentEvent {
+            sequence: 1,
+            agent_id: crate::AgentId::parse("agent-0002").unwrap(),
+            timestamp_ms: 0,
+            kind: "response".into(),
+            payload: serde_json::json!({
+                "operation": "prompt",
+                "ok": false,
+                "error": {
+                    "code": -32000,
+                    "message": "untrusted detail stays hidden",
+                    "data": {"kind": "unrecognized-sensitive-class", "retryable": false}
+                }
+            }),
+        };
+        let rendered = conversation(&[event]);
+        assert!(rendered.contains("Core prompt failed: request · -32000"));
+        assert!(!rendered.contains("unrecognized-sensitive-class"));
+        assert!(!rendered.contains("untrusted detail"));
     }
 
     #[test]

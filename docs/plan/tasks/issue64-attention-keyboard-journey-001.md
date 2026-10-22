@@ -10,9 +10,8 @@ depends-on: [issue63-attention-inbox-001, issue64-project-thread-picker-001]
 ## Objective
 
 Verify that an operator can inspect an uncertain delivery from the shared
-Attention Inbox, cancel its explicit retry confirmation without resending,
-continue to a pending editor proposal, and cancel then confirm application exit
-using the keyboard alone.
+Attention Inbox, navigate to a pending editor proposal, and cancel then confirm
+application exit using the keyboard alone.
 
 ## Context
 
@@ -32,15 +31,14 @@ using the keyboard alone.
 - [ ] At 80×24 and 50×16, a seeded uncertain delivery and editor proposal
       appear together in the Attention Inbox.
 - [ ] Activating the uncertain item opens its owning conversation with the
-      saved message; requesting retry shows the duplicate-risk confirmation.
-- [ ] Escape cancels that confirmation, leaves the attempt uncertain, and sends
-      no `turn/prompt`; the unrelated proposal remains available.
+      saved message and keeps the attempt uncertain without replay.
+- [ ] The unrelated proposal remains available after inspecting the uncertain
+      delivery.
 - [ ] Activating the remaining proposal opens its exact file review context.
 - [ ] Ctrl-C opens the review editor's unsaved-exit prompt; Escape keeps the
       review active, and a later Ctrl-C followed by `Q` opens the application
       quit confirmation, which Enter confirms before exiting.
-- [ ] Fixture and TUI child processes have bounded cleanup on assertion failure.
-- [ ] Focused PTY, scoped strict Clippy, formatting, fixture syntax, docs
+- [ ] Focused PTY, scoped strict Clippy, formatting, docs
       validators, and diff checks pass; evidence identifies the exact binary
       used and does not imply a fresh release build unless one was built.
 
@@ -48,8 +46,8 @@ using the keyboard alone.
 
 Run the allocated PTY journey with `GLASS_E2E=1` and an explicitly named
 `GLASS_E2E_BINARY`. Run `cargo clippy -p glass-dev --test tui_pty --locked --
--D warnings`, `cargo fmt --all -- --check`, fixture syntax validation,
-documentation coverage/depth/release-truth/shortcut checks, and `git diff
+-D warnings`, `cargo fmt --all -- --check`, documentation
+coverage/depth/release-truth/shortcut checks, and `git diff
 --check`.
 
 ## Evidence

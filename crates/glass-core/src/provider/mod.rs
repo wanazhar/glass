@@ -366,11 +366,11 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
     let mut tools = vec![
         (
             "bash".to_string(),
-            "Search, pipelines, builds, tests and processes. Prefer read/edit/write for files. \
-             timeout_ms defaults to 120000. Inline output: 16 KiB/stream; overflow: 4 MiB/stream; \
-             larger output reports discarded bytes and its final tail. Redirect explicitly for complete large logs. \
-             job action: start(command), poll(id,offset), input(id,text,eof), stop(id), list. \
-             Jobs return immediately; poll with next_offset.".to_string(),
+            "Search, pipelines, builds, tests, processes; prefer read/edit/write. \
+             timeout_ms defaults to 120000. Output: 16 KiB/stream inline; 4 MiB/stream overflow; \
+             report discarded bytes and tail. Redirect to capture full logs. \
+             Jobs: start(command), poll(id,offset), input(id,text,eof), stop(id), list. \
+             Poll jobs with next_offset.".to_string(),
             serde_json::json!({
                 "type": "object",
                 "properties": {

@@ -64,6 +64,11 @@ conversation remains selected. The queue's old-run block, explicit retarget,
 and confirmed `NeedsReview` retry are also complete; see the [queue
 retarget/retry journey](tasks/issue64-queue-retarget-retry-001.md). The
 combined TaskScheduler workflow and durable task recovery remain open.
+The completed [TaskScheduler project-thread journey](tasks/issue64-task-thread-journey-001.md)
+verifies that task creation, task snapshots, task-labeled conversations, and
+durable thread drafts are connected in the live TUI, including cursor
+restoration after switching. The manual-agent three-thread journey is separate
+evidence and does not establish this task-backed flow.
 
 ## Current source line: Glass 0.3.14
 

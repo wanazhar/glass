@@ -480,6 +480,15 @@ fn send_ctrl_shift_t(session: &mut Session) {
     session.send(b"\x1b[84;6u");
 }
 
+fn paste_command(session: &mut Session, command: &str) {
+    session.send(b":");
+    session.settle(Duration::from_millis(100));
+    session.send(b"\x1b[200~");
+    session.send(command.as_bytes());
+    session.send(b"\x1b[201~");
+    session.send(b"\r");
+}
+
 fn select_project_thread(session: &mut Session, current: usize, target: usize) {
     send_ctrl_shift_t(session);
     assert!(session.wait_for_visible("PROJECT THREADS", Duration::from_secs(5)));
@@ -516,6 +525,35 @@ fn wait_for_saved_thread_draft(
         assert!(
             Instant::now() < deadline,
             "{role} draft/cursor was not persisted: {registry}"
+        );
+        session.settle(Duration::from_millis(100));
+    }
+}
+
+fn wait_for_saved_thread_draft_id(
+    session: &mut Session,
+    registry_path: &std::path::Path,
+    thread_id: &str,
+    text: &str,
+    cursor: usize,
+) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(registry_path).unwrap()).unwrap();
+        let saved = registry["threads"].as_array().is_some_and(|threads| {
+            threads.iter().any(|thread| {
+                thread["threadId"] == thread_id
+                    && thread["composerDraft"]["text"] == text
+                    && thread["composerDraft"]["cursor"] == cursor
+            })
+        });
+        if saved {
+            return registry;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "thread {thread_id} draft/cursor was not persisted: {registry}"
         );
         session.settle(Duration::from_millis(100));
     }
@@ -1284,6 +1322,338 @@ fn three_fake_core_tasks_complete_without_stealing_selected_thread() {
     };
     for thread in registry["threads"].as_array().unwrap() {
         assert_eq!(thread["sendAttempts"][0]["status"], "settled", "{registry}");
+    }
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn task_scheduler_threads_keep_task_identity_drafts_and_background_focus() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    std::fs::write(fixture_state.join("e2e-core-concurrency"), "enabled").unwrap();
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_core_binary(&binary(), &root, 120, 50, Some(&fake_core));
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.trust_project();
+    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+
+    for (title, tag) in [
+        ("Alpha task", "alpha-job"),
+        ("Beta task", "beta-job"),
+        ("Gamma task", "gamma-job"),
+    ]
+    .into_iter()
+    {
+        let arguments = serde_json::json!({
+            "title": title,
+            "goal": tag,
+            "prompt": tag,
+            "verification": {"kind": "settled"}
+        });
+        let command = format!("tool glass.task.create {arguments}");
+        paste_command(&mut session, &command);
+        assert!(
+            session.wait_for("one-use confirmation required", Duration::from_secs(5)),
+            "task creation did not request its normal one-use confirmation\n{}",
+            session.output_tail()
+        );
+        session.send(b"y");
+        assert!(
+            session.wait_for("glass.task.create", Duration::from_secs(8)),
+            "task creation did not reach the workspace scheduler\n{}",
+            session.output_tail()
+        );
+        let started = fixture_state.join(format!("e2e-core-started-{tag}"));
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !started.exists() && Instant::now() < deadline {
+            session.settle(Duration::from_millis(50));
+        }
+        assert!(
+            started.exists(),
+            "TaskScheduler did not start task {tag}\n{}",
+            session.output_tail()
+        );
+    }
+
+    let registry_path = fixture_state.join("threads/registry.json");
+    session.send(b"1");
+    assert!(session.wait_for_visible("CONVERSATION", Duration::from_secs(5)));
+    let mut last_selected = 0;
+    for (index, (task_id, title, tag, draft)) in [
+        ("task-0001", "Alpha task", "alpha-job", "alpha task draft"),
+        ("task-0002", "Beta task", "beta-job", "beta task draft"),
+        ("task-0003", "Gamma task", "gamma-job", "gamma task draft"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        send_ctrl_shift_t(&mut session);
+        assert!(
+            session.wait_for_visible("PROJECT THREADS", Duration::from_secs(5)),
+            "project thread picker did not open from the Agent surface\n{}",
+            session.output_tail()
+        );
+        if index < last_selected {
+            session.send(&b"\x1b[A".repeat(last_selected - index));
+        } else if index > last_selected {
+            session.send(&b"\x1b[B".repeat(index - last_selected));
+        }
+        let picker = session.visible_output();
+        let label = format!("developer · {task_id} · {title}");
+        assert!(
+            picker.lines().any(|line| line.contains(&label)),
+            "project thread picker must show task identity {label}\n{picker}"
+        );
+        session.send(b"\r");
+        assert!(session.wait_for_visible("CONVERSATION", Duration::from_secs(5)));
+        last_selected = index;
+        let conversation = session.visible_output();
+        assert!(
+            conversation.contains(tag),
+            "selected task prompt should be visible\n{conversation}"
+        );
+        session.send(draft.as_bytes());
+        session.send(b"\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D");
+
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let registry = loop {
+            let registry: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+            let has_draft = registry["threads"].as_array().is_some_and(|threads| {
+                threads.iter().any(|thread| {
+                    thread["composerDraft"]["text"] == draft
+                        && thread["composerDraft"]["cursor"] == draft.len() - 5
+                })
+            });
+            if has_draft || Instant::now() >= deadline {
+                break registry;
+            }
+            session.settle(Duration::from_millis(100));
+        };
+        assert!(
+            registry["threads"].as_array().is_some_and(|threads| {
+                threads.iter().any(|thread| {
+                    thread["composerDraft"]["text"] == draft
+                        && thread["composerDraft"]["cursor"] == draft.len() - 5
+                })
+            }),
+            "task thread did not persist its draft and cursor: {registry}"
+        );
+    }
+
+    // Verify the scheduler's assignment projection and all three durable
+    // conversation records while gamma remains selected.
+    session.send(b"\x1b");
+    session.send(b"5");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let visible = session.visible_output();
+        let all_running = [
+            ("task-0001", "Alpha task", "agent-0001"),
+            ("task-0002", "Beta task", "agent-0002"),
+            ("task-0003", "Gamma task", "agent-0003"),
+        ]
+        .into_iter()
+        .all(|(id, title, agent)| {
+            visible.lines().any(|line| {
+                let compact = line
+                    .chars()
+                    .filter(|character| !character.is_whitespace())
+                    .collect::<String>();
+                compact.contains(id)
+                    && compact.contains("running")
+                    && compact.contains(&title.replace(' ', ""))
+            }) && visible.contains(agent)
+        });
+        if all_running || Instant::now() >= deadline {
+            assert!(all_running, "task snapshots are missing:\n{visible}");
+            break;
+        }
+        session.settle(Duration::from_millis(100));
+    }
+    let registry: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+    let threads = registry["threads"].as_array().unwrap();
+    assert_eq!(threads.len(), 3, "one durable thread per scheduled task");
+    assert!(threads.iter().all(|thread| thread["role"] == "developer"));
+    let mut thread_ids = std::collections::BTreeSet::new();
+    let mut draft_threads = std::collections::BTreeMap::new();
+    for draft in ["alpha task draft", "beta task draft", "gamma task draft"] {
+        let thread = threads
+            .iter()
+            .find(|thread| thread["composerDraft"]["text"] == draft)
+            .unwrap_or_else(|| panic!("missing durable task-thread draft {draft}: {registry}"));
+        let thread_id = thread["threadId"].as_str().unwrap().to_owned();
+        thread_ids.insert(thread_id.clone());
+        draft_threads.insert(draft, thread_id);
+        assert_eq!(thread["runs"].as_array().unwrap().len(), 1);
+    }
+    assert_eq!(
+        thread_ids.len(),
+        3,
+        "task assignments use distinct durable threads"
+    );
+    session.send(b"1");
+    assert!(session.wait_for_visible("CONVERSATION", Duration::from_secs(5)));
+    let mut previous_selection = 2;
+    for (target, tag, draft) in [
+        (0, "alpha-job", "alpha task draft"),
+        (1, "beta-job", "beta task draft"),
+        (2, "gamma-job", "gamma task draft"),
+    ] {
+        select_project_thread(&mut session, previous_selection, target);
+        previous_selection = target;
+        session.send(b"\r");
+        let cursor = draft.len() - 5;
+        let (draft_before_cursor, draft_after_cursor) = draft.split_at(cursor);
+        assert!(
+            session.wait_for_visible(draft_before_cursor, Duration::from_secs(5)),
+            "restored composer draft prefix {draft_before_cursor} should be visible\n{}",
+            session.output_tail()
+        );
+        let visible = session.visible_output();
+        assert!(
+            visible.contains(tag),
+            "selected task {tag} should be visible\n{visible}"
+        );
+        assert!(
+            visible.contains(draft_before_cursor) && visible.contains(draft_after_cursor),
+            "restored composer draft around its cursor should be visible\n{visible}"
+        );
+
+        let mut inserted = draft.to_owned();
+        inserted.insert(cursor, 'X');
+        session.send(b"X");
+        let thread_id = draft_threads[draft].as_str();
+        wait_for_saved_thread_draft_id(
+            &mut session,
+            &registry_path,
+            thread_id,
+            &inserted,
+            cursor + 1,
+        );
+        session.send(b"\x7f");
+        wait_for_saved_thread_draft_id(&mut session, &registry_path, thread_id, draft, cursor);
+        session.send(b"\x1b");
+    }
+    assert_eq!(
+        previous_selection, 2,
+        "gamma remains selected before alpha release"
+    );
+    // Release alpha only. Task completion is observed through the task surface;
+    // gamma remains selected in the project-thread picker and conversation.
+    session.buffer.clear();
+    std::fs::write(fixture_state.join("e2e-core-release-alpha-job"), "release").unwrap();
+    let alpha_completed = fixture_state.join("e2e-core-completed-alpha-job");
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while !alpha_completed.exists() && Instant::now() < deadline {
+        session.settle(Duration::from_millis(50));
+    }
+    assert!(
+        alpha_completed.exists(),
+        "alpha task did not settle after release"
+    );
+    session.settle(Duration::from_millis(500));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let settled = loop {
+        session.send(b"5");
+        session.settle(Duration::from_millis(300));
+        if session.wait_for_visible("task-0001", Duration::from_secs(2)) {
+            let visible = session.visible_output();
+            if visible.contains("succeeded") || Instant::now() >= deadline {
+                break visible;
+            }
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "alpha task did not reach succeeded state\n{}",
+                session.output_tail()
+            );
+        }
+    };
+    assert!(
+        settled.contains("succeeded"),
+        "settled-task verification should report alpha completion\n{settled}"
+    );
+    assert!(settled.contains("Alpha task") && settled.contains("agent-0001"));
+    for (id, title, agent) in [
+        ("task-0002", "Beta task", "agent-0002"),
+        ("task-0003", "Gamma task", "agent-0003"),
+    ] {
+        assert!(
+            settled.lines().any(|line| {
+                let compact = line
+                    .chars()
+                    .filter(|character| !character.is_whitespace())
+                    .collect::<String>();
+                compact.contains(id)
+                    && compact.contains("running")
+                    && compact.contains(&title.replace(' ', ""))
+            }) && settled.contains(agent),
+            "{id} should remain running on {agent}\n{settled}"
+        );
+    }
+
+    session.send(b"1");
+    assert!(session.wait_for_visible("CONVERSATION", Duration::from_secs(5)));
+    assert!(
+        session.visible_output().contains("gamma-job"),
+        "gamma should remain the selected conversation while task snapshots refresh\n{}",
+        session.visible_output()
+    );
+    send_ctrl_shift_t(&mut session);
+    assert!(session.wait_for_visible("PROJECT THREADS", Duration::from_secs(5)));
+    let picker = session.visible_output();
+    assert!(
+        picker.lines().any(|line| line.contains("▸")
+            && line.contains("task-0003")
+            && line.contains("Gamma task")),
+        "gamma must stay selected after alpha completed in the background\n{picker}"
+    );
+    session.send(b"\x1b");
+    assert!(session.wait_for_visible("gamma-job", Duration::from_secs(5)));
+    let gamma_view = session.visible_output();
+    assert!(
+        gamma_view.contains("gamma-job"),
+        "gamma conversation stays focused\n{gamma_view}"
+    );
+    assert!(
+        !gamma_view.contains("handled alpha-job"),
+        "alpha response stole gamma focus\n{gamma_view}"
+    );
+    let registry: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+    for (tag, draft) in [
+        ("alpha-job", "alpha task draft"),
+        ("beta-job", "beta task draft"),
+        ("gamma-job", "gamma task draft"),
+    ] {
+        let thread = registry["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|thread| thread["composerDraft"]["text"] == draft)
+            .unwrap();
+        assert_eq!(thread["composerDraft"]["cursor"], draft.len() - 5);
+        let expected_classification = if tag == "alpha-job" {
+            "completed"
+        } else {
+            "working"
+        };
+        assert_eq!(thread["runs"][0]["classification"], expected_classification);
+        assert!(
+            thread["runs"][0]["runId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty()),
+            "{tag} needs a durable run identity"
+        );
     }
     session.kill();
     let _ = std::fs::remove_file(fake_core);

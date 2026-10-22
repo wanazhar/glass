@@ -5,6 +5,8 @@ use crate::development::{DevelopmentError, DevelopmentResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -13,8 +15,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const MAX_TASKS: usize = 128;
 const MAX_DEPENDENCIES: usize = 32;
 const MAX_TASK_EVIDENCE: usize = 128;
+const MAX_PERSISTED_TASK_ERROR_BYTES: usize = 160;
 const MAX_TASK_TEXT_BYTES: usize = 128 * 1024;
 const MAX_VERIFIER_COMMAND_BYTES: usize = 16 * 1024;
+const TASK_CHECKPOINT_VERSION: u32 = 1;
+const MAX_TASK_CHECKPOINT_BYTES: u64 = 2 * 1024 * 1024;
+const TASK_CHECKPOINT_MUTATION_RESERVE: usize = 256;
+const TASK_CHECKPOINT_RELATIVE_PATH: &str = ".glass/tasks/scheduler.json";
+static NEXT_CHECKPOINT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TaskId(String);
@@ -303,6 +311,14 @@ pub struct TaskSnapshot {
     pub last_error: Option<String>,
     pub evidence: Vec<TaskEvidence>,
     pub blocked_override: bool,
+    /// True when an assigned task was active when Glass last shut down. The
+    /// assignment is retained for inspection, but the task is never replayed
+    /// without an explicit operator action.
+    #[serde(default)]
+    pub recovery_pending: bool,
+    /// True when bounded evidence history has been pruned or compressed.
+    #[serde(default)]
+    pub evidence_truncated: bool,
 }
 
 /// Durable overnight-crew artifact written under `{root}/.glass/crew`.
@@ -459,6 +475,27 @@ impl TaskAgentBackend for AgentRegistry {
     }
 }
 
+fn cancel_task_agent_if_live<B: TaskAgentBackend>(
+    agents: &mut B,
+    id: &AgentId,
+) -> DevelopmentResult<()> {
+    let snapshots = agents.agent_snapshots()?;
+    let Some(snapshot) = snapshots.iter().find(|snapshot| snapshot.id == *id) else {
+        return Ok(());
+    };
+    if matches!(
+        snapshot.status,
+        AgentStatus::RecoveryPending
+            | AgentStatus::Unavailable
+            | AgentStatus::Completed
+            | AgentStatus::Failed
+            | AgentStatus::Cancelled
+    ) {
+        return Ok(());
+    }
+    agents.cancel_agent(id)
+}
+
 pub(crate) struct TaskScheduler {
     root: PathBuf,
     tasks: BTreeMap<TaskId, TaskRecord>,
@@ -466,14 +503,64 @@ pub(crate) struct TaskScheduler {
     agent_event_cursor: u64,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskSchedulerCheckpoint {
+    format_version: u32,
+    project_root: PathBuf,
+    next_task: u64,
+    tasks: Vec<TaskRecordCheckpoint>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TaskRecordCheckpoint {
+    snapshot: TaskSnapshot,
+    next_retry_at_ms: Option<u128>,
+}
+
 impl TaskScheduler {
     pub(crate) fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
-        Ok(Self {
-            root: std::fs::canonicalize(root)?,
-            tasks: BTreeMap::new(),
-            next_task: 1,
+        let root = std::fs::canonicalize(root)?;
+        validate_task_checkpoint_paths(&root)?;
+        let checkpoint_path = root.join(TASK_CHECKPOINT_RELATIVE_PATH);
+        let (tasks, next_task) = if checkpoint_path.exists() {
+            load_task_checkpoint(&checkpoint_path, &root)?
+        } else {
+            (BTreeMap::new(), 1)
+        };
+        let mut scheduler = Self {
+            root,
+            tasks,
+            next_task,
             agent_event_cursor: 0,
-        })
+        };
+        for record in scheduler.tasks.values() {
+            scheduler.validate_snapshot(&record.snapshot)?;
+        }
+        let mut recovered = false;
+        let mut recovered_ids = Vec::new();
+        for record in scheduler.tasks.values_mut() {
+            if matches!(
+                record.snapshot.state,
+                TaskState::Ready | TaskState::Running | TaskState::Waiting | TaskState::Verifying
+            ) && record.snapshot.assigned_agent.is_some()
+            {
+                record.snapshot.state = TaskState::Paused;
+                record.snapshot.recovery_pending = true;
+                record.snapshot.last_error = Some(
+                    "recovery pending: prior agent outcome is unknown; inspect before resuming"
+                        .into(),
+                );
+                record.snapshot.updated_at_ms = now_ms();
+                recovered = true;
+                recovered_ids.push(record.snapshot.id.clone());
+            }
+        }
+        if recovered {
+            scheduler.persist_recovery_checkpoint(&recovered_ids)?;
+        }
+        Ok(scheduler)
     }
 
     pub fn create<B: TaskAgentBackend>(
@@ -493,44 +580,59 @@ impl TaskScheduler {
             )));
         }
         let id = TaskId(format!("task-{:04}", self.next_task));
-        self.next_task = self
+        let next_task = self
             .next_task
             .checked_add(1)
             .ok_or_else(|| DevelopmentError::Conflict("task identifier space exhausted".into()))?;
         let now = now_ms();
+        let mut projected = TaskSnapshot {
+            id: id.clone(),
+            title: spec.title.clone(),
+            goal: spec.goal.clone(),
+            prompt: spec.prompt.clone(),
+            role: spec.role.clone(),
+            dependencies: spec.dependencies.clone(),
+            assigned_agent: Some(maximum_length_agent_id()?),
+            worktree: spec.worktree.clone().unwrap_or_else(|| self.root.clone()),
+            model: spec.model.clone(),
+            thinking: spec.thinking.clone(),
+            unrestricted: spec.unrestricted,
+            budget: spec.budget.clone(),
+            verification: spec.verification.clone(),
+            retry: spec.retry.clone(),
+            state: TaskState::Ready,
+            attempt: 1,
+            observed_tokens: 0,
+            created_at_ms: now,
+            started_at_ms: None,
+            completed_at_ms: None,
+            updated_at_ms: now,
+            last_error: None,
+            evidence: Vec::new(),
+            blocked_override: false,
+            recovery_pending: false,
+            evidence_truncated: false,
+        };
+        let checkpoint = self.checkpoint_bytes(None, Some(&projected), next_task)?;
+        self.ensure_checkpoint_mutation_capacity(checkpoint.len())?;
+        self.next_task = next_task;
+        projected.assigned_agent = None;
+        projected.state = TaskState::Queued;
+        projected.attempt = 0;
         self.tasks.insert(
             id.clone(),
             TaskRecord {
-                snapshot: TaskSnapshot {
-                    id: id.clone(),
-                    title: spec.title,
-                    goal: spec.goal,
-                    prompt: spec.prompt,
-                    role: spec.role,
-                    dependencies: spec.dependencies,
-                    assigned_agent: None,
-                    worktree: spec.worktree.unwrap_or_else(|| self.root.clone()),
-                    model: spec.model,
-                    thinking: spec.thinking,
-                    unrestricted: spec.unrestricted,
-                    budget: spec.budget,
-                    verification: spec.verification,
-                    retry: spec.retry,
-                    state: TaskState::Queued,
-                    attempt: 0,
-                    observed_tokens: 0,
-                    created_at_ms: now,
-                    started_at_ms: None,
-                    completed_at_ms: None,
-                    updated_at_ms: now,
-                    last_error: None,
-                    evidence: Vec::new(),
-                    blocked_override: false,
-                },
+                snapshot: projected,
                 next_retry_at_ms: None,
             },
         );
+        if let Err(error) = self.ensure_current_checkpoint_fits() {
+            self.tasks.remove(&id);
+            self.next_task = self.next_task.saturating_sub(1);
+            return Err(error);
+        }
         self.schedule_ready(agents)?;
+        self.persist_checkpoint()?;
         Ok(id)
     }
 
@@ -630,14 +732,15 @@ impl TaskScheduler {
         let snapshots = agents.agent_snapshots()?;
         let events = agents.agent_events(self.agent_event_cursor)?;
         for event in events {
-            self.agent_event_cursor = self.agent_event_cursor.max(event.sequence);
             self.apply_agent_event(agents, &event)?;
+            self.agent_event_cursor = self.agent_event_cursor.max(event.sequence);
         }
-        self.apply_agent_failures(&snapshots);
+        self.apply_agent_failures(&snapshots)?;
         self.enforce_task_budgets(agents)?;
         self.verify_pending(agents)?;
-        self.propagate_blocked();
-        self.schedule_ready(agents)
+        self.propagate_blocked()?;
+        self.schedule_ready(agents)?;
+        self.persist_checkpoint()
     }
 
     pub fn list<B: TaskAgentBackend>(
@@ -673,22 +776,34 @@ impl TaskScheduler {
         passed: bool,
         details: Value,
     ) -> DevelopmentResult<()> {
+        let evidence = TaskEvidence {
+            kind: kind.into(),
+            actor: actor.into(),
+            source: source.into(),
+            passed: Some(passed),
+            observed_at_ms: now_ms(),
+            details,
+        };
+        validate_text("task evidence kind", &evidence.kind)?;
+        validate_text("task evidence actor", &evidence.actor)?;
+        validate_text("task evidence source", &evidence.source)?;
+        let mut projected = self.record(id)?.snapshot.clone();
+        let mut projected_record = TaskRecord {
+            snapshot: projected.clone(),
+            next_retry_at_ms: self.record(id)?.next_retry_at_ms,
+        };
+        push_evidence(&mut projected_record, evidence.clone());
+        projected = projected_record.snapshot;
+        if projected.state == TaskState::Waiting {
+            projected.state = TaskState::Verifying;
+        }
+        self.ensure_snapshot_checkpoint_fits(id, &projected)?;
         let record = self.record_mut(id)?;
-        push_evidence(
-            record,
-            TaskEvidence {
-                kind: kind.into(),
-                actor: actor.into(),
-                source: source.into(),
-                passed: Some(passed),
-                observed_at_ms: now_ms(),
-                details,
-            },
-        );
+        push_evidence(record, evidence);
         if record.snapshot.state == TaskState::Waiting {
             record.snapshot.state = TaskState::Verifying;
         }
-        Ok(())
+        self.persist_checkpoint()
     }
 
     pub fn pause<B: TaskAgentBackend>(
@@ -697,20 +812,29 @@ impl TaskScheduler {
         id: &TaskId,
     ) -> DevelopmentResult<()> {
         self.refresh(agents)?;
-        let agent = self.record(id)?.snapshot.assigned_agent.clone();
-        if let Some(agent) = agent {
-            agents.cancel_agent(&agent)?;
-        }
-        let record = self.record_mut(id)?;
-        if record.snapshot.state.terminal() {
+        let mut projected = self.record(id)?.snapshot.clone();
+        if projected.state.terminal() {
             return Err(DevelopmentError::Conflict(
                 "terminal task cannot be paused".into(),
             ));
         }
+        projected.assigned_agent = None;
+        projected.state = TaskState::Paused;
+        projected.recovery_pending = false;
+        projected.last_error = None;
+        projected.updated_at_ms = now_ms();
+        self.ensure_snapshot_checkpoint_fits(id, &projected)?;
+        let agent = self.record(id)?.snapshot.assigned_agent.clone();
+        if let Some(agent) = agent {
+            cancel_task_agent_if_live(agents, &agent)?;
+        }
+        let record = self.record_mut(id)?;
         record.snapshot.assigned_agent = None;
         record.snapshot.state = TaskState::Paused;
+        record.snapshot.recovery_pending = false;
+        record.snapshot.last_error = None;
         record.snapshot.updated_at_ms = now_ms();
-        Ok(())
+        self.persist_checkpoint()
     }
 
     pub fn resume<B: TaskAgentBackend>(
@@ -718,13 +842,26 @@ impl TaskScheduler {
         agents: &mut B,
         id: &TaskId,
     ) -> DevelopmentResult<()> {
-        let record = self.record_mut(id)?;
-        if record.snapshot.state != TaskState::Paused {
+        let mut projected = self.record(id)?.snapshot.clone();
+        if projected.state != TaskState::Paused {
             return Err(DevelopmentError::Conflict("task is not paused".into()));
         }
+        projected.state = TaskState::Queued;
+        projected.assigned_agent = None;
+        projected.recovery_pending = false;
+        projected.last_error = None;
+        projected.updated_at_ms = now_ms();
+        self.ensure_snapshot_checkpoint_fits(id, &projected)?;
+        self.ensure_schedule_checkpoint_fits(id, &projected)?;
+        let record = self.record_mut(id)?;
+
         record.snapshot.state = TaskState::Queued;
+        record.snapshot.assigned_agent = None;
+        record.snapshot.recovery_pending = false;
+        record.snapshot.last_error = None;
         record.snapshot.updated_at_ms = now_ms();
-        self.schedule_ready(agents)
+        self.schedule_ready(agents)?;
+        self.persist_checkpoint()
     }
 
     pub fn cancel<B: TaskAgentBackend>(
@@ -733,18 +870,28 @@ impl TaskScheduler {
         id: &TaskId,
     ) -> DevelopmentResult<()> {
         self.refresh(agents)?;
-        let agent = self.record(id)?.snapshot.assigned_agent.clone();
+        let current = self.record(id)?.snapshot.clone();
+        let mut projected = current.clone();
+        if !projected.state.terminal() {
+            projected.state = TaskState::Cancelled;
+            projected.recovery_pending = false;
+            projected.completed_at_ms = Some(now_ms());
+            projected.updated_at_ms = now_ms();
+        }
+        self.ensure_snapshot_checkpoint_fits(id, &projected)?;
+        let agent = current.assigned_agent.clone();
         if let Some(agent) = agent {
-            agents.cancel_agent(&agent)?;
+            cancel_task_agent_if_live(agents, &agent)?;
         }
         let record = self.record_mut(id)?;
         if !record.snapshot.state.terminal() {
             record.snapshot.state = TaskState::Cancelled;
+            record.snapshot.recovery_pending = false;
             record.snapshot.completed_at_ms = Some(now_ms());
             record.snapshot.updated_at_ms = now_ms();
         }
-        self.propagate_blocked();
-        Ok(())
+        self.propagate_blocked()?;
+        self.persist_checkpoint()
     }
 
     pub fn retry<B: TaskAgentBackend>(
@@ -752,22 +899,31 @@ impl TaskScheduler {
         agents: &mut B,
         id: &TaskId,
     ) -> DevelopmentResult<()> {
-        let record = self.record_mut(id)?;
-        if !matches!(
-            record.snapshot.state,
-            TaskState::Failed | TaskState::Blocked
-        ) {
+        let current = self.record(id)?.snapshot.clone();
+        if !matches!(current.state, TaskState::Failed | TaskState::Blocked) {
             return Err(DevelopmentError::Conflict(
                 "only failed or blocked tasks can be retried".into(),
             ));
         }
+        let mut projected = current;
+        projected.state = TaskState::Queued;
+        projected.assigned_agent = None;
+        projected.recovery_pending = false;
+        projected.completed_at_ms = None;
+        projected.last_error = None;
+        projected.updated_at_ms = now_ms();
+        self.ensure_snapshot_checkpoint_fits(id, &projected)?;
+        self.ensure_schedule_checkpoint_fits(id, &projected)?;
+        let record = self.record_mut(id)?;
         record.snapshot.state = TaskState::Queued;
         record.snapshot.assigned_agent = None;
+        record.snapshot.recovery_pending = false;
         record.snapshot.completed_at_ms = None;
         record.snapshot.last_error = None;
         record.snapshot.updated_at_ms = now_ms();
         record.next_retry_at_ms = None;
-        self.schedule_ready(agents)
+        self.schedule_ready(agents)?;
+        self.persist_checkpoint()
     }
 
     pub fn reassign<B: TaskAgentBackend>(
@@ -779,23 +935,44 @@ impl TaskScheduler {
         thinking: Option<String>,
     ) -> DevelopmentResult<()> {
         validate_text("task role", &role)?;
-        let agent = self.record(id)?.snapshot.assigned_agent.clone();
-        if let Some(agent) = agent {
-            agents.cancel_agent(&agent)?;
+        if let Some(value) = &model {
+            validate_text("task model", value)?;
         }
-        let record = self.record_mut(id)?;
-        if record.snapshot.state.terminal() {
+        if let Some(value) = &thinking {
+            validate_text("task thinking", value)?;
+        }
+        let current = self.record(id)?.snapshot.clone();
+        if current.state.terminal() {
             return Err(DevelopmentError::Conflict(
                 "terminal task cannot be reassigned".into(),
             ));
         }
+        let mut projected = current.clone();
+        projected.role.clone_from(&role);
+        projected.model.clone_from(&model);
+        projected.thinking.clone_from(&thinking);
+        projected.assigned_agent = None;
+        projected.state = TaskState::Queued;
+        projected.recovery_pending = false;
+        projected.last_error = None;
+        projected.updated_at_ms = now_ms();
+        self.ensure_snapshot_checkpoint_fits(id, &projected)?;
+        self.ensure_schedule_checkpoint_fits(id, &projected)?;
+        let agent = current.assigned_agent.clone();
+        if let Some(agent) = agent {
+            cancel_task_agent_if_live(agents, &agent)?;
+        }
+        let record = self.record_mut(id)?;
         record.snapshot.role = role;
         record.snapshot.model = model;
         record.snapshot.thinking = thinking;
         record.snapshot.assigned_agent = None;
         record.snapshot.state = TaskState::Queued;
+        record.snapshot.recovery_pending = false;
+        record.snapshot.last_error = None;
         record.snapshot.updated_at_ms = now_ms();
-        self.schedule_ready(agents)
+        self.schedule_ready(agents)?;
+        self.persist_checkpoint()
     }
 
     pub fn override_blocked<B: TaskAgentBackend>(
@@ -803,15 +980,25 @@ impl TaskScheduler {
         agents: &mut B,
         id: &TaskId,
     ) -> DevelopmentResult<()> {
-        let record = self.record_mut(id)?;
-        if record.snapshot.state != TaskState::Blocked {
+        let mut projected = self.record(id)?.snapshot.clone();
+        if projected.state != TaskState::Blocked {
             return Err(DevelopmentError::Conflict("task is not blocked".into()));
         }
+        projected.blocked_override = true;
+        projected.state = TaskState::Queued;
+        projected.recovery_pending = false;
+        projected.last_error = None;
+        projected.updated_at_ms = now_ms();
+        self.ensure_snapshot_checkpoint_fits(id, &projected)?;
+        self.ensure_schedule_checkpoint_fits(id, &projected)?;
+        let record = self.record_mut(id)?;
         record.snapshot.blocked_override = true;
         record.snapshot.state = TaskState::Queued;
+        record.snapshot.recovery_pending = false;
         record.snapshot.last_error = None;
         record.snapshot.updated_at_ms = now_ms();
-        self.schedule_ready(agents)
+        self.schedule_ready(agents)?;
+        self.persist_checkpoint()
     }
 
     fn schedule_ready<B: TaskAgentBackend>(&mut self, agents: &mut B) -> DevelopmentResult<()> {
@@ -833,6 +1020,12 @@ impl TaskScheduler {
             .collect::<Vec<_>>();
         for id in ready {
             let snapshot = self.record(&id)?.snapshot.clone();
+            let mut projected = snapshot.clone();
+            projected.assigned_agent = Some(maximum_length_agent_id()?);
+            projected.state = TaskState::Ready;
+            projected.attempt = projected.attempt.saturating_add(1);
+            projected.updated_at_ms = now_ms();
+            self.ensure_snapshot_checkpoint_fits(&id, &projected)?;
             let mut spec = AgentSpec::new(
                 snapshot.role.clone(),
                 format!("task {}: {}", id.as_str(), snapshot.title),
@@ -851,6 +1044,7 @@ impl TaskScheduler {
             record.snapshot.attempt = record.snapshot.attempt.saturating_add(1);
             record.snapshot.updated_at_ms = now_ms();
             record.next_retry_at_ms = None;
+            self.persist_checkpoint()?;
         }
         Ok(())
     }
@@ -861,59 +1055,65 @@ impl TaskScheduler {
         event: &AgentEvent,
     ) -> DevelopmentResult<()> {
         let Some(task_id) = self.task_for_agent(&event.agent_id) else {
-            return Ok(());
+            return self.persist_checkpoint();
         };
         let state = self.record(&task_id)?.snapshot.state;
         match event.kind.as_str() {
             "ready" if state == TaskState::Ready => {
                 let prompt = self.record(&task_id)?.snapshot.prompt.clone();
-                agents.prompt_agent(&event.agent_id, prompt)?;
+                let mut projected = self.record(&task_id)?.snapshot.clone();
+                projected.state = TaskState::Running;
+                projected.started_at_ms.get_or_insert_with(now_ms);
+                projected.updated_at_ms = now_ms();
+                self.ensure_snapshot_checkpoint_fits(&task_id, &projected)?;
                 let record = self.record_mut(&task_id)?;
                 record.snapshot.state = TaskState::Running;
                 record.snapshot.started_at_ms.get_or_insert_with(now_ms);
                 record.snapshot.updated_at_ms = now_ms();
+                self.persist_checkpoint()?;
+                agents.prompt_agent(&event.agent_id, prompt)?;
             }
             "agent_settled" if state == TaskState::Running => {
-                let record = self.record_mut(&task_id)?;
-                record.snapshot.state = TaskState::Verifying;
-                record.snapshot.updated_at_ms = now_ms();
-                push_evidence(
-                    record,
-                    TaskEvidence {
-                        kind: "agent.settled".into(),
-                        actor: event.agent_id.as_str().into(),
-                        source: "pi-agent-session".into(),
-                        passed: Some(true),
-                        observed_at_ms: event.timestamp_ms,
-                        details: event.payload.clone(),
-                    },
-                );
+                let evidence = TaskEvidence {
+                    kind: "agent.settled".into(),
+                    actor: event.agent_id.as_str().into(),
+                    source: "pi-agent-session".into(),
+                    passed: Some(true),
+                    observed_at_ms: event.timestamp_ms,
+                    details: bounded_event_details(&event.payload),
+                };
+                let mut projected = self.record(&task_id)?.snapshot.clone();
+                projected.state = TaskState::Verifying;
+                projected.updated_at_ms = now_ms();
+                push_snapshot_evidence(&mut projected, evidence.clone());
+                self.fit_event_snapshot_checkpoint(&task_id, &mut projected)?;
             }
             kind => {
-                let record = self.record_mut(&task_id)?;
+                let mut projected = self.record(&task_id)?.snapshot.clone();
                 if kind == "message_end" {
-                    record.snapshot.observed_tokens = record
-                        .snapshot
+                    projected.observed_tokens = projected
                         .observed_tokens
                         .saturating_add(event_tokens(&event.payload));
                 }
-                push_evidence(
-                    record,
+                push_snapshot_evidence(
+                    &mut projected,
                     TaskEvidence {
                         kind: format!("agent.{kind}"),
                         actor: event.agent_id.as_str().into(),
                         source: "pi-agent-session".into(),
                         passed: None,
                         observed_at_ms: event.timestamp_ms,
-                        details: event.payload.clone(),
+                        details: bounded_event_details(&event.payload),
                     },
                 );
+                self.fit_event_snapshot_checkpoint(&task_id, &mut projected)?;
             }
         }
+        self.persist_checkpoint()?;
         Ok(())
     }
 
-    fn apply_agent_failures(&mut self, snapshots: &[AgentSnapshot]) {
+    fn apply_agent_failures(&mut self, snapshots: &[AgentSnapshot]) -> DevelopmentResult<()> {
         for snapshot in snapshots {
             if !matches!(
                 snapshot.status,
@@ -924,17 +1124,25 @@ impl TaskScheduler {
             let Some(id) = self.task_for_agent(&snapshot.id) else {
                 continue;
             };
-            let record = self.tasks.get_mut(&id).expect("task exists");
-            if !record.snapshot.state.terminal() {
-                record.snapshot.state = TaskState::Failed;
-                record.snapshot.last_error = snapshot
+            let mut projected = self.record(&id)?.snapshot.clone();
+            if !projected.state.terminal() {
+                projected.state = TaskState::Failed;
+                projected.last_error = snapshot
                     .last_error
                     .clone()
                     .or_else(|| Some("assigned agent stopped before verification".into()));
-                record.snapshot.completed_at_ms = Some(now_ms());
-                record.snapshot.updated_at_ms = now_ms();
+                projected.last_error = projected.last_error.as_deref().map(bounded_task_error);
+                validate_text(
+                    "task error",
+                    projected.last_error.as_deref().unwrap_or_default(),
+                )?;
+                projected.completed_at_ms = Some(now_ms());
+                projected.updated_at_ms = now_ms();
+                let replacements = self.fit_snapshot_checkpoint(&id, &mut projected, false)?;
+                self.apply_event_snapshot_replacements(replacements)?;
             }
         }
+        Ok(())
     }
 
     fn verify_pending<B: TaskAgentBackend>(&mut self, agents: &mut B) -> DevelopmentResult<()> {
@@ -955,25 +1163,42 @@ impl TaskScheduler {
             };
             match verify(&requirement, &worktree, &evidence)? {
                 VerificationOutcome::Passed(new_evidence) => {
+                    let mut projected = self.record(&id)?.snapshot.clone();
+                    for item in &new_evidence {
+                        push_snapshot_evidence(&mut projected, item.clone());
+                    }
+                    projected.state = TaskState::Succeeded;
+                    projected.completed_at_ms = Some(now_ms());
+                    projected.updated_at_ms = now_ms();
+                    projected.last_error = None;
+                    let replacements = self.fit_snapshot_checkpoint(
+                        &id,
+                        &mut projected,
+                        !new_evidence.is_empty(),
+                    )?;
                     let agent = self.record(&id)?.snapshot.assigned_agent.clone();
                     if let Some(agent) = agent {
                         agents.complete_agent(&agent)?;
                     }
-                    let record = self.record_mut(&id)?;
-                    for evidence in new_evidence {
-                        push_evidence(record, evidence);
-                    }
-                    record.snapshot.state = TaskState::Succeeded;
-                    record.snapshot.completed_at_ms = Some(now_ms());
-                    record.snapshot.updated_at_ms = now_ms();
-                    record.snapshot.last_error = None;
+                    self.apply_event_snapshot_replacements(replacements)?;
+                    self.record_mut(&id)?.next_retry_at_ms = None;
                 }
                 VerificationOutcome::Waiting => {
-                    let record = self.record_mut(&id)?;
-                    record.snapshot.state = TaskState::Waiting;
-                    record.snapshot.updated_at_ms = now_ms();
+                    let mut projected = self.record(&id)?.snapshot.clone();
+                    projected.state = TaskState::Waiting;
+                    projected.updated_at_ms = now_ms();
+                    let replacements = self.fit_snapshot_checkpoint(&id, &mut projected, false)?;
+                    self.apply_event_snapshot_replacements(replacements)?;
                 }
                 VerificationOutcome::Failed(error, new_evidence) => {
+                    validate_text("task verification error", &error)?;
+                    let mut projected = self.record(&id)?.snapshot.clone();
+                    for item in &new_evidence {
+                        push_snapshot_evidence(&mut projected, item.clone());
+                    }
+                    projected.assigned_agent = None;
+                    projected.last_error = Some(bounded_task_error(&error));
+                    projected.updated_at_ms = now_ms();
                     let (agent, retry, attempt) = {
                         let record = self.record(&id)?;
                         (
@@ -982,24 +1207,28 @@ impl TaskScheduler {
                             record.snapshot.attempt,
                         )
                     };
-                    if let Some(agent) = agent {
-                        agents.cancel_agent(&agent)?;
-                    }
-                    let record = self.record_mut(&id)?;
-                    for evidence in new_evidence {
-                        push_evidence(record, evidence);
-                    }
-                    record.snapshot.assigned_agent = None;
-                    record.snapshot.last_error = Some(error);
-                    record.snapshot.updated_at_ms = now_ms();
                     if attempt <= retry.max_retries {
-                        record.snapshot.state = TaskState::Queued;
+                        projected.state = TaskState::Queued;
+                    } else {
+                        projected.state = TaskState::Failed;
+                        projected.completed_at_ms = Some(now_ms());
+                    }
+                    let replacements = self.fit_snapshot_checkpoint(
+                        &id,
+                        &mut projected,
+                        !new_evidence.is_empty(),
+                    )?;
+                    if let Some(agent) = agent {
+                        cancel_task_agent_if_live(agents, &agent)?;
+                    }
+                    self.apply_event_snapshot_replacements(replacements)?;
+                    let record = self.record_mut(&id)?;
+                    if attempt <= retry.max_retries {
                         record.next_retry_at_ms = Some(
                             now_ms().saturating_add(u128::from(retry.backoff_seconds) * 1_000),
                         );
                     } else {
-                        record.snapshot.state = TaskState::Failed;
-                        record.snapshot.completed_at_ms = Some(now_ms());
+                        record.next_retry_at_ms = None;
                     }
                 }
             }
@@ -1034,19 +1263,21 @@ impl TaskScheduler {
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for id in exceeded {
+            let mut projected = self.record(&id)?.snapshot.clone();
+            projected.state = TaskState::Failed;
+            projected.last_error = Some("task runtime or token budget exceeded".into());
+            projected.completed_at_ms = Some(now);
+            projected.updated_at_ms = now;
+            let replacements = self.fit_snapshot_checkpoint(&id, &mut projected, false)?;
             if let Some(agent) = self.record(&id)?.snapshot.assigned_agent.clone() {
-                agents.cancel_agent(&agent)?;
+                cancel_task_agent_if_live(agents, &agent)?;
             }
-            let record = self.record_mut(&id)?;
-            record.snapshot.state = TaskState::Failed;
-            record.snapshot.last_error = Some("task runtime or token budget exceeded".into());
-            record.snapshot.completed_at_ms = Some(now);
-            record.snapshot.updated_at_ms = now;
+            self.apply_event_snapshot_replacements(replacements)?;
         }
         Ok(())
     }
 
-    fn propagate_blocked(&mut self) {
+    fn propagate_blocked(&mut self) -> DevelopmentResult<()> {
         loop {
             let failed = self
                 .tasks
@@ -1078,12 +1309,15 @@ impl TaskScheduler {
                 break;
             }
             for id in blocked {
-                let record = self.tasks.get_mut(&id).expect("task exists");
-                record.snapshot.state = TaskState::Blocked;
-                record.snapshot.last_error = Some("a prerequisite task did not succeed".into());
-                record.snapshot.updated_at_ms = now_ms();
+                let mut projected = self.record(&id)?.snapshot.clone();
+                projected.state = TaskState::Blocked;
+                projected.last_error = Some("a prerequisite task did not succeed".into());
+                projected.updated_at_ms = now_ms();
+                let replacements = self.fit_snapshot_checkpoint(&id, &mut projected, false)?;
+                self.apply_event_snapshot_replacements(replacements)?;
             }
         }
+        Ok(())
     }
 
     fn validate_spec(&self, spec: &TaskSpec) -> DevelopmentResult<()> {
@@ -1094,6 +1328,14 @@ impl TaskScheduler {
             ("task role", spec.role.as_str()),
         ] {
             validate_text(label, value)?;
+        }
+        for (label, value) in [
+            ("task model", spec.model.as_deref()),
+            ("task thinking", spec.thinking.as_deref()),
+        ] {
+            if let Some(value) = value {
+                validate_text(label, value)?;
+            }
         }
         if spec.dependencies.len() > MAX_DEPENDENCIES {
             return Err(DevelopmentError::InvalidInput(
@@ -1132,10 +1374,112 @@ impl TaskScheduler {
         Ok(())
     }
 
+    fn validate_snapshot(&self, snapshot: &TaskSnapshot) -> DevelopmentResult<()> {
+        if snapshot
+            .id
+            .as_str()
+            .strip_prefix("task-")
+            .and_then(|suffix| suffix.parse::<u64>().ok())
+            == Some(0)
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "task checkpoint contains reserved task id".into(),
+            ));
+        }
+        let mut dependencies = BTreeSet::new();
+        if snapshot
+            .dependencies
+            .iter()
+            .any(|dependency| dependency == &snapshot.id || !dependencies.insert(dependency))
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "task checkpoint has a duplicate or self dependency".into(),
+            ));
+        }
+        if snapshot.recovery_pending
+            && (snapshot.state != TaskState::Paused || snapshot.assigned_agent.is_none())
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "task checkpoint has inconsistent recovery state".into(),
+            ));
+        }
+        if matches!(
+            snapshot.state,
+            TaskState::Ready | TaskState::Running | TaskState::Waiting | TaskState::Verifying
+        ) && snapshot.assigned_agent.is_none()
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "active task checkpoint has no assigned agent".into(),
+            ));
+        }
+        if matches!(snapshot.state, TaskState::Queued | TaskState::Blocked)
+            && snapshot.assigned_agent.is_some()
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "unassigned task state has an assigned agent".into(),
+            ));
+        }
+        if snapshot.state == TaskState::Paused
+            && !snapshot.recovery_pending
+            && snapshot.assigned_agent.is_some()
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "manually paused task has an unexpected agent assignment".into(),
+            ));
+        }
+        if snapshot.verification == VerificationRequirement::Inferred {
+            return Err(DevelopmentError::InvalidInput(
+                "task checkpoint contains unresolved inferred verification".into(),
+            ));
+        }
+        if let Some(value) = snapshot.last_error.as_deref()
+            && (value.len() > MAX_TASK_TEXT_BYTES || value.contains('\0'))
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "task checkpoint error text exceeds bounds".into(),
+            ));
+        }
+        for (label, value) in [
+            ("task model", snapshot.model.as_deref()),
+            ("task thinking", snapshot.thinking.as_deref()),
+        ] {
+            if let Some(value) = value
+                && (value.len() > MAX_TASK_TEXT_BYTES || value.contains('\0'))
+            {
+                return Err(DevelopmentError::InvalidInput(format!(
+                    "{label} exceeds task checkpoint bounds"
+                )));
+            }
+        }
+        for evidence in &snapshot.evidence {
+            validate_text("task evidence kind", &evidence.kind)?;
+            validate_text("task evidence actor", &evidence.actor)?;
+            validate_text("task evidence source", &evidence.source)?;
+        }
+        let spec = TaskSpec {
+            title: snapshot.title.clone(),
+            goal: snapshot.goal.clone(),
+            prompt: snapshot.prompt.clone(),
+            role: snapshot.role.clone(),
+            dependencies: snapshot.dependencies.clone(),
+            worktree: Some(snapshot.worktree.clone()),
+            model: snapshot.model.clone(),
+            thinking: snapshot.thinking.clone(),
+            unrestricted: snapshot.unrestricted,
+            budget: snapshot.budget.clone(),
+            verification: snapshot.verification.clone(),
+            retry: snapshot.retry.clone(),
+        };
+        self.validate_spec(&spec)
+    }
+
     fn task_for_agent(&self, agent: &AgentId) -> Option<TaskId> {
         self.tasks
             .iter()
-            .find(|(_, record)| record.snapshot.assigned_agent.as_ref() == Some(agent))
+            .find(|(_, record)| {
+                !record.snapshot.recovery_pending
+                    && record.snapshot.assigned_agent.as_ref() == Some(agent)
+            })
             .map(|(id, _)| id.clone())
     }
 
@@ -1150,6 +1494,449 @@ impl TaskScheduler {
             .get_mut(id)
             .ok_or_else(|| DevelopmentError::NotFound(format!("task {}", id.as_str())))
     }
+
+    fn checkpoint_bytes(
+        &self,
+        replacement: Option<(&TaskId, &TaskSnapshot)>,
+        appended: Option<&TaskSnapshot>,
+        next_task: u64,
+    ) -> DevelopmentResult<Vec<u8>> {
+        let replacements = replacement
+            .map(|(id, snapshot)| BTreeMap::from([(id.clone(), snapshot.clone())]))
+            .unwrap_or_default();
+        self.checkpoint_bytes_with_replacements(&replacements, appended, next_task)
+    }
+
+    fn checkpoint_bytes_with_replacements(
+        &self,
+        replacements: &BTreeMap<TaskId, TaskSnapshot>,
+        appended: Option<&TaskSnapshot>,
+        next_task: u64,
+    ) -> DevelopmentResult<Vec<u8>> {
+        let mut tasks = self
+            .tasks
+            .iter()
+            .map(|(id, record)| TaskRecordCheckpoint {
+                snapshot: replacements
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| record.snapshot.clone()),
+                next_retry_at_ms: record.next_retry_at_ms,
+            })
+            .collect::<Vec<_>>();
+        if let Some(snapshot) = appended {
+            tasks.push(TaskRecordCheckpoint {
+                snapshot: snapshot.clone(),
+                next_retry_at_ms: None,
+            });
+        }
+        serde_json::to_vec_pretty(&TaskSchedulerCheckpoint {
+            format_version: TASK_CHECKPOINT_VERSION,
+            project_root: self.root.clone(),
+            next_task,
+            tasks,
+        })
+        .map_err(Into::into)
+    }
+
+    fn ensure_checkpoint_size(&self, encoded_len: usize) -> DevelopmentResult<()> {
+        if encoded_len as u64 > MAX_TASK_CHECKPOINT_BYTES {
+            Err(DevelopmentError::Conflict(format!(
+                "task checkpoint exceeds {} bytes",
+                MAX_TASK_CHECKPOINT_BYTES
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn ensure_checkpoint_mutation_capacity(&self, encoded_len: usize) -> DevelopmentResult<()> {
+        self.ensure_checkpoint_size(encoded_len.saturating_add(TASK_CHECKPOINT_MUTATION_RESERVE))
+    }
+
+    fn ensure_current_checkpoint_fits(&self) -> DevelopmentResult<()> {
+        let encoded = self.checkpoint_bytes(None, None, self.next_task)?;
+        self.ensure_checkpoint_mutation_capacity(encoded.len())
+    }
+
+    fn ensure_snapshot_checkpoint_fits(
+        &self,
+        id: &TaskId,
+        snapshot: &TaskSnapshot,
+    ) -> DevelopmentResult<()> {
+        let encoded = self.checkpoint_bytes(Some((id, snapshot)), None, self.next_task)?;
+        self.ensure_checkpoint_mutation_capacity(encoded.len())
+    }
+
+    fn fit_event_snapshot_checkpoint(
+        &mut self,
+        id: &TaskId,
+        snapshot: &mut TaskSnapshot,
+    ) -> DevelopmentResult<()> {
+        let replacements = self.fit_snapshot_checkpoint(id, snapshot, true)?;
+        self.apply_event_snapshot_replacements(replacements)
+    }
+
+    fn fit_snapshot_checkpoint(
+        &self,
+        id: &TaskId,
+        snapshot: &mut TaskSnapshot,
+        has_incoming_evidence: bool,
+    ) -> DevelopmentResult<BTreeMap<TaskId, TaskSnapshot>> {
+        let mut replacements = BTreeMap::from([(id.clone(), snapshot.clone())]);
+        if self.event_checkpoint_replacements_fit(&replacements)? {
+            return Ok(replacements);
+        }
+
+        while let Some((task_id, evidence_index)) = self.oldest_duplicate_evidence(&replacements) {
+            let mut pruned = replacements
+                .get(&task_id)
+                .cloned()
+                .unwrap_or_else(|| self.tasks[&task_id].snapshot.clone());
+            pruned.evidence.remove(evidence_index);
+            pruned.evidence_truncated = true;
+            replacements.insert(task_id.clone(), pruned.clone());
+            if task_id == *id {
+                *snapshot = pruned;
+            }
+            if self.event_checkpoint_replacements_fit(&replacements)? {
+                return Ok(replacements);
+            }
+        }
+
+        // Duplicate pruning preserves each task's newest evidence per kind.
+        // If that is not enough, compress the just-arrived event, then drop
+        // only that event's evidence as a last resort while retaining state.
+        if !has_incoming_evidence {
+            if let Some(error) = snapshot.last_error.as_deref() {
+                let compact = bounded_task_error(error);
+                if compact != error {
+                    snapshot.last_error = Some(compact);
+                    replacements.insert(id.clone(), snapshot.clone());
+                    if self.event_checkpoint_replacements_fit(&replacements)? {
+                        return Ok(replacements);
+                    }
+                }
+                // The state transition itself is authoritative. If the old
+                // checkpoint has no room for even the compact explanation,
+                // persist the state and expose the failure without details.
+                snapshot.last_error = None;
+                replacements.insert(id.clone(), snapshot.clone());
+                if self.event_checkpoint_replacements_fit(&replacements)? {
+                    return Ok(replacements);
+                }
+            }
+            return Err(DevelopmentError::Conflict(
+                "task checkpoint capacity exhausted during state transition".into(),
+            ));
+        }
+        if let Some(event_evidence) = snapshot.evidence.last_mut() {
+            event_evidence.details = checkpoint_pressure_details(&event_evidence.details);
+            snapshot.evidence_truncated = true;
+        }
+        replacements.insert(id.clone(), snapshot.clone());
+        if self.event_checkpoint_replacements_fit(&replacements)? {
+            return Ok(replacements);
+        }
+        snapshot.evidence.pop();
+        snapshot.evidence_truncated = true;
+        replacements.insert(id.clone(), snapshot.clone());
+        if self.event_checkpoint_replacements_fit(&replacements)? {
+            Ok(replacements)
+        } else {
+            self.ensure_snapshot_checkpoint_fits(id, snapshot)
+                .map(|()| replacements)
+        }
+    }
+
+    fn oldest_duplicate_evidence(
+        &self,
+        replacements: &BTreeMap<TaskId, TaskSnapshot>,
+    ) -> Option<(TaskId, usize)> {
+        let mut oldest: Option<(u128, TaskId, usize)> = None;
+        for (id, record) in &self.tasks {
+            let snapshot = replacements.get(id).unwrap_or(&record.snapshot);
+            let mut latest_by_kind = BTreeMap::<&str, (u128, usize)>::new();
+            for (index, evidence) in snapshot.evidence.iter().enumerate() {
+                let current = (evidence.observed_at_ms, index);
+                if latest_by_kind
+                    .get(evidence.kind.as_str())
+                    .is_none_or(|prior| current > *prior)
+                {
+                    latest_by_kind.insert(&evidence.kind, current);
+                }
+            }
+            for (index, evidence) in snapshot.evidence.iter().enumerate() {
+                if latest_by_kind.get(evidence.kind.as_str())
+                    == Some(&(evidence.observed_at_ms, index))
+                {
+                    continue;
+                }
+                let candidate = (evidence.observed_at_ms, id.clone(), index);
+                if oldest.as_ref().is_none_or(|current| candidate < *current) {
+                    oldest = Some(candidate);
+                }
+            }
+        }
+        oldest.map(|(_, id, index)| (id, index))
+    }
+
+    fn event_checkpoint_replacements_fit(
+        &self,
+        replacements: &BTreeMap<TaskId, TaskSnapshot>,
+    ) -> DevelopmentResult<bool> {
+        let encoded =
+            self.checkpoint_bytes_with_replacements(replacements, None, self.next_task)?;
+        Ok(self
+            .ensure_checkpoint_mutation_capacity(encoded.len())
+            .is_ok())
+    }
+
+    fn apply_event_snapshot_replacements(
+        &mut self,
+        replacements: BTreeMap<TaskId, TaskSnapshot>,
+    ) -> DevelopmentResult<()> {
+        for (id, snapshot) in replacements {
+            self.record_mut(&id)?.snapshot = snapshot;
+        }
+        Ok(())
+    }
+
+    fn ensure_schedule_checkpoint_fits(
+        &self,
+        id: &TaskId,
+        queued: &TaskSnapshot,
+    ) -> DevelopmentResult<()> {
+        let mut scheduled = queued.clone();
+        scheduled.assigned_agent = Some(maximum_length_agent_id()?);
+        scheduled.state = TaskState::Ready;
+        scheduled.attempt = scheduled.attempt.saturating_add(1);
+        scheduled.updated_at_ms = now_ms();
+        self.ensure_snapshot_checkpoint_fits(id, &scheduled)
+    }
+
+    fn persist_checkpoint(&self) -> DevelopmentResult<()> {
+        let encoded = self.checkpoint_bytes(None, None, self.next_task)?;
+        self.ensure_checkpoint_size(encoded.len())?;
+        let path = self.root.join(TASK_CHECKPOINT_RELATIVE_PATH);
+        validate_task_checkpoint_paths(&self.root)?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| DevelopmentError::InvalidInput("invalid task checkpoint path".into()))?;
+        fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        }
+
+        let (temporary_path, mut file) = loop {
+            let sequence = NEXT_CHECKPOINT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let temporary_path =
+                parent.join(format!(".scheduler-{}-{sequence}.tmp", std::process::id()));
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&temporary_path) {
+                Ok(file) => break (temporary_path, file),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        };
+        let write_result = (|| -> DevelopmentResult<()> {
+            file.write_all(&encoded)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temporary_path, &path)?;
+            #[cfg(unix)]
+            OpenOptions::new().read(true).open(parent)?.sync_all()?;
+            Ok(())
+        })();
+        if write_result.is_err() {
+            let _ = fs::remove_file(temporary_path);
+        }
+        write_result
+    }
+
+    fn persist_recovery_checkpoint(&mut self, recovered_ids: &[TaskId]) -> DevelopmentResult<()> {
+        match self.persist_checkpoint() {
+            Ok(()) => return Ok(()),
+            Err(DevelopmentError::Conflict(message))
+                if message.contains("task checkpoint exceeds") => {}
+            Err(error) => return Err(error),
+        }
+
+        // Recovery flags carry the unknown-outcome state even when there is
+        // not room for a repeated explanatory last_error on every task.
+        for id in recovered_ids {
+            self.record_mut(id)?.snapshot.last_error = None;
+        }
+        match self.persist_checkpoint() {
+            Ok(()) => return Ok(()),
+            Err(DevelopmentError::Conflict(message))
+                if message.contains("task checkpoint exceeds") => {}
+            Err(error) => return Err(error),
+        }
+
+        // If the checkpoint was written by an older build at its full byte
+        // limit, reclaim only older duplicate evidence while retaining the
+        // newest evidence kind on each task.
+        while let Some((id, index)) = self.oldest_duplicate_evidence(&BTreeMap::new()) {
+            let snapshot = &mut self.record_mut(&id)?.snapshot;
+            snapshot.evidence.remove(index);
+            snapshot.evidence_truncated = true;
+            match self.persist_checkpoint() {
+                Ok(()) => return Ok(()),
+                Err(DevelopmentError::Conflict(message))
+                    if message.contains("task checkpoint exceeds") => {}
+                Err(error) => return Err(error),
+            }
+        }
+        self.persist_checkpoint()
+    }
+}
+
+fn validate_task_checkpoint_paths(root: &Path) -> DevelopmentResult<()> {
+    for path in [root.join(".glass"), root.join(".glass/tasks")] {
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(DevelopmentError::InvalidInput(format!(
+                    "task checkpoint path may not be a symbolic link: {}",
+                    path.display()
+                )));
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(DevelopmentError::InvalidInput(format!(
+                    "task checkpoint parent is not a directory: {}",
+                    path.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let checkpoint = root.join(TASK_CHECKPOINT_RELATIVE_PATH);
+    match fs::symlink_metadata(&checkpoint) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(DevelopmentError::InvalidInput(
+            "task checkpoint may not be a symbolic link".into(),
+        )),
+        Ok(metadata) if !metadata.is_file() => Err(DevelopmentError::InvalidInput(
+            "task checkpoint is not a regular file".into(),
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn maximum_length_agent_id() -> DevelopmentResult<AgentId> {
+    AgentId::parse(format!("agent-{}", "\\".repeat(58)))
+}
+
+fn load_task_checkpoint(
+    path: &Path,
+    project_root: &Path,
+) -> DevelopmentResult<(BTreeMap<TaskId, TaskRecord>, u64)> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(DevelopmentError::InvalidInput(
+            "task checkpoint must be a regular non-symlink file".into(),
+        ));
+    }
+    if metadata.len() > MAX_TASK_CHECKPOINT_BYTES {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "task checkpoint exceeds {} bytes",
+            MAX_TASK_CHECKPOINT_BYTES
+        )));
+    }
+    let bytes = fs::read(path)?;
+    let checkpoint: TaskSchedulerCheckpoint = serde_json::from_slice(&bytes).map_err(|error| {
+        DevelopmentError::InvalidInput(format!("invalid task checkpoint: {error}"))
+    })?;
+    if checkpoint.format_version != TASK_CHECKPOINT_VERSION {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "unsupported task checkpoint version {}",
+            checkpoint.format_version
+        )));
+    }
+    if checkpoint.project_root != project_root {
+        return Err(DevelopmentError::InvalidInput(
+            "task checkpoint belongs to a different project root".into(),
+        ));
+    }
+    if checkpoint.next_task == 0 || checkpoint.tasks.len() > MAX_TASKS {
+        return Err(DevelopmentError::InvalidInput(
+            "task checkpoint exceeds supported bounds".into(),
+        ));
+    }
+    let mut tasks = BTreeMap::new();
+    let mut maximum_id = 0_u64;
+    for saved in checkpoint.tasks {
+        let snapshot = saved.snapshot;
+        let id = TaskId::parse(snapshot.id.as_str().to_owned())?;
+        for (label, value) in [
+            ("task title", snapshot.title.as_str()),
+            ("task goal", snapshot.goal.as_str()),
+            ("task prompt", snapshot.prompt.as_str()),
+            ("task role", snapshot.role.as_str()),
+        ] {
+            validate_text(label, value)?;
+        }
+        if snapshot.dependencies.len() > MAX_DEPENDENCIES
+            || snapshot.evidence.len() > MAX_TASK_EVIDENCE
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "task checkpoint record exceeds supported bounds".into(),
+            ));
+        }
+        let numeric_id = id
+            .as_str()
+            .strip_prefix("task-")
+            .unwrap_or_default()
+            .parse::<u64>()
+            .map_err(|_| DevelopmentError::InvalidInput("invalid task checkpoint id".into()))?;
+        maximum_id = maximum_id.max(numeric_id);
+        if tasks
+            .insert(
+                id,
+                TaskRecord {
+                    snapshot,
+                    next_retry_at_ms: saved.next_retry_at_ms,
+                },
+            )
+            .is_some()
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "duplicate task id in checkpoint".into(),
+            ));
+        }
+    }
+    if checkpoint.next_task <= maximum_id {
+        return Err(DevelopmentError::InvalidInput(
+            "task checkpoint next id is not beyond saved task ids".into(),
+        ));
+    }
+    for record in tasks.values() {
+        if record
+            .snapshot
+            .dependencies
+            .iter()
+            .any(|dependency| !tasks.contains_key(dependency))
+        {
+            return Err(DevelopmentError::InvalidInput(
+                "task checkpoint has a missing dependency".into(),
+            ));
+        }
+        if let Some(agent) = &record.snapshot.assigned_agent {
+            AgentId::parse(agent.as_str().to_owned())?;
+        }
+    }
+    Ok((tasks, checkpoint.next_task))
 }
 
 enum VerificationOutcome {
@@ -1399,11 +2186,76 @@ fn validate_verification(
 }
 
 fn push_evidence(record: &mut TaskRecord, evidence: TaskEvidence) {
-    if record.snapshot.evidence.len() == MAX_TASK_EVIDENCE {
-        record.snapshot.evidence.remove(0);
+    push_snapshot_evidence(&mut record.snapshot, evidence);
+}
+
+fn push_snapshot_evidence(snapshot: &mut TaskSnapshot, evidence: TaskEvidence) {
+    if snapshot.evidence.len() == MAX_TASK_EVIDENCE {
+        snapshot.evidence.remove(0);
+        snapshot.evidence_truncated = true;
     }
-    record.snapshot.evidence.push(evidence);
-    record.snapshot.updated_at_ms = now_ms();
+    snapshot.evidence.push(evidence);
+    snapshot.updated_at_ms = now_ms();
+}
+
+fn bounded_event_details(payload: &Value) -> Value {
+    const MAX_EVENT_EVIDENCE_BYTES: usize = 4 * 1024;
+    let encoded = serde_json::to_vec(payload).unwrap_or_default();
+    if encoded.len() <= MAX_EVENT_EVIDENCE_BYTES {
+        return payload.clone();
+    }
+    let mut summary = verifier_scalar_fields(payload);
+    summary.insert("truncated".into(), Value::Bool(true));
+    summary.insert("originalBytes".into(), Value::from(encoded.len() as u64));
+    Value::Object(summary)
+}
+
+fn checkpoint_pressure_details(payload: &Value) -> Value {
+    let mut summary = verifier_scalar_fields(payload);
+    summary.insert("truncated".into(), Value::Bool(true));
+    summary.insert("checkpointPressure".into(), Value::Bool(true));
+    Value::Object(summary)
+}
+
+fn bounded_task_error(value: &str) -> String {
+    // Persist a readable, JSON-safe summary rather than allowing provider or
+    // process error payloads to consume the aggregate checkpoint budget.
+    let mut result = value
+        .chars()
+        .take(MAX_PERSISTED_TASK_ERROR_BYTES - 3)
+        .map(|character| {
+            if character.is_ascii_alphanumeric()
+                || matches!(character, ' ' | '.' | ',' | ':' | ';' | '_' | '-')
+            {
+                character
+            } else {
+                '?'
+            }
+        })
+        .collect::<String>();
+    if value.len() > result.len() {
+        result.push_str("...");
+    }
+    if result.is_empty() {
+        "agent failed".into()
+    } else {
+        result
+    }
+}
+
+fn verifier_scalar_fields(payload: &Value) -> serde_json::Map<String, Value> {
+    let mut summary = serde_json::Map::new();
+    for field in ["errors", "regressions"] {
+        if let Some(value) = payload.get(field).and_then(Value::as_u64) {
+            summary.insert(field.to_string(), Value::from(value));
+        }
+    }
+    for field in ["hasChanges", "clean"] {
+        if let Some(value) = payload.get(field).and_then(Value::as_bool) {
+            summary.insert(field.to_string(), Value::Bool(value));
+        }
+    }
+    summary
 }
 
 fn validate_text(label: &str, value: &str) -> DevelopmentResult<()> {
@@ -1539,6 +2391,623 @@ mod tests {
         let mut spec = TaskSpec::new(title, prompt);
         spec.verification = VerificationRequirement::Settled;
         spec
+    }
+
+    #[test]
+    fn task_checkpoint_restores_identity_evidence_and_requires_explicit_recovery() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let task = scheduler
+            .create(
+                &mut agents,
+                settle_only("recover me", "do not replay me automatically"),
+            )
+            .unwrap();
+        let old_agent = scheduler.tasks[&task]
+            .snapshot
+            .assigned_agent
+            .clone()
+            .expect("scheduled task retains its assignment");
+        scheduler.tasks.get_mut(&task).unwrap().snapshot.state = TaskState::Running;
+        scheduler
+            .submit_evidence(
+                &task,
+                "checkpoint-test",
+                "operator",
+                "task-test",
+                true,
+                serde_json::json!({"reviewed":true}),
+            )
+            .unwrap();
+        let checkpoint_path = root.join(TASK_CHECKPOINT_RELATIVE_PATH);
+        let checkpoint: Value =
+            serde_json::from_slice(&fs::read(&checkpoint_path).unwrap()).unwrap();
+        assert_eq!(checkpoint["formatVersion"], TASK_CHECKPOINT_VERSION);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&checkpoint_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        drop(scheduler);
+        let mut recovered = TaskScheduler::new(&root).unwrap();
+        let restored = &recovered.tasks[&task].snapshot;
+        assert_eq!(restored.id, task);
+        assert_eq!(restored.assigned_agent, Some(old_agent));
+        assert_eq!(restored.state, TaskState::Paused);
+        assert!(restored.recovery_pending);
+        assert!(
+            restored
+                .last_error
+                .as_deref()
+                .is_some_and(|message| message.contains("recovery pending"))
+        );
+        assert!(
+            restored
+                .evidence
+                .iter()
+                .any(|item| item.kind == "checkpoint-test")
+        );
+
+        let mut restarted_agents = FakeAgents::default();
+        recovered.refresh(&mut restarted_agents).unwrap();
+        assert!(restarted_agents.prompts.is_empty());
+        assert_eq!(recovered.tasks[&task].snapshot.state, TaskState::Paused);
+
+        assert_eq!(recovered.next_task, 2);
+        assert!(restarted_agents.prompts.is_empty());
+
+        recovered.resume(&mut restarted_agents, &task).unwrap();
+        recovered.refresh(&mut restarted_agents).unwrap();
+        assert_eq!(restarted_agents.prompts.len(), 1);
+        assert_eq!(
+            restarted_agents.prompts[0].1,
+            "do not replay me automatically"
+        );
+        assert!(!recovered.tasks[&task].snapshot.recovery_pending);
+        assert!(recovered.tasks[&task].snapshot.assigned_agent.is_some());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_pending_controls_tolerate_missing_historical_agents() {
+        {
+            let (root, mut scheduler, mut agents) = scheduler();
+            let task = scheduler
+                .create(&mut agents, settle_only("reassign me", "recovery prompt"))
+                .unwrap();
+            let old_agent = scheduler.tasks[&task]
+                .snapshot
+                .assigned_agent
+                .clone()
+                .unwrap();
+            {
+                let snapshot = &mut scheduler.tasks.get_mut(&task).unwrap().snapshot;
+                snapshot.state = TaskState::Paused;
+                snapshot.recovery_pending = true;
+            }
+            scheduler.persist_checkpoint().unwrap();
+            drop(scheduler);
+
+            let mut recovered = TaskScheduler::new(&root).unwrap();
+            recovered
+                .reassign(&mut agents, &task, "reviewer".into(), None, None)
+                .unwrap();
+            assert!(!recovered.tasks[&task].snapshot.recovery_pending);
+            assert_eq!(recovered.tasks[&task].snapshot.role, "reviewer");
+            assert_eq!(agents.snapshots[&old_agent].status, AgentStatus::Cancelled);
+            recovered.refresh(&mut agents).unwrap();
+            assert_eq!(agents.prompts.len(), 1);
+            assert_eq!(agents.prompts[0].1, "recovery prompt");
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        let (root, mut scheduler, mut agents) = scheduler();
+        let task = scheduler
+            .create(&mut agents, settle_only("cancel me", "cancel prompt"))
+            .unwrap();
+        scheduler.tasks.get_mut(&task).unwrap().snapshot.state = TaskState::Paused;
+        scheduler
+            .tasks
+            .get_mut(&task)
+            .unwrap()
+            .snapshot
+            .recovery_pending = true;
+        scheduler.persist_checkpoint().unwrap();
+        drop(scheduler);
+
+        let mut recovered = TaskScheduler::new(&root).unwrap();
+        let mut restarted_agents = FakeAgents::default();
+        recovered.cancel(&mut restarted_agents, &task).unwrap();
+        assert_eq!(recovered.tasks[&task].snapshot.state, TaskState::Cancelled);
+        assert!(!recovered.tasks[&task].snapshot.recovery_pending);
+        assert!(restarted_agents.prompts.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn near_capacity_recovery_with_many_active_tasks_drops_repeated_explanations() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let mut tasks = Vec::new();
+        for index in 0..10 {
+            tasks.push(
+                scheduler
+                    .create(
+                        &mut agents,
+                        settle_only(format!("active-{index}"), "recovery capacity prompt"),
+                    )
+                    .unwrap(),
+            );
+        }
+        let filler = &tasks[0];
+        for size in [
+            128 * 1024,
+            64 * 1024,
+            32 * 1024,
+            16 * 1024,
+            8 * 1024,
+            4 * 1024,
+            2 * 1024,
+            1024,
+            512,
+            256,
+            128,
+        ] {
+            loop {
+                if scheduler
+                    .submit_evidence(
+                        filler,
+                        "repeat",
+                        "operator",
+                        "task-test",
+                        true,
+                        Value::String("r".repeat(size)),
+                    )
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+        for id in &tasks {
+            scheduler.tasks.get_mut(id).unwrap().snapshot.state = TaskState::Running;
+        }
+        scheduler.persist_checkpoint().unwrap();
+        drop(scheduler);
+
+        let recovered = TaskScheduler::new(&root).unwrap();
+        assert_eq!(recovered.tasks.len(), tasks.len());
+        assert!(tasks.iter().all(|id| {
+            recovered.tasks[id].snapshot.state == TaskState::Paused
+                && recovered.tasks[id].snapshot.recovery_pending
+        }));
+        assert!(recovered.tasks.values().any(|record| {
+            record.snapshot.last_error.is_none() && record.snapshot.recovery_pending
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn near_capacity_agent_failure_persists_failed_state_with_bounded_error() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let task = scheduler
+            .create(&mut agents, settle_only("fail safely", "failure prompt"))
+            .unwrap();
+        let agent = scheduler.tasks[&task]
+            .snapshot
+            .assigned_agent
+            .clone()
+            .unwrap();
+
+        let mut index = 0;
+        loop {
+            let result = scheduler.submit_evidence(
+                &task,
+                format!("proof-{index}"),
+                "reviewer",
+                "task-test",
+                true,
+                Value::String("e".repeat(16 * 1024)),
+            );
+            if result.is_err() {
+                break;
+            }
+            index += 1;
+        }
+        assert!(index > 50);
+
+        let mut failed = agents.snapshots[&agent].clone();
+        failed.status = AgentStatus::Failed;
+        failed.last_error = Some(format!("engine failure {}", "x".repeat(64 * 1024)));
+        scheduler.apply_agent_failures(&[failed]).unwrap();
+        scheduler.persist_checkpoint().unwrap();
+
+        let snapshot = &scheduler.tasks[&task].snapshot;
+        assert_eq!(snapshot.state, TaskState::Failed);
+        let persisted_error = snapshot.last_error.as_deref().unwrap();
+        assert!(persisted_error.starts_with("engine failure "));
+        assert!(persisted_error.ends_with("..."));
+        assert!(persisted_error.len() <= MAX_PERSISTED_TASK_ERROR_BYTES);
+        let reopened = TaskScheduler::new(&root).unwrap();
+        assert_eq!(reopened.tasks[&task].snapshot.state, TaskState::Failed);
+        assert_eq!(
+            reopened.tasks[&task].snapshot.last_error.as_deref(),
+            Some(persisted_error)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn task_checkpoint_revalidates_worktree_and_verification_policy() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        scheduler
+            .create(&mut agents, settle_only("validate me", "validation prompt"))
+            .unwrap();
+        let path = root.join(TASK_CHECKPOINT_RELATIVE_PATH);
+        let outside = root.with_extension("outside-worktree");
+        fs::create_dir_all(&outside).unwrap();
+
+        let mut checkpoint: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        checkpoint["tasks"][0]["snapshot"]["worktree"] = serde_json::json!(outside);
+        fs::write(&path, serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+        assert!(TaskScheduler::new(&root).is_err());
+
+        checkpoint["tasks"][0]["snapshot"]["worktree"] = serde_json::json!(root);
+        checkpoint["tasks"][0]["snapshot"]["verification"] = serde_json::json!({
+            "kind": "command",
+            "command": "echo verified",
+            "expectedExit": 0,
+            "timeoutSeconds": 601
+        });
+        fs::write(&path, serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+        assert!(TaskScheduler::new(&root).is_err());
+        fs::remove_dir_all(outside).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn task_checkpoint_rejects_unknown_versions_and_oversized_files() {
+        let (root, scheduler, _) = scheduler();
+        drop(scheduler);
+        let path = root.join(TASK_CHECKPOINT_RELATIVE_PATH);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, r#"{"formatVersion":99,"nextTask":1,"tasks":[]}"#).unwrap();
+        assert!(TaskScheduler::new(&root).is_err());
+
+        fs::write(&path, vec![b' '; MAX_TASK_CHECKPOINT_BYTES as usize + 1]).unwrap();
+        assert!(TaskScheduler::new(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn task_checkpoint_is_bound_to_project_and_preserves_the_next_id() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let first = scheduler
+            .create(&mut agents, settle_only("first", "first prompt"))
+            .unwrap();
+        assert_eq!(first.as_str(), "task-0001");
+        let path = root.join(TASK_CHECKPOINT_RELATIVE_PATH);
+
+        let foreign_root = root.with_extension("foreign-project");
+        fs::create_dir_all(foreign_root.join(".glass/tasks")).unwrap();
+        fs::copy(&path, foreign_root.join(TASK_CHECKPOINT_RELATIVE_PATH)).unwrap();
+        assert!(TaskScheduler::new(&foreign_root).is_err());
+
+        let mut checkpoint: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        checkpoint["nextTask"] = serde_json::json!(1);
+        fs::write(&path, serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+        assert!(TaskScheduler::new(&root).is_err());
+
+        fs::remove_dir_all(foreign_root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_capacity_rejects_task_and_evidence_before_mutation_or_dispatch() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let large_prompt = "x".repeat(MAX_TASK_TEXT_BYTES);
+        let mut first = None;
+        for index in 0..15 {
+            let task = scheduler
+                .create(
+                    &mut agents,
+                    settle_only(format!("large-{index}"), large_prompt.clone()),
+                )
+                .unwrap();
+            first.get_or_insert(task);
+        }
+        let before_count = scheduler.tasks.len();
+        let before_next = scheduler.next_task;
+        let before_agents = agents.next;
+        let overflow = scheduler.create(&mut agents, settle_only("overflow", large_prompt.clone()));
+        assert!(overflow.is_err());
+        assert_eq!(scheduler.tasks.len(), before_count);
+        assert_eq!(scheduler.next_task, before_next);
+        assert_eq!(agents.next, before_agents);
+
+        let task = first.unwrap();
+        let before_evidence = scheduler.tasks[&task].snapshot.evidence.len();
+        let evidence = scheduler.submit_evidence(
+            &task,
+            "largeEvidence",
+            "operator",
+            "task-test",
+            true,
+            Value::String("d".repeat(MAX_TASK_TEXT_BYTES)),
+        );
+        assert!(evidence.is_err());
+        assert_eq!(
+            scheduler.tasks[&task].snapshot.evidence.len(),
+            before_evidence
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn oversized_runtime_event_is_summarized_and_cursor_advances_after_checkpoint() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let task = scheduler
+            .create(&mut agents, settle_only("event", "event prompt"))
+            .unwrap();
+        let assigned = scheduler.tasks[&task]
+            .snapshot
+            .assigned_agent
+            .clone()
+            .unwrap();
+        scheduler.tasks.get_mut(&task).unwrap().snapshot.state = TaskState::Running;
+        agents.emit(
+            &assigned,
+            "message_end",
+            serde_json::json!({
+                "errors": 1,
+                "clean": true,
+                "large": "x".repeat(MAX_TASK_CHECKPOINT_BYTES as usize),
+            }),
+        );
+
+        scheduler.refresh(&mut agents).unwrap();
+        assert_eq!(scheduler.agent_event_cursor, 2);
+        let evidence = scheduler.tasks[&task]
+            .snapshot
+            .evidence
+            .iter()
+            .find(|evidence| evidence.kind == "agent.message_end")
+            .unwrap();
+        assert_eq!(evidence.details["errors"], 1);
+        assert_eq!(evidence.details["clean"], true);
+        assert_eq!(evidence.details["truncated"], true);
+        assert!(serde_json::to_vec(evidence).unwrap().len() < 1024);
+        let mut reopened = TaskScheduler::new(&root).unwrap();
+        assert!(reopened.tasks[&task].snapshot.recovery_pending);
+        let prompts_before = agents.prompts.len();
+        reopened.refresh(&mut agents).unwrap();
+        assert_eq!(agents.prompts.len(), prompts_before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn oversized_event_summary_only_copies_bounded_verifier_scalars() {
+        let details = bounded_event_details(&serde_json::json!({
+            "errors": "n".repeat(8 * 1024),
+            "regressions": 3,
+            "hasChanges": {"nested": "x".repeat(8 * 1024)},
+            "clean": true,
+            "payload": "x".repeat(8 * 1024),
+        }));
+        assert!(!details.as_object().unwrap().contains_key("errors"));
+        assert_eq!(details["regressions"], 3);
+        assert!(!details.as_object().unwrap().contains_key("hasChanges"));
+        assert_eq!(details["clean"], true);
+        assert_eq!(details["truncated"], true);
+        assert!(serde_json::to_vec(&details).unwrap().len() < 256);
+    }
+
+    #[test]
+    fn checkpoint_saturation_drops_old_event_evidence_and_advances_cursor() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let task = scheduler
+            .create(&mut agents, settle_only("saturate", "saturation prompt"))
+            .unwrap();
+        let evidence_task = scheduler
+            .create(&mut agents, settle_only("other evidence", "other prompt"))
+            .unwrap();
+        scheduler
+            .submit_evidence(
+                &evidence_task,
+                "required-proof",
+                "operator",
+                "task-test",
+                true,
+                serde_json::json!({"clean": true}),
+            )
+            .unwrap();
+        let assigned = scheduler.tasks[&task]
+            .snapshot
+            .assigned_agent
+            .clone()
+            .unwrap();
+        let mut accepted = 0;
+        for size in [
+            128 * 1024,
+            64 * 1024,
+            32 * 1024,
+            16 * 1024,
+            8 * 1024,
+            4 * 1024,
+            2 * 1024,
+            1024,
+            512,
+            256,
+            128,
+            1,
+        ] {
+            loop {
+                let result = scheduler.submit_evidence(
+                    &evidence_task,
+                    "fill",
+                    "operator",
+                    "task-test",
+                    true,
+                    Value::String("f".repeat(size)),
+                );
+                if result.is_err() {
+                    break;
+                }
+                accepted += 1;
+            }
+        }
+        assert!(accepted >= 2);
+        assert!(accepted < MAX_TASK_EVIDENCE);
+
+        scheduler.agent_event_cursor = agents.next_event;
+        agents.emit(
+            &assigned,
+            "message_end",
+            Value::String("e".repeat(3 * 1024)),
+        );
+        let event_sequence = agents.next_event;
+        scheduler.refresh(&mut agents).unwrap();
+        assert_eq!(scheduler.agent_event_cursor, event_sequence);
+        let evidence = &scheduler.tasks[&task].snapshot.evidence;
+        assert!(
+            evidence
+                .iter()
+                .any(|evidence| evidence.kind == "agent.message_end")
+        );
+        let retained = &scheduler.tasks[&evidence_task].snapshot.evidence;
+        assert_eq!(
+            retained
+                .iter()
+                .filter(|evidence| evidence.kind == "fill")
+                .count(),
+            accepted - 1
+        );
+        assert!(retained.iter().any(|evidence| {
+            evidence.kind == "required-proof" && evidence.details["clean"] == true
+        }));
+        assert!(scheduler.tasks[&evidence_task].snapshot.evidence_truncated);
+        assert!(matches!(
+            verify(
+                &VerificationRequirement::LspDiagnostics { max_errors: 0 },
+                &root,
+                retained
+            )
+            .unwrap(),
+            VerificationOutcome::Waiting
+        ));
+        let evidence_count = retained.len();
+        scheduler.refresh(&mut agents).unwrap();
+        assert_eq!(scheduler.agent_event_cursor, event_sequence);
+        assert_eq!(
+            scheduler.tasks[&evidence_task].snapshot.evidence.len(),
+            evidence_count
+        );
+        let mut reopened = TaskScheduler::new(&root).unwrap();
+        assert!(reopened.tasks[&task].snapshot.recovery_pending);
+        let prompts_before = agents.prompts.len();
+        reopened.refresh(&mut agents).unwrap();
+        assert_eq!(agents.prompts.len(), prompts_before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_pressure_drops_incoming_event_proof_without_false_verification() {
+        let (root, mut scheduler, mut agents) = scheduler();
+        let mut receiver = settle_only("proof event", "proof prompt");
+        receiver.verification = VerificationRequirement::LspDiagnostics { max_errors: 0 };
+        let task = scheduler.create(&mut agents, receiver).unwrap();
+        let assigned = scheduler.tasks[&task]
+            .snapshot
+            .assigned_agent
+            .clone()
+            .unwrap();
+        let filler = scheduler
+            .create(&mut agents, settle_only("unique evidence", "filler prompt"))
+            .unwrap();
+        let mut kind = 0;
+        for size in [
+            128 * 1024,
+            64 * 1024,
+            32 * 1024,
+            16 * 1024,
+            8 * 1024,
+            4 * 1024,
+            2 * 1024,
+            1024,
+            512,
+            256,
+            128,
+            1,
+        ] {
+            loop {
+                let result = scheduler.submit_evidence(
+                    &filler,
+                    format!("unique-{kind}"),
+                    "operator",
+                    "task-test",
+                    true,
+                    Value::String("u".repeat(size)),
+                );
+                if result.is_err() {
+                    break;
+                }
+                kind += 1;
+            }
+        }
+        assert!(kind >= 20);
+        assert!(kind < MAX_TASK_EVIDENCE);
+
+        scheduler.agent_event_cursor = agents.next_event;
+        agents.emit(
+            &assigned,
+            "message_end",
+            serde_json::json!({
+                "usage": {"totalTokens": 7},
+                "message": "m".repeat(3 * 1024),
+            }),
+        );
+        let sequence = agents.next_event;
+        scheduler.refresh(&mut agents).unwrap();
+        assert_eq!(scheduler.agent_event_cursor, sequence);
+        let snapshot = &scheduler.tasks[&task].snapshot;
+        assert!(snapshot.evidence_truncated);
+        assert_eq!(snapshot.observed_tokens, 7);
+        assert!(
+            !snapshot
+                .evidence
+                .iter()
+                .any(|evidence| evidence.kind == "agent.message_end")
+        );
+        assert!(matches!(
+            verify(
+                &VerificationRequirement::LspDiagnostics { max_errors: 0 },
+                &root,
+                &snapshot.evidence
+            )
+            .unwrap(),
+            VerificationOutcome::Waiting
+        ));
+        scheduler.refresh(&mut agents).unwrap();
+        assert_eq!(scheduler.agent_event_cursor, sequence);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn task_checkpoint_rejects_symlinked_state_paths() {
+        use std::os::unix::fs::symlink;
+
+        let (root, scheduler, _) = scheduler();
+        drop(scheduler);
+        let external = root.with_extension("external-state");
+        fs::create_dir_all(&external).unwrap();
+        symlink(&external, root.join(".glass")).unwrap();
+        assert!(TaskScheduler::new(&root).is_err());
+        fs::remove_file(root.join(".glass")).unwrap();
+        fs::remove_dir_all(&external).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

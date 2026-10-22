@@ -2,7 +2,8 @@
 
 **Status: Current source behavior.** The task scheduler assigns work to
 resident agents and checks their results. It is not a general workflow engine.
-Task records stay in memory and do not survive a workspace restart.
+Task checkpoints persist under `.glass/tasks/scheduler.json`; active assigned
+work reopens as recovery-pending and is never automatically replayed.
 
 ```text
 TaskSpec (goal, prompt, policy, verifier, budget)
@@ -22,10 +23,11 @@ verification ── command or governed resident evidence
 
 `DevelopmentWorkspace` owns one `TaskScheduler` and one `AgentRegistry`. The
 daemon checks the scheduler every 50 ms, even when no client is connected.
-Tasks remain active while the workspace actor is alive. A daemon restart or
-workspace eviction clears task records. Agent session files and timeline
-evidence have separate persistence rules. Glass Core is the default resident
-engine; the legacy Pi backend is optional. See [Development Runtime](development-runtime.md),
+The scheduler atomically checkpoints task records below the project root.
+Agent session files and timeline evidence have separate persistence rules;
+the checkpoint does not claim that an interrupted engine turn has been
+recovered. Glass Core is the default resident engine; the legacy Pi backend is
+optional. See [Development Runtime](development-runtime.md),
 [Glass Core resident harness](glass-core-harness.md), [Native Pi SDK runtime](pi-sdk-runtime.md),
 and [Local daemon](daemon.md).
 
@@ -52,8 +54,10 @@ pair(s), reviewer, and browser-verification DAG. The workspace records a
 directories are used as the fallback. The crew is project-execution and
 confirmation gated.
 
-The scheduler's task records remain in memory, but the crew summary is durable:
-Glass writes `.glass/crew/<crew-id>.json` and replaces
+The scheduler's task records checkpoint under `.glass/tasks/scheduler.json`;
+the agent-event cursor belongs to the live registry and restarts with it. The
+crew summary has a separate durable record: Glass writes
+`.glass/crew/<crew-id>.json` and replaces
 `.glass/crew/latest.json` with the latest `CrewWake` record. `glass.task.wake`
 is read-only and returns that latest record. A wake refresh folds member states,
 bounded Git diff and test output, plus live verify, page, and proposal-accept
@@ -102,7 +106,13 @@ blocked ── override-blocked ──► queued (explicit human override)
 
 Terminal task states are `succeeded`, `failed`, and `cancelled`. `paused` and `blocked` retain their reason. A failed or cancelled prerequisite never becomes success by inference. `override-blocked` deliberately allows the task to queue without requiring its failed dependency to succeed; record why this exception is safe before continuing.
 
-The task snapshot includes ID, title, goal, full prompt, role, dependencies, assigned agent, worktree, model, thinking, unrestricted flag, budget, verification requirement, retry policy, state, attempt, observed tokens, timestamps, last error, bounded evidence, and override flag. IDs use the `task-` prefix and are capped at 64 bytes.
+The task snapshot includes ID, title, goal, full prompt, role, dependencies,
+assigned agent, worktree, model, thinking, unrestricted flag, budget,
+verification requirement, retry policy, state, attempt, observed tokens,
+timestamps, last error, bounded evidence, override flag, and
+`recoveryPending` and `evidenceTruncated`. IDs use the `task-` prefix and are
+capped at 64 bytes. `evidenceTruncated` indicates that the bounded evidence
+history has been pruned or compressed.
 
 ## Verification policies
 
@@ -132,7 +142,8 @@ While waiting for evidence, the task is `waiting`. `DevelopmentWorkspace::tasks(
 | Task records per scheduler | 128 |
 | Dependencies per task | 32 unique IDs |
 | Task title, goal, prompt, and role | 128 KiB each maximum; non-empty and no NUL |
-| Retained evidence per task | 128 values, oldest removed first |
+| Retained evidence per task | 128 values; overflow removes older entries and marks `evidenceTruncated` |
+| Persisted failure detail | 160 bytes maximum; long text is sanitized and truncated, and may be omitted if needed to preserve the state transition |
 | Verification command | 16 KiB; timeout 1–600 seconds |
 | `all` verification group | 1–16 requirements; nesting depth ≤8 |
 | Task runtime budget | 3,600 seconds by default; must be positive |
@@ -156,9 +167,29 @@ A task worktree must canonicalize successfully. The root or a Git worktree is ac
 | Resident evidence missing | Task remains `waiting` | Run the governed LSP/browser/debugger/Git/custom operation and submit matching evidence |
 | Task paused | Assigned agent is cancelled; task becomes `paused` | Resume to queue a new attempt |
 | Task cancelled | Assigned agent is cancelled; descendants become blocked | Create a new task or retry only if cancellation was intentional and state is safe |
-| Scheduler/daemon closes | In-memory tasks stop; agent sessions and timeline artifacts have separate persistence | Recreate tasks after reopening; inspect artifacts before resuming work |
+| Scheduler/daemon closes with queued, unassigned tasks | Queued state and stable IDs persist | Dependencies are checked and safe queued work may be scheduled on refresh |
+| Scheduler/daemon closes with an assigned task | Assignment, state, prompt, and evidence persist; on reopen the task is paused with `recoveryPending: true`, which marks the prior outcome unknown. An explanatory `lastError` is retained when checkpoint capacity permits. | Inspect the prior agent/session evidence. Resume is explicit and starts a new attempt; it clears the prior assignment from the active task record |
+| Checkpoint is malformed, unsupported, or over 2 MiB | Workspace scheduler initialization returns an error; it does not silently replace the checkpoint with an empty task set | Preserve and inspect the checkpoint before repair |
 
-A retry resets assignment, completion time, last error, and retry deadline. It does not erase bounded evidence or reset the task ID. `reassign` cancels a current agent, changes role/model/thinking, and queues the task again. Terminal tasks cannot be paused or reassigned.
+A retry resets assignment, completion time, last error, and retry deadline. It does not erase bounded evidence or reset the task ID. `reassign` cancels a current agent, changes role/model/thinking, and queues the task again. Terminal tasks cannot be paused or reassigned. `recoveryPending` preserves the prior assigned agent ID as historical context, but the scheduler ignores that assignment for event correlation. Explicit `resume` or `reassign` clears the marker and creates a new assignment; neither action proves what the prior engine turn did.
+
+The checkpoint is version 1 JSON and bound to the canonical project root,
+limited to 2 MiB and 128 tasks, and is
+replaced through a same-directory temporary file, file sync, atomic rename,
+and directory sync. On Unix, `.glass/tasks` is mode `0700` and the checkpoint
+is mode `0600`. A missing checkpoint starts a new empty scheduler; an
+unsupported version or invalid/boundedness-violating record fails startup so
+existing task history is not silently discarded. The checkpoint stores task
+prompts and evidence locally in the project state directory.
+
+Each task retains at most 128 evidence entries. If an incoming runtime event
+would exceed the aggregate checkpoint bound, the scheduler first evicts older
+duplicate evidence globally in deterministic timestamp/task order, preserving
+the newest entry for each evidence kind on each task. It then compresses the
+incoming event to verifier-relevant scalar fields and, only if needed, omits
+that event's evidence while retaining its task-state transition. Event payloads
+and repeated evidence are therefore bounded history, not an unlimited audit
+log.
 
 ## State ownership and security
 
@@ -187,6 +218,12 @@ Scheduler tests use a fake agent backend and do not consume a model request:
 - `verification_failure_retries_then_blocks_descendants` checks retry count, terminal failure, and descendant blocking.
 - `external_verification_evidence_is_proof_not_agent_claim` checks waiting state and matching external evidence.
 - `implementation_tasks_infer_project_verification_and_settle_only_is_explicit` checks project-marker inference and explicit settle-only policy.
+- `task_checkpoint_restores_identity_evidence_and_requires_explicit_recovery` checks stable IDs, assignment and evidence restoration, no prompt replay on reopen, and one explicit resume dispatch.
+- `task_checkpoint_rejects_unknown_versions_and_oversized_files` checks strict checkpoint version and byte bounds.
+- `task_checkpoint_is_bound_to_project_and_preserves_the_next_id` rejects copied checkpoints and ID reuse; `task_checkpoint_rejects_symlinked_state_paths` keeps state within the project-local directory.
+- `task_checkpoint_revalidates_worktree_and_verification_policy` checks restored task policy before accepting a checkpoint; `recovery_pending_controls_tolerate_missing_historical_agents` covers explicit reassign/cancel after a restart.
+- `checkpoint_capacity_rejects_task_and_evidence_before_mutation_or_dispatch` checks aggregate-capacity preflight; `oversized_runtime_event_is_summarized_and_cursor_advances_after_checkpoint` and `checkpoint_saturation_drops_old_event_evidence_and_advances_cursor` check bounded evidence and safe refresh under saturation across two tasks.
+- `oversized_event_summary_only_copies_bounded_verifier_scalars` checks that oversized values do not survive in the summary under verifier-field names.
 
 The daemon workspace actor test `daemon::tests::workspace_actors_do_not_serialize_unrelated_long_operations` checks that a one-second operation in one workspace does not block another actor. The daemon tick is 50 ms with missed ticks skipped. Run these targeted tests when changing scheduler behavior; keep release claims tied to [release evidence](release-evidence.md).
 

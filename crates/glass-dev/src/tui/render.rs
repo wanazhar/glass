@@ -6524,6 +6524,7 @@ mod tests {
         state
             .pending_chat_messages
             .push(super::super::state::PendingChatMessage {
+                agent_id: None,
                 message_id: "chat-follow-up-7".into(),
                 text: "follow up while you work".into(),
                 state: super::super::state::ChatMessageState::Sending,
@@ -6548,6 +6549,7 @@ mod tests {
         state
             .pending_chat_messages
             .push(super::super::state::PendingChatMessage {
+                agent_id: None,
                 message_id: "chat-send-7".into(),
                 text: "inspect the failing test".into(),
                 state: super::super::state::ChatMessageState::Sending,
@@ -6569,6 +6571,7 @@ mod tests {
         state
             .pending_chat_messages
             .push(super::super::state::PendingChatMessage {
+                agent_id: Some(crate::AgentId::parse("agent-0001").unwrap()),
                 message_id: "chat-send-9".into(),
                 text: "retry after the agent stopped".into(),
                 state: super::super::state::ChatMessageState::Sending,
@@ -6590,6 +6593,7 @@ mod tests {
         state
             .pending_chat_messages
             .push(super::super::state::PendingChatMessage {
+                agent_id: Some(crate::AgentId::parse("agent-0001").unwrap()),
                 message_id: "chat-send-8".into(),
                 text: "retry this request".into(),
                 state: super::super::state::ChatMessageState::Sending,
@@ -6622,6 +6626,7 @@ mod tests {
         state
             .pending_chat_messages
             .push(super::super::state::PendingChatMessage {
+                agent_id: Some(agent_id.clone()),
                 message_id: "chat-hello-1".into(),
                 text: "hello hello".into(),
                 state: super::super::state::ChatMessageState::Sent,
@@ -6630,7 +6635,7 @@ mod tests {
             });
 
         state.apply_snapshot(&super::super::snapshot::DisplaySnapshot {
-            agent_states: vec![(agent_id, crate::AgentStatus::Idle)],
+            agent_states: vec![(agent_id.clone(), crate::AgentStatus::Idle)],
             agent_conversation: state.agent_conversation.clone(),
             conversation_items: vec![super::super::projection::ConversationEntry {
                 kind: super::super::projection::ConversationKind::User,
@@ -6640,6 +6645,20 @@ mod tests {
                 client_message_id: Some("chat-hello-1".into()),
                 tool_name: None,
             }],
+            agent_conversations: std::collections::BTreeMap::from([(
+                agent_id,
+                super::super::snapshot::AgentConversation {
+                    text: state.agent_conversation.clone(),
+                    items: vec![super::super::projection::ConversationEntry {
+                        kind: super::super::projection::ConversationKind::User,
+                        text: "hello hello".into(),
+                        streaming: false,
+                        entry_id: Some("entry-hello-1".into()),
+                        client_message_id: Some("chat-hello-1".into()),
+                        tool_name: None,
+                    }],
+                },
+            )]),
             ..Default::default()
         });
 

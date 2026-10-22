@@ -96,11 +96,14 @@ archive. The two source Clippy findings were fixed in the follow-up. The
 imported source also does not pass `cargo fmt --all -- --check`; the immutable
 source snapshot was not broadly reformatted, and this is not a CI gate.
 
-The migration commit and follow-up integration commit are intended for Glass
-`main`, with source head copies under `archive/glass-core/`; publication is
-recorded here after remote verification. The old Core repository remains
-unchanged and is not archived by this migration. Archive it only after the
-standalone install and user path transition have been verified.
+The import (`0fbbe338457abf8197ae1f486be94509cdebf4ec`) and integration
+(`a2c04e7117350bc49c5ccb0e48ae344a9294a6b7`) commits were pushed to Glass
+`main`. A post-push fetch verified remote `main` at the integration commit.
+All seven public archive branch refs were also checked against their intended
+source commit IDs; no task-snapshot or Glass checkpoint refs were published.
+The old Core repository remains unchanged and is not archived by this
+migration. Archive it only after the standalone install and user path
+transition have been verified.
 
 The migration is one milestone in issue #63. Runtime ownership, shared tool
 execution, and the TUI work remain open acceptance work.

@@ -54,6 +54,14 @@ and selects without sending. `project_thread_picker_lists_status_and_selects_wit
 passes, including recovery-pending display, three-thread draft/cursor
 restoration, and a late result for the first thread while the third remains
 selected.
+`spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer` also
+passes with the fake Core runtime: it starts a resident agent, waits until the
+project picker reports it idle, selects that conversation, opens its composer,
+and sends a prompt. The fixture records the matching `turn/prompt`; the
+persisted attempt records the engine request ID and reaches `settled`. This
+proves a single selected conversation can complete a real adapter round trip
+through the TUI. It does not prove isolation among simultaneously active Core
+tasks; that journey remains open below.
 `project_thread_picker_is_discoverable_at_desktop_and_compact_sizes` passes
 with the fake Core fixture at 80×24 and 50×16. Formatting, strict scoped
 Clippy, shortcut validation, docs depth, docs coverage, release-truth, and

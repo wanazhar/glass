@@ -50,6 +50,11 @@ or publication is in scope. Completed P0 work is recorded in the
 [TUI editor/chat state](tasks/issue60-p0-tui-data-preservation-001.md),
 [editor claims and revisions](tasks/issue60-p0-editor-claims-revisions-001.md),
 and [daemon result-race](tasks/issue60-p0-daemon-result-race-001.md) tasks.
+The current-main audit of all 52 unchecked entries is complete locally and
+records source, regression, and final-certificate evidence in the
+[unchecked-finding matrix](tasks/issue60-current-unchecked-triage-001.md). The
+[bounded snapshot/search/parse fixes](tasks/issue60-p1-snapshot-search-parse-001.md)
+are tracked separately. The remote issue checklist remains unchanged.
 The current daemon lifecycle slice covers reports #52–#54, #56, and #59:
 [task record](tasks/issue60-p1-daemon-lifecycle-001.md).
 The first TUI P1 slice centralizes overlay precedence across input, pointer, and
@@ -74,6 +79,10 @@ The completed TUI-1 slice unifies typed and pasted Pi slash commands, retains
 the Agent composer draft and cursor across routes, and hands Tasks the
 keyboard after `/todo`:
 [task record](tasks/issue60-p1-tui-pi-draft-routing-001.md).
+The current snapshot/search/parse metadata slice joins the background worker
+on shutdown, preserves bounded file-listing coverage, clears stale edit
+metadata on parse-cache hits, and matches the canonical screenshot tool name:
+[task record](tasks/issue60-p1-snapshot-search-parse-001.md).
 
 ## Active plan: Glass native browser engine (issue #40)
 

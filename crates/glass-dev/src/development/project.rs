@@ -1,9 +1,10 @@
 use super::editor::{selection_offsets, text_position_at_offset, text_position_offset};
 use super::{
     Actor, DevelopmentError, DevelopmentEventKind, DevelopmentGraph, DevelopmentResult,
-    LanguageDiagnostic, LspClient, MAX_BUFFER_BYTES, MAX_FILE_BYTES, MAX_FILE_ENTRIES,
-    ProcessManager, ReplayWindow, SearchHit, SearchKind, SemanticBreakpoint, SemanticBreakpointHit,
-    SemanticSnapshot, SourceLocation, Timeline, read_bounded_utf8,
+    FileListingCoverage, LanguageDiagnostic, LspClient, MAX_BUFFER_BYTES, MAX_FILE_BYTES,
+    MAX_FILE_ENTRIES, ProcessManager, ProjectSearchResult, ReplayWindow, SearchHit, SearchKind,
+    SemanticBreakpoint, SemanticBreakpointHit, SemanticSnapshot, SourceLocation, Timeline,
+    read_bounded_utf8,
 };
 use crate::development::diff::{ProjectDiff, build_diff};
 use crate::development::graph::{LinkEvidence, LinkProvenance, RuntimeLink};
@@ -79,6 +80,8 @@ pub struct ProjectDetection {
     pub framework: Option<String>,
     pub build_system: Option<String>,
     pub formatter: Option<String>,
+    /// Installed server names discovered from the project language; this is
+    /// informational and never starts an LSP process without explicit config.
     pub lsp_servers: Vec<String>,
     pub git_branch: Option<String>,
     pub dev_command: Option<String>,
@@ -86,6 +89,8 @@ pub struct ProjectDetection {
     pub lint_command: Option<String>,
     pub build_command: Option<String>,
     pub browser_url: Option<String>,
+    /// Configured browser URL hints. Detection currently exposes the single
+    /// configured URL; it does not infer or launch additional local servers.
     pub local_development_urls: Vec<String>,
     pub editor_engine: Option<String>,
     pub agent_harness: Option<String>,
@@ -105,6 +110,9 @@ pub struct FileEntry {
     pub path: String,
     pub kind: FileKind,
     pub bytes: Option<u64>,
+    /// Whether `glass.file.read` can return the file within its bounded read size.
+    #[serde(default)]
+    pub readable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_status: Option<String>,
     #[serde(default)]
@@ -918,7 +926,14 @@ impl ProjectWorkspace {
             ignored_directories: Vec::new(),
             skipped_symlinks: 0,
         };
-        visit_files(&self.root, &self.root, &mut result)?;
+        let (mut file_count, mut tree_entry_count) = (0, 0);
+        visit_files(
+            &self.root,
+            &self.root,
+            &mut result,
+            &mut file_count,
+            &mut tree_entry_count,
+        )?;
         let git = git_statuses(&self.root);
         for entry in &mut result.entries {
             entry.git_status = git.get(&entry.path).cloned();
@@ -1309,7 +1324,12 @@ impl ProjectWorkspace {
         )?;
         if self.processes.list_checked()?.iter().any(|process| {
             matches!(process.state, super::ProcessState::Running)
-                && (process.name.contains("dev") || process.name.contains("server"))
+                && (!process.detected_urls.is_empty()
+                    || self
+                        .detection
+                        .dev_command
+                        .as_deref()
+                        .is_some_and(|command| command == process.command))
         }) {
             self.record(
                 DevelopmentEventKind::HmrObserved,
@@ -1540,8 +1560,10 @@ impl ProjectWorkspace {
     }
 
     pub(crate) fn discover_runtime_links(&mut self) -> DevelopmentResult<Vec<RuntimeLink>> {
-        let discovered = self.graph.discover_explicit_markers(&self.root)?;
-        self.graph.save(&self.graph_path)?;
+        let mut candidate = self.graph.clone();
+        let discovered = candidate.discover_explicit_markers(&self.root)?;
+        candidate.save(&self.graph_path)?;
+        self.graph = candidate;
         for link in &discovered {
             self.record(
                 DevelopmentEventKind::SourceRuntimeLinked,
@@ -1566,12 +1588,23 @@ impl ProjectWorkspace {
             .as_mut()
             .expect("language client initialized")
             .diagnostics(path)?;
-        self.diagnostics.insert(path.into(), diagnostics.clone());
+        self.publish_diagnostics(path, diagnostics.clone())?;
+        Ok(diagnostics)
+    }
+
+    pub(crate) fn publish_diagnostics(
+        &mut self,
+        path: &str,
+        diagnostics: Vec<LanguageDiagnostic>,
+    ) -> DevelopmentResult<()> {
+        let (_, relative) = self.resolve_path(path, false)?;
+        self.diagnostics
+            .insert(relative.clone(), diagnostics.clone());
         self.record(
             DevelopmentEventKind::DiagnosticsPublished,
-            serde_json::json!({"path": path, "count": diagnostics.len(), "diagnostics": diagnostics}),
+            serde_json::json!({"path": relative, "count": diagnostics.len(), "diagnostics": diagnostics}),
         )?;
-        Ok(diagnostics)
+        Ok(())
     }
 
     pub(crate) fn evaluate_semantic_breakpoints(
@@ -1598,14 +1631,21 @@ impl ProjectWorkspace {
         &mut self,
         query: &str,
         limit: usize,
-    ) -> DevelopmentResult<Vec<SearchHit>> {
+    ) -> DevelopmentResult<ProjectSearchResult> {
         if query.trim().is_empty() || query.len() > 256 || limit == 0 || limit > 256 {
             return Err(DevelopmentError::InvalidInput(
                 "search requires a 1-256 byte query and a 1-256 result limit".into(),
             ));
         }
+        let tree = self.list_files_result()?;
+        let file_listing = FileListingCoverage {
+            truncated: tree.truncated,
+            limit: tree.limit,
+            ignored_directories: tree.ignored_directories,
+            skipped_symlinks: tree.skipped_symlinks,
+        };
         let mut hits = Vec::new();
-        for file in self.list_files()? {
+        for file in tree.entries {
             if let Some(score) = super::fuzzy_score(query, &file.path) {
                 hits.push(SearchHit {
                     kind: SearchKind::File,
@@ -1668,7 +1708,10 @@ impl ProjectWorkspace {
                 });
             }
         }
-        Ok(super::rank(hits, limit))
+        Ok(ProjectSearchResult {
+            hits: super::rank(hits, limit),
+            file_listing,
+        })
     }
 
     pub(crate) fn record(
@@ -1948,8 +1991,11 @@ fn visit_files(
     root: &Path,
     current: &Path,
     result: &mut ProjectTreeResult,
+    file_count: &mut usize,
+    tree_entry_count: &mut usize,
 ) -> DevelopmentResult<()> {
-    if result.entries.len() >= MAX_FILE_ENTRIES {
+    const MAX_TREE_ENTRIES: usize = MAX_FILE_ENTRIES * 2;
+    if *file_count >= MAX_FILE_ENTRIES || *tree_entry_count >= MAX_TREE_ENTRIES {
         result.truncated = true;
         return Ok(());
     }
@@ -1957,7 +2003,7 @@ fn visit_files(
         fs::read_dir(current).map(|entries| entries.collect::<Result<Vec<_>, _>>())??;
     children.sort_by_key(|entry| entry.file_name());
     for entry in children {
-        if result.entries.len() >= MAX_FILE_ENTRIES {
+        if *file_count >= MAX_FILE_ENTRIES || *tree_entry_count >= MAX_TREE_ENTRIES {
             result.truncated = true;
             break;
         }
@@ -1981,20 +2027,25 @@ fn visit_files(
                 path: relative,
                 kind: FileKind::Directory,
                 bytes: None,
+                readable: false,
                 git_status: None,
                 dirty: false,
                 actor: None,
             });
-            visit_files(root, &path, result)?;
+            *tree_entry_count += 1;
+            visit_files(root, &path, result, file_count, tree_entry_count)?;
         } else if metadata.is_file() {
             result.entries.push(FileEntry {
                 path: relative,
                 kind: FileKind::File,
                 bytes: Some(metadata.len()),
+                readable: metadata.len() <= MAX_FILE_BYTES as u64,
                 git_status: None,
                 dirty: false,
                 actor: None,
             });
+            *file_count += 1;
+            *tree_entry_count += 1;
         }
     }
     Ok(())
@@ -2198,6 +2249,24 @@ mod tests {
                 .unwrap(),
             "src/main.rs"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_empty_diagnostics_replace_project_state_and_publish_clear_event() {
+        let root = fixture();
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+        project
+            .publish_diagnostics("src/main.rs", Vec::new())
+            .unwrap();
+
+        assert_eq!(project.diagnostics().get("src/main.rs"), Some(&Vec::new()));
+        let page = ProjectWorkspace::event_page(&root, None, 16).unwrap();
+        assert!(page.events.iter().any(|event| {
+            event.kind == DevelopmentEventKind::DiagnosticsPublished
+                && event.payload["path"] == "src/main.rs"
+                && event.payload["count"] == 0
+        }));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2465,6 +2534,61 @@ mod tests {
         );
         #[cfg(unix)]
         assert_eq!(tree.skipped_symlinks, 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_tree_file_limit_excludes_directories_and_marks_unreadable_files() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-project-tree-file-limit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        for index in 0..(MAX_FILE_ENTRIES + 100) {
+            fs::create_dir(root.join(format!("dir-{index:04}"))).unwrap();
+        }
+        fs::write(root.join("z-large.txt"), vec![b'x'; MAX_FILE_BYTES + 1]).unwrap();
+
+        let project = ProjectWorkspace::open(&root).unwrap();
+        let listing = project.list_files_result().unwrap();
+        assert!(
+            !listing.truncated,
+            "directory entries do not consume file limit"
+        );
+        let large_file = listing
+            .entries
+            .iter()
+            .find(|entry| entry.path == "z-large.txt")
+            .expect("large file remains listed");
+        assert!(!large_file.readable);
+        assert_eq!(large_file.bytes, Some((MAX_FILE_BYTES + 1) as u64));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_graph_discovery_does_not_mutate_live_graph() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-graph-discovery-transaction-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let markers = (0..17)
+            .map(|_| "<button data-glass-entity=\"shared.action\">Run</button>")
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(root.join("source.html"), markers).unwrap();
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+
+        assert!(project.discover_runtime_links().is_err());
+        assert!(project.graph.best_link("shared.action").is_none());
         let _ = fs::remove_dir_all(root);
     }
 

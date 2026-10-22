@@ -143,13 +143,26 @@ pub(crate) fn delegate(request: ExternalAgentRequest) -> Result<ExternalAgentRes
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    configure_process_group(&mut command);
     let started = Instant::now();
     let mut child = command
         .spawn()
         .map_err(|error| format!("could not start {}: {error}", harness.id()))?;
+    let process_tree = match ProcessTree::assign(child.id()) {
+        Ok(process_tree) => process_tree,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "could not own {} process tree: {error}",
+                harness.id()
+            ));
+        }
+    };
     let stdout = match child.stdout.take() {
         Some(stdout) => stdout,
         None => {
+            process_tree.terminate();
             let _ = child.kill();
             let _ = child.wait();
             return Err(format!("{} did not expose stdout", harness.id()));
@@ -158,6 +171,7 @@ pub(crate) fn delegate(request: ExternalAgentRequest) -> Result<ExternalAgentRes
     let stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
+            process_tree.terminate();
             let _ = child.kill();
             let _ = child.wait();
             return Err(format!("{} did not expose stderr", harness.id()));
@@ -182,14 +196,21 @@ pub(crate) fn delegate(request: ExternalAgentRequest) -> Result<ExternalAgentRes
             &mut stdout_truncated,
             &mut stderr_truncated,
         );
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| format!("could not poll {}: {error}", harness.id()))?
-        {
-            break Some(status);
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {}
+            Err(error) => {
+                process_tree.terminate();
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                return Err(format!("could not poll {}: {error}", harness.id()));
+            }
         }
         if started.elapsed() >= request.timeout {
             timed_out = true;
+            process_tree.terminate();
             let _ = child.kill();
             break child.wait().ok();
         }
@@ -210,6 +231,9 @@ pub(crate) fn delegate(request: ExternalAgentRequest) -> Result<ExternalAgentRes
         }
     };
 
+    // A temporary harness owns its process group. Reap descendants that keep
+    // inherited output pipes open after the direct child exits.
+    process_tree.terminate();
     let _ = stdout_thread.join();
     let _ = stderr_thread.join();
     drain_chunks(
@@ -233,6 +257,124 @@ pub(crate) fn delegate(request: ExternalAgentRequest) -> Result<ExternalAgentRes
         output_truncated: stdout_truncated,
         stderr_truncated,
     })
+}
+
+#[cfg(unix)]
+fn configure_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: setpgid is async-signal-safe and assigns this child a fresh group.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_command: &mut Command) {}
+
+struct ProcessTree {
+    pid: u32,
+    #[cfg(windows)]
+    job: WindowsJob,
+}
+
+impl ProcessTree {
+    fn assign(pid: u32) -> std::io::Result<Self> {
+        Ok(Self {
+            pid,
+            #[cfg(windows)]
+            job: WindowsJob::assign(pid)?,
+        })
+    }
+
+    fn terminate(&self) {
+        #[cfg(unix)]
+        // SAFETY: negative pid targets only the process group created for this run.
+        unsafe {
+            libc::kill(-(self.pid as i32), libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        // SAFETY: the job handle is valid and uniquely owned by this run.
+        unsafe {
+            windows_sys::Win32::System::JobObjects::TerminateJobObject(self.job.handle, 1);
+        }
+    }
+}
+
+#[cfg(windows)]
+struct WindowsJob {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn assign(pid: u32) -> std::io::Result<Self> {
+        use windows_sys::Win32::{
+            Foundation::CloseHandle,
+            System::{
+                JobObjects::{
+                    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                    SetInformationJobObject,
+                },
+                Threading::{
+                    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
+                    PROCESS_TERMINATE,
+                },
+            },
+        };
+        // SAFETY: null security/name creates an unnamed job owned by this process.
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: the information pointer and size match the requested class.
+        let configured = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        };
+        // SAFETY: requested rights are limited to job assignment and lifecycle.
+        let process = unsafe {
+            OpenProcess(
+                PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                pid,
+            )
+        };
+        if configured == 0 || process.is_null() {
+            // SAFETY: non-null job handle is owned here.
+            unsafe { CloseHandle(handle) };
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: both handles are valid and owned for this call.
+        let assigned = unsafe { AssignProcessToJobObject(handle, process) };
+        // SAFETY: the temporary process handle is no longer needed.
+        unsafe { CloseHandle(process) };
+        if assigned == 0 {
+            // SAFETY: assignment failed; closing the job releases its resources.
+            unsafe { CloseHandle(handle) };
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self { handle })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsJob {
+    fn drop(&mut self) {
+        // SAFETY: this type uniquely owns the job handle.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.handle) };
+    }
 }
 
 fn validate_request(request: &ExternalAgentRequest) -> Result<(), String> {
@@ -529,6 +671,31 @@ mod tests {
             .sum::<usize>();
         assert_eq!(received, MAX_STDOUT_BYTES);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn completed_harness_group_closes_pipes_inherited_by_descendants() {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "sleep 30 & exit 0"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_process_group(&mut command);
+        let mut child = command.spawn().unwrap();
+        let process_tree = ProcessTree::assign(child.id()).unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let reader = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let mut stdout = stdout;
+            stdout.read_to_end(&mut bytes).unwrap();
+        });
+
+        let status = child.wait().unwrap();
+        assert!(status.success());
+        process_tree.terminate();
+        reader.join().unwrap();
+    }
+
     #[test]
     fn timeout_must_be_at_least_one_second() {
         let request = ExternalAgentRequest {

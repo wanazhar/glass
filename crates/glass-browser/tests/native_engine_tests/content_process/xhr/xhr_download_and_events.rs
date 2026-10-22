@@ -573,24 +573,48 @@ async fn native_content_process_revalidates_fetch_and_xhr_responses() {
     )
     .unwrap();
     engine.initialize_async().await.unwrap();
-    assert_eq!(
-        engine
-            .evaluate_async(
-                "await (async () => { const first = await fetch('/data').then(response => response.text()); const fresh = await fetch('/data').then(response => response.text()); const reloaded = await fetch('/data', { cache: 'reload' }).then(response => response.text()); const revalidated = await fetch('/data', { cache: 'no-cache' }).then(response => response.text()); const networkOnly = await fetch('/data', { cache: 'no-store' }).then(response => response.text()); const forced = await fetch('/data', { cache: 'force-cache' }).then(response => response.text()); const only = await fetch(new Request('/data', { mode: 'same-origin', cache: 'only-if-cached' })).then(response => response.text()); const xhr = await new Promise((resolve, reject) => { const request = new XMLHttpRequest(); request.onload = () => resolve(request.responseText); request.onerror = reject; request.open('GET', '/data'); request.withCredentials = true; request.send(); }); return [first, fresh, reloaded, revalidated, networkOnly, forced, only, xhr]; })()",
-            )
-            .await
-            .unwrap(),
-        serde_json::json!([
+    // Exercise each cache mode in a separate bounded script turn; the cache and
+    // validator state remain resident in this same document between calls.
+    for (source, expected) in [
+        (
+            "await fetch('/data').then(response => response.text())",
             "version-one",
+        ),
+        (
+            "await fetch('/data').then(response => response.text())",
             "version-one",
+        ),
+        (
+            "await fetch('/data', { cache: 'reload' }).then(response => response.text())",
             "version-two",
+        ),
+        (
+            "await fetch('/data', { cache: 'no-cache' }).then(response => response.text())",
             "version-two",
+        ),
+        (
+            "await fetch('/data', { cache: 'no-store' }).then(response => response.text())",
             "network-only",
+        ),
+        (
+            "await fetch('/data', { cache: 'force-cache' }).then(response => response.text())",
             "version-two",
+        ),
+        (
+            "await fetch(new Request('/data', { mode: 'same-origin', cache: 'only-if-cached' })).then(response => response.text())",
             "version-two",
-            "version-two"
-        ])
-    );
+        ),
+        (
+            "await new Promise((resolve, reject) => { const request = new XMLHttpRequest(); request.onload = () => resolve(request.responseText); request.onerror = reject; request.open('GET', '/data'); request.withCredentials = true; request.send(); })",
+            "version-two",
+        ),
+    ] {
+        assert_eq!(
+            engine.evaluate_async(source).await.unwrap(),
+            serde_json::json!(expected),
+            "evaluation should preserve cache behavior for {source}"
+        );
+    }
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }

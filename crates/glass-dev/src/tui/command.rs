@@ -688,6 +688,7 @@ pub static ROOT_COMMANDS: &[&str] = &[
     "cockpit",
     "daemon",
     "debug",
+    "doctor",
     "editor",
     "experiment",
     "git",
@@ -827,6 +828,9 @@ pub fn execute(state: &mut DevTuiState, input: &str) -> Result<String, String> {
 }
 
 fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String> {
+    let trimmed = input.trim_start();
+    let command_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+    let command_remainder = trimmed[command_end..].trim_start();
     let mut parts = input.split_whitespace();
     let Some(command) = parts.next() else {
         return Ok("Command palette closed".into());
@@ -920,7 +924,7 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
         "replay" => execute_replay(state, parts.collect()),
         "memory" | "knowledge" => execute_memory(state, command, parts.collect()),
         "surface" | "surfaces" | "backend" => execute_data_surface(state, command, parts.collect()),
-        "tool" | "tools" => execute_generic_tool(state, parts.collect()),
+        "tool" | "tools" => execute_generic_tool(state, command_remainder),
         _ if state.ws()?.customization().command(command).is_some() => {
             let result = run_tool(state, &format!("glass.command.{command}"), json!({}), true)?;
             Ok(format!(
@@ -1675,8 +1679,12 @@ fn execute_data_surface(
     execute_named_tool(state, tool, json!({}), false, DevSurface::More)
 }
 
-fn execute_generic_tool(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
-    let name = parts.first().ok_or("tool requires NAME [JSON]")?;
+fn execute_generic_tool(state: &mut DevTuiState, input: &str) -> Result<String, String> {
+    let name_end = input.find(char::is_whitespace).unwrap_or(input.len());
+    let name = input.get(..name_end).ok_or("tool requires NAME [JSON]")?;
+    if name.is_empty() {
+        return Err("tool requires NAME [JSON]".into());
+    }
     let name = if name.starts_with("glass.") {
         (*name).to_string()
     } else {
@@ -1693,12 +1701,11 @@ fn execute_generic_tool(state: &mut DevTuiState, parts: Vec<&str>) -> Result<Str
             .unavailable_reason
             .unwrap_or_else(|| format!("{name} is unavailable")));
     }
-    let arguments = parts
-        .get(1..)
-        .filter(|values| !values.is_empty())
-        .map(|values| values.join(" "))
+    let raw_arguments = input[name_end..].trim();
+    let arguments = (!raw_arguments.is_empty())
+        .then_some(raw_arguments)
         .map(|value| {
-            serde_json::from_str(&value)
+            serde_json::from_str(value)
                 .map_err(|error| format!("tool arguments must be valid JSON: {error}"))
         })
         .transpose()?
@@ -2416,12 +2423,21 @@ fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
             .search(&query, 64)
             .map_err(|error| error.to_string())?;
         state.editor = hits
+            .hits
             .iter()
             .map(|hit| format!("{} · {}", hit.label, hit.detail))
             .collect::<Vec<_>>()
             .join("\n");
         state.surface = DevSurface::Code;
-        return Ok(format!("{} search results", hits.len()));
+        let result_count = hits.hits.len();
+        return Ok(if hits.file_listing.truncated {
+            format!(
+                "{result_count} search results · file listing limited to {} entries",
+                hits.file_listing.limit
+            )
+        } else {
+            format!("{result_count} search results")
+        });
     }
     let (tool, arguments, mutating) = match action {
         "open" => ("glass.editor.open", json!({"path":path}), true),
@@ -2659,19 +2675,26 @@ fn execute_browser(
         }
         match action {
             "start" => {
+                let defaults = &state.browser_start_defaults;
                 let port = parts
                     .get(1)
                     .and_then(|value| value.parse::<u16>().ok())
-                    .unwrap_or(9222);
-                let attach = parts.contains(&"--attach");
-                let incognito = parts.contains(&"--incognito");
-                let headed = !parts.contains(&"--headless");
+                    .unwrap_or(defaults.port);
+                let attach = parts.contains(&"--attach") || defaults.attach;
+                let incognito = parts.contains(&"--incognito") || defaults.incognito;
+                let headed = if parts.contains(&"--headless") {
+                    false
+                } else {
+                    parts.contains(&"--headed") || attach || defaults.headed
+                };
                 let chrome_path = parts
                     .get(2..)
                     .unwrap_or_default()
                     .iter()
                     .copied()
-                    .find(|value| !value.starts_with("--"));
+                    .find(|value| !value.starts_with("--"))
+                    .map(str::to_string)
+                    .or_else(|| defaults.chrome_path.as_ref().map(|path| path.display().to_string()));
                 (
                     "glass.browser.start",
                     json!({
@@ -2680,7 +2703,10 @@ fn execute_browser(
                         "incognito": incognito,
                         "headed": attach && headed,
                         "chromePath": if attach { chrome_path } else { None },
-                        "modalDialogs": !attach
+                        "modalDialogs": !attach && defaults.modal_dialogs,
+                        "interaction": defaults.interaction,
+                        "audit": defaults.audit,
+                        "viewport": defaults.viewport
                     }),
                     true,
                 )
@@ -3276,6 +3302,10 @@ mod tests {
         let _ = fs::remove_dir_all(native_root);
 
         let (mut attached, attached_root) = test_state("attached-browser-start");
+        attached.browser_start_defaults.interaction =
+            glass_browser::browser::session::InteractionMode::Fast;
+        attached.browser_start_defaults.audit = true;
+        attached.browser_start_defaults.viewport = Some((1440, 900));
         execute(&mut attached, "browser start --attach").expect("queue Chromium attach");
         let attached_start = attached
             .pending_confirmation
@@ -3284,6 +3314,12 @@ mod tests {
         assert_eq!(attached_start.call.arguments["attach"], true);
         assert_eq!(attached_start.call.arguments["modalDialogs"], false);
         assert_eq!(attached_start.call.arguments["headed"], true);
+        assert_eq!(attached_start.call.arguments["interaction"], "fast");
+        assert_eq!(attached_start.call.arguments["audit"], true);
+        assert_eq!(
+            attached_start.call.arguments["viewport"],
+            serde_json::json!([1440, 900])
+        );
         let _ = fs::remove_dir_all(attached_root);
     }
 
@@ -3394,6 +3430,30 @@ mod tests {
         assert_eq!(palette_order(DevSurface::Terminal)[0], "process");
         assert_eq!(palette_order(DevSurface::Code)[0], "editor");
         assert_eq!(palette_order(DevSurface::Tasks)[0], "task");
+    }
+
+    #[test]
+    fn more_routes_and_palette_use_the_same_action_catalog() {
+        let actions = surface_actions(DevSurface::More);
+        let roots = palette_order(DevSurface::More);
+        assert_eq!(actions.len(), 8);
+        for action in actions {
+            let root = action.command.split_whitespace().next().unwrap();
+            assert!(
+                roots.contains(&root),
+                "palette omits More action {action:?}"
+            );
+        }
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.label == "Cockpit status")
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.label == "Start detected suite")
+        );
     }
     #[test]
     fn palette_order_scopes_routes_to_current_surface_and_shared_roots() {
@@ -3847,5 +3907,25 @@ mod tests {
             assert_eq!(call.name, expected_tool, "route {input}");
             let _ = fs::remove_dir_all(root);
         }
+    }
+
+    #[test]
+    fn generic_tool_preserves_json_whitespace_and_string_content() {
+        let (mut state, root) = test_state("generic-json-whitespace");
+        execute(
+            &mut state,
+            "tool glass.file.write {\"path\":\"src/a b.txt\",\"content\":\"first line\\nsecond  line\"}",
+        )
+        .expect("parse complete JSON remainder");
+        let confirmation = state
+            .pending_confirmation
+            .take()
+            .expect("write requires confirmation");
+        assert_eq!(confirmation.call.arguments["path"], "src/a b.txt");
+        assert_eq!(
+            confirmation.call.arguments["content"],
+            "first line\nsecond  line"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

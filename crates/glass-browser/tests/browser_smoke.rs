@@ -179,20 +179,31 @@ async fn mcp_enforces_initialization_lifecycle_and_notification_silence() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let responses = mcp_responses(
-        child,
-        &[
-            json!({"jsonrpc":"2.0","method":"ping"}),
-            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}),
-            json!({"jsonrpc":"1.0","method":"notifications/initialized"}),
-            json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
-            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-            json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
-            json!({"jsonrpc":"2.0","id":null,"method":"ping"}),
-            json!({"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}),
-        ],
-    )
-    .await;
+    let mut child = child;
+    let requests = [
+        json!({"jsonrpc":"2.0","method":"ping"}),
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}),
+        json!({"jsonrpc":"1.0","method":"notifications/initialized"}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
+        json!({"jsonrpc":"2.0","id":null,"method":"ping"}),
+        json!({"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}),
+    ];
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    for request in requests {
+        write_mcp_line(&mut stdin, request).await;
+    }
+    // Keep stdin open until every response arrives. Closing it immediately
+    // cancels outstanding request tasks by design, making this lifecycle test
+    // race with the server's EOF cancellation behavior.
+    let mut responses = Vec::with_capacity(5);
+    for _ in 0..5 {
+        responses.push(read_mcp_line(&mut stdout).await);
+    }
+    drop(stdin);
+    assert!(child.wait().await.unwrap().success());
     assert_eq!(
         responses.len(),
         5,
@@ -206,12 +217,19 @@ async fn mcp_enforces_initialization_lifecycle_and_notification_silence() {
     };
     assert_eq!(response(1)["result"]["serverInfo"]["name"], "glass");
     assert_eq!(response(2)["error"]["code"], -32002);
-    assert!(response(3)["result"]["tools"].is_array());
+    assert!(
+        response(3)["result"]["tools"].is_array(),
+        "tools/list response missing tools: {responses:#?}"
+    );
     let null_id = responses
         .iter()
         .find(|response| response["id"].is_null())
         .unwrap();
-    assert_eq!(null_id["result"], json!({}));
+    assert_eq!(
+        null_id["result"],
+        json!({}),
+        "unexpected response selected for null ID: {responses:#?}"
+    );
     assert_eq!(response(4)["error"]["code"], -32600);
 }
 

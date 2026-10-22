@@ -321,13 +321,23 @@ impl CdpBrowserSession {
         ranking: CompactRanking,
     ) -> BrowserResult<CompactPageContext> {
         let revision = self.page_revision.load(Ordering::Relaxed);
+        let (target_id, frame_id) = self.route_identity().await?;
         // Never use cache when form values are requested (cache doesn't store them)
         if use_cache && !include_form_values {
             let cached_context = {
                 let cache = self.observation_cache.lock().await;
                 cache
                     .as_ref()
-                    .filter(|cached| cached.revision == revision)
+                    .filter(|cached| {
+                        cached_observation_matches_route(
+                            cached.revision,
+                            &cached.context.page.target_id,
+                            &cached.context.page.frame_id,
+                            revision,
+                            &target_id,
+                            &frame_id,
+                        )
+                    })
                     .map(|cached| cached.context.clone())
             };
             if let Some(context) = cached_context {
@@ -335,7 +345,6 @@ impl CdpBrowserSession {
             }
         }
 
-        let (target_id, frame_id) = self.route_identity().await?;
         let mut context_id = self.observation_context_id(&target_id, &frame_id).await?;
         let mut collected = None;
         let mut attempt = 1;
@@ -824,6 +833,17 @@ impl CdpBrowserSession {
     }
 }
 
+fn cached_observation_matches_route(
+    cached_revision: u64,
+    cached_target_id: &str,
+    cached_frame_id: &str,
+    revision: u64,
+    target_id: &str,
+    frame_id: &str,
+) -> bool {
+    cached_revision == revision && cached_target_id == target_id && cached_frame_id == frame_id
+}
+
 fn sensitive_form_field(input_type: &str, autocomplete: &str, name: &str, id: &str) -> bool {
     let autocomplete = autocomplete.to_ascii_lowercase();
     let identity = [input_type, autocomplete.as_str(), name, id]
@@ -866,4 +886,25 @@ fn is_stale_observation_context(error: &(dyn std::error::Error + 'static)) -> bo
             error.message.contains("Cannot find context")
                 || error.message.contains("Execution context was destroyed")
         })
+}
+
+#[cfg(test)]
+mod cache_route_tests {
+    use super::cached_observation_matches_route;
+
+    #[test]
+    fn observation_cache_requires_matching_revision_target_and_frame() {
+        assert!(cached_observation_matches_route(
+            7, "target-a", "frame-a", 7, "target-a", "frame-a"
+        ));
+        assert!(!cached_observation_matches_route(
+            7, "target-a", "frame-a", 7, "target-b", "frame-a"
+        ));
+        assert!(!cached_observation_matches_route(
+            7, "target-a", "frame-a", 7, "target-a", "frame-b"
+        ));
+        assert!(!cached_observation_matches_route(
+            7, "target-a", "frame-a", 8, "target-a", "frame-a"
+        ));
+    }
 }

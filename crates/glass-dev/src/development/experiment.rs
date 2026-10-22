@@ -64,8 +64,7 @@ impl ExperimentManager {
         let root = repository
             .parent()
             .unwrap_or(&repository)
-            .join(".glass-worktrees")
-            .join(repository_name);
+            .join(format!(".glass-{repository_name}-experiments"));
         Ok(Self { repository, root })
     }
 
@@ -127,7 +126,11 @@ impl ExperimentManager {
                 experiment.name
             )));
         }
-        let mut files_changed = 0;
+        let files_changed = crate::git::GitService::open(&experiment.worktree)
+            .and_then(|git| git.status())
+            .map_err(|error| DevelopmentError::Process(error.to_string()))?
+            .entries
+            .len();
         let mut insertions = 0_u64;
         let mut deletions = 0_u64;
         for line in String::from_utf8_lossy(&output.stdout).lines().take(4096) {
@@ -137,7 +140,6 @@ impl ExperimentManager {
             if fields.next().is_none() {
                 continue;
             }
-            files_changed += 1;
             insertions = insertions.saturating_add(added.parse().unwrap_or(0));
             deletions = deletions.saturating_add(removed.parse().unwrap_or(0));
         }
@@ -223,11 +225,22 @@ mod tests {
         );
         let manager = ExperimentManager::new(&root).unwrap();
         let experiment = manager.create("candidate_a", 3101).unwrap();
+        assert_eq!(
+            experiment.worktree,
+            root.parent()
+                .unwrap()
+                .join(format!(
+                    ".glass-{}-experiments",
+                    root.file_name().unwrap().to_string_lossy()
+                ))
+                .join("candidate_a")
+        );
         fs::write(experiment.worktree.join("app.txt"), "base\nchange\n").unwrap();
+        fs::write(experiment.worktree.join("new.txt"), "untracked\n").unwrap();
         let evidence = manager
             .evidence(&experiment, Some("pass".into()), Some(0), None)
             .unwrap();
-        assert_eq!(evidence.files_changed, 1);
+        assert_eq!(evidence.files_changed, 2);
         assert_eq!(evidence.insertions, 1);
         assert_eq!(experiment.browser_url, "http://localhost:3101");
         let _ = Command::new("git")

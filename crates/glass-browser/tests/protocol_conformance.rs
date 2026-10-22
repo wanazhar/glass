@@ -60,7 +60,6 @@ fn cli_and_mcp_advertise_the_same_capability_inventory() {
         })
     )
     .unwrap();
-    drop(stdin);
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
@@ -106,7 +105,9 @@ fn cli_and_mcp_advertise_the_same_capability_inventory() {
         .expect("client conformance fixture should be valid JSON");
     let mut tool_names = tools_response["result"]["tools"]
         .as_array()
-        .unwrap()
+        .unwrap_or_else(|| {
+            panic!("MCP tools/list returned an unexpected response: {tools_response}")
+        })
         .iter()
         .map(|tool| tool["name"].as_str().unwrap().to_string())
         .collect::<Vec<_>>();
@@ -120,6 +121,7 @@ fn cli_and_mcp_advertise_the_same_capability_inventory() {
             .map(|name| name.as_str().unwrap().to_string())
             .collect::<Vec<_>>()
     );
+    drop(stdin);
     let _ = child.kill();
     let _ = child.wait();
 }

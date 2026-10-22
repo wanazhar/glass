@@ -7,7 +7,7 @@ use super::editor::{
     split_ghost_word, textobject_from_key, textobject_selection,
 };
 use super::parse::IncrementalSyntax;
-use crate::browser::BrowserService;
+use crate::browser::{BrowserService, BrowserStartConfig};
 use crate::development::TextSelection;
 use crate::{ExperimentComparison, SharedDevelopmentWorkspace};
 use glass_browser::browser::policy::BrowserPolicy;
@@ -478,6 +478,8 @@ enum PiSlashRoute {
 
 const PI_COMMAND_INPUT_LIMIT: usize = 4 * 1024;
 const PI_COMMAND_INPUT_LIMIT_STATUS: &str = "Pi command input limit reached (4 KiB)";
+const PALETTE_INPUT_LIMIT: usize = 8 * 1024;
+const COMPOSER_INPUT_LIMIT: usize = 16 * 1024;
 
 fn resolve_pi_slash_route(command: &str) -> PiSlashRoute {
     match command {
@@ -497,6 +499,8 @@ pub struct DevTuiState {
     pub workspace: SharedDevelopmentWorkspace,
     /// Cloned directly so modal status/control never needs the workspace lock.
     pub(crate) browser_service: BrowserService,
+    /// Defaults captured from global CLI browser options for later resident starts.
+    pub(crate) browser_start_defaults: BrowserStartConfig,
     pub surface: DevSurface,
     pub layout: TuiLayout,
     /// Process-scoped unrestricted development mode from `glass --yolo`.
@@ -643,6 +647,7 @@ pub struct DevTuiState {
     pub processes: String,
     pub process_entries: Vec<ProcessRow>,
     pub selected_process: usize,
+    selected_process_identity: Option<String>,
     pub process_logs: String,
     pub process_logs_requested: bool,
     pub git: String,
@@ -650,6 +655,7 @@ pub struct DevTuiState {
     pub github: crate::github::GitHubStatus,
     pub github_review: String,
     pub selected_git_file: usize,
+    selected_git_identity: Option<String>,
     pub git_diff_path: Option<String>,
     pub git_diff: String,
     pub git_diff_open: bool,
@@ -659,6 +665,7 @@ pub struct DevTuiState {
     pub debugger: String,
     pub debug_sessions: Vec<DebugSessionRow>,
     pub selected_debug_session: usize,
+    selected_debug_identity: Option<String>,
     pub debug_threads: Vec<DebugThreadRow>,
     pub selected_debug_thread: usize,
     pub debug_frames: Vec<DebugFrameRow>,
@@ -687,6 +694,8 @@ pub struct DevTuiState {
     pub browser_visual_live: bool,
     pending_browser_visual_request: Option<BrowserVisualRequest>,
     pub browser_observe_pending: bool,
+    browser_observe_retry_after: Option<std::time::Instant>,
+    browser_observe_retry_count: u8,
     pub browser_ansi: AnsiCanvas,
     pub browser_pane: Option<AnsiPane>,
     pub workflow: String,
@@ -740,6 +749,11 @@ impl DevTuiState {
             _ => ProductMode::Build,
         }
     }
+
+    pub(crate) fn set_browser_start_defaults(&mut self, defaults: BrowserStartConfig) {
+        self.browser_start_defaults = defaults;
+    }
+
     #[cfg(test)]
     pub(crate) fn open(
         root: impl AsRef<Path>,
@@ -821,6 +835,10 @@ impl DevTuiState {
         let mut state = Self {
             workspace,
             browser_service,
+            browser_start_defaults: BrowserStartConfig {
+                modal_dialogs: true,
+                ..BrowserStartConfig::default()
+            },
             surface: if trust_prompt {
                 DevSurface::Trust
             } else {
@@ -954,6 +972,7 @@ impl DevTuiState {
             processes: String::new(),
             process_entries: Vec::new(),
             selected_process: 0,
+            selected_process_identity: None,
             process_logs: String::new(),
             process_logs_requested: false,
             git: String::new(),
@@ -961,6 +980,7 @@ impl DevTuiState {
             github: crate::github::GitHubStatus::default(),
             github_review: "No GitHub review yet".into(),
             selected_git_file: 0,
+            selected_git_identity: None,
             git_diff_path: None,
             git_diff: String::new(),
             git_diff_open: false,
@@ -970,6 +990,7 @@ impl DevTuiState {
             debugger: String::new(),
             debug_sessions: Vec::new(),
             selected_debug_session: 0,
+            selected_debug_identity: None,
             debug_threads: Vec::new(),
             selected_debug_thread: 0,
             debug_frames: Vec::new(),
@@ -1005,6 +1026,8 @@ impl DevTuiState {
             browser_visual_live: false,
             pending_browser_visual_request: None,
             browser_observe_pending: false,
+            browser_observe_retry_after: None,
+            browser_observe_retry_count: 0,
             browser_ansi: AnsiCanvas::default(),
             browser_pane: None,
             workflow: "No workflow evidence yet".into(),
@@ -1280,7 +1303,15 @@ impl DevTuiState {
     }
 
     pub fn scroll_help(&mut self, delta: i32) {
-        self.help_scroll = (self.help_scroll as i32 + delta).max(0) as u16;
+        let visible_lines = self.terminal_height.saturating_sub(4) as usize;
+        let max_scroll = super::bindings::curriculum_help(self.surface)
+            .lines()
+            .count()
+            .saturating_sub(visible_lines)
+            .min(u16::MAX as usize) as i32;
+        self.help_scroll = i32::from(self.help_scroll)
+            .saturating_add(delta)
+            .clamp(0, max_scroll) as u16;
     }
 
     pub fn open_menu(&mut self) {
@@ -2161,8 +2192,22 @@ impl DevTuiState {
     }
 
     pub fn insert_palette_text(&mut self, text: &str) {
-        for character in text.replace(['\r', '\n'], " ").chars().take(8_192) {
+        let normalized = text.replace(['\r', '\n'], " ");
+        let remaining = PALETTE_INPUT_LIMIT.saturating_sub(self.command_input.len());
+        let mut accepted = String::new();
+        let mut truncated = false;
+        for character in normalized.chars() {
+            if accepted.len() + character.len_utf8() > remaining {
+                truncated = true;
+                break;
+            }
+            accepted.push(character);
+        }
+        for character in accepted.chars() {
             self.insert_palette_char(character);
+        }
+        if truncated {
+            self.status = "Palette input limit reached (8 KiB)".into();
         }
     }
 
@@ -2302,6 +2347,13 @@ impl DevTuiState {
             || self.running_tool_job.is_some()
             || self.queued_tool_request.is_some()
             || self.agent_send_job.is_some()
+    }
+
+    fn blocking_background_tool_running(&self) -> bool {
+        self.pending_confirmation.is_some()
+            || self.pending_agent_approval.is_some()
+            || self.running_tool_job.is_some()
+            || self.queued_tool_request.is_some()
     }
 
     fn debug_frame_preview_view_is_current(
@@ -2965,7 +3017,7 @@ impl DevTuiState {
         self.pending_confirmation.is_some()
             || self.pending_agent_approval.is_some()
             || self.queued_tool_request.is_some()
-            || (self.running_tool_job.is_some() && self.agent_send_job.is_none())
+            || self.running_tool_job.is_some()
     }
 
     fn reconcile_pending_chat(&mut self) {
@@ -3865,9 +3917,21 @@ impl DevTuiState {
     }
 
     pub fn insert_composer_text(&mut self, text: &str) {
-        for character in text.chars().take(16_384) {
-            self.composer_input.insert(self.composer_cursor, character);
-            self.composer_cursor += character.len_utf8();
+        let remaining = COMPOSER_INPUT_LIMIT.saturating_sub(self.composer_input.len());
+        let mut accepted = String::new();
+        let mut truncated = false;
+        for character in text.chars() {
+            if accepted.len() + character.len_utf8() > remaining {
+                truncated = true;
+                break;
+            }
+            accepted.push(character);
+        }
+        self.composer_input
+            .insert_str(self.composer_cursor, &accepted);
+        self.composer_cursor += accepted.len();
+        if truncated {
+            self.status = "Composer input limit reached (16 KiB)".into();
         }
     }
 
@@ -4340,8 +4404,12 @@ impl DevTuiState {
 
     pub fn apply_tool_job_result(&mut self, result: super::snapshot::ToolJobResult) {
         let mut publish_preview_status = true;
-        if result.tool == "glass.agent.send" && self.agent_send_job == Some(result.id) {
-            self.agent_send_job = None;
+        if result.tool == "glass.agent.send"
+            && self
+                .pending_chat_messages
+                .iter()
+                .any(|message| message.job_id == Some(result.id))
+        {
             match result.result {
                 Ok(value) => {
                     let agent = value
@@ -4396,6 +4464,12 @@ impl DevTuiState {
                     self.status = format!("Could not send message · edit and retry: {error}");
                 }
             }
+            self.agent_send_job = self
+                .pending_chat_messages
+                .iter()
+                .rev()
+                .find(|message| message.state == ChatMessageState::Sending)
+                .and_then(|message| message.job_id);
             return;
         }
 
@@ -4496,9 +4570,14 @@ impl DevTuiState {
                 } else if result.tool.starts_with("glass.browser") {
                     self.apply_browser_result(&result.tool, &value);
                     self.browser_detail = super::projection::browser_result(&result.tool, &value);
+                    if result.tool == "glass.browser.observe" {
+                        self.browser_observe_retry_count = 0;
+                        self.browser_observe_retry_after = None;
+                    }
                     if result.tool == "glass.browser.act" || result.tool == "glass.browser.navigate"
                     {
                         self.browser_observe_pending = true;
+                        self.browser_observe_retry_after = None;
                         self.watch_agent_on_app(&result.tool, &value);
                     }
                 } else if result.tool == "glass.process.logs" {
@@ -4715,8 +4794,31 @@ impl DevTuiState {
                     self.last_proof_ok = Some(false);
                     self.last_verify = Some(evidence_card("live page", 0, None, &error, false));
                 }
-                let recovery_offered = result.tool.starts_with("glass.browser")
+                if result.tool == "glass.browser.observe" {
+                    self.browser_observe_retry_count =
+                        self.browser_observe_retry_count.saturating_add(1);
+                    if self.browser_observe_retry_count <= 3 {
+                        self.browser_observe_pending = true;
+                        self.browser_observe_retry_after =
+                            Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+                        self.status = format!(
+                            "Browser evidence refresh failed ({}/3); retrying: {error}",
+                            self.browser_observe_retry_count
+                        );
+                    } else {
+                        self.browser_observe_pending = false;
+                        self.browser_observe_retry_after = None;
+                        self.browser_observe_retry_count = 0;
+                        self.status = format!(
+                            "Browser evidence may be stale · refresh failed after 3 attempts: {error}"
+                        );
+                    }
+                }
+                let mut recovery_offered = result.tool.starts_with("glass.browser")
                     && self.note_browser_failure(&result.tool, &error);
+                if result.tool == "glass.browser.observe" {
+                    recovery_offered = true;
+                }
                 if result.tool == "glass.git.diff" {
                     self.git_diff = format!("Git diff unavailable: {error}");
                     self.git_diff_open = true;
@@ -4844,7 +4946,7 @@ impl DevTuiState {
                     return;
                 }
                 'o' | 'O' => Some(crate::LocalTrustDecision::OpenUntrusted),
-                '1' => Some(crate::LocalTrustDecision::TrustOnce),
+                '1' | 't' => Some(crate::LocalTrustDecision::TrustOnce),
                 'T' => Some(crate::LocalTrustDecision::TrustProject),
                 _ => None,
             };
@@ -5052,7 +5154,7 @@ impl DevTuiState {
         if self.pending_open_file.is_none() {
             return;
         }
-        if self.surface != DevSurface::Code || self.code_edit_mode {
+        if self.code_edit_mode {
             return;
         }
         if self.files.is_empty() {
@@ -5111,7 +5213,11 @@ impl DevTuiState {
     }
 
     pub fn scroll_end(&mut self) {
-        let end = self.surface_content_height().saturating_sub(1);
+        let end = if self.surface == DevSurface::Agent {
+            super::render::agent_conversation_scroll_end(self)
+        } else {
+            self.surface_content_height().saturating_sub(1)
+        };
         self.surface_scroll.insert(self.surface, end);
     }
 
@@ -5835,40 +5941,49 @@ impl DevTuiState {
         }
     }
 
-    pub const MORE_ROUTES: [&'static str; 5] = [
-        "doctor",
-        "cockpit start",
-        "kernel start",
-        "experiment",
-        "harness list",
-    ];
+    pub fn more_route_actions() -> &'static [command::SurfaceAction] {
+        command::surface_actions(DevSurface::More)
+    }
 
     pub fn move_more_selection(&mut self, delta: i32) {
-        let last = Self::MORE_ROUTES.len().saturating_sub(1) as i32;
+        let actions = Self::more_route_actions();
+        let last = actions.len().saturating_sub(1) as i32;
         self.selected_more = (self.selected_more as i32 + delta).clamp(0, last) as usize;
         self.status = format!(
             "Route {}/{} · {} · Enter runs",
             self.selected_more + 1,
-            Self::MORE_ROUTES.len(),
-            Self::MORE_ROUTES[self.selected_more]
+            actions.len(),
+            actions[self.selected_more].label
         );
     }
 
     pub fn select_more(&mut self, index: usize) {
-        self.selected_more = index.min(Self::MORE_ROUTES.len().saturating_sub(1));
+        let actions = Self::more_route_actions();
+        self.selected_more = index.min(actions.len().saturating_sub(1));
         self.status = format!(
             "Route {}/{} · {} · Enter runs",
             self.selected_more + 1,
-            Self::MORE_ROUTES.len(),
-            Self::MORE_ROUTES[self.selected_more]
+            actions.len(),
+            actions[self.selected_more].label
         );
     }
 
     pub fn activate_more_selection(&mut self) {
-        let command = Self::MORE_ROUTES[self.selected_more.min(Self::MORE_ROUTES.len() - 1)];
-        if command == "kernel start" {
-            self.open_palette_with("kernel start ");
-            self.status = "kernel start · NAME KIND, then Enter".into();
+        let action = Self::more_route_actions()
+            [self.selected_more.min(Self::more_route_actions().len() - 1)];
+        let command = action.command;
+        if let Some((_, placeholder)) = command.split_once(' ')
+            && placeholder
+                .split_whitespace()
+                .any(|word| word.chars().all(|character| character.is_ascii_uppercase()))
+        {
+            let prefill = command
+                .split_whitespace()
+                .take_while(|word| !word.chars().all(|character| character.is_ascii_uppercase()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            self.open_palette_with(&format!("{prefill} "));
+            self.status = format!("{} · complete the highlighted arguments", action.label);
             return;
         }
         match super::command::execute(self, command) {
@@ -6402,13 +6517,12 @@ impl DevTuiState {
         if self.focused_editor_path.is_empty() {
             return;
         }
-        let viewport_height = usize::from(self.terminal_height.saturating_sub(8).max(1));
+        let area = ratatui::layout::Rect::new(0, 0, self.terminal_width, self.terminal_height);
+        let rows = super::render::fullscreen_editor_rows(self, area);
+        let viewport_height = usize::from(rows[1].height.saturating_sub(2).max(1));
+        let viewport_width = usize::from(rows[1].width.saturating_sub(2).max(1));
         if self.editor_soft_wrap {
-            let marks = self
-                .editor_gutter_marks()
-                .into_iter()
-                .map(|(line, mark)| (line, mark.glyph()))
-                .collect::<Vec<_>>();
+            let marks = super::file_view::coalesce_editor_marks(self.editor_gutter_marks());
             let notes = self.editor_source_notes();
             let decorations = super::file_view::EditorDecorations {
                 marks: &marks,
@@ -6421,7 +6535,7 @@ impl DevTuiState {
                 self.focused_editor_line,
                 self.focused_editor_column,
                 self.focused_editor_selection.as_ref(),
-                self.terminal_width.saturating_sub(4).max(1),
+                rows[1].width.saturating_sub(2).max(1),
                 &decorations,
             );
             let Some(cursor) = wrapped.cursor else {
@@ -6442,13 +6556,12 @@ impl DevTuiState {
         } else if cursor_line >= self.editor_scroll_line + viewport_height {
             self.editor_scroll_line = cursor_line + 1 - viewport_height;
         }
-        let gutter_width = lines.len().max(1).to_string().len().max(3);
-        let viewport_width = usize::from(
-            self.terminal_width
-                .saturating_sub((gutter_width + 8).min(u16::MAX as usize) as u16)
-                .max(1),
-        );
-        let cursor_column = self.focused_editor_column.saturating_sub(1) as usize;
+        let marks = super::file_view::coalesce_editor_marks(self.editor_gutter_marks());
+        let gutter_width = super::file_view::editor_gutter_prefix_width(lines.len(), &marks);
+        let cursor_index = self.focused_editor_column.saturating_sub(1) as usize;
+        let source_line = lines.get(cursor_line).copied().unwrap_or_default();
+        let prefix = source_line.chars().take(cursor_index).collect::<String>();
+        let cursor_column = gutter_width + ratatui::text::Span::raw(prefix).width();
         if cursor_column < self.editor_scroll_column {
             self.editor_scroll_column = cursor_column;
         } else if cursor_column >= self.editor_scroll_column + viewport_width {
@@ -8412,6 +8525,7 @@ impl DevTuiState {
 
     /// Apply one background snapshot without touching UI-only fields.
     pub fn apply_snapshot(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
+        self.remember_row_selection_identity();
         let was_waiting_for_snapshot = !self.snapshot_ready;
         let mut browser_recovery_status = None;
         self.snapshot_ready = true;
@@ -8510,12 +8624,21 @@ impl DevTuiState {
         self.processes = snapshot.processes.clone();
         self.process_entries = snapshot.process_entries.clone();
         if self.process_entries.is_empty() {
-            self.selected_process = 0;
             self.process_urls.clear();
         } else {
             self.selected_process = self
-                .selected_process
-                .min(self.process_entries.len().saturating_sub(1));
+                .selected_process_identity
+                .as_deref()
+                .and_then(|name| {
+                    self.process_entries
+                        .iter()
+                        .position(|entry| entry.name == name)
+                })
+                .unwrap_or_else(|| self.selected_process.min(self.process_entries.len() - 1));
+            self.selected_process_identity = self
+                .process_entries
+                .get(self.selected_process)
+                .map(|entry| entry.name.clone());
             self.process_urls = self
                 .process_entries
                 .iter()
@@ -8526,6 +8649,17 @@ impl DevTuiState {
         }
         self.git = snapshot.git.clone();
         self.git_entries = snapshot.git_entries.clone();
+        if !self.git_entries.is_empty() {
+            self.selected_git_file = self
+                .selected_git_identity
+                .as_deref()
+                .and_then(|path| self.git_entries.iter().position(|entry| entry.path == path))
+                .unwrap_or_else(|| self.selected_git_file.min(self.git_entries.len() - 1));
+            self.selected_git_identity = self
+                .git_entries
+                .get(self.selected_git_file)
+                .map(|entry| entry.path.clone());
+        }
         self.git_branch = snapshot.git_branch.clone();
         self.git_dirty = snapshot.git_dirty;
         self.git_ahead = snapshot.git_ahead;
@@ -8533,9 +8667,7 @@ impl DevTuiState {
         self.git_conflicts = snapshot.git_conflicts.clone();
         self.github = snapshot.github.clone();
         self.github_review = snapshot.github_review.clone();
-        if self.git_entries.is_empty() {
-            self.selected_git_file = 0;
-        } else {
+        if !self.git_entries.is_empty() {
             self.selected_git_file = self
                 .selected_git_file
                 .min(self.git_entries.len().saturating_sub(1));
@@ -8554,7 +8686,6 @@ impl DevTuiState {
             .map(|session| session.name.clone());
         self.debug_sessions = snapshot.debug_sessions.clone();
         if self.debug_sessions.is_empty() {
-            self.selected_debug_session = 0;
             self.debug_threads.clear();
             self.debug_frames.clear();
             self.debug_scopes.clear();
@@ -8567,8 +8698,21 @@ impl DevTuiState {
             self.debug_variables_notice = None;
         } else {
             self.selected_debug_session = self
-                .selected_debug_session
-                .min(self.debug_sessions.len().saturating_sub(1));
+                .selected_debug_identity
+                .as_deref()
+                .and_then(|name| {
+                    self.debug_sessions
+                        .iter()
+                        .position(|entry| entry.name == name)
+                })
+                .unwrap_or_else(|| {
+                    self.selected_debug_session
+                        .min(self.debug_sessions.len() - 1)
+                });
+            self.selected_debug_identity = self
+                .debug_sessions
+                .get(self.selected_debug_session)
+                .map(|entry| entry.name.clone());
             let current = self
                 .selected_debug_session()
                 .map(|session| session.name.clone());
@@ -8588,6 +8732,7 @@ impl DevTuiState {
         self.reconcile_stale_debug_previews();
         self.replay = snapshot.replay.clone();
         self.workflow = snapshot.workflow.clone();
+        self.refresh_workflow_recording_status();
         self.workspace_status = snapshot.workspace_status.clone();
         self.browser = snapshot.browser.clone();
         self.snapshot_root = snapshot.root.clone();
@@ -8604,11 +8749,7 @@ impl DevTuiState {
                 self.selected_file = self.selected_file.min(self.files.len() - 1);
             }
         }
-        if self.surface == DevSurface::Code
-            && !self.code_edit_mode
-            && self.pending_open_file.is_some()
-            && !self.files.is_empty()
-        {
+        if !self.code_edit_mode && self.pending_open_file.is_some() && !self.files.is_empty() {
             self.flush_pending_open_file();
         }
         if was_waiting_for_snapshot && self.browser_recovery.is_none() {
@@ -8619,6 +8760,18 @@ impl DevTuiState {
         }
     }
 
+    fn remember_row_selection_identity(&mut self) {
+        if let Some(entry) = self.process_entries.get(self.selected_process) {
+            self.selected_process_identity = Some(entry.name.clone());
+        }
+        if let Some(entry) = self.git_entries.get(self.selected_git_file) {
+            self.selected_git_identity = Some(entry.path.clone());
+        }
+        if let Some(entry) = self.debug_sessions.get(self.selected_debug_session) {
+            self.selected_debug_identity = Some(entry.name.clone());
+        }
+    }
+
     pub fn set_terminal_size(&mut self, width: u16, height: u16) {
         self.terminal_width = width;
         self.terminal_height = height;
@@ -8626,6 +8779,7 @@ impl DevTuiState {
     }
 
     pub fn refresh(&mut self) {
+        self.remember_row_selection_identity();
         self.harnesses = crate::harness::summary();
         let Ok(mut workspace) = self.workspace.try_lock() else {
             self.status = "Workspace lock failed".into();
@@ -8772,9 +8926,20 @@ impl DevTuiState {
                 self.selected_process = if self.process_entries.is_empty() {
                     0
                 } else {
-                    self.selected_process
-                        .min(self.process_entries.len().saturating_sub(1))
+                    self.selected_process_identity
+                        .as_deref()
+                        .and_then(|name| {
+                            self.process_entries
+                                .iter()
+                                .position(|entry| entry.name == name)
+                        })
+                        .unwrap_or_else(|| {
+                            self.selected_process.min(self.process_entries.len() - 1)
+                        })
                 };
+                if let Some(entry) = self.process_entries.get(self.selected_process) {
+                    self.selected_process_identity = Some(entry.name.clone());
+                }
                 self.processes = if items.is_empty() {
                     "No managed terminals. Start the detected development command from More.".into()
                 } else {
@@ -8941,8 +9106,14 @@ impl DevTuiState {
             self.selected_git_file = 0;
         } else {
             self.selected_git_file = self
-                .selected_git_file
-                .min(self.git_entries.len().saturating_sub(1));
+                .selected_git_identity
+                .as_deref()
+                .and_then(|path| self.git_entries.iter().position(|entry| entry.path == path))
+                .unwrap_or_else(|| self.selected_git_file.min(self.git_entries.len() - 1));
+            self.selected_git_identity = self
+                .git_entries
+                .get(self.selected_git_file)
+                .map(|entry| entry.path.clone());
         }
         let _ = workspace.tests_mut().poll();
         let test_runs = workspace
@@ -9027,8 +9198,21 @@ impl DevTuiState {
                         })
                         .collect();
                     self.selected_debug_session = self
-                        .selected_debug_session
-                        .min(self.debug_sessions.len().saturating_sub(1));
+                        .selected_debug_identity
+                        .as_deref()
+                        .and_then(|name| {
+                            self.debug_sessions
+                                .iter()
+                                .position(|entry| entry.name == name)
+                        })
+                        .unwrap_or_else(|| {
+                            self.selected_debug_session
+                                .min(self.debug_sessions.len() - 1)
+                        });
+                    self.selected_debug_identity = self
+                        .debug_sessions
+                        .get(self.selected_debug_session)
+                        .map(|entry| entry.name.clone());
                     snapshots
                     .iter()
                     .map(|(name, snapshot)| {
@@ -9733,20 +9917,49 @@ impl DevTuiState {
     }
 
     pub fn insert_browser_target_query(&mut self, character: char) {
+        let selected_id = self.selected_browser_target_id();
         if self.browser_target_query.len() < 512 {
             self.browser_target_query.push(character);
-            self.browser_target_selection = 0;
+            self.preserve_browser_target_selection(selected_id.as_deref());
         }
     }
 
     pub fn browser_target_backspace(&mut self) {
+        let selected_id = self.selected_browser_target_id();
         self.browser_target_query.pop();
-        self.browser_target_selection = 0;
+        self.preserve_browser_target_selection(selected_id.as_deref());
     }
 
     pub fn clear_browser_target_query(&mut self) {
+        let selected_id = self.selected_browser_target_id();
         self.browser_target_query.clear();
-        self.browser_target_selection = 0;
+        self.preserve_browser_target_selection(selected_id.as_deref());
+    }
+
+    fn selected_browser_target_id(&self) -> Option<String> {
+        let target_index = *self
+            .browser_target_matches()
+            .get(self.browser_target_selection)?;
+        self.browser_workspace
+            .state()
+            .targets
+            .get(target_index)
+            .map(|target| target.id.clone())
+    }
+
+    fn preserve_browser_target_selection(&mut self, selected_id: Option<&str>) {
+        let matches = self.browser_target_matches();
+        if let Some(selected_id) = selected_id
+            && let Some(selection) = matches.iter().position(|target_index| {
+                self.browser_workspace.state().targets[*target_index].id == selected_id
+            })
+        {
+            self.browser_target_selection = selection;
+        } else {
+            self.browser_target_selection = self
+                .browser_target_selection
+                .min(matches.len().saturating_sub(1));
+        }
     }
 
     pub fn move_browser_target_selection(&mut self, delta: i32) {
@@ -9840,24 +10053,68 @@ impl DevTuiState {
     }
 
     pub fn queue_browser_observe(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
-        if !self.browser_observe_pending || self.background_action_running() {
+        if !self.browser_observe_pending || self.blocking_background_tool_running() {
             return;
         }
-        self.browser_observe_pending = false;
-        let (call, context) =
-            match self.tool_request("glass.browser.observe", serde_json::json!({}), false) {
-                Ok(request) => request,
-                Err(error) => {
-                    self.status = format!("Could not refresh browser evidence: {error}");
-                    return;
-                }
-            };
+        if self
+            .browser_observe_retry_after
+            .is_some_and(|retry_after| std::time::Instant::now() < retry_after)
+        {
+            return;
+        }
+        let (call, context) = match self.tool_request(
+            "glass.browser.observe",
+            serde_json::json!({}),
+            false,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.browser_observe_retry_count =
+                    self.browser_observe_retry_count.saturating_add(1);
+                self.browser_observe_pending = self.browser_observe_retry_count <= 3;
+                self.browser_observe_retry_after = self
+                    .browser_observe_pending
+                    .then(|| std::time::Instant::now() + std::time::Duration::from_secs(2));
+                self.status = if self.browser_observe_pending {
+                    format!(
+                        "Browser evidence refresh failed ({}/3); retrying: {error}",
+                        self.browser_observe_retry_count
+                    )
+                } else {
+                    self.browser_observe_retry_count = 0;
+                    format!(
+                        "Browser evidence may be stale · refresh failed after 3 attempts: {error}"
+                    )
+                };
+                return;
+            }
+        };
         match worker.submit_tool(call, context) {
             Ok(id) => {
+                self.browser_observe_pending = false;
+                self.browser_observe_retry_after = None;
                 self.running_tool_job = Some(id);
                 self.status = "Refreshing semantic browser evidence…".into();
             }
-            Err(error) => self.status = format!("Could not refresh browser evidence: {error}"),
+            Err(error) => {
+                self.browser_observe_retry_count =
+                    self.browser_observe_retry_count.saturating_add(1);
+                self.browser_observe_pending = self.browser_observe_retry_count <= 3;
+                self.browser_observe_retry_after = self
+                    .browser_observe_pending
+                    .then(|| std::time::Instant::now() + std::time::Duration::from_secs(2));
+                self.status = if self.browser_observe_pending {
+                    format!(
+                        "Browser evidence refresh failed ({}/3); retrying: {error}",
+                        self.browser_observe_retry_count
+                    )
+                } else {
+                    self.browser_observe_retry_count = 0;
+                    format!(
+                        "Browser evidence may be stale · refresh failed after 3 attempts: {error}"
+                    )
+                };
+            }
         }
     }
 
@@ -9930,13 +10187,20 @@ impl DevTuiState {
     }
 
     pub fn queue_browser_intent(&mut self, intent: BrowserWorkspaceIntent) {
+        let moved_selection = matches!(&intent, BrowserWorkspaceIntent::MoveSelection { .. });
         if self.background_action_running() {
             self.status = "Browser action waits for the current background operation".into();
             return;
         }
         let action = match self.browser_workspace.reduce(intent) {
             Ok(Some(action)) => action,
-            Ok(None) => return,
+            Ok(None) => {
+                self.browser = self.browser_workspace_summary();
+                if moved_selection {
+                    self.status = "Selection moved · Enter activates the selected entity".into();
+                }
+                return;
+            }
             Err(error) => {
                 self.status = format!("App action unavailable: {error}");
                 return;
@@ -10883,6 +11147,185 @@ mod tests {
             .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
             .expect("trust temporary workspace for test");
         state.snapshot_trust_label = "trusted once".into();
+    }
+
+    #[test]
+    fn pasted_palette_and_composer_text_report_byte_limit_truncation() {
+        let (mut state, root) = routed_state("paste-limits");
+        let palette_paste = "é".repeat(PALETTE_INPUT_LIMIT / 2 + 1);
+        state.insert_palette_text(&palette_paste);
+        assert_eq!(state.command_input.len(), PALETTE_INPUT_LIMIT);
+        assert_eq!(state.command_cursor, PALETTE_INPUT_LIMIT);
+        assert_eq!(state.status, "Palette input limit reached (8 KiB)");
+
+        state.composer_input.clear();
+        state.composer_cursor = 0;
+        let composer_paste = "λ".repeat(COMPOSER_INPUT_LIMIT / 2 + 1);
+        state.insert_composer_text(&composer_paste);
+        assert_eq!(state.composer_input.len(), COMPOSER_INPUT_LIMIT);
+        assert_eq!(state.composer_cursor, COMPOSER_INPUT_LIMIT);
+        assert_eq!(state.status, "Composer input limit reached (16 KiB)");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn help_scroll_is_clamped_to_renderable_content() {
+        let (mut state, root) = routed_state("help-scroll-bound");
+        state.terminal_height = 24;
+        let visible = state.terminal_height.saturating_sub(4) as usize;
+        let max_scroll = super::super::bindings::curriculum_help(state.surface)
+            .lines()
+            .count()
+            .saturating_sub(visible) as u16;
+        state.scroll_help(i32::MAX);
+        assert_eq!(state.help_scroll, max_scroll);
+        state.scroll_help(i32::MIN);
+        assert_eq!(state.help_scroll, 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn trust_surface_accepts_lowercase_once_and_uppercase_project_aliases() {
+        let (mut state, root) = routed_state("trust-key-case");
+        state.surface = DevSurface::Trust;
+        let workspace = state.workspace.clone();
+        let guard = workspace.try_lock().expect("lock test workspace");
+        state.handle_printable('t');
+        drop(guard);
+        assert_eq!(
+            state.pending_trust,
+            Some(crate::LocalTrustDecision::TrustOnce)
+        );
+        state.pending_trust = None;
+        let guard = workspace.try_lock().expect("lock test workspace");
+        state.handle_printable('T');
+        drop(guard);
+        assert_eq!(
+            state.pending_trust,
+            Some(crate::LocalTrustDecision::TrustProject)
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scroll_end_uses_wrapped_agent_conversation_height() {
+        let (mut state, root) = routed_state("agent-scroll-end-wrap");
+        state.surface = DevSurface::Agent;
+        state.terminal_width = 40;
+        state.terminal_height = 18;
+        state.agent_conversation = format!(
+            "YOU\n{}\n\nGLASS AGENT\n{}",
+            "user message ".repeat(12),
+            "agent response ".repeat(16)
+        );
+        let raw_height = state.conversation_view().lines().count();
+        let expected = super::super::render::agent_conversation_scroll_end(&state);
+
+        state.scroll_end();
+
+        assert_eq!(state.current_scroll() as usize, expected);
+        assert!(expected > raw_height.saturating_sub(1));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_snapshot_refresh_preserves_selection_identity_across_reordering() {
+        let (mut state, root) = routed_state("empty-refresh-selection");
+        let process = |name: &str| ProcessRow {
+            name: name.into(),
+            command: "dev".into(),
+            pid: None,
+            health: crate::development::ProcessHealth::Healthy,
+            url: None,
+        };
+        let git = |path: &str| crate::git::GitStatusEntry {
+            path: path.into(),
+            original_path: None,
+            index_status: ' ',
+            worktree_status: 'M',
+            untracked: false,
+        };
+        let debug = |name: &str, pid| DebugSessionRow {
+            name: name.into(),
+            state: crate::debugger::DebugSessionState::Stopped,
+            pid,
+            breakpoints: 0,
+            watches: 0,
+        };
+        state.process_entries = vec![process("api"), process("web")];
+        state.selected_process = 1;
+        state.git_entries = vec![git("a.rs"), git("b.rs")];
+        state.selected_git_file = 1;
+        state.debug_sessions = vec![debug("alpha", 1), debug("beta", 2)];
+        state.selected_debug_session = 1;
+
+        state.apply_snapshot(&super::super::snapshot::DisplaySnapshot::default());
+        let refreshed = super::super::snapshot::DisplaySnapshot {
+            process_entries: vec![process("web"), process("api")],
+            git_entries: vec![git("b.rs"), git("a.rs")],
+            debug_sessions: vec![debug("beta", 2), debug("alpha", 1)],
+            ..Default::default()
+        };
+        state.apply_snapshot(&refreshed);
+
+        assert_eq!(state.selected_process_entry().unwrap().name, "web");
+        assert_eq!(state.selected_git_entry().unwrap().path, "b.rs");
+        assert_eq!(state.selected_debug_session().unwrap().name, "beta");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pending_file_open_flushes_after_workspace_recovers_off_code_surface() {
+        let (mut state, root) = routed_state("pending-open-off-code");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        state.files = vec!["src/main.rs".into()];
+        state.pending_open_file = Some("src/main.rs".into());
+        state.surface = DevSurface::App;
+
+        state.flush_pending_open_file();
+
+        assert!(state.pending_open_file.is_none());
+        assert_eq!(state.focused_editor_path, "src/main.rs");
+        assert_eq!(state.surface, DevSurface::App);
+        assert!(
+            state
+                .ws()
+                .unwrap()
+                .project()
+                .buffer("src/main.rs")
+                .is_some()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn browser_selection_intent_updates_projection_through_shared_gateway() {
+        let (mut state, root) = routed_state("browser-selection-gateway");
+        state.browser_workspace.replace_entities(
+            7,
+            vec![
+                BrowserWorkspaceEntity {
+                    reference: "r7:b1".into(),
+                    role: "button".into(),
+                    name: "One".into(),
+                    actionable: true,
+                    revision: 7,
+                },
+                BrowserWorkspaceEntity {
+                    reference: "r7:b2".into(),
+                    role: "button".into(),
+                    name: "Two".into(),
+                    actionable: true,
+                    revision: 7,
+                },
+            ],
+        );
+        state.queue_browser_intent(BrowserWorkspaceIntent::MoveSelection { delta: 1 });
+        assert_eq!(state.browser_workspace.state().selected_entity, Some(1));
+        assert!(state.browser.contains("Two"));
+        assert!(state.status.contains("Selection moved"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn routed_state(label: &str) -> (DevTuiState, std::path::PathBuf) {
@@ -11976,6 +12419,33 @@ mod tests {
     }
 
     #[test]
+    fn failed_browser_observe_keeps_evidence_pending_for_bounded_retries() {
+        let (mut state, root) = routed_state("browser-observe-retry");
+        for attempt in 1..=3 {
+            let id = 200 + attempt;
+            state.running_tool_job = Some(id);
+            state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+                id,
+                tool: "glass.browser.observe".into(),
+                result: Err("temporary busy result".into()),
+            });
+            assert!(state.browser_observe_pending);
+            assert!(state.status.contains(&format!("{attempt}/3")));
+        }
+        let id = 204;
+        state.running_tool_job = Some(id);
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id,
+            tool: "glass.browser.observe".into(),
+            result: Err("still unavailable".into()),
+        });
+        assert!(!state.browser_observe_pending);
+        assert!(state.status.contains("evidence may be stale"));
+        drop(state);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn browser_recovery_attach_disables_incognito() {
         assert_eq!(
             browser_recovery_arguments(9222, true),
@@ -12045,6 +12515,39 @@ mod tests {
         assert!(view.contains("https://example.test/docs"));
         assert!(!view.contains("token=secret"));
         assert!(!view.contains("fragment-secret"));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn browser_target_query_keeps_selection_when_target_still_matches() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-target-query-selection-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.browser_workspace.replace_targets(vec![
+            BrowserWorkspaceTarget {
+                id: "page-one".into(),
+                title: "Docs one".into(),
+                url: "https://example.test/one".into(),
+                selected: false,
+            },
+            BrowserWorkspaceTarget {
+                id: "page-two".into(),
+                title: "Docs two".into(),
+                url: "https://example.test/two".into(),
+                selected: false,
+            },
+        ]);
+        state.browser_target_query = "doc".into();
+        state.browser_target_selection = 1;
+
+        state.insert_browser_target_query('s');
+
+        assert_eq!(state.browser_target_matches(), vec![0, 1]);
+        assert_eq!(state.browser_target_selection, 1);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
     #[test]
@@ -13083,6 +13586,28 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_refresh_keeps_local_workflow_recording_status_authoritative() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-workflow-record-status-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
+        state
+            .start_workflow_recording("locators")
+            .expect("start recording");
+        state.apply_snapshot(&super::super::snapshot::DisplaySnapshot {
+            workflow: "not recording".into(),
+            ..Default::default()
+        });
+
+        assert!(state.workflow.starts_with("REC locators"));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn agent_editor_context_attaches_unsaved_buffer_and_inline_prompt() {
         let root =
             std::env::temp_dir().join(format!("glass-editor-agent-context-{}", std::process::id()));
@@ -13609,6 +14134,67 @@ mod tests {
     }
 
     #[test]
+    fn agent_thinking_does_not_block_independent_browser_observation() {
+        let (mut state, root) = routed_state("observe-during-agent-send");
+        state.agent_send_job = Some(42);
+        assert!(state.background_action_running());
+        assert!(!state.blocking_background_tool_running());
+        assert!(!state.composer_send_blocked());
+
+        state.running_tool_job = Some(43);
+        assert!(state.blocking_background_tool_running());
+        assert!(state.composer_send_blocked());
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn follow_up_results_reconcile_by_each_job_id_out_of_order() {
+        let (mut state, root) = routed_state("follow-up-result-order");
+        state.agent_send_job = Some(12);
+        state.pending_chat_messages = vec![
+            PendingChatMessage {
+                message_id: "first".into(),
+                text: "first message".into(),
+                state: ChatMessageState::Sending,
+                job_id: Some(11),
+                error: None,
+            },
+            PendingChatMessage {
+                message_id: "second".into(),
+                text: "second message".into(),
+                state: ChatMessageState::Sending,
+                job_id: Some(12),
+                error: None,
+            },
+        ];
+
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 11,
+            tool: "glass.agent.send".into(),
+            result: Ok(serde_json::json!({"agentId":"agent:first"})),
+        });
+
+        assert_eq!(state.pending_chat_messages[0].state, ChatMessageState::Sent);
+        assert_eq!(state.pending_chat_messages[0].job_id, None);
+        assert_eq!(state.agent_send_job, Some(12));
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 12,
+            tool: "glass.agent.send".into(),
+            result: Err("provider unavailable".into()),
+        });
+        assert_eq!(
+            state.pending_chat_messages[1].state,
+            ChatMessageState::Failed
+        );
+        assert_eq!(
+            state.pending_chat_messages[1].error.as_deref(),
+            Some("provider unavailable")
+        );
+        assert_eq!(state.agent_send_job, None);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn composer_slash_compact_routes_to_native_pi_command() {
         let root = std::env::temp_dir().join(format!("glass-slash-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create temporary workspace");
@@ -13855,7 +14441,10 @@ mod tests {
         state.snapshot_trust_label = "trusted-project".into();
 
         state.show_surface(DevSurface::More);
-        state.selected_more = 0;
+        state.selected_more = DevTuiState::more_route_actions()
+            .iter()
+            .position(|action| action.command == "doctor")
+            .expect("the More action catalog exposes doctor");
         state.activate_more_selection();
         assert_eq!(state.surface, DevSurface::More);
         assert!(

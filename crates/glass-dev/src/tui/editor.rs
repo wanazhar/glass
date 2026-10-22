@@ -522,19 +522,15 @@ pub fn textobject_selection(
     }
 }
 
-/// Stream `proposed` over `original` by revealing `revealed` bytes of the replacement.
+/// Stream `proposed` over `original` by revealing display columns of the replacement.
 pub fn pair_apply_content(original: &str, proposed: &str, revealed: usize) -> String {
     let prefix = common_prefix_len(original, proposed);
     let suffix = common_suffix_len(original, proposed, prefix);
     let new_mid = &proposed[prefix..proposed.len() - suffix];
-    let revealed = revealed.min(new_mid.len());
-    let mut revealed = revealed;
-    while revealed > 0 && !new_mid.is_char_boundary(revealed) {
-        revealed -= 1;
-    }
+    let revealed_bytes = display_columns_to_bytes(new_mid, revealed);
     let mut content = String::with_capacity(original.len() + new_mid.len());
     content.push_str(&original[..prefix]);
-    content.push_str(&new_mid[..revealed]);
+    content.push_str(&new_mid[..revealed_bytes]);
     content.push_str(&original[original.len() - suffix..]);
     content
 }
@@ -542,7 +538,9 @@ pub fn pair_apply_content(original: &str, proposed: &str, revealed: usize) -> St
 pub fn pair_apply_caret(original: &str, proposed: &str, revealed: usize) -> usize {
     let prefix = common_prefix_len(original, proposed);
     let content = pair_apply_content(original, proposed, revealed);
-    (prefix + revealed).min(content.len())
+    let suffix = common_suffix_len(original, proposed, prefix);
+    let new_mid = &proposed[prefix..proposed.len() - suffix];
+    (prefix + display_columns_to_bytes(new_mid, revealed)).min(content.len())
 }
 
 pub fn pair_apply_step(
@@ -553,13 +551,34 @@ pub fn pair_apply_step(
 ) -> (String, usize, bool) {
     let prefix = common_prefix_len(original, proposed);
     let suffix = common_suffix_len(original, proposed, prefix);
-    let new_mid_len = proposed.len() - prefix - suffix;
-    let mut next = (revealed + step.max(1)).min(new_mid_len);
-    while next < new_mid_len && !proposed.is_char_boundary(prefix + next) {
-        next += 1;
-    }
+    let new_mid = &proposed[prefix..proposed.len() - suffix];
+    let new_mid_columns = new_mid
+        .chars()
+        .map(|character| {
+            ratatui::text::Span::raw(character.to_string())
+                .width()
+                .max(1)
+        })
+        .sum::<usize>();
+    let next = revealed.saturating_add(step.max(1)).min(new_mid_columns);
     let content = pair_apply_content(original, proposed, next);
-    (content, next, next >= new_mid_len)
+    (content, next, next >= new_mid_columns)
+}
+
+fn display_columns_to_bytes(value: &str, columns: usize) -> usize {
+    let mut bytes = 0usize;
+    let mut width = 0usize;
+    for character in value.chars() {
+        let character_width = ratatui::text::Span::raw(character.to_string())
+            .width()
+            .max(1);
+        if width.saturating_add(character_width) > columns {
+            break;
+        }
+        width += character_width;
+        bytes += character.len_utf8();
+    }
+    bytes
 }
 
 fn common_prefix_len(old: &str, new: &str) -> usize {
@@ -1602,6 +1621,24 @@ mod tests {
         }
         assert_eq!(content, proposed);
         assert!(pair_apply_content(original, proposed, 3).len() >= original.len());
+    }
+
+    #[test]
+    fn pair_apply_reveals_unicode_by_display_columns_and_keeps_caret_on_boundary() {
+        let proposed = "界 café";
+        let content = pair_apply_content("", proposed, 2);
+        assert_eq!(content, "界");
+        assert_eq!(pair_apply_caret("", proposed, 2), "界".len());
+        let full_columns = proposed
+            .chars()
+            .map(|character| {
+                ratatui::text::Span::raw(character.to_string())
+                    .width()
+                    .max(1)
+            })
+            .sum();
+        assert_eq!(pair_apply_content("", proposed, full_columns), proposed);
+        assert_eq!(pair_apply_caret("", proposed, full_columns), proposed.len());
     }
 
     #[test]

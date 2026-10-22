@@ -298,14 +298,49 @@ fn run_development_tui(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         quality: cli.tui_live_quality,
         fit: cli.tui_live_fit,
     };
+    let browser_start_defaults = browser_start_defaults_from_cli(cli)?;
     let policy = glass_browser::cli::runner::policy_from_cli(cli)?;
     tui::run_with_browser_policy(
         std::env::current_dir()?,
         cli.tui_layout,
         visual_options,
+        browser_start_defaults,
         cli.yolo,
         policy,
     )
+}
+
+fn browser_start_defaults_from_cli(
+    cli: &Cli,
+) -> Result<BrowserStartConfig, Box<dyn std::error::Error>> {
+    Ok(BrowserStartConfig {
+        port: cli.port,
+        attach: cli.attach,
+        incognito: cli.incognito,
+        headed: cli.headed,
+        profile: cli.profile.clone(),
+        chrome_path: cli.chrome_path.clone(),
+        modal_dialogs: !cli.attach,
+        interaction: cli.interaction,
+        audit: cli.audit,
+        viewport: cli
+            .viewport
+            .as_deref()
+            .map(parse_tui_viewport)
+            .transpose()?,
+    })
+}
+
+fn parse_tui_viewport(value: &str) -> Result<(u32, u32), Box<dyn std::error::Error>> {
+    let (width, height) = value
+        .split_once('x')
+        .ok_or("viewport must use WIDTHxHEIGHT")?;
+    let width = width.parse::<u32>()?;
+    let height = height.parse::<u32>()?;
+    if !(320..=10_000).contains(&width) || !(240..=10_000).contains(&height) {
+        return Err("viewport dimensions must be width 320..10000 and height 240..10000".into());
+    }
+    Ok((width, height))
 }
 
 fn enforce_legacy_development_trust(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
@@ -341,7 +376,9 @@ fn enforce_legacy_development_trust(cli: &Cli) -> Result<(), Box<dyn std::error:
                 | ProjectCommand::Replay { root, .. }
                 | ProjectCommand::Neovim { root, .. }
                 | ProjectCommand::Experiment { root, .. }
-                | ProjectCommand::Attach { root, .. } => root,
+                | ProjectCommand::Attach { root, .. }
+                | ProjectCommand::Git { root, .. }
+                | ProjectCommand::Github { root, .. } => root,
             };
             let safe = matches!(
                 action,
@@ -357,6 +394,18 @@ fn enforce_legacy_development_trust(cli: &Cli) -> Result<(), Box<dyn std::error:
                     }
                     | ProjectCommand::Timeline { .. }
                     | ProjectCommand::Replay { .. }
+                    | ProjectCommand::Git {
+                        action: glass_browser::cli::args::ProjectGitCommand::Status
+                            | glass_browser::cli::args::ProjectGitCommand::Diff { .. }
+                            | glass_browser::cli::args::ProjectGitCommand::Branches
+                            | glass_browser::cli::args::ProjectGitCommand::StashList
+                            | glass_browser::cli::args::ProjectGitCommand::WorktreeList,
+                        ..
+                    }
+                    | ProjectCommand::Github {
+                        action: glass_browser::cli::args::ProjectGithubCommand::Review,
+                        ..
+                    }
             );
             (root, safe)
         }
@@ -478,6 +527,45 @@ mod authorization_boundary_tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn global_browser_start_options_reach_the_resident_tui_defaults() {
+        // Clap's generated command graph needs more stack than the default
+        // Rust test worker when parsing the full global option set.
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "glass",
+                    "--port",
+                    "9333",
+                    "--profile",
+                    "work",
+                    "--attach",
+                    "--headed",
+                    "--viewport",
+                    "1440x900",
+                    "--interaction",
+                    "fast",
+                    "--audit",
+                ])
+                .unwrap();
+                let config = browser_start_defaults_from_cli(&cli).unwrap();
+                assert_eq!(config.port, 9333);
+                assert_eq!(config.profile, "work");
+                assert!(config.attach && config.headed);
+                assert_eq!(config.viewport, Some((1440, 900)));
+                assert_eq!(
+                    config.interaction,
+                    glass_browser::browser::session::InteractionMode::Fast
+                );
+                assert!(config.audit);
+                assert!(!config.modal_dialogs);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[test]
     fn cli_agent_tool_uses_workspace_router_trust_gate() {

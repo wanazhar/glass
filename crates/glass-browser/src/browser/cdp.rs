@@ -1713,6 +1713,7 @@ mod tests {
                     _ => panic!("expected text frame"),
                 };
                 assert_eq!(ack["method"], "Page.screencastFrameAck");
+                assert_ne!(ack["id"], request["id"]);
                 assert_eq!(ack["params"]["sessionId"], 9);
                 assert_eq!(ack["sessionId"], route);
             }

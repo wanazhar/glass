@@ -45,6 +45,11 @@ DevelopmentWorkspace (generation + trust)
 
 `DevelopmentWorkspace` owns the generation and resident service registries. `ProjectWorkspace` owns project files, in-memory buffers, editor revisions, actor attribution, comments, proposals, checkpoints, timeline, and graph. `AgentRegistry` owns worker threads and Pi child processes. `TaskScheduler` owns task records but is currently in-memory; the daemon ticks it while its workspace actor is alive. Pi session files and timeline/checkpoint files are separate persisted artifacts. A worker, TUI snapshot, or external harness cannot become the project authority.
 
+`project inspect` reports detected LSP executable names and configured browser
+URL hints as discovery metadata. Those values are informational: Glass does not
+launch detected language servers or infer extra development URLs unless the
+project configuration explicitly requests them.
+
 Every governed tool carries expected workspace generation and project revision. A stale call fails with `Conflict`; reread state and issue a new call. Mutations also require a trusted workspace, actor attribution, and the applicable mutation authority or confirmation.
 
 ## Project files and tree

@@ -117,6 +117,12 @@ Project process startup is owned by `ProcessManager`. `glass project run NAME --
 
 `glass harness list` performs PATH-only discovery. It does not probe versions, use the network, or start a child. The fixed catalog contains `amp`, `aider`, `claude`, `codex`, `gemini`, `goose`, `kiro`, `opencode`, `pi`, `qwen`, `cursor`, and `windsurf`. `glass harness start NAME --root .` resolves a case-insensitive ID, label, or binary and starts that executable in the project directory. It waits for the child to exit, reports exit status, and returns to Glass. A missing executable, unknown name, failed start, or non-zero exit is explicit.
 
+Bounded `harness delegate` is a separate capability: only `codex`, `claude`,
+and `opencode` have the invocation adapter needed for that contract. The
+machine-readable harness list marks those entries with
+`temporaryDelegation: true`; a catalog entry without that marker remains
+available for direct `harness start`.
+
 One-shot delegation is a separate non-interactive API:
 
 ```console

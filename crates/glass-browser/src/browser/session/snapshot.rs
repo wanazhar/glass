@@ -3,6 +3,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -137,31 +138,50 @@ impl SessionSnapshotStore {
         let from_snapshot = self.load(from)?;
         let to_snapshot = self.load(to)?;
         let same_route = from_snapshot.observation.route == to_snapshot.observation.route;
-        let changed_regions = from_snapshot
-            .observation
-            .regions
-            .iter()
-            .zip(to_snapshot.observation.regions.iter())
-            .filter(|(left, right)| left != right)
-            .count()
-            + from_snapshot
-                .observation
+        // Compare by semantic identity, not presentation order. Region and target
+        // ordering can change as layout changes without changing the entities.
+        let regions_by_id = |observation: &SemanticObservation| {
+            observation
                 .regions
-                .len()
-                .abs_diff(to_snapshot.observation.regions.len());
-        let changed_targets = from_snapshot
-            .observation
-            .regions
-            .iter()
-            .flat_map(|region| region.targets.iter())
-            .zip(
-                to_snapshot
-                    .observation
-                    .regions
-                    .iter()
-                    .flat_map(|region| region.targets.iter()),
-            )
-            .filter(|(left, right)| left != right)
+                .iter()
+                .map(|region| {
+                    let mut content = region.clone();
+                    content.targets.clear();
+                    (region.id.clone(), content)
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let from_regions = regions_by_id(&from_snapshot.observation);
+        let to_regions = regions_by_id(&to_snapshot.observation);
+        let changed_regions = from_regions
+            .keys()
+            .chain(to_regions.keys())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .filter(|id| from_regions.get(*id) != to_regions.get(*id))
+            .count();
+        let targets_by_id = |observation: &SemanticObservation| {
+            observation
+                .regions
+                .iter()
+                .flat_map(|region| {
+                    region.targets.iter().map(move |target| {
+                        (
+                            (region.id.clone(), target.reference.clone()),
+                            target.clone(),
+                        )
+                    })
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let from_targets = targets_by_id(&from_snapshot.observation);
+        let to_targets = targets_by_id(&to_snapshot.observation);
+        let changed_targets = from_targets
+            .keys()
+            .chain(to_targets.keys())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .filter(|id| from_targets.get(*id) != to_targets.get(*id))
             .count();
         Ok(SessionSnapshotDiff {
             from_snapshot: from.into(),
@@ -261,6 +281,16 @@ fn redact_text(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn observation(regions: serde_json::Value, revision: u64) -> SemanticObservation {
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1, "revision": revision, "level": "interactive",
+            "route": {"targetId":"t", "frameId":"f", "url":"https://x.test/"},
+            "page": {"kind":"generic", "title":"x", "url":"https://x.test/", "targetId":"t", "frameId":"f", "confidence":"high"},
+            "regions": regions,
+            "limits": {"truncated":false,"omittedRegions":0}
+        })).unwrap()
+    }
+
     #[test]
     fn snapshot_redacts_urls_and_sensitive_labels() {
         let observation: SemanticObservation = serde_json::from_value(serde_json::json!({
@@ -278,5 +308,51 @@ mod tests {
             "[REDACTED]"
         );
         assert!(serde_json::to_string(&snapshot).unwrap().len() < MAX_SNAPSHOT_BYTES);
+    }
+
+    #[test]
+    fn snapshot_diff_matches_regions_and_targets_by_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-snapshot-diff-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = SessionSnapshotStore::new(&root);
+        let first = SessionSnapshot::from_observation(
+            "default",
+            observation(
+                serde_json::json!([
+                {"id":"main", "kind":"main", "label":"Main", "interactiveCount":2, "confidence":"high", "targets":[
+                        {"reference":"r1", "role":"button", "name":"Save"},
+                        {"reference":"r2", "role":"link", "name":"Help"}
+                    ]},
+                    {"id":"nav", "kind":"navigation", "label":"Navigation", "interactiveCount":0, "confidence":"high"}
+                ]),
+                1,
+            ),
+        );
+        let second = SessionSnapshot::from_observation(
+            "default",
+            observation(
+                serde_json::json!([
+                    {"id":"nav", "kind":"navigation", "label":"Navigation", "interactiveCount":0, "confidence":"high"},
+                {"id":"main", "kind":"main", "label":"Main", "interactiveCount":2, "confidence":"high", "targets":[
+                        {"reference":"r2", "role":"link", "name":"Help"},
+                        {"reference":"r1", "role":"button", "name":"Save"}
+                    ]}
+                ]),
+                2,
+            ),
+        );
+        store.save(&first).unwrap();
+        store.save(&second).unwrap();
+
+        let diff = store.diff(&first.snapshot_id, &second.snapshot_id).unwrap();
+        assert_eq!(diff.changed_regions, 0);
+        assert_eq!(diff.changed_targets, 0);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

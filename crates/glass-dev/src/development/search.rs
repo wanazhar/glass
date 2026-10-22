@@ -19,6 +19,26 @@ pub struct SearchHit {
     pub score: u32,
 }
 
+/// Search hits plus the bounded project-file traversal that contributed file
+/// results. Callers can distinguish a complete search from one whose file
+/// candidates were limited or skipped.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSearchResult {
+    pub hits: Vec<SearchHit>,
+    pub file_listing: FileListingCoverage,
+}
+
+/// Coverage metadata for file candidates in a project search.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileListingCoverage {
+    pub truncated: bool,
+    pub limit: usize,
+    pub ignored_directories: Vec<String>,
+    pub skipped_symlinks: usize,
+}
+
 pub fn fuzzy_score(query: &str, candidate: &str) -> Option<u32> {
     let query = query.to_ascii_lowercase();
     let candidate = candidate.to_ascii_lowercase();

@@ -241,6 +241,21 @@ impl Cli {
         args.push("--port".into());
         args.push(self.port.to_string());
         push_enum_flag(&mut args, "--interaction", self.interaction);
+        push_enum_flag(&mut args, "--tui-layout", self.tui_layout);
+        push_enum_flag(&mut args, "--tui-transport", self.tui_transport);
+        push_enum_flag(&mut args, "--tui-graphics", self.tui_graphics);
+        if let Some(rtt_ms) = self.tui_rtt_ms {
+            args.push("--tui-rtt-ms".into());
+            args.push(rtt_ms.to_string());
+        }
+        if let Some(throughput_mbps) = self.tui_throughput_mbps {
+            args.push("--tui-throughput-mbps".into());
+            args.push(throughput_mbps.to_string());
+        }
+        push_enum_flag(&mut args, "--tui-live", self.tui_live);
+        push_enum_flag(&mut args, "--tui-live-backend", self.tui_live_backend);
+        push_enum_flag(&mut args, "--tui-live-quality", self.tui_live_quality);
+        push_enum_flag(&mut args, "--tui-live-fit", self.tui_live_fit);
         if self.yolo {
             args.push("--yolo".into());
         }
@@ -1222,6 +1237,112 @@ pub enum ProjectCommand {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Inspect and operate the project Git repository through the shared tool contracts.
+    Git {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[command(subcommand)]
+        action: ProjectGitCommand,
+    },
+    /// Inspect GitHub review state or create a pull request.
+    Github {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[command(subcommand)]
+        action: ProjectGithubCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectGitCommand {
+    Status,
+    Diff {
+        #[arg(long)]
+        staged: bool,
+        #[arg(long)]
+        path: Option<String>,
+    },
+    Stage {
+        paths: Vec<String>,
+    },
+    Unstage {
+        paths: Vec<String>,
+    },
+    Discard {
+        paths: Vec<String>,
+    },
+    Fetch {
+        #[arg(long)]
+        remote: Option<String>,
+    },
+    Pull {
+        #[arg(long)]
+        remote: Option<String>,
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    Push {
+        #[arg(long)]
+        remote: Option<String>,
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    Merge {
+        branch: String,
+    },
+    Rebase {
+        onto: String,
+    },
+    Commit {
+        message: String,
+    },
+    Branches,
+    BranchCreate {
+        name: String,
+        #[arg(long)]
+        start_point: Option<String>,
+    },
+    BranchSwitch {
+        name: String,
+        #[arg(long)]
+        create: bool,
+    },
+    StashList,
+    StashPush {
+        message: String,
+        #[arg(long)]
+        include_untracked: bool,
+    },
+    StashPop {
+        reference: String,
+    },
+    WorktreeList,
+    WorktreeCreate {
+        path: PathBuf,
+        branch: String,
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        create_branch: bool,
+    },
+    WorktreeRemove {
+        path: PathBuf,
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectGithubCommand {
+    Review,
+    Ship {
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        body: Option<String>,
+        #[arg(long)]
+        base: Option<String>,
+        #[arg(long)]
+        draft: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1427,9 +1548,11 @@ pub enum AgentHarness {
     Pi,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ExternalAgentSandbox {
+    #[value(alias = "readonly", alias = "read_only")]
     ReadOnly,
+    #[value(alias = "workspacewrite", alias = "workspace_write")]
     WorkspaceWrite,
 }
 
@@ -1756,6 +1879,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn project_git_and_github_cli_routes_parse() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let cli = try_parse_cli([
+                    "glass",
+                    "project",
+                    "git",
+                    "stage",
+                    "src/main.rs",
+                    "--allow-mutation",
+                    "--yes",
+                ])
+                .unwrap();
+                assert!(matches!(
+                    cli.command,
+                    Some(Commands::Project {
+                        allow_mutation: true,
+                        yes: true,
+                        action: ProjectCommand::Git {
+                            action: ProjectGitCommand::Stage { .. },
+                            ..
+                        },
+                    })
+                ));
+
+                let cli = try_parse_cli(["glass", "project", "github", "review"]).unwrap();
+                assert!(matches!(
+                    cli.command,
+                    Some(Commands::Project {
+                        action: ProjectCommand::Github {
+                            action: ProjectGithubCommand::Review,
+                            ..
+                        },
+                        ..
+                    })
+                ));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn external_sandbox_cli_aliases_match_shared_parser() {
+        assert_eq!(
+            ExternalAgentSandbox::from_str("readonly", false).unwrap(),
+            ExternalAgentSandbox::ReadOnly
+        );
+        assert_eq!(
+            ExternalAgentSandbox::from_str("read_only", false).unwrap(),
+            ExternalAgentSandbox::ReadOnly
+        );
+        assert_eq!(
+            ExternalAgentSandbox::from_str("workspace_write", false).unwrap(),
+            ExternalAgentSandbox::WorkspaceWrite
+        );
+    }
+
+    #[test]
     fn project_mutation_authorization_is_available_at_project_scope() {
         std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
@@ -1930,6 +2113,55 @@ mod tests {
         assert!(mcp.yolo);
         assert!(mcp.incognito);
         assert_eq!(mcp.policy_allow_host, vec!["example.test"]);
+    }
+
+    #[test]
+    fn session_cli_flags_preserve_tui_presentation_configuration() {
+        let cli = try_parse_cli([
+            "glass",
+            "--tui-layout",
+            "mobile",
+            "--tui-transport",
+            "remote-constrained",
+            "--tui-graphics",
+            "kitty",
+            "--tui-rtt-ms",
+            "42",
+            "--tui-throughput-mbps",
+            "18",
+            "--tui-live",
+            "on",
+            "--tui-live-backend",
+            "ansi",
+            "--tui-live-quality",
+            "data",
+            "--tui-live-fit",
+            "cover",
+            "daemon",
+            "start",
+        ])
+        .unwrap();
+
+        let flags = cli.session_cli_flags();
+        assert!(flag_pair(&flags, "--tui-layout", "mobile"));
+        assert!(flag_pair(&flags, "--tui-transport", "remote-constrained"));
+        assert!(flag_pair(&flags, "--tui-graphics", "kitty"));
+        assert!(flag_pair(&flags, "--tui-rtt-ms", "42"));
+        assert!(flag_pair(&flags, "--tui-throughput-mbps", "18"));
+        assert!(flag_pair(&flags, "--tui-live", "on"));
+        assert!(flag_pair(&flags, "--tui-live-backend", "ansi"));
+        assert!(flag_pair(&flags, "--tui-live-quality", "data"));
+        assert!(flag_pair(&flags, "--tui-live-fit", "cover"));
+        let cloned = cli.mcp_cli();
+        assert_eq!(cloned.tui_layout, TuiLayout::Mobile);
+        assert_eq!(cloned.tui_transport, TuiTransport::RemoteConstrained);
+        assert_eq!(cloned.tui_graphics, TuiGraphics::Kitty);
+        assert_eq!(cloned.tui_rtt_ms, Some(42.0));
+        assert_eq!(cloned.tui_throughput_mbps, Some(18.0));
+        assert_eq!(cloned.tui_live, TuiLiveMode::On);
+        assert_eq!(cloned.tui_live_backend, TuiLiveBackend::Ansi);
+        assert_eq!(cloned.tui_live_quality, TuiLiveQuality::Data);
+        assert_eq!(cloned.tui_live_fit, TuiLiveFit::Cover);
     }
 
     #[test]

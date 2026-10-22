@@ -485,11 +485,7 @@ impl ProcessManager {
             process.snapshot.detected_urls = detect_urls(&process.snapshot.output);
             if matches!(process.snapshot.state, ProcessState::Running)
                 && (!process.snapshot.detected_urls.is_empty()
-                    || process
-                        .snapshot
-                        .output
-                        .to_ascii_lowercase()
-                        .contains("ready"))
+                    || output_indicates_ready(&process.snapshot.output))
             {
                 process.snapshot.health = ProcessHealth::Healthy;
             }
@@ -795,7 +791,7 @@ fn detect_urls(output: &str) -> Vec<String> {
             if matches!(parsed.scheme(), "http" | "https")
                 && matches!(
                     parsed.host_str(),
-                    Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
+                    Some("localhost" | "127.0.0.1" | "0.0.0.0" | "[::1]" | "::1")
                 )
             {
                 Some(parsed.to_string())
@@ -810,10 +806,27 @@ fn detect_urls(output: &str) -> Vec<String> {
     urls
 }
 
+fn output_indicates_ready(output: &str) -> bool {
+    output.lines().any(|line| {
+        line.split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|token| token.eq_ignore_ascii_case("ready"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn health_output_requires_a_ready_word_and_detects_wildcard_bind_urls() {
+        assert!(!output_indicates_ready("server already started"));
+        assert!(output_indicates_ready("server is READY now"));
+        assert_eq!(
+            detect_urls("listening at http://0.0.0.0:3000"),
+            vec!["http://0.0.0.0:3000/"]
+        );
+    }
 
     #[test]
     fn pty_process_emits_output_and_exits() {

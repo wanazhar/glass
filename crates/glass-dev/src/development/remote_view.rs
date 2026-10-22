@@ -16,6 +16,7 @@ use tokio_tungstenite::{accept_async, tungstenite};
 const MAX_CLIENTS: usize = 4;
 const MAX_INPUT_BYTES: usize = 16 * 1024;
 const MAX_FRAME_DATA_BYTES: usize = 8 * 1024 * 1024;
+const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -207,18 +208,28 @@ async fn handle_client(
     inputs: mpsc::Sender<RemoteInput>,
     mut revoked: watch::Receiver<bool>,
 ) -> DevelopmentResult<()> {
-    let mut peek = [0_u8; 4096];
-    let size = timeout(HANDSHAKE_TIMEOUT, stream.peek(&mut peek))
-        .await
-        .map_err(|_| DevelopmentError::Process("remote view handshake timed out".into()))??;
-    let request = std::str::from_utf8(&peek[..size]).unwrap_or("");
+    let request_bytes = match timeout(HANDSHAKE_TIMEOUT, read_http_header(&mut stream)).await {
+        Ok(Ok(request)) => request,
+        Ok(Err(_)) => {
+            tokio::io::AsyncWriteExt::write_all(
+                &mut stream,
+                b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ).await?;
+            return Ok(());
+        }
+        Err(_) => {
+            return Err(DevelopmentError::Process(
+                "remote view handshake timed out".into(),
+            ));
+        }
+    };
+    let request_line = request_bytes
+        .split(|byte| *byte == b'\n')
+        .next()
+        .unwrap_or_default();
+    let request = std::str::from_utf8(request_line).unwrap_or("");
     let expected_page = format!("GET /{token}/ ");
     if request.starts_with(&expected_page) {
-        // Consume the request before closing the socket. Windows sends an RST
-        // when a socket is closed with unread inbound bytes, which can discard
-        // an otherwise complete HTTP response at the client.
-        let mut request_bytes = vec![0_u8; size];
-        tokio::io::AsyncReadExt::read_exact(&mut stream, &mut request_bytes).await?;
         let body = viewer_html(&token);
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'self'; img-src 'self' data:; script-src 'unsafe-inline'; connect-src 'self'\r\nX-Frame-Options: DENY\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -237,9 +248,17 @@ async fn handle_client(
         .await?;
         return Ok(());
     }
-    let mut socket = accept_async(stream).await.map_err(|error| {
-        DevelopmentError::Process(format!("remote view handshake failed: {error}"))
-    })?;
+    // Replay the consumed header (and any read-ahead bytes) to tungstenite,
+    // retaining the original write half for its handshake response and frames.
+    use tokio::io::AsyncReadExt;
+    let (read, write) = stream.into_split();
+    let transport = tokio::io::join(std::io::Cursor::new(request_bytes).chain(read), write);
+    let mut socket = timeout(HANDSHAKE_TIMEOUT, accept_async(transport))
+        .await
+        .map_err(|_| DevelopmentError::Process("remote view handshake timed out".into()))?
+        .map_err(|error| {
+            DevelopmentError::Process(format!("remote view handshake failed: {error}"))
+        })?;
 
     loop {
         tokio::select! {
@@ -267,6 +286,38 @@ async fn handle_client(
     Ok(())
 }
 
+async fn read_http_header<R>(reader: &mut R) -> DevelopmentResult<Vec<u8>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+
+    let mut header = Vec::with_capacity(1024);
+    let mut chunk = [0_u8; 512];
+    loop {
+        let read = reader.read(&mut chunk).await?;
+        if read == 0 {
+            return Err(DevelopmentError::Process(
+                "remote view request ended before headers completed".into(),
+            ));
+        }
+        header.extend_from_slice(&chunk[..read]);
+        if let Some(end) = header.windows(4).position(|window| window == b"\r\n\r\n") {
+            if end + 4 > MAX_HTTP_HEADER_BYTES {
+                return Err(DevelopmentError::Process(
+                    "remote view request headers exceed the bounded size".into(),
+                ));
+            }
+            return Ok(header);
+        }
+        if header.len() >= MAX_HTTP_HEADER_BYTES {
+            return Err(DevelopmentError::Process(
+                "remote view request headers exceed the bounded size".into(),
+            ));
+        }
+    }
+}
+
 fn secure_token() -> DevelopmentResult<String> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).map_err(|error| {
@@ -284,6 +335,60 @@ fn viewer_html(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn fragmented_viewer_and_websocket_requests_keep_the_complete_header() {
+        use tokio::io::AsyncWriteExt;
+
+        let view = RemoteView::bind().await.unwrap();
+        let token = view
+            .local_url()
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .to_string();
+        for websocket in [false, true] {
+            let mut stream = TcpStream::connect(("127.0.0.1", view.port()))
+                .await
+                .unwrap();
+            stream.write_all(b"GET /").await.unwrap();
+            // Separate the prefix from the remainder so a single TCP peek
+            // cannot classify the request before the token has arrived.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let path = if websocket {
+                format!("ws/{token}")
+            } else {
+                format!("{token}/")
+            };
+            let upgrade = if websocket {
+                "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            } else {
+                ""
+            };
+            stream
+                .write_all(
+                    format!(
+                        "{path} HTTP/1.1\r\nHost: localhost\r\n{upgrade}X-Filler: {}\r\n\r\n",
+                        "x".repeat(5 * 1024)
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let response = timeout(Duration::from_secs(2), read_http_header(&mut stream))
+                .await
+                .unwrap()
+                .unwrap();
+            let expected = if websocket {
+                "HTTP/1.1 101"
+            } else {
+                "HTTP/1.1 200"
+            };
+            assert!(String::from_utf8_lossy(&response).starts_with(expected));
+        }
+        view.revoke().await;
+    }
 
     #[tokio::test]
     async fn endpoint_is_loopback_tokenized_and_revocable() {
@@ -384,5 +489,44 @@ mod tests {
             data: "x".repeat(MAX_FRAME_DATA_BYTES + 1),
         }));
         view.revoke().await;
+    }
+
+    #[tokio::test]
+    async fn viewer_request_headers_larger_than_peek_buffer_are_consumed_completely() {
+        let (mut writer, mut reader) = tokio::io::duplex(MAX_HTTP_HEADER_BYTES + 1024);
+        let request = format!(
+            "GET /token/ HTTP/1.1\r\nX-Filler: {}\r\n\r\n",
+            "x".repeat(5 * 1024)
+        );
+        let expected = request.as_bytes().to_vec();
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            writer.write_all(&expected).await.unwrap();
+        });
+
+        let header = read_http_header(&mut reader).await.unwrap();
+        assert!(header.len() > 4096);
+        assert!(header.ends_with(b"\r\n\r\n"));
+        assert!(String::from_utf8(header).unwrap().contains("X-Filler:"));
+    }
+
+    #[tokio::test]
+    async fn viewer_rejects_terminated_headers_over_the_size_limit() {
+        let (mut writer, mut reader) = tokio::io::duplex(MAX_HTTP_HEADER_BYTES + 1024);
+        let request = format!(
+            "GET /token/ HTTP/1.1\r\nX-Filler: {}\r\n\r\n",
+            "x".repeat(MAX_HTTP_HEADER_BYTES)
+        );
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            writer.write_all(request.as_bytes()).await.unwrap();
+        });
+
+        let error = read_http_header(&mut reader).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("headers exceed the bounded size")
+        );
     }
 }

@@ -681,12 +681,8 @@ impl CdpBrowserSession {
         expected_browser_ws_url: Option<&str>,
     ) -> BrowserResult<Self> {
         let startup_started = Instant::now();
-        if let Some((width, height)) = viewport
-            && (!(320..=10000).contains(&width) || !(240..=10000).contains(&height))
-        {
-            return Err(
-                "viewport dimensions must be width 320..10000 and height 240..10000".into(),
-            );
+        if let Some((width, height)) = viewport {
+            validate_viewport_dimensions(width, height)?;
         }
         options.validate()?;
         if options.attach {
@@ -1073,6 +1069,7 @@ impl CdpBrowserSession {
         if width == 0 && height == 0 {
             self.cdp.clear_device_metrics_override().await?;
         } else {
+            validate_viewport_dimensions(width, height)?;
             self.cdp
                 .set_device_metrics_override(
                     width,
@@ -1279,6 +1276,13 @@ impl CdpBrowserSession {
         drop(self.disposable_profile.take());
         shutdown_result
     }
+}
+
+fn validate_viewport_dimensions(width: i64, height: i64) -> BrowserResult<()> {
+    if !(320..=10000).contains(&width) || !(240..=10000).contains(&height) {
+        return Err("viewport dimensions must be width 320..10000 and height 240..10000".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

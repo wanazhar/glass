@@ -9732,6 +9732,9 @@ document.body.textContent = window.dialogTrace.join("|");
                 headed: false,
                 chrome_path: None,
                 policy,
+                interaction_mode: crate::browser::session::InteractionMode::Human,
+                audit: false,
+                viewport: None,
                 native_config: Some(NativeEngineConfig::default().with_storage_path(&storage_path)),
             },
         ));

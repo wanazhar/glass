@@ -468,6 +468,11 @@ impl DevelopmentToolRouter {
                 string("name")?,
                 required_string(call, "command")?,
             )),
+            "glass.command.run" => map_service(workspace.project_mut().run_verification(
+                string("name")?,
+                required_string(call, "command")?,
+                timeout(call, 300)?.unwrap_or(Duration::from_secs(30)),
+            )),
             "glass.process.stop" => {
                 map_service(workspace.project_mut().stop_process(string("name")?))
             }
@@ -916,11 +921,21 @@ impl DevelopmentToolRouter {
                     .unwrap_or_else(|| serde_json::json!({})),
                 timeout(call, 60)?.unwrap_or(Duration::from_secs(10)),
             )),
-            "glass.lsp.diagnostics" => map_service(workspace.language().diagnostics(
-                string("server")?,
-                &actor,
-                string("path")?,
-            )),
+            "glass.lsp.diagnostics" => {
+                let server = string("server")?.to_string();
+                let path = string("path")?.to_string();
+                let diagnostics = map_service(
+                    workspace
+                        .language()
+                        .diagnostics(&server, &actor, &path),
+                )?;
+                let diagnostics: Vec<crate::development::LanguageDiagnostic> =
+                    serde_json::from_value(diagnostics)?;
+                workspace
+                    .project_mut()
+                    .publish_diagnostics(&path, diagnostics.clone())?;
+                Ok(serde_json::to_value(diagnostics)?)
+            }
             "glass.lsp.hover" => map_service(workspace.language().hover(
                 string("server")?,
                 &actor,
@@ -1721,9 +1736,13 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.entries",
         "glass.agent.stats",
         "glass.debug.events",
+        "glass.debug.stack",
         "glass.debug.inspect",
         "glass.debug.processes",
         "glass.debug.threads",
+        "glass.debug.scopes",
+        "glass.debug.variables",
+        "glass.debug.evaluate",
         "glass.graph.source",
         "glass.todo.list",
         "glass.task.list",
@@ -1858,6 +1877,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.editor.checkpoint.create",
         "glass.editor.checkpoint.restore",
         "glass.process.start",
+        "glass.command.run",
         "glass.process.stop",
         "glass.process.restart",
         "glass.process.input",
@@ -2042,6 +2062,159 @@ fn confined_worktree_path(workspace_root: &Path, path: &Path) -> DevelopmentResu
     Ok(canonical_parent.join(name))
 }
 
+fn lsp_debug_schema(name: &str) -> Option<serde_json::Value> {
+    use serde_json::json;
+
+    let mut properties = serde_json::Map::new();
+    let mut required: Vec<String> = Vec::new();
+    let mut add = |key: &str, value: serde_json::Value, is_required: bool| {
+        properties.insert(key.to_string(), value);
+        if is_required {
+            required.push(key.to_string());
+        }
+    };
+    let string = json!({"type":"string", "minLength":1});
+    let integer = json!({"type":"integer", "minimum":0});
+    match name {
+        "glass.lsp.start" => {
+            add("server", string.clone(), true);
+            add("command", string.clone(), false);
+            add(
+                "arguments",
+                json!({"type":"array", "items":{"type":"string"}}),
+                false,
+            );
+        }
+        "glass.lsp.stop" => add("server", string.clone(), true),
+        "glass.lsp.events" => add("since", integer.clone(), false),
+        "glass.lsp.raw" => {
+            add("server", string.clone(), true);
+            add("method", string.clone(), true);
+            add("params", json!({"type":"object"}), false);
+            add("timeoutSeconds", integer.clone(), false);
+        }
+        name if name.starts_with("glass.lsp.") => {
+            let operation = name.trim_start_matches("glass.lsp.");
+            if matches!(operation, "list") {
+                return Some(
+                    json!({"type":"object", "properties":{}, "additionalProperties":false}),
+                );
+            }
+            add("server", string.clone(), true);
+            add(
+                "path",
+                string.clone(),
+                !matches!(operation, "workspace_symbols"),
+            );
+            match operation {
+                "workspace_symbols" => add("query", string.clone(), true),
+                "hover" | "completion" => {
+                    add("line", json!({"type":"integer", "minimum":1}), false);
+                    add("character", json!({"type":"integer", "minimum":1}), false);
+                }
+                "definition" | "declaration" | "implementation" | "references"
+                | "signature_help" => {
+                    add("line", integer.clone(), true);
+                    add("character", integer.clone(), true);
+                }
+                "rename" => {
+                    add("line", integer.clone(), true);
+                    add("character", integer.clone(), true);
+                    add("newName", string.clone(), true);
+                }
+                "code_actions" | "range_formatting" => {
+                    add(
+                        "start",
+                        json!({"type":"object", "required":["line","character"], "properties":{"line":integer.clone(),"character":integer.clone()}, "additionalProperties":false}),
+                        true,
+                    );
+                    add(
+                        "end",
+                        json!({"type":"object", "required":["line","character"], "properties":{"line":integer.clone(),"character":integer.clone()}, "additionalProperties":false}),
+                        true,
+                    );
+                    if operation == "code_actions" {
+                        add(
+                            "diagnostics",
+                            json!({"type":"array", "items":{"type":"object"}}),
+                            false,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        name if name.starts_with("glass.debug.") => {
+            let operation = name.trim_start_matches("glass.debug.");
+            if matches!(operation, "list") {
+                return Some(
+                    json!({"type":"object", "properties":{}, "additionalProperties":false}),
+                );
+            }
+            add("session", string.clone(), true);
+            match operation {
+                "start" => {
+                    add("command", string.clone(), false);
+                    add(
+                        "arguments",
+                        json!({"type":"array", "items":{"type":"string"}}),
+                        false,
+                    );
+                    add("tcpAddress", string.clone(), false);
+                    add("connectTimeoutMs", integer.clone(), false);
+                    add("timeoutSeconds", integer.clone(), false);
+                }
+                "launch" | "attach" | "restart" => add(
+                    "configuration",
+                    json!({"type":"object"}),
+                    operation != "restart",
+                ),
+                "breakpoint.set" => {
+                    add("path", string.clone(), true);
+                    add(
+                        "lines",
+                        json!({"type":"array", "minItems":1, "items":{"type":"integer", "minimum":0}}),
+                        true,
+                    );
+                }
+                "breakpoint.remove" => add("path", string.clone(), true),
+                "exception.set" => add(
+                    "filters",
+                    json!({"type":"array", "items":{"type":"string"}}),
+                    false,
+                ),
+                "continue" | "pause" => add("threadId", integer.clone(), true),
+                "step" => {
+                    add("threadId", integer.clone(), true);
+                    add(
+                        "kind",
+                        json!({"type":"string", "enum":["over","in","out"]}),
+                        true,
+                    );
+                }
+                "stack" => add("threadId", integer.clone(), true),
+                "scopes" => add("frameId", integer.clone(), true),
+                "variables" => add("variablesReference", integer.clone(), true),
+                "evaluate" => {
+                    add("expression", string.clone(), true);
+                    add("frameId", integer.clone(), false);
+                    add("context", string.clone(), false);
+                }
+                "disconnect" => add("terminateDebuggee", json!({"type":"boolean"}), false),
+                "terminate" => add("restart", json!({"type":"boolean"}), false),
+                _ => {}
+            }
+        }
+        _ => return None,
+    }
+    Some(json!({
+        "type":"object",
+        "properties":properties,
+        "required":required,
+        "additionalProperties":false
+    }))
+}
+
 fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
     let (description, input_schema) = if name == "glass.agent.send" {
         (
@@ -2063,6 +2236,20 @@ fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
                     }
                 },
                 "required": ["text"],
+                "additionalProperties": false
+            }),
+        )
+    } else if name == "glass.command.run" {
+        (
+            "Run one bounded project command and return its terminal result".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type":"string", "minLength":1, "maxLength":128},
+                    "command": {"type":"string", "minLength":1, "maxLength":8192},
+                    "timeoutSeconds": {"type":"integer", "minimum":1, "maximum":300}
+                },
+                "required": ["name", "command"],
                 "additionalProperties": false
             }),
         )
@@ -2133,6 +2320,8 @@ fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
                 "additionalProperties": false
             }),
         )
+    } else if let Some(schema) = lsp_debug_schema(name) {
+        (format!("Resident Glass Dev operation {name}"), schema)
     } else {
         (
             format!("Resident Glass Dev operation {name}"),
@@ -3878,5 +4067,38 @@ mod tests {
         let rest = &source[start + 1..];
         let end = rest.find('"')?;
         Some(rest[..end].to_string())
+    }
+
+    #[test]
+    fn lsp_and_debugger_descriptors_publish_required_argument_schemas() {
+        let descriptors = service_descriptors();
+        let schema = |name: &str| {
+            &descriptors
+                .iter()
+                .find(|descriptor| descriptor.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"))
+                .input_schema
+        };
+        assert_eq!(
+            schema("glass.lsp.diagnostics")["required"],
+            json!(["server", "path"])
+        );
+        assert_eq!(
+            schema("glass.lsp.definition")["required"],
+            json!(["server", "path", "line", "character"])
+        );
+        assert_eq!(schema("glass.debug.start")["required"], json!(["session"]));
+        assert_eq!(
+            schema("glass.debug.launch")["required"],
+            json!(["session", "configuration"])
+        );
+        assert_eq!(
+            schema("glass.debug.step")["properties"]["kind"]["enum"],
+            json!(["over", "in", "out"])
+        );
+        assert_eq!(
+            schema("glass.debug.variables")["required"],
+            json!(["session", "variablesReference"])
+        );
     }
 }

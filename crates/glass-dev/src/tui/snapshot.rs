@@ -142,7 +142,6 @@ pub struct SnapshotWorker {
     visual_results: Receiver<VisualJobResult>,
     next_job_id: u64,
     next_visual_id: u64,
-    running_job: Arc<AtomicBool>,
     refresh_requested: Arc<AtomicBool>,
     conversation_requested: Arc<AtomicBool>,
     visual_requested: Arc<AtomicBool>,
@@ -156,8 +155,6 @@ impl SnapshotWorker {
         let (request_tx, request_rx) = channel::<ActorRequest>();
         let (job_result_tx, job_result_rx) = channel::<ToolJobResult>();
         let (visual_result_tx, visual_result_rx) = channel::<VisualJobResult>();
-        let running_job = Arc::new(AtomicBool::new(false));
-        let worker_running_job = Arc::clone(&running_job);
         let refresh_requested = Arc::new(AtomicBool::new(false));
         let conversation_requested = Arc::new(AtomicBool::new(false));
         let worker_refresh_requested = Arc::clone(&refresh_requested);
@@ -178,7 +175,6 @@ impl SnapshotWorker {
                     request_rx,
                     job_result_tx,
                     visual_result_tx,
-                    worker_running_job,
                     worker_refresh_requested,
                     worker_conversation_requested,
                     worker_visual_requested,
@@ -199,7 +195,6 @@ impl SnapshotWorker {
             visual_results: visual_result_rx,
             next_job_id: 1,
             next_visual_id: 1,
-            running_job,
             refresh_requested,
             conversation_requested,
             visual_requested,
@@ -304,9 +299,10 @@ impl SnapshotWorker {
 impl Drop for SnapshotWorker {
     fn drop(&mut self) {
         let _ = self.requests.send(ActorRequest::ShutDown);
-        if let Some(handle) = self.handle.take()
-            && !self.running_job.load(Ordering::Acquire)
-        {
+        // Always reap the worker, including an in-flight tool call. The TUI
+        // declares its terminal guard after this worker, so raw mode and the
+        // alternate screen are restored before this join can wait.
+        if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
     }
@@ -318,7 +314,6 @@ fn worker_loop(
     requests: Receiver<ActorRequest>,
     job_results: Sender<ToolJobResult>,
     visual_results: Sender<VisualJobResult>,
-    running_job: Arc<AtomicBool>,
     refresh_requested: Arc<AtomicBool>,
     conversation_requested: Arc<AtomicBool>,
     visual_requested: Arc<AtomicBool>,
@@ -364,7 +359,6 @@ fn worker_loop(
                 });
             }
             ActorRequest::Tool(job) => {
-                running_job.store(true, Ordering::Release);
                 let tool = job.call.name.clone();
                 let result = workspace
                     .lock()
@@ -375,7 +369,6 @@ fn worker_loop(
                     tool,
                     result,
                 });
-                running_job.store(false, Ordering::Release);
             }
             ActorRequest::RefreshConversation => {
                 conversation_requested.store(false, Ordering::Release);

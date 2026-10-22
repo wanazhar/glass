@@ -1741,12 +1741,8 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, _mode: 
     );
 }
 
-fn editor_mark_glyphs(state: &DevTuiState) -> Vec<(u32, char)> {
-    state
-        .editor_gutter_marks()
-        .into_iter()
-        .map(|(line, mark)| (line, mark.glyph()))
-        .collect()
+fn editor_mark_glyphs(state: &DevTuiState) -> Vec<(u32, String)> {
+    file_view::coalesce_editor_marks(state.editor_gutter_marks())
 }
 
 fn compact_path(path: &str, width: u16) -> String {
@@ -2314,6 +2310,55 @@ fn agent_conversation_text(state: &DevTuiState, landing: &str, width: u16) -> Te
     }
     Text::from(lines)
 }
+
+fn agent_landing(state: &DevTuiState) -> String {
+    let conversation = state.conversation_view();
+    if !conversation.starts_with("No conversation yet.") {
+        return conversation;
+    }
+    if state.agent_readiness.starts_with("✓ Ready") {
+        return "START HERE\nDescribe a coding task.\nEnter to chat or type a message.\n: actions open Glass tools and settings.\nGlass can inspect, edit, run, and verify.\nOpen the browser for UI work.".into();
+    }
+    if crate::ResidentHarnessKind::from_env() == crate::ResidentHarnessKind::GlassCore {
+        return "SETUP\nConfigure glass-core with a provider and credentials.\nUse :actions to inspect available agent setup options.\nThen Enter or type to chat.".into();
+    }
+    "SETUP\nPress :actions.\nChoose Setup Pi runtime · Enter to install.\nChoose Authenticate if installed.\nThen Enter or type to chat.".into()
+}
+
+pub(super) fn agent_conversation_scroll_end(state: &DevTuiState) -> usize {
+    let screen = Rect::new(0, 0, state.terminal_width, state.terminal_height);
+    let area = surface_area(state, screen);
+    let compact = matches!(
+        state.responsive_class(area.width, area.height),
+        ResponsiveClass::Phone | ResponsiveClass::Compact
+    );
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if compact {
+            [Constraint::Length(4), Constraint::Min(5)]
+        } else {
+            [Constraint::Length(4), Constraint::Min(6)]
+        })
+        .split(area);
+    let conversation_area = if compact || area.width < 84 {
+        rows[1]
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(68), Constraint::Min(24)])
+            .split(rows[1])[0]
+    };
+    let content_width = conversation_area.width.saturating_sub(4).max(1);
+    let landing = agent_landing(state);
+    let text = agent_conversation_text(state, &landing, content_width);
+    let wrapped_lines = text
+        .lines
+        .iter()
+        .map(|line| line.width().max(1).div_ceil(usize::from(content_width)))
+        .sum::<usize>();
+    wrapped_lines.saturating_sub(usize::from(conversation_area.height.saturating_sub(2)))
+}
+
 fn render_agent_conversation_panel(
     frame: &mut Frame<'_>,
     state: &DevTuiState,
@@ -2353,16 +2398,7 @@ fn render_agent_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
     let header = compact_agent_header(state, rows[0].width.saturating_sub(4));
     render_panel(frame, rows[0], " CODING AGENT ", header, ACCENT_BRIGHT);
 
-    let conversation = state.conversation_view();
-    let landing = if conversation.starts_with("No conversation yet.") {
-        if state.agent_readiness.starts_with("✓ Ready") {
-            "START HERE\nDescribe a coding task.\nEnter to chat or type a message.\n/ Pi commands · : Glass actions\nGlass inspects, edits, runs, verifies.\nBrowser opens only for UI work.".into()
-        } else {
-            "SETUP\nPress :actions.\nChoose Setup Pi runtime · Enter to install.\nChoose Authenticate if installed.\nThen Enter or type to chat.".into()
-        }
-    } else {
-        conversation
-    };
+    let landing = agent_landing(state);
     if compact || area.width < 84 {
         render_agent_conversation_panel(frame, state, &landing, rows[1]);
         return;
@@ -3972,7 +4008,7 @@ pub(crate) fn more_route_at(state: &DevTuiState, column: u16, row: u16) -> Optio
         return None;
     }
     let index = usize::from(row - route.content.y).saturating_add(route.scroll_offset);
-    (index < DevTuiState::MORE_ROUTES.len()).then_some(index)
+    (index < DevTuiState::more_route_actions().len()).then_some(index)
 }
 
 fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -4044,7 +4080,7 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         let route_title = format!(
             " ROUTES · {}/{} ",
             state.selected_more + 1,
-            DevTuiState::MORE_ROUTES.len()
+            DevTuiState::more_route_actions().len()
         );
         render_scrolled_panel(
             frame,
@@ -4144,16 +4180,16 @@ fn more_experiment_content(state: &DevTuiState) -> String {
 }
 
 fn more_route_lines(state: &DevTuiState) -> Vec<String> {
-    crate::tui::state::DevTuiState::MORE_ROUTES
+    DevTuiState::more_route_actions()
         .iter()
         .enumerate()
-        .map(|(index, route)| {
+        .map(|(index, action)| {
             let marker = if index == state.selected_more {
                 "›"
             } else {
                 " "
             };
-            format!("{marker} {route}")
+            format!("{marker} {}", action.label)
         })
         .collect()
 }
@@ -5209,11 +5245,12 @@ mod tests {
         let mut state = state(TuiLayout::Mobile);
         state.surface = DevSurface::Agent;
         state.agent_readiness = "○ Needs setup".into();
-        let output = rendered(&state, 48, 18);
+        let output = agent_landing(&state);
 
         assert!(output.contains("SETUP"));
-        assert!(output.contains("Press :actions"));
-        assert!(output.contains("Enter to install"));
+        assert!(output.contains("Configure glass-core with a provider and credentials"));
+        assert!(output.contains(":actions"));
+        assert!(output.contains("Then Enter or type to chat"));
     }
 
     #[test]
@@ -5278,7 +5315,7 @@ mod tests {
         assert!(output.contains("VISUAL PLANE"));
         if state.agent_readiness.starts_with("✓ Ready") {
             assert!(output.contains("Describe a coding task"));
-            assert!(output.contains("Browser opens only for UI work"));
+            assert!(output.contains("Open the browser for UI work"));
         }
 
         state.git_diff_open = true;
@@ -5407,11 +5444,11 @@ mod tests {
     fn phone_more_route_selection_reports_position_and_keeps_marker_visible() {
         let mut state = state(TuiLayout::Mobile);
         state.surface = DevSurface::More;
-        state.selected_more = DevTuiState::MORE_ROUTES.len() - 1;
+        state.selected_more = DevTuiState::more_route_actions().len() - 1;
 
         let output = rendered(&state, 48, 18);
-        assert!(output.contains("ROUTES · 5/5"));
-        assert!(output.contains("› harness list"));
+        assert!(output.contains("ROUTES · 8/8"));
+        assert!(output.contains("› Cockpit status"));
     }
 
     #[test]
@@ -5428,11 +5465,17 @@ mod tests {
     fn more_phone_surface_shows_every_route_and_the_latest_result() {
         let mut state = state(TuiLayout::Mobile);
         state.surface = DevSurface::More;
-        let output = rendered(&state, 48, 18);
-        for route in DevTuiState::MORE_ROUTES {
-            assert!(output.contains(route), "missing phone route {route}");
+        for (index, action) in DevTuiState::more_route_actions().iter().enumerate() {
+            state.selected_more = index;
+            let output = rendered(&state, 48, 18);
+            assert!(
+                output.contains(action.label),
+                "missing phone route {}",
+                action.label
+            );
         }
 
+        state.selected_more = 0;
         state.more_result = "External harnesses · ● installed · ○ unavailable".into();
         let output = rendered(&state, 48, 18);
         assert!(output.contains("LAST External harnesses"));

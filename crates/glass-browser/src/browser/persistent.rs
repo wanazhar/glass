@@ -61,6 +61,8 @@ pub struct PersistentSessionConfig {
     pub headed: bool,
     pub chrome_path: Option<PathBuf>,
     pub policy_args: Vec<String>,
+    /// Global runtime flags forwarded to the owner process.
+    pub runtime_args: Vec<String>,
     #[cfg(feature = "native-engine")]
     pub native_config: Option<NativeEngineConfig>,
 }
@@ -81,6 +83,9 @@ pub struct PersistentSessionServeConfig {
     pub headed: bool,
     pub chrome_path: Option<PathBuf>,
     pub policy: BrowserPolicy,
+    pub interaction_mode: super::session::InteractionMode,
+    pub audit: bool,
+    pub viewport: Option<(i64, i64)>,
     #[cfg(feature = "native-engine")]
     pub native_config: Option<NativeEngineConfig>,
 }
@@ -303,10 +308,12 @@ pub async fn start(config: PersistentSessionConfig) -> BrowserResult<PersistentS
         if native_config.storage_path.is_none() {
             command.arg("--incognito");
         }
-        command.arg("--viewport").arg(format!(
-            "{}x{}",
-            native_config.viewport.width, native_config.viewport.height
-        ));
+        if !config.runtime_args.iter().any(|arg| arg == "--viewport") {
+            command.arg("--viewport").arg(format!(
+                "{}x{}",
+                native_config.viewport.width, native_config.viewport.height
+            ));
+        }
     }
     if config.headed {
         command.arg("--headed");
@@ -314,6 +321,7 @@ pub async fn start(config: PersistentSessionConfig) -> BrowserResult<PersistentS
     if let Some(chrome_path) = &config.chrome_path {
         command.arg("--chrome-path").arg(chrome_path);
     }
+    command.args(&config.runtime_args);
     for argument in config.policy_args.iter().skip(1) {
         command.arg(argument);
     }
@@ -443,6 +451,9 @@ async fn serve_chromium_unix(config: PersistentSessionServeConfig) -> BrowserRes
         headed,
         chrome_path,
         policy,
+        interaction_mode,
+        audit,
+        viewport,
         #[cfg(feature = "native-engine")]
             native_config: _,
     } = config;
@@ -462,32 +473,35 @@ async fn serve_chromium_unix(config: PersistentSessionServeConfig) -> BrowserRes
         profile: profile.clone(),
         chrome_path,
         headed,
-        policy: Some(policy),
+        policy: Some(policy.clone()),
+        interaction_mode,
+        audit,
         ..SessionOptions::default()
     };
 
-    let session = match CdpBrowserSession::start(&options).await {
-        Ok(session) => session,
-        Err(error) => {
-            let failed = PersistentSessionRecord {
-                schema_version: SESSION_SCHEMA_VERSION,
-                name,
-                runtime,
-                state: "failed".into(),
-                pid: std::process::id(),
-                browser_pid: 0,
-                port,
-                profile: profile.clone(),
-                headed,
-                socket: socket.to_path_buf(),
-                status_path: status_path.to_path_buf(),
-                started_at: chrono::Utc::now().to_rfc3339(),
-                error: Some(error.to_string()),
-            };
-            write_record(&status_path, &failed)?;
-            return Err(error);
-        }
-    };
+    let session =
+        match CdpBrowserSession::start_with_policy_and_viewport(&options, policy, viewport).await {
+            Ok(session) => session,
+            Err(error) => {
+                let failed = PersistentSessionRecord {
+                    schema_version: SESSION_SCHEMA_VERSION,
+                    name,
+                    runtime,
+                    state: "failed".into(),
+                    pid: std::process::id(),
+                    browser_pid: 0,
+                    port,
+                    profile: profile.clone(),
+                    headed,
+                    socket: socket.to_path_buf(),
+                    status_path: status_path.to_path_buf(),
+                    started_at: chrono::Utc::now().to_rfc3339(),
+                    error: Some(error.to_string()),
+                };
+                write_record(&status_path, &failed)?;
+                return Err(error);
+            }
+        };
     let record = PersistentSessionRecord {
         schema_version: SESSION_SCHEMA_VERSION,
         name,
@@ -561,6 +575,9 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
         profile,
         headed,
         chrome_path: _,
+        interaction_mode: _,
+        audit: _,
+        viewport: _,
     } = config;
     let native_config =
         native_config.ok_or("native persistent session is missing its engine configuration")?;
@@ -1818,6 +1835,9 @@ mod tests {
                         headed: false,
                         chrome_path: None,
                         policy,
+                        interaction_mode: super::super::session::InteractionMode::Human,
+                        audit: false,
+                        viewport: None,
                         native_config: Some(
                             NativeEngineConfig::default()
                                 .with_storage_path(root.join("storage.json")),
@@ -1992,7 +2012,12 @@ mod tests {
                     let follow_up_client = tokio::task::spawn_local(async move {
                         send_request_payload(&follow_up_socket, &follow_up).await
                     });
-                    tokio::time::timeout(Duration::from_secs(5), fast_request_rx)
+                    // The persistent test is exercising a real native worker;
+                    // allow its bounded startup path the same 30 seconds as the
+                    // following command result, rather than treating five
+                    // seconds without an accepted fixture request as a routing
+                    // failure under a cold test-process start.
+                    tokio::time::timeout(Duration::from_secs(30), fast_request_rx)
                         .await
                         .expect("follow-up navigation never reached the HTTP fixture")
                         .expect("HTTP fixture follow-up notification was dropped");

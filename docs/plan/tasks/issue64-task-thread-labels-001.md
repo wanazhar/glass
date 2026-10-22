@@ -1,7 +1,7 @@
 ---
 id: issue64-task-thread-labels-001
 scope: issue-64-project-thread-identity
-status: in-progress
+status: complete
 depends-on: [issue64-project-thread-picker-001]
 ---
 
@@ -38,10 +38,12 @@ for manually spawned agents and safely handling missing or unassigned tasks.
 ## Evidence
 
 `project_thread_picker_items` joins task snapshots to resident agents by the
-scheduler's `assigned_agent` field in both the direct refresh and immutable
-snapshot paths. Assigned conversations show `role · task-id · task title`;
-unassigned tasks do not label unrelated agents, and agents with no assignment
-keep the existing role-only title. The focused
+scheduler's recorded `assigned_agent` association in both the direct refresh
+and immutable snapshot paths. Assigned conversations show
+`role · task-id · task title`; the scheduler may retain an association after a
+task becomes terminal so the picker can still identify its thread during later
+review. Unassigned tasks do not label unrelated agents, and agents with no
+assignment keep the existing role-only title. The focused
 `task_assigned_threads_show_task_identity_and_other_threads_keep_role` unit test
 checks two `developer` assignments, one unassigned task, and a manually spawned
 agent.
@@ -54,3 +56,6 @@ with `CARGO_TARGET_DIR=/home/ubuntu/work/glass/target`. Strict scoped Clippy
 pass. Coverage used the existing shared root binaries through explicit
 `--glass` and `--glass-browser` paths because this isolated worktree has no
 local `target/debug` binaries. No disk cleanup or global build was performed.
+
+Independent review passed after clarifying the retained terminal-task
+association: [review record](../reviews/issue64-task-thread-labels-001-01.md).

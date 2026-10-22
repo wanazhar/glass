@@ -288,7 +288,8 @@ fn project_thread_picker_title(
         )
 }
 
-/// Build conversation labels from the task scheduler's current assignments.
+/// Build conversation labels from the task-to-agent associations recorded by
+/// the scheduler, including retained associations for terminal tasks.
 /// Agents without a matching assigned task retain their role-only label.
 pub(super) fn project_thread_picker_items(
     agents: &[crate::AgentSnapshot],

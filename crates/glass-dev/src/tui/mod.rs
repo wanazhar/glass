@@ -577,6 +577,29 @@ pub(crate) fn run_with_browser_policy(
                             KeyCode::Down | KeyCode::Char('j') => state.move_attention_selection(1),
                             _ => {}
                         }
+                    } else if active_overlay == Some(overlay::ActiveOverlay::ThreadPicker) {
+                        match key.code {
+                            KeyCode::Esc => state.close_thread_picker(),
+                            KeyCode::Enter => state.activate_thread_picker_selection(),
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                state.move_thread_picker_selection(-1)
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                state.move_thread_picker_selection(1)
+                            }
+                            _ => {}
+                        }
+                    } else if state.surface == DevSurface::Agent
+                        && matches!(
+                            active_overlay,
+                            None | Some(overlay::ActiveOverlay::Composer)
+                        )
+                        && key.code == KeyCode::Char('T')
+                        && key
+                            .modifiers
+                            .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+                    {
+                        state.open_thread_picker();
                     } else if matches!(
                         active_overlay,
                         None | Some(overlay::ActiveOverlay::Composer)
@@ -1492,10 +1515,10 @@ pub(crate) fn run_with_browser_policy(
 fn terminal_overlay_mask(state: &DevTuiState) -> u32 {
     let overlay = overlay::active_overlay(state)
         .map(|active| {
-            let bit = if active == overlay::ActiveOverlay::AttentionInbox {
-                30
-            } else {
-                16 + active as u32
+            let bit = match active {
+                overlay::ActiveOverlay::AttentionInbox => 30,
+                overlay::ActiveOverlay::ThreadPicker => 29,
+                _ => 16 + active as u32,
             };
             1_u32 << bit
         })

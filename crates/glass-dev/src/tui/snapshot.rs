@@ -81,6 +81,7 @@ pub struct DisplaySnapshot {
     /// Typed lifecycle state for each resident agent; the TUI uses this to
     /// replace optimistic "thinking" copy when a turn actually settles.
     pub agent_states: Vec<(crate::AgentId, crate::AgentStatus)>,
+    pub thread_picker_items: Vec<super::state::ThreadPickerItem>,
     pub pending_agent_approvals: Vec<super::state::PendingAgentApproval>,
     pub editor_proposals: Vec<crate::development::EditorProposal>,
     pub harnesses: String,
@@ -563,6 +564,19 @@ fn compute_snapshot(
             agents
                 .iter()
                 .map(|agent| (agent.id.clone(), agent.status))
+                .collect()
+        })
+        .unwrap_or_default();
+    snapshot.thread_picker_items = agent_snapshots
+        .as_ref()
+        .map(|agents| {
+            agents
+                .iter()
+                .map(|agent| super::state::ThreadPickerItem {
+                    agent_id: agent.id.clone(),
+                    title: agent.role.clone(),
+                    status: agent.status.label().to_owned(),
+                })
                 .collect()
         })
         .unwrap_or_default();

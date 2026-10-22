@@ -95,7 +95,8 @@ setup/login failure leaves the workspace available for retry.
 
 Talk from any surface. `Ctrl-L` opens the shared composer dock (not a redraw).
 `Alt-A` docks from the editor. Default mode is Agent. `Ctrl-Shift-A` cycles
-Ask, Plan, and Agent; `/ask`, `/plan`, `/agent`, and `/todo` also set the mode.
+Ask, Plan, and Agent; `Ctrl-Shift-T` opens the project conversation picker.
+`/ask`, `/plan`, `/agent`, and `/todo` also set the mode.
 Ask and Plan are fail-closed for mutations. `Enter` sends and keeps the dock
 open; `Esc` closes it. `Ctrl-D` toggles steer mode; follow-up mode queues a
 message. Sent prompts remain as `YOU`, and `GLASS AGENT` streams replies and

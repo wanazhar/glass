@@ -65,8 +65,13 @@ and confirmed `NeedsReview` retry are also complete; see the [queue
 retarget/retry journey](tasks/issue64-queue-retarget-retry-001.md). The
 Task state now checkpoints durably and assigned work is classified
 recovery-pending after restart; see the [durable scheduler recovery
-slice](tasks/issue64-task-scheduler-recovery-001.md). Combined
-task/queue/thread recovery journeys remain open.
+slice](tasks/issue64-task-scheduler-recovery-001.md). The combined allocated
+PTY restart journey also passes: task recovery, task-to-thread identity, and
+queue identity survive reopen without automatic task or queue prompt replay;
+explicit task resume creates one new Core session. See the [combined task,
+thread, and queue recovery journey](tasks/issue64-task-thread-queue-restart-001.md).
+The final broader keyboard, review, provider-coding, and package-validation
+acceptance remains open.
 The completed [TaskScheduler project-thread journey](tasks/issue64-task-thread-journey-001.md)
 verifies that task creation, task snapshots, task-labeled conversations, and
 durable thread drafts are connected in the live TUI, including cursor

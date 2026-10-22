@@ -92,6 +92,44 @@ def run_turn(identifier, params: dict) -> None:
     turn = "turn-1"
     event("turn_start", {}, turn)
     gate_root = os.path.join(os.getcwd(), ".glass")
+    if "issue64-task-recovery-prompt" in text:
+        if os.path.exists(os.path.join(gate_root, "e2e-core-task-recovery-gate")):
+            with open(
+                os.path.join(gate_root, "e2e-core-task-recovery-pid"), "w", encoding="utf-8"
+            ) as marker:
+                marker.write(str(os.getpid()))
+            with open(
+                os.path.join(gate_root, "e2e-core-task-recovery-started"), "w", encoding="utf-8"
+            ) as marker:
+                marker.write("started")
+            deadline = time.monotonic() + 30
+            while not os.path.exists(os.path.join(gate_root, "e2e-core-task-recovery-release")):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("timed out waiting for task recovery test release")
+                time.sleep(0.02)
+        if os.path.exists(os.path.join(gate_root, "e2e-core-task-recovery-resumed")):
+            with open(
+                os.path.join(gate_root, "e2e-core-task-recovery-resumed-pid"),
+                "w",
+                encoding="utf-8",
+            ) as marker:
+                marker.write(str(os.getpid()))
+            if os.path.exists(
+                os.path.join(gate_root, "e2e-core-task-recovery-resume-gate")
+            ):
+                with open(
+                    os.path.join(gate_root, "e2e-core-task-recovery-resume-started"),
+                    "w",
+                    encoding="utf-8",
+                ) as marker:
+                    marker.write("started")
+                deadline = time.monotonic() + 30
+                while not os.path.exists(
+                    os.path.join(gate_root, "e2e-core-task-recovery-resume-release")
+                ):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("timed out waiting for resumed task test release")
+                    time.sleep(0.02)
     if "active-run-queue-target" in text and os.path.exists(
         os.path.join(gate_root, "e2e-core-active-steer")
     ):
@@ -176,11 +214,13 @@ def run_turn(identifier, params: dict) -> None:
 
 
 def main() -> None:
-    global STORAGE_DIR, MODE
+    global STORAGE_DIR, MODE, SESSION_ID
     # Glass appends `runtime` to every engine invocation. Ignore that command
     # argument when no fixture mode was explicitly supplied.
     mode = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] != "runtime" else "mixed"
     MODE = mode
+    if os.path.exists(os.path.join(os.getcwd(), ".glass", "e2e-core-unique-session-ids")):
+        SESSION_ID = f"fixture-session-{os.getpid()}"
     runtime_version = "0.1.0" if mode == "older-version-v2" else "0.3.14"
     for line in sys.stdin:
         line = line.strip()

@@ -1014,7 +1014,11 @@ fn follow_up_queue_edits_persist_without_automatic_dispatch() {
     session.trust_project();
     assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
     session.send(b":agent spawn queue-owner queue persistence\r");
-    assert!(session.wait_for("Spawned agent-0001", Duration::from_secs(5)));
+    assert!(
+        session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
+        "queue-owner agent did not spawn\n{}",
+        session.output_tail()
+    );
     send_ctrl_shift_t(&mut session);
     assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
     assert!(session.wait_for("queue-owner", Duration::from_secs(5)));
@@ -1300,6 +1304,120 @@ fn project_thread_picker_is_discoverable_at_desktop_and_compact_sizes() {
         let _ = std::fs::remove_file(fake_core);
         let _ = std::fs::remove_dir_all(root);
     }
+}
+
+#[test]
+fn live_core_response_crash_reopens_as_uncertain_without_replay() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = git_workspace_root();
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    std::fs::write(fixture_state.join("e2e-core-recovery-gate"), "enabled").unwrap();
+    let fake_core = fake_core_binary(&root);
+    let prompt = "live-response-crash-window";
+    let mut session = Session::start_with_core_binary(&binary(), &root, 80, 24, Some(&fake_core));
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.trust_project();
+    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    session.send(b":agent spawn crash-owner recovery check\r");
+    assert!(
+        session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
+        "resident agent did not spawn\n{}",
+        session.output_tail()
+    );
+    send_ctrl_shift_t(&mut session);
+    assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
+    assert!(session.wait_for("crash-owner", Duration::from_secs(5)));
+    session.send(b"\r\r");
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    session.send(prompt.as_bytes());
+    session.send(b"\r");
+
+    let started = fixture_state.join("e2e-core-recovery-started");
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while !started.exists() && Instant::now() < deadline {
+        session.settle(Duration::from_millis(50));
+    }
+    assert!(
+        started.exists(),
+        "fake Core did not enter the live response window\n{}",
+        session.output_tail()
+    );
+    let registry_path = fixture_state.join("threads/registry.json");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let working_registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        if registry["threads"][0]["sendAttempts"][0]["status"] == "working"
+            || Instant::now() >= deadline
+        {
+            break registry;
+        }
+        session.settle(Duration::from_millis(50));
+    };
+    assert_eq!(
+        working_registry["threads"][0]["sendAttempts"][0]["status"], "working",
+        "the interruption must happen after Glass persisted an active delivery"
+    );
+    let runtime_pid = std::fs::read_to_string(fixture_state.join("e2e-core-recovery-pid"))
+        .expect("fixture recorded its exact child pid");
+    let runtime_pid = runtime_pid.trim();
+    assert!(runtime_pid.parse::<u32>().is_ok());
+
+    // Kill the Glass UI first, leaving the runtime blocked before its response;
+    // then stop only this test's fake Core child so it cannot outlive the case.
+    session.kill();
+    let _ = Command::new("kill").args(["-9", runtime_pid]).status();
+
+    let mut reopened = Session::start_with_core_binary(&binary(), &root, 80, 24, Some(&fake_core));
+    assert!(reopened.wait_for("GLASS", Duration::from_secs(8)));
+    reopened.trust_project();
+    assert!(reopened.wait_for("✓ Ready", Duration::from_secs(8)));
+    send_ctrl_shift_a(&mut reopened);
+    assert!(reopened.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
+    assert!(
+        reopened.wait_for("Message delivery uncertain", Duration::from_secs(8)),
+        "the interrupted live send was not classified for inspection\n{}",
+        reopened.output_tail()
+    );
+    reopened.send(b"\r");
+    assert!(
+        reopened.wait_for("Message delivery is uncertain", Duration::from_secs(5)),
+        "attention item did not open its owning conversation\n{}",
+        reopened.output_tail()
+    );
+
+    let registry: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+    let attempts = registry["threads"][0]["sendAttempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0]["status"], "uncertain");
+    assert!(
+        attempts[0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains(prompt)),
+        "uncertain attempt lost the user prompt: {registry}"
+    );
+    let requests = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+        .expect("fake Core request log is present");
+    assert_eq!(
+        requests
+            .lines()
+            .filter(|line| {
+                serde_json::from_str::<serde_json::Value>(line)
+                    .ok()
+                    .is_some_and(|request| request["method"] == "turn/prompt")
+            })
+            .count(),
+        1,
+        "reopening must not replay the interrupted request"
+    );
+    reopened.kill();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

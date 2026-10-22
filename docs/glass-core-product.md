@@ -3,7 +3,9 @@
 Glass Core is the coding harness used by Glass resident agents. It is also a
 standalone product: its `glass-core` package, `gc` command alias, terminal
 interface, optional web assets, installer, and license notices remain usable
-without installing Glass Dev or its browser packages.
+without installing Glass Dev or its browser packages. Glass negotiates runtime
+protocol v2 with the `mixedTools` capability; the standalone runtime keeps its
+local and generic host modes.
 
 The Rust packages live under [`crates/`](../crates/glass-core/Cargo.toml) in
 the root Cargo workspace. They share the root package version, currently

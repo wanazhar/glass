@@ -191,6 +191,7 @@ type HostedExecution<'a> = (Vec<(String, String, String)>, HostExecutor<'a>);
 
 pub struct Agent<'a> {
     hosted: Option<HostedExecution<'a>>,
+    mixed_hosted: Option<HostedExecution<'a>>,
     host_attachments: Vec<Record>,
     pub provider: &'a dyn Provider,
     pub session: &'a mut Session,
@@ -363,6 +364,7 @@ impl<'a> Agent<'a> {
         extensions.bind_session_path(session.path.clone());
         Self {
             hosted: None,
+            mixed_hosted: None,
             host_attachments: Vec::new(),
             provider,
             session,
@@ -444,11 +446,22 @@ impl<'a> Agent<'a> {
         self
     }
 
+    /// Register a host-owned integration catalog alongside Core's native
+    /// tools. Names in this catalog must be explicitly namespaced by the host.
+    pub fn with_mixed_host_tools(
+        mut self,
+        tools: Vec<(String, String, String)>,
+        execute: HostExecutor<'a>,
+    ) -> Self {
+        self.mixed_hosted = Some((tools, execute));
+        self
+    }
+
     fn tool_set(&self) -> Vec<(String, String, String)> {
         if let Some((tools, _)) = &self.hosted {
             return tools.clone();
         }
-        if self.read_only {
+        let mut tools = if self.read_only {
             let mut tools = crate::inspect::schema();
             if self.input_keys.is_some() || self.human.is_some() {
                 tools.push(crate::questions::schema());
@@ -466,7 +479,11 @@ impl<'a> Agent<'a> {
                 tools.extend(crate::provider::checkpoint_tool_schemas());
             }
             tools
+        };
+        if let Some((host_tools, _)) = &self.mixed_hosted {
+            tools.extend(host_tools.iter().cloned());
         }
+        tools
     }
 
     pub fn with_recovery(mut self, recovering: bool) -> Self {
@@ -1640,6 +1657,49 @@ impl<'a> Agent<'a> {
                 }
             }
             self.hosted = Some((schemas, execute));
+            return;
+        }
+        if let Some((schemas, mut execute)) = self.mixed_hosted.take() {
+            if let Some(index) = calls
+                .iter()
+                .position(|call| call.name == "ask_user_question")
+            {
+                let question = &calls[index];
+                self.run_tool_batch(std::slice::from_ref(question), pump);
+                for (other_index, call) in calls.iter().enumerate() {
+                    if other_index != index {
+                        self.finish_tool(
+                            call,
+                            tools::Outcome::err(
+                                "Not executed: process the user's question answer before proposing further tools",
+                            ),
+                        );
+                    }
+                }
+                self.mixed_hosted = Some((schemas, execute));
+                return;
+            }
+            for call in calls {
+                pump(&mut self.steer);
+                if self.steer.is_some() {
+                    break;
+                }
+                if schemas.iter().any(|(name, _, _)| name == &call.name) {
+                    self.loop_guard(call);
+                    self.emit_tool_start(call);
+                    let sequence = self.session.log_len() as u64;
+                    let outcome = execute(call, &mut |slot| pump(slot), sequence);
+                    self.host_attachments.extend(outcome.attachments);
+                    self.finish_tool(call, outcome.outcome);
+                } else {
+                    self.run_tool_batch(std::slice::from_ref(call), pump);
+                }
+                pump(&mut self.steer);
+                if self.steer.is_some() {
+                    break;
+                }
+            }
+            self.mixed_hosted = Some((schemas, execute));
             return;
         }
         // Tool-call arrays do not establish dependencies. A question gates
@@ -3209,6 +3269,68 @@ for line in sys.stdin:
         fn context_window(&self) -> u32 {
             200_000
         }
+    }
+
+    #[test]
+    fn mixed_mode_keeps_core_tools_local_and_dispatches_only_registered_host_names() {
+        let dir = std::env::temp_dir().join(format!("gc-mixed-dispatch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = Session::create(&dir).unwrap();
+        let mut state = State::new();
+        let mods = Vec::new();
+        let mut extensions = Registry::load(&[], &dir, "mock");
+        let host_calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let observed = host_calls.clone();
+        let host_tools = vec![(
+            "glass.workspace.list".into(),
+            "List Glass workspaces".into(),
+            r#"{"type":"object"}"#.into(),
+        )];
+        let mut agent = Agent::new(
+            &MockTurnProvider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &dir,
+        )
+        .with_mixed_host_tools(
+            host_tools,
+            Box::new(move |_, _, _| {
+                observed.set(observed.get() + 1);
+                HostToolOutcome::plain(tools::Outcome::ok("glass result".into()))
+            }),
+        );
+        let tools = agent.tool_set();
+        assert!(tools.iter().any(|(name, _, _)| name == "bash"));
+        assert!(
+            tools
+                .iter()
+                .any(|(name, _, _)| name == "glass.workspace.list")
+        );
+        let calls = [
+            ToolCall {
+                id: "host".into(),
+                name: "glass.workspace.list".into(),
+                arguments: serde_json::json!({}).to_string(),
+            },
+            ToolCall {
+                id: "undeclared".into(),
+                name: "glass.undeclared".into(),
+                arguments: serde_json::json!({}).to_string(),
+            },
+            ToolCall {
+                id: "core".into(),
+                name: "state".into(),
+                arguments: serde_json::json!({"items":["native tool ran"]}).to_string(),
+            },
+        ];
+        agent.run_tool_batch(&calls, &mut no_pump);
+        assert_eq!(host_calls.get(), 1);
+        assert_eq!(agent.state.items(), &["native tool ran"]);
+        drop(agent);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -1,11 +1,8 @@
 //! Glass Core resident harness adapter.
 //!
-//! Glass Dev drives the `glass-core` engine over its documented JSON-RPC 2.0
-//! host runtime (`glass-core runtime`). The engine owns the model loop,
-//! recovery, compaction, and session persistence. Glass keeps the workspace,
-//! the governed tool router, and the collaboration surface, so every tool the
-//! model calls is executed by Glass with the same authority and revision
-//! checks as an interactive request.
+//! Glass Dev drives the `glass-core` engine over its negotiated mixed-tool
+//! JSON-RPC runtime (`glass-core runtime`). Core owns provider and session
+//! state plus its native coding tools; Glass routes only Glass integrations.
 //!
 //! Glass Core is the default resident harness. The Pi SDK runtime remains
 //! available as an explicit legacy backend; see [`crate::resident_harness`].
@@ -24,9 +21,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 /// Protocol version Glass Dev speaks to `glass-core runtime`.
-pub const GLASS_CORE_PROTOCOL_VERSION: u64 = 1;
-/// Oldest `glass-core` build with the runtime v1 host surface.
-pub const MINIMUM_GLASS_CORE_VERSION: (u64, u64, u64) = (0, 1, 0);
+pub const GLASS_CORE_PROTOCOL_VERSION: u64 = 2;
 /// `glass-core` rejects frames larger than one mebibyte in either direction.
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 /// Bounded result text returned to the engine for one host tool call.
@@ -49,7 +44,7 @@ pub enum CoreReadinessState {
     Ready,
     /// Component was not found.
     Missing,
-    /// Component exists but is older than the supported surface.
+    /// Component exists but does not satisfy the negotiated surface.
     Incompatible,
     /// Component exists but has no usable provider configuration.
     Unauthenticated,
@@ -111,7 +106,7 @@ pub struct CoreRuntimeOptions {
     pub thinking: Option<String>,
     /// Authoritative resident daemon broker used when no local executor exists.
     pub broker: Option<ResidentAgentBroker>,
-    /// Executes host tool calls inside the resident workspace.
+    /// Executes Glass integration calls inside the resident workspace.
     pub local_tool_executor: Option<crate::resident_harness::AgentToolExecutor>,
     /// Extra instructions appended to the Glass collaboration brief.
     pub additional_system_prompt: Option<String>,
@@ -183,7 +178,7 @@ impl std::fmt::Debug for GlassCoreRuntime {
 }
 
 impl GlassCoreRuntime {
-    /// Start one `glass-core runtime` process and open a host-tool session.
+    /// Start one `glass-core runtime` process and open a mixed-tool session.
     pub(crate) fn spawn(root: &Path, options: CoreRuntimeOptions) -> DevelopmentResult<Self> {
         let root = fs::canonicalize(root)?;
         fs::create_dir_all(&options.session_dir)?;
@@ -248,18 +243,11 @@ impl GlassCoreRuntime {
             "initialize",
             json!({
                 "protocolVersion": GLASS_CORE_PROTOCOL_VERSION,
+                "requiredCapabilities": ["mixedTools"],
                 "storageDir": self.storage_dir,
             }),
         )?;
         let result = self.wait_response(&id, STARTUP_TIMEOUT)?;
-        let version = result.pointer("/runtime/version").and_then(Value::as_str);
-        if let Some(version) = version
-            && parse_version(version).is_some_and(|version| version < MINIMUM_GLASS_CORE_VERSION)
-        {
-            return Err(DevelopmentError::Process(format!(
-                "Glass Core {version} is older than the supported runtime surface"
-            )));
-        }
         let protocol = result
             .get("protocolVersion")
             .and_then(Value::as_u64)
@@ -270,12 +258,12 @@ impl GlassCoreRuntime {
             )));
         }
         if !result
-            .pointer("/capabilities/hostTools")
+            .pointer("/capabilities/mixedTools")
             .and_then(Value::as_bool)
             .unwrap_or(false)
         {
             return Err(DevelopmentError::Process(
-                "Glass Core runtime does not advertise host tool ownership".into(),
+                "Glass Core runtime does not advertise mixed Core/Glass tool ownership (protocol v2 required)".into(),
             ));
         }
         Ok(())
@@ -287,7 +275,7 @@ impl GlassCoreRuntime {
         {
             let id = self.send_request(
                 "session/resume",
-                json!({"sessionId": session, "expectedToolMode": "host"}),
+                json!({"sessionId": session, "expectedToolMode": "mixed"}),
             )?;
             let result = self.wait_response(&id, STARTUP_TIMEOUT)?;
             self.session_id = result
@@ -354,7 +342,7 @@ impl GlassCoreRuntime {
     }
 
     fn session_params(&self, root: &Path, options: &CoreRuntimeOptions) -> Value {
-        let tools = crate::tools::host_tool_catalog()
+        let tools = crate::tools::integration_tool_catalog()
             .into_iter()
             .map(|tool| {
                 json!({
@@ -366,7 +354,7 @@ impl GlassCoreRuntime {
             .collect::<Vec<_>>();
         let mut params = json!({
             "cwd": root,
-            "toolMode": "host",
+            "toolMode": "mixed",
             "tools": tools,
             "instructions": instructions(options),
         });
@@ -401,6 +389,7 @@ impl GlassCoreRuntime {
             for session in &sessions {
                 let cwd = session.get("cwd").and_then(Value::as_str);
                 if cwd.is_some_and(|cwd| Path::new(cwd) == root)
+                    && session.get("toolMode").and_then(Value::as_str) == Some("mixed")
                     && let Some(session) = session.get("sessionId").and_then(Value::as_str)
                 {
                     newest = Some(session.to_string());
@@ -566,6 +555,15 @@ impl GlassCoreRuntime {
             arguments: params.get("arguments").cloned().unwrap_or(Value::Null),
         };
         let frame_key = frame_id_key(&frame_id);
+        if !crate::tools::is_integration_tool(&call.name) {
+            let result = Err(DevelopmentError::NotFound(format!(
+                "Glass integration {}",
+                call.name
+            )));
+            self.respond_tool_result(&frame_key, &result)?;
+            self.host_events.push_back(tool_evidence(&call, &result));
+            return Ok(());
+        }
         if !self.unrestricted && crate::tools::tool_requires_mutation(&call.name) {
             if self.pending_tool_approval.is_some() {
                 return Err(DevelopmentError::Conflict(
@@ -738,7 +736,7 @@ impl Drop for GlassCoreRuntime {
     }
 }
 
-/// Map one Glass session request onto the Glass Core runtime v1 surface.
+/// Map one Glass session request onto the Glass Core runtime surface.
 fn request_parts(
     session: &str,
     request: &crate::pi_runtime::PiSessionRequest,
@@ -1208,15 +1206,6 @@ fn search_path(binary: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = text
-        .trim()
-        .trim_start_matches('v')
-        .split(['.', '-', '+'])
-        .filter_map(|part| part.parse::<u64>().ok());
-    Some((parts.next()?, parts.next()?, parts.next()?))
-}
-
 fn core_version(binary: &Path, args: &[String]) -> Option<String> {
     let output = Command::new(binary)
         .args(args)
@@ -1245,30 +1234,15 @@ pub fn core_readiness() -> DevelopmentResult<CoreReadiness> {
     let (binary_component, version) = match &binary {
         Ok(path) => {
             let version = core_version(path, &[]);
-            let compatible = version
-                .as_deref()
-                .and_then(parse_version)
-                .is_none_or(|version| version >= MINIMUM_GLASS_CORE_VERSION);
-            let state = if compatible {
-                CoreReadinessState::Ready
-            } else {
-                CoreReadinessState::Incompatible
-            };
             (
                 CoreReadinessComponent {
-                    state,
+                    state: CoreReadinessState::Ready,
                     version: version.clone(),
                     path: Some(path.clone()),
-                    detail: if compatible {
-                        "Glass Core engine available".into()
-                    } else {
-                        format!(
-                            "Glass Core is older than {}.{}.{}",
-                            MINIMUM_GLASS_CORE_VERSION.0,
-                            MINIMUM_GLASS_CORE_VERSION.1,
-                            MINIMUM_GLASS_CORE_VERSION.2
-                        )
-                    },
+                    detail: version
+                        .as_deref()
+                        .map(|version| format!("Glass Core engine available ({version})"))
+                        .unwrap_or_else(|| "Glass Core engine available".into()),
                 },
                 version,
             )
@@ -1293,7 +1267,7 @@ pub fn core_readiness() -> DevelopmentResult<CoreReadiness> {
                     version: version.clone(),
                     path: binary.as_ref().ok().cloned(),
                     detail: format!(
-                        "runtime protocol {GLASS_CORE_PROTOCOL_VERSION} with host tool ownership"
+                        "runtime protocol {GLASS_CORE_PROTOCOL_VERSION} with negotiated mixed tools"
                     ),
                 },
                 probe.authentication,
@@ -1302,7 +1276,15 @@ pub fn core_readiness() -> DevelopmentResult<CoreReadiness> {
             ),
             Err(error) => (
                 CoreReadinessComponent {
-                    state: CoreReadinessState::Unknown,
+                    state: if error.to_string().contains("protocol")
+                        || error
+                            .to_string()
+                            .contains("mixed Core/Glass tool ownership")
+                    {
+                        CoreReadinessState::Incompatible
+                    } else {
+                        CoreReadinessState::Unknown
+                    },
                     version: version.clone(),
                     path: binary.as_ref().ok().cloned(),
                     detail: error.to_string(),
@@ -1345,8 +1327,9 @@ pub fn core_readiness() -> DevelopmentResult<CoreReadiness> {
                 .to_string(),
         );
     }
-    if binary_component.state == CoreReadinessState::Incompatible {
-        remediation.push("Update glass-core to a build with runtime protocol v1".to_string());
+    if protocol.state == CoreReadinessState::Incompatible {
+        remediation
+            .push("Update glass-core to a build with runtime protocol v2 mixed tools".to_string());
     }
     if authentication.state != CoreReadinessState::Ready {
         remediation.push(
@@ -1438,6 +1421,7 @@ fn probe_runtime(binary: Option<&Path>, storage_dir: &Path) -> DevelopmentResult
             "initialize",
             json!({
                 "protocolVersion": GLASS_CORE_PROTOCOL_VERSION,
+                "requiredCapabilities": ["mixedTools"],
                 "storageDir": storage_dir,
             }),
         )?;
@@ -1513,6 +1497,24 @@ mod tests {
         unrestricted: bool,
         executor: Option<crate::resident_harness::AgentToolExecutor>,
     ) -> GlassCoreRuntime {
+        harness_mode(root, unrestricted, executor, "mixed")
+    }
+
+    fn harness_mode(
+        root: &Path,
+        unrestricted: bool,
+        executor: Option<crate::resident_harness::AgentToolExecutor>,
+        mode: &str,
+    ) -> GlassCoreRuntime {
+        spawn_mode(root, unrestricted, executor, mode).unwrap()
+    }
+
+    fn spawn_mode(
+        root: &Path,
+        unrestricted: bool,
+        executor: Option<crate::resident_harness::AgentToolExecutor>,
+        mode: &str,
+    ) -> DevelopmentResult<GlassCoreRuntime> {
         let python = python3().expect("python3 is required for this fixture test");
         GlassCoreRuntime::spawn(
             root,
@@ -1522,11 +1524,10 @@ mod tests {
                 name: Some("fixture".into()),
                 local_tool_executor: executor,
                 binary: Some(python),
-                binary_args: vec![fixture().display().to_string()],
+                binary_args: vec![fixture().display().to_string(), mode.into()],
                 ..CoreRuntimeOptions::default()
             },
         )
-        .unwrap()
     }
 
     fn drain(runtime: &mut GlassCoreRuntime, timeout: Duration) -> Vec<Value> {
@@ -1633,12 +1634,73 @@ mod tests {
     }
 
     #[test]
-    fn host_tool_catalog_is_registered_as_object_schemas() {
-        let catalog = crate::tools::host_tool_catalog();
+    fn integration_tool_catalog_is_namespaced_object_schemas() {
+        let catalog = crate::tools::integration_tool_catalog();
         assert!(!catalog.is_empty());
         for tool in &catalog {
+            assert!(tool.name.starts_with("glass."), "{}", tool.name);
             assert_eq!(tool.input_schema["type"], "object", "{}", tool.name);
         }
+        assert!(crate::tools::is_integration_tool("glass.workspace.list"));
+        assert!(!crate::tools::is_integration_tool("glass.file.read"));
+        assert!(!crate::tools::is_integration_tool("glass.not_registered"));
+    }
+
+    #[test]
+    fn rejects_v1_runtime_without_silent_host_mode_fallback() {
+        if python3().is_none() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "glass-core-v1-rejected-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let error = spawn_mode(&root, true, None, "legacy-v1").unwrap_err();
+        assert!(
+            error.to_string().contains("protocolVersion must be 1"),
+            "{error}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_v2_runtime_without_mixed_tools_capability() {
+        if python3().is_none() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "glass-core-no-mixed-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let error = spawn_mode(&root, true, None, "missing-mixed").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not advertise mixed Core/Glass"),
+            "{error}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn protocol_capability_not_package_version_decides_compatibility() {
+        if python3().is_none() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "glass-core-old-version-v2-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let runtime = harness_mode(&root, true, None, "older-version-v2");
+        assert_eq!(runtime.session_id(), "fixture-session");
+        drop(runtime);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1655,7 +1717,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let executor: crate::resident_harness::AgentToolExecutor =
             Arc::new(|call: &ToolCall, _allow_mutation: bool, _confirmed: bool| {
-                assert_eq!(call.name, "glass.file.read");
+                assert_eq!(call.name, "glass.workspace.list");
                 Ok(json!({"text": "fixture contents"}))
             });
         let mut runtime = harness(&root, true, Some(executor));
@@ -1715,7 +1777,7 @@ mod tests {
             })
             .expect("mutation parks on an approval frame");
         let frame = approval["frameId"].as_str().unwrap().to_string();
-        assert_eq!(approval["toolName"], json!("glass.file.write"));
+        assert_eq!(approval["toolName"], json!("glass.git.commit"));
         assert!(approval["arguments"].is_object());
         runtime.resolve_tool_approval(&frame, true).unwrap();
         let events = drain(&mut runtime, Duration::from_secs(5));

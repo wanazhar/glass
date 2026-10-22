@@ -7,23 +7,23 @@ existing agent engine without the terminal UI. Hosts can be editors, agent
 development environments, desktop applications, or automation services.
 
 The standalone `gc`, `gc run`, ACP, and served-session interfaces retain their
-existing behavior. Runtime v1 is a separate protocol; it does not claim Pi SDK
-compatibility or replace ACP.
+existing behavior. Runtime protocols v1 and v2 are separate surfaces; they do
+not claim Pi SDK compatibility or replace ACP.
 
 ## Ownership
 
-| Concern | Host tool mode | Local tool mode |
-| --- | --- | --- |
-| Model loop, recovery, compaction | GC | GC |
-| Tool schemas and execution | Host only | GC built-ins |
-| Tool permissions and approvals | Host | GC configured policy; no interactive terminal |
-| Questions | Host-provided question tool | Not advertised |
-| Output and interaction UI | Host | Host |
-| Credentials | GC configuration/environment | GC configuration/environment |
-| Session location | Explicit initialization or isolated runtime directory | Same |
+| Concern | Host tool mode | Local tool mode | Mixed tool mode |
+| --- | --- | --- | --- |
+| Model loop, recovery, compaction | GC | GC | GC |
+| Tool schemas and execution | Host only | GC built-ins | GC built-ins + registered host integrations |
+| Tool permissions and approvals | Host | GC configured policy; no interactive terminal | Core tools: GC; host integrations: host |
+| Questions | Host-provided question tool | Not advertised | Not advertised by default |
+| Output and interaction UI | Host | Host | Host |
+| Credentials | GC configuration/environment | GC configuration/environment | GC configuration/environment |
+| Session location | Explicit initialization or isolated runtime directory | Same | Same |
 
-Host mode is the default. It exposes no built-in filesystem, shell, state,
-memory, browser, or extension tools. The host must register every tool it wants
+Host mode is the default under protocol v1. It exposes no built-in filesystem,
+shell, state, memory, browser, or extension tools. The host must register every tool it wants
 the model to use. A tool named `read` or `bash` is still a host tool: GC does
 not substitute its own implementation.
 
@@ -32,6 +32,28 @@ host can display an approval prompt and wait for the user. Denial returns an
 error tool result. GC waits without making another provider request. A
 question tool works the same way and may accept free-text answers. The runtime
 does not infer tool permissions from names.
+
+Protocol v2 adds negotiated mixed-tool sessions for hosts that integrate with
+Core's native tools. Initialize with an exact protocol version and declare
+required capabilities:
+
+```json
+{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":2,"requiredCapabilities":["mixedTools"],"storageDir":"/absolute/private/session-directory"}}
+```
+
+The response must report protocol version `2` and capability `mixedTools`.
+Package version is informational; compatibility follows the negotiated
+protocol and capability. There is no automatic downgrade. A v2 session uses `toolMode: "mixed"` and
+may register only host names in the `glass.*` namespace. Core adds and executes
+its native coding tools in that same session; only registered Glass tools are
+sent over `tool/execute`. Collisions with Core-native and Core extension tools
+are rejected when the session is created. Provider selection, credentials,
+model configuration, and session state remain in Core. Hosts may select a
+model, but must not send provider credential values.
+
+Protocol v1 host and local sessions retain their original exclusive semantics.
+Standalone `gc` continues to use Core's local tools and configured execution
+policy. The negotiated mixed mode does not make Core depend on a host.
 
 ## Transport and lifecycle
 
@@ -75,11 +97,13 @@ Create an isolated host-controlled conversation:
 ```
 
 The response contains `sessionId`. The workspace must be an existing absolute
-directory. Host sessions can register up to 512 tools. Names must use unique
+directory. Host and mixed sessions can register up to 512 tools. Names must use unique
 ASCII alphanumeric, underscore, hyphen, or period characters. Schemas must
 describe JSON objects. GC validates the structural JSON Schema subset used by
 its existing tool-repair mechanism; the host must validate any additional
-constraints before execution.
+constraints before execution. Session creation and inspection report
+`toolOwners`, which lists Core native-tool ownership and the exact registered
+host tool names.
 
 Optional session settings:
 
@@ -99,6 +123,9 @@ Local mode uses `"toolMode":"local"` and omits `tools`. It uses GC built-ins
 under the configured execution policy. Runtime local mode does not load
 configured extensions or offer interactive permission prompts. Use host mode
 when the application needs approvals or questions.
+
+Mixed mode uses `"toolMode":"mixed"` with only namespaced integration tools.
+It is accepted only after protocol v2 initialization with `mixedTools`.
 
 | Method | Parameters beyond sessionId | Behavior |
 | --- | --- | --- |
@@ -120,7 +147,7 @@ and maxTokens can change through session/configure while idle.
 
 Effective transport/model settings are saved when the session is created.
 Credential values are never stored in the manifest; saved connection IDs and
-environment variable names are retained. The host owns its credential lifecycle.
+environment variable names are retained. GC owns provider credentials and their lifecycle.
 Selecting a connection applies that account's defaults before explicit overrides.
 
 Inspection returns record count, bounded text previews, truncation flags, and
@@ -224,10 +251,11 @@ python3 examples/runtime_host.py --binary gc --storage /tmp/gc-host-demo \
 
 Glass Dev is the intended first production integration. Its governed tool router
 can implement tool/execute and its existing approval UI can pause that response.
-This protocol and client do not switch Glass Dev away from Pi. The resident
-Glass adapter and its acceptance tests remain separate integration work.
+Glass Dev uses this negotiated v2 mixed surface for resident Core sessions.
+Its adapter preserves the explicit Pi SDK backend as a separate legacy
+selection.
 
-Runtime v1 supports an isolated prefix/suffix completion lane and inline image
+The runtime supports an isolated prefix/suffix completion lane and inline image
 inputs. These are protocol capabilities, not guarantees that a particular model
 supports vision or enforces reasoning hints. ACP remains a separate adapter with
 its existing capability response.

@@ -5,7 +5,7 @@ Speaks the documented newline-delimited JSON-RPC 2.0 host runtime so Glass Dev's
 resident harness adapter can be exercised without a provider account, a model
 call, or a network. It mirrors the real engine's ordering:
 
-* `initialize` reports protocol v1 with host tool ownership.
+* `initialize` reports protocol v2 with negotiated mixed tool ownership.
 * `session/new` returns a fixed session id.
 * `turn/prompt` emits `turn_start`, requests exactly one host tool, waits for
   the host result, streams text, and only then answers the prompt request.
@@ -21,7 +21,6 @@ import os
 import sys
 
 SESSION_ID = "fixture-session"
-RUNTIME_VERSION = "0.1.0"
 
 
 def send(message: dict) -> None:
@@ -79,14 +78,14 @@ def run_turn(identifier, params: dict) -> None:
     if "write" in text:
         result = request_tool(
             "call-write",
-            "glass.file.write",
+            "glass.git.commit",
             {"path": "notes.md", "content": "fixture\n"},
         )
     else:
         result = request_tool(
             "call-read",
-            "glass.file.read",
-            {"path": "README.md"},
+            "glass.workspace.list",
+            {},
         )
     tool_error = bool(result.get("isError"))
     event("tool_end", {"callId": "call-1", "isError": tool_error}, turn)
@@ -97,6 +96,8 @@ def run_turn(identifier, params: dict) -> None:
 
 
 def main() -> None:
+    mode = sys.argv[1] if len(sys.argv) > 1 else "mixed"
+    runtime_version = "0.1.0" if mode == "older-version-v2" else "0.3.14"
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -109,21 +110,28 @@ def main() -> None:
         identifier = message.get("id")
         params = message.get("params") or {}
         if method == "initialize":
-            if params.get("protocolVersion") != 1:
+            if mode == "legacy-v1":
+                send({
+                    "jsonrpc": "2.0",
+                    "id": identifier,
+                    "error": {"code": -32602, "message": "protocolVersion must be 1"},
+                })
+                continue
+            if params.get("protocolVersion") != 2:
                 send(
                     {
                         "jsonrpc": "2.0",
                         "id": identifier,
-                        "error": {"code": -32602, "message": "protocolVersion must be 1"},
+                        "error": {"code": -32602, "message": "protocolVersion must be 2"},
                     }
                 )
                 continue
             reply(
                 identifier,
                 {
-                    "protocolVersion": 1,
-                    "runtime": {"name": "glass-core", "version": RUNTIME_VERSION},
-                    "capabilities": {"hostTools": True, "steering": True, "cancel": True},
+                    "protocolVersion": 2,
+                    "runtime": {"name": "glass-core", "version": runtime_version},
+                    "capabilities": {"hostTools": True, "localTools": True, "mixedTools": mode != "missing-mixed", "steering": True, "cancel": True},
                     "limits": {"frameBytes": 1024 * 1024, "toolResultBytes": 512 * 1024},
                     "storageDir": params.get("storageDir"),
                 },
@@ -139,8 +147,17 @@ def main() -> None:
                 },
             )
         elif method == "session/new":
+            assert params.get("toolMode") == "mixed"
+            assert params.get("tools") and all(
+                tool.get("name", "").startswith("glass.") for tool in params["tools"]
+            )
+            assert not any(tool.get("name") == "glass.file.read" for tool in params["tools"])
+            assert not any(
+                key in params for key in ("provider", "baseUrl", "connection", "apiKeyEnv", "apiKey")
+            )
             reply(identifier, {"sessionId": SESSION_ID})
         elif method == "session/resume":
+            assert params.get("expectedToolMode") == "mixed"
             # The real engine returns the stored id. The fixture prefixes it so
             # a test can tell resume apart from a fresh session/new.
             reply(
@@ -160,8 +177,15 @@ def main() -> None:
                             "open": True,
                             "name": "fixture",
                             "cwd": os.getcwd(),
+                            "toolMode": "mixed",
+                        },
+                        {
+                            "sessionId": "zz-legacy-host-session",
+                            "open": False,
+                            "name": "legacy host session",
+                            "cwd": os.getcwd(),
                             "toolMode": "host",
-                        }
+                        },
                     ],
                     "nextAfterSessionId": None,
                 },
@@ -172,7 +196,7 @@ def main() -> None:
                 {
                     "sessionId": SESSION_ID,
                     "cwd": params.get("cwd"),
-                    "toolMode": "host",
+                    "toolMode": "mixed",
                 },
             )
         elif method in ("turn/prompt", "turn/followUp"):

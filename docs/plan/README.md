@@ -15,7 +15,10 @@ commits for inherited Core test expectations, Core formatting, and shared
 target-path handling. The [workspace design](analysis/shared-workspace.md) and
 [implementation task](tasks/workspace-glass-core-001.md) record the result and
 verification. Mixed runtime tools and the collaboration TUI remain subsequent
-issue #63 slices, with their own contracts and acceptance evidence.
+issue #63 slices, with their own contracts and acceptance evidence. The
+negotiated Core-coding/Glass-integration runtime slice is documented in the
+[mixed-runtime analysis](analysis/mixed-runtime-tools.md) and tracked in the
+[issue #63 task checklist](tasks/issue63-mixed-tools-001.md).
 
 ## Current source line: Glass 0.3.14
 

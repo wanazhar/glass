@@ -8,23 +8,23 @@ Preserve standalone Core behavior and explicit legacy Pi selection.
 
 ## Acceptance checklist
 
-- [ ] Publish a focused design analysis at
+- [x] Publish a focused design analysis at
       `docs/plan/analysis/mixed-runtime-tools.md` before implementation.
-- [ ] Negotiate an explicit mixed-tools protocol/capability; reject unsupported
+- [x] Negotiate an explicit mixed-tools protocol/capability; reject unsupported
       runtimes clearly and preserve protocol v1 host/local semantics.
-- [ ] Keep provider credentials, provider selection, model configuration, and
+- [x] Keep provider credentials, provider selection, model configuration, and
       session authority in Core; do not duplicate credentials in Glass.
-- [ ] Register only Glass-owned integrations from Glass and route only those
+- [x] Register only Glass-owned integrations from Glass and route only those
       calls through Glass authorization/evidence.
-- [ ] Execute Core-native coding tools inside Core in the same session.
-- [ ] Reject schema/name collisions and preserve correlation, results,
+- [x] Execute Core-native coding tools inside Core in the same session.
+- [x] Reject schema/name collisions and preserve correlation, results,
       progress, and cancellation for Glass calls.
-- [ ] Preserve the host-neutral Core standalone mode and explicit Pi legacy
+- [x] Preserve the host-neutral Core standalone mode and explicit Pi legacy
       decision.
-- [ ] Update current docs, setup/install language, validators, and fixtures as
+- [x] Update current docs, setup/install language, validators, and fixtures as
       needed without rewriting historical evidence.
-- [ ] Add behavioral tests for both owners and compatibility/error paths.
-- [ ] Run focused package tests, format and strict scoped Clippy; run
+- [x] Add behavioral tests for both owners and compatibility/error paths.
+- [x] Run focused package tests, format and strict scoped Clippy; run
       documentation/version checks; inspect for unrelated changes.
 - [ ] Commit the implementation in focused Conventional Commits. Do not push,
       publish, tag, release, globally install, or interrupt existing services.

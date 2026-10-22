@@ -1,7 +1,8 @@
 //! Discovery and safe handoff metadata for installed coding harnesses.
 //!
-//! Glass owns the workspace, trust boundary, and resident Pi agent. Other
-//! coding harnesses remain their own interactive programs, so the TUI only
+//! Glass owns the workspace, tool router, and resident agent session. Glass
+//! Core is the default resident engine; Pi remains an optional legacy backend.
+//! Other coding harnesses remain their own interactive programs, so the TUI only
 //! discovers fixed executable names and hands the terminal to a selected
 //! program. It never interpolates user-provided commands or emulates another
 //! harness's protocol.

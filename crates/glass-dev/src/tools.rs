@@ -397,7 +397,7 @@ impl DevelopmentToolRouter {
                             .map(|item| item.id)
                             .ok_or_else(|| {
                                 DevelopmentError::NotFound(
-                                    "no idle Pi session for FIM; start an agent first".into(),
+                                    "no idle resident agent for FIM; start an agent first".into(),
                                 )
                             })?;
                         workspace.agents().request(

@@ -24,7 +24,7 @@
 //!
 //! | Goal | Entry point |
 //! |---|---|
-//! | Drive the native browser | [`BrowserSession`] and [`browser::NativeEngineConfig`] |
+//! | Drive the native browser | `BrowserSession` and `NativeEngineConfig` |
 //! | Migrate an owned or attached Chromium session | [`CdpBrowserSession`] and [`SessionOptions`] |
 //! | Collect stable evidence | [`extraction`] and [`web_ir`] |
 //! | Compile/execute semantic tasks | [`task_protocol`] and [`task_compiler`] |
@@ -41,14 +41,17 @@
 //! Start, navigate, and explicitly close the native session:
 //!
 //! ```rust,no_run
+//! # async fn run() -> glass_browser::BrowserResult<()> {
+//! #[cfg(feature = "native-engine")]
+//! {
 //! use glass_browser::BrowserSession;
 //! use glass_browser::browser::NativeEngineConfig;
 //!
-//! # async fn run() -> glass_browser::BrowserResult<()> {
 //! let session = BrowserSession::start(NativeEngineConfig::default()).await?;
 //! let page = session.navigate("https://example.com").await?;
 //! println!("{}", page.url);
 //! session.close().await?;
+//! }
 //! # Ok(())
 //! # }
 //! ```
@@ -59,17 +62,20 @@
 //!
 //! # Structured observation and guarded action
 //!
-//! The native [`BrowserSession::observe`] method returns a bounded structured
-//! semantic observation; `semantic_observe` selects another declared level.
+//! The feature-enabled native `BrowserSession::observe` method returns a
+//! bounded structured semantic observation; `semantic_observe` selects another
+//! declared level.
 //! Revisioned target references are executed through the standard action
 //! boundary:
 //!
 //! ```rust,no_run
+//! # async fn run() -> glass_browser::BrowserResult<()> {
+//! #[cfg(feature = "native-engine")]
+//! {
 //! use glass_browser::browser::session::SemanticObservationLevel;
 //! use glass_browser::browser_backend::SemanticAction;
 //! use glass_browser::BrowserSession;
 //!
-//! # async fn run() -> glass_browser::BrowserResult<()> {
 //! let session = BrowserSession::start_default().await?;
 //! session
 //!     .navigate("data:text/html,%3Cmain%3E%3Cbutton%3ESave%3C%2Fbutton%3E%3C%2Fmain%3E")
@@ -94,7 +100,9 @@
 //!     )
 //!     .await?;
 //! println!("accepted={}", outcome.accepted);
-//! session.close().await
+//! session.close().await?;
+//! }
+//! # Ok(())
 //! # }
 //! ```
 //!

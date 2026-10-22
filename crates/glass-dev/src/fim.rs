@@ -1,9 +1,10 @@
-//! Fill-in-the-middle ghosts served by a resident Pi AgentSession.
+//! Fill-in-the-middle ghosts for the native editor.
 //!
 //! Local identifier/LSP/`TODO` fallbacks stay available. A `stub://` endpoint
-//! is for tests and never starts Pi. Otherwise Glass queues `complete` on a
-//! resident Pi session so ghosts use the same SDK, auth, and model as the
-//! factory — not a second HTTP client.
+//! is for tests and never starts an agent. Otherwise Glass sends a bounded
+//! completion request to the selected resident agent engine. Glass Core is the
+//! default engine; the legacy Pi adapter handles the same request through its
+//! `AgentSession`. Glass does not start a second model client for editor ghosts.
 
 use crate::customization::EditorConfig;
 use serde_json::Value;
@@ -13,14 +14,18 @@ const MAX_PREFIX_BYTES: usize = 6 * 1024;
 const MAX_SUFFIX_BYTES: usize = 2 * 1024;
 pub const MAX_GHOST_BYTES: usize = 256;
 
-/// Who supplies the ghost fill.
+/// Which editor completion provider supplies the ghost text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FimBackend {
     Stub,
+    /// Request completion from the selected resident agent engine.
+    ///
+    /// The historical variant name is retained for serialized/API
+    /// compatibility; Glass Core is the default engine.
     Pi,
 }
 
-/// Resolved FIM provider.
+/// Editor completion provider resolved from project and process settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FimProvider {
     pub backend: FimBackend,
@@ -72,7 +77,7 @@ impl FimProvider {
             FimBackend::Stub => validate_ghost_text(&stub_complete(prefix, suffix))?
                 .ok_or_else(|| "completion provider returned empty text".into()),
             FimBackend::Pi => {
-                Err("Pi FIM is served by a resident AgentSession complete operation".into())
+                Err("resident-agent FIM must use the agent complete operation".into())
             }
         }
     }

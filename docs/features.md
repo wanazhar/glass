@@ -686,7 +686,7 @@ default; wrapped source uses whitespace-aware reflow and continuation gutters,
 keeping cursor, selection, and syntax highlighting synchronized. Off uses
 horizontal source-column scrolling. `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y` undo/redo,
 and `Alt-A` attaches focused path/cursor/selection and unsaved content to a
-do-not-edit Pi prompt. The editor starts in INSERT. `Esc` returns to NORMAL.
+do-not-edit resident-agent prompt. The editor starts in INSERT. `Esc` returns to NORMAL.
 `Esc` from NORMAL on a clean buffer leaves the editor. Unsaved buffers offer
 `S` save, `D` discard, `Q` discard-and-quit, or `Esc`/`N` stay. `Ctrl-C` opens
 Glass quit confirmation from editor input; an already-open unsaved-exit prompt

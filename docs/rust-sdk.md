@@ -1014,7 +1014,7 @@ Pi, Neovim, Git, and collaboration belong to `glass-dev`.
 | `tasks` | Task scheduling, retry, evidence, and verification requirements |
 | `testing` | Test execution and result collection |
 | `todos` | Workspace-local Agent checklist persisted at `.glass/todos/session.json` (`glass.todo.*`); not the overnight DAG |
-| `fim` | Configured fill-in-the-middle provider for editor ghosts |
+| `fim` | Local stub and resident-agent providers for editor completion ghosts |
 | `tools` | Governed development-tool routing |
 | `trust` | Workspace trust decisions and persistence |
 | `tui` | Resident development terminal application and surface routing |

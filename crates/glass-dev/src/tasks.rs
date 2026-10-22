@@ -1,4 +1,4 @@
-//! Autonomous, verified task DAG scheduling above resident Pi agents.
+//! Task DAG scheduling and verification above Glass's resident agent engines.
 
 use crate::agents::{AgentEvent, AgentId, AgentRegistry, AgentSnapshot, AgentSpec, AgentStatus};
 use crate::development::{DevelopmentError, DevelopmentResult};
@@ -221,7 +221,7 @@ fn implementer_prompt(goal: &str, index: usize, total: usize, worktree: &Path) -
         "tests, types, and remaining files from the architect plan"
     };
     format!(
-        "You are implementer {index} of {total} for: {goal}\nYou work only in this isolated worktree: {}\nYou continue from a forked Pi session of the architect when one exists. Do not edit other implementers' trees. Own {slice}. Follow the architect plan. Default file writes are editor proposals; do not write through unless unrestricted mode is on. Keep the change minimal.",
+        "You are implementer {index} of {total} for: {goal}\nYou work only in this isolated worktree: {}\nYou continue from a forked resident-agent session of the architect when one exists. Do not edit other implementers' trees. Own {slice}. Follow the architect plan. Default file writes are editor proposals; do not write through unless unrestricted mode is on. Keep the change minimal.",
         worktree.display()
     )
 }

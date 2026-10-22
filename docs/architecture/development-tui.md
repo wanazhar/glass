@@ -426,7 +426,7 @@ function, class, pair, argument, parameter, field, string, and comment ranges;
 lexical word/pair selection remains the fallback when parsing is unavailable.
 `gm`/`gn` can add matching structural selections.
 
-The editor can show a local or configured resident-Pi fill-in-the-middle ghost.
+The editor can show a local or configured resident-agent fill-in-the-middle ghost.
 `Tab` accepts the full ghost and `Ctrl-Right` accepts its next word; acceptance
 advances to the next incomplete site when one exists. Agent pair-apply streams
 a bounded proposal over the buffer: `Enter` accepts, `n` rejects, `Esc` yields,

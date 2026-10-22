@@ -29,9 +29,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 /// One resident software-development workspace owned by Glass Dev.
 ///
-/// The handle is deliberately distinct from the browser workspace. It remains
-/// valid while browser sessions connect, fail, or are replaced and is the
-/// ownership root for services moved into `glass-dev` during the 0.3.4 cycle.
+/// This handle is distinct from the browser workspace. It remains valid while
+/// browser sessions connect, fail, or are replaced. It owns the services that
+/// make up the Glass Dev project workspace.
 pub struct DevelopmentWorkspace {
     root: PathBuf,
     agents: AgentRegistry,

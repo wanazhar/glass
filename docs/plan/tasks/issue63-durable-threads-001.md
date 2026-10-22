@@ -51,6 +51,13 @@ Do not touch protocol/TUI ownership behavior or perform broad formatting.
       with explicit project identity and bounded schema validation.
 - [x] Writes are private and atomic; invalid schema/identity and write failures
       are surfaced without overwriting the prior registry.
+- [x] Session-reference/classification combinations are validated on both
+      mutation and reopen. If Unix parent-directory sync fails after atomic
+      replacement, the error reports that replacement already occurred and
+      durability is uncertain.
+- [x] Windows inherits workspace ACLs without strengthened privacy in this
+      checkpoint, so all reopened durable rows remain unavailable until
+      protected ACL support is implemented.
 - [x] Stable random ThreadId and RunId are created; AgentId and worker/job IDs
       remain process-local and absent from serialized data.
 - [x] The session reference is captured from an initialized Core runtime and is
@@ -79,7 +86,9 @@ Do not touch protocol/TUI ownership behavior or perform broad formatting.
 Passed using shared target `/home/ubuntu/work/glass/.worktrees/issue63-mixed-tools-001/target`:
 
 - `cargo fmt --all -- --check`
-- `cargo test -p glass-dev --lib thread_store --locked` (8 passed)
+- `cargo test -p glass-dev --lib thread_store --locked` (10 passed), including
+  invalid session/classification no-overwrite and post-replacement directory-
+  sync failure reporting
 - Focused `reopened_thread_rows_are_truthful_and_never_accept_prompts`,
   `worker_persists_core_session_before_ready_notification`,
   `terminal_cancel_classification_survives_registry_reopen`,

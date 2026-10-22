@@ -1087,13 +1087,25 @@ mod tests {
         assert_eq!(snapshot.agent_states.len(), 1);
         assert_eq!(
             snapshot.agent_states[0].1,
-            crate::AgentStatus::RecoveryPending
+            if cfg!(windows) {
+                crate::AgentStatus::Unavailable
+            } else {
+                crate::AgentStatus::RecoveryPending
+            }
         );
         assert_eq!(
             snapshot.agent_chrome[0].status,
-            crate::AgentStatus::RecoveryPending
+            if cfg!(windows) {
+                crate::AgentStatus::Unavailable
+            } else {
+                crate::AgentStatus::RecoveryPending
+            }
         );
-        assert!(snapshot.agents.contains("recovery pending"));
+        assert!(snapshot.agents.contains(if cfg!(windows) {
+            "unavailable"
+        } else {
+            "recovery pending"
+        }));
         // The conversation cursor starts at zero and only moves when events exist.
         let cursor = worker.conversation_cursor();
         worker.request_conversation();

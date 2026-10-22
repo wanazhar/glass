@@ -26,7 +26,7 @@ Preserve standalone Core behavior and explicit legacy Pi selection.
 - [x] Add behavioral tests for both owners and compatibility/error paths.
 - [x] Run focused package tests, format and strict scoped Clippy; run
       documentation/version checks; inspect for unrelated changes.
-- [ ] Commit the implementation in focused Conventional Commits. Do not push,
+- [x] Commit the implementation in focused Conventional Commits. Do not push,
       publish, tag, release, globally install, or interrupt existing services.
 
 ## Scope exclusions

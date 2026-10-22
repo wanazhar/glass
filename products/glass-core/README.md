@@ -53,6 +53,14 @@ The installer creates `glass-core` and a relative `gc` symlink. It preserves
 the separate `glass` command. For a build without installation, see
 [Getting started](docs/getting-started.md).
 
+The Rust implementation is the `glass-core` member at
+[`crates/glass-core`](../../crates/glass-core/README.md) in the repository-root
+Cargo workspace. It inherits the shared workspace version (`0.3.14` in this
+source line) and lockfile. This product directory contains the standalone
+product docs, extensions, web assets, and installer; it does not carry a second
+Cargo workspace. `glass-core` is the resident coding harness, while
+`glass-browser-core` is the separate native browser implementation crate.
+
 ## Stay in control of the work
 
 Type `/` or press **Ctrl+P** to search actions. The three main destinations are
@@ -136,6 +144,10 @@ roles. [Permissions and security](docs/security.md) explains their boundaries.
 | [Native tools](docs/tools.md) | File operations, repair, background jobs |
 | [Agents](docs/agents.md) | Delegation, persistent teammates, review |
 | [Development](docs/development.md) | Architecture, measurements, verification |
+
+The Glass repository [documentation index](../../docs/INDEX.md) routes across
+the complete workspace, including the separate `glass-dev` product and browser
+tooling.
 
 The [documentation index](docs/INDEX.md) covers all guides and implementation
 records. Run `gc help` or `gc COMMAND --help` for the installed command interface.

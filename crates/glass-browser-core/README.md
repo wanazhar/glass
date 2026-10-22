@@ -17,5 +17,6 @@ in rustdoc.
 separate crates and programs.
 
 See the [published Rust API docs](https://docs.rs/glass-browser-core) when this
-crate version is available. The repository's [browser-core architecture guide](https://github.com/wanazhar/glass/blob/main/docs/architecture/browser-core.md)
-for crate responsibilities, feature behavior, and module ownership.
+crate version is available. The repository's
+[browser-core architecture guide](https://github.com/wanazhar/glass/blob/main/docs/architecture/browser-core.md)
+describes crate responsibilities, feature behavior, and module ownership.

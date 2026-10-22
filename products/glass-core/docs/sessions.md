@@ -94,7 +94,7 @@ updates the active snapshot. Removing an image in `/context` excludes it from
 future requests without deleting the saved transcript. Active snapshots survive
 resume and compaction until explicitly removed. Native `view_image` results use separate durable,
 content-addressed artifacts and can be inspected again on demand. Image support
-still depends on the model; see [Tools](tools.md#image-viewing).
+still depends on the model; see [Tools](tools.md#image-sharing-and-viewing).
 
 ## Crash recovery
 

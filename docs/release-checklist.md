@@ -179,7 +179,7 @@ gh run view "$RELEASE_RUN_ID" --json status,conclusion,headSha,jobs
 
 - [x] Exact signed source, ordered crates.io publication, clean installs,
       native certification, fuzz, and source-only GitHub Release were recorded
-      in the closed [`0.3.13` evidence](release-evidence.md#0.3.13-release-evidence).
+      in the closed [`0.3.13` evidence](release-evidence.md#0313-release-evidence).
 - [x] Current-source documentation was re-audited before the 0.3.14 section
       was opened; the 0.3.13 records remain immutable historical evidence.
 

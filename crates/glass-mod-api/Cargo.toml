@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 repository.workspace = true
+readme = "README.md"
 description = "Stable extension surface for glass. Zero dependencies by design."
 
 [dependencies]

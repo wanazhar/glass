@@ -88,7 +88,7 @@ for this source line.
 
 The [0.3.14 release notes](../releases/0.3.14.md) and
 [0.3.14 migration guide](../migration/0.3.14.md) route the current release
-contract. The [0.3.14 release evidence](../release-evidence.md#0.3.14-release-evidence)
+contract. The [0.3.14 release evidence](../release-evidence.md#0314-release-evidence)
 holds the exact-source records and closed publication evidence. The
 historical [0.3.13 release notes](../releases/0.3.13.md) and
 [0.3.13 migration guide](../migration/0.3.13.md) retain their original

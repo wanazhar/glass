@@ -72,7 +72,8 @@ without the full workspace, install `glass-browser` instead.
   pages, perform actions, and verify results.
 - [CLI reference](docs/cli.md) and [MCP integration](docs/mcp.md) — command-line
   and client interfaces.
-- [Complete documentation index](docs/INDEX.md) — all current guides.
+- [Documentation index](docs/INDEX.md) — topic and section routes for current
+  guides, package references, and historical records.
 - [Package and feature comparison](docs/features.md) — supported interfaces
   and package boundaries.
 

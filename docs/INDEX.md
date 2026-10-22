@@ -29,6 +29,12 @@ standalone source product lives at [`products/glass-core`](../products/glass-cor
 see the [standalone product guide](glass-core-product.md) for its own build,
 install, package metadata, and license boundary.
 
+This index is the repository's topic and section home. The generated
+[Markdown catalog](documentation-catalog.json) records every Markdown file's
+class, topic, canonical route, and heading anchors. Run the
+[documentation change check](../scripts/check-documentation-wiki.py) to see
+page, section, anchor, and body-only changes against a base commit.
+
 ## Choose your path
 
 | You are… | Start here | Then read |
@@ -54,6 +60,74 @@ install, package metadata, and license boundary.
 | Building a browser workflow | [Semantic observations](semantic-observation.md) | [Actions](actions.md), [workflows](workflows.md), [semantic execution](semantic-execution.md) |
 | Operating authenticated sessions | [Profiles](profile-ergonomics.md) | [Security](../SECURITY.md), [policy](policy.md) |
 | Maintaining or releasing Glass | [Contributing](../CONTRIBUTING.md) | [Release checklist](release-checklist.md), [release evidence](release-evidence.md) |
+
+## Product and package boundaries
+
+- [Glass product overview](../README.md) — early-alpha scope, workspace role,
+  and first commands.
+- [Package and feature comparison](features.md) — installable products,
+  package ownership, and capability-to-interface map.
+- [Glass Core product](glass-core-product.md) and
+  [Glass Core source product](../products/glass-core/README.md) — standalone
+  harness role, source/workspace relationship, build, install, and licensing.
+- [Glass Core documentation index](../products/glass-core/docs/INDEX.md) —
+  product setup, terminal workflow, provider configuration, permissions,
+  integrations, runtime, and development records.
+- [Glass Core extension catalog](../products/glass-core/extensions/README.md) —
+  installed and optional extensions, kept separate from Glass workspace
+  extensions.
+- [Browser crate](../crates/glass-browser/README.md) and
+  [Glass development crate](../crates/glass-dev/README.md) — package-level
+  APIs and ownership.
+- Workspace implementation packages: [`glass-core`](../crates/glass-core/README.md),
+  [`glass-browser-core`](../crates/glass-browser-core/README.md),
+  [`glass-runtime-client`](../crates/glass-runtime-client/README.md),
+  [`glass-mod-api`](../crates/glass-mod-api/README.md), and
+  [`glass-tui`](../crates/glass-tui/README.md). These are Cargo workspace
+  members, not additional user-facing Glass products.
+
+## Setup, authentication, providers, and models
+
+- [Getting started](getting-started.md) and
+  [installation and operations](installation.md) — choose an install, verify
+  it, select a browser, and resolve common first-run problems.
+- [Glass Core resident harness](glass-core-harness.md) — engine selection,
+  provider readiness, authentication ownership, model configuration, and
+  session setup.
+- Glass Core [getting started](../products/glass-core/docs/getting-started.md),
+  [configuration](../products/glass-core/docs/configuration.md), and
+  [documentation index](../products/glass-core/docs/INDEX.md) — provider
+  connection, authentication, model selection, and runtime settings.
+
+## Workspace operations
+
+- [Development Runtime](development-runtime.md) — project files, native
+  editor, PTYs, Git, LSP diagnostics, graph, replay, collaboration, and agents.
+- [Development TUI](architecture/development-tui.md) and
+  [terminal UI architecture](architecture/tui.md) — panes, navigation,
+  keyboard and mouse interaction, responsive layout, and workers.
+- [Mobile and remote development](mobile-remote.md) — SSH/Mosh, phone access,
+  terminal rendering, and browser controls.
+- [Processes and daemon](daemon.md) — persistent clients, project sessions,
+  leases, shutdown, and recovery.
+- [Browser operations and safety](#browser-operations-and-safety) — profiles,
+  browser targets, actions, policies, observations, and live-site checks.
+
+## Orchestration, recovery, and review
+
+- [Autonomous task DAGs](task-dag.md) — task creation, dependencies, dispatch,
+  verification, retries, budgets, and controls.
+- [Development Runtime: agents and authority](development-runtime.md#agents-and-actor-authority)
+  — project threads, attribution, and mutation ownership.
+- [Glass Core resident harness](glass-core-harness.md) — provider session
+  lifecycle, host runtime protocol, and tool handoff.
+- [Workflows](workflows.md) and [workflow authoring](workflow-authoring.md) —
+  checkpoints, resume, validation, and bounded execution.
+- [Actions and revisions](actions.md) — guarded changes, receipts, review,
+  failure, and recovery.
+- [Workspace trust](workspace-trust.md) and
+  [customization governance](customization-governance.md) — trust states,
+  skills, hooks, tool evidence, and mutation policy.
 
 The [complete feature reference](features.md) maps every implemented domain to
 its CLI, TUI, MCP, and Rust entry points. It is the fastest way to answer “is
@@ -227,6 +301,14 @@ current user instructions.
 - [v0.3.3 remote cockpit design evidence](design/v0.3.3/README.md) — pinned
   phone concepts, renderer validation, and interaction-reference rationale.
 
+## Credits and project references
+
+- [Project inspiration and attribution](credits-and-inspiration.md) — product
+  research references for Pi, OpenAI Codex, and T3 Code, distinct from runtime
+  dependencies and third-party license notices.
+- [Glass Core third-party notices](../products/glass-core/THIRD_PARTY.md) —
+  applicable adapted-code and bundled web-asset notices.
+
 ## Maintainer and release guides
 
 - [Maintainer handbook](maintainers/README.md) — the versioned documentation,
@@ -235,6 +317,8 @@ current user instructions.
   status conventions.
 - [Contributing](../CONTRIBUTING.md) — source workflow, checks, security, and
   review expectations.
+- [Agent working instructions](../AGENTS.md) — repository structure, build and
+  test commands, coding style, and documentation expectations for agents.
 - [Release checklist](release-checklist.md) — repeatable two-package release.
 - [Release evidence](release-evidence.md) — package, source release, platform,
   client, and validation evidence.
@@ -283,3 +367,36 @@ current user instructions.
 - [Delivery plans](plan/README.md) — current-source navigation, proposed work,
   and historical implementation records; these are not current user
   instructions.
+
+## Historical, generated, and evidence records
+
+- [Delivery plan archive](plan/README.md) — distinguishes active plans from
+  completed and historical implementation evidence; follow current guides for
+  present behavior.
+- [Glass Core implementation plan](../products/glass-core/docs/plan/README.md)
+  and [research index](../products/glass-core/research/README.md) — Core-owned
+  proposal, implementation, and dated research records.
+- [Migration records](migration/0.3.14.md) — current upgrade contract and
+  links to the previous versioned migrations.
+- [Release notes](releases/0.3.14.md) and
+  [release evidence](release-evidence.md) — source records and publication
+  evidence with version boundaries intact.
+- [Changelog](../CHANGELOG.md) — unreleased changes and historical release
+  entries.
+- Generated and fixture Markdown is classified as `generated` in the catalog;
+  those files are consumed by tools, tests, or product builds, not user guides.
+- [Complete per-file and section inventory](documentation-catalog.json) — all
+  repository Markdown, including package docs, research, plans, reviews,
+  generated records, and historical evidence.
+
+The generated catalog is intentionally compact structured data rather than a
+second prose copy of every page. Each catalog entry links to its canonical
+Markdown path and lists the section titles and anchor fragments detected from
+that file. The existing CLI, MCP, examples, Rust API, release-truth, and
+documentation-depth checks remain the authorities for their code-derived and
+substantive inventories.
+
+Plan and research files retain the status and evidence written in each record;
+their presence does not mean a proposal is implemented. If a historical page
+names a successor, follow that page's explicit link. The index does not infer
+one-to-one replacements for records that have none.

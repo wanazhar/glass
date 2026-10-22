@@ -106,7 +106,9 @@ def run_turn(identifier, params: dict) -> None:
 
 def main() -> None:
     global STORAGE_DIR, MODE
-    mode = sys.argv[1] if len(sys.argv) > 1 else "mixed"
+    # Glass appends `runtime` to every engine invocation. Ignore that command
+    # argument when no fixture mode was explicitly supplied.
+    mode = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] != "runtime" else "mixed"
     MODE = mode
     runtime_version = "0.1.0" if mode == "older-version-v2" else "0.3.14"
     for line in sys.stdin:

@@ -25,6 +25,11 @@ and [acceptance task](tasks/editor-buffer-reconcile-001.md).
 Core-owned provider authentication and model controls in the Glass TUI are
 tracked in the [provider-controls analysis](analysis/core-provider-controls.md)
 and [acceptance task](tasks/core-provider-controls-001.md).
+Live-agent transcript and composer isolation is tracked in the
+[thread-isolation analysis](analysis/issue63-thread-isolation.md) and
+[acceptance task](tasks/issue63-thread-isolation-001.md). The current
+AgentId-based thread identity is process-local; durable thread/run identity and
+restart recovery remain subsequent work.
 
 ## Current source line: Glass 0.3.14
 

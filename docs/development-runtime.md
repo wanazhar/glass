@@ -76,6 +76,20 @@ URL hints as discovery metadata. Those values are informational: Glass does not
 launch detected language servers or infer extra development URLs unless the
 project configuration explicitly requests them.
 
+The Glass TUI's default agent controls use Core-owned provider and model
+configuration. `:agent setup login` hands the terminal to the resolved
+`glass-core` interactive UI in the current project; Core's `/login` owns
+authentication, and Glass refreshes readiness after return without restarting
+resident sessions. To start an agent with configuration changed during that
+handoff, use `:agent spawn ROLE TASK`, which creates a separate resident
+runtime. `:agent new` creates a conversation in the existing runtime and does
+not reload its configuration. `:agent models [AGENT_ID]` and
+`:agent model [AGENT_ID] PROVIDER MODEL` use the selected session, or the
+workspace's first active session when none is selected, through negotiated
+model APIs. Model catalog responses are shown in the Agent conversation. Setting
+`GLASS_AGENT_HARNESS=pi` retains the Pi-specific setup, login, and model path;
+see the [resident harness guide](glass-core-harness.md).
+
 Every governed tool carries expected workspace generation and project revision. A stale call fails with `Conflict`; reread state and issue a new call. Mutations also require a trusted workspace, actor attribution, and the applicable mutation authority or confirmation.
 
 ## Project files and tree

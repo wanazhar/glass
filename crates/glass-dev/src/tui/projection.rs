@@ -716,7 +716,24 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                 }
             }
             "response" => {
-                if let Some(text) = event_text(event) {
+                if event.payload.get("operation").and_then(Value::as_str) == Some("models") {
+                    if event.payload.get("ok").and_then(Value::as_bool) == Some(false) {
+                        let error = event
+                            .payload
+                            .pointer("/error/message")
+                            .and_then(Value::as_str)
+                            .or_else(|| event.payload.get("error").and_then(Value::as_str))
+                            .unwrap_or("model catalog request failed");
+                        items.push(ConversationEntry::error(
+                            format!("Core model list · {error}"),
+                            Some("models/list".into()),
+                        ));
+                    } else if let Some(text) =
+                        event.payload.get("result").and_then(model_catalog_text)
+                    {
+                        items.push(ConversationEntry::system(text, Some("models/list".into())));
+                    }
+                } else if let Some(text) = event_text(event) {
                     push_assistant_final(&mut items, text, entry_id);
                 }
             }
@@ -730,6 +747,38 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
         }
     }
     items
+}
+
+fn model_catalog_text(result: &Value) -> Option<String> {
+    let models = result.get("models")?.as_array()?;
+    let provider = result.get("provider").and_then(Value::as_str);
+    let mut lines = vec![match provider {
+        Some(provider) => format!("Models · {provider} · {} available", models.len()),
+        None => format!("Models · {} available", models.len()),
+    }];
+    for model in models.iter().take(100) {
+        let id = model
+            .get("id")
+            .or_else(|| model.get("slug"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown model");
+        let label = model.get("label").and_then(Value::as_str);
+        let model_provider = model.get("provider").and_then(Value::as_str).or(provider);
+        let name =
+            model_provider.map_or_else(|| id.to_string(), |provider| format!("{provider}/{id}"));
+        lines.push(match label.filter(|label| *label != id) {
+            Some(label) => format!("  {name} · {label}"),
+            None => format!("  {name}"),
+        });
+    }
+    if models.len() > 100
+        || result
+            .get("nextCursor")
+            .is_some_and(|cursor| !cursor.is_null())
+    {
+        lines.push("  more models available".into());
+    }
+    Some(lines.join("\n"))
 }
 
 pub fn conversation(events: &[crate::AgentEvent]) -> String {
@@ -959,6 +1008,35 @@ fn tool_name(payload: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn core_model_response_surfaces_provider_and_model_labels() {
+        let event = crate::AgentEvent {
+            sequence: 1,
+            agent_id: crate::AgentId::parse("agent-0002").unwrap(),
+            timestamp_ms: 0,
+            kind: "response".into(),
+            payload: serde_json::json!({
+                "operation": "models",
+                "ok": true,
+                "result": {
+                    "provider": "anthropic",
+                    "models": [
+                        {"id": "claude-opus-4", "label": "Claude Opus 4"},
+                        {"id": "claude-sonnet-4", "label": "claude-sonnet-4"}
+                    ],
+                    "nextCursor": null
+                }
+            }),
+        };
+        let rendered = conversation(&[event]);
+        assert!(
+            rendered.contains("Models · anthropic · 2 available"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("anthropic/claude-opus-4 · Claude Opus 4"));
+        assert!(rendered.contains("anthropic/claude-sonnet-4"));
+    }
 
     #[test]
     fn trust_items_project_authority_and_risk() {

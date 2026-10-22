@@ -64,27 +64,27 @@ the same split.
 
 ## Acceptance and verification
 
-- [ ] Core `:agent setup login` performs an actual terminal handoff to Core's
+- [x] Core `:agent setup login` performs an actual terminal handoff to Core's
       own interactive `/login`; Glass neither prompts for nor stores secrets.
-- [ ] The child is resolved from the configured Core binary/PATH, receives
+- [x] The child is resolved from the configured Core binary/PATH, receives
       inherited terminal streams and workspace cwd, and the TUI resumes and
       refreshes readiness after exit or reports launch/resume failure. It does
       not restart the current runtime; the result explains that a new
       independent agent process (not `:agent new` in the old process) is needed
       to use updated Core settings while preserving the old session.
-- [ ] Core action labels and readiness text name Glass Core and its provider
+- [x] Core action labels and readiness text name Glass Core and its provider
       flow; explicit Pi mode retains its Pi-specific setup/login labels.
-- [ ] Core model-list and model-selection commands target the selected
+- [x] Core model-list and model-selection commands target the selected
       resident session and map to negotiated `models/list` and
       `session/configure`, including provider/model selection; they do not
       route credentials or config through Glass.
-- [ ] Fixture tests cover model request mapping and errors; Core and Pi
+- [x] Fixture tests cover model request mapping and errors; Core and Pi
       command/catalog behavior is tested without live provider credentials.
-- [ ] A fake executable plus PTY or process fixture verifies terminal
+- [x] A fake executable plus PTY or process fixture verifies terminal
       handoff arguments, cwd, inherited streams where feasible, and return to
       Glass without network or auth use.
-- [ ] Current runtime/harness/CLI docs explain ownership, handoff, selected
+- [x] Current runtime/harness/CLI docs explain ownership, handoff, selected
       harness behavior, and model controls; historical records remain intact.
-- [ ] Focused `glass-dev` tests, formatting, strict scoped Clippy, docs
+- [x] Focused `glass-dev` tests, formatting, strict scoped Clippy, docs
       validators, and final diff review pass. No push, release, global install,
       service restart, or issue closure.

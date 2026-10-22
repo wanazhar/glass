@@ -251,10 +251,22 @@ const CORE_AGENT_ACTIONS: &[SurfaceAction] = &[
         description: "show how to configure the resident engine",
     },
     SurfaceAction {
-        label: "Provider login guidance",
+        label: "Glass Core provider login",
         command: "agent setup login",
         key: ":",
-        description: "show provider login options for Glass Core",
+        description: "open Glass Core's interactive provider login",
+    },
+    SurfaceAction {
+        label: "List Core models",
+        command: "agent models [AGENT_ID]",
+        key: ":",
+        description: "list models from the selected resident session",
+    },
+    SurfaceAction {
+        label: "Select Core model",
+        command: "agent model PROVIDER MODEL",
+        key: ":",
+        description: "configure the selected resident session model",
     },
     SurfaceAction {
         label: "New conversation",
@@ -1932,6 +1944,8 @@ fn execute_agent_for_harness(
             state.surface = DevSurface::Agent;
             Ok(if ready {
                 "Glass Agent is ready · press Enter or type to start a conversation".into()
+            } else if harness == crate::ResidentHarnessKind::GlassCore {
+                "Glass Core needs setup · use :agent setup login for provider authentication, then Enter to chat".into()
             } else {
                 "Glass Agent needs setup · use :agent setup or :agent setup login, then Enter to chat"
                     .into()
@@ -2013,7 +2027,14 @@ fn execute_agent_for_harness(
             } else {
                 "glass.agent.models"
             };
-            let result = run_tool(state, tool, json!({}), false)?;
+            let mut arguments = json!({});
+            if action == "models" {
+                let (agent_id, _) = explicit_or_active_agent(state, &parts)?;
+                if let Some(agent_id) = agent_id {
+                    arguments["agentId"] = Value::String(agent_id);
+                }
+            }
+            let result = run_tool(state, tool, arguments, false)?;
             state.surface = DevSurface::Agent;
             Ok(compact_result(tool, &result))
         }
@@ -2153,25 +2174,37 @@ fn explicit_or_active_agent(
         let agent = find_agent(state, id)?;
         return Ok((Some(agent.as_str().to_string()), 1));
     }
-    if let Some(id) = state.selected_agent.as_ref() {
-        return Ok((Some(id.as_str().to_string()), 0));
+    let id = selected_or_active_agent(state.selected_agent.clone(), || {
+        Ok(state
+            .ws_mut()?
+            .agents()
+            .list()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|agent| {
+                !matches!(
+                    agent.status,
+                    crate::AgentStatus::Completed
+                        | crate::AgentStatus::Failed
+                        | crate::AgentStatus::Cancelled
+                )
+            })
+            .map(|agent| agent.id))
+    })?;
+    Ok((id.map(|id| id.as_str().to_string()), 0))
+}
+
+fn selected_or_active_agent<F>(
+    selected: Option<crate::AgentId>,
+    active: F,
+) -> Result<Option<crate::AgentId>, String>
+where
+    F: FnOnce() -> Result<Option<crate::AgentId>, String>,
+{
+    match selected {
+        Some(selected) => Ok(Some(selected)),
+        None => active(),
     }
-    let id = state
-        .ws_mut()?
-        .agents()
-        .list()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .find(|agent| {
-            !matches!(
-                agent.status,
-                crate::AgentStatus::Completed
-                    | crate::AgentStatus::Failed
-                    | crate::AgentStatus::Cancelled
-            )
-        })
-        .map(|agent| agent.id.as_str().to_string());
-    Ok((id, 0))
 }
 
 fn agent_control(
@@ -3315,7 +3348,17 @@ mod tests {
         assert!(
             actions
                 .iter()
-                .any(|action| action.label == "Provider login guidance")
+                .any(|action| action.label == "Glass Core provider login")
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.label == "List Core models")
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.label == "Select Core model")
         );
         assert!(actions.iter().all(|action| !action.label.contains("Pi")));
 
@@ -3330,6 +3373,16 @@ mod tests {
                 .iter()
                 .any(|action| action.label == "Update Pi runtime")
         );
+        assert!(legacy.iter().any(|action| action.label == "Authenticate"));
+    }
+
+    #[test]
+    fn selected_model_agent_precedes_workspace_first_active_agent() {
+        let selected = crate::AgentId::parse("agent-0002").unwrap();
+        let workspace_first = crate::AgentId::parse("agent-0001").unwrap();
+        let chosen = selected_or_active_agent(Some(selected.clone()), || Ok(Some(workspace_first)))
+            .expect("agent selection");
+        assert_eq!(chosen, Some(selected));
     }
 
     #[test]
@@ -3360,9 +3413,26 @@ mod tests {
             crate::ResidentHarnessKind::GlassCore,
         )
         .expect("Core provider login guidance");
-        assert!(output.contains("Glass Core manages provider login"));
-        assert!(!state.agent_login_requested);
+        assert!(output.contains("Glass Core login will open in this terminal"));
+        assert!(state.agent_login_requested);
         assert!(state.pending_confirmation.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn core_model_list_uses_the_selected_session_service_request() {
+        let (mut state, root) = test_state("core-models-no-session");
+        state.selected_agent = Some(crate::AgentId::parse("agent-0002").unwrap());
+        let output = execute_agent_for_harness(
+            &mut state,
+            vec!["models"],
+            crate::ResidentHarnessKind::GlassCore,
+        )
+        .expect("queue model listing");
+        assert!(output.contains("glass.agent.models"));
+        let (call, _) = state.queued_tool_request.take().expect("queued request");
+        assert_eq!(call.name, "glass.agent.models");
+        assert_eq!(call.arguments["agentId"], "agent-0002");
         let _ = fs::remove_dir_all(root);
     }
 

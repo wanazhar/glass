@@ -625,9 +625,9 @@ pub struct DevTuiState {
     pub agent_readiness: String,
     pub harnesses: String,
     /// Set by an in-TUI login action; the event loop temporarily hands the
-    /// terminal to Pi so `/login` can receive interactive input.
+    /// terminal to the selected runtime's interactive login flow.
     pub agent_login_requested: bool,
-    /// Optional provider preselected by a native `/login PROVIDER` request.
+    /// Optional provider preselected by a native legacy Pi `/login PROVIDER` request.
     pub agent_login_provider: Option<String>,
     /// Set by a palette action; the event loop hands the terminal to the
     /// selected external harness and resumes Glass after it exits.
@@ -2979,13 +2979,25 @@ impl DevTuiState {
         self.session_picker_items = parse_session_picker_items(value);
         self.session_picker_selection = 0;
         self.session_picker_open = !self.session_picker_items.is_empty();
+        let collection =
+            if crate::ResidentHarnessKind::from_env() == crate::ResidentHarnessKind::GlassCore {
+                "conversation(s)"
+            } else {
+                "Pi session(s)"
+            };
+        let none =
+            if crate::ResidentHarnessKind::from_env() == crate::ResidentHarnessKind::GlassCore {
+                "No persisted conversations"
+            } else {
+                "No persisted Pi sessions"
+            };
         self.status = if self.session_picker_open {
             format!(
-                "{} Pi session(s) · Enter switch · Esc close",
-                self.session_picker_items.len()
+                "{} {collection} · Enter switch · Esc close",
+                self.session_picker_items.len(),
             )
         } else {
-            "No persisted Pi sessions".into()
+            none.into()
         };
     }
 
@@ -3665,17 +3677,17 @@ impl DevTuiState {
         harness: crate::ResidentHarnessKind,
         provider: Option<String>,
     ) -> Result<(), String> {
-        if harness == crate::ResidentHarnessKind::GlassCore {
-            self.agent_login_provider = None;
-            self.agent_login_requested = false;
-            self.surface = DevSurface::Agent;
-            self.status = "Glass Core manages provider login · run `glass-core` and use `/login`, or configure a provider API key".into();
-            return Ok(());
-        }
         if self.background_action_running() {
             let error = "Finish the current background action before signing in".to_string();
             self.status = error.clone();
             return Err(error);
+        }
+        if harness == crate::ResidentHarnessKind::GlassCore {
+            self.agent_login_provider = None;
+            self.agent_login_requested = true;
+            self.surface = DevSurface::Agent;
+            self.status = "Glass Core login will open in this terminal · use Core's `/login`, then exit to return".into();
+            return Ok(());
         }
         self.agent_login_provider = provider;
         self.agent_login_requested = true;
@@ -14700,7 +14712,7 @@ mod tests {
         state.move_palette_selection(1);
         assert_eq!(
             state.selected_palette_action().map(|action| action.label),
-            Some("Provider login guidance")
+            Some("Glass Core provider login")
         );
 
         assert!(
@@ -14796,6 +14808,18 @@ mod tests {
         state.running_tool_job = Some(43);
         assert!(state.blocking_background_tool_running());
         assert!(state.composer_send_blocked());
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn core_login_waits_for_background_agent_action() {
+        let (mut state, root) = routed_state("core-login-background-action");
+        state.agent_send_job = Some(42);
+        let error = state
+            .request_agent_login_for_harness(crate::ResidentHarnessKind::GlassCore, None)
+            .expect_err("Core handoff cannot suspend a running background action");
+        assert!(error.contains("Finish the current background action"));
+        assert!(!state.agent_login_requested);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 
@@ -14980,6 +15004,13 @@ mod tests {
             {"path": "/tmp/beta.jsonl"}
         ]));
         assert!(state.session_picker_open);
+        assert!(
+            if crate::ResidentHarnessKind::from_env() == crate::ResidentHarnessKind::GlassCore {
+                state.status.contains("conversation(s)")
+            } else {
+                state.status.contains("Pi session(s)")
+            }
+        );
         assert_eq!(state.session_picker_items[0].label, "alpha");
         assert_eq!(state.session_picker_items[1].label, "beta.jsonl");
         state.edit_last_user_message();

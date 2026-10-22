@@ -1649,7 +1649,7 @@ impl DevelopmentToolRouter {
                     .or_else(|| active_agent_id(workspace))
                     .ok_or_else(|| {
                         DevelopmentError::Conflict(
-                            "start an interactive agent session before requesting Pi state"
+                            "start an interactive agent session before requesting model state"
                                 .into(),
                         )
                     })?;
@@ -3037,6 +3037,32 @@ mod tests {
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
         }
+    }
+
+    #[test]
+    fn model_listing_without_an_active_session_returns_actionable_conflict() {
+        let mut workspace = workspace();
+        let root = workspace.root().to_path_buf();
+        let read_only = context(&workspace, false);
+        let error = DevelopmentToolRouter::default()
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "models-without-session".into(),
+                    name: "glass.agent.models".into(),
+                    arguments: json!({}),
+                },
+                &read_only,
+            )
+            .expect_err("no resident session should be actionable error");
+        assert!(
+            error
+                .to_string()
+                .contains("start an interactive agent session"),
+            "{error}"
+        );
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

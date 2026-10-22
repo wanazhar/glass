@@ -84,9 +84,13 @@ git diff --check
 scripts/release-certify.sh
 ```
 
-The common certification command runs the same source, documentation,
-packaging, and fuzz-workspace gates used by CI. Platform fixtures, client
-smokes, and dependency audits remain CI-owned checks.
+For source changes, the common certification command runs the full source,
+documentation, packaging, and fuzz-workspace gates used by CI. Markdown-only
+pull requests use the dedicated Documentation wiki workflow, which checks the
+catalog, routes, package README metadata, and local links, then reports page and
+section changes. Mixed source and documentation changes still run full source
+CI. Platform fixtures, client smokes, and dependency audits remain CI-owned
+checks.
 
 Build both debug binaries before the coverage check. Update the complete CLI,
 MCP, example, or Rust module reference in the same change that alters its

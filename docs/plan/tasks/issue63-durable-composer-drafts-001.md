@@ -38,9 +38,11 @@ protected ACLs there; do not claim private durable drafts on that platform.
 - If save enqueue fails or an asynchronous write failure is known, keep the
   outgoing agent selected with its draft intact. Quit performs the bounded
   final flush; failure requires visible confirmation to discard before exiting.
-  Discard runs on the same worker after any in-flight write, clears the selected
-  thread draft, and quits only after the clear is acknowledged. A clear failure
-  keeps the warning visible and allows retry; cancelling keeps editing.
+  Discard runs on the same worker after any in-flight write, clears only the
+  failed or still-pending thread drafts, and quits only after all clears are
+  acknowledged. Successfully written drafts for other agents remain intact. A
+  clear failure keeps the warning visible and allows retry; cancelling keeps
+  editing.
 
 ## Acceptance
 
@@ -57,7 +59,8 @@ protected ACLs there; do not claim private durable drafts on that platform.
 
 Passed: `cargo test -p glass-dev --lib draft --locked` (16 passed),
 the durable-load tests (2 passed), the writer-responsiveness test (1 passed),
-and the in-flight discard-after-timeout test (1 passed),
+the in-flight discard-after-timeout and multi-owner preservation tests (1 each),
+and the failed-enqueue quit-confirmation test (1 passed),
 `cargo fmt --all -- --check`, `git diff --check`, strict scoped Clippy, the
 documentation coverage/depth/release-truth validators, and the TUI shortcut
 validator. The refreshed live MCP catalog measures 342 tools and 181,498 UTF-8

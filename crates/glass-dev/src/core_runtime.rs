@@ -901,7 +901,10 @@ fn request_parts(
     let turn = |text: &String, context: &Option<Value>| {
         let mut params = json!({"sessionId": session, "text": text});
         if let Some(context) = context {
-            params["context"] = context.clone();
+            // Glass attachments are a bounded, versioned JSON object. Core's
+            // runtime protocol accepts context as typed blocks, so preserve
+            // the attachment as one JSON block at the protocol boundary.
+            params["context"] = json!([{"type": "json", "value": context}]);
         }
         params
     };
@@ -1848,6 +1851,25 @@ mod tests {
         assert_eq!(params["sessionId"], "s-1");
         assert_eq!(params["text"], "hello");
         assert!(params.get("context").is_none());
+
+        let context = json!({
+            "schemaVersion": "glass.agent-context.v1",
+            "surface": "code",
+            "editor": {"focusedPath": "src/main.rs"}
+        });
+        let (method, params) = request_parts(
+            "s-1",
+            &PiSessionRequest::Prompt {
+                text: "inspect this buffer".into(),
+                context: Some(context.clone()),
+            },
+        )
+        .unwrap();
+        assert_eq!(method, "turn/prompt");
+        assert_eq!(
+            params["context"],
+            json!([{"type": "json", "value": context}])
+        );
 
         let (method, params) = request_parts(
             "s-1",

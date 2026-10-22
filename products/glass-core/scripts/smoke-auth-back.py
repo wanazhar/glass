@@ -7,9 +7,10 @@ from pathlib import Path
 import tempfile
 import threading
 from pty_vt import Terminal
+from core_binary import core_binary_path
 
 ROOT = Path(__file__).resolve().parents[1]
-os.environ.setdefault('GLASS_CORE_TEST_BINARY', str(ROOT / 'target/release/glass-core'))
+os.environ.setdefault('GLASS_CORE_TEST_BINARY', str(core_binary_path('release')))
 SECRET = 'not-a-real-api-key'
 class Catalog(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_): pass

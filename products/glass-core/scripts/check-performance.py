@@ -19,10 +19,10 @@ import tempfile
 import termios
 import time
 from pathlib import Path
+from core_binary import core_binary_path
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = Path(__file__).resolve().parents[3]
-BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', REPO / 'target/core-release/glass-core'))
+BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', str(core_binary_path('release'))))
 
 
 def limit(name, default):

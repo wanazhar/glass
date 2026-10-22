@@ -3,8 +3,9 @@
 import base64,urllib.parse
 import http.server,json,os,re,subprocess,tempfile,threading,time,urllib.request,urllib.error,socket,sys
 from pathlib import Path
+from core_binary import core_binary_path
 ROOT=Path(__file__).resolve().parents[1]
-BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',ROOT/'target/debug/glass-core')).resolve()
+BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',core_binary_path('debug'))).resolve()
 class Provider(http.server.BaseHTTPRequestHandler):
     calls=0
     received=[]

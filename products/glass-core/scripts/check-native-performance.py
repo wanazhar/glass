@@ -2,7 +2,8 @@
 """Offline native helper throughput and default-write subprocess regression check."""
 import hashlib,json,os,statistics,subprocess,tempfile,time
 from pathlib import Path
-BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',Path(__file__).resolve().parents[1]/'target/release/glass-core')).resolve()
+from core_binary import core_binary_path
+BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',core_binary_path('release'))).resolve()
 report={}
 with tempfile.TemporaryDirectory(prefix='gc-native-perf-') as tmp:
     root=Path(tmp);env=dict(os.environ,GC_FILE_JSON='1',XDG_CONFIG_HOME=str(root/'config'))

@@ -9,9 +9,10 @@ import subprocess
 import tempfile
 import threading
 from pty_vt import Terminal
+from core_binary import core_binary_path
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', ROOT / 'target/release/glass-core')).resolve()
+BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', core_binary_path('release'))).resolve()
 os.environ.setdefault('GLASS_CORE_TEST_BINARY', str(BIN))
 class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True

@@ -14,11 +14,12 @@ import subprocess
 import tempfile
 import threading
 from pty_vt import Terminal
+from core_binary import core_binary_path
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--bounded', action='store_true')
 options = parser.parse_args()
-binary = Path(os.environ.get('GLASS_CORE_TEST_BINARY', 'target/release/glass-core')).resolve()
+binary = Path(os.environ.get('GLASS_CORE_TEST_BINARY', str(core_binary_path('release')))).resolve()
 os.environ['GLASS_CORE_TEST_BINARY'] = str(binary)
 
 

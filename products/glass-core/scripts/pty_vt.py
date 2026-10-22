@@ -2,6 +2,7 @@
 import pyte, http.server, threading, time, json, tempfile, os, select, importlib.util, re, subprocess, fcntl, termios, struct, signal, codecs
 from pathlib import Path
 from wcwidth import wcwidth
+from core_binary import core_binary_path
 
 class VT:
 
@@ -80,7 +81,7 @@ class Terminal:
         import pty
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', size[1], size[0], 0, 0))
-        self.p = subprocess.Popen([os.environ.get('GLASS_CORE_TEST_BINARY', str(Path(__file__).resolve().parents[1] / 'target/debug/glass-core')), *args], cwd=root, env=dict(env, TERM='xterm-256color'), stdin=slave, stdout=slave, stderr=slave)
+        self.p = subprocess.Popen([os.environ.get('GLASS_CORE_TEST_BINARY', str(core_binary_path('debug'))), *args], cwd=root, env=dict(env, TERM='xterm-256color'), stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
         self.vt = VT(*size)
         self.decoder = codecs.getincrementaldecoder('utf-8')()

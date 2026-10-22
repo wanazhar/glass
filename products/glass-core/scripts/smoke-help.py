@@ -11,8 +11,9 @@ import subprocess
 import tempfile
 import termios
 import time
+from core_binary import core_binary_path
 
-binary = str(Path(os.environ.get('GLASS_CORE_TEST_BINARY', 'target/release/glass-core')).resolve())
+binary = str(Path(os.environ.get('GLASS_CORE_TEST_BINARY', str(core_binary_path('release')))).resolve())
 with tempfile.TemporaryDirectory(prefix='gc-help-') as directory:
     env = dict(os.environ, XDG_CONFIG_HOME=directory+'/config', XDG_DATA_HOME=directory+'/data', TERM='xterm-256color')
     def pipe(*args):

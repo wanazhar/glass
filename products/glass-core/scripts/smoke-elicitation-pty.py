@@ -12,9 +12,10 @@ import time
 import subprocess
 
 from pty_vt import Terminal
+from core_binary import core_binary_path
 
 REPO = Path(__file__).resolve().parents[1]
-BINARY = Path(os.environ.get("GLASS_CORE_TEST_BINARY", str(REPO / "target/debug/glass-core")))
+BINARY = Path(os.environ.get("GLASS_CORE_TEST_BINARY", str(core_binary_path('debug'))))
 BRIDGE = REPO / "extensions/mcp-bridge/mcp_bridge.py"
 FIXTURE = REPO / "scripts/mcp_fixture_server.py"
 PRIVATE = "PRIVATE_FORM_VALUE_DO_NOT_PERSIST"

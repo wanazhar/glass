@@ -7,9 +7,10 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from core_binary import core_binary_path
 
 ROOT=Path(__file__).resolve().parents[1]
-BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',ROOT/'target/release/glass-core')).resolve()
+BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',core_binary_path('release'))).resolve()
 with tempfile.TemporaryDirectory(prefix='gc-transaction-review-') as tmp:
     root=Path(tmp)
     cfg=root/'config/glass-core';cfg.mkdir(parents=True)

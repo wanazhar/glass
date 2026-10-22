@@ -8,9 +8,10 @@ import shutil
 import subprocess
 import tempfile
 import urllib.request
+from core_binary import core_binary_path
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', ROOT/'target/debug/glass-core')).resolve()
+BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', core_binary_path('debug'))).resolve()
 with tempfile.TemporaryDirectory(prefix='gc-gateway-upgrade-') as tmp:
     root = Path(tmp)
     data = root/'data/glass-core'

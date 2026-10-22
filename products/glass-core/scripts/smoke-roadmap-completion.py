@@ -3,8 +3,9 @@
 import http.server, json, os, subprocess, tempfile, threading, time
 from pathlib import Path
 from pty_vt import Terminal
+from core_binary import core_binary_path
 
-BINARY=os.environ.get('GLASS_CORE_TEST_BINARY',str(Path(__file__).resolve().parents[1]/'target/release/glass-core'))
+BINARY=os.environ.get('GLASS_CORE_TEST_BINARY',str(core_binary_path('release')))
 class Endpoint(http.server.BaseHTTPRequestHandler):
     calls=0
     def log_message(self,*args):pass

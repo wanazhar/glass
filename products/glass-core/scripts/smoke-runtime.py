@@ -8,12 +8,13 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from core_binary import core_binary_path
 
 root = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("runtime_host", root / "examples/runtime_host.py")
 host = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(host)
-binary = Path(os.environ.get("GLASS_CORE_TEST_BINARY", root / "target/release/glass-core")).resolve()
+binary = Path(os.environ.get("GLASS_CORE_TEST_BINARY", core_binary_path('release'))).resolve()
 requests = []
 failures = []
 mode = "tool"

@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+from core_binary import core_binary_path
 import shlex
 import subprocess
 import tempfile
@@ -16,8 +17,7 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = Path(__file__).resolve().parents[3]
-BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', REPO / 'target/core-release/glass-core')).resolve()
+BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', str(core_binary_path('release')))).resolve()
 spec = importlib.util.spec_from_file_location('features', ROOT / 'scripts/smoke-features.py')
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)

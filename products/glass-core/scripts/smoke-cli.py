@@ -4,9 +4,10 @@ import codecs, errno, fcntl, http.server, json, os, pty, re, select, struct
 import subprocess, tempfile, termios, threading, time
 from pathlib import Path
 from pty_vt import VT
+from core_binary import core_binary_path
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = str(Path(os.environ.get('GLASS_CORE_TEST_BINARY', ROOT/'target/release/glass-core')).resolve())
+BIN = str(Path(os.environ.get('GLASS_CORE_TEST_BINARY', core_binary_path('release'))).resolve())
 class Provider(http.server.BaseHTTPRequestHandler):
     requests=[]
     def log_message(self,*args): pass

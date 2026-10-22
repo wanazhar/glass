@@ -3,6 +3,7 @@
 import http.server, json, os, re, subprocess, tempfile, threading, time
 from pathlib import Path
 from pty_vt import Terminal
+from core_binary import core_binary_path
 
 class Provider(http.server.BaseHTTPRequestHandler):
     calls = []
@@ -50,7 +51,7 @@ for size in [(40,24),(20,8)]:
             # Captured sources survive edits and are accessible without a terminal.
             instruction.unlink()
             session_path=manifests[0].with_suffix('.jsonl')
-            binary=os.environ.get('GLASS_CORE_TEST_BINARY',str(Path(__file__).resolve().parents[1]/'target/debug/glass-core'))
+            binary=os.environ.get('GLASS_CORE_TEST_BINARY',str(core_binary_path('debug')))
             out=subprocess.check_output([binary,'context',session_path.stem,'--json'],cwd=root,env=env,text=True)
             assert str(instruction) in json.loads(out)['text'],out
             t.send('/context\r'); t.visible('Context')

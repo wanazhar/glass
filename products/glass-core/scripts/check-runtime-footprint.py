@@ -13,11 +13,12 @@ from pathlib import Path
 import subprocess
 import tempfile
 import threading
+from core_binary import core_binary_path
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--bounded', action='store_true')
 options = parser.parse_args()
-binary = Path(os.environ.get('GLASS_CORE_TEST_BINARY', 'target/release/glass-core')).resolve()
+binary = Path(os.environ.get('GLASS_CORE_TEST_BINARY', str(core_binary_path('release')))).resolve()
 report = {'binary_bytes': binary.stat().st_size}
 
 for scenario in ('hello', 'verbose', 'native_partial'):

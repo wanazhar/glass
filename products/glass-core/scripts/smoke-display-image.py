@@ -2,9 +2,10 @@
 """Native display tool and text-only recovery through real provider requests."""
 import base64,http.server,importlib.util,json,os,subprocess,tempfile,threading
 from pathlib import Path
+from core_binary import core_binary_path
 spec=importlib.util.spec_from_file_location('image_fixture',Path(__file__).with_name('smoke-image.py'))
 f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
-BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY','target/debug/glass-core')).resolve()
+BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',str(core_binary_path('debug')))).resolve()
 class Server(http.server.ThreadingHTTPServer): daemon_threads=True
 class Endpoint(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args):pass

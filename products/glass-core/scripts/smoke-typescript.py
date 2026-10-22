@@ -10,13 +10,14 @@ import subprocess
 import threading
 import time
 from pty_vt import Terminal
+from core_binary import core_binary_path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / 'extensions/typescript/dist/index.js'
 SDK = ROOT / 'packages/extension-sdk/dist/index.js'
 DOT = '⣾⣽⣻⢿⡿⣟⣯⣷'
 assert ENTRY.exists() and SDK.exists(), 'Run npm ci --ignore-scripts && npm run build first'
-os.environ.setdefault('GLASS_CORE_TEST_BINARY', str(ROOT / 'target/release/glass-core'))
+os.environ.setdefault('GLASS_CORE_TEST_BINARY', str(core_binary_path('release')))
 
 class Provider(http.server.BaseHTTPRequestHandler):
     gate = threading.Event()

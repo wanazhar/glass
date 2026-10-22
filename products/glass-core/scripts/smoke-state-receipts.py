@@ -16,9 +16,10 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from core_binary import core_binary_path
 
 REPO = Path(__file__).resolve().parents[1]
-BINARY = Path(os.environ.get("GLASS_CORE_TEST_BINARY", str(REPO / "target/debug/glass-core")))
+BINARY = Path(os.environ.get("GLASS_CORE_TEST_BINARY", str(core_binary_path('debug'))))
 
 RETRY_ARGS = {"request_id": "req-1", "items": ["only once"]}
 CONFLICT_ARGS = {"request_id": "req-1", "items": ["something else entirely"]}

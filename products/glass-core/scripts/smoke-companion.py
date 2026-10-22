@@ -2,7 +2,8 @@
 """Actual release companion authentication, observer reconnect and frame fixture."""
 import json, os, select, signal, socket, subprocess, tempfile, threading, time, urllib.error, urllib.request
 from pathlib import Path
-BINARY=os.environ.get('GLASS_CORE_TEST_BINARY',str(Path(__file__).resolve().parents[1]/'target/release/glass-core'))
+from core_binary import core_binary_path
+BINARY=os.environ.get('GLASS_CORE_TEST_BINARY',str(core_binary_path('release')))
 with tempfile.TemporaryDirectory(prefix='gc-companion-') as tmp:
     root=Path(tmp);path=root/'fixture.sock';listener=socket.socket(socket.AF_UNIX);listener.bind(str(path));listener.listen();listener.settimeout(.2)
     stopped=threading.Event();messages=[];clients=[]

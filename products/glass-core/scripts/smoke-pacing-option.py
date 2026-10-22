@@ -10,8 +10,9 @@ import tempfile
 import threading
 import time
 from pty_vt import Terminal
+from core_binary import core_binary_path
 
-BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', 'target/release/glass-core')).resolve()
+BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', str(core_binary_path('release')))).resolve()
 os.environ['GLASS_CORE_TEST_BINARY'] = str(BIN)
 
 class Endpoint(http.server.BaseHTTPRequestHandler):

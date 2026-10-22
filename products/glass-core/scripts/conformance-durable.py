@@ -7,11 +7,12 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+from core_binary import core_binary_path
 
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('host',ROOT/'examples/runtime_host.py')
 host=importlib.util.module_from_spec(spec);spec.loader.exec_module(host)
-BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',ROOT/'target/release/glass-core')).resolve()
+BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',core_binary_path('release'))).resolve()
 requests=[]
 class Endpoint(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args):pass

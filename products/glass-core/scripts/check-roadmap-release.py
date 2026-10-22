@@ -2,8 +2,9 @@
 """Deterministic release workflows, ownership/recovery checks and small-screen PTYs."""
 import argparse, concurrent.futures, hashlib, json, os, subprocess, sys
 from pathlib import Path
+from core_binary import core_binary_path
 parser=argparse.ArgumentParser(description='Run roadmap acceptance against one unchanged optimized binary. Requires pyte.')
-parser.add_argument('--binary',type=Path,default=Path(__file__).resolve().parents[1]/'target/release/glass-core')
+parser.add_argument('--binary',type=Path,default=core_binary_path('release'))
 parser.add_argument('--report',type=Path,default=Path('roadmap-release-report.json'))
 options=parser.parse_args()
 root=Path(__file__).resolve().parents[1]

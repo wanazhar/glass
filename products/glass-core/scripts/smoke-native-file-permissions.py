@@ -5,8 +5,9 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from core_binary import core_binary_path
 
-binary = Path(os.environ.get('GLASS_CORE_TEST_BINARY', 'target/release/glass-core')).resolve()
+binary = Path(os.environ.get('GLASS_CORE_TEST_BINARY', str(core_binary_path('release')))).resolve()
 with tempfile.TemporaryDirectory(prefix='gc-file-permissions-') as tmp:
     root = Path(tmp)
     workspace = root/'workspace'

@@ -60,10 +60,10 @@ desktop and compact terminal sizes. The completed
 [three-thread homespace journey](tasks/issue64-three-thread-journey-001.md)
 exercises three concurrently active fake-Core conversations with distinct
 drafts and cursors, then settles one in the background while a different
-conversation remains selected. Issue #64 remains active for follow-up queue
-delivery and the remaining combined homespace journeys. The queue's old-run
-block, explicit retarget, and confirmed `NeedsReview` retry are now complete;
-see the [queue retarget/retry journey](tasks/issue64-queue-retarget-retry-001.md).
+conversation remains selected. The queue's old-run block, explicit retarget,
+and confirmed `NeedsReview` retry are also complete; see the [queue
+retarget/retry journey](tasks/issue64-queue-retarget-retry-001.md). The
+combined TaskScheduler workflow and durable task recovery remain open.
 
 ## Current source line: Glass 0.3.14
 

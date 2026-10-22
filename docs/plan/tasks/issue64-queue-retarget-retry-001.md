@@ -1,7 +1,7 @@
 ---
 id: issue64-queue-retarget-retry-001
 scope: issue-64-follow-up-queue-delivery
-status: in-progress
+status: complete
 depends-on: [issue64-live-run-queue-targeting-001, issue64-send-attempt-recovery-001]
 ---
 
@@ -40,7 +40,7 @@ matching send attempt.
       confirmation. Escape cancels it without a new attempt or Core request.
 - [x] A later explicit confirmation sends the item once, and the accepted
       queue row plus settled attempt retain the exact current target RunId.
-- [ ] The focused PTY test, strict scoped Clippy, formatting, fixture syntax,
+- [x] The focused PTY test, strict scoped Clippy, formatting, fixture syntax,
       documentation coverage/depth/release-truth/TUI-shortcut checks, and
       independent review pass. Evidence identifies the exact binary and
       distinguishes it from a fresh release build.
@@ -87,10 +87,10 @@ debug binary. No fresh Glass or release binary was built for this slice.
 Validation passed: strict `cargo clippy -p glass-dev --test tui_pty --locked --
 -D warnings`, `cargo fmt --all -- --check`, Python fixture syntax validation,
 documentation coverage (1809 Markdown files), documentation depth, release
-truth, TUI shortcut inventory, and `git diff --check`. Independent review is
-pending re-review after remediation. The first review identified that the
-stale dispatch assertion did not check that the row remained `ready` before
-retargeting; the PTY test now asserts that persisted state. Re-review then
-identified that the final accepted row's target was not asserted alongside the
-settled attempt's target; the settlement wait and final assertions now check
-both against the current RunId.
+truth, TUI shortcut inventory, Python fixture syntax, and `git diff --check`.
+The first independent Luna-medium review identified that the stale dispatch
+assertion did not check that the row remained `ready` before retargeting. Its
+re-review then identified that the accepted row's target was not asserted
+alongside the settled attempt's target. Both checks were added and the
+focused journey rerun successfully. The independent re-review of `a26161ef`
+passed with no remaining findings.

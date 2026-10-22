@@ -67,3 +67,12 @@ independent read-only diff review passed. Current documentation coverage,
 depth, release-truth, and TUI-shortcut checks passed after refreshing the live
 MCP schema measurement in `7e3c8a6a`. The issue remains open for the attention
 inbox and broader orchestration/review journeys.
+
+`follow_up_queue_edits_persist_without_automatic_dispatch` adds a real TUI PTY
+journey through the project thread picker and queue dialog. It creates two rows,
+edits one, reorders the rows, removes the other, and checks the owning thread's
+ledger after asynchronous writes settle. The retained row remains `ready`, and
+the fake Core request log contains no prompt for it, demonstrating that queue
+preparation does not dispatch work. This journey covers the interactive queue
+lifecycle; the focused store tests remain the coverage for reopening and
+cross-platform persistence policy.

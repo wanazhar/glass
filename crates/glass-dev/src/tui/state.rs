@@ -15267,7 +15267,22 @@ mod tests {
         let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop).unwrap();
         let first = crate::AgentId::parse("agent-0001").unwrap();
         let second = crate::AgentId::parse("agent-0002").unwrap();
-        assert!(state.select_agent(Some(first.clone())));
+        let third = crate::AgentId::parse("agent-0003").unwrap();
+        for (agent, transcript) in [
+            (first.clone(), "first transcript"),
+            (second.clone(), "second transcript"),
+            (third.clone(), "third transcript"),
+        ] {
+            state.agent_conversations.insert(
+                agent,
+                super::super::snapshot::AgentConversation {
+                    text: transcript.into(),
+                    items: Vec::new(),
+                },
+            );
+        }
+        state.selected_agent = Some(first.clone());
+        state.agent_conversation = "first transcript".into();
         state.composer_input = "draft on first".into();
         state.composer_cursor = 5;
         state.thread_drafts.insert(
@@ -15289,19 +15304,62 @@ mod tests {
             "recovery pending"
         };
         assert_eq!(state.thread_picker_items[0].status, expected_status);
-        assert_eq!(state.selected_agent, Some(first));
+        assert_eq!(state.selected_agent, Some(first.clone()));
         state.move_thread_picker_selection(1);
         state.activate_thread_picker_selection();
 
         assert!(!state.thread_picker_open);
-        assert_eq!(state.selected_agent, Some(second));
+        assert_eq!(state.selected_agent, Some(second.clone()));
         assert_eq!(state.composer_input, "draft on second");
         assert_eq!(state.composer_cursor, 10);
+
+        state.thread_drafts.insert(
+            Some(third.clone()),
+            ComposerDraft {
+                text: "draft on third".into(),
+                cursor: 8,
+            },
+        );
+        state.open_thread_picker();
+        state.move_thread_picker_selection(1);
+        state.activate_thread_picker_selection();
+        assert_eq!(state.selected_agent, Some(third.clone()));
+        assert_eq!(state.composer_input, "draft on third");
+        assert_eq!(state.composer_cursor, 8);
+
+        state.composer_mode = true;
+        state.surface = DevSurface::Agent;
+        state.status = "Third thread stays focused".into();
+        state.pending_chat_messages.push(PendingChatMessage {
+            agent_id: Some(first.clone()),
+            message_id: "picker-late-first".into(),
+            text: "completed in first".into(),
+            state: ChatMessageState::Sending,
+            job_id: Some(81),
+            error: None,
+        });
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 81,
+            tool: "glass.agent.send".into(),
+            result: Ok(serde_json::json!({"agentId": first.as_str()})),
+        });
+        assert_eq!(state.selected_agent, Some(third.clone()));
+        assert_eq!(state.composer_input, "draft on third");
+        assert_eq!(state.composer_cursor, 8);
+        assert_eq!(state.status, "Third thread stays focused");
+        assert!(state.composer_mode);
+
+        state.open_thread_picker();
+        state.move_thread_picker_selection(-2);
+        state.activate_thread_picker_selection();
+        assert_eq!(state.selected_agent, Some(first));
+        assert_eq!(state.composer_input, "draft on first");
+        assert_eq!(state.composer_cursor, 5);
         state.status = "Return to this conversation".into();
         state.open_thread_picker();
         state.close_thread_picker();
         assert_eq!(state.status, "Return to this conversation");
-        assert_eq!(state.composer_input, "draft on second");
+        assert_eq!(state.composer_input, "draft on first");
         drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }

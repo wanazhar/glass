@@ -8,6 +8,7 @@
 //! and interactive behavior (key handling in every mode, menus, composer,
 //! action menus, recovery, and quit conventions).
 
+use sha2::Digest;
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
@@ -17,6 +18,183 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+const LIVE_CORE_TRACE_WRAPPER_SOURCE: &str = r#"import hashlib
+import json
+import os
+import select
+import subprocess
+import sys
+
+binary, trace_path, pid_path = BINARY, TRACE_PATH, PID_PATH
+arguments = sys.argv[1:]
+if arguments == ["--version"]:
+    os.execv(binary, [binary, *arguments])
+
+child = subprocess.Popen(
+    [binary, *arguments], stdin=subprocess.PIPE, stdout=subprocess.PIPE
+)
+with open(pid_path, "w", encoding="utf-8") as pid_file:
+    pid_file.write(f"{child.pid}\n")
+
+def trace(direction, frame):
+    record = {"direction": direction}
+    request_id = frame.get("id")
+    if request_id is not None:
+        record["id_sha256"] = hashlib.sha256(str(request_id).encode()).hexdigest()
+    method = frame.get("method")
+    if method in ("turn/prompt", "turn/followUp", "session/hello", "session/state"):
+        record["method"] = method
+    if method == "runtime/event":
+        event_type = frame.get("params", {}).get("type")
+        record["event_type"] = event_type if event_type in {
+            "turn_start", "text", "reasoning", "tool_start", "tool_end",
+            "tool_cancel", "tool_progress", "usage", "waiting", "compacted",
+            "steered", "queued", "notice", "error", "settled"
+        } else "unknown"
+    if "error" in frame:
+        error = frame["error"]
+        data = error.get("data", {}) if isinstance(error, dict) else {}
+        kind = data.get("kind") if isinstance(data, dict) else None
+        code = error.get("code") if isinstance(error, dict) else None
+        record["error_code"] = code if type(code) is int else "unknown"
+        record["error_kind"] = kind if kind in {
+            "authentication", "provider", "protocol", "unsupported_method",
+            "invalid_input", "busy", "limit", "operation"
+        } else "unknown"
+        retryable = data.get("retryable") if isinstance(data, dict) else None
+        if isinstance(retryable, bool):
+            record["retryable"] = retryable
+    with open(trace_path, "a", encoding="utf-8") as trace_file:
+        trace_file.write(json.dumps(record, sort_keys=True) + "\n")
+
+source_to_target = {sys.stdin.buffer: child.stdin, child.stdout: sys.stdout.buffer}
+open_sources = set(source_to_target)
+while open_sources:
+    readable, _, _ = select.select(list(open_sources), [], [])
+    for source in readable:
+        line = source.readline()
+        if not line:
+            open_sources.remove(source)
+            if source is sys.stdin.buffer:
+                child.stdin.close()
+            continue
+        try:
+            frame = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            frame = None
+        if isinstance(frame, dict):
+            trace("request" if source is sys.stdin.buffer else "response", frame)
+        target = source_to_target[source]
+        target.write(line)
+        target.flush()
+sys.exit(child.wait())
+"#;
+
+fn write_live_core_trace_wrapper(
+    wrapper: &std::path::Path,
+    binary: &std::path::Path,
+    trace_path: &std::path::Path,
+    pid_path: &std::path::Path,
+) {
+    let body = format!(
+        "#!/usr/bin/env python3\nBINARY = {}\nTRACE_PATH = {}\nPID_PATH = {}\n{}\n",
+        serde_json::to_string(&binary.to_string_lossy()).unwrap(),
+        serde_json::to_string(&trace_path.to_string_lossy()).unwrap(),
+        serde_json::to_string(&pid_path.to_string_lossy()).unwrap(),
+        LIVE_CORE_TRACE_WRAPPER_SOURCE
+    );
+    std::fs::write(wrapper, body).unwrap();
+    let mut permissions = std::fs::metadata(wrapper).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(wrapper, permissions).unwrap();
+}
+
+#[test]
+fn live_core_trace_wrapper_forwards_frames_and_keeps_trace_sanitized() {
+    let root = workspace_root();
+    let _cleanup = TemporaryProjectGuard(root.clone());
+    let fake_core = root.join("fake-core");
+    let wrapper = root.join("core-wrapper");
+    let trace_path = root.join("trace.jsonl");
+    let pid_path = root.join("core.pid");
+    std::fs::write(
+        &fake_core,
+        r#"#!/usr/bin/env python3
+import json
+import sys
+request = json.loads(sys.stdin.buffer.readline())
+sys.stdout.write(json.dumps({
+    "jsonrpc": "2.0",
+    "id": request["id"],
+    "error": {"code": -32000, "message": "private raw provider detail",
+              "data": {"kind": "provider", "retryable": True}}
+}) + "\n")
+sys.stdout.write(json.dumps({
+    "jsonrpc": "2.0", "method": "runtime/event",
+    "params": {"type": "error", "data": {"message": "private event detail"}}
+}) + "\n")
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_core).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_core, permissions).unwrap();
+    write_live_core_trace_wrapper(&wrapper, &fake_core, &trace_path, &pid_path);
+
+    let request_id = "private-request-identity";
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "turn/prompt",
+        "params": {"message": "private prompt content"}
+    });
+    let mut process = Command::new(&wrapper)
+        .arg("runtime")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start trace wrapper fixture");
+    process
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("{}\n", request).as_bytes())
+        .unwrap();
+    let output = process.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let forwarded = String::from_utf8(output.stdout).unwrap();
+    assert!(forwarded.contains("private raw provider detail"));
+    assert!(forwarded.contains("private event detail"));
+
+    let trace = std::fs::read_to_string(&trace_path).unwrap();
+    for private_value in [
+        request_id,
+        "private prompt content",
+        "private raw provider detail",
+        "private event detail",
+    ] {
+        assert!(
+            !trace.contains(private_value),
+            "trace leaked {private_value}"
+        );
+    }
+    let records = trace
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let expected_digest = format!("{:x}", sha2::Sha256::digest(request_id.as_bytes()));
+    assert_eq!(records[0]["direction"], "request");
+    assert_eq!(records[0]["method"], "turn/prompt");
+    assert_eq!(records[0]["id_sha256"], expected_digest);
+    assert_eq!(records[1]["direction"], "response");
+    assert_eq!(records[1]["id_sha256"], expected_digest);
+    assert_eq!(records[1]["error_code"], -32000);
+    assert_eq!(records[1]["error_kind"], "provider");
+    assert_eq!(records[1]["retryable"], true);
+    assert_eq!(records[2]["event_type"], "error");
+}
 
 struct Session {
     child: Child,
@@ -2206,17 +2384,9 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     let data_home = root.join(".glass/xdg-data");
     std::fs::create_dir_all(&fixture_state).unwrap();
     let pid_path = fixture_state.join("live-provider-core-pid");
+    let trace_path = fixture_state.join("live-provider-core-trace.jsonl");
     let wrapper = fixture_state.join("glass-core-live-wrapper");
-    let wrapper_body = format!(
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exec '{}' \"$@\"; fi\nprintf '%s\\n' \"$$\" > '{}'\nexec '{}' \"$@\"\n",
-        core_binary.display(),
-        pid_path.display(),
-        core_binary.display(),
-    );
-    std::fs::write(&wrapper, wrapper_body).unwrap();
-    let mut wrapper_permissions = std::fs::metadata(&wrapper).unwrap().permissions();
-    wrapper_permissions.set_mode(0o755);
-    std::fs::set_permissions(&wrapper, wrapper_permissions).unwrap();
+    write_live_core_trace_wrapper(&wrapper, &core_binary, &trace_path, &pid_path);
     let core_guard = LiveCoreProcessGuard {
         pid_path,
         binary: core_binary.clone(),
@@ -2325,6 +2495,10 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         session.settle(Duration::from_millis(200));
         let terminal_output = session.output().to_ascii_lowercase();
         let visible_output = session.visible_output().to_ascii_lowercase();
+        let normalized_visible_output = visible_output
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         for class in [
             "authentication",
             "provider",
@@ -2336,7 +2510,7 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
             "unsupported_method",
             "request",
         ] {
-            if visible_output.contains(&format!("failed: {class}")) {
+            if normalized_visible_output.contains(&format!("failed: {class}")) {
                 projected_failure_class = class;
                 break;
             }
@@ -2377,8 +2551,9 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         if send_status == "failed" {
             let failed_at = failed_status_observed_at.get_or_insert_with(Instant::now);
             if (run_classification != "working"
+                && projected_failure_class != "unobserved"
                 && failed_at.elapsed() >= Duration::from_millis(1200))
-                || failed_at.elapsed() >= Duration::from_secs(3)
+                || failed_at.elapsed() >= Duration::from_secs(5)
             {
                 break;
             }
@@ -2397,9 +2572,87 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     let file_content = std::fs::read(&file_path).ok();
     let file_exists = file_content.is_some();
     let file_length = file_content.as_ref().map_or(0, Vec::len);
+    let trace = std::fs::read_to_string(&trace_path).unwrap_or_default();
+    let trace_records = trace
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .collect::<Vec<_>>();
+    let request_id_digest = std::fs::read(&registry_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|registry| {
+            registry["threads"]
+                .as_array()?
+                .iter()
+                .rev()
+                .find_map(|thread| {
+                    let attempt = thread["sendAttempts"].as_array()?.last()?;
+                    let request_id = attempt["engineRequestId"].as_str()?;
+                    Some(format!("{:x}", sha2::Sha256::digest(request_id.as_bytes())))
+                })
+        });
+    let prompt_request_digests = trace_records
+        .iter()
+        .filter(|record| record["direction"] == "request" && record["method"] == "turn/prompt")
+        .filter_map(|record| record["id_sha256"].as_str())
+        .collect::<Vec<_>>();
+    let attempt_matches_prompt = request_id_digest
+        .as_deref()
+        .is_some_and(|digest| prompt_request_digests.contains(&digest));
+    let matching_response = request_id_digest.as_deref().is_some_and(|digest| {
+        trace_records
+            .iter()
+            .any(|record| record["direction"] == "response" && record["id_sha256"] == digest)
+    });
+    let safe_error_frames = trace_records
+        .iter()
+        .filter(|record| record["direction"] == "response" && record.get("error_code").is_some())
+        .map(|record| {
+            format!(
+                "code={:?},kind={},retryable={}",
+                record["error_code"].as_i64(),
+                record["error_kind"].as_str().unwrap_or("unknown"),
+                record["retryable"]
+                    .as_bool()
+                    .map_or("unknown", |value| if value { "true" } else { "false" })
+            )
+        })
+        .collect::<Vec<_>>();
+    let safe_event_types = trace_records
+        .iter()
+        .filter_map(|record| record["event_type"].as_str())
+        .filter(|event_type| {
+            matches!(
+                *event_type,
+                "turn_start"
+                    | "text"
+                    | "reasoning"
+                    | "tool_start"
+                    | "tool_end"
+                    | "tool_cancel"
+                    | "tool_progress"
+                    | "usage"
+                    | "waiting"
+                    | "compacted"
+                    | "steered"
+                    | "queued"
+                    | "notice"
+                    | "error"
+                    | "settled"
+            )
+        })
+        .collect::<Vec<_>>();
+    let trace_summary = format!(
+        "prompt_request_count={}, attempt_matches_prompt={}, correlated_response={}, safe_error_frames={:?}, runtime_event_types={:?}",
+        prompt_request_digests.len(),
+        attempt_matches_prompt,
+        matching_response,
+        safe_error_frames,
+        safe_event_types
+    );
     assert!(
         completed,
-        "live provider verification incomplete: file_exists={file_exists}, file_length={file_length}, run_classification={run_classification}, send_status={send_status}, engine_request_id_present={engine_request_id_present}, projected_failure_class={projected_failure_class}, observed_429={observed_429}; no retry was attempted"
+        "live provider verification incomplete: file_exists={file_exists}, file_length={file_length}, run_classification={run_classification}, send_status={send_status}, engine_request_id_present={engine_request_id_present}, projected_failure_class={projected_failure_class}, observed_429={observed_429}, trace=({trace_summary}); no retry was attempted"
     );
     assert_eq!(std::fs::read(&file_path).unwrap(), expected);
 
@@ -3799,7 +4052,7 @@ fn failed_core_response_is_visible_and_can_be_retried_explicitly() {
     assert!(session.wait_for_composer_text(prompt, Duration::from_secs(5)));
     session.send(b"\r");
     assert!(
-        session.wait_for("Core prompt failed: provider", Duration::from_secs(8)),
+        session.wait_for("Core prompt failed: operation", Duration::from_secs(8)),
         "correlated Core error was not projected into the active conversation\n{}",
         session.output_tail()
     );

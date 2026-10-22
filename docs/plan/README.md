@@ -37,8 +37,9 @@ session reattachment is specified in the [exact-session recovery analysis](analy
 and tracked in the [acceptance task](tasks/issue63-core-session-resume-001.md).
 Per-thread composer text/cursor recovery is tracked in the
 [durable composer draft task](tasks/issue63-durable-composer-drafts-001.md);
-draft/queue persistence beyond the composer, editable queues, and the attention
-inbox remain subsequent tasks.
+per-thread editable follow-up queues are tracked in the
+[durable follow-up queue task](tasks/issue63-durable-followup-queue-001.md).
+The attention inbox remains a subsequent task.
 
 ## Current source line: Glass 0.3.14
 

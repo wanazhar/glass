@@ -11,6 +11,10 @@ const MAX_BYTES: u64 = 256 * 1024;
 const MAX_THREADS: usize = 256;
 #[cfg(unix)]
 const MAX_DRAFT_BYTES: usize = 64 * 1024;
+#[cfg(unix)]
+const MAX_FOLLOW_UP_QUEUE_TEXT_BYTES: usize = 64 * 1024;
+#[cfg(unix)]
+const MAX_FOLLOW_UP_QUEUE_ENTRIES: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -26,6 +30,38 @@ pub(crate) struct ThreadRecord {
     #[cfg(windows)]
     #[serde(default)]
     pub composer_draft: Option<serde_json::Value>,
+    #[cfg(unix)]
+    #[serde(default)]
+    pub follow_up_queue: Option<Vec<FollowUpQueueRecord>>,
+    #[cfg(windows)]
+    #[serde(default)]
+    pub follow_up_queue: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum FollowUpQueueMode {
+    FollowUp,
+    Steer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum FollowUpQueueState {
+    Ready,
+    Dispatching,
+    NeedsReview,
+    Accepted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FollowUpQueueRecord {
+    pub entry_id: String,
+    pub target_run_id: String,
+    pub mode: FollowUpQueueMode,
+    pub text: String,
+    pub state: FollowUpQueueState,
 }
 
 #[cfg(unix)]
@@ -155,6 +191,37 @@ impl ThreadStore {
                 .find(|thread| thread.thread_id == thread_id)
                 .ok_or_else(|| config("composer draft thread was not found"))?;
             thread.composer_draft = None;
+            Ok(())
+        })
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn follow_up_queue(
+        &self,
+        thread_id: &str,
+    ) -> DevelopmentResult<Vec<FollowUpQueueRecord>> {
+        self.load()?
+            .threads
+            .into_iter()
+            .find(|thread| thread.thread_id == thread_id)
+            .map(|thread| thread.follow_up_queue.unwrap_or_default())
+            .ok_or_else(|| config("follow-up queue thread was not found"))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn set_follow_up_queue(
+        &self,
+        thread_id: &str,
+        queue: Vec<FollowUpQueueRecord>,
+    ) -> DevelopmentResult<()> {
+        self.mutate(|doc| {
+            let thread = doc
+                .threads
+                .iter_mut()
+                .find(|thread| thread.thread_id == thread_id)
+                .ok_or_else(|| config("follow-up queue thread was not found"))?;
+            validate_follow_up_queue(&queue, &thread.runs)?;
+            thread.follow_up_queue = (!queue.is_empty()).then_some(queue);
             Ok(())
         })
     }
@@ -577,6 +644,10 @@ fn validate_thread(thread: &ThreadRecord) -> DevelopmentResult<()> {
     if let Some(draft) = &thread.composer_draft {
         validate_composer_draft(draft)?;
     }
+    #[cfg(unix)]
+    if let Some(queue) = &thread.follow_up_queue {
+        validate_follow_up_queue(queue, &thread.runs)?;
+    }
     for run in &thread.runs {
         validate_id(&run.run_id, "run")?;
         validate_run(run)?;
@@ -604,10 +675,53 @@ fn validate_draft_budget(doc: &Document) -> DevelopmentResult<()> {
         .filter_map(|thread| thread.composer_draft.as_ref())
         .try_fold(0usize, |total, draft| total.checked_add(draft.text.len()))
         .ok_or_else(|| config("thread composer drafts exceed their aggregate limit"))?;
-    if total > MAX_DRAFT_BYTES {
+    let queue_total = doc
+        .threads
+        .iter()
+        .filter_map(|thread| thread.follow_up_queue.as_ref())
+        .flatten()
+        .try_fold(0usize, |total, item| total.checked_add(item.text.len()))
+        .ok_or_else(|| config("thread follow-up queues exceed their aggregate limit"))?;
+    if total > MAX_DRAFT_BYTES || queue_total > MAX_FOLLOW_UP_QUEUE_TEXT_BYTES {
         return Err(config(
-            "thread composer drafts exceed their aggregate limit",
+            "thread composer drafts or follow-up queues exceed their aggregate limit",
         ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_follow_up_queue(
+    queue: &[FollowUpQueueRecord],
+    runs: &[RunRecord],
+) -> DevelopmentResult<()> {
+    if queue.len() > MAX_FOLLOW_UP_QUEUE_ENTRIES {
+        return Err(config("thread follow-up queue reached its entry limit"));
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    let mut aggregate = 0usize;
+    for item in queue {
+        validate_id(&item.entry_id, "queue")?;
+        validate_id(&item.target_run_id, "run")?;
+        if !ids.insert(item.entry_id.as_str()) {
+            return Err(config("duplicate follow-up queue entry identifier"));
+        }
+        if !runs.iter().any(|run| run.run_id == item.target_run_id) {
+            return Err(config("follow-up queue target run is not in its thread"));
+        }
+        if item.text.is_empty()
+            || item.text.len() > 16 * 1024
+            || item.text.contains('\0')
+            || item.text.trim().is_empty()
+        {
+            return Err(config("follow-up queue text exceeds its field limits"));
+        }
+        aggregate = aggregate
+            .checked_add(item.text.len())
+            .ok_or_else(|| config("thread follow-up queue exceeds its aggregate limit"))?;
+    }
+    if aggregate > MAX_FOLLOW_UP_QUEUE_TEXT_BYTES {
+        return Err(config("thread follow-up queue exceeds its aggregate limit"));
     }
     Ok(())
 }
@@ -677,6 +791,7 @@ mod tests {
             role: "builder".into(),
             created_at_ms: 1,
             composer_draft: None,
+            follow_up_queue: None,
             runs: vec![RunRecord {
                 run_id: random_id("run").unwrap(),
                 engine: "glass-core".into(),
@@ -731,6 +846,94 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.to_string().contains("composer draft"));
+        assert_eq!(fs::read(&store.path).unwrap(), before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn follow_up_queue_round_trips_and_rejects_cross_thread_run_without_overwrite() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        let first = record();
+        let thread_id = first.thread_id.clone();
+        let run_id = first.runs[0].run_id.clone();
+        store.create(first).unwrap();
+        let entry = FollowUpQueueRecord {
+            entry_id: random_id("queue").unwrap(),
+            target_run_id: run_id,
+            mode: FollowUpQueueMode::Steer,
+            text: "Use the tested approach".into(),
+            state: FollowUpQueueState::Ready,
+        };
+        store
+            .set_follow_up_queue(&thread_id, vec![entry.clone()])
+            .unwrap();
+        assert_eq!(
+            ThreadStore::open(&root)
+                .unwrap()
+                .follow_up_queue(&thread_id)
+                .unwrap(),
+            vec![entry.clone()]
+        );
+        let before = fs::read(&store.path).unwrap();
+        let error = store
+            .set_follow_up_queue(
+                &thread_id,
+                vec![FollowUpQueueRecord {
+                    entry_id: random_id("queue").unwrap(),
+                    target_run_id: random_id("run").unwrap(),
+                    mode: FollowUpQueueMode::FollowUp,
+                    text: "Do this later".into(),
+                    state: FollowUpQueueState::Ready,
+                }],
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("target run"));
+        assert_eq!(fs::read(&store.path).unwrap(), before);
+        assert_eq!(store.follow_up_queue(&thread_id).unwrap(), vec![entry]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn aggregate_follow_up_queue_limit_preserves_committed_queues() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        let mut targets = Vec::new();
+        for _ in 0..5 {
+            let thread = record();
+            let target = (thread.thread_id.clone(), thread.runs[0].run_id.clone());
+            store.create(thread).unwrap();
+            targets.push(target);
+        }
+        for (thread_id, run_id) in &targets[..4] {
+            let queue = (0..4)
+                .map(|_| FollowUpQueueRecord {
+                    entry_id: random_id("queue").unwrap(),
+                    target_run_id: run_id.clone(),
+                    mode: FollowUpQueueMode::FollowUp,
+                    text: "x".repeat(4096),
+                    state: FollowUpQueueState::Ready,
+                })
+                .collect();
+            store.set_follow_up_queue(thread_id, queue).unwrap();
+        }
+        let before = fs::read(&store.path).unwrap();
+        let overflow = vec![FollowUpQueueRecord {
+            entry_id: random_id("queue").unwrap(),
+            target_run_id: targets[4].1.clone(),
+            mode: FollowUpQueueMode::FollowUp,
+            text: "x".repeat(16 * 1024),
+            state: FollowUpQueueState::Ready,
+        }];
+        assert!(
+            store
+                .set_follow_up_queue(&targets[4].0, overflow)
+                .unwrap_err()
+                .to_string()
+                .contains("aggregate limit")
+        );
         assert_eq!(fs::read(&store.path).unwrap(), before);
         let _ = fs::remove_dir_all(root);
     }
@@ -809,6 +1012,10 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("composerDraft");
+        value["threads"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("followUpQueue");
         fs::write(&store.path, serde_json::to_vec(&value).unwrap()).unwrap();
         let reopened = ThreadStore::open(&root).unwrap();
         assert_eq!(reopened.list().unwrap()[0].composer_draft, None);
@@ -837,6 +1044,31 @@ mod tests {
         let saved: serde_json::Value =
             serde_json::from_slice(&fs::read(&store.path).unwrap()).unwrap();
         assert_eq!(saved["threads"][0]["composerDraft"], draft);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_preserves_opaque_follow_up_queue_during_other_registry_mutations() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        let row = record();
+        let thread_id = row.thread_id.clone();
+        let run_id = row.runs[0].run_id.clone();
+        store.create(row).unwrap();
+        let queue = serde_json::json!([{ "entryId": "queue-old", "text": "private queued text" }]);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&store.path).unwrap()).unwrap();
+        value["threads"][0]["followUpQueue"] = queue.clone();
+        fs::write(&store.path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let reopened = ThreadStore::open(&root).unwrap();
+        reopened
+            .classify_run(&thread_id, &run_id, RunClassification::Failed)
+            .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&store.path).unwrap()).unwrap();
+        assert_eq!(saved["threads"][0]["followUpQueue"], queue);
         let _ = fs::remove_dir_all(root);
     }
 

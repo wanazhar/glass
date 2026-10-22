@@ -93,7 +93,9 @@ an attention inbox follow after verified resume.
 ## Later issue #63 slices
 
 1. Completed in [the exact-session recovery task](../tasks/issue63-core-session-resume-001.md): describe and resume the exact stored Core session, handle missing or incompatible sessions without fallback, and verify a closed/reopened conversation without a duplicate turn.
-2. Persist and edit/reorder/remove follow-up queue entries against stable
-   `ThreadId`/`RunId`.
+2. In progress in the [durable follow-up queue task](../tasks/issue63-durable-followup-queue-001.md):
+   persist and edit/reorder/remove queue entries against stable
+   `ThreadId`/`RunId`, with an explicit destination for steering and no
+   automatic replay after restart.
 3. Add an attention inbox ordered by durable run lifecycle and link each item
    back to its owning thread.

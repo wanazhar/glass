@@ -628,8 +628,134 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
         Some(ActiveOverlay::PiSlashCommand) => render_pi_command_palette(frame, state, area),
         Some(ActiveOverlay::FilePicker) => render_file_picker(frame, state, area),
         Some(ActiveOverlay::SessionPicker) => render_session_picker(frame, state, area),
+        Some(ActiveOverlay::FollowUpQueue) => render_follow_up_queue(frame, state, area),
         _ => {}
     }
+}
+
+fn render_follow_up_queue(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let width = area.width.saturating_sub(4).min(100);
+    let height = area.height.saturating_sub(4).clamp(7, 18);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .title(" THREAD FOLLOW-UP QUEUE ")
+        .title_style(
+            Style::default()
+                .fg(ACCENT_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        )
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT_BRIGHT))
+        .bg(PANEL_BACKGROUND)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(modal);
+    let mut lines = Vec::new();
+    if state.follow_up_queue_retry_confirmation.is_some() {
+        lines.push(palette_fixed_line(
+            "RETRY UNRESOLVED DELIVERY?",
+            inner.width,
+            Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
+        ));
+        lines.push(palette_fixed_line(
+            "The runtime may already have accepted this message. Retrying can send it twice.",
+            inner.width,
+            Style::default().fg(TEXT),
+        ));
+        lines.push(palette_fixed_line(
+            "Enter or y retry · Esc or n keep it for review",
+            inner.width,
+            Style::default().fg(MUTED),
+        ));
+    } else if state.follow_up_queue_is_editing() {
+        lines.push(palette_fixed_line(
+            "EDIT FOLLOW-UP · Enter save · Esc cancel · Ctrl-A/E move cursor",
+            inner.width,
+            Style::default().fg(MUTED),
+        ));
+        lines.push(palette_fixed_line(
+            format!(
+                "{} · {}",
+                match state.follow_up_queue_edit_mode {
+                    Some(crate::thread_store::FollowUpQueueMode::Steer) => "STEER",
+                    _ => "FOLLOW-UP",
+                },
+                state.follow_up_queue_edit_text,
+            ),
+            inner.width,
+            Style::default().fg(TEXT),
+        ));
+    } else {
+        let Some((current_run, entries)) = state.follow_up_queue_view() else {
+            lines.push(palette_fixed_line(
+                "Loading thread queue…",
+                inner.width,
+                Style::default().fg(MUTED),
+            ));
+            frame.render_widget(Clear, modal);
+            frame.render_widget(Paragraph::new(Text::from(lines)).block(block), modal);
+            return;
+        };
+        lines.push(palette_fixed_line(
+            format!("Active destination · {}", short_run_id(current_run)),
+            inner.width,
+            Style::default().fg(MUTED),
+        ));
+        if entries.is_empty() {
+            lines.push(palette_fixed_line(
+                "No queued follow-ups · a add · s add steer to the active run",
+                inner.width,
+                Style::default().fg(MUTED),
+            ));
+        } else {
+            for (index, entry) in entries.iter().enumerate() {
+                let mode = match entry.mode {
+                    crate::thread_store::FollowUpQueueMode::Steer => "STEER",
+                    crate::thread_store::FollowUpQueueMode::FollowUp => "FOLLOW-UP",
+                };
+                let state_label = match entry.state {
+                    crate::thread_store::FollowUpQueueState::Ready => "ready",
+                    crate::thread_store::FollowUpQueueState::Dispatching => "saving / sending",
+                    crate::thread_store::FollowUpQueueState::NeedsReview => "needs review",
+                    crate::thread_store::FollowUpQueueState::Accepted => "accepted",
+                };
+                let text = entry.text.replace('\n', " ↵ ");
+                let label = format!(
+                    "{mode} → {} · {state_label} · {text}",
+                    short_run_id(&entry.target_run_id),
+                );
+                lines.push(palette_fixed_line(
+                    label,
+                    inner.width,
+                    if index == state.follow_up_queue_selection {
+                        Style::default().fg(PANEL_BACKGROUND).bg(ACCENT_BRIGHT)
+                    } else {
+                        Style::default().fg(TEXT)
+                    },
+                ));
+            }
+        }
+        lines.push(palette_fixed_line(
+            "a follow-up · s steer · e edit · < > order · d remove · t retarget · Enter send · Esc close",
+            inner.width,
+            Style::default().fg(MUTED),
+        ));
+    }
+    frame.render_widget(Clear, modal);
+    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), modal);
+}
+
+fn short_run_id(run_id: &str) -> &str {
+    run_id
+        .strip_prefix("run-")
+        .unwrap_or(run_id)
+        .get(..8)
+        .unwrap_or(run_id)
 }
 fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = fullscreen_editor_rows(state, area);

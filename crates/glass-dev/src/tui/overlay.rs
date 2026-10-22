@@ -14,13 +14,14 @@ pub(super) enum ActiveOverlay {
     BrowserTargetPicker = 5,
     FilePicker = 6,
     SessionPicker = 7,
-    AgentApproval = 8,
-    MutationConfirmation = 9,
-    FullscreenEditor = 10,
-    PiSlashCommand = 11,
-    Composer = 12,
-    CommandPalette = 13,
-    BrowserRecovery = 14,
+    FollowUpQueue = 8,
+    AgentApproval = 9,
+    MutationConfirmation = 10,
+    FullscreenEditor = 11,
+    PiSlashCommand = 12,
+    Composer = 13,
+    CommandPalette = 14,
+    BrowserRecovery = 15,
 }
 
 impl ActiveOverlay {
@@ -51,6 +52,8 @@ pub(super) fn active_overlay(state: &DevTuiState) -> Option<ActiveOverlay> {
         Some(ActiveOverlay::FilePicker)
     } else if state.session_picker_open {
         Some(ActiveOverlay::SessionPicker)
+    } else if state.follow_up_queue_open {
+        Some(ActiveOverlay::FollowUpQueue)
     } else if state.pending_agent_approval.is_some() {
         Some(ActiveOverlay::AgentApproval)
     } else if state.pending_confirmation.is_some() {

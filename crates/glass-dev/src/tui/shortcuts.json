@@ -14,6 +14,10 @@
       "text": "Ctrl-Shift-A  Ask/Plan/Agent · /ask /plan /agent /todo"
     },
     {
+      "keys": ["Ctrl-Shift-T"],
+      "text": "Ctrl-Shift-T  open project conversations on Agent"
+    },
+    {
       "keys": ["/", ":"],
       "text": "/  Pi native commands on Agent · :  Glass workspace commands"
     },
@@ -34,14 +38,14 @@
         "`Tab`", "`Shift-Tab`", "`?`", "`/`", "`:`", "`a`",
         "`Ctrl-L`", "`Ctrl-P`", "`Ctrl-K`", "`Ctrl-Shift-P`", "`Ctrl-G`",
         "`Alt-Left`", "`Alt-Right`", "`Ctrl-R`", "`Alt-W`", "`Ctrl-S`",
-        "`Ctrl-Z`", "`Ctrl-Y`", "`Ctrl-D`"
+        "`Ctrl-Z`", "`Ctrl-Y`", "`Ctrl-D`", "`Ctrl-Shift-T`"
       ]
     },
     {
       "path": "crates/glass-dev/README.md",
       "markers": [
         "`Ctrl-L`", "`Alt-A`", "`Ctrl-Shift-A`", "`/`", "`:`", "`Ctrl-D`", "`Alt-W`",
-        "`Ctrl-S`", "`Ctrl-Z`", "`Ctrl-Y`", "`Ctrl-C`"
+        "`Ctrl-S`", "`Ctrl-Z`", "`Ctrl-Y`", "`Ctrl-C`", "`Ctrl-Shift-T`"
       ]
     },
     {
@@ -50,7 +54,7 @@
         "`Ctrl-L`", "`Alt-A`", "`Ctrl-P`", "`Ctrl-K`", "`Ctrl-Shift-P`",
         "`Ctrl-Shift-A`", "`/`", "`:`", "`Ctrl-G`", "`Tab`", "`Alt-Left`", "`Alt-Right`",
         "`Ctrl-R`", "Ctrl-O", "Ctrl-D", "Ctrl-X", "`Alt-W`",
-        "`Ctrl-S`", "`Ctrl-Z`", "`Ctrl-Y`", "`Ctrl-C`"
+        "`Ctrl-S`", "`Ctrl-Z`", "`Ctrl-Y`", "`Ctrl-C`", "`Ctrl-Shift-T`"
       ]
     },
     {

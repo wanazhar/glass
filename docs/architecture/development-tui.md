@@ -198,6 +198,7 @@ mouse, paste, or surface input while a higher-priority overlay is active.
 | `Ctrl-K` / `Ctrl-Shift-P` | open the command palette from the normal surface view |
 | `Ctrl-G` | jump to App while keeping the composer dock open |
 | `Ctrl-Shift-A` | cycle Ask, Plan, and Agent; default Agent; Ask/Plan fail closed for mutations |
+| `Ctrl-Shift-T` on Agent | open the project conversation picker; Enter selects a thread without dispatching a prompt, Esc returns to the current conversation |
 | `?` | help; `j`/`k`, PageUp/PageDown and Home/End scroll; `?`/Esc closes |
 | `Enter` on Agent | start/continue the agent interaction; with text focus, submit composer |
 | `Enter` on Code | open the selected file for full-screen edit; preview queues if the workspace is busy |
@@ -350,7 +351,9 @@ includes Pi runtime installation, update, and authentication routes. See the
 The shared composer dock is a local draft with a character cursor. `Ctrl-L`
 opens it on any surface. `i`, Enter on the Agent surface, or typing a
 non-digit Agent character also opens it. Default mode is Agent. `Ctrl-Shift-A`
-cycles Ask, Plan, and Agent. Glass `/ask`, `/plan`, and `/agent` aliases use
+cycles Ask, Plan, and Agent. `Ctrl-Shift-T` opens the project conversation
+picker; selecting a row switches to that thread without sending a prompt, and
+Esc leaves the selected conversation unchanged. Glass `/ask`, `/plan`, and `/agent` aliases use
 the same slash resolver whether typed in the modal or pasted into the
 composer: their arguments are the prompt sent in the selected mode, and any
 pre-existing composer draft remains intact. An alias without a prompt changes

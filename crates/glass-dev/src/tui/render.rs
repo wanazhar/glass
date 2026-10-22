@@ -628,6 +628,7 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
         Some(ActiveOverlay::PiSlashCommand) => render_pi_command_palette(frame, state, area),
         Some(ActiveOverlay::FilePicker) => render_file_picker(frame, state, area),
         Some(ActiveOverlay::SessionPicker) => render_session_picker(frame, state, area),
+        Some(ActiveOverlay::ThreadPicker) => render_thread_picker(frame, state, area),
         Some(ActiveOverlay::FollowUpQueue) => render_follow_up_queue(frame, state, area),
         Some(ActiveOverlay::AttentionInbox) => render_attention_inbox(frame, state, area),
         _ => {}
@@ -1253,6 +1254,83 @@ fn render_file_picker(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                 palette_row_text(&format!("{marker}{path}"), inner.width),
                 style,
             )));
+        }
+    }
+    frame.render_widget(Clear, modal);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
+            .block(block),
+        modal,
+    );
+}
+
+fn render_thread_picker(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let width = area.width.saturating_sub(4).min(84);
+    let height = area.height.saturating_sub(4).clamp(7, 20);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .title(" PROJECT THREADS · Enter open · Esc return ")
+        .title_style(
+            Style::default()
+                .fg(ACCENT_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        )
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(ACCENT))
+        .bg(PANEL_BACKGROUND)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(modal);
+    let mut lines = vec![palette_fixed_line(
+        format!("CONVERSATIONS · {}", state.thread_picker_items.len()),
+        inner.width,
+        Style::default()
+            .fg(ACCENT_BRIGHT)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if state.thread_picker_items.is_empty() {
+        lines.push(palette_fixed_line(
+            if state.snapshot_ready {
+                "No project conversations yet · type in the dock to start"
+            } else {
+                "Loading project conversations…"
+            },
+            inner.width,
+            Style::default().fg(MUTED),
+        ));
+    } else {
+        let visible = inner.height.saturating_sub(1) as usize;
+        let start = state
+            .thread_picker_selection
+            .saturating_sub(visible.saturating_sub(1));
+        for (index, item) in state
+            .thread_picker_items
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(visible)
+        {
+            let selected = index == state.thread_picker_selection;
+            let marker = if selected { "▸ " } else { "  " };
+            let style = if selected {
+                Style::default()
+                    .fg(ACCENT_BRIGHT)
+                    .bg(ACTIVE_BACKGROUND)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(TEXT).bg(PANEL_BACKGROUND)
+            };
+            lines.push(palette_fixed_line(
+                format!("{marker}{} · {}", item.title, item.status),
+                inner.width,
+                style,
+            ));
         }
     }
     frame.render_widget(Clear, modal);

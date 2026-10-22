@@ -262,6 +262,13 @@ pub struct SessionPickerItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadPickerItem {
+    pub agent_id: crate::AgentId,
+    pub title: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessRow {
     pub name: String,
     pub command: String,
@@ -1433,6 +1440,10 @@ pub struct DevTuiState {
     pub pending_chat_messages: Vec<PendingChatMessage>,
     pub agent_send_job: Option<u64>,
     pub selected_agent: Option<crate::AgentId>,
+    pub thread_picker_open: bool,
+    pub thread_picker_items: Vec<ThreadPickerItem>,
+    pub thread_picker_selection: usize,
+    thread_picker_previous_status: Option<String>,
     pub attention_inbox_open: bool,
     pub attention_selection: usize,
     pub(crate) attention_items: Vec<AttentionItem>,
@@ -1831,6 +1842,10 @@ impl DevTuiState {
             pending_chat_messages: Vec::new(),
             agent_send_job: None,
             selected_agent: None,
+            thread_picker_open: false,
+            thread_picker_items: Vec::new(),
+            thread_picker_selection: 0,
+            thread_picker_previous_status: None,
             attention_inbox_open: false,
             attention_selection: 0,
             attention_items: Vec::new(),
@@ -4192,6 +4207,56 @@ impl DevTuiState {
             "Selected {} · Enter chats · ]/[ switches agent",
             selected.as_str()
         );
+    }
+
+    pub fn open_thread_picker(&mut self) {
+        self.thread_picker_previous_status = Some(self.status.clone());
+        self.thread_picker_selection = self
+            .thread_picker_items
+            .iter()
+            .position(|item| Some(&item.agent_id) == self.selected_agent.as_ref())
+            .unwrap_or(0);
+        self.thread_picker_open = true;
+        self.status = if self.thread_picker_items.is_empty() {
+            if self.snapshot_ready {
+                "No project conversations yet".into()
+            } else {
+                "Loading project conversations".into()
+            }
+        } else {
+            "Project conversations · Enter opens · Esc returns".into()
+        };
+    }
+
+    pub fn close_thread_picker(&mut self) {
+        self.thread_picker_open = false;
+        if let Some(status) = self.thread_picker_previous_status.take() {
+            self.status = status;
+        }
+    }
+
+    pub fn move_thread_picker_selection(&mut self, delta: i32) {
+        if self.thread_picker_items.is_empty() {
+            return;
+        }
+        let next = self.thread_picker_selection as i32 + delta;
+        self.thread_picker_selection =
+            next.clamp(0, self.thread_picker_items.len() as i32 - 1) as usize;
+    }
+
+    pub fn activate_thread_picker_selection(&mut self) {
+        let Some(item) = self.thread_picker_items.get(self.thread_picker_selection) else {
+            self.status = "No project conversation selected".into();
+            return;
+        };
+        let item = item.clone();
+        if !self.select_agent(Some(item.agent_id.clone())) {
+            return;
+        }
+        self.surface = DevSurface::Agent;
+        self.thread_picker_open = false;
+        self.thread_picker_previous_status = None;
+        self.status = format!("{} · {}", item.title, item.status);
     }
 
     pub fn open_follow_up_queue(&mut self) {
@@ -11349,6 +11414,27 @@ impl DevTuiState {
                 .selected_todo
                 .min(self.session_todos.items.len().saturating_sub(1));
         }
+        let highlighted_thread = self
+            .thread_picker_items
+            .get(self.thread_picker_selection)
+            .map(|item| item.agent_id.clone());
+        self.thread_picker_items = snapshot.thread_picker_items.clone();
+        self.thread_picker_selection = highlighted_thread
+            .as_ref()
+            .and_then(|id| {
+                self.thread_picker_items
+                    .iter()
+                    .position(|item| &item.agent_id == id)
+            })
+            .or_else(|| {
+                self.thread_picker_items
+                    .iter()
+                    .position(|item| Some(&item.agent_id) == self.selected_agent.as_ref())
+            })
+            .unwrap_or_else(|| {
+                self.thread_picker_selection
+                    .min(self.thread_picker_items.len().saturating_sub(1))
+            });
         self.agents = snapshot.agents.clone();
         let active_approval = self.pending_agent_approval.clone();
         self.pending_agent_approvals = snapshot.pending_agent_approvals.clone();
@@ -11618,6 +11704,16 @@ impl DevTuiState {
         let agent_snapshots = workspace.agents().list();
         self.pending_agent_approvals = pending_agent_approvals(agent_snapshots.as_ref().ok());
         self.pending_agent_approval = self.pending_agent_approvals.first().cloned();
+        if let Ok(agents) = &agent_snapshots {
+            self.thread_picker_items = agents
+                .iter()
+                .map(|agent| ThreadPickerItem {
+                    agent_id: agent.id.clone(),
+                    title: agent.role.clone(),
+                    status: agent.status.label().to_owned(),
+                })
+                .collect();
+        }
         self.agents = match agent_snapshots {
             Ok(agents) if agents.is_empty() => "No agents. :agent spawn ROLE TASK".into(),
             Ok(agents) => agents
@@ -15127,6 +15223,85 @@ mod tests {
                 .text,
             other_text
         );
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_thread_picker_lists_status_and_selects_without_losing_draft() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-tui-thread-picker-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = crate::thread_store::ThreadStore::open(&root).unwrap();
+        for (index, title) in ["First thread", "Second thread", "Third thread"]
+            .into_iter()
+            .enumerate()
+        {
+            store
+                .create(crate::thread_store::ThreadRecord {
+                    thread_id: format!("thread-{:032x}", index + 1),
+                    title: title.into(),
+                    role: title.into(),
+                    created_at_ms: index as u128 + 1,
+                    runs: vec![crate::thread_store::RunRecord {
+                        run_id: format!("run-{:032x}", index + 1),
+                        engine: "glass-core".into(),
+                        core_session_id: Some(format!("session-{index}")),
+                        classification: crate::thread_store::RunClassification::RecoveryPending,
+                    }],
+                    composer_draft: None,
+                    follow_up_queue: None,
+                    send_attempts: Vec::new(),
+                    #[cfg(windows)]
+                    send_attempts_opaque: None,
+                })
+                .unwrap();
+        }
+
+        let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop).unwrap();
+        let first = crate::AgentId::parse("agent-0001").unwrap();
+        let second = crate::AgentId::parse("agent-0002").unwrap();
+        assert!(state.select_agent(Some(first.clone())));
+        state.composer_input = "draft on first".into();
+        state.composer_cursor = 5;
+        state.thread_drafts.insert(
+            Some(second.clone()),
+            ComposerDraft {
+                text: "draft on second".into(),
+                cursor: 10,
+            },
+        );
+
+        state.refresh();
+        state.open_thread_picker();
+        assert!(state.thread_picker_open);
+        assert_eq!(state.thread_picker_items.len(), 3);
+        assert_eq!(state.thread_picker_items[0].title, "First thread");
+        let expected_status = if cfg!(windows) {
+            "unavailable"
+        } else {
+            "recovery pending"
+        };
+        assert_eq!(state.thread_picker_items[0].status, expected_status);
+        assert_eq!(state.selected_agent, Some(first));
+        state.move_thread_picker_selection(1);
+        state.activate_thread_picker_selection();
+
+        assert!(!state.thread_picker_open);
+        assert_eq!(state.selected_agent, Some(second));
+        assert_eq!(state.composer_input, "draft on second");
+        assert_eq!(state.composer_cursor, 10);
+        state.status = "Return to this conversation".into();
+        state.open_thread_picker();
+        state.close_thread_picker();
+        assert_eq!(state.status, "Return to this conversation");
+        assert_eq!(state.composer_input, "draft on second");
         drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }

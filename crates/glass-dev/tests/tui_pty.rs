@@ -439,6 +439,55 @@ fn send_ctrl_shift_a(session: &mut Session) {
     session.send(b"\x1b[65;6u");
 }
 
+fn send_ctrl_shift_t(session: &mut Session) {
+    // CSI-u preserves the physical T key with Ctrl+Shift modifiers.
+    session.send(b"\x1b[84;6u");
+}
+
+fn seed_project_threads(root: &std::path::Path) {
+    use std::os::unix::fs::MetadataExt;
+
+    let canonical_root = std::fs::canonicalize(root).unwrap();
+    let metadata = std::fs::metadata(&canonical_root).unwrap();
+    let threads = ["First thread", "Second thread", "Third thread"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, title)| {
+            serde_json::json!({
+                "threadId": format!("thread-{:032x}", index + 1),
+                "title": title,
+                "role": title,
+                "createdAtMs": 1,
+                "runs": [{
+                    "runId": format!("run-{:032x}", index + 1),
+                    "engine": "glass-core",
+                    "coreSessionId": null,
+                    "classification": "completed"
+                }],
+                "sendAttempts": [],
+                "composerDraft": null,
+                "followUpQueue": null
+            })
+        })
+        .collect::<Vec<_>>();
+    let registry = serde_json::json!({
+        "version": 1,
+        "projectIdentity": {
+            "canonicalRoot": canonical_root,
+            "device": metadata.dev(),
+            "inode": metadata.ino()
+        },
+        "threads": threads
+    });
+    let directory = root.join(".glass/threads");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("registry.json"),
+        serde_json::to_vec_pretty(&registry).unwrap(),
+    )
+    .unwrap();
+}
+
 #[test]
 fn ctrl_c_requires_confirmation_from_every_input_mode() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
@@ -775,6 +824,67 @@ fn attention_inbox_keyboard_journey_keeps_composer_and_opens_proposal_context() 
         );
         session.kill();
         let _ = std::fs::remove_file(fake_core);
+    }
+}
+
+#[test]
+fn project_thread_picker_is_discoverable_at_desktop_and_compact_sizes() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+
+    for (cols, rows) in [(80, 24), (50, 16)] {
+        let root = git_workspace_root();
+        seed_project_threads(&root);
+        let fake_core = fake_core_binary(&root);
+        let mut session =
+            Session::start_with_core_binary(&binary(), &root, cols, rows, Some(&fake_core));
+        assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+        if cols <= 50 {
+            session.trust_project_with_probe("trusted project");
+        } else {
+            session.trust_project();
+        }
+        assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+
+        send_ctrl_shift_t(&mut session);
+        assert!(
+            session.wait_for_visible("PROJECT THREADS", Duration::from_secs(5)),
+            "thread picker did not open at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        assert!(
+            session.wait_for_visible("First thread · completed", Duration::from_secs(5)),
+            "readable thread title/status missing at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        assert!(
+            session.wait_for_visible("Second thread · completed", Duration::from_secs(5)),
+            "second thread missing at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        session.clear_output();
+        session.send(b"\x1b[B\r");
+        assert!(
+            session.wait_for_visible("Second thread · completed", Duration::from_secs(5)),
+            "Enter did not select the highlighted thread at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        assert!(
+            !session.visible_output().contains("PROJECT THREADS"),
+            "Enter left the thread picker open at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        assert!(
+            !session.visible_output().contains("Sending"),
+            "thread selection dispatched a prompt at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        session.send(b"\x1b");
+        session.settle(Duration::from_millis(200));
+        session.kill();
+        let _ = std::fs::remove_file(fake_core);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 #[test]

@@ -42,6 +42,8 @@ Per-thread composer text/cursor recovery is tracked in the
 [durable composer draft task](tasks/issue63-durable-composer-drafts-001.md);
 per-thread editable follow-up queues are tracked in the
 [durable follow-up queue task](tasks/issue63-durable-followup-queue-001.md).
+The discoverable project-local thread picker is tracked in the
+[thread picker task](tasks/issue64-project-thread-picker-001.md).
 The [attention inbox](tasks/issue63-attention-inbox-001.md) and its allocated
 PTY journey are complete. Per-send crash reconciliation and project-centered
 thread navigation remain open issue #64 work. The bounded per-send attempt

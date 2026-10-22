@@ -10,11 +10,12 @@ Core binary, installer alias, web UI, extensions, licenses, and independent
 package build must continue to work without selecting Glass development or
 browser packages.
 
-The structural and version migration is tracked in the
-[workspace design](analysis/shared-workspace.md) and
-[implementation task](tasks/workspace-glass-core-001.md). Mixed runtime tools
-and the collaboration TUI remain subsequent issue #63 slices, with their own
-contracts and acceptance evidence.
+The structural and version migration is complete in `f067a3bc`, with follow-up
+commits for inherited Core test expectations, Core formatting, and shared
+target-path handling. The [workspace design](analysis/shared-workspace.md) and
+[implementation task](tasks/workspace-glass-core-001.md) record the result and
+verification. Mixed runtime tools and the collaboration TUI remain subsequent
+issue #63 slices, with their own contracts and acceptance evidence.
 
 ## Current source line: Glass 0.3.14
 

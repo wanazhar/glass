@@ -739,6 +739,8 @@ pub struct DevTuiState {
     #[cfg(unix)]
     composer_draft_writer: Option<ComposerDraftWriter>,
     #[cfg(unix)]
+    composer_draft_save_failed: bool,
+    #[cfg(unix)]
     composer_draft_targets:
         std::collections::BTreeMap<crate::AgentId, (crate::thread_store::ThreadStore, String)>,
     pub pending_confirmation: Option<PendingConfirmation>,
@@ -1095,6 +1097,8 @@ impl DevTuiState {
             #[cfg(unix)]
             composer_draft_writer: None,
             #[cfg(unix)]
+            composer_draft_save_failed: false,
+            #[cfg(unix)]
             composer_draft_targets: std::collections::BTreeMap::new(),
             pending_confirmation: None,
             editor_exit_prompt: None,
@@ -1250,13 +1254,20 @@ impl DevTuiState {
     }
 
     pub fn request_quit(&mut self) {
+        if self.quit {
+            return;
+        }
         #[cfg(unix)]
         {
             self.persist_composer_draft();
-            self.flush_composer_drafts();
-        }
-        if self.quit {
-            return;
+            if !self.flush_composer_drafts() {
+                let save_error = self.status.clone();
+                self.quit_confirmation = true;
+                self.status = format!(
+                    "{save_error} · Enter discards the unsaved draft and quits · Esc keeps editing"
+                );
+                return;
+            }
         }
         if self.editor_exit_prompt.is_none() {
             let dirty_buffer = match self.workspace.try_lock() {
@@ -1315,6 +1326,12 @@ impl DevTuiState {
 
     pub fn cancel_quit(&mut self) {
         self.quit_confirmation = false;
+        #[cfg(unix)]
+        if self.composer_draft_save_failed {
+            self.status =
+                "Composer draft remains unsaved · keep editing and retry persistence".into();
+            return;
+        }
         self.status = "Quit dismissed · workspace remains open".into();
     }
 
@@ -3309,16 +3326,18 @@ impl DevTuiState {
             (current + (delta as usize % agents.len())) % agents.len()
         };
         let selected = agents[next].id.clone();
-        self.select_agent(Some(selected.clone()));
+        if !self.select_agent(Some(selected.clone())) {
+            return;
+        }
         self.status = format!(
             "Selected {} · Enter chats · ]/[ switches agent",
             selected.as_str()
         );
     }
 
-    fn select_agent(&mut self, selected: Option<crate::AgentId>) {
+    fn select_agent(&mut self, selected: Option<crate::AgentId>) -> bool {
         if self.selected_agent == selected {
-            return;
+            return true;
         }
         let current = self.selected_agent.clone();
         self.thread_drafts.insert(
@@ -3331,7 +3350,9 @@ impl DevTuiState {
         #[cfg(unix)]
         {
             self.persist_composer_draft();
-            self.flush_composer_drafts();
+            if !self.flush_composer_drafts() {
+                return false;
+            }
         }
         self.selected_agent = selected.clone();
         if let Some(conversation) = selected
@@ -3376,6 +3397,7 @@ impl DevTuiState {
                 self.persist_composer_draft();
             }
         }
+        true
     }
 
     #[cfg(unix)]
@@ -3460,11 +3482,16 @@ impl DevTuiState {
     #[cfg(unix)]
     fn flush_composer_drafts(&mut self) -> bool {
         let Some(writer) = self.composer_draft_writer.as_ref() else {
+            self.composer_draft_save_failed = false;
             return true;
         };
         match writer.flush() {
-            Ok(()) => true,
+            Ok(()) => {
+                self.composer_draft_save_failed = false;
+                true
+            }
             Err(error) => {
+                self.composer_draft_save_failed = true;
                 self.status = format!("Could not save composer draft: {error}");
                 false
             }
@@ -12415,6 +12442,74 @@ mod tests {
         assert_eq!(reopened.composer_input, "resume this λ");
         assert_eq!(reopened.composer_cursor, "resume ".len());
         drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_composer_draft_flush_keeps_outgoing_agent_selected() {
+        let (mut state, root) = routed_state("composer-draft-save-failure-switch");
+        let agent_a = crate::AgentId::parse("agent-0001").unwrap();
+        let agent_b = crate::AgentId::parse("agent-0002").unwrap();
+        let store = crate::thread_store::ThreadStore::open(&root).unwrap();
+        state.selected_agent = Some(agent_a.clone());
+        state.composer_input = "unsaved outgoing draft".into();
+        state.composer_cursor = 8;
+        state.composer_draft_targets.insert(
+            agent_a.clone(),
+            (store, "missing-thread-for-failure-test".into()),
+        );
+
+        assert!(!state.select_agent(Some(agent_b)));
+        assert_eq!(state.selected_agent, Some(agent_a.clone()));
+        assert_eq!(state.composer_input, "unsaved outgoing draft");
+        assert_eq!(state.composer_cursor, 8);
+        assert_eq!(
+            state.thread_drafts.get(&Some(agent_a)),
+            Some(&ComposerDraft {
+                text: "unsaved outgoing draft".into(),
+                cursor: 8,
+            })
+        );
+        assert!(state.status.contains("Could not save composer draft"));
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_composer_draft_flush_requires_explicit_quit_discard() {
+        let (mut state, root) = routed_state("composer-draft-save-failure-quit");
+        let agent = crate::AgentId::parse("agent-0001").unwrap();
+        let store = crate::thread_store::ThreadStore::open(&root).unwrap();
+        state.selected_agent = Some(agent.clone());
+        state.composer_input = "unsaved composer text".into();
+        state.composer_cursor = 8;
+        state
+            .composer_draft_targets
+            .insert(agent, (store, "missing-thread-for-failure-test".into()));
+
+        state.request_quit();
+        assert!(state.quit_confirmation);
+        assert!(!state.quit);
+        assert!(state.status.contains("Could not save composer draft"));
+        assert!(
+            state
+                .status
+                .contains("Enter discards the unsaved draft and quits")
+        );
+
+        state.cancel_quit();
+        assert!(!state.quit);
+        assert!(!state.quit_confirmation);
+        assert!(state.status.contains("Composer draft remains unsaved"));
+        assert_eq!(state.composer_input, "unsaved composer text");
+
+        state.request_quit();
+        assert!(state.quit_confirmation);
+        state.confirm_quit();
+        assert!(state.quit);
+        drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }
 

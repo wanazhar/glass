@@ -32,6 +32,10 @@ protected ACLs there; do not claim private durable drafts on that platform.
 - Persist text and cursor after composer key handling; deleting/sending a draft
   persists the empty state. Windows skips these durable operations and keeps
   the existing in-memory behavior.
+- If a thread-switch flush fails, keep the outgoing agent selected with its
+  draft intact. If a quit flush fails, require the visible quit confirmation
+  to explicitly discard the unsaved draft before exiting; cancelling keeps the
+  unsaved warning visible until persistence succeeds.
 
 ## Acceptance
 
@@ -45,7 +49,7 @@ protected ACLs there; do not claim private durable drafts on that platform.
 
 ## Verification
 
-Passed: `cargo test -p glass-dev --lib draft --locked` (13 passed),
+Passed: `cargo test -p glass-dev --lib draft --locked` (15 passed),
 `cargo fmt --all -- --check`, `git diff --check`, strict scoped Clippy, the
 documentation coverage/depth/release-truth validators, and the TUI shortcut
 validator. The refreshed live MCP catalog measures 342 tools and 181,498 UTF-8

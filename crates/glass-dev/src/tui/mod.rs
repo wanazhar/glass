@@ -485,6 +485,7 @@ pub(crate) fn run_with_browser_policy(
     worker.request_refresh();
     let mut guard = TerminalGuard::enter()?;
     let mut last_refresh = Instant::now();
+    let mut last_editor_reconcile = Instant::now();
     let mut last_visual = Instant::now();
     let mut last_render = Instant::now() - Duration::from_millis(33);
     let mut render_requested = true;
@@ -1184,6 +1185,10 @@ pub(crate) fn run_with_browser_policy(
             handle_herdr_event(&mut state, &mut visual, event);
         }
         render_requested |= state.flush_pending_editor_input();
+        if last_editor_reconcile.elapsed() >= Duration::from_millis(500) {
+            render_requested |= state.tick_editor_reconcile();
+            last_editor_reconcile = Instant::now();
+        }
         state.flush_pending_trust();
         state.flush_pending_open_file();
         if state.git_diff_requested {

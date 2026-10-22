@@ -138,12 +138,32 @@ pub struct EditorBuffer {
     pub path: String,
     pub content: String,
     pub original_hash: String,
+    #[serde(default = "default_existing_file")]
+    pub original_exists: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_change: Option<ExternalFileSnapshot>,
     pub dirty: bool,
     pub cursor_line: u32,
     pub cursor_column: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selection: Option<super::TextSelection>,
     pub actor: Actor,
+}
+
+fn default_existing_file() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalFileSnapshot {
+    pub exists: bool,
+    pub content_hash: Option<String>,
+    /// Filesystem state has no trustworthy actor record.
+    #[serde(default)]
+    pub actor: Option<super::Actor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
 }
 
 pub struct ProjectWorkspace {
@@ -168,6 +188,22 @@ pub struct ProjectWorkspace {
     checkpoints: BTreeMap<String, super::EditorCheckpoint>,
     checkpoints_path: PathBuf,
     next_editor_id: u64,
+}
+
+fn clamp_editor_position(buffer: &mut EditorBuffer) {
+    let lines = buffer.content.split('\n').collect::<Vec<_>>();
+    buffer.cursor_line = buffer.cursor_line.clamp(1, lines.len() as u32);
+    let line = lines[(buffer.cursor_line - 1) as usize];
+    buffer.cursor_column = buffer
+        .cursor_column
+        .clamp(1, line.chars().count() as u32 + 1);
+    if buffer
+        .selection
+        .as_ref()
+        .is_some_and(|selection| selection_offsets(&buffer.content, selection).is_none())
+    {
+        buffer.selection = None;
+    }
 }
 
 impl std::fmt::Debug for ProjectWorkspace {
@@ -983,6 +1019,8 @@ impl ProjectWorkspace {
         let buffer = EditorBuffer {
             path: relative.clone(),
             original_hash: hash(&content),
+            original_exists: true,
+            external_change: None,
             content,
             dirty: false,
             cursor_line: 1,
@@ -1001,9 +1039,16 @@ impl ProjectWorkspace {
     ) -> DevelopmentResult<EditorBuffer> {
         let content = self.read_file(path)?;
         let (_, relative) = self.resolve_path(path, false)?;
+        let actor = if self.buffers.contains_key(&relative) {
+            super::Actor::unknown_external()
+        } else {
+            actor
+        };
         let buffer = EditorBuffer {
             path: relative.clone(),
             original_hash: hash(&content),
+            original_exists: true,
+            external_change: None,
             content,
             dirty: false,
             cursor_line: 1,
@@ -1019,6 +1064,85 @@ impl ProjectWorkspace {
 
     pub fn buffers(&self) -> impl Iterator<Item = &EditorBuffer> {
         self.buffers.values()
+    }
+
+    /// Reconcile only currently open buffers against their confined paths.
+    /// Filesystem observations carry no actor attribution.
+    pub(crate) fn reconcile_open_buffers(&mut self) -> DevelopmentResult<bool> {
+        let paths = self.buffers.keys().cloned().collect::<Vec<_>>();
+        let mut changed = false;
+        for path in paths {
+            let observed = self.external_snapshot(&path)?;
+            let buffer = self.buffers.get_mut(&path).expect("listed buffer exists");
+            let same = observed.exists == buffer.original_exists
+                && (!observed.exists
+                    || observed.content_hash.as_deref() == Some(buffer.original_hash.as_str()));
+            if same {
+                if buffer.external_change.take().is_some() {
+                    changed = true;
+                }
+            } else if !buffer.dirty {
+                if let Some(content) = observed.content.clone() {
+                    buffer.content = content;
+                    buffer.original_hash = observed.content_hash.clone().unwrap_or_default();
+                    buffer.original_exists = true;
+                    buffer.dirty = false;
+                    buffer.external_change = None;
+                    buffer.actor = super::Actor::unknown_external();
+                    clamp_editor_position(buffer);
+                    changed = true;
+                } else {
+                    buffer.external_change = Some(observed);
+                    changed = true;
+                }
+            } else if buffer.external_change.as_ref() != Some(&observed) {
+                buffer.external_change = Some(observed);
+                changed = true;
+            }
+        }
+        Ok(changed)
+    }
+
+    fn external_snapshot(&self, path: &str) -> DevelopmentResult<ExternalFileSnapshot> {
+        let (absolute, _) = self.resolve_path(path, true)?;
+        match read_bounded_utf8(&absolute, MAX_FILE_BYTES, "project file") {
+            Ok(content) => Ok(ExternalFileSnapshot {
+                exists: true,
+                content_hash: Some(hash(&content)),
+                actor: None,
+                content: Some(content),
+            }),
+            Err(DevelopmentError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(ExternalFileSnapshot {
+                    exists: false,
+                    content_hash: None,
+                    actor: None,
+                    content: None,
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn compare_buffer(&mut self, path: &str) -> DevelopmentResult<ExternalFileSnapshot> {
+        self.reconcile_open_buffers()?;
+        self.buffers
+            .get(path)
+            .and_then(|buffer| buffer.external_change.clone())
+            .ok_or_else(|| DevelopmentError::NotFound(format!("external change for {path}")))
+    }
+
+    pub(crate) fn keep_local_buffer(&mut self, path: &str) -> DevelopmentResult<EditorBuffer> {
+        let observed = self.external_snapshot(path)?;
+        let buffer = self
+            .buffers
+            .get_mut(path)
+            .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {path}")))?;
+        buffer.original_exists = observed.exists;
+        buffer.original_hash = observed.content_hash.unwrap_or_default();
+        buffer.external_change = None;
+        buffer.dirty = !observed.exists || hash(&buffer.content) != buffer.original_hash;
+        Ok(buffer.clone())
     }
 
     pub fn buffer(&self, path: &str) -> Option<&EditorBuffer> {
@@ -1052,6 +1176,8 @@ impl ProjectWorkspace {
                         path: relative,
                         content: String::new(),
                         original_hash: hash(""),
+                        original_exists: false,
+                        external_change: None,
                         dirty: false,
                         cursor_line: 1,
                         cursor_column: 1,
@@ -1085,21 +1211,17 @@ impl ProjectWorkspace {
             .get(path)
             .cloned()
             .ok_or_else(|| DevelopmentError::NotFound(format!("buffer {path}")))?;
-        let disk_hash = match read_existing(&self.root, path) {
-            Ok(content) => hash(&content),
-            Err(DevelopmentError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                hash("")
-            }
-            Err(error) => return Err(error),
-        };
-        if disk_hash != buffer.original_hash {
-            return Err(DevelopmentError::Conflict(format!(
-                "{path} changed on disk after the buffer was opened"
-            )));
-        }
-        self.write_file(path, &buffer.content, buffer.actor.clone())?;
+        self.write_file_expected(
+            path,
+            &buffer.content,
+            buffer.actor.clone(),
+            buffer.original_exists,
+            &buffer.original_hash,
+        )?;
         let mut saved = buffer;
         saved.original_hash = hash(&saved.content);
+        saved.original_exists = true;
+        saved.external_change = None;
         saved.dirty = false;
         self.buffers.insert(path.into(), saved.clone());
         Ok(saved)
@@ -1279,6 +1401,27 @@ impl ProjectWorkspace {
         content: &str,
         actor: Actor,
     ) -> DevelopmentResult<()> {
+        self.write_file_inner(path, content, actor, None)
+    }
+
+    fn write_file_expected(
+        &mut self,
+        path: &str,
+        content: &str,
+        actor: Actor,
+        expected_exists: bool,
+        expected_hash: &str,
+    ) -> DevelopmentResult<()> {
+        self.write_file_inner(path, content, actor, Some((expected_exists, expected_hash)))
+    }
+
+    fn write_file_inner(
+        &mut self,
+        path: &str,
+        content: &str,
+        actor: Actor,
+        expected: Option<(bool, &str)>,
+    ) -> DevelopmentResult<()> {
         self.invalidate_tree_cache();
         if content.len() > MAX_FILE_BYTES {
             return Err(DevelopmentError::InvalidInput(format!(
@@ -1306,6 +1449,28 @@ impl ProjectWorkspace {
                 .open(&temporary)?;
             file.write_all(content.as_bytes())?;
             file.sync_all()?;
+        }
+        if let Some((expected_exists, expected_hash)) = expected {
+            let current = match read_bounded_utf8(&absolute, MAX_FILE_BYTES, "project file") {
+                Ok(content) => Some(hash(&content)),
+                Err(DevelopmentError::Io(error))
+                    if error.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    None
+                }
+                Err(error) => {
+                    let _ = fs::remove_file(&temporary);
+                    return Err(error);
+                }
+            };
+            if current.is_some() != expected_exists
+                || current.as_deref() != expected_exists.then_some(expected_hash)
+            {
+                let _ = fs::remove_file(&temporary);
+                return Err(DevelopmentError::Conflict(format!(
+                    "{relative} changed on disk before save completed"
+                )));
+            }
         }
         if let Err(error) = fs::rename(&temporary, &absolute) {
             let _ = fs::remove_file(&temporary);
@@ -2051,11 +2216,6 @@ fn visit_files(
     Ok(())
 }
 
-fn read_existing(root: &Path, path: &str) -> DevelopmentResult<String> {
-    let absolute = root.join(path);
-    read_bounded_utf8(&absolute, MAX_BUFFER_BYTES, "existing editor file")
-}
-
 fn hash(content: &str) -> String {
     Sha256::digest(content.as_bytes())
         .iter()
@@ -2249,6 +2409,149 @@ mod tests {
                 .unwrap(),
             "src/main.rs"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reconciliation_refreshes_clean_and_preserves_dirty_with_compare_reload_keep_local() {
+        let root = fixture();
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+        project
+            .open_buffer("src/main.rs", Actor::embedded())
+            .unwrap();
+        fs::write(root.join("src/main.rs"), "fn external() {}\n").unwrap();
+        assert!(project.reconcile_open_buffers().unwrap());
+        assert_eq!(
+            project.buffer("src/main.rs").unwrap().content,
+            "fn external() {}\n"
+        );
+        assert!(!project.buffer("src/main.rs").unwrap().dirty);
+        assert_eq!(
+            project.buffer("src/main.rs").unwrap().actor.kind,
+            super::super::events::ActorKind::Unknown
+        );
+
+        project
+            .edit_buffer("src/main.rs", "fn local() {}\n".into(), Actor::local())
+            .unwrap();
+        fs::write(root.join("src/main.rs"), "fn changed_again() {}\n").unwrap();
+        project.reconcile_open_buffers().unwrap();
+        let observed = project.compare_buffer("src/main.rs").unwrap();
+        assert_eq!(observed.content.as_deref(), Some("fn changed_again() {}\n"));
+        assert_eq!(observed.actor, None);
+        assert_eq!(
+            project.buffer("src/main.rs").unwrap().content,
+            "fn local() {}\n"
+        );
+        project.keep_local_buffer("src/main.rs").unwrap();
+        assert!(project.buffer("src/main.rs").unwrap().dirty);
+        project.save_buffer("src/main.rs").unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("src/main.rs")).unwrap(),
+            "fn local() {}\n"
+        );
+
+        fs::write(root.join("src/main.rs"), "fn reloaded() {}\n").unwrap();
+        project.reconcile_open_buffers().unwrap();
+        project
+            .reload_buffer_from_disk("src/main.rs", Actor::local())
+            .unwrap();
+        assert_eq!(
+            project.buffer("src/main.rs").unwrap().content,
+            "fn reloaded() {}\n"
+        );
+        assert!(!project.buffer("src/main.rs").unwrap().dirty);
+        assert_eq!(
+            project.buffer("src/main.rs").unwrap().actor.kind,
+            super::super::events::ActorKind::Unknown
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn save_guards_target_identity_but_ignores_unrelated_file_changes() {
+        let root = fixture();
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+        project.open_buffer("src/main.rs", Actor::local()).unwrap();
+        project
+            .edit_buffer("src/main.rs", "fn local() {}\n".into(), Actor::local())
+            .unwrap();
+        project
+            .write_file("README.md", "unrelated\n", Actor::local())
+            .unwrap();
+        project.save_buffer("src/main.rs").unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("src/main.rs")).unwrap(),
+            "fn local() {}\n"
+        );
+
+        project
+            .edit_buffer("src/main.rs", "fn second() {}\n".into(), Actor::local())
+            .unwrap();
+        fs::write(root.join("src/main.rs"), "fn outside() {}\n").unwrap();
+        assert!(matches!(
+            project.save_buffer("src/main.rs"),
+            Err(DevelopmentError::Conflict(_))
+        ));
+        assert_eq!(
+            fs::read_to_string(root.join("src/main.rs")).unwrap(),
+            "fn outside() {}\n"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deleted_open_source_is_detected_and_keep_local_can_recreate_it() {
+        let root = fixture();
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+        project.open_buffer("src/main.rs", Actor::local()).unwrap();
+        project
+            .edit_buffer("src/main.rs", "fn preserved() {}\n".into(), Actor::local())
+            .unwrap();
+        fs::remove_file(root.join("src/main.rs")).unwrap();
+        project.reconcile_open_buffers().unwrap();
+        let snapshot = project.compare_buffer("src/main.rs").unwrap();
+        assert!(!snapshot.exists);
+        assert_eq!(
+            project.buffer("src/main.rs").unwrap().content,
+            "fn preserved() {}\n"
+        );
+        project.keep_local_buffer("src/main.rs").unwrap();
+        project.save_buffer("src/main.rs").unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("src/main.rs")).unwrap(),
+            "fn preserved() {}\n"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn absent_new_buffer_is_not_reported_as_an_external_deletion() {
+        let root = fixture();
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+        project
+            .edit_buffer("src/new.rs", String::new(), Actor::local())
+            .unwrap();
+        assert!(!project.reconcile_open_buffers().unwrap());
+        assert!(
+            project
+                .buffer("src/new.rs")
+                .unwrap()
+                .external_change
+                .is_none()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_buffer_without_existence_flag_defaults_to_existing_file() {
+        let root = fixture();
+        let mut project = ProjectWorkspace::open(&root).unwrap();
+        let buffer = project.open_buffer("src/main.rs", Actor::local()).unwrap();
+        let mut serialized = serde_json::to_value(buffer).unwrap();
+        serialized.as_object_mut().unwrap().remove("originalExists");
+        let restored: EditorBuffer = serde_json::from_value(serialized).unwrap();
+        assert!(restored.original_exists);
         let _ = fs::remove_dir_all(root);
     }
 

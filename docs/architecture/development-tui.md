@@ -421,6 +421,16 @@ Changing modes resets scroll and re-runs cursor visibility. Cursor visibility
 is kept synchronized after edits, movement, resize, projection refresh and
 selection changes.
 
+The TUI reconciles only open editor paths on a bounded 500 ms interval. Clean
+buffers adopt changed contents and clamp cursor/selection to valid positions.
+Dirty buffers keep their text and show an external-change affordance. Use
+`:editor compare` for a bounded unified diff view, `:editor reload` to accept disk
+content, or `:editor keep-local` to rebase local text before saving. A deleted
+path remains a conflict; reload reports the missing file, while keep-local
+allows an explicit save to recreate it. Filesystem observations have unknown
+actor attribution. Saves compare the target file identity at the replacement
+boundary, independent of unrelated project revision changes.
+
 The full-screen editor reads through a cached projection while a workspace
 refresh holds the shared workspace lock. This keeps the last visible buffer on
 screen instead of replacing it with an empty view. If an edit arrives while

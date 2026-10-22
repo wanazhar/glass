@@ -654,6 +654,19 @@ fn render_fullscreen_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Re
                 Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
             ),
             Span::styled(dirty.0, Style::default().fg(dirty.1)),
+            if state
+                .focused_editor_buffer
+                .as_ref()
+                .and_then(|buffer| buffer.external_change.as_ref())
+                .is_some()
+            {
+                Span::styled(
+                    "  EXTERNAL CHANGE · :editor compare | reload | keep-local",
+                    Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::raw("")
+            },
             Span::raw("  "),
             Span::styled(
                 format!(" {} ", state.editor_engine.mode.label()),

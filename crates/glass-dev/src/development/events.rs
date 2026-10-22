@@ -17,6 +17,7 @@ pub enum ActorKind {
     ExternalAgent,
     System,
     Observer,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,6 +63,18 @@ fn default_session() -> String {
 }
 
 impl Actor {
+    pub fn unknown_external() -> Self {
+        Self {
+            id: "external:unknown".into(),
+            kind: ActorKind::Unknown,
+            name: "Unknown external source".into(),
+            session: "external".into(),
+            capabilities: vec!["read".into()],
+            authority: ActorAuthority::ReadOnly,
+            connection: ActorConnection::Disconnected,
+        }
+    }
+
     pub fn local() -> Self {
         Self {
             id: "human:local".into(),

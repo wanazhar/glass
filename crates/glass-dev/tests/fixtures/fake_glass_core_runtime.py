@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import sys
 import time
 
@@ -90,6 +91,41 @@ def run_turn(identifier, params: dict) -> None:
     turn = "turn-1"
     event("turn_start", {}, turn)
     gate_root = os.path.join(os.getcwd(), ".glass")
+    if "active-run-queue-target" in text and os.path.exists(
+        os.path.join(gate_root, "e2e-core-active-steer")
+    ):
+        with open(
+            os.path.join(gate_root, "e2e-core-active-steer-pid"), "w", encoding="utf-8"
+        ) as marker:
+            marker.write(str(os.getpid()))
+        with open(
+            os.path.join(gate_root, "e2e-core-active-steer-started"), "w", encoding="utf-8"
+        ) as marker:
+            marker.write("started")
+        deadline = time.monotonic() + 30
+        while not os.path.exists(os.path.join(gate_root, "e2e-core-active-steer-release")):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("timed out waiting for active queue steering test release")
+            readable, _, _ = select.select([sys.stdin], [], [], 0.02)
+            if not readable:
+                continue
+            line = sys.stdin.readline()
+            if not line:
+                raise SystemExit(0)
+            try:
+                incoming = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if incoming.get("method") == "turn/steer":
+                steer_params = incoming.get("params") or {}
+                log_request("turn/steer", steer_params)
+                reply(incoming.get("id"), {"accepted": True})
+                with open(
+                    os.path.join(gate_root, "e2e-core-active-steer-received"),
+                    "w",
+                    encoding="utf-8",
+                ) as marker:
+                    marker.write(json.dumps(steer_params, separators=(",", ":")))
     gate_tag = next((tag for tag in ("alpha-job", "beta-job", "gamma-job") if tag in text), None)
     if "live-response-crash-window" in text and os.path.exists(
         os.path.join(gate_root, "e2e-core-recovery-gate")

@@ -3,6 +3,9 @@
 //! This crate owns the resident software-development workspace used by the
 //! `glass` product. Browser intelligence remains provided by the one-way
 //! `glass-browser` dependency.
+//! Resident agents use the standalone `glass-core` engine by default. The
+//! workspace and governed tool router remain owned by Glass Dev; the legacy
+//! Pi SDK backend is available when `GLASS_AGENT_HARNESS=pi` is set.
 //!
 //! The interactive TUI separates terminal rendering from workspace work. A
 //! snapshot worker hydrates resident projections and executes governed browser,
@@ -21,8 +24,9 @@
 //!
 //! [`DevelopmentWorkspace`] owns the resident project runtime and its trust
 //! boundary. [`SharedDevelopmentWorkspace`] is the thread-safe handle used by
-//! the TUI, daemon, MCP, and agent services. [`PiReadiness`] and [`PiSessionRequest`]
-//! describe the managed Pi runtime surface.
+//! the TUI, daemon, MCP, and agent services. [`CoreReadiness`] and
+//! [`CoreRuntimeOptions`] describe the default Glass Core runtime. The
+//! [`pi_runtime`] module documents the optional legacy Pi backend.
 //!
 //! Raw process and resident-service controls are implementation details. The
 //! supported public mutation route is [`DevelopmentWorkspace::execute_tool`]
@@ -140,7 +144,7 @@ pub mod development;
 pub mod experiments;
 /// One-shot adapters for installed external coding agents.
 pub mod external_agents;
-/// Configured fill-in-the-middle provider for editor ghosts.
+/// Configured editor completion providers for fill-in-the-middle ghosts.
 pub mod fim;
 /// Governed Git workspace operations.
 pub mod git;
@@ -180,7 +184,7 @@ pub mod workspace;
 
 use glass_browser::cli::args::Cli;
 
-/// Resident Pi agent types and scheduler handles.
+/// Resident agent event and identity types.
 pub use agents::{AgentEvent, AgentId, AgentSnapshot, AgentSpec, AgentStatus, ResidentAgentBroker};
 /// Development browser configuration, state, and service handle.
 pub use browser::{BrowserRuntimeState, BrowserStartConfig};
@@ -203,7 +207,7 @@ pub use intelligence::{
 };
 /// Language-service configuration and event types.
 pub use lsp::{LanguageServerConfig, LanguageServiceEvent};
-/// Pi readiness and managed-session request types.
+/// Legacy Pi readiness and managed-session request types.
 pub use pi_runtime::{
     PINNED_PI_SDK_VERSION, PiReadiness, PiReadinessComponent, PiReadinessState, PiSessionRequest,
 };

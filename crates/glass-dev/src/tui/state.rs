@@ -797,12 +797,11 @@ impl DevTuiState {
             browser_policy,
             yolo_mode,
         )?;
-        // Glass Dev's resident Pi session is an explicitly human-controlled
-        // development surface. Resident agents load the trusted workspace
-        // resources and run unrestricted by default; workspace trust remains
-        // a separate project state used by Glass's workspace policy. The
-        // legacy `yolo_mode` flag still controls its existing Glass policy
-        // marker and authority paths.
+        // Glass Dev's resident-agent surface is human-controlled. Agents load
+        // the workspace's configured resources and run unrestricted by
+        // default; workspace trust remains a separate project state used by
+        // Glass's workspace policy. The legacy `yolo_mode` flag still
+        // controls its existing Glass policy marker and authority paths.
         {
             let mut workspace = workspace.lock()?;
             workspace.agents().set_default_unrestricted(true);

@@ -110,7 +110,7 @@ Opening a file creates an in-memory `EditorBuffer` with content, disk `originalH
 The native editor supports arrows, text insertion, `Enter`, `Backspace`, `Shift` plus arrows for a selection, `Ctrl-S`, `Ctrl-Z`, `Ctrl-Y`, and `Alt-A` to prepare an agent prompt. The editor starts in INSERT. `Esc` returns to NORMAL. `Esc` from NORMAL on a clean buffer leaves the editor. Unsaved content still opens the exit prompt (`S` save, `D` discard, `Q` discard and quit, `Esc`/`N` stay). `Ctrl-C` opens Glass quit confirmation from editor input; if the unsaved-exit prompt is already open, its save/discard/stay choices take priority. `Tab` remains product navigation outside editor mode. `Delete` has no editor mutation binding.
 
 The editor's native layer also supports modal motions, operators and tree-sitter
-textobjects with lexical fallback, local or resident-Pi FIM ghosts, LSP hover,
+textobjects with lexical fallback, local or resident-agent FIM ghosts, LSP hover,
 definition, references, symbols and inlay hints, Git/Agent/Page/Proof/comment
 gutter marks, and bounded proposal hunk review. Agent pair-apply streams a
 proposal until the human accepts, rejects, or yields it; prove-it predicates

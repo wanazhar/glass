@@ -41,8 +41,8 @@ write boundary and do not use the unrelated project revision as a guard.
 - [x] Clean open buffers adopt external file changes on reconciliation.
 - [x] Dirty buffers preserve local text and expose changed/deleted disk state.
 - [x] Compare, reload, and keep-local are distinct explicit resolutions.
-- [x] A stale or concurrent target-file change rejects save; unrelated
-  project revision changes do not reject save.
+- [x] Save rejects when the target file identity differs at its replacement
+  check; unrelated project revision changes do not reject save.
 - [x] Deletion/source-rename conflict is represented and safely resolvable.
 - [x] External writes are never attributed to the local human or an agent
   without actor evidence.
@@ -68,5 +68,7 @@ write boundary and do not use the unrelated project revision as a guard.
 
 Do not overwrite dirty buffers during automatic refresh. Do not infer an
 external actor from filesystem state. Do not reject a save because another
-file changed or the workspace's global project revision advanced. Do not add a
-watcher daemon or a large editor redesign.
+file changed or the workspace's global project revision advanced. The identity
+guard is optimistic and does not provide cross-process locking or
+compare-and-swap against non-cooperating writers after the replacement check.
+Do not add a watcher daemon or a large editor redesign.

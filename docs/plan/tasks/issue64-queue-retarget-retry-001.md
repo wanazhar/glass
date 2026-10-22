@@ -88,4 +88,6 @@ Validation passed: strict `cargo clippy -p glass-dev --test tui_pty --locked --
 -D warnings`, `cargo fmt --all -- --check`, Python fixture syntax validation,
 documentation coverage (1809 Markdown files), documentation depth, release
 truth, TUI shortcut inventory, and `git diff --check`. Independent review is
-pending.
+pending re-review after remediation. Its first pass identified that the stale
+dispatch assertion did not explicitly check that the row remained `ready`
+before retargeting; the PTY test now asserts the persisted state at that point.

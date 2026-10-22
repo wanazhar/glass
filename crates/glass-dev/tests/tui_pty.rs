@@ -1801,6 +1801,10 @@ fn follow_up_queue_old_run_retarget_and_review_retry_are_explicit() {
         old_run_id
     );
     assert_eq!(
+        blocked["threads"][0]["followUpQueue"][0]["state"], "ready",
+        "blocked dispatch must leave the old-run row ready for explicit retargeting"
+    );
+    assert_eq!(
         blocked["threads"][0]["sendAttempts"]
             .as_array()
             .unwrap()

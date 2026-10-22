@@ -36,9 +36,11 @@ collaborator.
 ## Build, Test, and Development Commands
 
 - `cargo check -p glass-browser --lib --locked` and `cargo check -p glass-dev --lib --bins --locked` are the fast package-scoped edit checks.
+- `cargo check -p glass-core --locked` checks the separately installable Core package from the shared root workspace.
 - `cargo test -p glass-dev --lib core_runtime resident_harness --locked` runs the resident harness adapter tests, including the offline fake-engine fixture.
 - `cargo build -p glass-dev --bin glass --locked` builds the development TUI without examples or integration-test binaries.
-- `cargo build` compiles the selected workspace debug targets; use an explicit package and binary when iterating.
+- `cargo build` compiles the Glass-only default members; use an explicit package and binary when iterating.
+- `cargo build --profile core-release -p glass-core --bin glass-core --locked` builds the Core binary with its size-oriented full-LTO profile.
 - `cargo run -- --help` lists the implemented CLI options and subcommands.
 - `cargo run -- install-chromium` downloads the managed Chromium build; browser flows otherwise require Chrome/Chromium and use CDP port `9222` by default.
 - `cargo run -- "navigate to https://example.com"` runs a one-shot browser prompt; subcommands include `navigate`, `click`, `type`, `screenshot`, `text`, `dom`, `observe`, `scroll`, and `evaluate`.
@@ -47,7 +49,7 @@ collaborator.
 - `cargo test` runs the current unit tests; `cargo test --all-targets --locked` is the full target validation; coverage has no enforced threshold.
 - `GLASS_E2E=1 cargo test --test browser_smoke -- --nocapture` runs the local-Chrome end-to-end smoke test.
 - `cargo fmt --all -- --check` verifies formatting; `cargo clippy --all-targets --all-features -- -D warnings` checks lint cleanliness.
-- `cargo build --release` builds the performance-oriented release; `cargo build --profile release-size` builds the stripped size-oriented profile.
+- `cargo build --release` builds the performance-oriented Glass release; `cargo build --profile release-size` builds the stripped Glass size-oriented profile.
 - `GLASS_BENCH_ITERATIONS=50 cargo run --release --example benchmark` measures warm-session operations; see benchmarks/README.md for Playwright comparison.
 
 ## Coding Style & Naming Conventions

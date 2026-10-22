@@ -7,14 +7,14 @@
 ```
 crates/glass-mod-api   the in-process hook surface, zero dependencies
 crates/glass-tui       terminal rendering, input, virtualized transcript
-crates/glass           agent loop, providers, native tools, session storage,
+crates/glass-core      agent loop, providers, native tools, session storage,
                        context, configuration, permissions, extension host
 packages/extension-sdk TypeScript extension types, runtime, and examples
 extensions/            reference protocol, optional integrations and CLI helpers
 ```
 
 `glass-mod-api` defines shared hook types and remains dependency-free. Provider,
-file, job, and session implementations stay in the main crate; terminal rendering
+file, job, and session implementations stay in `glass-core`; terminal rendering
 and input types stay in `glass-tui`.
 
 ## Performance notes
@@ -50,17 +50,18 @@ measures bounded prompt recall, diagnostic writes, and native read payloads.
 To measure the current release build:
 
 ```sh
-GLASS_CORE_TEST_BINARY="$PWD/target/release/glass-core" \
+GLASS_CORE_TEST_BINARY="$(git rev-parse --show-toplevel)/target/core-release/glass-core" \
   GC_PERF_REPORT=/tmp/gc-performance.json \
   python3 scripts/check-performance.py
 python3 scripts/check-native-performance.py
 ```
 
 Run measurements after compiler and other test load has stopped.
-The release profile uses size optimization with full LTO, one code generation
-unit, stripped symbols, and aborting panics. Compare runtime measurements when
-changing these settings. [Runtime storage](reference/storage.md) explains the
-footprint fixture and default disk writes.
+The `core-release` profile preserves Core's size optimization, full LTO, one
+code generation unit, stripped symbols, and aborting panics while inheriting
+the root release configuration. Compare runtime measurements when changing
+these settings. [Runtime storage](reference/storage.md) explains the footprint
+fixture and default disk writes.
 
 ## Tests
 
@@ -70,10 +71,10 @@ stream recovery, cancellation, private storage, session ownership, and terminal
 navigation. Mock providers do not establish live-model reliability.
 
 ```sh
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo build --release --locked --package glass-core --bin glass-core
-export GLASS_CORE_TEST_BINARY="$PWD/target/release/glass-core"
+cargo test -p glass-core -p glass-mod-api -p glass-runtime-client -p glass-tui --locked
+cargo clippy -p glass-core -p glass-mod-api -p glass-runtime-client -p glass-tui --all-targets --locked -- -D warnings
+cargo build --profile core-release --locked -p glass-core --bin glass-core
+export GLASS_CORE_TEST_BINARY="$(git rev-parse --show-toplevel)/target/core-release/glass-core"
 python3 scripts/smoke-conversations.py
 python3 scripts/smoke-cli.py
 python3 scripts/smoke-live.py
@@ -103,10 +104,10 @@ artifacts; the workflow does not publish a release or modify Git tags.
 To run the same checks locally:
 
 ```sh
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo build --release --locked --package glass-core --bin glass-core
-export GLASS_CORE_TEST_BINARY="$PWD/target/release/glass-core"
+cargo test -p glass-core -p glass-mod-api -p glass-runtime-client -p glass-tui --locked
+cargo clippy -p glass-core -p glass-mod-api -p glass-runtime-client -p glass-tui --all-targets --locked -- -D warnings
+cargo build --profile core-release --locked -p glass-core --bin glass-core
+export GLASS_CORE_TEST_BINARY="$(git rev-parse --show-toplevel)/target/core-release/glass-core"
 python3 scripts/smoke-install.py
 python3 scripts/smoke-features.py
 python3 scripts/smoke-onboarding.py

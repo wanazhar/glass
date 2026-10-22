@@ -2,7 +2,8 @@
 # Install only Glass Core, with gc as a symlink.
 set -eu
 
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
+product_root=$repo_root/products/glass-core
 install_root=${CARGO_INSTALL_ROOT:-${CARGO_HOME:-${HOME:?HOME or CARGO_HOME must be set}/.cargo}}
 bin_dir=$install_root/bin
 
@@ -19,16 +20,16 @@ if [ -e "$bin_dir/gc" ] || [ -L "$bin_dir/gc" ]; then
     fi
 fi
 
-cargo install --locked --force --root "$install_root" --path "$repo_root/crates/glass" --bin glass-core
+cargo install --locked --force --profile core-release --root "$install_root" --path "$repo_root/crates/glass-core" --bin glass-core
 if [ "${GC_INSTALL_WEB:-0}" = 1 ]; then
-    if [ ! -f "$repo_root/web/dist/app.js" ]; then
-        npm --prefix "$repo_root/web" ci --ignore-scripts
-        npm --prefix "$repo_root/web" run build
+    if [ ! -f "$product_root/web/dist/app.js" ]; then
+        npm --prefix "$product_root/web" ci --ignore-scripts
+        npm --prefix "$product_root/web" run build
     fi
     web_parent=$install_root/share/glass-core
     mkdir -p "$web_parent"
     web_stage=$(mktemp -d "$web_parent/.web-install.XXXXXX")
-    cp -R "$repo_root/web/dist/." "$web_stage/"
+    cp -R "$product_root/web/dist/." "$web_stage/"
     if [ -e "$web_parent/web" ]; then
         if [ -L "$web_parent/web" ] || [ ! -f "$web_parent/web/build.json" ]; then
             printf '%s\n' "Refusing to replace an unrelated web asset directory: $web_parent/web" >&2

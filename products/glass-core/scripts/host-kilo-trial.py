@@ -3,9 +3,10 @@
 import argparse,ast,base64,hashlib,importlib.util,json,os,subprocess,sys,tempfile,time
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
+REPO=Path(__file__).resolve().parents[3]
 spec=importlib.util.spec_from_file_location("host",ROOT/"examples/runtime_host.py")
 host=importlib.util.module_from_spec(spec);spec.loader.exec_module(host)
-parser=argparse.ArgumentParser(description=__doc__);parser.add_argument("--live",action="store_true");parser.add_argument("--binary",default=str(ROOT/"target/release/glass-core"))
+parser=argparse.ArgumentParser(description=__doc__);parser.add_argument("--live",action="store_true");parser.add_argument("--binary",default=str(REPO/"target/core-release/glass-core"))
 args=parser.parse_args()
 if not args.live:parser.error("pass --live to use the configured provider")
 binary=str(Path(args.binary).resolve())

@@ -21,7 +21,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', ROOT / 'target/release/glass-core'))
+REPO = Path(__file__).resolve().parents[3]
+BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', REPO / 'target/core-release/glass-core'))
 
 
 def limit(name, default):

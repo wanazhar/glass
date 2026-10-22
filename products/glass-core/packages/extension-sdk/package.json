@@ -1,6 +1,6 @@
 {
   "name": "@glass-core/extension-sdk",
-  "version": "0.1.0",
+  "version": "0.3.14",
   "description": "Typed subprocess extensions for glass-core",
   "type": "module",
   "exports": {

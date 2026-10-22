@@ -267,7 +267,7 @@ fn assets() -> Result<PathBuf, String> {
     {
         paths.push(parent.join("../share/glass-core/web"));
     }
-    paths.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/dist"));
+    paths.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../products/glass-core/web/dist"));
     paths.into_iter().find(|p|p.join("app.js").is_file()&&p.join("index.html").is_file()).and_then(|p|p.canonicalize().ok()).ok_or("Web assets are missing. Install the GC web asset bundle, or build it with npm run build:web. Set GC_WEB_ASSETS to its directory.".into())
 }
 pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String> {

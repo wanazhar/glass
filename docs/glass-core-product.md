@@ -2,29 +2,33 @@
 
 Glass Core is the coding harness used by Glass resident agents. It is also a
 standalone product: its `glass-core` package, `gc` command alias, terminal
-interface, optional web assets, Cargo workspace, lockfile, and license notices
-remain usable without installing Glass Dev or its browser packages.
+interface, optional web assets, installer, and license notices remain usable
+without installing Glass Dev or its browser packages.
 
-The source is under [`products/glass-core`](../products/glass-core/README.md).
-Its workspace package version is declared independently in its own
-[`Cargo.toml`](../products/glass-core/Cargo.toml), and its license declaration
-is `MIT OR Apache-2.0`. The source tree retains its MIT license files and
-[`THIRD_PARTY.md`](../products/glass-core/THIRD_PARTY.md). The root Glass Cargo
-workspace and its version are maintained separately.
+The Rust packages live under [`crates/`](../crates/glass-core/Cargo.toml) in
+the root Cargo workspace. They share the root package version, currently
+`0.3.14`, while retaining `MIT OR Apache-2.0` package metadata and the
+product's own license files and [`THIRD_PARTY.md`](../products/glass-core/THIRD_PARTY.md).
+Web assets, TypeScript extensions, scripts, and product documentation remain
+under [`products/glass-core`](../products/glass-core/README.md). The Core
+packages are explicit workspace members but are not default members, so normal
+Glass builds stay Glass-only.
 
 ## Build from the monorepo
 
-Run these commands from the repository root. `--manifest-path` selects the
-nested workspace, so Cargo uses Glass Core's own lockfile and package metadata.
+Run these commands from the repository root. Cargo uses the shared root lockfile
+and the Core release profile preserves its size-oriented optimization and fat
+LTO settings.
 
 ```sh
-cargo metadata --manifest-path products/glass-core/Cargo.toml --locked --format-version 1
-cargo build --manifest-path products/glass-core/Cargo.toml --locked --package glass-core --bin glass-core
+cargo metadata --locked --format-version 1
+cargo tree -p glass-core --locked
+cargo build --profile core-release --locked -p glass-core --bin glass-core
 ```
 
-The manifest contains four packages: `glass-core`, `glass-tui`,
-`glass-mod-api`, and `glass-runtime-client`. This build does not select the
-Glass Dev or browser packages from the root workspace.
+The Core package set is `glass-core`, `glass-tui`, `glass-mod-api`, and
+`glass-runtime-client`. Building or installing `glass-core` selects only this
+package closure; it does not pull in Glass Dev or browser packages.
 
 ## Install the current checkout
 
@@ -54,7 +58,6 @@ for how Glass discovers the executable and reports provider readiness.
 ## CI and validation scope
 
 The root [Glass Core workflow](../.github/workflows/glass-core-ci.yml) runs for
-changes under `products/glass-core/`. GitHub does not discover a workflow stored
-inside that nested product directory, so the root workflow sets its working
-directory there and validates the independent workspace, its packages, web
-assets, and isolated installer.
+changes to the Core crates or product assets. The root workflow selects the
+Core package set while using the root lockfile and the product working
+directory for npm and smoke scripts.

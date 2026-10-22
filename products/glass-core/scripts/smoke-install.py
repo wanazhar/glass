@@ -6,8 +6,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-REPO = Path(__file__).resolve().parents[1]
-INSTALLER = REPO / "scripts/install.sh"
+REPO = Path(__file__).resolve().parents[3]
+PRODUCT = REPO / "products/glass-core"
+INSTALLER = PRODUCT / "scripts/install.sh"
 
 with tempfile.TemporaryDirectory(prefix="glass-core-install-smoke-") as scratch:
     root = Path(scratch)
@@ -47,10 +48,11 @@ bindir = pathlib.Path(os.environ["CARGO_INSTALL_ROOT"]) / "bin"
         assert alias.is_symlink() and alias.readlink() == Path("glass-core")
         assert alias.read_bytes() == b"new harness executable"
         assert foreign.read_bytes() == b"other project's Glass executable"
-        assert json.loads(args_file.read_text()) == [
-            "install", "--locked", "--force", "--root", str(installed),
-            "--path", str(REPO / "crates/glass"), "--bin", "glass-core",
-        ]
+        actual_args = json.loads(args_file.read_text())
+        assert actual_args == [
+            "install", "--locked", "--force", "--profile", "core-release",
+            "--root", str(installed), "--path", str(REPO / "crates/glass-core"), "--bin", "glass-core",
+        ], actual_args
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=REPO, text=True))
     assert not any(p["name"] == "glass" for p in metadata["packages"])
     package = next(p for p in metadata["packages"] if p["name"] == "glass-core")

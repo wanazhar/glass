@@ -20,7 +20,7 @@ from pty_vt import VT
 INTRO = '# **Workspace overview**\n\nThis is a Rust workspace for **glass-core**, a coding harness with readable conversation rendering. '
 PROSE = 'The concurrency implementation coordinates commands while preserving clear feedback and predictable interaction. '
 EARLY = INTRO + PROSE * 4 + 'STREAMREADY '
-TAIL = '\n\n- **`crates/glass`** contains the main application and concurrency implementation with responsive interaction.\n  * Reading and editing project files should remain comfortable on a phone.\n\n## Next steps\n\n```rust\nfn main() {\n    println!("界 👋 café");\n}\n```\n\nFinal partial line FINISHEDCHAT'
+TAIL = '\n\n- **`crates/glass-core`** contains the main application and concurrency implementation with responsive interaction.\n  * Reading and editing project files should remain comfortable on a phone.\n\n## Next steps\n\n```rust\nfn main() {\n    println!("界 👋 café");\n}\n```\n\nFinal partial line FINISHEDCHAT'
 SOURCE = EARLY + TAIL
 
 class Endpoint(http.server.BaseHTTPRequestHandler):
@@ -150,7 +150,7 @@ with tempfile.TemporaryDirectory(prefix='gc-chat-design-') as tmp:
                     end = next(i for i, row in enumerate(history) if '773 in' in row)
                     body = history[start:end]
                     assert any('Workspace overview' in row for row in body), body
-                    assert any('• crates/glass' in row for row in body), body
+                    assert any('• crates/glass-core' in row for row in body), body
                     assert any('│ ' in row for row in body), body
                     # This word fits the reading column and must stay whole.
                     assert sum(row.count('concurrency') for row in body) == 5, body

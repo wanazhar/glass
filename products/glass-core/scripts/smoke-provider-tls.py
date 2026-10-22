@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local HTTPS regression for quiet reads and cancellation; run cargo test first; requires rustc and openssl."""
 import tempfile, subprocess, pathlib, http.server, ssl, threading, time
-root=pathlib.Path(__file__).resolve().parents[1]
+root=pathlib.Path(__file__).resolve().parents[3]
 class Server(http.server.ThreadingHTTPServer): daemon_threads=True
 class Handler(http.server.BaseHTTPRequestHandler):
  def log_message(self,*_): pass
@@ -16,7 +16,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 with tempfile.TemporaryDirectory(prefix='gc-tls-check-') as tmp:
  p=pathlib.Path(tmp)
  subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(p/'key.pem'),'-out',str(p/'cert.pem'),'-subj','/CN=localhost','-days','1','-addext','subjectAltName=DNS:localhost','-addext','basicConstraints=critical,CA:FALSE'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
- source='''#[path="/home/ubuntu/work/glass-core/crates/glass/src/provider/cancellable.rs"] mod cancellable;
+ source='''#[path="__CANCELLABLE_RS__"] mod cancellable;
 use std::{io::Read,sync::{Arc,atomic::{AtomicBool,Ordering}},time::{Duration,Instant}};
 fn main(){
  let args:Vec<_>=std::env::args().collect();
@@ -29,11 +29,12 @@ fn main(){
  if args[3]=="cancel" {assert!(result.unwrap_err().contains("cancelled"));assert!(started.elapsed()<Duration::from_secs(2));}else{assert_eq!(result.unwrap(),"X");}
  println!("PASS TLS {}: {:?}",args[3],started.elapsed());
 }'''
- source=source.replace('/home/ubuntu/work/glass-core/crates/glass/src/provider/cancellable.rs', str(root/'crates/glass/src/provider/cancellable.rs'))
+ source=source.replace('__CANCELLABLE_RS__', str(root/'crates/glass-core/src/provider/cancellable.rs'))
  (p/'main.rs').write_text(source)
- lib=next((root/'target/debug/deps').glob('libureq-*.rlib'))
- native=next((root/'target/debug/build').glob('ring-*/out/libring_core_0_17_14_.a')).parent
- subprocess.run(['rustc','--edition=2024',str(p/'main.rs'),'-o',str(p/'client'),'-L',f'dependency={root}/target/debug/deps','-L',f'native={native}','--extern',f'ureq={lib}'],check=True)
+ target=pathlib.Path(__import__('os').environ.get('CARGO_TARGET_DIR',root/'target'))
+ lib=next((target/'debug/deps').glob('libureq-*.rlib'))
+ native=next((target/'debug/build').glob('ring-*/out/libring_core_0_17_14_.a')).parent
+ subprocess.run(['rustc','--edition=2024',str(p/'main.rs'),'-o',str(p/'client'),'-L',f'dependency={target}/debug/deps','-L',f'native={native}','--extern',f'ureq={lib}'],check=True)
  server=Server(('127.0.0.1',0),Handler)
  context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(p/'cert.pem',p/'key.pem');server.socket=context.wrap_socket(server.socket,server_side=True)
  threading.Thread(target=server.serve_forever,daemon=True).start()

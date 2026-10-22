@@ -65,8 +65,9 @@ without the full workspace, install `glass-browser` instead.
   processes, diagnostics, collaboration, and agents.
 - [Glass Core resident harness](docs/glass-core-harness.md) — configure and use
   the default agent engine.
-- [Standalone Glass Core](docs/glass-core-product.md) — build and install the
-  independently versioned coding harness from this monorepo.
+- [Glass Core product](docs/glass-core-product.md) — build and install the
+  standalone coding harness, whose Rust packages share Glass's root workspace
+  and version source.
 - [Browser automation](docs/INDEX.md#browser-operations-and-safety) — inspect
   pages, perform actions, and verify results.
 - [CLI reference](docs/cli.md) and [MCP integration](docs/mcp.md) — command-line

@@ -4,10 +4,24 @@ on:
   push:
     paths:
       - "products/glass-core/**"
+      - "crates/glass-core/**"
+      - "crates/glass-mod-api/**"
+      - "crates/glass-runtime-client/**"
+      - "crates/glass-tui/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/check-version-sync.py"
       - ".github/workflows/glass-core-ci.yml"
   pull_request:
     paths:
       - "products/glass-core/**"
+      - "crates/glass-core/**"
+      - "crates/glass-mod-api/**"
+      - "crates/glass-runtime-client/**"
+      - "crates/glass-tui/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/check-version-sync.py"
       - ".github/workflows/glass-core-ci.yml"
   workflow_dispatch:
 
@@ -47,20 +61,20 @@ jobs:
           python-version: '3.12'
       - name: Install PTY test dependency
         run: python3 -m pip install pyte==0.8.2
-      - run: cargo test --workspace --locked
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo build --release --locked --package glass-core --bin glass-core
+      - run: cargo test -p glass-core -p glass-mod-api -p glass-runtime-client -p glass-tui --locked
+      - run: cargo clippy -p glass-core -p glass-mod-api -p glass-runtime-client -p glass-tui --all-targets --locked -- -D warnings
+      - run: cargo build --profile core-release --locked --package glass-core --bin glass-core
       - name: Browser workspace checks
         if: runner.os == 'Linux'
         env:
-          GLASS_CORE_TEST_BINARY: ${{ github.workspace }}/products/glass-core/target/release/glass-core
+          GLASS_CORE_TEST_BINARY: ${{ github.workspace }}/target/core-release/glass-core
         run: |
           web/node_modules/.bin/playwright-core install --with-deps chromium
           python3 scripts/smoke-connect.py
           python3 scripts/smoke-connect-lifecycle.py
       - name: Installer and offline PTY checks
         env:
-          GLASS_CORE_TEST_BINARY: ${{ github.workspace }}/products/glass-core/target/release/glass-core
+          GLASS_CORE_TEST_BINARY: ${{ github.workspace }}/target/core-release/glass-core
         run: |
           python3 scripts/smoke-install.py
           python3 scripts/smoke-features.py
@@ -104,7 +118,7 @@ jobs:
           python3 scripts/smoke-acp.py
           python3 scripts/smoke-runtime.py
           python3 scripts/conformance-runtime.py
-          cargo test -p glass-runtime-client --test runtime -- --ignored
+          cargo test -p glass-runtime-client --locked --test runtime -- --ignored
           npm run test --workspace @glass-core/runtime-client
           python3 scripts/smoke-serve.py
           python3 scripts/smoke-verify.py
@@ -130,7 +144,7 @@ jobs:
       - name: Package binary
         run: |
           mkdir -p dist/package
-          cp target/release/glass-core dist/package/
+          cp target/core-release/glass-core dist/package/
           ln -s glass-core dist/package/gc
           cp README.md LICENSE THIRD_PARTY.md dist/package/
           python3 -c 'import platform; print("glass-core-" + platform.system().lower() + "-" + platform.machine())' > dist/name

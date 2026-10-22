@@ -2,7 +2,7 @@
 
 ## Charm Bubbles activity frames
 
-The Dot, MiniDot and Pulse frame sequences in `crates/glass-tui/src/theme.rs`
+The Dot, MiniDot and Pulse frame sequences in `../../crates/glass-tui/src/theme.rs`
 are adapted from [Charm Bubbles](https://github.com/charmbracelet/bubbles/blob/main/spinner/spinner.go).
 GC supplies spacing and scheduling through its existing renderer.
 

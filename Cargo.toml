@@ -4,6 +4,15 @@ members = [
     "crates/glass-browser-core",
     "crates/glass-browser",
     "crates/glass-dev",
+    "crates/glass-core",
+    "crates/glass-mod-api",
+    "crates/glass-runtime-client",
+    "crates/glass-tui",
+]
+default-members = [
+    "crates/glass-browser-core",
+    "crates/glass-browser",
+    "crates/glass-dev",
 ]
 exclude = ["fuzz"]
 
@@ -14,6 +23,10 @@ rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/wanazhar/glass"
 homepage = "https://github.com/wanazhar/glass"
+
+[workspace.dependencies]
+glass-mod-api = { path = "crates/glass-mod-api", version = "0.3.14" }
+glass-tui = { path = "crates/glass-tui", version = "0.3.14" }
 
 # Keep the normal edit/build loop light. Use `--profile debugging` when full
 # workspace debug information is needed for an interactive debugger.
@@ -37,4 +50,11 @@ strip = "symbols"
 [profile.release-size]
 inherits = "release"
 opt-level = "z"
+lto = "fat"
+
+# Glass Core keeps its original size/LTO profile without changing Glass's
+# default release profile.
+[profile.core-release]
+inherits = "release"
+opt-level = "s"
 lto = "fat"

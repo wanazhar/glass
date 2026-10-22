@@ -87,8 +87,9 @@ current user instructions.
 - [Glass Core resident harness](glass-core-harness.md) — the default resident
   engine: host runtime protocol, session lifecycle, tool execution, approvals,
   engine selection, and reported capability gaps.
-- [Standalone Glass Core](glass-core-product.md) — build and install the
-  independently versioned coding harness from this monorepo.
+- [Glass Core product](glass-core-product.md) — build and install the
+  standalone coding harness, whose Rust packages share Glass's root workspace
+  and version source.
 - [Glass Core monorepo migration](migration/glass-core-monorepo.md) — source
   refs, history preservation, security and license audit, and migration checks.
 - [Native Pi SDK runtime](pi-sdk-runtime.md) — the legacy resident backend:

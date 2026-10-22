@@ -91,6 +91,19 @@ def run_turn(identifier, params: dict) -> None:
     event("turn_start", {}, turn)
     gate_root = os.path.join(os.getcwd(), ".glass")
     gate_tag = next((tag for tag in ("alpha-job", "beta-job", "gamma-job") if tag in text), None)
+    if "live-response-crash-window" in text and os.path.exists(
+        os.path.join(gate_root, "e2e-core-recovery-gate")
+    ):
+        with open(
+            os.path.join(gate_root, "e2e-core-recovery-started"), "w", encoding="utf-8"
+        ) as marker:
+            marker.write("started")
+        with open(
+            os.path.join(gate_root, "e2e-core-recovery-pid"), "w", encoding="utf-8"
+        ) as marker:
+            marker.write(str(os.getpid()))
+        while not os.path.exists(os.path.join(gate_root, "e2e-core-recovery-release")):
+            time.sleep(0.02)
     if gate_tag and os.path.exists(os.path.join(gate_root, "e2e-core-concurrency")):
         with open(os.path.join(gate_root, f"e2e-core-started-{gate_tag}"), "w", encoding="utf-8") as marker:
             marker.write("started")

@@ -65,11 +65,13 @@ matches that run.
       a unique persisted attempt ID before dispatch on supported hosts.
 - [ ] Queue rejection and runtime errors update only the matching attempt;
       successful responses use exact engine request-ID correlation.
-- [ ] Run-level wait/settled events never falsely settle an ambiguous attempt.
+- [x] Run-level wait/settled events never falsely settle an ambiguous attempt.
 - [x] Reopen converts unresolved attempts to uncertain, exposes them in the
       owning thread's attention context, and never resends them.
 - [x] Retry can reuse a client message ID while receiving a new attempt ID.
-- [ ] Bounds, invalid transitions, response correlation, reopen behavior,
+- [x] Abrupt Glass exit during a live response reopens as uncertain without
+      replaying the prompt.
+- [x] Bounds, invalid transitions, response correlation, reopen behavior,
       platform privacy behavior, and attention selection have focused tests.
 - [ ] Relevant package tests, formatting, strict scoped Clippy, docs coverage,
       depth, links, and diff review pass.
@@ -98,4 +100,14 @@ It then confirms, checks that fake Core receives the stored text, and verifies
 the original uncertain attempt remains while a second settled attempt uses the
 same client message ID and a different attempt ID. The implementation
 revalidates ownership, uncertain status, and current run before sending. The
-true kill-during-response timing path and final task-level review remain open.
+`live_core_response_crash_reopens_as_uncertain_without_replay` adds the live
+interruption path. The fake Core holds an active prompt before its response;
+the PTY journey verifies the ledger is `working`, terminates Glass during that
+window, and restarts it. The reopened attention inbox routes to the owner,
+startup does not send another prompt, and the retained record becomes
+`uncertain` with its original message. This is a process-interruption test with
+the offline runtime fixture, not a provider-backed timing test.
+
+The remaining unchecked criteria cover per-mode ID coverage, explicit queue
+rejection/runtime-error correlation, and the task-level final package and
+documentation review.

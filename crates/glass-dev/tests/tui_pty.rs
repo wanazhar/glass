@@ -2303,6 +2303,8 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     let mut observed_429 = false;
     let mut run_classification = "missing".to_owned();
     let mut send_status = "missing".to_owned();
+    let mut engine_request_id_present = false;
+    let mut failed_status_observed_at = None;
     while Instant::now() < deadline {
         session.settle(Duration::from_millis(200));
         let terminal_output = session.output().to_ascii_lowercase();
@@ -2319,25 +2321,33 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         if let Some(threads) = registry
             .as_ref()
             .and_then(|value| value["threads"].as_array())
-            && let Some((classification, status)) = threads.iter().rev().find_map(|thread| {
-                let attempt = thread["sendAttempts"].as_array()?.last()?;
-                let target_run_id = attempt["targetRunId"].as_str()?;
-                let run = thread["runs"]
-                    .as_array()?
-                    .iter()
-                    .find(|run| run["runId"].as_str() == Some(target_run_id))?;
-                Some((
-                    run["classification"].as_str()?.to_owned(),
-                    attempt["status"].as_str()?.to_owned(),
-                ))
-            })
+            && let Some((classification, status, request_id_present)) =
+                threads.iter().rev().find_map(|thread| {
+                    let attempt = thread["sendAttempts"].as_array()?.last()?;
+                    let target_run_id = attempt["targetRunId"].as_str()?;
+                    let run = thread["runs"]
+                        .as_array()?
+                        .iter()
+                        .find(|run| run["runId"].as_str() == Some(target_run_id))?;
+                    Some((
+                        run["classification"].as_str()?.to_owned(),
+                        attempt["status"].as_str()?.to_owned(),
+                        attempt["engineRequestId"].as_str().is_some(),
+                    ))
+                })
         {
             run_classification = classification;
             send_status = status;
+            engine_request_id_present = request_id_present;
         }
 
         if send_status == "failed" {
-            break;
+            let failed_at = failed_status_observed_at.get_or_insert_with(Instant::now);
+            if run_classification != "working" || failed_at.elapsed() >= Duration::from_secs(3) {
+                break;
+            }
+        } else {
+            failed_status_observed_at = None;
         }
 
         if run_classification == "idle"
@@ -2353,7 +2363,7 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     let file_length = file_content.as_ref().map_or(0, Vec::len);
     assert!(
         completed,
-        "live provider verification incomplete: file_exists={file_exists}, file_length={file_length}, run_classification={run_classification}, send_status={send_status}, observed_429={observed_429}; no retry was attempted"
+        "live provider verification incomplete: file_exists={file_exists}, file_length={file_length}, run_classification={run_classification}, send_status={send_status}, engine_request_id_present={engine_request_id_present}, observed_429={observed_429}; no retry was attempted"
     );
     assert_eq!(std::fs::read(&file_path).unwrap(), expected);
 

@@ -1377,7 +1377,7 @@ impl AgentRegistry {
                     && value.get("ok").and_then(Value::as_bool) == Some(false)
                     && matches!(
                         value.get("operation").and_then(Value::as_str),
-                        Some("turn/prompt" | "turn/followUp")
+                        Some("prompt" | "followUp")
                     );
                 let phase = if failed_turn_response {
                     Some(RunClassification::Idle)
@@ -2891,7 +2891,7 @@ mod tests {
                 serde_json::json!({
                     "type":"response",
                     "id":"core-request-3",
-                    "operation":"turn/prompt",
+                    "operation":"prompt",
                     "ok":false,
                     "error":{"code":-32000,"message":"provider unavailable"},
                 }),

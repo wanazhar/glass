@@ -86,10 +86,29 @@ pub(crate) struct RunRecord {
 pub(crate) enum RunClassification {
     Queued,
     Starting,
+    Idle,
+    Working,
+    Waiting,
     RecoveryPending,
     Completed,
     Failed,
     Cancelled,
+}
+
+impl RunClassification {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Starting => "starting",
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Waiting => "waiting",
+            Self::RecoveryPending => "recovery pending",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

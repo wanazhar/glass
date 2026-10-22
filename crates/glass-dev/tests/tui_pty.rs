@@ -1093,7 +1093,31 @@ fn three_fake_core_tasks_complete_without_stealing_selected_thread() {
         alpha_completed.exists(),
         "alpha did not finish after release"
     );
-    session.settle(Duration::from_millis(300));
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let after_alpha_registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let alpha_settled = registry["threads"].as_array().is_some_and(|threads| {
+            threads
+                .iter()
+                .find(|thread| thread["role"] == "alpha")
+                .is_some_and(|thread| thread["sendAttempts"][0]["status"] == "settled")
+        });
+        if alpha_settled || Instant::now() >= deadline {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    assert_eq!(
+        after_alpha_registry["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|thread| thread["role"] == "alpha")
+            .unwrap()["sendAttempts"][0]["status"],
+        "settled",
+        "alpha must settle before its background completion is reviewed"
+    );
     send_ctrl_shift_t(&mut session);
     assert!(session.wait_for_visible("PROJECT THREADS", Duration::from_secs(5)));
     let visible = session.visible_output();
@@ -1103,15 +1127,17 @@ fn three_fake_core_tasks_complete_without_stealing_selected_thread() {
             .any(|line| line.contains("▸") && line.contains("gamma")),
         "gamma must remain the selected project thread after alpha completes\n{visible}"
     );
-    assert!(
-        !visible.contains("handled alpha-job"),
-        "alpha's background response replaced the selected gamma conversation\n{visible}"
-    );
+    session.buffer.clear();
     session.send(b"\x1b");
-    session.settle(Duration::from_millis(150));
+    assert!(session.wait_for_visible("gamma-job", Duration::from_secs(5)));
+    let gamma_after_alpha = session.visible_output();
     assert!(
-        visible.contains("gamma"),
-        "alpha's background completion changed the selected conversation\n{visible}"
+        !gamma_after_alpha.contains("handled alpha-job"),
+        "alpha's background response replaced the selected gamma conversation\n{gamma_after_alpha}"
+    );
+    assert!(
+        gamma_after_alpha.contains("gamma-job"),
+        "Escape from the picker must return to gamma's conversation\n{gamma_after_alpha}"
     );
     let registry: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();

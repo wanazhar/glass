@@ -65,8 +65,9 @@ CARGO_TARGET_DIR=/home/ubuntu/work/glass/target GLASS_E2E=1 \
 The test starts alpha, beta, and gamma prompts behind the fixture's three
 independent gates, then persists a distinct draft and cursor in each thread.
 It releases alpha while gamma remains selected and checks the picker still
-highlights gamma, alpha's completion does not appear in the selected gamma
-view, and the ledger records alpha as settled while beta and gamma remain
+highlights gamma. After the picker closes, it captures a fresh conversation
+frame and verifies gamma's prompt is displayed without alpha's response. It
+waits for the registry to record alpha as settled while beta and gamma remain
 working under their own prompt text and target RunIds. It then visits alpha,
 beta, and gamma; inserting and removing a character at each restored cursor
 confirms the live composer position as well as the saved text/cursor ownership.
@@ -83,4 +84,7 @@ Validation passed: strict `cargo clippy -p glass-dev --test tui_pty --locked --
 documentation coverage (using the existing root debug binaries), documentation
 depth, release-truth, TUI shortcut inventory, and `git diff --check`.
 
-Independent review: pending.
+Independent review: the first review found that a picker-frame snapshot was
+being reused to claim conversation isolation. The test now captures the gamma
+conversation after closing the picker and waits for the alpha ledger state;
+independent re-review is pending.

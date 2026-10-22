@@ -268,6 +268,51 @@ pub struct ThreadPickerItem {
     pub status: String,
 }
 
+struct TaskThreadLabel {
+    assigned_agent: Option<crate::AgentId>,
+    id: String,
+    title: String,
+}
+
+fn project_thread_picker_title(
+    role: &str,
+    agent_id: &crate::AgentId,
+    tasks: &[TaskThreadLabel],
+) -> String {
+    tasks
+        .iter()
+        .find(|task| task.assigned_agent.as_ref() == Some(agent_id))
+        .map_or_else(
+            || role.to_owned(),
+            |task| format!("{role} · {} · {}", task.id, task.title),
+        )
+}
+
+/// Build conversation labels from the task-to-agent associations recorded by
+/// the scheduler, including retained associations for terminal tasks.
+/// Agents without a matching assigned task retain their role-only label.
+pub(super) fn project_thread_picker_items(
+    agents: &[crate::AgentSnapshot],
+    tasks: &[crate::TaskSnapshot],
+) -> Vec<ThreadPickerItem> {
+    let task_labels = tasks
+        .iter()
+        .map(|task| TaskThreadLabel {
+            assigned_agent: task.assigned_agent.clone(),
+            id: task.id.as_str().to_owned(),
+            title: task.title.clone(),
+        })
+        .collect::<Vec<_>>();
+    agents
+        .iter()
+        .map(|agent| ThreadPickerItem {
+            agent_id: agent.id.clone(),
+            title: project_thread_picker_title(&agent.role, &agent.id, &task_labels),
+            status: agent.status.label().to_owned(),
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessRow {
     pub name: String,
@@ -11905,18 +11950,12 @@ impl DevTuiState {
         if !self.files.is_empty() {
             self.selected_file = self.selected_file.min(self.files.len() - 1);
         }
+        let task_snapshots = workspace.tasks().unwrap_or_default();
         let agent_snapshots = workspace.agents().list();
         self.pending_agent_approvals = pending_agent_approvals(agent_snapshots.as_ref().ok());
         self.pending_agent_approval = self.pending_agent_approvals.first().cloned();
         if let Ok(agents) = &agent_snapshots {
-            self.thread_picker_items = agents
-                .iter()
-                .map(|agent| ThreadPickerItem {
-                    agent_id: agent.id.clone(),
-                    title: agent.role.clone(),
-                    status: agent.status.label().to_owned(),
-                })
-                .collect();
+            self.thread_picker_items = project_thread_picker_items(agents, &task_snapshots);
         }
         self.agents = match agent_snapshots {
             Ok(agents) if agents.is_empty() => "No agents. :agent spawn ROLE TASK".into(),
@@ -14458,6 +14497,43 @@ fn editor_offset(content: &str, line: u32, column: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_assigned_threads_show_task_identity_and_other_threads_keep_role() {
+        let first = crate::AgentId::parse("agent-0001").unwrap();
+        let second = crate::AgentId::parse("agent-0002").unwrap();
+        let manual = crate::AgentId::parse("agent-0003").unwrap();
+        let tasks = [
+            TaskThreadLabel {
+                assigned_agent: Some(first.clone()),
+                id: "task-alpha".into(),
+                title: "Review parser".into(),
+            },
+            TaskThreadLabel {
+                assigned_agent: Some(second.clone()),
+                id: "task-beta".into(),
+                title: "Update renderer".into(),
+            },
+            TaskThreadLabel {
+                assigned_agent: None,
+                id: "task-unassigned".into(),
+                title: "Unassigned work".into(),
+            },
+        ];
+
+        assert_eq!(
+            project_thread_picker_title("developer", &first, &tasks),
+            "developer · task-alpha · Review parser"
+        );
+        assert_eq!(
+            project_thread_picker_title("developer", &second, &tasks),
+            "developer · task-beta · Update renderer"
+        );
+        assert_eq!(
+            project_thread_picker_title("developer", &manual, &tasks),
+            "developer"
+        );
+    }
 
     #[cfg(unix)]
     #[test]

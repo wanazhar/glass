@@ -353,7 +353,10 @@ opens it on any surface. `i`, Enter on the Agent surface, or typing a
 non-digit Agent character also opens it. Default mode is Agent. `Ctrl-Shift-A`
 cycles Ask, Plan, and Agent. `Ctrl-Shift-T` opens the project conversation
 picker; selecting a row switches to that thread without sending a prompt, and
-Esc leaves the selected conversation unchanged. Glass `/ask`, `/plan`, and `/agent` aliases use
+Esc leaves the selected conversation unchanged. A thread assigned to a project
+task displays its agent role, task title, and task ID so concurrent tasks with
+the same role remain distinguishable; manually spawned or currently unassigned
+agents keep their role label. Glass `/ask`, `/plan`, and `/agent` aliases use
 the same slash resolver whether typed in the modal or pasted into the
 composer: their arguments are the prompt sent in the selected mode, and any
 pre-existing composer draft remains intact. An alias without a prompt changes

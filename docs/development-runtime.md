@@ -129,7 +129,12 @@ explicit resume succeeds. See the
 [exact-session recovery contract](plan/analysis/issue63-core-session-resume.md).
 The TUI uses its ordinary confirmation for the resume action; subsequent
 conversation follows the existing session flow without per-tool-call
-confirmation.
+confirmation. For an uncertain send on a supported Unix host, select its
+attention item, resume that owning Core session, inspect the conversation, then
+run `:agent retry`. A separate confirmation warns that the original may have
+been accepted. Confirming reuses the saved client message ID, creates a fresh
+attempt ID, and targets the current run; a changed, inactive, or mismatched
+thread is refused. Cancel leaves the uncertain attempt unchanged.
 
 Every governed tool carries expected workspace generation and project revision. A stale call fails with `Conflict`; reread state and issue a new call. Mutations also require a trusted workspace, actor attribution, and the applicable mutation authority or confirmation.
 

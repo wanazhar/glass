@@ -281,6 +281,12 @@ const CORE_AGENT_ACTIONS: &[SurfaceAction] = &[
         description: "start a separate resident session",
     },
     SurfaceAction {
+        label: "Retry uncertain delivery",
+        command: "agent retry",
+        key: ":",
+        description: "inspect and explicitly retry the selected uncertain message",
+    },
+    SurfaceAction {
         label: "List conversations",
         command: "agent sessions",
         key: ":",
@@ -2019,6 +2025,17 @@ fn execute_agent_for_harness(
             state.surface = DevSurface::Agent;
             Ok(compact_result("glass.agent.resume", &result))
         }
+        "retry" => {
+            if harness != crate::ResidentHarnessKind::GlassCore {
+                return Err("uncertain delivery retry is available for Glass Core threads".into());
+            }
+            if parts.len() != 1 {
+                return Err("agent retry takes no arguments · select an uncertain delivery first".into());
+            }
+            state.surface = DevSurface::Agent;
+            state.request_uncertain_send_retry();
+            Ok(state.status.clone())
+        }
         "prompt" | "steer" | "follow-up" => {
             let (agent_id, offset) = explicit_or_active_agent(state, &parts)?;
             let text_start = if offset == 1 { 2 } else { 1 };
@@ -2176,7 +2193,7 @@ fn execute_agent_for_harness(
             }
             Ok(compact_result(tool, &result))
         }
-        _ => Err("agent actions: doctor, status, setup [login], hello, models, spawn, resume [AGENT_ID], prompt, steer, follow-up, cancel, abort, compact, model, set-model, thinking, set-thinking, new, new-session, clone, clone-session, rewind, fork, switch, sessions, tree, messages, entries, stats".into()),
+        _ => Err("agent actions: doctor, status, setup [login], hello, models, spawn, resume [AGENT_ID], retry, prompt, steer, follow-up, cancel, abort, compact, model, set-model, thinking, set-thinking, new, new-session, clone, clone-session, rewind, fork, switch, sessions, tree, messages, entries, stats".into()),
     }
 }
 

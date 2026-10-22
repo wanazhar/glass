@@ -429,7 +429,9 @@ content, or `:editor keep-local` to rebase local text before saving. A deleted
 path remains a conflict; reload reports the missing file, while keep-local
 allows an explicit save to recreate it. Filesystem observations have unknown
 actor attribution. Saves compare the target file identity at the replacement
-boundary, independent of unrelated project revision changes.
+boundary, independent of unrelated project revision changes. This optimistic
+check rejects a mismatch observed at that boundary; it does not lock out a
+non-cooperating writer after the check.
 
 The full-screen editor reads through a cached projection while a workspace
 refresh holds the shared workspace lock. This keeps the last visible buffer on

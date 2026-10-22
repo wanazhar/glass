@@ -47,14 +47,16 @@ Reconciliation compares each open buffer's base content identity with disk:
   undo/redo and conflict state. A deleted file cannot be reloaded as text.
 - Keep local explicitly rebases the human text onto the latest file identity,
   leaves it dirty, and clears the observed conflict. A later save still checks
-  that latest identity, so a subsequent external write is rejected.
+  that latest identity and rejects a mismatch observed at its replacement
+  check.
 
 Saving uses the buffer's expected file identity, not the workspace-wide
 revision. The guarded write validates the file immediately before replacement
 and uses the existing sibling-temp/atomic-rename path. A changed or deleted
-file returns a conflict rather than silently replacing newer content. This
-does not claim cross-process locking; the file is revalidated at the write
-boundary because the Core writer does not participate in Glass locks.
+file returns a conflict if its identity differs at the replacement check.
+This optimistic guard does not provide cross-process locking or compare-and-
+swap against non-cooperating writers that change a file after the check; the
+Core writer does not participate in Glass locks.
 
 The TUI adds a small visible conflict line and explicit compare, reload, and
 keep-local actions, routed through the existing editor command/key handling.

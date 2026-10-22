@@ -14651,6 +14651,8 @@ mod tests {
             composer_draft: None,
             follow_up_queue: None,
             send_attempts: Vec::new(),
+            #[cfg(windows)]
+            send_attempts_opaque: None,
             runs: vec![crate::thread_store::RunRecord {
                 run_id: crate::thread_store::random_id("run").unwrap(),
                 engine: "glass-core".into(),
@@ -14742,6 +14744,8 @@ mod tests {
                 composer_draft: None,
                 follow_up_queue: None,
                 send_attempts: Vec::new(),
+                #[cfg(windows)]
+                send_attempts_opaque: None,
             })
             .unwrap();
         store
@@ -14818,6 +14822,8 @@ mod tests {
                 composer_draft: None,
                 follow_up_queue: None,
                 send_attempts: Vec::new(),
+                #[cfg(windows)]
+                send_attempts_opaque: None,
             })
             .unwrap();
         let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop).unwrap();
@@ -14904,6 +14910,8 @@ mod tests {
                 composer_draft: None,
                 follow_up_queue: None,
                 send_attempts: Vec::new(),
+                #[cfg(windows)]
+                send_attempts_opaque: None,
             })
             .unwrap();
 
@@ -15046,6 +15054,8 @@ mod tests {
             composer_draft: None,
             follow_up_queue: None,
             send_attempts: Vec::new(),
+            #[cfg(windows)]
+            send_attempts_opaque: None,
         };
         let agent_thread = make_thread("agent A");
         let other_thread = make_thread("agent B");
@@ -15143,6 +15153,8 @@ mod tests {
             composer_draft: None,
             follow_up_queue: None,
             send_attempts: Vec::new(),
+            #[cfg(windows)]
+            send_attempts_opaque: None,
             runs: vec![crate::thread_store::RunRecord {
                 run_id: crate::thread_store::random_id("run").unwrap(),
                 engine: "glass-core".into(),
@@ -15354,6 +15366,8 @@ mod tests {
                 composer_draft: None,
                 follow_up_queue: None,
                 send_attempts: Vec::new(),
+                #[cfg(windows)]
+                send_attempts_opaque: None,
             })
             .unwrap();
         store

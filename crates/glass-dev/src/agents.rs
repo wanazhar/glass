@@ -526,6 +526,8 @@ impl AgentRegistry {
             composer_draft: None,
             follow_up_queue: None,
             send_attempts: Vec::new(),
+            #[cfg(windows)]
+            send_attempts_opaque: None,
             runs: vec![RunRecord {
                 run_id: run_id.clone(),
                 engine: harness.id().into(),
@@ -2292,6 +2294,8 @@ mod tests {
                 composer_draft: None,
                 follow_up_queue: None,
                 send_attempts: Vec::new(),
+                #[cfg(windows)]
+                send_attempts_opaque: None,
                 runs: vec![RunRecord {
                     run_id: run_id.clone(),
                     engine: "glass-core".into(),
@@ -2420,6 +2424,8 @@ mod tests {
                 composer_draft: None,
                 follow_up_queue: None,
                 send_attempts: Vec::new(),
+                #[cfg(windows)]
+                send_attempts_opaque: None,
                 runs: vec![RunRecord {
                     run_id: crate::thread_store::random_id("run").unwrap(),
                     engine: "glass-core".into(),
@@ -2771,6 +2777,8 @@ mod tests {
                 composer_draft: None,
                 follow_up_queue: None,
                 send_attempts: Vec::new(),
+                #[cfg(windows)]
+                send_attempts_opaque: None,
                 runs: vec![RunRecord {
                     run_id: run_id.clone(),
                     engine: "glass-core".into(),

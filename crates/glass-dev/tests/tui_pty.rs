@@ -480,6 +480,62 @@ fn send_ctrl_shift_t(session: &mut Session) {
     session.send(b"\x1b[84;6u");
 }
 
+fn select_project_thread(session: &mut Session, current: usize, target: usize) {
+    send_ctrl_shift_t(session);
+    assert!(session.wait_for_visible("PROJECT THREADS", Duration::from_secs(5)));
+    if target < current {
+        session.send(&b"\x1b[A".repeat(current - target));
+    } else {
+        session.send(&b"\x1b[B".repeat(target - current));
+    }
+    session.send(b"\r");
+    assert!(session.wait_for_visible("CONVERSATION", Duration::from_secs(5)));
+}
+
+fn wait_for_saved_thread_draft(
+    session: &mut Session,
+    registry_path: &std::path::Path,
+    role: &str,
+    text: &str,
+    cursor: usize,
+) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(registry_path).unwrap()).unwrap();
+        let saved = registry["threads"]
+            .as_array()
+            .and_then(|threads| threads.iter().find(|thread| thread["role"] == role))
+            .is_some_and(|thread| {
+                thread["composerDraft"]["text"] == text
+                    && thread["composerDraft"]["cursor"] == cursor
+            });
+        if saved {
+            return registry;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{role} draft/cursor was not persisted: {registry}"
+        );
+        session.settle(Duration::from_millis(100));
+    }
+}
+
+fn verify_selected_thread_draft_cursor(
+    session: &mut Session,
+    registry_path: &std::path::Path,
+    role: &str,
+    text: &str,
+    cursor: usize,
+) {
+    let mut inserted = text.to_owned();
+    inserted.insert(cursor, 'X');
+    session.send(b"X");
+    wait_for_saved_thread_draft(session, registry_path, role, &inserted, cursor + 1);
+    session.send(b"\x7f");
+    wait_for_saved_thread_draft(session, registry_path, role, text, cursor);
+}
+
 fn seed_project_threads(root: &std::path::Path) {
     use std::os::unix::fs::MetadataExt;
 
@@ -923,6 +979,18 @@ fn three_fake_core_tasks_complete_without_stealing_selected_thread() {
             "fake Core did not start {tag}\n{}",
             session.output_tail()
         );
+        let role = ["alpha", "beta", "gamma"][index];
+        let draft = format!("{role} private draft");
+        let cursor = draft.len() - "draft".len();
+        session.send(draft.as_bytes());
+        session.send(b"\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D");
+        wait_for_saved_thread_draft(
+            &mut session,
+            &fixture_state.join("threads/registry.json"),
+            role,
+            &draft,
+            cursor,
+        );
     }
 
     let registry_path = fixture_state.join("threads/registry.json");
@@ -970,6 +1038,10 @@ fn three_fake_core_tasks_complete_without_stealing_selected_thread() {
                 .as_str()
                 .is_some_and(|id| !id.is_empty())
         );
+        assert_eq!(
+            attempts[0]["targetRunId"], thread["runs"][0]["runId"],
+            "{role}'s attempt must target its own run"
+        );
     }
     assert_eq!(
         client_ids.len(),
@@ -977,6 +1049,40 @@ fn three_fake_core_tasks_complete_without_stealing_selected_thread() {
         "each message needs a distinct client ID"
     );
 
+    let registry = wait_for_saved_thread_draft(
+        &mut session,
+        &registry_path,
+        "gamma",
+        "gamma private draft",
+        "gamma private ".len(),
+    );
+    for (role, text, cursor) in [
+        ("alpha", "alpha private draft", "alpha private ".len()),
+        ("beta", "beta private draft", "beta private ".len()),
+        ("gamma", "gamma private draft", "gamma private ".len()),
+    ] {
+        let thread = registry["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|thread| thread["role"] == role)
+            .unwrap();
+        assert_eq!(
+            thread["composerDraft"]["text"], text,
+            "{role} owns its draft"
+        );
+        assert_eq!(
+            thread["composerDraft"]["cursor"], cursor,
+            "{role} owns its draft cursor"
+        );
+    }
+    let gamma_view = session.visible_output();
+    assert!(
+        gamma_view.contains("gamma"),
+        "gamma remains selected\n{gamma_view}"
+    );
+
+    session.buffer.clear();
     std::fs::write(fixture_state.join("e2e-core-release-alpha-job"), "release").unwrap();
     let alpha_completed = fixture_state.join("e2e-core-completed-alpha-job");
     let deadline = Instant::now() + Duration::from_secs(12);
@@ -987,16 +1093,165 @@ fn three_fake_core_tasks_complete_without_stealing_selected_thread() {
         alpha_completed.exists(),
         "alpha did not finish after release"
     );
-    session.settle(Duration::from_millis(300));
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let after_alpha_registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let alpha_settled = registry["threads"].as_array().is_some_and(|threads| {
+            threads
+                .iter()
+                .find(|thread| thread["role"] == "alpha")
+                .is_some_and(|thread| thread["sendAttempts"][0]["status"] == "settled")
+        });
+        if alpha_settled || Instant::now() >= deadline {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    assert_eq!(
+        after_alpha_registry["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|thread| thread["role"] == "alpha")
+            .unwrap()["sendAttempts"][0]["status"],
+        "settled",
+        "alpha must settle before its background completion is reviewed"
+    );
+    send_ctrl_shift_t(&mut session);
+    assert!(session.wait_for_visible("PROJECT THREADS", Duration::from_secs(5)));
     let visible = session.visible_output();
     assert!(
-        visible.contains("gamma"),
-        "the selected gamma conversation disappeared after alpha completed\n{visible}"
+        visible
+            .lines()
+            .any(|line| line.contains("▸") && line.contains("gamma")),
+        "gamma must remain the selected project thread after alpha completes\n{visible}"
+    );
+    session.buffer.clear();
+    session.send(b"\x1b");
+    assert!(session.wait_for_visible("gamma-job", Duration::from_secs(5)));
+    let gamma_after_alpha = session.visible_output();
+    assert!(
+        !gamma_after_alpha.contains("handled alpha-job"),
+        "alpha's background response replaced the selected gamma conversation\n{gamma_after_alpha}"
     );
     assert!(
-        !visible.contains("handled alpha-job"),
-        "alpha's background response replaced the selected gamma conversation\n{visible}"
+        gamma_after_alpha.contains("gamma-job"),
+        "Escape from the picker must return to gamma's conversation\n{gamma_after_alpha}"
     );
+    let registry: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+    for (role, text, cursor) in [
+        ("alpha", "alpha private draft", "alpha private ".len()),
+        ("beta", "beta private draft", "beta private ".len()),
+        ("gamma", "gamma private draft", "gamma private ".len()),
+    ] {
+        let thread = registry["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|thread| thread["role"] == role)
+            .unwrap();
+        assert_eq!(
+            thread["composerDraft"]["text"], text,
+            "{role} draft after background completion"
+        );
+        assert_eq!(
+            thread["composerDraft"]["cursor"], cursor,
+            "{role} cursor after background completion"
+        );
+    }
+    let alpha_thread = registry["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|thread| thread["role"] == "alpha")
+        .unwrap();
+    let gamma_thread = registry["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|thread| thread["role"] == "gamma")
+        .unwrap();
+    assert_eq!(alpha_thread["sendAttempts"][0]["status"], "settled");
+    assert!(
+        alpha_thread["sendAttempts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("alpha-job")
+    );
+    assert_eq!(gamma_thread["sendAttempts"][0]["status"], "working");
+    assert!(
+        gamma_thread["sendAttempts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("gamma-job")
+    );
+
+    session.buffer.clear();
+    select_project_thread(&mut session, 2, 0);
+    let alpha_view = session.visible_output();
+    assert!(
+        alpha_view.contains("alpha-job"),
+        "the completed alpha conversation remains selectable\n{alpha_view}"
+    );
+    verify_selected_thread_draft_cursor(
+        &mut session,
+        &registry_path,
+        "alpha",
+        "alpha private draft",
+        "alpha private ".len(),
+    );
+    session.buffer.clear();
+    select_project_thread(&mut session, 0, 1);
+    let beta_view = session.visible_output();
+    assert!(
+        beta_view.contains("beta-job"),
+        "beta is selected\n{beta_view}"
+    );
+    verify_selected_thread_draft_cursor(
+        &mut session,
+        &registry_path,
+        "beta",
+        "beta private draft",
+        "beta private ".len(),
+    );
+    session.buffer.clear();
+    select_project_thread(&mut session, 1, 2);
+    let gamma_view = session.visible_output();
+    assert!(
+        gamma_view.contains("gamma-job"),
+        "gamma is selected again\n{gamma_view}"
+    );
+    verify_selected_thread_draft_cursor(
+        &mut session,
+        &registry_path,
+        "gamma",
+        "gamma private draft",
+        "gamma private ".len(),
+    );
+    let registry: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+    for (role, text, cursor) in [
+        ("alpha", "alpha private draft", "alpha private ".len()),
+        ("beta", "beta private draft", "beta private ".len()),
+        ("gamma", "gamma private draft", "gamma private ".len()),
+    ] {
+        let thread = registry["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|thread| thread["role"] == role)
+            .unwrap();
+        assert_eq!(
+            thread["composerDraft"]["text"], text,
+            "{role} draft ownership"
+        );
+        assert_eq!(
+            thread["composerDraft"]["cursor"], cursor,
+            "{role} cursor ownership"
+        );
+    }
     for tag in ["beta-job", "gamma-job"] {
         std::fs::write(
             fixture_state.join(format!("e2e-core-release-{tag}")),

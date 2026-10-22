@@ -5175,14 +5175,19 @@ mod tests {
                             .symbol()
                     })
                     .collect::<String>();
-                row_text.contains("Delegate to external harness")
-                    && (0..48).any(|column| {
-                        buffer
-                            .cell((column, *row))
-                            .expect("cell in buffer")
-                            .symbol()
-                            == "▸"
-                    })
+                row_text.contains(
+                    palette_state
+                        .surface_actions()
+                        .last()
+                        .expect("agent action catalog is nonempty")
+                        .label,
+                ) && (0..48).any(|column| {
+                    buffer
+                        .cell((column, *row))
+                        .expect("cell in buffer")
+                        .symbol()
+                        == "▸"
+                })
             })
             .expect("selected bottom palette row must remain visible");
         let row_text = (0..48)
@@ -5193,7 +5198,15 @@ mod tests {
                     .symbol()
             })
             .collect::<String>();
-        assert!(row_text.contains("Delegate to external harness"));
+        assert!(
+            row_text.contains(
+                palette_state
+                    .surface_actions()
+                    .last()
+                    .expect("agent action catalog is nonempty")
+                    .label
+            )
+        );
         assert!(
             (0..48).any(|column| {
                 buffer
@@ -5765,7 +5778,7 @@ mod tests {
         state.move_palette_selection(2);
         assert_eq!(
             state.selected_palette_action().map(|action| action.label),
-            Some("Update Pi runtime")
+            state.surface_actions().get(2).map(|action| action.label)
         );
         state.insert_palette_text("browser");
         state.move_palette_cursor(false);
@@ -5839,12 +5852,20 @@ mod tests {
         state.surface = DevSurface::Agent;
         state.open_menu();
         assert!(!state.surface_actions().is_empty());
-        state.move_menu_selection(3);
+        state.menu_selection = state
+            .surface_actions()
+            .iter()
+            .position(|action| action.command == "agent setup login")
+            .expect("agent login action is listed");
         state.run_menu_action();
-        // No-input actions execute immediately; login hands control to the
-        // outer loop instead of requiring a second Enter in the palette.
         assert!(!state.command_mode);
-        assert!(state.agent_login_requested);
+        match crate::ResidentHarnessKind::from_env() {
+            crate::ResidentHarnessKind::GlassCore => {
+                assert!(state.status.contains("Glass Core manages provider login"));
+                assert!(!state.agent_login_requested);
+            }
+            crate::ResidentHarnessKind::Pi => assert!(state.agent_login_requested),
+        }
 
         state.surface = DevSurface::App;
         state.open_menu();
@@ -6291,11 +6312,17 @@ mod tests {
         // Discoverability: the action menu opens from navigation mode and
         // renders its entries inside the surface pane at desktop size.
         state.surface = DevSurface::Agent;
+        trust_workspace_once(&mut state);
+        state.selected_agent = Some(crate::AgentId::parse("agent-e2e").expect("agent id"));
         state.open_menu();
         let output = rendered(&state, 118, 32);
         assert!(output.contains("ACTIONS · Agent"));
         assert!(output.contains("Compose message"));
-        state.move_menu_selection(1);
+        state.menu_selection = state
+            .surface_actions()
+            .iter()
+            .position(|action| action.command == "agent new")
+            .expect("new conversation action is listed");
         state.run_menu_action();
         assert!(!state.command_mode);
         assert!(state.pending_confirmation.is_some());
@@ -6423,7 +6450,9 @@ mod tests {
                 .is_some_and(|pending| pending.summary.contains("Refresh"))
         );
         state.deny_confirmation();
-        state.request_agent_login().expect("queue Pi login");
+        state
+            .request_agent_login_for_harness(crate::ResidentHarnessKind::Pi, None)
+            .expect("queue Pi login");
         assert!(state.agent_login_requested);
         assert!(state.status.contains("exit Pi to return"));
     }

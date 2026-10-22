@@ -49,7 +49,7 @@ pub fn curriculum_help(surface: DevSurface) -> String {
     let surface_lines = match surface {
         DevSurface::Trust => "TRUST\n  I inspect · 1/t once · T project · O untrusted",
         DevSurface::Agent => {
-            "AGENT\n  type in the dock to talk · Enter sends\n  / Pi commands · : Glass actions\n  :plan accept after a Plan turn"
+            "AGENT\n  type in the dock to talk · Enter sends\n  / agent commands · : Glass actions\n  :plan accept after a Plan turn"
         }
         DevSurface::Code => "CODE\n  Enter opens · i inserts · gc comments",
         DevSurface::App => "APP\n  Enter activates · g source · C comment",
@@ -73,7 +73,7 @@ pub fn curriculum_help(surface: DevSurface) -> String {
 
 pub fn dock_placeholder(surface: DevSurface, mode: crate::AgentTurnMode) -> String {
     let command_hint = if surface == DevSurface::Agent {
-        ": search · / Pi commands · a actions"
+        ": search · / agent commands · a actions"
     } else {
         ": search · a actions"
     };

@@ -958,7 +958,7 @@ fn workspace_status_projection(workspace: &mut crate::DevelopmentWorkspace) -> S
         .map(|url| format!("● open App {url}"))
         .unwrap_or_else(|| "○ start App after a URL is detected".into());
     format!(
-        "WELCOME · {}\n{}\n\n✓ workspace {}\n\nNEXT ACTIONS\n◆ :actions guided launchers · per-surface flows\n◆ :agent setup · install Pi · :agent setup login · sign in\n◆ :process start dev · start detected dev suite\n◆ Enter · open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
+        "WELCOME · {}\n{}\n\n✓ workspace {}\n\nNEXT ACTIONS\n◆ :actions guided launchers · per-surface flows\n◆ :agent doctor · check the resident engine and provider setup\n◆ :process start dev · start detected dev suite\n◆ Enter · open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
         detection.git_branch.as_deref().unwrap_or("no branch"),
         project_line,
         workspace.trust().label(),

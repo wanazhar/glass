@@ -604,6 +604,10 @@ pub struct DevTuiState {
     pub conversation_cursor: u64,
     /// Index of the editor buffer focused by the Code surface.
     pub editor_buffer_index: usize,
+    pending_editor_input: std::collections::VecDeque<PendingEditorInput>,
+    /// Last editor buffer projection, available while a background task owns
+    /// the workspace mutex. Writes still require the live workspace.
+    focused_editor_buffer: Option<crate::development::EditorBuffer>,
     pub focused_editor_path: String,
     /// Cached editor content used while the shared workspace is busy.
     pub focused_editor_content: String,
@@ -713,6 +717,12 @@ pub(crate) struct BrowserVisualRequest {
     pub(crate) live: bool,
     pub(crate) status: Option<String>,
     pub(crate) failure: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PendingEditorInput {
+    Key(crossterm::event::KeyCode, crossterm::event::KeyModifiers),
+    Paste(String),
 }
 
 impl DevTuiState {
@@ -929,6 +939,8 @@ impl DevTuiState {
             refresh_latency_ms: 0,
             conversation_cursor: 0,
             editor_buffer_index: 0,
+            pending_editor_input: std::collections::VecDeque::new(),
+            focused_editor_buffer: None,
             focused_editor_path: String::new(),
             focused_editor_content: String::new(),
             focused_editor_dirty: false,
@@ -1125,7 +1137,7 @@ impl DevTuiState {
 
     /// Guided launchers for the current surface. `:actions` opens the command center.
     pub fn surface_actions(&self) -> &'static [command::SurfaceAction] {
-        command::surface_actions(self.surface)
+        command::surface_actions_for(self.surface, crate::ResidentHarnessKind::from_env())
     }
 
     /// Explain why a guided launcher cannot run with the currently visible
@@ -1614,7 +1626,8 @@ impl DevTuiState {
         self.pi_command_cursor = 0;
         self.pi_command_selection = 0;
         self.pi_command_scroll = 0;
-        self.status = "Pi commands · type to filter · ↑↓ select · Tab complete · Enter run".into();
+        self.status =
+            "Agent commands · type to filter · ↑↓ select · Tab complete · Enter run".into();
     }
 
     pub(crate) fn close_pi_command_palette(&mut self) {
@@ -1627,9 +1640,9 @@ impl DevTuiState {
         self.pi_command_selection = 0;
         self.pi_command_scroll = 0;
         self.status = if return_to_composer {
-            "Pi commands closed · composer draft restored".into()
+            "Agent commands closed · composer draft restored".into()
         } else {
-            "Pi command surface closed · press / on Agent".into()
+            "Agent command surface closed · press / on Agent".into()
         };
     }
 
@@ -3110,11 +3123,19 @@ impl DevTuiState {
     }
 
     pub(crate) fn trust_allows_execution(&self) -> bool {
-        self.yolo_mode
-            || self
-                .workspace
-                .try_lock()
-                .is_ok_and(|workspace| workspace.trust().permits_project_execution())
+        if self.yolo_mode {
+            return true;
+        }
+        match self.workspace.try_lock() {
+            Ok(workspace) => workspace.trust().permits_project_execution(),
+            Err(error) if error.to_string().contains("workspace busy") => {
+                matches!(
+                    self.snapshot_trust_label.as_str(),
+                    "trusted once" | "trusted project" | "trusted-once" | "trusted-project"
+                )
+            }
+            Err(_) => false,
+        }
     }
 
     pub(crate) fn may_leave_trust_surface(&self) -> bool {
@@ -3636,6 +3657,21 @@ impl DevTuiState {
         &mut self,
         provider: Option<String>,
     ) -> Result<(), String> {
+        self.request_agent_login_for_harness(crate::ResidentHarnessKind::from_env(), provider)
+    }
+
+    pub(crate) fn request_agent_login_for_harness(
+        &mut self,
+        harness: crate::ResidentHarnessKind,
+        provider: Option<String>,
+    ) -> Result<(), String> {
+        if harness == crate::ResidentHarnessKind::GlassCore {
+            self.agent_login_provider = None;
+            self.agent_login_requested = false;
+            self.surface = DevSurface::Agent;
+            self.status = "Glass Core manages provider login · run `glass-core` and use `/login`, or configure a provider API key".into();
+            return Ok(());
+        }
         if self.background_action_running() {
             let error = "Finish the current background action before signing in".to_string();
             self.status = error.clone();
@@ -3975,6 +4011,21 @@ impl DevTuiState {
         consume_draft: bool,
         worker: &mut super::snapshot::SnapshotWorker,
     ) -> bool {
+        self.submit_composer_prompt_for_harness(
+            prompt,
+            consume_draft,
+            worker,
+            crate::ResidentHarnessKind::from_env(),
+        )
+    }
+
+    fn submit_composer_prompt_for_harness(
+        &mut self,
+        prompt: &str,
+        consume_draft: bool,
+        worker: &mut super::snapshot::SnapshotWorker,
+        harness: crate::ResidentHarnessKind,
+    ) -> bool {
         if self.composer_send_blocked() {
             self.status = "Background operation running · message kept in composer".into();
             return false;
@@ -3986,7 +4037,15 @@ impl DevTuiState {
             return false;
         }
         if !self.agent_readiness.starts_with("✓ Ready") {
-            self.status = "Pi is not ready · use :agent setup or :agent setup login".into();
+            self.status = match harness {
+                crate::ResidentHarnessKind::GlassCore => {
+                    "Glass Core needs setup · configure its executable and provider before chatting"
+                        .into()
+                }
+                crate::ResidentHarnessKind::Pi => {
+                    "Pi is not ready · use :agent setup or :agent setup login".into()
+                }
+            };
             return false;
         }
         if prompt.trim().is_empty() {
@@ -6190,13 +6249,17 @@ impl DevTuiState {
     }
 
     pub fn focused_buffer(&self) -> Option<crate::development::EditorBuffer> {
-        self.workspace.try_lock().ok().and_then(|workspace| {
-            workspace
+        match self.workspace.try_lock() {
+            Ok(workspace) => workspace
                 .project()
                 .buffers()
                 .nth(self.editor_buffer_index)
-                .cloned()
-        })
+                .cloned(),
+            Err(error) if error.to_string().contains("workspace busy") => {
+                self.focused_editor_buffer.clone()
+            }
+            Err(_) => None,
+        }
     }
 
     pub fn refresh_editor_projection(&mut self) {
@@ -6217,6 +6280,7 @@ impl DevTuiState {
         self.editor_proposals = proposals;
         self.editor_checkpoints = checkpoints;
         if let Some(buffer) = buffers.get(self.editor_buffer_index) {
+            self.focused_editor_buffer = Some(buffer.clone());
             self.focused_editor_path = buffer.path.clone();
             self.focused_editor_content = buffer.content.clone();
             self.focused_editor_dirty = buffer.dirty;
@@ -6245,6 +6309,7 @@ impl DevTuiState {
             }
             self.maybe_begin_pair_apply();
         } else {
+            self.focused_editor_buffer = None;
             self.focused_editor_path.clear();
             self.focused_editor_content.clear();
             self.focused_editor_dirty = false;
@@ -6585,6 +6650,106 @@ impl DevTuiState {
         code: crossterm::event::KeyCode,
         modifiers: crossterm::event::KeyModifiers,
     ) {
+        if !self.pending_editor_input.is_empty() {
+            self.queue_editor_input(PendingEditorInput::Key(code, modifiers));
+            return;
+        }
+        if self.workspace_is_temporarily_busy() {
+            self.queue_editor_input(PendingEditorInput::Key(code, modifiers));
+            return;
+        }
+        self.apply_editor_key(code, modifiers);
+    }
+
+    fn queue_editor_input(&mut self, input: PendingEditorInput) {
+        const MAX_PENDING_EDITOR_KEYS: usize = 4096;
+        if self.pending_editor_input.len() < MAX_PENDING_EDITOR_KEYS {
+            self.pending_editor_input.push_back(input);
+            self.status = format!(
+                "Editor input queued · {} event{} waiting for the workspace",
+                self.pending_editor_input.len(),
+                if self.pending_editor_input.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            );
+        } else {
+            self.status = "Editor input queue is full · wait for the workspace to resume".into();
+        }
+    }
+
+    pub fn paste_editor_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let input = PendingEditorInput::Paste(text.to_string());
+        if !self.pending_editor_input.is_empty() {
+            self.queue_editor_input(input);
+            return;
+        }
+        if self.workspace_is_temporarily_busy() {
+            self.queue_editor_input(input);
+            return;
+        }
+        self.apply_editor_paste(text);
+    }
+
+    fn workspace_is_temporarily_busy(&self) -> bool {
+        self.workspace
+            .try_lock()
+            .err()
+            .is_some_and(|error| error.to_string().contains("workspace busy"))
+    }
+
+    /// Retry queued editor input after a background operation releases the
+    /// workspace. Events stay in order, including save and exit keys.
+    pub fn flush_pending_editor_input(&mut self) -> bool {
+        if self.pending_editor_input.is_empty() {
+            return false;
+        }
+        if self.workspace.try_lock().is_err() {
+            return false;
+        }
+        let mut processed = false;
+        while let Some(input) = self.pending_editor_input.pop_front() {
+            let remaining_before = self.pending_editor_input.len();
+            match input {
+                PendingEditorInput::Key(code, modifiers) => self.apply_editor_key(code, modifiers),
+                PendingEditorInput::Paste(text) => self.apply_editor_paste(&text),
+            }
+            processed = true;
+            if self.pending_editor_input.len() > remaining_before {
+                break;
+            }
+        }
+        processed
+    }
+
+    fn apply_editor_paste(&mut self, text: &str) {
+        if !self.trust_allows_execution() {
+            self.status =
+                "Workspace is untrusted · editor is read-only; paste was not applied".into();
+            return;
+        }
+        let Some(buffer) = self.focused_buffer() else {
+            self.status = "No open buffer".into();
+            return;
+        };
+        match self.insert_editor_text(&buffer.path, text) {
+            Ok(()) => self.refresh_editor_projection(),
+            Err(error) if error.to_string().contains("workspace busy") => {
+                self.queue_editor_input(PendingEditorInput::Paste(text.to_string()));
+            }
+            Err(error) => self.status = format!("Editor paste failed: {error}"),
+        }
+    }
+
+    fn apply_editor_key(
+        &mut self,
+        code: crossterm::event::KeyCode,
+        modifiers: crossterm::event::KeyModifiers,
+    ) {
         if !self.trust_allows_execution() {
             self.editor_engine.stop_pair_apply();
             self.editor_engine.enter_normal();
@@ -6764,7 +6929,11 @@ impl DevTuiState {
             _ => Ok(()),
         };
         if let Err(error) = result {
-            self.status = format!("Editor action failed: {error}");
+            if error.to_string().contains("workspace busy") {
+                self.queue_editor_input(PendingEditorInput::Key(code, modifiers));
+            } else {
+                self.status = format!("Editor action failed: {error}");
+            }
         }
         self.refresh_editor_projection();
     }
@@ -11432,6 +11601,31 @@ mod tests {
     }
 
     #[test]
+    fn trusted_workspace_remains_trusted_while_background_job_holds_lock() {
+        let root =
+            std::env::temp_dir().join(format!("glass-trust-contention-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
+        let trust = state
+            .ws_mut()
+            .expect("workspace lock")
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
+            .expect("trust project");
+        state.snapshot_trust_label = trust.label().into();
+
+        {
+            let _background_job = state.workspace.lock().expect("hold workspace lock");
+            assert!(
+                state.trust_allows_execution(),
+                "temporary lock contention must not erase an explicit local trust decision"
+            );
+        }
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn pi_slash_command_waits_for_mutation_confirmation() {
         let root =
             std::env::temp_dir().join(format!("glass-tui-pi-slash-confirm-{}", std::process::id()));
@@ -11507,24 +11701,29 @@ mod tests {
     }
 
     #[test]
-    fn composer_slash_submit_failure_keeps_exact_input_for_retry() {
+    fn composer_prompt_failure_keeps_exact_input_for_retry() {
         let (mut state, root) = routed_state("composer-slash-retry");
         state.surface = DevSurface::Agent;
         state.open_composer();
-        state.agent_readiness = "Pi is not ready".into();
-        let original = "/ask retry this prompt";
+        state.agent_readiness = "Glass Core is not ready".into();
+        let original = "retry this prompt";
         let cursor = original.find("this").expect("cursor anchor");
         state.composer_input = original.into();
         state.composer_cursor = cursor;
         let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
 
-        state.submit_composer(&mut worker);
+        state.submit_composer_prompt_for_harness(
+            original,
+            true,
+            &mut worker,
+            crate::ResidentHarnessKind::GlassCore,
+        );
 
         assert!(state.pending_confirmation.is_none());
         assert!(state.composer_mode);
         assert_eq!(state.composer_input, original);
         assert_eq!(state.composer_cursor, cursor);
-        assert!(state.status.contains("Pi is not ready"));
+        assert!(state.status.contains("Glass Core needs setup"));
         assert!(state.pi_command_composer_origin.is_none());
 
         drop(worker);
@@ -11607,6 +11806,7 @@ mod tests {
             assert!(state.composer_mode);
             assert_eq!(state.composer_input, draft);
             assert_eq!(state.composer_cursor, cursor);
+            assert!(state.status.starts_with("Agent commands closed"));
         }
 
         drop(state);
@@ -13854,6 +14054,78 @@ mod tests {
     }
 
     #[test]
+    fn focused_editor_projection_survives_temporary_workspace_lock_contention() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-editor-busy-projection-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open editor buffer");
+        state.refresh_editor_projection();
+
+        let workspace = state.ws().expect("hold workspace lock");
+        let buffer = state
+            .focused_buffer()
+            .expect("cached editor projection while workspace is busy");
+        assert_eq!(buffer.path, "src/main.rs");
+        assert_eq!(buffer.content, "fn main() {}\n");
+        drop(workspace);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn editor_keys_and_paste_wait_for_workspace_and_apply_in_order() {
+        let root =
+            std::env::temp_dir().join(format!("glass-editor-queued-keys-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/main.rs"), "main\n").expect("write source");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        trust_workspace_once(&mut state);
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open editor buffer");
+        state.refresh_editor_projection();
+        state.enter_code_edit();
+
+        let workspace_handle = state.workspace.clone();
+        let workspace_guard = workspace_handle.try_lock().expect("hold workspace lock");
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::empty(),
+        );
+        state.edit_code_key(
+            crossterm::event::KeyCode::Char('y'),
+            crossterm::event::KeyModifiers::empty(),
+        );
+        state.paste_editor_text("z\n");
+        assert_eq!(state.focused_editor_content, "main\n");
+        assert!(state.status.contains("3 events waiting"));
+
+        drop(workspace_guard);
+        assert!(state.flush_pending_editor_input());
+        assert_eq!(state.focused_editor_content, "xyz\nmain\n");
+        assert!(state.pending_editor_input.is_empty());
+        assert_eq!(
+            state.focused_buffer().expect("updated buffer").content,
+            "xyz\nmain\n"
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn editor_exit_prompts_save_discard_and_discard_quit() {
         let root = std::env::temp_dir().join(format!("glass-editor-exit-{}", std::process::id()));
         std::fs::create_dir_all(root.join("src")).expect("create source directory");
@@ -14039,7 +14311,7 @@ mod tests {
     }
 
     #[test]
-    fn palette_filters_actions_and_prefills_selected_arguments() {
+    fn default_core_palette_shows_engine_specific_setup_guidance() {
         let root =
             std::env::temp_dir().join(format!("glass-palette-actions-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create temporary workspace");
@@ -14050,21 +14322,29 @@ mod tests {
         state.insert_palette_text("agent setup");
         assert_eq!(
             state.selected_palette_action().map(|action| action.label),
-            Some("Setup Pi runtime")
+            Some("Glass Core setup guidance")
         );
         state.move_palette_selection(1);
         assert_eq!(
             state.selected_palette_action().map(|action| action.label),
-            Some("Authenticate")
+            Some("Provider login guidance")
         );
 
-        state.open_palette_with("agent rewind ENTRY_ID");
-        let action = state.selected_palette_action().expect("rewind action");
+        assert!(
+            command::surface_actions_for(DevSurface::Agent, crate::ResidentHarnessKind::GlassCore,)
+                .iter()
+                .all(|action| !action.label.contains("Pi")),
+            "the default Core action catalog must not advertise legacy Pi-only actions"
+        );
+
+        let action =
+            command::surface_actions_for(DevSurface::Agent, crate::ResidentHarnessKind::Pi)
+                .iter()
+                .find(|action| action.label == "Rewind Pi session")
+                .copied()
+                .expect("legacy Pi rewind action");
         assert_eq!(action.label, "Rewind Pi session");
-        assert!(state.resolve_surface_action(action).is_none());
-        assert!(state.command_mode);
-        assert_eq!(state.command_input, "agent rewind ");
-        assert!(state.status.contains("required value"));
+        assert_eq!(action.command, "agent rewind ENTRY_ID");
 
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }

@@ -231,6 +231,75 @@ const AGENT_ACTIONS: &[SurfaceAction] = &[
     },
 ];
 
+const CORE_AGENT_ACTIONS: &[SurfaceAction] = &[
+    SurfaceAction {
+        label: "Compose message",
+        command: "i",
+        key: ":",
+        description: "ask the resident Glass Agent",
+    },
+    SurfaceAction {
+        label: "Readiness doctor",
+        command: "agent doctor",
+        key: ":",
+        description: "check Glass Core and provider configuration",
+    },
+    SurfaceAction {
+        label: "Glass Core setup guidance",
+        command: "agent setup",
+        key: ":",
+        description: "show how to configure the resident engine",
+    },
+    SurfaceAction {
+        label: "Provider login guidance",
+        command: "agent setup login",
+        key: ":",
+        description: "show provider login options for Glass Core",
+    },
+    SurfaceAction {
+        label: "New conversation",
+        command: "agent new",
+        key: ":",
+        description: "start a separate resident session",
+    },
+    SurfaceAction {
+        label: "List conversations",
+        command: "agent sessions",
+        key: ":",
+        description: "pick a persisted conversation",
+    },
+    SurfaceAction {
+        label: "Compact conversation",
+        command: "agent compact",
+        key: ":",
+        description: "summarize the selected conversation in place",
+    },
+    SurfaceAction {
+        label: "Task loop",
+        command: "task list",
+        key: ":",
+        description: "inspect tasks and verification state",
+    },
+    SurfaceAction {
+        label: "Create task",
+        command: "task create TITLE PROMPT",
+        key: ":",
+        description: "queue a verified development task",
+    },
+    SurfaceAction {
+        label: "Resume task",
+        command: "task resume TASK_ID",
+        key: ":",
+        description: "resume a paused or blocked task",
+    },
+    SurfaceAction {
+        label: "Review workspace changes",
+        command: "review",
+        key: ":",
+        description: "open the shippable review object",
+    },
+];
+
 const CODE_ACTIONS: &[SurfaceAction] = &[
     SurfaceAction {
         label: "Open selected file full-screen",
@@ -616,8 +685,16 @@ const TRUST_ACTIONS: &[SurfaceAction] = &[
 ];
 
 pub fn surface_actions(surface: DevSurface) -> &'static [SurfaceAction] {
+    surface_actions_for(surface, crate::ResidentHarnessKind::from_env())
+}
+
+pub fn surface_actions_for(
+    surface: DevSurface,
+    harness: crate::ResidentHarnessKind,
+) -> &'static [SurfaceAction] {
     match surface {
         DevSurface::Trust => TRUST_ACTIONS,
+        DevSurface::Agent if harness == crate::ResidentHarnessKind::GlassCore => CORE_AGENT_ACTIONS,
         DevSurface::Agent => AGENT_ACTIONS,
         DevSurface::Code => CODE_ACTIONS,
         DevSurface::App => APP_ACTIONS,
@@ -1834,6 +1911,14 @@ fn execute_plan(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
 }
 
 fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
+    execute_agent_for_harness(state, parts, crate::ResidentHarnessKind::from_env())
+}
+
+fn execute_agent_for_harness(
+    state: &mut DevTuiState,
+    parts: Vec<&str>,
+    harness: crate::ResidentHarnessKind,
+) -> Result<String, String> {
     let Some(action) = parts.first().copied() else {
         state.surface = DevSurface::Agent;
         return Ok("Opened Glass Agent".into());
@@ -1873,8 +1958,12 @@ fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
             }
             state.surface = DevSurface::Agent;
             if login {
-                state.request_agent_login()?;
-                return Ok("Pi login will open in this terminal".into());
+                state.request_agent_login_for_harness(harness, None)?;
+                return Ok(state.status.clone());
+            }
+            if harness == crate::ResidentHarnessKind::GlassCore {
+                state.request_agent_setup_mode(crate::ResidentHarnessKind::GlassCore, update);
+                return Ok(state.status.clone());
             }
             let result = run_tool(
                 state,
@@ -3213,6 +3302,68 @@ mod tests {
     }
 
     #[test]
+    fn default_core_agent_catalog_does_not_offer_pi_install_actions() {
+        let actions = surface_actions_for(DevSurface::Agent, crate::ResidentHarnessKind::GlassCore);
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.label == "Glass Core setup guidance")
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.label == "Provider login guidance")
+        );
+        assert!(actions.iter().all(|action| !action.label.contains("Pi")));
+
+        let legacy = surface_actions_for(DevSurface::Agent, crate::ResidentHarnessKind::Pi);
+        assert!(
+            legacy
+                .iter()
+                .any(|action| action.label == "Setup Pi runtime")
+        );
+        assert!(
+            legacy
+                .iter()
+                .any(|action| action.label == "Update Pi runtime")
+        );
+    }
+
+    #[test]
+    fn core_setup_commands_report_external_engine_setup_without_queuing_pi_install() {
+        let (mut state, root) = test_state("core-setup-guidance");
+        let output = execute_agent_for_harness(
+            &mut state,
+            vec!["setup"],
+            crate::ResidentHarnessKind::GlassCore,
+        )
+        .expect("Core setup guidance");
+        assert!(output.contains("Glass Core is the resident engine"));
+        assert!(state.pending_confirmation.is_none());
+        assert!(state.queued_tool_request.is_none());
+
+        let output = execute_agent_for_harness(
+            &mut state,
+            vec!["update"],
+            crate::ResidentHarnessKind::GlassCore,
+        )
+        .expect("Core update guidance");
+        assert!(output.contains("Glass Core is the resident engine"));
+        assert!(state.pending_confirmation.is_none());
+
+        let output = execute_agent_for_harness(
+            &mut state,
+            vec!["setup", "login"],
+            crate::ResidentHarnessKind::GlassCore,
+        )
+        .expect("Core provider login guidance");
+        assert!(output.contains("Glass Core manages provider login"));
+        assert!(!state.agent_login_requested);
+        assert!(state.pending_confirmation.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn palette_resolution_preserves_typed_routes_and_prefills_partial_actions() {
         let live_view = APP_ACTIONS
             .iter()
@@ -3401,7 +3552,7 @@ mod tests {
         let (mut state, root) = test_state("yolo-prefix");
         state.yolo_mode = true;
 
-        let output = execute(&mut state, "agent update").expect("queue yolo update");
+        let output = execute(&mut state, "git stage .").expect("queue yolo stage");
 
         assert!(output.contains("queued"));
         assert!(state.pending_confirmation.is_none());
@@ -3410,7 +3561,7 @@ mod tests {
                 .queued_tool_request
                 .as_ref()
                 .map(|(call, _)| call.name.as_str()),
-            Some("glass.agent.setup")
+            Some("glass.git.stage")
         );
         let _ = fs::remove_dir_all(root);
     }
@@ -3516,7 +3667,9 @@ mod tests {
     #[test]
     fn agent_update_routes_forced_pinned_sdk_refresh() {
         let (mut state, root) = test_state("agent-update");
-        let output = execute(&mut state, "agent update").expect("queue Pi update");
+        let output =
+            execute_agent_for_harness(&mut state, vec!["update"], crate::ResidentHarnessKind::Pi)
+                .expect("queue Pi update");
         assert!(output.contains("confirmation"));
         let pending = state.pending_confirmation.take().expect("confirmation");
         assert_eq!(pending.call.name, "glass.agent.setup");

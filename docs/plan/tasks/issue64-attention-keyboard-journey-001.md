@@ -37,7 +37,8 @@ using the keyboard alone.
       no `turn/prompt`; the unrelated proposal remains available.
 - [ ] Activating the remaining proposal opens its exact file review context.
 - [ ] Ctrl-C opens the review editor's unsaved-exit prompt; Escape keeps the
-      review active, and a later Ctrl-C followed by `Q` exits cleanly.
+      review active, and a later Ctrl-C followed by `Q` opens the application
+      quit confirmation, which Enter confirms before exiting.
 - [ ] Fixture and TUI child processes have bounded cleanup on assertion failure.
 - [ ] Focused PTY, scoped strict Clippy, formatting, fixture syntax, docs
       validators, and diff checks pass; evidence identifies the exact binary

@@ -212,6 +212,21 @@ pub struct PendingAgentApproval {
     pub arguments: serde_json::Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum AttentionItemKey {
+    Approval { agent_id: String, frame_id: String },
+    EditorProposal { proposal_id: String, path: String },
+    FollowUp { thread_id: String, entry_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AttentionItem {
+    pub key: AttentionItemKey,
+    pub title: String,
+    pub detail: String,
+    pub owner_agent_id: Option<crate::AgentId>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatMessageState {
     Sending,
@@ -380,8 +395,24 @@ type PendingFollowUpQueueLoad = (
     std::sync::mpsc::Receiver<Result<FollowUpQueueSnapshot, String>>,
 );
 
+#[cfg(unix)]
+type AttentionQueueSnapshots = Vec<(crate::AgentId, FollowUpQueueSnapshot)>;
+
+#[cfg(unix)]
+type AttentionQueueLoadResult = Result<AttentionQueueSnapshots, String>;
+
+#[cfg(unix)]
+type AttentionQueueLoadReceiver = std::sync::mpsc::Receiver<AttentionQueueLoadResult>;
+
+#[cfg(unix)]
+type PendingAttentionQueueLoad = (
+    std::collections::BTreeMap<crate::AgentId, u64>,
+    AttentionQueueLoadReceiver,
+);
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct FollowUpQueueSnapshot {
+    thread_id: String,
     current_run_id: String,
     entries: Vec<crate::thread_store::FollowUpQueueRecord>,
 }
@@ -399,7 +430,43 @@ enum FollowUpQueueCommand {
         agent_id: crate::AgentId,
         reply: std::sync::mpsc::Sender<Result<FollowUpQueueSnapshot, String>>,
     },
+    LoadInbox {
+        workspace: crate::workspace::SharedDevelopmentWorkspace,
+        reply: std::sync::mpsc::Sender<AttentionQueueLoadResult>,
+    },
     Shutdown,
+}
+
+#[cfg(unix)]
+fn load_all_follow_up_queues(
+    workspace: crate::workspace::SharedDevelopmentWorkspace,
+) -> AttentionQueueLoadResult {
+    workspace
+        .lock()
+        .and_then(|mut workspace| {
+            let agents = workspace.agents().list()?;
+            let mut queues = Vec::new();
+            for agent in agents {
+                let (store, thread_id, current_run_id) =
+                    workspace.agents().follow_up_queue_target(&agent.id)?;
+                let mut entries = store.follow_up_queue(&thread_id)?;
+                for entry in &mut entries {
+                    if entry.state == crate::thread_store::FollowUpQueueState::Dispatching {
+                        entry.state = crate::thread_store::FollowUpQueueState::NeedsReview;
+                    }
+                }
+                queues.push((
+                    agent.id,
+                    FollowUpQueueSnapshot {
+                        thread_id,
+                        current_run_id,
+                        entries,
+                    },
+                ));
+            }
+            Ok(queues)
+        })
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(unix)]
@@ -516,12 +583,17 @@ impl FollowUpQueueWriter {
                                                 }
                                             }
                                             Ok(FollowUpQueueSnapshot {
+                                                thread_id,
                                                 current_run_id: run_id,
                                                 entries,
                                             })
                                         })
                                         .map_err(|error| error.to_string());
                                     let _ = reply.send(result);
+                                }
+                                Ok(FollowUpQueueCommand::LoadInbox { workspace, reply }) => {
+                                    flush(&mut pending, &events_tx);
+                                    let _ = reply.send(load_all_follow_up_queues(workspace));
                                 }
                                 Ok(FollowUpQueueCommand::Shutdown) => {
                                     flush(&mut pending, &events_tx);
@@ -552,12 +624,17 @@ impl FollowUpQueueWriter {
                                     }
                                 }
                                 Ok(FollowUpQueueSnapshot {
+                                    thread_id,
                                     current_run_id: run_id,
                                     entries,
                                 })
                             })
                             .map_err(|error| error.to_string());
                         let _ = reply.send(result);
+                    }
+                    Ok(FollowUpQueueCommand::LoadInbox { workspace, reply }) => {
+                        flush(&mut pending, &events_tx);
+                        let _ = reply.send(load_all_follow_up_queues(workspace));
                     }
                     Ok(FollowUpQueueCommand::Shutdown) => {
                         flush(&mut pending, &events_tx);
@@ -590,6 +667,17 @@ impl FollowUpQueueWriter {
                 agent_id,
                 reply,
             })
+            .map_err(|error| error.to_string())?;
+        Ok(result)
+    }
+
+    fn load_inbox(
+        &self,
+        workspace: crate::workspace::SharedDevelopmentWorkspace,
+    ) -> Result<AttentionQueueLoadReceiver, String> {
+        let (reply, result) = std::sync::mpsc::channel();
+        self.tx
+            .send(FollowUpQueueCommand::LoadInbox { workspace, reply })
             .map_err(|error| error.to_string())?;
         Ok(result)
     }
@@ -1325,6 +1413,9 @@ pub struct DevTuiState {
     pub pending_chat_messages: Vec<PendingChatMessage>,
     pub agent_send_job: Option<u64>,
     pub selected_agent: Option<crate::AgentId>,
+    pub attention_inbox_open: bool,
+    pub attention_selection: usize,
+    pub(crate) attention_items: Vec<AttentionItem>,
     pub follow_up_queue_open: bool,
     pub follow_up_queue_selection: usize,
     pub follow_up_queue_edit_text: String,
@@ -1342,6 +1433,10 @@ pub struct DevTuiState {
     #[cfg(unix)]
     pending_follow_up_queue_loads:
         std::collections::BTreeMap<crate::AgentId, PendingFollowUpQueueLoad>,
+    #[cfg(unix)]
+    attention_queue_load: Option<PendingAttentionQueueLoad>,
+    #[cfg(unix)]
+    attention_queue_refresh_at: Option<std::time::Instant>,
     /// Drafts keyed by process-local resident agent identity; `None` is the
     /// composer before an agent thread is selected.
     thread_drafts: std::collections::BTreeMap<Option<crate::AgentId>, ComposerDraft>,
@@ -1374,6 +1469,8 @@ pub struct DevTuiState {
     pub pending_page_entity: Option<String>,
     pub process_urls: Vec<String>,
     pub pending_agent_approval: Option<PendingAgentApproval>,
+    pending_agent_approvals: Vec<PendingAgentApproval>,
+    selected_editor_proposal_id: Option<String>,
     pub editor_exit_prompt: Option<EditorExitPrompt>,
     pub queued_tool_request: Option<(
         crate::development::ToolCall,
@@ -1714,6 +1811,9 @@ impl DevTuiState {
             pending_chat_messages: Vec::new(),
             agent_send_job: None,
             selected_agent: None,
+            attention_inbox_open: false,
+            attention_selection: 0,
+            attention_items: Vec::new(),
             follow_up_queue_open: false,
             follow_up_queue_selection: 0,
             follow_up_queue_edit_text: String::new(),
@@ -1730,6 +1830,10 @@ impl DevTuiState {
             follow_up_queue_writer: None,
             #[cfg(unix)]
             pending_follow_up_queue_loads: std::collections::BTreeMap::new(),
+            #[cfg(unix)]
+            attention_queue_load: None,
+            #[cfg(unix)]
+            attention_queue_refresh_at: None,
             thread_drafts: std::collections::BTreeMap::new(),
             #[cfg(unix)]
             persisted_composer_draft: None,
@@ -1754,6 +1858,8 @@ impl DevTuiState {
             pending_confirmation: None,
             editor_exit_prompt: None,
             pending_agent_approval: None,
+            pending_agent_approvals: Vec::new(),
+            selected_editor_proposal_id: None,
             pending_browser_navigation: None,
             browser_dialog: None,
             pending_page_entity: None,
@@ -4108,13 +4214,14 @@ impl DevTuiState {
                 workspace
                     .agents()
                     .follow_up_queue_target(&agent_id)
-                    .map(|(_, _, run_id)| run_id)
+                    .map(|(_, thread_id, run_id)| (thread_id, run_id))
             });
             match target {
-                Ok(current_run_id) => {
+                Ok((thread_id, current_run_id)) => {
                     self.follow_up_queue_snapshots.insert(
                         agent_id,
                         FollowUpQueueSnapshot {
+                            thread_id,
                             current_run_id,
                             entries: Vec::new(),
                         },
@@ -4129,6 +4236,230 @@ impl DevTuiState {
     pub fn close_follow_up_queue(&mut self) {
         self.follow_up_queue_open = false;
         self.cancel_follow_up_queue_edit();
+    }
+
+    pub fn open_attention_inbox(&mut self) {
+        self.attention_inbox_open = true;
+        self.refresh_attention_items();
+        #[cfg(unix)]
+        if self.attention_queue_load.is_none() {
+            let writer = self
+                .follow_up_queue_writer
+                .get_or_insert_with(FollowUpQueueWriter::spawn);
+            match writer.load_inbox(self.workspace.clone()) {
+                Ok(reply) => {
+                    self.attention_queue_load =
+                        Some((self.follow_up_queue_generations.clone(), reply));
+                    self.attention_queue_refresh_at = None;
+                    self.status = "Loading reviewable follow-ups…".into();
+                }
+                Err(error) => {
+                    self.attention_queue_refresh_at =
+                        Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+                    self.status = format!("Could not refresh follow-up review items: {error}");
+                }
+            }
+        }
+    }
+
+    pub fn close_attention_inbox(&mut self) {
+        self.attention_inbox_open = false;
+    }
+
+    pub fn move_attention_selection(&mut self, delta: i32) {
+        if self.attention_items.is_empty() {
+            self.attention_selection = 0;
+            return;
+        }
+        let next = self.attention_selection as i32 + delta;
+        self.attention_selection = next.clamp(0, self.attention_items.len() as i32 - 1) as usize;
+    }
+
+    pub fn activate_attention_selection(&mut self) {
+        let Some(item) = self.attention_items.get(self.attention_selection).cloned() else {
+            self.status = "No attention items need review".into();
+            return;
+        };
+        match item.key {
+            AttentionItemKey::Approval { agent_id, frame_id } => {
+                let approval = self
+                    .pending_agent_approvals
+                    .iter()
+                    .find(|approval| approval.agent_id == agent_id && approval.frame_id == frame_id)
+                    .cloned();
+                let Some(approval) = approval else {
+                    self.attention_status_stale();
+                    return;
+                };
+                let Some(agent_id) = crate::AgentId::parse(&approval.agent_id).ok() else {
+                    self.attention_status_stale();
+                    return;
+                };
+                if !self.select_agent(Some(agent_id)) {
+                    return;
+                }
+                self.pending_agent_approval = Some(approval);
+                self.attention_inbox_open = false;
+                self.status = "Approval request selected · inspect details before deciding".into();
+            }
+            AttentionItemKey::EditorProposal { proposal_id, path } => {
+                let pending = self.editor_proposals.iter().any(|proposal| {
+                    proposal.id == proposal_id
+                        && proposal.path == path
+                        && proposal.state == crate::development::EditorProposalState::Pending
+                });
+                let Some(normalized_path) = self.workspace.try_lock().ok().and_then(|workspace| {
+                    workspace.project().normalize_existing_file_path(&path).ok()
+                }) else {
+                    self.attention_status_stale();
+                    return;
+                };
+                if !pending {
+                    self.attention_status_stale();
+                    return;
+                }
+                self.attention_inbox_open = false;
+                self.selected_editor_proposal_id = Some(proposal_id.clone());
+                let selected_file = self
+                    .files
+                    .iter()
+                    .position(|file| file == &normalized_path)
+                    .unwrap_or_else(|| {
+                        self.files.push(normalized_path.clone());
+                        self.files.len() - 1
+                    });
+                self.selected_file = selected_file;
+                self.surface = DevSurface::Code;
+                self.open_selected_file();
+                self.refresh_editor_hunks();
+                if self
+                    .workspace
+                    .try_lock()
+                    .ok()
+                    .is_some_and(|workspace| workspace.project().buffer(&normalized_path).is_some())
+                {
+                    self.status = format!(
+                        "Review proposal {proposal_id} · {normalized_path} · accept or reject explicitly"
+                    );
+                }
+            }
+            AttentionItemKey::FollowUp {
+                thread_id,
+                entry_id,
+            } => {
+                let Some(owner) = item.owner_agent_id.clone() else {
+                    self.attention_status_stale();
+                    return;
+                };
+                let exists = self
+                    .follow_up_queue_snapshots
+                    .get(&owner)
+                    .is_some_and(|snapshot| {
+                        snapshot.thread_id == thread_id
+                            && snapshot.entries.iter().any(|entry| {
+                                entry.entry_id == entry_id
+                                    && entry.state
+                                        == crate::thread_store::FollowUpQueueState::NeedsReview
+                            })
+                    });
+                if !exists || !self.refresh_follow_up_queue_run(&owner) {
+                    self.attention_status_stale();
+                    return;
+                }
+                if !self.select_agent(Some(owner.clone())) {
+                    return;
+                }
+                let Some(snapshot) = self.follow_up_queue_snapshots.get(&owner) else {
+                    self.attention_status_stale();
+                    return;
+                };
+                if snapshot.thread_id != thread_id {
+                    self.attention_status_stale();
+                    return;
+                }
+                let Some(index) = snapshot.entries.iter().position(|entry| {
+                    entry.entry_id == entry_id
+                        && entry.state == crate::thread_store::FollowUpQueueState::NeedsReview
+                }) else {
+                    self.attention_status_stale();
+                    return;
+                };
+                self.attention_inbox_open = false;
+                self.follow_up_queue_open = true;
+                self.follow_up_queue_retry_confirmation = None;
+                self.follow_up_queue_selection = index;
+                self.status = "Unresolved follow-up selected · review before retry".into();
+            }
+        }
+    }
+
+    fn attention_status_stale(&mut self) {
+        self.refresh_attention_items();
+        self.status = "That attention item is no longer active · inbox refreshed".into();
+    }
+
+    fn refresh_attention_items(&mut self) {
+        let selected_key = self
+            .attention_items
+            .get(self.attention_selection)
+            .map(|item| item.key.clone());
+        let mut items = std::collections::BTreeMap::<AttentionItemKey, AttentionItem>::new();
+        for approval in &self.pending_agent_approvals {
+            let key = AttentionItemKey::Approval {
+                agent_id: approval.agent_id.clone(),
+                frame_id: approval.frame_id.clone(),
+            };
+            items.entry(key.clone()).or_insert_with(|| AttentionItem {
+                key,
+                title: format!("Approval · {}", approval.tool_name),
+                detail: format!("{} · frame {}", approval.agent_id, approval.frame_id),
+                owner_agent_id: crate::AgentId::parse(&approval.agent_id).ok(),
+            });
+        }
+        for proposal in &self.editor_proposals {
+            if proposal.state != crate::development::EditorProposalState::Pending {
+                continue;
+            }
+            let key = AttentionItemKey::EditorProposal {
+                proposal_id: proposal.id.clone(),
+                path: proposal.path.clone(),
+            };
+            items.entry(key.clone()).or_insert_with(|| AttentionItem {
+                key,
+                title: format!("Review · {}", proposal.summary),
+                detail: format!("{} · {}", proposal.actor.name, proposal.path),
+                owner_agent_id: None,
+            });
+        }
+        for (agent_id, snapshot) in &self.follow_up_queue_snapshots {
+            for entry in &snapshot.entries {
+                if entry.state != crate::thread_store::FollowUpQueueState::NeedsReview {
+                    continue;
+                }
+                let key = AttentionItemKey::FollowUp {
+                    thread_id: snapshot.thread_id.clone(),
+                    entry_id: entry.entry_id.clone(),
+                };
+                let preview = entry.text.lines().next().unwrap_or_default();
+                items.entry(key.clone()).or_insert_with(|| AttentionItem {
+                    key,
+                    title: "Follow-up delivery needs review".into(),
+                    detail: format!(
+                        "{} · {}",
+                        agent_id.as_str(),
+                        preview.chars().take(72).collect::<String>()
+                    ),
+                    owner_agent_id: Some(agent_id.clone()),
+                });
+            }
+        }
+        self.attention_items = items.into_values().collect();
+        self.attention_selection = selected_key
+            .and_then(|key| self.attention_items.iter().position(|item| item.key == key))
+            .unwrap_or_else(|| {
+                self.attention_selection
+                    .min(self.attention_items.len().saturating_sub(1))
+            });
     }
 
     pub(crate) fn follow_up_queue_view(
@@ -4156,6 +4487,69 @@ impl DevTuiState {
         let mut changed = false;
         #[cfg(unix)]
         {
+            if let Some((generations, reply)) = self.attention_queue_load.take() {
+                match reply.try_recv() {
+                    Ok(Ok(queues)) => {
+                        for (agent_id, snapshot) in queues {
+                            let expected = generations.get(&agent_id).copied().unwrap_or_default();
+                            let current = self
+                                .follow_up_queue_generations
+                                .get(&agent_id)
+                                .copied()
+                                .unwrap_or_default();
+                            if expected == current {
+                                self.follow_up_queue_snapshots.insert(agent_id, snapshot);
+                            }
+                        }
+                        self.attention_queue_refresh_at =
+                            Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+                        changed = true;
+                    }
+                    Ok(Err(error)) => {
+                        if self.attention_inbox_open {
+                            self.status =
+                                format!("Could not refresh follow-up review items: {error}");
+                            changed = true;
+                        }
+                        self.attention_queue_refresh_at =
+                            Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        self.attention_queue_load = Some((generations, reply));
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        if self.attention_inbox_open {
+                            self.status = "Follow-up review worker disconnected".into();
+                            changed = true;
+                        }
+                        self.attention_queue_refresh_at =
+                            Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+                    }
+                }
+            }
+            if self.attention_inbox_open
+                && self.attention_queue_load.is_none()
+                && self
+                    .attention_queue_refresh_at
+                    .is_some_and(|deadline| deadline <= std::time::Instant::now())
+            {
+                self.attention_queue_refresh_at = None;
+                let writer = self
+                    .follow_up_queue_writer
+                    .get_or_insert_with(FollowUpQueueWriter::spawn);
+                match writer.load_inbox(self.workspace.clone()) {
+                    Ok(reply) => {
+                        self.attention_queue_load =
+                            Some((self.follow_up_queue_generations.clone(), reply));
+                    }
+                    Err(error) => {
+                        self.attention_queue_refresh_at =
+                            Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+                        self.status = format!("Could not refresh follow-up review items: {error}");
+                        changed = true;
+                    }
+                }
+            }
             let events = self
                 .follow_up_queue_writer
                 .as_ref()
@@ -4250,6 +4644,9 @@ impl DevTuiState {
                     }
                 }
             }
+        }
+        if changed {
+            self.refresh_attention_items();
         }
         changed
     }
@@ -4752,14 +5149,17 @@ impl DevTuiState {
             workspace
                 .agents()
                 .follow_up_queue_target(agent_id)
-                .map(|(_, _, run_id)| run_id)
+                .map(|(_, thread_id, run_id)| (thread_id, run_id))
         });
-        let Ok(run_id) = target else {
+        let Ok((thread_id, run_id)) = target else {
             return false;
         };
         let Some(snapshot) = self.follow_up_queue_snapshots.get_mut(agent_id) else {
             return false;
         };
+        if snapshot.thread_id != thread_id {
+            return false;
+        }
         snapshot.current_run_id = run_id;
         true
     }
@@ -6494,6 +6894,7 @@ impl DevTuiState {
                 )
             };
             let _ = self.save_follow_up_queue(agent_id);
+            self.refresh_attention_items();
             return;
         }
         let mut publish_preview_status = true;
@@ -8401,6 +8802,7 @@ impl DevTuiState {
             .unwrap_or_default();
         self.editor_comments = comments;
         self.editor_proposals = proposals;
+        self.reconcile_selected_editor_proposal();
         self.editor_checkpoints = checkpoints;
         if let Some(buffer) = buffers.get(self.editor_buffer_index) {
             self.focused_editor_buffer = Some(buffer.clone());
@@ -8415,9 +8817,7 @@ impl DevTuiState {
             let path = self.focused_editor_path.clone();
             let content = self.focused_editor_content.clone();
             self.syntax.sync(&path, &content);
-            if let Some(proposal) = self.editor_proposals.iter().find(|item| {
-                item.path == path && item.state == crate::development::EditorProposalState::Pending
-            }) {
+            if let Some(proposal) = self.selected_editor_proposal(&path) {
                 let line = native::line_hunks(&proposal.original, &proposal.proposed)
                     .first()
                     .map(|hunk| hunk.start_line)
@@ -9815,10 +10215,41 @@ impl DevTuiState {
         if path.is_empty() {
             return;
         }
-        let proposal = self.editor_proposals.iter().find(|item| item.path == path);
+        let proposal = self.selected_editor_proposal(&path).cloned();
         if let Some(proposal) = proposal {
             self.editor_engine
                 .set_hunks(line_hunks(&proposal.original, &proposal.proposed));
+        } else {
+            self.editor_engine.set_hunks(Vec::new());
+        }
+    }
+
+    fn selected_editor_proposal(&self, path: &str) -> Option<&crate::development::EditorProposal> {
+        if let Some(proposal_id) = &self.selected_editor_proposal_id {
+            self.editor_proposals.iter().find(|proposal| {
+                proposal.id == *proposal_id
+                    && proposal.path == path
+                    && proposal.state == crate::development::EditorProposalState::Pending
+            })
+        } else {
+            self.editor_proposals.iter().find(|proposal| {
+                proposal.path == path
+                    && proposal.state == crate::development::EditorProposalState::Pending
+            })
+        }
+    }
+
+    fn reconcile_selected_editor_proposal(&mut self) {
+        let selected_is_pending = self.selected_editor_proposal_id.as_ref().is_none_or(|id| {
+            self.editor_proposals.iter().any(|proposal| {
+                proposal.id == *id
+                    && proposal.state == crate::development::EditorProposalState::Pending
+            })
+        });
+        if !selected_is_pending {
+            self.selected_editor_proposal_id = None;
+            self.editor_engine.set_hunks(Vec::new());
+            self.editor_engine.agent_caret = None;
         }
     }
 
@@ -9971,12 +10402,7 @@ impl DevTuiState {
 
     fn accept_current_hunk(&mut self) {
         let path = self.focused_editor_path.clone();
-        let Some(proposal) = self
-            .editor_proposals
-            .iter()
-            .find(|item| item.path == path)
-            .cloned()
-        else {
+        let Some(proposal) = self.selected_editor_proposal(&path).cloned() else {
             self.status = "No proposal hunk on this buffer".into();
             return;
         };
@@ -10000,12 +10426,7 @@ impl DevTuiState {
 
     fn reject_current_hunk(&mut self) {
         let path = self.focused_editor_path.clone();
-        let Some(proposal) = self
-            .editor_proposals
-            .iter()
-            .find(|item| item.path == path)
-            .cloned()
-        else {
+        let Some(proposal) = self.selected_editor_proposal(&path).cloned() else {
             return;
         };
         let _ = self.locked(|workspace| {
@@ -10854,6 +11275,17 @@ impl DevTuiState {
                 .min(self.session_todos.items.len().saturating_sub(1));
         }
         self.agents = snapshot.agents.clone();
+        let active_approval = self.pending_agent_approval.clone();
+        self.pending_agent_approvals = snapshot.pending_agent_approvals.clone();
+        self.pending_agent_approval = active_approval
+            .filter(|current| {
+                self.pending_agent_approvals.iter().any(|approval| {
+                    approval.agent_id == current.agent_id && approval.frame_id == current.frame_id
+                })
+            })
+            .or_else(|| self.pending_agent_approvals.first().cloned());
+        self.editor_proposals = snapshot.editor_proposals.clone();
+        self.reconcile_selected_editor_proposal();
         self.agent_conversations = snapshot.agent_conversations.clone();
         if self.selected_agent.is_none()
             && let Some(chrome) = snapshot.agent_chrome.first()
@@ -11062,6 +11494,7 @@ impl DevTuiState {
         if let Some(status) = browser_recovery_status {
             self.status = status;
         }
+        self.refresh_attention_items();
     }
 
     fn remember_row_selection_identity(&mut self) {
@@ -11108,7 +11541,8 @@ impl DevTuiState {
             self.selected_file = self.selected_file.min(self.files.len() - 1);
         }
         let agent_snapshots = workspace.agents().list();
-        self.pending_agent_approval = pending_agent_approval(agent_snapshots.as_ref().ok());
+        self.pending_agent_approvals = pending_agent_approvals(agent_snapshots.as_ref().ok());
+        self.pending_agent_approval = self.pending_agent_approvals.first().cloned();
         self.agents = match agent_snapshots {
             Ok(agents) if agents.is_empty() => "No agents. :agent spawn ROLE TASK".into(),
             Ok(agents) => agents
@@ -11653,6 +12087,7 @@ impl DevTuiState {
             self.experiment_comparison = Some(experiments.compare());
         }
         drop(workspace);
+        self.refresh_attention_items();
         self.snapshot_ready = true;
         self.reconcile_pending_chat();
     }
@@ -13385,12 +13820,14 @@ fn bounded_editor_content(content: &str) -> (String, bool) {
     (content[..end].to_string(), true)
 }
 
-fn pending_agent_approval(
+pub(crate) fn pending_agent_approvals(
     agents: Option<&Vec<crate::AgentSnapshot>>,
-) -> Option<PendingAgentApproval> {
-    let agents = agents?;
+) -> Vec<PendingAgentApproval> {
+    let Some(agents) = agents else {
+        return Vec::new();
+    };
+    let mut pending = std::collections::BTreeMap::new();
     for agent in agents {
-        let mut pending = None;
         for event in &agent.evidence {
             match event.get("type").and_then(serde_json::Value::as_str) {
                 Some("glass_tool_approval_request") => {
@@ -13398,34 +13835,31 @@ fn pending_agent_approval(
                     else {
                         continue;
                     };
-                    pending = Some(PendingAgentApproval {
-                        agent_id: agent.id.as_str().to_string(),
-                        frame_id: frame_id.to_string(),
-                        tool_name: event
-                            .get("toolName")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("unknown tool")
-                            .to_string(),
-                        arguments: event.get("arguments").cloned().unwrap_or_default(),
-                    });
+                    pending.insert(
+                        (agent.id.as_str().to_string(), frame_id.to_string()),
+                        PendingAgentApproval {
+                            agent_id: agent.id.as_str().to_string(),
+                            frame_id: frame_id.to_string(),
+                            tool_name: event
+                                .get("toolName")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("unknown tool")
+                                .to_string(),
+                            arguments: event.get("arguments").cloned().unwrap_or_default(),
+                        },
+                    );
                 }
                 Some("glass_tool_approval_resolved") => {
                     let frame_id = event.get("frameId").and_then(serde_json::Value::as_str);
-                    if pending
-                        .as_ref()
-                        .is_some_and(|approval| Some(approval.frame_id.as_str()) == frame_id)
-                    {
-                        pending = None;
+                    if let Some(frame_id) = frame_id {
+                        pending.remove(&(agent.id.as_str().to_string(), frame_id.to_string()));
                     }
                 }
                 _ => {}
             }
         }
-        if pending.is_some() {
-            return pending;
-        }
     }
-    None
+    pending.into_values().collect()
 }
 
 fn action_command_prefix(command: &str) -> String {
@@ -13649,6 +14083,163 @@ fn editor_offset(content: &str, line: u32, column: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn attention_inbox_is_stable_deduplicated_and_selection_preserving() {
+        let (mut state, root) = routed_state("attention-order");
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        state.pending_agent_approvals = vec![
+            PendingAgentApproval {
+                agent_id: agent_id.as_str().into(),
+                frame_id: "frame-2".into(),
+                tool_name: "write_file".into(),
+                arguments: serde_json::json!({}),
+            },
+            PendingAgentApproval {
+                agent_id: agent_id.as_str().into(),
+                frame_id: "frame-1".into(),
+                tool_name: "read_file".into(),
+                arguments: serde_json::json!({}),
+            },
+        ];
+        let proposal = crate::development::EditorProposal {
+            id: "proposal-1".into(),
+            path: "README.md".into(),
+            summary: "Update documentation".into(),
+            actor: crate::development::Actor::local(),
+            base_hash: String::new(),
+            base_revision: 0,
+            original: String::new(),
+            proposed: String::new(),
+            state: crate::development::EditorProposalState::Pending,
+            created_revision: 1,
+            updated_revision: 1,
+        };
+        let mut second_proposal = proposal.clone();
+        second_proposal.id = "proposal-2".into();
+        second_proposal.summary = "Second proposal".into();
+        state.editor_proposals = vec![proposal.clone(), proposal, second_proposal];
+        state.follow_up_queue_snapshots.insert(
+            agent_id.clone(),
+            FollowUpQueueSnapshot {
+                thread_id: "thread-0001".into(),
+                current_run_id: "run-0001".into(),
+                entries: vec![crate::thread_store::FollowUpQueueRecord {
+                    entry_id: "entry-1".into(),
+                    target_run_id: "run-old".into(),
+                    mode: crate::thread_store::FollowUpQueueMode::Steer,
+                    text: "Continue review".into(),
+                    state: crate::thread_store::FollowUpQueueState::NeedsReview,
+                }],
+            },
+        );
+        state.refresh_attention_items();
+        assert_eq!(state.attention_items.len(), 5);
+        assert!(
+            state
+                .attention_items
+                .windows(2)
+                .all(|pair| pair[0].key < pair[1].key)
+        );
+        let selected = state.attention_items[1].key.clone();
+        state.attention_selection = 1;
+        state.pending_agent_approvals.reverse();
+        state.refresh_attention_items();
+        assert_eq!(
+            state.attention_items[state.attention_selection].key,
+            selected
+        );
+        state.selected_editor_proposal_id = Some("proposal-2".into());
+        assert_eq!(
+            state.selected_editor_proposal("README.md").unwrap().id,
+            "proposal-2"
+        );
+        state
+            .follow_up_queue_snapshots
+            .get_mut(&agent_id)
+            .unwrap()
+            .entries[0]
+            .state = crate::thread_store::FollowUpQueueState::Accepted;
+        state.refresh_attention_items();
+        assert_eq!(state.attention_items.len(), 4);
+        assert!(
+            !state
+                .attention_items
+                .iter()
+                .any(|item| matches!(item.key, AttentionItemKey::FollowUp { .. }))
+        );
+        std::fs::write(root.join("README.md"), "source\n").unwrap();
+        let (workspace_proposals, proposal_id) = {
+            let mut workspace = state.ws_mut().expect("lock test workspace");
+            workspace
+                .project_mut()
+                .open_buffer("README.md", crate::development::Actor::local())
+                .unwrap();
+            workspace
+                .project_mut()
+                .propose_editor_change(
+                    "README.md",
+                    "source\n".into(),
+                    "first\n".into(),
+                    "First proposal".into(),
+                    crate::development::Actor::local(),
+                )
+                .unwrap();
+            let second = workspace
+                .project_mut()
+                .propose_editor_change(
+                    "README.md",
+                    "source\n".into(),
+                    "second\n".into(),
+                    "Second proposal".into(),
+                    crate::development::Actor::local(),
+                )
+                .unwrap();
+            (workspace.project().editor_proposals(), second.id)
+        };
+        state.editor_proposals = workspace_proposals;
+        state.refresh_attention_items();
+        state.files = vec!["README.md".into()];
+        state.attention_inbox_open = true;
+        state.attention_selection = state
+            .attention_items
+            .iter()
+            .position(|item| {
+                item.key
+                    == (AttentionItemKey::EditorProposal {
+                        proposal_id: proposal_id.clone(),
+                        path: "README.md".into(),
+                    })
+            })
+            .unwrap();
+        state.activate_attention_selection();
+        assert_eq!(
+            state.selected_editor_proposal_id.as_deref(),
+            Some(proposal_id.as_str())
+        );
+        assert!(
+            state
+                .status
+                .contains(&format!("Review proposal {proposal_id}"))
+        );
+        state
+            .editor_engine
+            .set_hunks(vec![super::super::editor::EditorHunk {
+                start_line: 1,
+                end_line: 1,
+                kind: super::super::editor::HunkKind::Change,
+            }]);
+        state
+            .editor_proposals
+            .retain(|proposal| proposal.id != proposal_id);
+        state.reconcile_selected_editor_proposal();
+        assert!(state.selected_editor_proposal_id.is_none());
+        assert!(state.editor_engine.hunks.is_empty());
+        assert!(state.editor_engine.agent_caret.is_none());
+        state.close_attention_inbox();
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     fn trust_workspace_once(state: &mut DevTuiState) {
         state
@@ -17804,6 +18395,7 @@ mod tests {
         state.follow_up_queue_snapshots.insert(
             agent_id,
             FollowUpQueueSnapshot {
+                thread_id: "thread-0001".into(),
                 current_run_id: run_id.clone(),
                 entries: vec![crate::thread_store::FollowUpQueueRecord {
                     entry_id: entry_id.clone(),

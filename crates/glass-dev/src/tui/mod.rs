@@ -569,6 +569,24 @@ pub(crate) fn run_with_browser_policy(
                             KeyCode::Home => state.help_scroll = 0,
                             _ => {}
                         }
+                    } else if active_overlay == Some(overlay::ActiveOverlay::AttentionInbox) {
+                        match key.code {
+                            KeyCode::Esc => state.close_attention_inbox(),
+                            KeyCode::Enter => state.activate_attention_selection(),
+                            KeyCode::Up | KeyCode::Char('k') => state.move_attention_selection(-1),
+                            KeyCode::Down | KeyCode::Char('j') => state.move_attention_selection(1),
+                            _ => {}
+                        }
+                    } else if matches!(
+                        active_overlay,
+                        None | Some(overlay::ActiveOverlay::Composer)
+                            | Some(overlay::ActiveOverlay::AgentApproval)
+                    ) && matches!(key.code, KeyCode::Char('a' | 'A'))
+                        && key
+                            .modifiers
+                            .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+                    {
+                        state.open_attention_inbox();
                     } else if matches!(
                         active_overlay,
                         None | Some(overlay::ActiveOverlay::Composer)
@@ -1473,7 +1491,14 @@ pub(crate) fn run_with_browser_policy(
 }
 fn terminal_overlay_mask(state: &DevTuiState) -> u32 {
     let overlay = overlay::active_overlay(state)
-        .map(|active| 1_u32 << (16 + active as u32))
+        .map(|active| {
+            let bit = if active == overlay::ActiveOverlay::AttentionInbox {
+                30
+            } else {
+                16 + active as u32
+            };
+            1_u32 << bit
+        })
         .unwrap_or_default();
     // Preserve the pre-existing Git diff presentation bit while reserving the
     // upper bits for the single resolver-selected overlay.

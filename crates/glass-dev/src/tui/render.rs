@@ -629,8 +629,62 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
         Some(ActiveOverlay::FilePicker) => render_file_picker(frame, state, area),
         Some(ActiveOverlay::SessionPicker) => render_session_picker(frame, state, area),
         Some(ActiveOverlay::FollowUpQueue) => render_follow_up_queue(frame, state, area),
+        Some(ActiveOverlay::AttentionInbox) => render_attention_inbox(frame, state, area),
         _ => {}
     }
+}
+
+fn render_attention_inbox(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let width = area.width.saturating_sub(4).min(96);
+    let height = area.height.saturating_sub(4).clamp(7, 20);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .title(" ATTENTION INBOX ")
+        .title_style(
+            Style::default()
+                .fg(ACCENT_BRIGHT)
+                .add_modifier(Modifier::BOLD),
+        )
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT_BRIGHT))
+        .bg(PANEL_BACKGROUND)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(modal);
+    let mut lines = Vec::new();
+    if state.attention_items.is_empty() {
+        lines.push(palette_fixed_line(
+            "No approvals, proposals, or unresolved follow-ups need review.",
+            inner.width,
+            Style::default().fg(MUTED),
+        ));
+    } else {
+        for (index, item) in state.attention_items.iter().enumerate() {
+            let style = if index == state.attention_selection {
+                Style::default().fg(PANEL_BACKGROUND).bg(ACCENT_BRIGHT)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            lines.push(palette_fixed_line(&item.title, inner.width, style));
+            lines.push(palette_fixed_line(
+                format!("  {}", item.detail),
+                inner.width,
+                Style::default().fg(MUTED),
+            ));
+        }
+    }
+    lines.push(palette_fixed_line(
+        "↑/↓ select · Enter inspect · Esc close · Ctrl-Shift-A open",
+        inner.width,
+        Style::default().fg(MUTED),
+    ));
+    frame.render_widget(Clear, modal);
+    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), modal);
 }
 
 fn render_follow_up_queue(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {

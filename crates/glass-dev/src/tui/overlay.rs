@@ -22,6 +22,7 @@ pub(super) enum ActiveOverlay {
     Composer = 13,
     CommandPalette = 14,
     BrowserRecovery = 15,
+    AttentionInbox = 16,
 }
 
 impl ActiveOverlay {
@@ -52,6 +53,8 @@ pub(super) fn active_overlay(state: &DevTuiState) -> Option<ActiveOverlay> {
         Some(ActiveOverlay::FilePicker)
     } else if state.session_picker_open {
         Some(ActiveOverlay::SessionPicker)
+    } else if state.attention_inbox_open {
+        Some(ActiveOverlay::AttentionInbox)
     } else if state.follow_up_queue_open {
         Some(ActiveOverlay::FollowUpQueue)
     } else if state.pending_agent_approval.is_some() {

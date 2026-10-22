@@ -121,6 +121,26 @@ After the debug binaries are built, run the inventory and link check:
 python3 scripts/check-documentation-coverage.py
 ```
 
+The dedicated Documentation wiki workflow runs on Markdown changes and Cargo
+manifest changes. It validates the generated catalog, routes, package README
+metadata, and local links; runs the change-alert fixtures; and writes changed
+pages, topics, sections, anchors, and body-only edits to the Actions job
+summary. It does not claim to detect semantic freshness. Markdown-only pull
+requests skip the root CI and fuzz workflows, and Markdown-only Glass Core
+product changes skip Glass Core CI. A source change mixed with documentation
+still runs the full applicable source workflows. Pushes run the full root and
+fuzz workflows on `main`; Glass Core CI also runs on `main` for its source
+paths. See the workflow path filters for the exact boundary.
+
+For local review, generate the catalog and report against the pull-request
+base SHA (or the commit being compared):
+
+```console
+python3 scripts/check-documentation-wiki.py --write
+python3 scripts/check-documentation-wiki.py --base <base-sha> --summary
+python3 scripts/tests/test_check_documentation_wiki.py
+```
+
 Run the common source certification before requesting merge or release:
 
 ```console
@@ -135,8 +155,9 @@ references remain visible in the report for review.
 The coverage check resolves repository-local links and compares live command,
 MCP, example, and Rust-module inventories with their documentation. The depth
 check requires every current `docs/` guide to be routed from the index and
-accounted for by the depth audit. CI runs these checks before it issues an
-exact-source release certification.
+accounted for by the depth audit. The full source workflows apply to source changes and main pushes; docs-only
+pull requests use the dedicated wiki check described above. Release
+certification remains a complete source gate.
 
 ## Review and ownership
 

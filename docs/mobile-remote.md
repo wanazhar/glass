@@ -86,8 +86,12 @@ ready, Glass reports the exact repair step for the selected harness. The legacy
 Pi backend (`GLASS_AGENT_HARNESS=pi`) keeps `:agent setup` to install/repair the
 pinned Pi runtime, `:agent setup login` for Pi `/login`, and `:agent update` to
 refresh it. Setup mutations use the one-use confirmation card.
-Composer `Enter` sends and stays open; `Esc` closes. A failed send keeps the
-draft for retry, and background work does not silently discard typed text.
+Composer `Enter` sends and stays open; `Esc` closes. A local or pre-dispatch
+failure keeps the draft for retry, and background work does not silently
+discard typed text. If Core returns an error after accepting a prompt, Glass
+marks that attempt failed, returns the agent to idle, and lists it in Attention
+Inbox. Inspect the conversation before using `:agent retry`; a confirmation is
+required, and the prompt is never replayed automatically.
 
 
 ## Responsive execution

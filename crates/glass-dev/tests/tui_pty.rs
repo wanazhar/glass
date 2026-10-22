@@ -396,6 +396,10 @@ impl Session {
 }
 
 fn fake_core_binary(_root: &std::path::Path) -> std::path::PathBuf {
+    fake_core_binary_with_mode("mixed")
+}
+
+fn fake_core_binary_with_mode(mode: &str) -> std::path::PathBuf {
     let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
         "glass-e2e-fake-core-{}-{sequence}",
@@ -407,8 +411,8 @@ fn fake_core_binary(_root: &std::path::Path) -> std::path::PathBuf {
     std::fs::write(
         &path,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'glass-core 0.1.0\\n'; exit 0; fi\nexec python3 '{}' \"$@\"\n",
-            fixture.display()
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'glass-core 0.1.0\\n'; exit 0; fi\nexec python3 '{}' '{}' \"$@\"\n",
+            fixture.display(), mode
         ),
     )
     .unwrap();
@@ -714,6 +718,17 @@ fn seed_uncertain_send_attempt(root: &std::path::Path, text: &str) {
         serde_json::to_vec_pretty(&registry).unwrap(),
     )
     .unwrap();
+}
+
+fn seed_failed_send_attempt(root: &std::path::Path, text: &str) {
+    seed_uncertain_send_attempt(root, text);
+    let path = root.join(".glass/threads/registry.json");
+    let mut registry: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    registry["threads"][0]["title"] = serde_json::json!("Failed Core turn");
+    registry["threads"][0]["runs"][0]["classification"] = serde_json::json!("idle");
+    registry["threads"][0]["sendAttempts"][0]["status"] = serde_json::json!("failed");
+    std::fs::write(path, serde_json::to_vec_pretty(&registry).unwrap()).unwrap();
 }
 
 #[test]
@@ -2305,9 +2320,26 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     let mut send_status = "missing".to_owned();
     let mut engine_request_id_present = false;
     let mut failed_status_observed_at = None;
+    let mut projected_failure_class = "unobserved";
     while Instant::now() < deadline {
         session.settle(Duration::from_millis(200));
         let terminal_output = session.output().to_ascii_lowercase();
+        let visible_output = session.visible_output().to_ascii_lowercase();
+        for class in [
+            "authentication",
+            "provider",
+            "protocol",
+            "invalid_input",
+            "busy",
+            "limit",
+            "unsupported_method",
+            "request",
+        ] {
+            if visible_output.contains(&format!("failed: {class}")) {
+                projected_failure_class = class;
+                break;
+            }
+        }
         observed_429 = terminal_output.contains("429")
             || terminal_output.contains("too many requests")
             || terminal_output.contains("rate limit exceeded");
@@ -2343,7 +2375,10 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
 
         if send_status == "failed" {
             let failed_at = failed_status_observed_at.get_or_insert_with(Instant::now);
-            if run_classification != "working" || failed_at.elapsed() >= Duration::from_secs(3) {
+            if (run_classification != "working"
+                && failed_at.elapsed() >= Duration::from_millis(1200))
+                || failed_at.elapsed() >= Duration::from_secs(3)
+            {
                 break;
             }
         } else {
@@ -2363,7 +2398,7 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     let file_length = file_content.as_ref().map_or(0, Vec::len);
     assert!(
         completed,
-        "live provider verification incomplete: file_exists={file_exists}, file_length={file_length}, run_classification={run_classification}, send_status={send_status}, engine_request_id_present={engine_request_id_present}, observed_429={observed_429}; no retry was attempted"
+        "live provider verification incomplete: file_exists={file_exists}, file_length={file_length}, run_classification={run_classification}, send_status={send_status}, engine_request_id_present={engine_request_id_present}, projected_failure_class={projected_failure_class}, observed_429={observed_429}; no retry was attempted"
     );
     assert_eq!(std::fs::read(&file_path).unwrap(), expected);
 
@@ -3494,7 +3529,11 @@ fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
     assert!(session.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
     assert!(session.wait_for(prompt, Duration::from_secs(8)));
     session.send(b"\r");
-    assert!(session.wait_for("Message delivery is uncertain", Duration::from_secs(5)));
+    assert!(
+        session.wait_for("Message delivery uncertain", Duration::from_secs(5)),
+        "opening the uncertain attempt did not show its review state\n{}",
+        session.output_tail()
+    );
 
     session.send(b":agent resume\r");
     assert!(
@@ -3527,6 +3566,9 @@ fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
         "Core session did not become ready for an explicit retry: {registry}"
     );
 
+    // Registry persistence happens before the TUI's workspace snapshot is
+    // refreshed. Let the resume transition settle before requesting retry.
+    session.settle(Duration::from_millis(750));
     session.send(b":agent retry\r");
     assert!(
         session.wait_for("RETRY UNCERTAIN DELIVERY", Duration::from_secs(5)),
@@ -3592,6 +3634,209 @@ fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
     let _ = std::fs::remove_file(fake_core);
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn failed_core_turn_is_reviewable_and_retry_requires_confirmation() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let prompt = "review the failed Core turn before retry";
+    let root = git_workspace_root();
+    let data_home = root.join(".glass/xdg-data");
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    std::fs::write(
+        fixture_state.join("e2e-core-preserve-resume-session"),
+        "enabled",
+    )
+    .unwrap();
+    seed_failed_send_attempt(&root, prompt);
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_data_home_options(
+        &binary(),
+        &root,
+        80,
+        24,
+        "glass-core",
+        Some(&fake_core),
+        Some(&data_home),
+    );
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.trust_project();
+    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    send_ctrl_shift_a(&mut session);
+    assert!(session.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
+    assert!(session.wait_for("Core turn failed", Duration::from_secs(5)));
+    session.send(b"\r");
+    assert!(session.wait_for("Core turn failed · inspect it", Duration::from_secs(5)));
+    let registry_path = fixture_state.join("threads/registry.json");
+    let selected: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+    assert_eq!(
+        selected["threads"][0]["sendAttempts"][0]["status"],
+        "failed"
+    );
+    let requests_path = fixture_state.join("e2e-core-requests.jsonl");
+    let requests = std::fs::read_to_string(&requests_path).unwrap();
+    assert_eq!(requests.matches("\"method\":\"turn/prompt\"").count(), 0);
+
+    session.send(b":agent resume\r");
+    assert!(session.wait_for("CONFIRMATION", Duration::from_secs(5)));
+    session.send(b"\r");
+    let resume_deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let resumed = registry["threads"][0]["runs"]
+            .as_array()
+            .is_some_and(|runs| {
+                runs.len() > 1
+                    && runs
+                        .last()
+                        .is_some_and(|run| run["classification"] == "idle")
+            });
+        if resumed || Instant::now() >= resume_deadline {
+            assert!(resumed, "Core session did not resume as idle: {registry}");
+            break;
+        }
+        session.settle(Duration::from_millis(100));
+    }
+    // The registry is persisted before the TUI workspace snapshot has finished
+    // observing the resumed Core run.
+    session.settle(Duration::from_millis(750));
+    session.send(b":agent retry\r");
+    assert!(
+        session.wait_for("RETRY FAILED CORE TURN", Duration::from_secs(5)),
+        "failed Core response did not require an explicit retry confirmation\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
+    let after_cancel: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+    assert_eq!(
+        after_cancel["threads"][0]["sendAttempts"][0]["status"], "failed",
+        "cancelling the retry confirmation preserves the failed attempt"
+    );
+    let requests = std::fs::read_to_string(&requests_path).unwrap();
+    assert_eq!(requests.matches("\"method\":\"turn/prompt\"").count(), 0);
+    session.send(b":agent retry\r");
+    assert!(session.wait_for("RETRY FAILED CORE TURN", Duration::from_secs(5)));
+    session.send(b"\r");
+    let retry_deadline = Instant::now() + Duration::from_secs(8);
+    let after_retry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let attempts = registry["threads"][0]["sendAttempts"].as_array().unwrap();
+        if (attempts.len() == 2 && attempts[1]["status"] == "settled")
+            || Instant::now() >= retry_deadline
+        {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    let attempts = after_retry["threads"][0]["sendAttempts"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        attempts.len(),
+        2,
+        "retry creates a new attempt; requests={}\n{}",
+        std::fs::read_to_string(&requests_path).unwrap(),
+        session.output_tail()
+    );
+    assert_eq!(attempts[0]["status"], "failed");
+    assert_eq!(attempts[1]["status"], "settled");
+    assert_eq!(
+        attempts[0]["clientMessageId"],
+        attempts[1]["clientMessageId"]
+    );
+    assert_ne!(attempts[0]["attemptId"], attempts[1]["attemptId"]);
+    let requests = std::fs::read_to_string(requests_path).unwrap();
+    assert_eq!(requests.matches("\"method\":\"turn/prompt\"").count(), 1);
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn failed_core_response_is_visible_and_can_be_retried_explicitly() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let data_home = root.join(".glass/xdg-data");
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    let fake_core = fake_core_binary_with_mode("prompt-error");
+    let mut session = Session::start_with_data_home_options(
+        &binary(),
+        &root,
+        100,
+        30,
+        "glass-core",
+        Some(&fake_core),
+        Some(&data_home),
+    );
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.trust_project();
+    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    session.send(b":agent spawn assistant report a safe test failure\r");
+    assert!(session.wait_for("Spawned agent-0001", Duration::from_secs(8)));
+    send_ctrl_shift_t(&mut session);
+    assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
+    assert!(session.wait_for("agent-0001", Duration::from_secs(8)));
+    assert!(session.wait_for("idle", Duration::from_secs(8)));
+    session.send(b"\r");
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    session.clear_output();
+    session.send(b"\r");
+    assert!(session.wait_for("▌", Duration::from_secs(5)));
+    let prompt = "inspect the failed response without exposing its raw message";
+    session.send_slowly(prompt.as_bytes(), Duration::from_millis(2));
+    assert!(session.wait_for_composer_text(prompt, Duration::from_secs(5)));
+    session.send(b"\r");
+    assert!(
+        session.wait_for("Core prompt failed: provider", Duration::from_secs(8)),
+        "correlated Core error was not projected into the active conversation\n{}",
+        session.output_tail()
+    );
+    assert!(!session.visible_output().contains("fixture provider detail"));
+
+    let registry_path = fixture_state.join("threads/registry.json");
+    let registry: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+    let thread = registry["threads"].as_array().unwrap().last().unwrap();
+    let attempts = thread["sendAttempts"].as_array().unwrap();
+    assert_eq!(attempts.last().unwrap()["status"], "failed");
+    assert!(attempts.last().unwrap()["engineRequestId"].is_string());
+    assert_eq!(
+        thread["runs"].as_array().unwrap().last().unwrap()["classification"],
+        "idle"
+    );
+
+    send_ctrl_shift_a(&mut session);
+    assert!(session.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
+    assert!(session.wait_for("Core turn failed", Duration::from_secs(5)));
+    session.send(b"\r");
+    assert!(session.wait_for("Core turn failed · inspect it", Duration::from_secs(5)));
+    session.send(b"\x1b");
+    session.send(b":agent retry\r");
+    assert!(
+        session.wait_for("RETRY FAILED CORE TURN", Duration::from_secs(5)),
+        "failed Core attempt did not open its retry confirmation\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
+    let requests = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+        .expect("fake Core request log is present");
+    assert_eq!(requests.matches("\"method\":\"turn/prompt\"").count(), 1);
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn palette_and_help_survive_real_key_sequences() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {

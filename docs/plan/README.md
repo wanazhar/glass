@@ -50,8 +50,9 @@ projections, while manually spawned agents keep their role label; see the
 The [attention inbox](tasks/issue63-attention-inbox-001.md) and its allocated
 PTY journey are complete. Project-local thread navigation and the bounded
 per-send attempt record with conservative restart handling are also complete;
-see the [thread picker task](tasks/issue64-project-thread-picker-001.md) and
-[send-attempt recovery task](tasks/issue64-send-attempt-recovery-001.md).
+see the [thread picker task](tasks/issue64-project-thread-picker-001.md),
+[send-attempt recovery task](tasks/issue64-send-attempt-recovery-001.md), and
+[failed Core response recovery task](tasks/issue64-failed-core-response-recovery-001.md).
 Issue #64 remains active for the combined project/task/thread workflows,
 durable task recovery, and broader attention/review journeys.
 The completed [attention keyboard journey](tasks/issue64-attention-keyboard-journey-001.md)

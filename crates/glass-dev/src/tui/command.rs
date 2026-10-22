@@ -281,10 +281,10 @@ const CORE_AGENT_ACTIONS: &[SurfaceAction] = &[
         description: "start a separate resident session",
     },
     SurfaceAction {
-        label: "Retry uncertain delivery",
+        label: "Retry failed or uncertain message",
         command: "agent retry",
         key: ":",
-        description: "inspect and explicitly retry the selected uncertain message",
+        description: "inspect and explicitly retry a selected failed or uncertain message",
     },
     SurfaceAction {
         label: "List conversations",
@@ -2027,10 +2027,10 @@ fn execute_agent_for_harness(
         }
         "retry" => {
             if harness != crate::ResidentHarnessKind::GlassCore {
-                return Err("uncertain delivery retry is available for Glass Core threads".into());
+                return Err("failed or uncertain delivery retry is available for Glass Core threads".into());
             }
             if parts.len() != 1 {
-                return Err("agent retry takes no arguments · select an uncertain delivery first".into());
+                return Err("agent retry takes no arguments · select a failed or uncertain message first".into());
             }
             state.surface = DevSurface::Agent;
             state.request_uncertain_send_retry();

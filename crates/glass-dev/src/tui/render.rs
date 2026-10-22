@@ -648,8 +648,16 @@ fn render_send_attempt_retry_confirmation(frame: &mut Frame<'_>, state: &DevTuiS
         width,
         height,
     };
+    let title = state
+        .send_attempt_retry_confirmation
+        .as_ref()
+        .map(|target| match target.status {
+            crate::thread_store::SendAttemptStatus::Failed => " RETRY FAILED CORE TURN ",
+            _ => " RETRY UNCERTAIN DELIVERY ",
+        })
+        .unwrap_or(" RETRY MESSAGE DELIVERY ");
     let block = Block::default()
-        .title(" RETRY UNCERTAIN DELIVERY ")
+        .title(title)
         .title_style(Style::default().fg(WARNING).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -664,7 +672,7 @@ fn render_send_attempt_retry_confirmation(frame: &mut Frame<'_>, state: &DevTuiS
         .unwrap_or_else(|| "Saved message unavailable".into());
     let lines = vec![
         palette_fixed_line(
-            "Core may already have accepted the previous request; retry can duplicate work.",
+            "Core may have partly processed the previous request; retry can repeat work.",
             inner.width,
             Style::default().fg(TEXT),
         ),

@@ -675,9 +675,12 @@ to keep the legacy Pi backend, where `:agent setup` installs/repairs the pinned
 runtime, `:agent setup login` opens Pi `/login`, and `:agent update` refreshes
 it. `Ctrl-L` opens the shared composer dock on
 every surface. Default mode is Agent; `Ctrl-Shift-A` cycles Ask, Plan, and
-Agent. Composer `Enter` sends and stays open; `Esc` closes; failed sends keep
-the draft for retry. Mutations outside the session's authority use one-use
-approval cards.
+Agent. Composer `Enter` sends and stays open; `Esc` closes. Local or
+pre-dispatch failures keep the draft for retry. A Core error for an accepted
+prompt marks its attempt failed and the agent idle, shows a bounded error
+summary, and adds the attempt to Attention Inbox. Inspect it and use
+`:agent retry` to request confirmation; Glass never replays it automatically.
+Mutations outside the session's authority use one-use approval cards.
 
 The Code file preview is read-only and wraps long lines on narrow terminals.
 Switching to Code queues the selected-file preview if the workspace is busy.

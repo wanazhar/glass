@@ -21,6 +21,15 @@ import os
 import sys
 
 SESSION_ID = "fixture-session"
+STORAGE_DIR = None
+MODE = "mixed"
+
+
+def log_request(method: str, params: dict) -> None:
+    if STORAGE_DIR is None:
+        return
+    with open(os.path.join(STORAGE_DIR, "fixture-requests.jsonl"), "a", encoding="utf-8") as log:
+        log.write(json.dumps({"method": method, "params": params}, separators=(",", ":")) + "\n")
 
 
 def send(message: dict) -> None:
@@ -96,7 +105,9 @@ def run_turn(identifier, params: dict) -> None:
 
 
 def main() -> None:
+    global STORAGE_DIR, MODE
     mode = sys.argv[1] if len(sys.argv) > 1 else "mixed"
+    MODE = mode
     runtime_version = "0.1.0" if mode == "older-version-v2" else "0.3.14"
     for line in sys.stdin:
         line = line.strip()
@@ -109,7 +120,12 @@ def main() -> None:
         method = message.get("method")
         identifier = message.get("id")
         params = message.get("params") or {}
+        if method != "shutdown":
+            log_request(method, params)
         if method == "initialize":
+            STORAGE_DIR = params.get("storageDir")
+            if STORAGE_DIR:
+                os.makedirs(STORAGE_DIR, exist_ok=True)
             if mode == "legacy-v1":
                 send({
                     "jsonrpc": "2.0",
@@ -158,12 +174,13 @@ def main() -> None:
             reply(identifier, {"sessionId": SESSION_ID})
         elif method == "session/resume":
             assert params.get("expectedToolMode") == "mixed"
+            if mode == "missing-session":
+                send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "session not found"}})
+                continue
             # The real engine returns the stored id. The fixture prefixes it so
             # a test can tell resume apart from a fresh session/new.
-            reply(
-                identifier,
-                {"sessionId": f"resumed-{params.get('sessionId', SESSION_ID)}"},
-            )
+            resumed = params.get("sessionId", SESSION_ID)
+            reply(identifier, {"sessionId": "different-session" if mode == "resume-mismatch" else (f"resumed-{resumed}" if mode == "mixed" else resumed)})
         elif method == "session/name":
             reply(identifier, {})
         elif method == "session/list":
@@ -194,11 +211,32 @@ def main() -> None:
             reply(
                 identifier,
                 {
-                    "sessionId": SESSION_ID,
-                    "cwd": params.get("cwd"),
-                    "toolMode": "mixed",
+                    "sessionId": "different-session" if mode == "describe-mismatch" else params.get("sessionId", SESSION_ID),
+                    "cwd": os.path.join(os.getcwd(), "..") if mode == "wrong-cwd" else os.getcwd(),
+                    "toolMode": "host" if mode == "wrong-tool-mode" else "mixed",
+                    "provider": "must-not-be-copied",
+                    "apiKeyEnv": "FIXTURE_SECRET_ENV",
                 },
             )
+        elif method == "session/entries":
+            assert params.get("sessionId") == SESSION_ID
+            if mode == "endless-empty-entries":
+                reply(identifier, {
+                    "entries": [],
+                    "cursor": params.get("cursor", 0) + 1,
+                    "hasMore": True,
+                })
+            elif params.get("cursor", 0) > 0:
+                reply(identifier, {"entries": [], "cursor": params["cursor"], "hasMore": False})
+            else:
+                reply(identifier, {
+                    "entries": [
+                        {"entryId": f"{SESSION_ID}@0", "cursor": 10, "record": {"k": "user", "t": "prior question"}, "truncatedFields": []},
+                        {"entryId": f"{SESSION_ID}@10", "cursor": 20, "record": {"k": "assistant", "t": "prior answer"}, "truncatedFields": []},
+                    ],
+                    "cursor": 20,
+                    "hasMore": False,
+                })
         elif method == "models/list":
             assert params.get("sessionId") == SESSION_ID
             assert params.get("cursor") == 0

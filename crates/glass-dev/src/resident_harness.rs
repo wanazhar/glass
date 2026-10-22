@@ -111,6 +111,12 @@ pub struct ResidentHarnessOptions {
     pub additional_system_prompt: Option<String>,
     /// Resume the newest stored session for this workspace.
     pub resume: bool,
+    /// Resume this exact persisted Core session during Glass thread recovery.
+    pub resume_session_id: Option<String>,
+    /// Explicit Core executable override; primarily used by offline runtime fixtures.
+    pub binary: Option<std::path::PathBuf>,
+    /// Extra arguments passed to the Core executable before `runtime`.
+    pub binary_args: Vec<String>,
     /// Session reference to branch from, when the caller wants a fork.
     pub fork_from: Option<std::path::PathBuf>,
 }
@@ -131,6 +137,9 @@ impl std::fmt::Debug for ResidentHarnessOptions {
             )
             .field("additional_system_prompt", &self.additional_system_prompt)
             .field("resume", &self.resume)
+            .field("resume_session_id", &self.resume_session_id)
+            .field("binary", &self.binary)
+            .field("binary_args", &self.binary_args)
             .field("fork_from", &self.fork_from)
             .finish()
     }
@@ -163,9 +172,10 @@ impl ResidentHarnessOptions {
             local_tool_executor: self.local_tool_executor,
             additional_system_prompt: self.additional_system_prompt,
             resume: self.resume,
+            resume_session_id: self.resume_session_id,
             fork_from: self.fork_from,
-            binary: None,
-            binary_args: Vec::new(),
+            binary: self.binary,
+            binary_args: self.binary_args,
         }
     }
 }
@@ -199,6 +209,11 @@ impl ResidentHarness {
                 crate::core_runtime::GlassCoreRuntime::spawn(root, options.into_core())
                     .map(Self::GlassCore)
             }
+            ResidentHarnessKind::Pi if options.resume_session_id.is_some() => {
+                Err(DevelopmentError::Conflict(
+                    "durable recovery requires the stored Glass Core runtime session".into(),
+                ))
+            }
             ResidentHarnessKind::Pi => {
                 crate::pi_runtime::GlassPiRuntime::spawn(root, options.into_pi()).map(Self::Pi)
             }
@@ -218,6 +233,14 @@ impl ResidentHarness {
         match self {
             Self::GlassCore(runtime) => Some(runtime.session_id()),
             Self::Pi(_) => None,
+        }
+    }
+
+    /// Take transcript events loaded before worker readiness.
+    pub(crate) fn take_startup_events(&mut self) -> Vec<Value> {
+        match self {
+            Self::GlassCore(runtime) => runtime.take_startup_events(),
+            Self::Pi(_) => Vec::new(),
         }
     }
 

@@ -696,7 +696,15 @@ runtime. `:agent models [AGENT_ID]` lists models for the selected session, or
 the workspace's first active session when none is selected. `:agent model
 [AGENT_ID] PROVIDER MODEL` configures that session through Core's negotiated
 runtime methods. Model catalog responses appear in the Agent conversation.
-These controls require an active resident session.
+`:agent resume [AGENT_ID]` explicitly reattaches a recovery-pending project
+thread to its stored Core session; the Agent picker remains the navigation
+surface. Recovery verifies the exact session ID, mixed ownership mode, and
+canonical project directory, then restores bounded transcript entries before
+accepting sends. A failed resume remains retryable and never creates a new
+session or replays the previous prompt. These controls require an active
+resident session except for explicit recovery. The TUI asks its normal
+confirmation once for the resume action; after recovery, conversation follows
+the existing session interaction flow without per-tool-call confirmation.
 
 The standard Glass tool behavior is explicit and bounded. `read` accepts
 one-based `offset` and `limit`; `ls` accepts a path prefix and limit; `grep`

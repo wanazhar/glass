@@ -152,6 +152,12 @@ const AGENT_ACTIONS: &[SurfaceAction] = &[
         description: "start a separate resident session",
     },
     SurfaceAction {
+        label: "Resume selected thread",
+        command: "agent resume",
+        key: ":",
+        description: "reattach the exact stored Core session without replay",
+    },
+    SurfaceAction {
         label: "List Pi sessions",
         command: "agent sessions",
         key: ":",
@@ -2001,6 +2007,18 @@ fn execute_agent_for_harness(
             state.surface = DevSurface::Agent;
             Ok(format!("Spawned {}", id.as_str()))
         }
+        "resume" => {
+            let (agent_id, _) = explicit_or_active_agent(state, &parts)?;
+            let agent_id = agent_id.ok_or("select a recovery-pending thread first")?;
+            let result = run_tool(
+                state,
+                "glass.agent.resume",
+                json!({"agentId":agent_id}),
+                true,
+            )?;
+            state.surface = DevSurface::Agent;
+            Ok(compact_result("glass.agent.resume", &result))
+        }
         "prompt" | "steer" | "follow-up" => {
             let (agent_id, offset) = explicit_or_active_agent(state, &parts)?;
             let text_start = if offset == 1 { 2 } else { 1 };
@@ -2158,7 +2176,7 @@ fn execute_agent_for_harness(
             }
             Ok(compact_result(tool, &result))
         }
-        _ => Err("agent actions: doctor, status, setup [login], hello, models, spawn, prompt, steer, follow-up, cancel, abort, compact, model, set-model, thinking, set-thinking, new, new-session, clone, clone-session, rewind, fork, switch, sessions, tree, messages, entries, stats".into()),
+        _ => Err("agent actions: doctor, status, setup [login], hello, models, spawn, resume [AGENT_ID], prompt, steer, follow-up, cancel, abort, compact, model, set-model, thinking, set-thinking, new, new-session, clone, clone-session, rewind, fork, switch, sessions, tree, messages, entries, stats".into()),
     }
 }
 
@@ -3433,6 +3451,26 @@ mod tests {
         let (call, _) = state.queued_tool_request.take().expect("queued request");
         assert_eq!(call.name, "glass.agent.models");
         assert_eq!(call.arguments["agentId"], "agent-0002");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn agent_resume_command_routes_selected_thread_to_resume_service() {
+        let (mut state, root) = test_state("agent-resume-routing");
+        state.selected_agent = Some(crate::AgentId::parse("agent-0002").unwrap());
+        let output = execute_agent_for_harness(
+            &mut state,
+            vec!["resume"],
+            crate::ResidentHarnessKind::GlassCore,
+        )
+        .expect("queue selected-thread resume");
+        assert!(output.contains("glass.agent.resume"), "{output}");
+        let confirmation = state
+            .pending_confirmation
+            .take()
+            .expect("resume confirmation");
+        assert_eq!(confirmation.call.name, "glass.agent.resume");
+        assert_eq!(confirmation.call.arguments["agentId"], "agent-0002");
         let _ = fs::remove_dir_all(root);
     }
 

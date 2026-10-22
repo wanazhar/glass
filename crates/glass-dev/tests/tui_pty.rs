@@ -1002,20 +1002,20 @@ fn uncertain_send_opens_attention_without_replaying_after_restart() {
         assert_eq!(attempts[0]["text"], prompt);
         assert_eq!(attempts[0]["status"], "uncertain");
 
-        if let Ok(log) = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl")) {
-            let requests = log
-                .lines()
-                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-                .collect::<Vec<_>>();
-            assert_eq!(
-                requests
-                    .iter()
-                    .filter(|request| request["method"] == "turn/prompt")
-                    .count(),
-                0,
-                "opening an uncertain attempt must never replay the prompt"
-            );
-        }
+        let log = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+            .expect("fake Core request log is present");
+        let requests = log
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request["method"] == "turn/prompt")
+                .count(),
+            0,
+            "opening an uncertain attempt must never replay the prompt"
+        );
         session.kill();
         let _ = std::fs::remove_file(fake_core);
         let _ = std::fs::remove_dir_all(root);

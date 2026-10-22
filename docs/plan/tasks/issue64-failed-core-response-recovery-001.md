@@ -92,9 +92,22 @@ After both fixes, one live composer run created the requested fixture file with
 the exact expected 26 bytes using Core's native bash tool. It did not finish the
 turn within the existing 90-second verification window: the trace showed tool
 start/end, text, and usage events, but no correlated JSON-RPC response, and the
-send remained waiting. This proves the live coding tool path reached and
-executed the operation, but the complete live turn-settlement journey remains
-unverified. No further provider request or retry was made. The raw diagnostic
-file and temporary project were removed. Offline context/alias regressions and
-the complete Glass Dev and Core unit suites pass; the earlier sanitized trace
-wrapper test also passes.
+send remained waiting. A later source audit found Core's global provider timeout
+is 600 seconds, so that 90-second run could not distinguish a slow open stream
+from a missing response; its trace does not establish why it remained open.
+
+On 2026-10-22, the same bounded composer journey passed using the configured
+provider Kilo via SW proxy, model `kilo-auto/free`, and source-built Core 0.3.14.
+The composer created and read back the exact 26-byte fixture file; three Core
+native bash tool calls completed, followed by final text, usage, `settled`, and
+the correlated JSON-RPC response. Glass recorded the send as settled, and the
+PTY test passed in 15 seconds. Its trace wrapper records only hashed request
+IDs, allowlisted method/event names, elapsed milliseconds, and allowlisted error
+metadata. The sanitized trace was retained with mode 0600 in a mode 0700
+task-owned temporary evidence directory. This closes the live turn-settlement
+gap for the tested provider/model; it does not generalize provider behavior.
+No further provider request or retry was made.
+
+Offline context/alias regressions, the complete Glass Dev and Core unit suites,
+the trace-wrapper test, scoped strict Clippy, formatting, and documentation
+checks pass.

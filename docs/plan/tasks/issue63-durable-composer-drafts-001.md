@@ -22,6 +22,8 @@ protected ACLs there; do not claim private durable drafts on that platform.
   stores bounded `text` and a byte `cursor`; `null` means no draft. Existing
   records without the field decode as empty drafts, and strict unknown-field,
   project-identity, registry-size, and atomic private-write rules stay intact.
+  The registry remains v1; this additive optional field retains v1 forward
+  reads, with no promise that older Glass versions preserve it on rewrite.
 - Validate draft text against the existing 16 KiB composer limit, reject NUL,
   require the cursor to be in range and on a UTF-8 character boundary, and cap
   aggregate stored draft text at 64 KiB within the 256 KiB registry budget.
@@ -35,8 +37,10 @@ protected ACLs there; do not claim private durable drafts on that platform.
   the existing in-memory behavior.
 - If save enqueue fails or an asynchronous write failure is known, keep the
   outgoing agent selected with its draft intact. Quit performs the bounded
-  final flush; failure requires visible confirmation to discard before exiting,
-  and cancelling keeps the unsaved warning visible until persistence succeeds.
+  final flush; failure requires visible confirmation to discard before exiting.
+  Discard runs on the same worker after any in-flight write, clears the selected
+  thread draft, and quits only after the clear is acknowledged. A clear failure
+  keeps the warning visible and allows retry; cancelling keeps editing.
 
 ## Acceptance
 
@@ -53,6 +57,7 @@ protected ACLs there; do not claim private durable drafts on that platform.
 
 Passed: `cargo test -p glass-dev --lib draft --locked` (16 passed),
 the durable-load tests (2 passed), the writer-responsiveness test (1 passed),
+and the in-flight discard-after-timeout test (1 passed),
 `cargo fmt --all -- --check`, `git diff --check`, strict scoped Clippy, the
 documentation coverage/depth/release-truth validators, and the TUI shortcut
 validator. The refreshed live MCP catalog measures 342 tools and 181,498 UTF-8

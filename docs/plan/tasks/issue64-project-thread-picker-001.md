@@ -1,7 +1,7 @@
 ---
 id: issue64-project-thread-picker-001
 scope: issue-64-project-local-thread-navigation
-status: in-progress
+status: complete
 depends-on: [issue63-thread-isolation-001, issue63-durable-threads-001]
 ---
 
@@ -74,3 +74,11 @@ does not replace gamma's conversation with alpha's response; releasing beta
 and gamma then settles all three attempts in their owning threads. The fixture
 gate is enabled only by this test's marker, so ordinary offline adapter tests
 retain their immediate response behavior.
+
+The project-thread navigation task is complete on local `main`: the focused
+reducer/render and allocated-PTY journeys cover draft restoration, recovery
+labels, single-thread dispatch, three concurrent tasks, and focus-safe
+background completion. Formatting, strict scoped Clippy, shortcut validation,
+documentation depth/coverage/release-truth, and diff checks pass. The larger
+umbrella issue remains open for the queue, attention/review, and combined
+homespace journeys.

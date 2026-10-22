@@ -8,9 +8,10 @@ import subprocess
 import tempfile
 
 from pty_vt import Terminal
+from core_binary import core_binary_path
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', ROOT / 'target/debug/glass-core'))
+BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', core_binary_path('debug')))
 
 
 def run(args, env):

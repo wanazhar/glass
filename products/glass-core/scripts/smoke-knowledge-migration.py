@@ -2,7 +2,8 @@
 """Real CLI migration, overwrite, review revision and backup preservation."""
 import json,os,subprocess,tempfile
 from pathlib import Path
-BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',Path(__file__).resolve().parents[1]/'target/release/glass-core')).resolve()
+from core_binary import core_binary_path
+BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',core_binary_path('release'))).resolve()
 with tempfile.TemporaryDirectory(prefix='gc-knowledge-migration-') as temp:
     root=Path(temp);env=dict(os.environ,XDG_DATA_HOME=str(root/'data'),XDG_CONFIG_HOME=str(root/'config'))
     def run(*args,ok=True):

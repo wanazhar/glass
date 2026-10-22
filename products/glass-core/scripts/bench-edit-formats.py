@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from core_binary import core_binary_path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,7 +42,7 @@ def worker(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--binary", default=os.environ.get("GLASS_CORE_TEST_BINARY", str(ROOT / "target/release/glass-core")))
+    parser.add_argument("--binary", default=os.environ.get("GLASS_CORE_TEST_BINARY", str(core_binary_path('release'))))
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--worker", choices=["read", "edit"])
     args = parser.parse_args()

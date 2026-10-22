@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 
 from pty_vt import Terminal
+from core_binary import core_binary_path
 
 
 def line_text(screen, index):
@@ -34,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix='gc-inline-pty-') as tmp:
     )
     env = dict(os.environ, XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'))
     binary = os.environ.get(
-        'GLASS_CORE_TEST_BINARY', str(Path(__file__).resolve().parents[1] / 'target/debug/glass-core')
+        'GLASS_CORE_TEST_BINARY', str(core_binary_path('debug'))
     )
 
     for size in [(65, 30), (40, 24), (24, 16), (20, 12), (20, 8)]:

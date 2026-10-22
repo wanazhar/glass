@@ -3,7 +3,8 @@
 import http.server,json,os,subprocess,tempfile,threading,time
 from pathlib import Path
 from pty_vt import Terminal
-BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY','target/debug/glass-core')).resolve()
+from core_binary import core_binary_path
+BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',str(core_binary_path('debug')))).resolve()
 class Endpoint(http.server.BaseHTTPRequestHandler):
     def log_message(self,*_):pass
     def do_POST(self):

@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import threading
 from pty_vt import Terminal
+from core_binary import core_binary_path
 
 COMMANDS=["printf 'SEARCHABLE_OUTPUT_ONLY\\n'", "printf '\\033]52;c;EVIL\\007CONTROL_OUTPUT\\n'", ":"]
 class Endpoint(http.server.BaseHTTPRequestHandler):
@@ -37,7 +38,7 @@ with tempfile.TemporaryDirectory(prefix='gc-navigation-pty-') as tmp:
     server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Endpoint);threading.Thread(target=server.serve_forever,daemon=True).start()
     (cfg/'config.toml').write_text(f'provider="openai"\nmodel="mock"\napi_key_env=""\nbase_url="http://127.0.0.1:{server.server_port}/v1"\n')
     env=dict(os.environ,XDG_CONFIG_HOME=str(root/'config'),XDG_DATA_HOME=str(root/'data'))
-    binary=os.environ.get('GLASS_CORE_TEST_BINARY',str(Path(__file__).resolve().parents[1]/'target/debug/glass-core'))
+    binary=os.environ.get('GLASS_CORE_TEST_BINARY',str(core_binary_path('debug')))
     try:
         run=subprocess.run([binary,'run','--json','navigation fixture'],cwd=root,env=env,text=True,capture_output=True,timeout=15)
         assert run.returncode==0,run.stderr

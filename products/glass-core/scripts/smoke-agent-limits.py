@@ -5,9 +5,10 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from core_binary import core_binary_path
 
 ROOT = Path(__file__).resolve().parents[1]
-os.environ.setdefault('GLASS_CORE_TEST_BINARY', str(ROOT / 'target/release/glass-core'))
+os.environ.setdefault('GLASS_CORE_TEST_BINARY', str(core_binary_path('release')))
 spec = importlib.util.spec_from_file_location('agents', ROOT / 'scripts/smoke-agents.py')
 a = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(a)

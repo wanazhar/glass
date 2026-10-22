@@ -2,7 +2,8 @@
 """Actual-binary regression: tiny incremental job polls preserve split Unicode."""
 import http.server, json, os, re, subprocess, tempfile, threading
 from pathlib import Path
-BIN = Path(os.environ.get("GLASS_CORE_TEST_BINARY", Path(__file__).resolve().parents[1] / "target/debug/glass-core"))
+from core_binary import core_binary_path
+BIN = Path(os.environ.get("GLASS_CORE_TEST_BINARY", core_binary_path('debug')))
 class Provider(http.server.BaseHTTPRequestHandler):
     output = ""
     def log_message(self, *_): pass

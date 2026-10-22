@@ -3,7 +3,8 @@
 import http.server, json, os, subprocess, tempfile, threading
 from pathlib import Path
 from pty_vt import Terminal
-BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',Path(__file__).resolve().parents[1]/'target/release/glass-core')).resolve()
+from core_binary import core_binary_path
+BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',core_binary_path('release'))).resolve()
 class Provider(http.server.BaseHTTPRequestHandler):
     step=0
     def log_message(self,*_):pass

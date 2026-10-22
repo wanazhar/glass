@@ -19,9 +19,10 @@ import sys
 import shlex
 import signal
 import threading
+from core_binary import core_binary_path
 
 REPO = Path(__file__).resolve().parents[1]
-BINARY = Path(os.environ.get("GLASS_CORE_TEST_BINARY", str(REPO / "target/debug/glass-core")))
+BINARY = Path(os.environ.get("GLASS_CORE_TEST_BINARY", str(core_binary_path('debug'))))
 
 
 def process_exists(pid):

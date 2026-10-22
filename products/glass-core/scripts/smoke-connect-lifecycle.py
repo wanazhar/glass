@@ -2,7 +2,8 @@
 """Isolated fake-Tailscale lifecycle and real native gateway authorization checks."""
 import hashlib,http.server,json,os,socket,socketserver,subprocess,tempfile,threading,urllib.request,urllib.error,time
 from pathlib import Path
-ROOT=Path(__file__).resolve().parents[1];BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',ROOT/'target/debug/glass-core')).resolve()
+from core_binary import core_binary_path
+ROOT=Path(__file__).resolve().parents[1];BIN=Path(os.environ.get('GLASS_CORE_TEST_BINARY',core_binary_path('debug'))).resolve()
 with tempfile.TemporaryDirectory(prefix='gc-connect-lifecycle-')as tmp:
  root=Path(tmp);tools=root/'bin';tools.mkdir();cfg=root/'config/glass-core';cfg.mkdir(parents=True);data=root/'data/glass-core';data.mkdir(parents=True)
  routes=root/'routes.json';initial={'TCP':{'443':{'HTTPS':True}},'Web':{'fixture.tail.test:443':{'Handlers':{'/':{'Proxy':'http://127.0.0.1:8123'}}}}};routes.write_text(json.dumps(initial))

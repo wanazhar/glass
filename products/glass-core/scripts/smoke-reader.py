@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import subprocess
 from pty_vt import Terminal
+from core_binary import core_binary_path
 
 def foreground(term, needle):
     for y, text in enumerate(term.vt.active.display):
@@ -56,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix='gc-reader-pty-') as tmp:
     (data / 'reader-fixture.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in records))
     env = dict(os.environ, XDG_CONFIG_HOME=str(root / 'config'), XDG_DATA_HOME=str(root / 'data'))
     env.pop('NO_COLOR', None)  # This PTY checks diff foreground colors explicitly.
-    binary = os.environ.get('GLASS_CORE_TEST_BINARY', str(Path(__file__).resolve().parents[1] / 'target/debug/glass-core'))
+    binary = os.environ.get('GLASS_CORE_TEST_BINARY', str(core_binary_path('debug')))
     for size in [(40, 24), (20, 12), (20, 8)]:
         terminal = Terminal(repo, env, size, args=('resume', 'reader-fixture'))
         try:

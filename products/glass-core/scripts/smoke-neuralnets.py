@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Isolated release CLI lifecycle and actual PTY rendering checks."""
 import json, os, pathlib, pty, select, subprocess, tempfile, fcntl, struct, termios
-binary = str(pathlib.Path(os.environ.get('GLASS_CORE_TEST_BINARY', 'target/release/glass-core')).resolve())
+from core_binary import core_binary_path
+binary = str(pathlib.Path(os.environ.get('GLASS_CORE_TEST_BINARY', str(core_binary_path('release')))).resolve())
 with tempfile.TemporaryDirectory(prefix='gc-neuralnets-') as tmp:
     env = dict(os.environ, XDG_DATA_HOME=tmp+'/data', XDG_CONFIG_HOME=tmp+'/config')
     def run(*args, ok=True):

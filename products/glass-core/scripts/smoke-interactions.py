@@ -8,8 +8,9 @@ import subprocess
 import tempfile
 import threading
 from pty_vt import Terminal
+from core_binary import core_binary_path
 
-binary=Path(os.environ.get('GLASS_CORE_TEST_BINARY','target/release/glass-core')).resolve()
+binary=Path(os.environ.get('GLASS_CORE_TEST_BINARY',str(core_binary_path('release')))).resolve()
 os.environ['GLASS_CORE_TEST_BINARY']=str(binary)
 class Endpoint(http.server.BaseHTTPRequestHandler):
     def log_message(self,*_): pass

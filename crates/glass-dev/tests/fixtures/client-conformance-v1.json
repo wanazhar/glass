@@ -58,6 +58,7 @@
     "glass.agent.name",
     "glass.agent.new-session",
     "glass.agent.prompt",
+    "glass.agent.resume",
     "glass.agent.rewind",
     "glass.agent.send",
     "glass.agent.sessions",

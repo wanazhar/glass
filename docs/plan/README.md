@@ -35,8 +35,10 @@ checkpoint stores stable IDs and actual Core session references, then restores
 prior runs as recovery-pending or unavailable rows without replay. Exact Core
 session reattachment is specified in the [exact-session recovery analysis](analysis/issue63-core-session-resume.md)
 and tracked in the [acceptance task](tasks/issue63-core-session-resume-001.md).
-Draft/queue persistence, editable queues, and the attention inbox remain
-subsequent tasks.
+Per-thread composer text/cursor recovery is tracked in the
+[durable composer draft task](tasks/issue63-durable-composer-drafts-001.md);
+draft/queue persistence beyond the composer, editable queues, and the attention
+inbox remain subsequent tasks.
 
 ## Current source line: Glass 0.3.14
 

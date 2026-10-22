@@ -93,8 +93,11 @@ see the [resident harness guide](glass-core-harness.md).
 Live resident agents have separate Agent TUI transcripts and composer drafts;
 switching agents restores that thread's text and cursor. A send result stays
 with the AgentId captured at submission, including a first-send agent created
-by the result. AgentId and these drafts are process-local: they are not restored
-after Glass restarts and are not durable project thread identities.
+by the result. AgentId and transcripts are process-local. On Unix, composer
+text and its UTF-8 byte cursor are saved by durable ThreadId in the private
+thread ledger and restored after restart; Windows keeps drafts process-local
+because the ledger inherits workspace ACLs and does not provide private draft
+durability.
 
 Glass also records random, project-scoped ThreadId and RunId values plus the
 actual initialized Glass Core session ID in the
@@ -113,8 +116,8 @@ from Core session entries before enabling sends. Missing or mismatched sessions
 remain recovery-pending with an error; Glass does not create a replacement or
 replay a prompt. Only ThreadId, RunId, and the opaque Core session reference are
 stored by the Glass ledger; provider configuration and credentials remain Core
-owned. Composer drafts and follow-up queues are not persisted, and reopened
-rows are not live workers until an explicit resume succeeds. See the
+owned. Follow-up queues are not persisted, and reopened rows are not live
+workers until an explicit resume succeeds. See the
 [exact-session recovery contract](plan/analysis/issue63-core-session-resume.md).
 The TUI uses its ordinary confirmation for the resume action; subsequent
 conversation follows the existing session flow without per-tool-call

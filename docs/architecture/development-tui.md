@@ -368,18 +368,19 @@ paste is inserted as one bounded edit. A send is a governed background request
 and never executes from the input loop. If another job is active, the draft is
 retained and the send waits; a failed transport marks the pending message
 failed and restores its draft for edit-and-retry. Each live resident AgentId
-has its own transcript, draft, and character cursor; switching threads restores
+has its own transcript, draft, and UTF-8 byte cursor; switching threads restores
 the matching context, and late send results remain attached to their submitting
-thread without changing the selected thread's focus or draft. AgentId and its
-draft state are process-local and do not survive TUI restart. Glass persists
-random ThreadId/RunId identity and actual Core session references in the
-project's `.glass/threads/registry.json`; on Unix its files use private modes.
-On Windows the files inherit workspace ACLs and reopened rows remain unavailable
-until protected ACL support is implemented. Reopened entries with Core
+thread without changing the selected thread's focus or draft. AgentId remains
+process-local; on Unix Glass saves each selected thread's bounded composer text
+and UTF-8 byte cursor with its durable ThreadId in the private
+`.glass/threads/registry.json` ledger, restoring them after restart even when
+AgentId changes. The aggregate draft data is bounded with the registry. On
+Windows drafts remain process-local because the ledger inherits workspace ACLs
+and Glass does not claim private draft durability there. Reopened entries with Core
 session references are labelled `recovery pending`, while work queued or
 stopped before initialization is `unavailable`. Both reject sends. This
-checkpoint does not reattach to Core, replay prompts, or persist drafts,
-transcripts, or follow-up queues. Workspace-local todos
+checkpoint does not reattach to Core, replay prompts, or persist transcripts
+or follow-up queues. Workspace-local todos
 (`glass.todo.*`) persist at `.glass/todos/session.json` and form the Agent
 checklist shown on Agent and Tasks; they are not the overnight task DAG.
 

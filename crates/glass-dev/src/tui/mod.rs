@@ -1139,8 +1139,14 @@ pub(crate) fn run_with_browser_policy(
                             _ => {}
                         }
                     }
+                    #[cfg(unix)]
+                    state.persist_composer_draft();
                 }
-                Event::Paste(text) => route_paste(&mut state, &text),
+                Event::Paste(text) => {
+                    route_paste(&mut state, &text);
+                    #[cfg(unix)]
+                    state.persist_composer_draft();
+                }
                 Event::Mouse(mouse) => {
                     pointer.handle(&mut state, mouse, Instant::now());
                 }

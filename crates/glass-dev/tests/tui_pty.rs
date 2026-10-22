@@ -719,6 +719,102 @@ fn agent_enter_and_typing_open_composer_with_offline_core_fixture() {
 }
 
 #[test]
+fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_core_binary(&binary(), &root, 80, 24, Some(&fake_core));
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.trust_project();
+    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+
+    session.send(b":agent spawn assistant offline task\r");
+    assert!(
+        session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
+        "agent command did not create the resident session\n{}",
+        session.output_tail()
+    );
+    send_ctrl_shift_t(&mut session);
+    assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
+    assert!(
+        session.wait_for("idle", Duration::from_secs(12)),
+        "spawned agent never became ready\n{}",
+        session.output_tail()
+    );
+    session.send(b"\r");
+    session.send(b"\r");
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    session.send(b"offline prompt round trip");
+    session.send(b"\r");
+    assert!(
+        session.wait_for(
+            "Glass Agent ready · response received",
+            Duration::from_secs(12)
+        ),
+        "offline Core did not return to its ready state after the prompt\n{}",
+        session.output_tail()
+    );
+    let requests = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+        .expect("fake Core request log is present");
+    assert!(
+        requests.lines().any(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .is_some_and(|request| {
+                    request["method"] == "turn/prompt"
+                        && request["params"]["text"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("offline prompt round trip"))
+                })
+        }),
+        "fake Core did not receive a turn/prompt"
+    );
+    let registry_path = fixture_state.join("threads/registry.json");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        if registry["threads"][0]["sendAttempts"][0]["status"] == "settled"
+            || Instant::now() >= deadline
+        {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    let attempts = registry["threads"][0]["sendAttempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(
+        attempts[0]["status"], "settled",
+        "attempt never settled: {registry}"
+    );
+    assert!(
+        attempts[0]["engineRequestId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
+    assert!(
+        attempts[0]["clientMessageId"]
+            .as_str()
+            .unwrap()
+            .starts_with("chat-")
+    );
+    assert!(
+        attempts[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("offline prompt round trip")
+    );
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn agent_update_route_requires_confirmation_in_tui() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;

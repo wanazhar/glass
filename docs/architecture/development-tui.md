@@ -375,7 +375,11 @@ process-local; on Unix Glass saves each selected thread's bounded composer text
 and UTF-8 byte cursor with its durable ThreadId in the private
 `.glass/threads/registry.json` ledger, restoring them after restart even when
 AgentId changes. The aggregate draft data is bounded with the registry. On
-Windows drafts remain process-local because the ledger inherits workspace ACLs
+Unix, draft reads and writes use a coalescing background worker, so agent
+switches enqueue the outgoing draft without waiting on registry locks or fsync;
+only explicit quit waits for a bounded flush. A failed enqueue or known write
+failure keeps the current draft selected, and quit requires an explicit discard
+confirmation. Windows drafts remain process-local because the ledger inherits workspace ACLs
 and Glass does not claim private draft durability there. Reopened entries with Core
 session references are labelled `recovery pending`, while work queued or
 stopped before initialization is `unavailable`. Both reject sends. This

@@ -25,17 +25,18 @@ protected ACLs there; do not claim private durable drafts on that platform.
 - Validate draft text against the existing 16 KiB composer limit, reject NUL,
   require the cursor to be in range and on a UTF-8 character boundary, and cap
   aggregate stored draft text at 64 KiB within the 256 KiB registry budget.
-- Expose the current AgentId-to-ThreadId mapping from the resident registry.
-  When switching agents, save the outgoing editor state and load the incoming
-  thread's durable draft on Unix, while retaining the existing AgentId map for
-  immediate process-local switching and send-failure recovery.
+- On Unix, enqueue outgoing saves and incoming loads through one coalescing
+  background worker; resolve AgentId-to-ThreadId and access the ledger there,
+  never on the UI thread. Keep process-local AgentId drafts for immediate
+  switching and send-failure recovery. Apply a late load only when that
+  agent's edit generation is unchanged and no local draft superseded it.
 - Persist text and cursor after composer key handling; deleting/sending a draft
   persists the empty state. Windows skips these durable operations and keeps
   the existing in-memory behavior.
-- If a thread-switch flush fails, keep the outgoing agent selected with its
-  draft intact. If a quit flush fails, require the visible quit confirmation
-  to explicitly discard the unsaved draft before exiting; cancelling keeps the
-  unsaved warning visible until persistence succeeds.
+- If save enqueue fails or an asynchronous write failure is known, keep the
+  outgoing agent selected with its draft intact. Quit performs the bounded
+  final flush; failure requires visible confirmation to discard before exiting,
+  and cancelling keeps the unsaved warning visible until persistence succeeds.
 
 ## Acceptance
 
@@ -45,11 +46,13 @@ protected ACLs there; do not claim private durable drafts on that platform.
 - [x] Invalid drafts fail closed without replacing the prior registry.
 - [x] Windows keeps process-local drafts and makes no private-durability claim.
 - [x] Focused tests, format, strict scoped Clippy, documentation validators,
-      and diff review pass; commit locally with a Conventional Commit only.
+      and local diff checks pass; local Conventional Commit is recorded.
+- [ ] Independent review of the async load/save and switch-race fix is pending.
 
 ## Verification
 
-Passed: `cargo test -p glass-dev --lib draft --locked` (15 passed),
+Passed: `cargo test -p glass-dev --lib draft --locked` (16 passed),
+the durable-load tests (2 passed), the writer-responsiveness test (1 passed),
 `cargo fmt --all -- --check`, `git diff --check`, strict scoped Clippy, the
 documentation coverage/depth/release-truth validators, and the TUI shortcut
 validator. The refreshed live MCP catalog measures 342 tools and 181,498 UTF-8

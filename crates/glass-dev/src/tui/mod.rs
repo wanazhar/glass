@@ -1191,6 +1191,10 @@ pub(crate) fn run_with_browser_policy(
             handle_herdr_event(&mut state, &mut visual, event);
         }
         render_requested |= state.flush_pending_editor_input();
+        #[cfg(unix)]
+        {
+            render_requested |= state.poll_composer_draft_io();
+        }
         if last_editor_reconcile.elapsed() >= Duration::from_millis(500) {
             render_requested |= state.tick_editor_reconcile();
             last_editor_reconcile = Instant::now();

@@ -341,19 +341,53 @@ struct ComposerDraft {
 }
 
 #[cfg(unix)]
+type PendingComposerDraftLoad = (
+    u64,
+    std::sync::mpsc::Receiver<Result<Option<ComposerDraft>, String>>,
+);
+
+#[cfg(unix)]
 enum ComposerDraftWrite {
     Save {
-        store: crate::thread_store::ThreadStore,
-        thread_id: String,
+        key: String,
+        target: ComposerDraftTarget,
         draft: ComposerDraft,
     },
+    Load {
+        workspace: crate::workspace::SharedDevelopmentWorkspace,
+        agent_id: crate::AgentId,
+        reply: std::sync::mpsc::Sender<Result<Option<ComposerDraft>, String>>,
+    },
     Flush(std::sync::mpsc::Sender<Result<(), String>>),
+    DiscardAndShutdown,
     Shutdown,
+    #[cfg(test)]
+    Delay(std::time::Duration),
+}
+
+#[cfg(unix)]
+enum ComposerDraftTarget {
+    Agent {
+        workspace: crate::workspace::SharedDevelopmentWorkspace,
+        agent_id: crate::AgentId,
+    },
+    #[cfg(test)]
+    Thread {
+        store: crate::thread_store::ThreadStore,
+        thread_id: String,
+    },
+}
+
+#[cfg(unix)]
+enum ComposerDraftWriterEvent {
+    SaveFailed(String),
+    SaveSucceeded,
 }
 
 #[cfg(unix)]
 struct ComposerDraftWriter {
     tx: std::sync::mpsc::Sender<ComposerDraftWrite>,
+    events: std::sync::mpsc::Receiver<ComposerDraftWriterEvent>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -365,9 +399,9 @@ impl ComposerDraftWriter {
         use std::time::Duration;
 
         let (tx, rx) = mpsc::channel();
+        let (events_tx, events) = mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let mut pending =
-                BTreeMap::<String, (crate::thread_store::ThreadStore, ComposerDraft)>::new();
+            let mut pending = BTreeMap::<String, (ComposerDraftTarget, ComposerDraft)>::new();
             let mut wait_for_change_after_failure = false;
             loop {
                 let received = if wait_for_change_after_failure {
@@ -376,47 +410,109 @@ impl ComposerDraftWriter {
                     rx.recv_timeout(Duration::from_millis(150))
                 };
                 match received {
-                    Ok(ComposerDraftWrite::Save {
-                        store,
-                        thread_id,
-                        draft,
-                    }) => {
+                    Ok(ComposerDraftWrite::Save { key, target, draft }) => {
                         wait_for_change_after_failure = false;
-                        pending.insert(thread_id, (store, draft));
+                        pending.insert(key, (target, draft));
                         loop {
                             match rx.try_recv() {
-                                Ok(ComposerDraftWrite::Save {
-                                    store,
-                                    thread_id,
-                                    draft,
-                                }) => {
+                                Ok(ComposerDraftWrite::Save { key, target, draft }) => {
                                     wait_for_change_after_failure = false;
-                                    pending.insert(thread_id, (store, draft));
+                                    pending.insert(key, (target, draft));
+                                }
+                                Ok(ComposerDraftWrite::Load {
+                                    workspace,
+                                    agent_id,
+                                    reply,
+                                }) => {
+                                    let flushed = Self::flush_pending(&mut pending);
+                                    Self::report_flush(&events_tx, &flushed);
+                                    let result = flushed.and_then(|()| {
+                                        let (store, thread_id) = workspace
+                                            .lock()
+                                            .and_then(|mut workspace| {
+                                                workspace.agents().composer_draft_target(&agent_id)
+                                            })
+                                            .map_err(|error| error.to_string())?;
+                                        store
+                                            .composer_draft(&thread_id)
+                                            .map(|draft| {
+                                                draft.map(|draft| ComposerDraft {
+                                                    text: draft.text,
+                                                    cursor: draft.cursor,
+                                                })
+                                            })
+                                            .map_err(|error| error.to_string())
+                                    });
+                                    let _ = reply.send(result);
+                                    wait_for_change_after_failure = false;
                                 }
                                 Ok(ComposerDraftWrite::Flush(reply)) => {
                                     let result = Self::flush_pending(&mut pending);
+                                    Self::report_flush(&events_tx, &result);
                                     wait_for_change_after_failure = result.is_err();
                                     let _ = reply.send(result);
                                 }
                                 Ok(ComposerDraftWrite::Shutdown) => {
-                                    let _ = Self::flush_pending(&mut pending);
                                     return;
+                                }
+                                Ok(ComposerDraftWrite::DiscardAndShutdown) => {
+                                    return;
+                                }
+                                #[cfg(test)]
+                                Ok(ComposerDraftWrite::Delay(duration)) => {
+                                    std::thread::sleep(duration);
                                 }
                                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
                             }
                         }
                     }
+                    Ok(ComposerDraftWrite::Load {
+                        workspace,
+                        agent_id,
+                        reply,
+                    }) => {
+                        let flushed = Self::flush_pending(&mut pending);
+                        Self::report_flush(&events_tx, &flushed);
+                        let result = flushed.and_then(|()| {
+                            let (store, thread_id) = workspace
+                                .lock()
+                                .and_then(|mut workspace| {
+                                    workspace.agents().composer_draft_target(&agent_id)
+                                })
+                                .map_err(|error| error.to_string())?;
+                            store
+                                .composer_draft(&thread_id)
+                                .map(|draft| {
+                                    draft.map(|draft| ComposerDraft {
+                                        text: draft.text,
+                                        cursor: draft.cursor,
+                                    })
+                                })
+                                .map_err(|error| error.to_string())
+                        });
+                        let _ = reply.send(result);
+                        wait_for_change_after_failure = false;
+                    }
                     Ok(ComposerDraftWrite::Flush(reply)) => {
                         let result = Self::flush_pending(&mut pending);
+                        Self::report_flush(&events_tx, &result);
                         wait_for_change_after_failure = result.is_err();
                         let _ = reply.send(result);
                     }
                     Ok(ComposerDraftWrite::Shutdown) => {
-                        let _ = Self::flush_pending(&mut pending);
                         return;
                     }
+                    Ok(ComposerDraftWrite::DiscardAndShutdown) => {
+                        return;
+                    }
+                    #[cfg(test)]
+                    Ok(ComposerDraftWrite::Delay(duration)) => {
+                        std::thread::sleep(duration);
+                    }
                     Err(RecvTimeoutError::Timeout) => {
-                        wait_for_change_after_failure = Self::flush_pending(&mut pending).is_err();
+                        let result = Self::flush_pending(&mut pending);
+                        Self::report_flush(&events_tx, &result);
+                        wait_for_change_after_failure = result.is_err();
                     }
                     Err(RecvTimeoutError::Disconnected) => {
                         let _ = Self::flush_pending(&mut pending);
@@ -427,10 +523,12 @@ impl ComposerDraftWriter {
         });
         Self {
             tx,
+            events,
             worker: Some(worker),
         }
     }
 
+    #[cfg(test)]
     fn save(
         &self,
         store: crate::thread_store::ThreadStore,
@@ -439,11 +537,45 @@ impl ComposerDraftWriter {
     ) -> Result<(), String> {
         self.tx
             .send(ComposerDraftWrite::Save {
-                store,
-                thread_id,
+                key: format!("thread:{thread_id}"),
+                target: ComposerDraftTarget::Thread { store, thread_id },
                 draft,
             })
             .map_err(|error| error.to_string())
+    }
+
+    fn save_agent(
+        &self,
+        workspace: crate::workspace::SharedDevelopmentWorkspace,
+        agent_id: crate::AgentId,
+        draft: ComposerDraft,
+    ) -> Result<(), String> {
+        self.tx
+            .send(ComposerDraftWrite::Save {
+                key: format!("agent:{}", agent_id.as_str()),
+                target: ComposerDraftTarget::Agent {
+                    workspace,
+                    agent_id,
+                },
+                draft,
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    fn load_agent(
+        &self,
+        workspace: crate::workspace::SharedDevelopmentWorkspace,
+        agent_id: crate::AgentId,
+    ) -> Result<std::sync::mpsc::Receiver<Result<Option<ComposerDraft>, String>>, String> {
+        let (reply, result) = std::sync::mpsc::channel();
+        self.tx
+            .send(ComposerDraftWrite::Load {
+                workspace,
+                agent_id,
+                reply,
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(result)
     }
 
     fn flush(&self) -> Result<(), String> {
@@ -451,32 +583,92 @@ impl ComposerDraftWriter {
         self.tx
             .send(ComposerDraftWrite::Flush(tx))
             .map_err(|error| error.to_string())?;
-        rx.recv().map_err(|error| error.to_string())?
+        rx.recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|error| error.to_string())?
+    }
+
+    fn try_event(&self) -> Option<ComposerDraftWriterEvent> {
+        self.events.try_recv().ok()
+    }
+
+    fn discard_and_shutdown(&self) {
+        let _ = self.tx.send(ComposerDraftWrite::DiscardAndShutdown);
+    }
+
+    #[cfg(test)]
+    fn block_for_test(&self, duration: std::time::Duration) -> Result<(), String> {
+        self.tx
+            .send(ComposerDraftWrite::Delay(duration))
+            .map_err(|error| error.to_string())
+    }
+
+    #[cfg(test)]
+    fn disconnected_for_test() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(rx);
+        let (event_tx, events) = std::sync::mpsc::channel();
+        drop(event_tx);
+        Self {
+            tx,
+            events,
+            worker: None,
+        }
+    }
+
+    fn report_flush(
+        events: &std::sync::mpsc::Sender<ComposerDraftWriterEvent>,
+        result: &Result<(), String>,
+    ) {
+        let event = match result {
+            Ok(()) => ComposerDraftWriterEvent::SaveSucceeded,
+            Err(error) => ComposerDraftWriterEvent::SaveFailed(error.clone()),
+        };
+        let _ = events.send(event);
     }
 
     fn flush_pending(
-        pending: &mut std::collections::BTreeMap<
-            String,
-            (crate::thread_store::ThreadStore, ComposerDraft),
-        >,
+        pending: &mut std::collections::BTreeMap<String, (ComposerDraftTarget, ComposerDraft)>,
     ) -> Result<(), String> {
         let mut failed = Vec::new();
         let thread_ids = pending.keys().cloned().collect::<Vec<_>>();
         for thread_id in thread_ids {
-            let Some((store, draft)) = pending.remove(&thread_id) else {
+            let Some((target, draft)) = pending.remove(&thread_id) else {
                 continue;
             };
-            match store.set_composer_draft(
-                &thread_id,
-                crate::thread_store::ComposerDraftRecord {
-                    text: draft.text.clone(),
-                    cursor: draft.cursor,
-                },
-            ) {
+            let result = match &target {
+                #[cfg(test)]
+                ComposerDraftTarget::Thread { store, thread_id } => store
+                    .set_composer_draft(
+                        thread_id,
+                        crate::thread_store::ComposerDraftRecord {
+                            text: draft.text.clone(),
+                            cursor: draft.cursor,
+                        },
+                    )
+                    .map_err(|error| error.to_string()),
+                ComposerDraftTarget::Agent {
+                    workspace,
+                    agent_id,
+                } => workspace
+                    .lock()
+                    .and_then(|mut workspace| {
+                        let (store, thread_id) =
+                            workspace.agents().composer_draft_target(agent_id)?;
+                        store.set_composer_draft(
+                            &thread_id,
+                            crate::thread_store::ComposerDraftRecord {
+                                text: draft.text.clone(),
+                                cursor: draft.cursor,
+                            },
+                        )
+                    })
+                    .map_err(|error| error.to_string()),
+            };
+            match result {
                 Ok(()) => {}
                 Err(error) => {
-                    failed.push(error.to_string());
-                    pending.insert(thread_id, (store, draft));
+                    failed.push(error);
+                    pending.insert(thread_id, (target, draft));
                 }
             }
         }
@@ -488,9 +680,10 @@ impl ComposerDraftWriter {
 impl Drop for ComposerDraftWriter {
     fn drop(&mut self) {
         let _ = self.tx.send(ComposerDraftWrite::Shutdown);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        // Registry fsync runs on this worker. Detach it during teardown so a
+        // slow filesystem cannot trap the terminal after an explicit bounded
+        // quit flush has already reported its outcome.
+        drop(self.worker.take());
     }
 }
 
@@ -741,8 +934,12 @@ pub struct DevTuiState {
     #[cfg(unix)]
     composer_draft_save_failed: bool,
     #[cfg(unix)]
-    composer_draft_targets:
-        std::collections::BTreeMap<crate::AgentId, (crate::thread_store::ThreadStore, String)>,
+    composer_draft_failure: Option<String>,
+    #[cfg(unix)]
+    composer_draft_edit_generations: std::collections::BTreeMap<crate::AgentId, u64>,
+    #[cfg(unix)]
+    pending_composer_draft_loads:
+        std::collections::BTreeMap<crate::AgentId, PendingComposerDraftLoad>,
     pub pending_confirmation: Option<PendingConfirmation>,
     /// URL retained while the TUI launches a detached browser before navigation.
     pub pending_browser_navigation: Option<String>,
@@ -1099,7 +1296,11 @@ impl DevTuiState {
             #[cfg(unix)]
             composer_draft_save_failed: false,
             #[cfg(unix)]
-            composer_draft_targets: std::collections::BTreeMap::new(),
+            composer_draft_failure: None,
+            #[cfg(unix)]
+            composer_draft_edit_generations: std::collections::BTreeMap::new(),
+            #[cfg(unix)]
+            pending_composer_draft_loads: std::collections::BTreeMap::new(),
             pending_confirmation: None,
             editor_exit_prompt: None,
             pending_agent_approval: None,
@@ -1259,12 +1460,25 @@ impl DevTuiState {
         }
         #[cfg(unix)]
         {
-            self.persist_composer_draft();
-            if !self.flush_composer_drafts() {
-                let save_error = self.status.clone();
+            if !self.persist_composer_draft() || self.composer_draft_save_failed {
+                let save_error = self
+                    .composer_draft_failure
+                    .clone()
+                    .unwrap_or_else(|| "composer draft is not saved".into());
                 self.quit_confirmation = true;
                 self.status = format!(
-                    "{save_error} · Enter discards the unsaved draft and quits · Esc keeps editing"
+                    "Could not save composer draft: {save_error} · Enter discards the unsaved draft and quits · Esc keeps editing"
+                );
+                return;
+            }
+            if !self.flush_composer_drafts() {
+                let save_error = self
+                    .composer_draft_failure
+                    .clone()
+                    .unwrap_or_else(|| "persistence did not complete".into());
+                self.quit_confirmation = true;
+                self.status = format!(
+                    "Could not save composer draft: {save_error} · Enter discards the unsaved draft and quits · Esc keeps editing"
                 );
                 return;
             }
@@ -1319,9 +1533,26 @@ impl DevTuiState {
             self.status = format!("Could not resolve the page dialog before quitting · {error}");
             return;
         }
+        #[cfg(unix)]
+        let discarding_composer_draft = self.composer_draft_save_failed;
+        #[cfg(unix)]
+        if discarding_composer_draft && let Some(writer) = self.composer_draft_writer.as_ref() {
+            writer.discard_and_shutdown();
+        }
         self.quit_confirmation = false;
         self.quit = true;
-        self.status = "Closing Glass Dev".into();
+        #[cfg(unix)]
+        {
+            self.status = if discarding_composer_draft {
+                "Closing Glass Dev · unsaved composer draft discarded".into()
+            } else {
+                "Closing Glass Dev".into()
+            };
+        }
+        #[cfg(not(unix))]
+        {
+            self.status = "Closing Glass Dev".into();
+        }
     }
 
     pub fn cancel_quit(&mut self) {
@@ -3311,7 +3542,9 @@ impl DevTuiState {
             }
         };
         if agents.is_empty() {
-            self.select_agent(None);
+            if !self.select_agent(None) {
+                return;
+            }
             self.status = "No resident agents · Enter starts the Glass Agent".into();
             return;
         }
@@ -3340,6 +3573,28 @@ impl DevTuiState {
             return true;
         }
         let current = self.selected_agent.clone();
+        #[cfg(unix)]
+        {
+            let current_load_pending = current.as_ref().is_some_and(|agent_id| {
+                self.pending_composer_draft_loads.contains_key(agent_id)
+                    && !self.thread_drafts.contains_key(&Some(agent_id.clone()))
+            });
+            if !current_load_pending {
+                self.thread_drafts.insert(
+                    current.clone(),
+                    ComposerDraft {
+                        text: self.composer_input.clone(),
+                        cursor: self.composer_cursor,
+                    },
+                );
+            }
+            if (!current_load_pending && !self.persist_composer_draft())
+                || self.composer_draft_save_failed
+            {
+                return false;
+            }
+        }
+        #[cfg(not(unix))]
         self.thread_drafts.insert(
             current,
             ComposerDraft {
@@ -3347,13 +3602,6 @@ impl DevTuiState {
                 cursor: self.composer_cursor,
             },
         );
-        #[cfg(unix)]
-        {
-            self.persist_composer_draft();
-            if !self.flush_composer_drafts() {
-                return false;
-            }
-        }
         self.selected_agent = selected.clone();
         if let Some(conversation) = selected
             .as_ref()
@@ -3367,116 +3615,149 @@ impl DevTuiState {
             self.conversation_items.clear();
         }
         let process_local_draft = self.thread_drafts.get(&selected).cloned();
-        let draft = process_local_draft.clone().unwrap_or_else(|| {
-            #[cfg(unix)]
-            if let Some(agent_id) = selected.as_ref()
-                && let Some(draft) = self.load_durable_composer_draft(agent_id)
-            {
-                return draft;
-            }
-            ComposerDraft::default()
-        });
-        self.composer_input = draft.text;
+        let draft = process_local_draft.clone().unwrap_or_default();
+        self.composer_input = draft.text.clone();
         self.composer_cursor = draft.cursor.min(self.composer_input.len());
         #[cfg(unix)]
         {
-            self.persisted_composer_draft = if process_local_draft.is_some() {
-                None
-            } else {
-                selected.clone().map(|agent| {
-                    (
-                        agent,
-                        ComposerDraft {
-                            text: self.composer_input.clone(),
-                            cursor: self.composer_cursor,
-                        },
-                    )
-                })
-            };
-            if process_local_draft.is_some() {
-                self.persist_composer_draft();
+            self.persisted_composer_draft =
+                selected.clone().map(|agent_id| (agent_id, draft.clone()));
+            if process_local_draft.is_none()
+                && let Some(agent_id) = selected
+                && !self.pending_composer_draft_loads.contains_key(&agent_id)
+            {
+                let writer = self
+                    .composer_draft_writer
+                    .get_or_insert_with(ComposerDraftWriter::spawn);
+                match writer.load_agent(self.workspace.clone(), agent_id.clone()) {
+                    Ok(reply) => {
+                        let generation = self
+                            .composer_draft_edit_generations
+                            .get(&agent_id)
+                            .copied()
+                            .unwrap_or_default();
+                        self.pending_composer_draft_loads
+                            .insert(agent_id, (generation, reply));
+                    }
+                    Err(error) => {
+                        self.composer_draft_save_failed = true;
+                        self.composer_draft_failure = Some(error.clone());
+                        self.status = format!("Could not queue composer draft load: {error}");
+                    }
+                }
             }
         }
         true
     }
 
     #[cfg(unix)]
-    fn load_durable_composer_draft(&mut self, agent_id: &crate::AgentId) -> Option<ComposerDraft> {
-        if !self.composer_draft_targets.contains_key(agent_id) {
-            let target = self
-                .workspace
-                .lock()
-                .and_then(|mut workspace| workspace.agents().composer_draft_target(agent_id));
-            match target {
-                Ok(target) => {
-                    self.composer_draft_targets.insert(agent_id.clone(), target);
-                }
-                Err(error) => {
-                    self.status = format!("Could not load composer draft: {error}");
-                    return None;
-                }
-            }
-        }
-        let (store, thread_id) = self.composer_draft_targets.get(agent_id)?;
-        match store.composer_draft(thread_id) {
-            Ok(Some(draft)) => Some(ComposerDraft {
-                text: draft.text,
-                cursor: draft.cursor,
-            }),
-            Ok(None) => Some(ComposerDraft::default()),
-            Err(error) => {
-                self.status = format!("Could not load composer draft: {error}");
-                None
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    pub(super) fn persist_composer_draft(&mut self) {
+    pub(super) fn persist_composer_draft(&mut self) -> bool {
         let Some(agent_id) = self.selected_agent.clone() else {
-            return;
+            return true;
         };
         let draft = ComposerDraft {
             text: self.composer_input.clone(),
             cursor: self.composer_cursor.min(self.composer_input.len()),
         };
         if self.persisted_composer_draft.as_ref() == Some(&(agent_id.clone(), draft.clone())) {
-            return;
+            if !self.pending_composer_draft_loads.contains_key(&agent_id) {
+                self.thread_drafts.insert(Some(agent_id), draft);
+            }
+            return true;
         }
-        if !self.composer_draft_targets.contains_key(&agent_id) {
-            let target = self
-                .workspace
-                .try_lock()
-                .and_then(|mut workspace| workspace.agents().composer_draft_target(&agent_id));
-            match target {
-                Ok(target) => {
-                    self.composer_draft_targets.insert(agent_id.clone(), target);
-                }
-                Err(error) => {
-                    self.status = format!("Could not queue composer draft: {error}");
-                    return;
-                }
+        let generation = self
+            .composer_draft_edit_generations
+            .entry(agent_id.clone())
+            .or_default();
+        *generation = generation.wrapping_add(1);
+        self.thread_drafts
+            .insert(Some(agent_id.clone()), draft.clone());
+        let writer = self
+            .composer_draft_writer
+            .get_or_insert_with(ComposerDraftWriter::spawn);
+        match writer.save_agent(self.workspace.clone(), agent_id.clone(), draft.clone()) {
+            Ok(()) => {
+                self.persisted_composer_draft = Some((agent_id, draft));
+                true
+            }
+            Err(error) => {
+                self.composer_draft_save_failed = true;
+                self.composer_draft_failure = Some(error.clone());
+                self.status = format!("Could not queue composer draft: {error}");
+                false
             }
         }
-        let target = self.composer_draft_targets.get(&agent_id).cloned();
-        match target {
-            Some((store, thread_id)) => {
-                let writer = self
-                    .composer_draft_writer
-                    .get_or_insert_with(ComposerDraftWriter::spawn);
-                match writer.save(store, thread_id, draft.clone()) {
-                    Ok(()) => {
-                        self.persisted_composer_draft = Some((agent_id, draft));
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn poll_composer_draft_io(&mut self) -> bool {
+        let mut changed = false;
+        if let Some(writer) = self.composer_draft_writer.as_ref() {
+            while let Some(event) = writer.try_event() {
+                match event {
+                    ComposerDraftWriterEvent::SaveFailed(error) => {
+                        self.composer_draft_save_failed = true;
+                        self.composer_draft_failure = Some(error.clone());
+                        self.status = format!("Could not save composer draft: {error}");
+                        changed = true;
                     }
-                    Err(error) => {
-                        self.status = format!("Could not queue composer draft: {error}");
+                    ComposerDraftWriterEvent::SaveSucceeded => {
+                        self.composer_draft_save_failed = false;
+                        self.composer_draft_failure = None;
                     }
                 }
             }
-            None => {
-                self.status = "Could not queue composer draft: thread mapping unavailable".into();
+        }
+        let pending_ids = self
+            .pending_composer_draft_loads
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for agent_id in pending_ids {
+            let Some((generation, reply)) = self.pending_composer_draft_loads.remove(&agent_id)
+            else {
+                continue;
+            };
+            match reply.try_recv() {
+                Ok(Ok(draft)) => {
+                    let current_generation = self
+                        .composer_draft_edit_generations
+                        .get(&agent_id)
+                        .copied()
+                        .unwrap_or_default();
+                    if current_generation == generation
+                        && !self.thread_drafts.contains_key(&Some(agent_id.clone()))
+                    {
+                        let draft = draft.unwrap_or_default();
+                        self.thread_drafts
+                            .insert(Some(agent_id.clone()), draft.clone());
+                        if self.selected_agent.as_ref() == Some(&agent_id) {
+                            self.composer_input = draft.text.clone();
+                            self.composer_cursor = draft.cursor.min(self.composer_input.len());
+                            self.persisted_composer_draft = Some((agent_id, draft));
+                            changed = true;
+                        }
+                    }
+                }
+                Ok(Err(error)) => {
+                    if self.selected_agent.as_ref() == Some(&agent_id) {
+                        self.status = format!("Could not load composer draft: {error}");
+                        changed = true;
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.pending_composer_draft_loads
+                        .insert(agent_id, (generation, reply));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if self.selected_agent.as_ref() == Some(&agent_id) {
+                        self.status = "Could not load composer draft: worker disconnected".into();
+                        changed = true;
+                    }
+                }
             }
         }
+        changed
     }
 
     #[cfg(unix)]
@@ -3488,10 +3769,12 @@ impl DevTuiState {
         match writer.flush() {
             Ok(()) => {
                 self.composer_draft_save_failed = false;
+                self.composer_draft_failure = None;
                 true
             }
             Err(error) => {
                 self.composer_draft_save_failed = true;
+                self.composer_draft_failure = Some(error.clone());
                 self.status = format!("Could not save composer draft: {error}");
                 false
             }
@@ -12417,7 +12700,8 @@ mod tests {
         first.select_agent(Some(old_agent_id));
         first.composer_input = "resume this λ".into();
         first.composer_cursor = "resume ".len();
-        first.persist_composer_draft();
+        assert!(first.persist_composer_draft());
+        assert!(first.flush_composer_drafts());
         drop(first);
 
         store
@@ -12439,6 +12723,12 @@ mod tests {
         let mut reopened = DevTuiState::open_for_tui(&root, TuiLayout::Desktop).unwrap();
         let new_agent_id = crate::AgentId::parse("agent-0002").unwrap();
         reopened.select_agent(Some(new_agent_id));
+        for _ in 0..100 {
+            if reopened.poll_composer_draft_io() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert_eq!(reopened.composer_input, "resume this λ");
         assert_eq!(reopened.composer_cursor, "resume ".len());
         drop(reopened);
@@ -12447,18 +12737,14 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn failed_composer_draft_flush_keeps_outgoing_agent_selected() {
+    fn failed_composer_draft_enqueue_keeps_outgoing_agent_selected() {
         let (mut state, root) = routed_state("composer-draft-save-failure-switch");
         let agent_a = crate::AgentId::parse("agent-0001").unwrap();
         let agent_b = crate::AgentId::parse("agent-0002").unwrap();
-        let store = crate::thread_store::ThreadStore::open(&root).unwrap();
         state.selected_agent = Some(agent_a.clone());
         state.composer_input = "unsaved outgoing draft".into();
         state.composer_cursor = 8;
-        state.composer_draft_targets.insert(
-            agent_a.clone(),
-            (store, "missing-thread-for-failure-test".into()),
-        );
+        state.composer_draft_writer = Some(ComposerDraftWriter::disconnected_for_test());
 
         assert!(!state.select_agent(Some(agent_b)));
         assert_eq!(state.selected_agent, Some(agent_a.clone()));
@@ -12471,23 +12757,20 @@ mod tests {
                 cursor: 8,
             })
         );
-        assert!(state.status.contains("Could not save composer draft"));
+        assert!(state.status.contains("Could not queue composer draft"));
         drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]
     #[test]
-    fn failed_composer_draft_flush_requires_explicit_quit_discard() {
+    fn failed_composer_draft_enqueue_requires_explicit_quit_discard() {
         let (mut state, root) = routed_state("composer-draft-save-failure-quit");
         let agent = crate::AgentId::parse("agent-0001").unwrap();
-        let store = crate::thread_store::ThreadStore::open(&root).unwrap();
         state.selected_agent = Some(agent.clone());
         state.composer_input = "unsaved composer text".into();
         state.composer_cursor = 8;
-        state
-            .composer_draft_targets
-            .insert(agent, (store, "missing-thread-for-failure-test".into()));
+        state.composer_draft_writer = Some(ComposerDraftWriter::disconnected_for_test());
 
         state.request_quit();
         assert!(state.quit_confirmation);
@@ -12509,6 +12792,170 @@ mod tests {
         assert!(state.quit_confirmation);
         state.confirm_quit();
         assert!(state.quit);
+        assert!(state.status.contains("unsaved composer draft discarded"));
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn asynchronous_composer_draft_failure_blocks_switch_and_requires_discard() {
+        let (mut state, root) = routed_state("composer-draft-async-save-failure");
+        let agent_a = crate::AgentId::parse("agent-0001").unwrap();
+        let agent_b = crate::AgentId::parse("agent-0002").unwrap();
+        state.selected_agent = Some(agent_a.clone());
+        state.composer_input = "draft with failed backing store".into();
+        state.composer_cursor = 6;
+        assert!(state.persist_composer_draft());
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        assert!(state.poll_composer_draft_io());
+        assert!(state.composer_draft_save_failed);
+
+        assert!(!state.select_agent(Some(agent_b)));
+        assert_eq!(state.selected_agent, Some(agent_a));
+        state.request_quit();
+        assert!(state.quit_confirmation);
+        assert!(!state.quit);
+        assert!(
+            state
+                .status
+                .contains("Enter discards the unsaved draft and quits")
+        );
+        state.cancel_quit();
+        assert!(state.status.contains("Composer draft remains unsaved"));
+
+        let _ = state.flush_composer_drafts();
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn switching_agents_does_not_wait_for_composer_writer() {
+        let (mut state, root) = routed_state("composer-draft-switch-responsive");
+        let agent_a = crate::AgentId::parse("agent-0001").unwrap();
+        let agent_b = crate::AgentId::parse("agent-0002").unwrap();
+        state.selected_agent = Some(agent_a.clone());
+        state.composer_input = "keep this draft".into();
+        state.composer_cursor = 5;
+        let writer = ComposerDraftWriter::spawn();
+        writer
+            .block_for_test(std::time::Duration::from_millis(250))
+            .unwrap();
+        state.composer_draft_writer = Some(writer);
+
+        let started = std::time::Instant::now();
+        assert!(state.select_agent(Some(agent_b.clone())));
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        assert_eq!(state.selected_agent, Some(agent_b));
+        assert_eq!(
+            state.thread_drafts.get(&Some(agent_a)),
+            Some(&ComposerDraft {
+                text: "keep this draft".into(),
+                cursor: 5,
+            })
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        state.poll_composer_draft_io();
+        let _ = state.flush_composer_drafts();
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_durable_load_survives_switch_away_and_back() {
+        let (mut state, root) = routed_state("composer-draft-late-load-switch");
+        let agent_a = crate::AgentId::parse("agent-0001").unwrap();
+        let agent_b = crate::AgentId::parse("agent-0002").unwrap();
+        let store = crate::thread_store::ThreadStore::open(&root).unwrap();
+        let thread_id = crate::thread_store::random_id("thread").unwrap();
+        store
+            .create(crate::thread_store::ThreadRecord {
+                thread_id: thread_id.clone(),
+                title: "draft owner".into(),
+                role: "assistant".into(),
+                created_at_ms: 1,
+                runs: vec![crate::thread_store::RunRecord {
+                    run_id: crate::thread_store::random_id("run").unwrap(),
+                    engine: "glass-core".into(),
+                    core_session_id: None,
+                    classification: crate::thread_store::RunClassification::Starting,
+                }],
+                composer_draft: None,
+            })
+            .unwrap();
+        store
+            .set_composer_draft(
+                &thread_id,
+                crate::thread_store::ComposerDraftRecord {
+                    text: "durable draft λ".into(),
+                    cursor: "durable ".len(),
+                },
+            )
+            .unwrap();
+        let durable = store.composer_draft(&thread_id).unwrap().unwrap();
+        let (load_a_tx, load_a_rx) = std::sync::mpsc::channel();
+        let (_load_b_tx, load_b_rx) = std::sync::mpsc::channel();
+        state.selected_agent = Some(agent_a.clone());
+        state
+            .pending_composer_draft_loads
+            .insert(agent_a.clone(), (0, load_a_rx));
+        state
+            .pending_composer_draft_loads
+            .insert(agent_b.clone(), (0, load_b_rx));
+
+        assert!(state.select_agent(Some(agent_b)));
+        assert!(state.select_agent(Some(agent_a.clone())));
+        assert!(state.composer_input.is_empty());
+        load_a_tx
+            .send(Ok(Some(ComposerDraft {
+                text: durable.text,
+                cursor: durable.cursor,
+            })))
+            .unwrap();
+        assert!(state.poll_composer_draft_io());
+        assert_eq!(state.selected_agent, Some(agent_a));
+        assert_eq!(state.composer_input, "durable draft λ");
+        assert_eq!(state.composer_cursor, "durable ".len());
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn late_durable_load_does_not_replace_a_new_user_edit() {
+        let (mut state, root) = routed_state("composer-draft-late-load-edit");
+        let agent = crate::AgentId::parse("agent-0001").unwrap();
+        let (load_tx, load_rx) = std::sync::mpsc::channel();
+        state.selected_agent = Some(agent.clone());
+        state
+            .pending_composer_draft_loads
+            .insert(agent.clone(), (0, load_rx));
+        state.composer_input = "new user edit".into();
+        state.composer_cursor = 4;
+        assert!(state.persist_composer_draft());
+        load_tx
+            .send(Ok(Some(ComposerDraft {
+                text: "old durable text".into(),
+                cursor: 12,
+            })))
+            .unwrap();
+
+        state.poll_composer_draft_io();
+        assert_eq!(state.composer_input, "new user edit");
+        assert_eq!(state.composer_cursor, 4);
+        assert_eq!(
+            state.thread_drafts.get(&Some(agent)),
+            Some(&ComposerDraft {
+                text: "new user edit".into(),
+                cursor: 4,
+            })
+        );
+
+        let _ = state.flush_composer_drafts();
         drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }

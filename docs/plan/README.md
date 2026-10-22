@@ -59,6 +59,9 @@ exercises three concurrently active fake-Core conversations with distinct
 drafts and cursors, then settles one in the background while a different
 conversation remains selected. Issue #64 remains active for follow-up queue
 delivery and the remaining combined homespace journeys.
+The follow-up queue's old-run block, explicit retarget, and confirmed
+`NeedsReview` retry path is tracked in the
+[queue retarget/retry journey](tasks/issue64-queue-retarget-retry-001.md).
 
 ## Current source line: Glass 0.3.14
 

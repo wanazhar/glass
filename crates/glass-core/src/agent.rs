@@ -268,7 +268,7 @@ pub struct Agent<'a> {
 const VERIFY_TAIL_LINES: usize = 40;
 
 /// A progress callback.
-type HumanDecision<'a> = Box<dyn Fn(&serde_json::Value) -> Result<serde_json::Value,String> + 'a>;
+type HumanDecision<'a> = Box<dyn Fn(&serde_json::Value) -> Result<serde_json::Value, String> + 'a>;
 
 pub type ProgressSink<'a> = Box<dyn Fn(Progress<'_>) + 'a>;
 
@@ -297,30 +297,48 @@ impl<'a> Agent<'a> {
         if let Some(live) = self.live.as_mut() {
             live.tool(&call.id, &call.name);
         }
-        let command = call.arg_str("command").or_else(|| call.arg_str("path")).or_else(|| {
-            call.arg_raw("job")
-                .and_then(|raw| serde_json::from_str(&raw).ok())
-                .map(|v| crate::jobs::label(&v))
-        });
+        let command = call
+            .arg_str("command")
+            .or_else(|| call.arg_str("path"))
+            .or_else(|| {
+                call.arg_raw("job")
+                    .and_then(|raw| serde_json::from_str(&raw).ok())
+                    .map(|v| crate::jobs::label(&v))
+            });
         let command = command.map(|label| {
             let outside = call.arg_str("path").is_some_and(|path| {
                 let mut normalized = std::path::PathBuf::new();
                 for component in self.workspace.join(path).components() {
                     match component {
-                        std::path::Component::ParentDir => { normalized.pop(); },
-                        std::path::Component::CurDir => {},
+                        std::path::Component::ParentDir => {
+                            normalized.pop();
+                        }
+                        std::path::Component::CurDir => {}
                         other => normalized.push(other.as_os_str()),
                     }
                 }
                 !normalized.starts_with(self.workspace)
             });
-            let system_write = call.name == "bash" && call.arg_str("command").is_some_and(|command| {
-                verify::written_paths(&command, self.workspace).iter().any(|path|
-                    ["/proc", "/sys", "/dev"].iter().any(|root| path.starts_with(root)))
-            });
-            if system_write { format!("[system control write · check impact] {label}") }
-            else if outside { format!("[outside workspace · {}] {label}", crate::sandbox::permission_profile_label()) }
-            else { label }
+            let system_write = call.name == "bash"
+                && call.arg_str("command").is_some_and(|command| {
+                    verify::written_paths(&command, self.workspace)
+                        .iter()
+                        .any(|path| {
+                            ["/proc", "/sys", "/dev"]
+                                .iter()
+                                .any(|root| path.starts_with(root))
+                        })
+                });
+            if system_write {
+                format!("[system control write · check impact] {label}")
+            } else if outside {
+                format!(
+                    "[outside workspace · {}] {label}",
+                    crate::sandbox::permission_profile_label()
+                )
+            } else {
+                label
+            }
         });
         self.emit(Progress::ToolStart {
             call_id: &call.id,
@@ -338,7 +356,10 @@ impl<'a> Agent<'a> {
         workspace: &'a Path,
     ) -> Self {
         session.validate_writes();
-        let todo_error = session.write_error().map(str::to_string).or_else(||state.load_todo_once(session).err());
+        let todo_error = session
+            .write_error()
+            .map(str::to_string)
+            .or_else(|| state.load_todo_once(session).err());
         extensions.bind_session_path(session.path.clone());
         Self {
             hosted: None,
@@ -398,7 +419,8 @@ impl<'a> Agent<'a> {
     pub fn with_task_context(mut self, prompt: String, read_only: bool) -> Self {
         // Isolated tasks inherit their parent context; task text is not a user directive.
         self.automatic_memory = false;
-        self.with_prompt(prompt, None, None).with_plan_mode(read_only)
+        self.with_prompt(prompt, None, None)
+            .with_plan_mode(read_only)
     }
 
     pub fn with_plan_mode(mut self, enabled: bool) -> Self {
@@ -413,21 +435,33 @@ impl<'a> Agent<'a> {
     }
     /// Exclusive host execution: no built-ins, extensions, or local tool guards.
     /// The host owns authorization and every side effect.
-    pub fn with_host_tools(mut self, tools: Vec<(String, String, String)>, execute: HostExecutor<'a>) -> Self {
+    pub fn with_host_tools(
+        mut self,
+        tools: Vec<(String, String, String)>,
+        execute: HostExecutor<'a>,
+    ) -> Self {
         self.hosted = Some((tools, execute));
         self
     }
 
     fn tool_set(&self) -> Vec<(String, String, String)> {
-        if let Some((tools, _)) = &self.hosted { return tools.clone(); }
+        if let Some((tools, _)) = &self.hosted {
+            return tools.clone();
+        }
         if self.read_only {
-            let mut tools=crate::inspect::schema();
-            if self.input_keys.is_some() || self.human.is_some() {tools.push(crate::questions::schema());}
+            let mut tools = crate::inspect::schema();
+            if self.input_keys.is_some() || self.human.is_some() {
+                tools.push(crate::questions::schema());
+            }
             tools
         } else {
             let mut tools = provider::collect_tools(self.mods);
-            if !self.image_input { tools.retain(|(name, _, _)| name != "view_image"); }
-            if self.input_keys.is_some() || self.human.is_some() { tools.push(crate::questions::schema()); }
+            if !self.image_input {
+                tools.retain(|(name, _, _)| name != "view_image");
+            }
+            if self.input_keys.is_some() || self.human.is_some() {
+                tools.push(crate::questions::schema());
+            }
             if self.checkpoint_tools {
                 tools.extend(crate::provider::checkpoint_tool_schemas());
             }
@@ -515,7 +549,10 @@ impl<'a> Agent<'a> {
     }
 
     /// Bind a trusted frontend's paused, explicit human decision channel.
-    pub fn with_human(mut self, human: impl Fn(&serde_json::Value) -> Result<serde_json::Value, String> + 'a) -> Self {
+    pub fn with_human(
+        mut self,
+        human: impl Fn(&serde_json::Value) -> Result<serde_json::Value, String> + 'a,
+    ) -> Self {
         self.human = Some(Box::new(human));
         self
     }
@@ -528,51 +565,127 @@ impl<'a> Agent<'a> {
 
     fn command_approvals(&self, call: &ToolCall) -> crate::sandbox::SessionApprovals {
         let mut approvals = if self.input_keys.is_some() {
-            call.arg_str("command").and_then(|command|crate::permissions::approvals_for_command(&command).ok()).unwrap_or_default()
-        } else { crate::sandbox::SessionApprovals::default() };
-        if let Some(command)=call.arg_str("command")
-            && self.approved_calls.get(&call.id)==Some(&command) { approvals.approve_exact(&command); }
+            call.arg_str("command")
+                .and_then(|command| crate::permissions::approvals_for_command(&command).ok())
+                .unwrap_or_default()
+        } else {
+            crate::sandbox::SessionApprovals::default()
+        };
+        if let Some(command) = call.arg_str("command")
+            && self.approved_calls.get(&call.id) == Some(&command)
+        {
+            approvals.approve_exact(&command);
+        }
         approvals
     }
 
-    fn approval_refusal(&mut self, call:&ToolCall) -> Option<String> {
+    fn approval_refusal(&mut self, call: &ToolCall) -> Option<String> {
         match call.arg_str("permission").as_deref() {
             None | Some("use_default") => return None,
-            Some("require_escalated") => {},
+            Some("require_escalated") => {}
             _ => return Some("Unknown permission request; nothing executed".into()),
         }
-        if !matches!(call.name.as_str(),"bash"|"edit"|"write") {return Some("Only bash, edit and write support elevation; nothing executed".into());}
-        if self.read_only {return Some("Plan mode cannot request execution rights".into());}
-        if crate::sandbox::permission_profile_label()=="unrestricted" && crate::sandbox::policy()==crate::sandbox::Policy::Off {return None;}
-        if self.input_keys.is_none() && self.human.is_none() {return Some("Approval required: no interactive human is connected; nothing executed".into());}
-        if call.arguments.len()>65536 {return Some("Operation exceeds the 64 KiB approval review bound; split it into smaller explicit operations".into());}
-        let requirements=match crate::requirements::load(&crate::config::config_dir()) {Ok(r)=>r,Err(e)=>return Some(e)};
-        if requirements.sandbox.is_some_and(|policy|policy!=crate::sandbox::Policy::Off) {return Some("Administrator sandbox requirements forbid elevation".into());}
-        let Some(operation)=call.arg_str("command").or_else(||call.arg_str("path")) else {return Some("Elevation requires an exact command or path; nothing executed".into());};
-        if call.name=="bash" && call.arg_str("cwd").is_some_and(|cwd|cwd!="."&&std::path::Path::new(&cwd)!=self.workspace) {return Some("Elevated commands must use the session workspace cwd".into());}
-        let reason=call.arg_str("justification").filter(|s|!s.trim().is_empty()&&s.len()<=2048);
-        let Some(reason)=reason else {return Some("An elevation request needs a justification (1–2048 bytes)".into());};
-        if let Err(error)=crate::policy::shell(call.arg_str("command").as_deref().unwrap_or("")) {return Some(error);}
-        if let Err(error)=self.session.append_checked(&[Record::Meta(format!("Approval pending: {} · {}",call.name,operation))]) {return Some(format!("Cannot record approval request: {error}; nothing executed"));}
+        if !matches!(call.name.as_str(), "bash" | "edit" | "write") {
+            return Some("Only bash, edit and write support elevation; nothing executed".into());
+        }
+        if self.read_only {
+            return Some("Plan mode cannot request execution rights".into());
+        }
+        if crate::sandbox::permission_profile_label() == "unrestricted"
+            && crate::sandbox::policy() == crate::sandbox::Policy::Off
+        {
+            return None;
+        }
+        if self.input_keys.is_none() && self.human.is_none() {
+            return Some(
+                "Approval required: no interactive human is connected; nothing executed".into(),
+            );
+        }
+        if call.arguments.len() > 65536 {
+            return Some("Operation exceeds the 64 KiB approval review bound; split it into smaller explicit operations".into());
+        }
+        let requirements = match crate::requirements::load(&crate::config::config_dir()) {
+            Ok(r) => r,
+            Err(e) => return Some(e),
+        };
+        if requirements
+            .sandbox
+            .is_some_and(|policy| policy != crate::sandbox::Policy::Off)
+        {
+            return Some("Administrator sandbox requirements forbid elevation".into());
+        }
+        let Some(operation) = call.arg_str("command").or_else(|| call.arg_str("path")) else {
+            return Some("Elevation requires an exact command or path; nothing executed".into());
+        };
+        if call.name == "bash"
+            && call
+                .arg_str("cwd")
+                .is_some_and(|cwd| cwd != "." && std::path::Path::new(&cwd) != self.workspace)
+        {
+            return Some("Elevated commands must use the session workspace cwd".into());
+        }
+        let reason = call
+            .arg_str("justification")
+            .filter(|s| !s.trim().is_empty() && s.len() <= 2048);
+        let Some(reason) = reason else {
+            return Some("An elevation request needs a justification (1–2048 bytes)".into());
+        };
+        if let Err(error) = crate::policy::shell(call.arg_str("command").as_deref().unwrap_or("")) {
+            return Some(error);
+        }
+        if let Err(error) = self.session.append_checked(&[Record::Meta(format!(
+            "Approval pending: {} · {}",
+            call.name, operation
+        ))]) {
+            return Some(format!(
+                "Cannot record approval request: {error}; nothing executed"
+            ));
+        }
         // Render the full operation and its decision together; compact choice
         // menus hide their note, which is not sufficient approval disclosure.
-        let payload=match serde_json::from_str::<serde_json::Value>(&call.arguments).and_then(|value|serde_json::to_string_pretty(&value)) {Ok(payload)=>payload,Err(error)=>return Some(error.to_string())};
-        let review=format!("**Paused · ↑↓/PgUp/PgDn scroll**\n**a allow once · d/Esc deny**\n\n{reason}\n\n## Exact {} operation\n```json\n{payload}\n```\n\nThis one operation runs outside the configured sandbox. Denial grants nothing; the configured profile remains unchanged.",call.name);
+        let payload = match serde_json::from_str::<serde_json::Value>(&call.arguments)
+            .and_then(|value| serde_json::to_string_pretty(&value))
+        {
+            Ok(payload) => payload,
+            Err(error) => return Some(error.to_string()),
+        };
+        let review = format!(
+            "**Paused · ↑↓/PgUp/PgDn scroll**\n**a allow once · d/Esc deny**\n\n{reason}\n\n## Exact {} operation\n```json\n{payload}\n```\n\nThis one operation runs outside the configured sandbox. Denial grants nothing; the configured profile remains unchanged.",
+            call.name
+        );
         let chosen = if let Some(human) = &self.human {
-            match human(&serde_json::json!({"kind":"approval","call_id":call.id,"name":call.name,"operation":serde_json::from_str::<serde_json::Value>(&call.arguments).unwrap_or_default(),"reason":reason,"review":review})) {
+            match human(
+                &serde_json::json!({"kind":"approval","call_id":call.id,"name":call.name,"operation":serde_json::from_str::<serde_json::Value>(&call.arguments).unwrap_or_default(),"reason":reason,"review":review}),
+            ) {
                 Ok(answer) if answer["allow"] == true => Some('a'),
-                Err(error) if error.contains("cancelled") || error.contains("expired") => {self.steer=Some(String::new());None},
+                Err(error) if error.contains("cancelled") || error.contains("expired") => {
+                    self.steer = Some(String::new());
+                    None
+                }
                 _ => None,
             }
         } else {
-            crate::modal::rich_actions(self.input_keys.unwrap(),"Approval required",&review,&[('a',"Allow once"),('d',"Deny")])
+            crate::modal::rich_actions(
+                self.input_keys.unwrap(),
+                "Approval required",
+                &review,
+                &[('a', "Allow once"), ('d', "Deny")],
+            )
         };
-        if chosen!=Some('a') {
-            self.session.append(Record::Meta(format!("Approval denied: {}",call.id)));
+        if chosen != Some('a') {
+            self.session
+                .append(Record::Meta(format!("Approval denied: {}", call.id)));
             return Some("User denied this operation. Do not repeat or work around the denial; choose an allowed approach or explain the blocker.".into());
         }
-        if let Err(error)=self.session.append_checked(&[Record::Meta(format!("Approval granted once: {}",call.id))]) {return Some(format!("Cannot record approval decision: {error}; nothing executed"));}
-        self.approved_calls.insert(call.id.clone(),operation);
+        if let Err(error) = self
+            .session
+            .append_checked(&[Record::Meta(format!("Approval granted once: {}", call.id))])
+        {
+            return Some(format!(
+                "Cannot record approval decision: {error}; nothing executed"
+            ));
+        }
+        self.approved_calls.insert(call.id.clone(), operation);
         None
     }
 
@@ -588,7 +701,10 @@ impl<'a> Agent<'a> {
         self
     }
 
-    pub fn with_image_input(mut self, enabled: bool) -> Self { self.image_input = enabled; self }
+    pub fn with_image_input(mut self, enabled: bool) -> Self {
+        self.image_input = enabled;
+        self
+    }
 
     pub fn with_limits(mut self, max_tokens: u32, reasoning: Option<u32>, rounds: usize) -> Self {
         self.max_tokens = max_tokens;
@@ -605,7 +721,9 @@ impl<'a> Agent<'a> {
         &mut self,
         mut pump: impl FnMut(&mut Option<String>),
     ) -> Result<TurnOutput, provider::Error> {
-        if let Some(error) = &self.checklist_error { return Err(provider::Error::Config(error.clone())); }
+        if let Some(error) = &self.checklist_error {
+            return Err(provider::Error::Config(error.clone()));
+        }
         self.session.validate_writes();
         if let Some(error) = self.session.write_error() {
             return Err(provider::Error::Config(format!(
@@ -676,7 +794,11 @@ impl<'a> Agent<'a> {
             messages: &messages,
             tools: &tools,
             max_tokens: self.max_tokens,
-            reasoning: if self.empty_correction { Some(0) } else { self.reasoning },
+            reasoning: if self.empty_correction {
+                Some(0)
+            } else {
+                self.reasoning
+            },
         };
 
         let manifest = crate::context_audit::capture(
@@ -712,73 +834,95 @@ impl<'a> Agent<'a> {
             let reasoning = req.reasoning;
             std::thread::spawn(move || {
                 let notice_tx = tx.clone();
-                let result = provider::with_pacing_notice(move |notice| { let _ = notice_tx.send(StreamUpdate::Event(Event::Warning(notice))); }, || provider::with_request_cancel(worker_cancel.clone(), || -> Result<(), String> {
-                    let provider = factory()?;
-                    let req = Request {
-                        model: &model,
-                        system: &system,
-                        messages: &messages,
-                        tools: &tools,
-                        max_tokens,
-                        reasoning,
-                    };
-                    let mut attempt = 0u8;
-                    let stream = loop {
-                        if worker_cancel.load(std::sync::atomic::Ordering::Acquire) {
-                            return Ok(());
-                        }
-                        match provider.stream(&req) {
-                            Ok(stream) => break stream,
-                            Err(e)
-                                if provider::is_transient(&e)
-                                    && attempt + 1 < provider::RETRY_ATTEMPTS =>
-                            {
-                                let delay_s = provider::RETRY_DELAYS
-                                    .get(attempt as usize)
-                                    .copied()
-                                    .unwrap_or(0);
-                                attempt += 1;
+                let result = provider::with_pacing_notice(
+                    move |notice| {
+                        let _ = notice_tx.send(StreamUpdate::Event(Event::Warning(notice)));
+                    },
+                    || {
+                        provider::with_request_cancel(
+                            worker_cancel.clone(),
+                            || -> Result<(), String> {
+                                let provider = factory()?;
+                                let req = Request {
+                                    model: &model,
+                                    system: &system,
+                                    messages: &messages,
+                                    tools: &tools,
+                                    max_tokens,
+                                    reasoning,
+                                };
+                                let mut attempt = 0u8;
+                                let stream = loop {
+                                    if worker_cancel.load(std::sync::atomic::Ordering::Acquire) {
+                                        return Ok(());
+                                    }
+                                    match provider.stream(&req) {
+                                        Ok(stream) => break stream,
+                                        Err(e)
+                                            if provider::is_transient(&e)
+                                                && attempt + 1 < provider::RETRY_ATTEMPTS =>
+                                        {
+                                            let delay_s = provider::RETRY_DELAYS
+                                                .get(attempt as usize)
+                                                .copied()
+                                                .unwrap_or(0);
+                                            attempt += 1;
+                                            if tx
+                                                .send(StreamUpdate::Retry {
+                                                    attempt,
+                                                    delay_s,
+                                                    reason: e.to_string(),
+                                                })
+                                                .is_err()
+                                            {
+                                                return Ok(());
+                                            }
+                                            let deadline = std::time::Instant::now()
+                                                + std::time::Duration::from_secs(delay_s);
+                                            while std::time::Instant::now() < deadline {
+                                                if worker_cancel
+                                                    .load(std::sync::atomic::Ordering::Acquire)
+                                                {
+                                                    return Ok(());
+                                                }
+                                                std::thread::sleep(
+                                                    std::time::Duration::from_millis(30),
+                                                );
+                                            }
+                                        }
+                                        Err(e) => return Err(e.to_string()),
+                                    }
+                                };
                                 if tx
-                                    .send(StreamUpdate::Retry {
-                                        attempt,
-                                        delay_s,
-                                        reason: e.to_string(),
-                                    })
+                                    .send(StreamUpdate::Pricing(
+                                        provider.model().to_owned(),
+                                        provider.rate_card(),
+                                    ))
                                     .is_err()
                                 {
                                     return Ok(());
                                 }
-                                let deadline = std::time::Instant::now()
-                                    + std::time::Duration::from_secs(delay_s);
-                                while std::time::Instant::now() < deadline {
-                                    if worker_cancel.load(std::sync::atomic::Ordering::Acquire) {
+                                let mut completed = false;
+                                for event in stream {
+                                    if matches!(event, Event::Done) {
+                                        completed = true;
+                                        break;
+                                    }
+                                    if worker_cancel.load(std::sync::atomic::Ordering::Acquire)
+                                        || tx.send(StreamUpdate::Event(event)).is_err()
+                                    {
                                         return Ok(());
                                     }
-                                    std::thread::sleep(std::time::Duration::from_millis(30));
                                 }
-                            }
-                            Err(e) => return Err(e.to_string()),
-                        }
-                    };
-                    if tx.send(StreamUpdate::Pricing(provider.model().to_owned(), provider.rate_card())).is_err() { return Ok(()) }
-                    let mut completed = false;
-                    for event in stream {
-                        if matches!(event, Event::Done) {
-                            completed = true;
-                            break;
-                        }
-                        if worker_cancel.load(std::sync::atomic::Ordering::Acquire)
-                            || tx.send(StreamUpdate::Event(event)).is_err()
-                        {
-                            return Ok(());
-                        }
-                    }
-                    // Dropping the stream commits metered usage before the UI observes Done.
-                    if completed {
-                        let _ = tx.send(StreamUpdate::Event(Event::Done));
-                    }
-                    Ok(())
-                }));
+                                // Dropping the stream commits metered usage before the UI observes Done.
+                                if completed {
+                                    let _ = tx.send(StreamUpdate::Event(Event::Done));
+                                }
+                                Ok(())
+                            },
+                        )
+                    },
+                );
                 if let Err(e) = result {
                     let _ = tx.send(StreamUpdate::Event(Event::Error(e)));
                 }
@@ -822,7 +966,9 @@ impl<'a> Agent<'a> {
         } else {
             None
         };
-        if receiver.is_none() { trace.serving(self.provider.model(), self.provider.rate_card()); }
+        if receiver.is_none() {
+            trace.serving(self.provider.model(), self.provider.rate_card());
+        }
         let mut out = TurnOutput {
             text: String::new(),
             tool_calls: Vec::new(),
@@ -840,7 +986,10 @@ impl<'a> Agent<'a> {
                     .recv_timeout(std::time::Duration::from_millis(40))
                 {
                     Ok(StreamUpdate::Event(ev)) => Some(ev),
-                    Ok(StreamUpdate::Pricing(model, rate)) => { trace.serving(&model, rate); None }
+                    Ok(StreamUpdate::Pricing(model, rate)) => {
+                        trace.serving(&model, rate);
+                        None
+                    }
                     Ok(StreamUpdate::Retry {
                         attempt,
                         delay_s,
@@ -890,7 +1039,13 @@ impl<'a> Agent<'a> {
             }
             if self.steer.as_deref() == Some("") {
                 if !out.text.is_empty() {
-                    if out.chat_response {self.session.append(crate::reasoning::record(out.chat_reasoning.as_deref(),&out.text,&[]));}
+                    if out.chat_response {
+                        self.session.append(crate::reasoning::record(
+                            out.chat_reasoning.as_deref(),
+                            &out.text,
+                            &[],
+                        ));
+                    }
                     self.session.append(Record::Assistant(out.text.clone()));
                 }
                 self.session.append(Record::Meta("Response cancelled; streamed output was preserved and pending tools were not executed.".into()));
@@ -910,12 +1065,15 @@ impl<'a> Agent<'a> {
                 }
                 // Reasoning is captured but not rendered by default: it is
                 // noise in a terminal and costs context to replay.
-                Event::ChatResponse => out.chat_response=true,
+                Event::ChatResponse => out.chat_response = true,
                 Event::ChatReasoning(t) => {
-                    out.chat_response=true;
-                    let content=out.chat_reasoning.get_or_insert_with(String::new);
-                    if content.len()+t.len()>crate::reasoning::MAX_BYTES {
-                        return Err(provider::Error::Transport("Provider reasoning exceeds the 2 MiB replay bound; no tools executed".into()));
+                    out.chat_response = true;
+                    let content = out.chat_reasoning.get_or_insert_with(String::new);
+                    if content.len() + t.len() > crate::reasoning::MAX_BYTES {
+                        return Err(provider::Error::Transport(
+                            "Provider reasoning exceeds the 2 MiB replay bound; no tools executed"
+                                .into(),
+                        ));
                     }
                     content.push_str(&t);
                 }
@@ -944,13 +1102,25 @@ impl<'a> Agent<'a> {
                 Event::Error(e) => {
                     let e = crate::live::sanitize_provider_detail(&e);
                     if out.text.trim().is_empty() && out.tool_calls.is_empty() {
-                        let status = provider::stream_status(&e).filter(|status| *status != 429 || provider::rate_limited(&e))
+                        let status = provider::stream_status(&e)
+                            .filter(|status| *status != 429 || provider::rate_limited(&e))
                             .or_else(|| provider::rate_limited(&e).then_some(429));
-                        if let Some(status) = status { return Err(provider::Error::Status(status, format!("stream rejection: {e}"))); }
+                        if let Some(status) = status {
+                            return Err(provider::Error::Status(
+                                status,
+                                format!("stream rejection: {e}"),
+                            ));
+                        }
                     }
                     if !out.text.is_empty() {
-                        if out.chat_response {self.session.append(crate::reasoning::record(out.chat_reasoning.as_deref(),&out.text,&[]));}
-                    self.session.append(Record::Assistant(out.text.clone()));
+                        if out.chat_response {
+                            self.session.append(crate::reasoning::record(
+                                out.chat_reasoning.as_deref(),
+                                &out.text,
+                                &[],
+                            ));
+                        }
+                        self.session.append(Record::Assistant(out.text.clone()));
                     }
                     if !out.text.trim().is_empty() || !out.tool_calls.is_empty() {
                         // A Meta record is only honest when something survived;
@@ -967,8 +1137,10 @@ impl<'a> Agent<'a> {
                 Event::Done => break,
             }
         }
-        if out.tool_calls.len()>256 {
-            return Err(provider::Error::Transport("Provider returned more than 256 tool calls; none executed".into()));
+        if out.tool_calls.len() > 256 {
+            return Err(provider::Error::Transport(
+                "Provider returned more than 256 tool calls; none executed".into(),
+            ));
         }
         let mut identities = std::collections::HashSet::new();
         if out.tool_calls.iter().any(|call| {
@@ -1002,7 +1174,9 @@ impl<'a> Agent<'a> {
         &mut self,
         mut pump: impl FnMut(&mut Option<String>),
     ) -> Result<(TurnOutput, Stop), provider::Error> {
-        if let Some(error) = &self.checklist_error { return Err(provider::Error::Config(error.clone())); }
+        if let Some(error) = &self.checklist_error {
+            return Err(provider::Error::Config(error.clone()));
+        }
         self.session.validate_writes();
         if let Some(error) = self.session.write_error() {
             return Err(provider::Error::Config(format!(
@@ -1011,18 +1185,36 @@ impl<'a> Agent<'a> {
         }
         // Capture/recall once, then freeze the snapshot across tool rounds and retries.
         if self.automatic_memory && self.hosted.is_none() {
-            let query = self.session.records.iter().rev().find_map(|r| match r {
-                Record::User(text) => Some(text.as_str()), _ => None,
-            }).unwrap_or("");
-            match crate::neuralnets::turn_context(self.workspace, query, &format!("session:{} user directive", self.session.id), self.read_only) {
+            let query = self
+                .session
+                .records
+                .iter()
+                .rev()
+                .find_map(|r| match r {
+                    Record::User(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("");
+            match crate::neuralnets::turn_context(
+                self.workspace,
+                query,
+                &format!("session:{} user directive", self.session.id),
+                self.read_only,
+            ) {
                 Ok(memory) => {
                     self.project_instructions = Some(crate::neuralnets::refresh_context(
-                        self.project_instructions.take().unwrap_or_default(), memory.as_deref()));
+                        self.project_instructions.take().unwrap_or_default(),
+                        memory.as_deref(),
+                    ));
                 }
                 Err(error) => {
                     self.project_instructions = Some(crate::neuralnets::refresh_context(
-                        self.project_instructions.take().unwrap_or_default(), None));
-                    self.emit(Progress::ProviderNotice(&format!("Memory unavailable: {error}")));
+                        self.project_instructions.take().unwrap_or_default(),
+                        None,
+                    ));
+                    self.emit(Progress::ProviderNotice(&format!(
+                        "Memory unavailable: {error}"
+                    )));
                 }
             }
         }
@@ -1030,15 +1222,25 @@ impl<'a> Agent<'a> {
         // replay of the interrupted batch, never a cache for newly run tools.
         let mut recovery_results = Vec::new();
         if self.recovering {
-            let start = self.session.records.iter()
-                .rposition(|r| matches!(r, Record::User(_))).unwrap_or(0);
-            let completed: std::collections::HashMap<_, _> = self.session.records[start..].iter()
+            let start = self
+                .session
+                .records
+                .iter()
+                .rposition(|r| matches!(r, Record::User(_)))
+                .unwrap_or(0);
+            let completed: std::collections::HashMap<_, _> = self.session.records[start..]
+                .iter()
                 .filter_map(|record| match record {
                     Record::ToolResult { call_id, body, .. } => Some((call_id.as_str(), body)),
                     _ => None,
-                }).collect();
+                })
+                .collect();
             for record in self.session.records[start..].iter().rev() {
-                if let Record::ToolCall { id, name, arguments } = record
+                if let Record::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                } = record
                     && let Ok(arguments) = serde_json::from_str::<serde_json::Value>(arguments)
                     && let Some(body) = completed.get(id.as_str())
                 {
@@ -1078,53 +1280,66 @@ impl<'a> Agent<'a> {
         for round in 0..self.max_tool_rounds {
             crate::team::record_notices(self.session).map_err(provider::Error::Config)?;
             let mut pressure_retries = 0;
-            let out = loop { let result = match self.turn(&mut pump) {
-                Ok(out) => out,
-                Err(provider::Error::Status(status, ref detail))
-                    if (status == 429 || status >= 500) && detail.starts_with("stream rejection:") && pressure_retries + 1 < provider::RETRY_ATTEMPTS => {
-                    pressure_retries += 1;
-                    self.emit(Progress::ProviderNotice("Provider cooldown · provider rejected stream; preserving completed tools and retrying after cooldown."));
-                    continue;
-                }
-                Err(ref error) if self.image_input && crate::images::text_only_rejection(error) => {
-                    self.image_input = false;
-                    let detail = "Provider confirmed text-only input. Retrying once without pixels; completed tools and original images are preserved. Use display_image to share images without inspecting them.";
-                    self.session.append(Record::Meta(detail.into()));
-                    self.emit(Progress::ProviderNotice(detail));
-                    self.turn(&mut pump)?
-                }
-                // A refusal that names an overflow can be recovered once: the
-                // harness caused it by under-estimating, and the right answer
-                // is to truncate — never to re-send the history that just did
-                // not fit (the Crush #3620 cascade). Recovery only fires when
-                // something actually got freed; otherwise the original error
-                // is the honest report.
-                Err(e)
-                    if !self.overflow_recovered && (compact::looks_like_overflow(&e.to_string()) || e.to_string().contains("teammate request context exceeds remaining")) =>
-                {
-                    self.overflow_recovered = true;
-                    if !self.force_compact() {
-                        return Err(e);
+            let out = loop {
+                let result = match self.turn(&mut pump) {
+                    Ok(out) => out,
+                    Err(provider::Error::Status(status, ref detail))
+                        if (status == 429 || status >= 500)
+                            && detail.starts_with("stream rejection:")
+                            && pressure_retries + 1 < provider::RETRY_ATTEMPTS =>
+                    {
+                        pressure_retries += 1;
+                        self.emit(Progress::ProviderNotice("Provider cooldown · provider rejected stream; preserving completed tools and retrying after cooldown."));
+                        continue;
                     }
-                    self.turn(&mut pump)?
-                }
-                Err(e)
-                    if !self.empty_recovered
-                        && e.to_string()
-                            .contains("reasoning arrived without an answer")
-                        || !self.empty_recovered && e.to_string().contains("output limit reached before an answer") =>
-                {
-                    self.empty_recovered = true;
-                    let detail = "No answer received; requesting an answer with reduced reasoning. Completed tools are preserved.".to_string();
-                    self.session.append(Record::Meta(detail.clone()));
-                    self.emit(Progress::ProviderNotice(&detail));
-                    self.empty_correction = true;
-                    let recovered = self.turn(&mut pump);
-                    self.empty_correction = false;
-                    recovered?
-                }
-                Err(e) => return Err(e),
-            }; break result; };
+                    Err(ref error)
+                        if self.image_input && crate::images::text_only_rejection(error) =>
+                    {
+                        self.image_input = false;
+                        let detail = "Provider confirmed text-only input. Retrying once without pixels; completed tools and original images are preserved. Use display_image to share images without inspecting them.";
+                        self.session.append(Record::Meta(detail.into()));
+                        self.emit(Progress::ProviderNotice(detail));
+                        self.turn(&mut pump)?
+                    }
+                    // A refusal that names an overflow can be recovered once: the
+                    // harness caused it by under-estimating, and the right answer
+                    // is to truncate — never to re-send the history that just did
+                    // not fit (the Crush #3620 cascade). Recovery only fires when
+                    // something actually got freed; otherwise the original error
+                    // is the honest report.
+                    Err(e)
+                        if !self.overflow_recovered
+                            && (compact::looks_like_overflow(&e.to_string())
+                                || e.to_string()
+                                    .contains("teammate request context exceeds remaining")) =>
+                    {
+                        self.overflow_recovered = true;
+                        if !self.force_compact() {
+                            return Err(e);
+                        }
+                        self.turn(&mut pump)?
+                    }
+                    Err(e)
+                        if !self.empty_recovered
+                            && e.to_string()
+                                .contains("reasoning arrived without an answer")
+                            || !self.empty_recovered
+                                && e.to_string()
+                                    .contains("output limit reached before an answer") =>
+                    {
+                        self.empty_recovered = true;
+                        let detail = "No answer received; requesting an answer with reduced reasoning. Completed tools are preserved.".to_string();
+                        self.session.append(Record::Meta(detail.clone()));
+                        self.emit(Progress::ProviderNotice(&detail));
+                        self.empty_correction = true;
+                        let recovered = self.turn(&mut pump);
+                        self.empty_correction = false;
+                        recovered?
+                    }
+                    Err(e) => return Err(e),
+                };
+                break result;
+            };
             // A successful response advances the task. Recovery allowance is
             // per response chain, so a later tool round can recover as well.
             self.empty_recovered = false;
@@ -1151,7 +1366,11 @@ impl<'a> Agent<'a> {
                     .append(Record::System(format!("provider: {w}")));
             }
             if out.chat_response {
-                self.session.append(crate::reasoning::record(out.chat_reasoning.as_deref(),&out.text,&out.tool_calls));
+                self.session.append(crate::reasoning::record(
+                    out.chat_reasoning.as_deref(),
+                    &out.text,
+                    &out.tool_calls,
+                ));
             }
             if !out.text.trim().is_empty() {
                 self.session.append(Record::Assistant(out.text.clone()));
@@ -1186,7 +1405,9 @@ impl<'a> Agent<'a> {
                 // Everything still running in this turn stops mattering;
                 // extension calls watching the shared token stop waiting.
                 self.turn_cancel.cancel();
-                if steer.is_empty() { return Ok((last, Stop::Cancelled)); }
+                if steer.is_empty() {
+                    return Ok((last, Stop::Cancelled));
+                }
                 self.session.append(Record::User(format!(
                     "Follow-up received before the requested actions: {steer}"
                 )));
@@ -1196,10 +1417,14 @@ impl<'a> Agent<'a> {
 
             if !out.wants_tools() {
                 let revision = self.state.todo.revision();
-                if !self.read_only && self.state.todo.can_continue(&out.text)
-                    && !crate::jobs::has_running(self.workspace,&self.session.id)
-                    && !crate::team::get(&self.session.id).is_some_and(|hub|hub.snapshot().iter().any(|a|a.status=="working")) {
-                    if checklist_continuations < 2 && checklist_revision.as_ref()!=Some(&revision) {
+                if !self.read_only
+                    && self.state.todo.can_continue(&out.text)
+                    && !crate::jobs::has_running(self.workspace, &self.session.id)
+                    && !crate::team::get(&self.session.id)
+                        .is_some_and(|hub| hub.snapshot().iter().any(|a| a.status == "working"))
+                {
+                    if checklist_continuations < 2 && checklist_revision.as_ref() != Some(&revision)
+                    {
                         checklist_continuations += 1;
                         checklist_revision = Some(revision);
                         let notice = "Checklist continuation · unfinished actionable tasks remain; continuing without replaying completed tools.";
@@ -1284,10 +1509,16 @@ impl<'a> Agent<'a> {
             // the transcript is identical to a sequential run.
             let mut executable = Vec::new();
             for call in &out.tool_calls {
-                let cached = if recovery_results.is_empty() { None } else {
-                    serde_json::from_str::<serde_json::Value>(&call.arguments).ok()
-                        .and_then(|arguments| recovery_results.iter()
-                            .position(|(name, value, _)| name == &call.name && value == &arguments))
+                let cached = if recovery_results.is_empty() {
+                    None
+                } else {
+                    serde_json::from_str::<serde_json::Value>(&call.arguments)
+                        .ok()
+                        .and_then(|arguments| {
+                            recovery_results.iter().position(|(name, value, _)| {
+                                name == &call.name && value == &arguments
+                            })
+                        })
                         .map(|index| recovery_results.remove(index).2)
                 };
                 if let Err(error) = self.session.append_checked(&[Record::ToolCall {
@@ -1351,8 +1582,7 @@ impl<'a> Agent<'a> {
                 }
                 if steer.is_empty() {
                     self.session.append(Record::Meta(
-                        "Cancelled: tool execution stopped; remaining tools skipped."
-                            .into(),
+                        "Cancelled: tool execution stopped; remaining tools skipped.".into(),
                     ));
                     return Ok((last, Stop::Cancelled));
                 }
@@ -1390,28 +1620,41 @@ impl<'a> Agent<'a> {
         if let Some((schemas, mut execute)) = self.hosted.take() {
             for call in calls {
                 pump(&mut self.steer);
-                if self.steer.is_some() { break; }
+                if self.steer.is_some() {
+                    break;
+                }
                 self.emit_tool_start(call);
                 let sequence = self.session.log_len() as u64;
-                let outcome = execute(call, &mut |slot| {
-                    pump(slot);
-                }, sequence);
+                let outcome = execute(
+                    call,
+                    &mut |slot| {
+                        pump(slot);
+                    },
+                    sequence,
+                );
                 self.host_attachments.extend(outcome.attachments);
                 self.finish_tool(call, outcome.outcome);
                 pump(&mut self.steer);
-                if self.steer.is_some() { break; }
+                if self.steer.is_some() {
+                    break;
+                }
             }
             self.hosted = Some((schemas, execute));
             return;
         }
         // Tool-call arrays do not establish dependencies. A question gates
         // the whole batch, including mutations listed before the question.
-        if let Some(index)=calls.iter().position(|call|call.name=="ask_user_question") {
-            let question=&calls[index];
+        if let Some(index) = calls
+            .iter()
+            .position(|call| call.name == "ask_user_question")
+        {
+            let question = &calls[index];
             self.loop_guard(question);
-            self.run_tool_pumped_or_inline(question,pump);
-            for (other_index,call) in calls.iter().enumerate() {
-                if other_index!=index {self.finish_tool(call,tools::Outcome::err("Not executed: process the user's question answer before proposing further tools"));}
+            self.run_tool_pumped_or_inline(question, pump);
+            for (other_index, call) in calls.iter().enumerate() {
+                if other_index != index {
+                    self.finish_tool(call,tools::Outcome::err("Not executed: process the user's question answer before proposing further tools"));
+                }
             }
             return;
         }
@@ -1436,15 +1679,20 @@ impl<'a> Agent<'a> {
             return;
         }
 
-        if calls.iter().any(|call|crate::files::is_tool(&call.name) || call.name=="ask_user_question" || call.arg_raw("permission").is_some())
-            || !self.mods.is_empty()
+        if calls.iter().any(|call| {
+            crate::files::is_tool(&call.name)
+                || call.name == "ask_user_question"
+                || call.arg_raw("permission").is_some()
+        }) || !self.mods.is_empty()
             || !self.extensions.is_empty()
             || calls
                 .iter()
                 .any(|c| c.name == "bash" && self.read_before_write_refusal(c).is_some())
         {
             for call in calls {
-                if self.steer.is_some() { break; }
+                if self.steer.is_some() {
+                    break;
+                }
                 self.loop_guard(call);
                 self.run_tool_pumped_or_inline(call, pump);
             }
@@ -1576,28 +1824,53 @@ impl<'a> Agent<'a> {
         call: &ToolCall,
         pump: &mut impl FnMut(&mut Option<String>),
     ) {
-        if call.arg_raw("permission").is_some() || call.name=="ask_user_question" {
+        if call.arg_raw("permission").is_some() || call.name == "ask_user_question" {
             pump(&mut self.steer);
-            if self.steer.is_some() {self.finish_tool(call,tools::Outcome::err("Skipped before interaction because the user interrupted or steered the task"));return;}
+            if self.steer.is_some() {
+                self.finish_tool(call,tools::Outcome::err("Skipped before interaction because the user interrupted or steered the task"));
+                return;
+            }
         }
-        if let Some(reason)=self.approval_refusal(call) { self.finish_tool(call,tools::Outcome::err(reason)); return; }
-        if call.name=="ask_user_question" {
+        if let Some(reason) = self.approval_refusal(call) {
+            self.finish_tool(call, tools::Outcome::err(reason));
+            return;
+        }
+        if call.name == "ask_user_question" {
             self.emit_tool_start(call);
-            let outcome=serde_json::from_str(&call.arguments).map_err(|e|e.to_string()).and_then(|value| {
-                if let Some(human) = &self.human {
-                    crate::questions::remote(&value, |request| human(&serde_json::json!({"kind":"question","request":request})))
-                } else { crate::questions::run(&value,self.input_keys) }
-            });
+            let outcome = serde_json::from_str(&call.arguments)
+                .map_err(|e| e.to_string())
+                .and_then(|value| {
+                    if let Some(human) = &self.human {
+                        crate::questions::remote(&value, |request| {
+                            human(&serde_json::json!({"kind":"question","request":request}))
+                        })
+                    } else {
+                        crate::questions::run(&value, self.input_keys)
+                    }
+                });
             match outcome {
-                Ok(value)=>{if value["status"]=="cancelled" {self.steer=Some(String::new());} self.finish_tool(call,tools::Outcome::ok(value.to_string()));},
-                Err(error)=>{if error.contains("cancelled") || error.contains("expired") {self.steer=Some(String::new());}self.finish_tool(call,tools::Outcome::err(error));},
+                Ok(value) => {
+                    if value["status"] == "cancelled" {
+                        self.steer = Some(String::new());
+                    }
+                    self.finish_tool(call, tools::Outcome::ok(value.to_string()));
+                }
+                Err(error) => {
+                    if error.contains("cancelled") || error.contains("expired") {
+                        self.steer = Some(String::new());
+                    }
+                    self.finish_tool(call, tools::Outcome::err(error));
+                }
             }
             return;
         }
         if call.name == "view_image" && !self.image_input {
-            self.finish_tool(call, tools::Outcome::err("Image input is disabled for this model"));
+            self.finish_tool(
+                call,
+                tools::Outcome::err("Image input is disabled for this model"),
+            );
         } else if crate::files::is_tool(&call.name) {
-            self.run_file_pumped(call,pump);
+            self.run_file_pumped(call, pump);
         } else if call.name == "bash" || self.extensions.has_tool(&call.name) {
             self.run_tool_pumped(call, pump);
         } else {
@@ -1607,54 +1880,97 @@ impl<'a> Agent<'a> {
 
     /// Native IO runs off the input thread. Preserve results even when steered:
     /// atomic commits must never become unobserved background mutations.
-    fn run_file_pumped(&mut self,call:&ToolCall,pump:&mut impl FnMut(&mut Option<String>)) {
+    fn run_file_pumped(&mut self, call: &ToolCall, pump: &mut impl FnMut(&mut Option<String>)) {
         self.emit_tool_start(call);
-        if let Some(verdict)=self.pre_tool_verdict(call) {
+        if let Some(verdict) = self.pre_tool_verdict(call) {
             match verdict {
-                crate::hooks_shell::Verdict::Block(reason)=>return self.finish_tool(call,tools::Outcome::err(reason)),
-                crate::hooks_shell::Verdict::Halt(reason)=>{
+                crate::hooks_shell::Verdict::Block(reason) => {
+                    return self.finish_tool(call, tools::Outcome::err(reason));
+                }
+                crate::hooks_shell::Verdict::Halt(reason) => {
                     self.steer = Some(String::new());
-                    self.session.append(Record::Meta("error: pre-tool-use hook cancelled the rest of the turn".into()));
-                    return self.finish_tool(call,tools::Outcome::err(reason));
-                },
-                crate::hooks_shell::Verdict::Warn(warning)=>self.session.append(Record::Meta(format!("hook warning: {warning}"))),
-                crate::hooks_shell::Verdict::Allow=>{},
+                    self.session.append(Record::Meta(
+                        "error: pre-tool-use hook cancelled the rest of the turn".into(),
+                    ));
+                    return self.finish_tool(call, tools::Outcome::err(reason));
+                }
+                crate::hooks_shell::Verdict::Warn(warning) => self
+                    .session
+                    .append(Record::Meta(format!("hook warning: {warning}"))),
+                crate::hooks_shell::Verdict::Allow => {}
             }
         }
-        if let Some(reason)=self.authorization_refusal(call) {return self.finish_tool(call,tools::Outcome::err(reason));}
-        if let Some(reason)=self.read_before_write_refusal(call) {return self.finish_tool(call,tools::Outcome::err(reason));}
-        let granted=call.arg_str("path").is_some_and(|path|self.approved_calls.get(&call.id)==Some(&path));
-        let workspace=self.workspace.to_path_buf();let worker=self.reads.native_call(call,self.workspace);
-        let (tx,rx)=std::sync::mpsc::channel();
-        let cancel=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker_cancel=cancel.clone();
-        std::thread::spawn(move || {let _=tx.send(crate::files::tool_cancellable_approved(&worker,&workspace,&worker_cancel,granted));});
-        let outcome=loop {
+        if let Some(reason) = self.authorization_refusal(call) {
+            return self.finish_tool(call, tools::Outcome::err(reason));
+        }
+        if let Some(reason) = self.read_before_write_refusal(call) {
+            return self.finish_tool(call, tools::Outcome::err(reason));
+        }
+        let granted = call
+            .arg_str("path")
+            .is_some_and(|path| self.approved_calls.get(&call.id) == Some(&path));
+        let workspace = self.workspace.to_path_buf();
+        let worker = self.reads.native_call(call, self.workspace);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::files::tool_cancellable_approved(
+                &worker,
+                &workspace,
+                &worker_cancel,
+                granted,
+            ));
+        });
+        let outcome = loop {
             match rx.recv_timeout(std::time::Duration::from_millis(10)) {
-                Ok(result)=>break result,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout)=>{
+                Ok(result) => break result,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     pump(&mut self.steer);
-                    if self.steer.is_some() {cancel.store(true,std::sync::atomic::Ordering::Release);}
-                },
-                Err(_)=>break tools::Outcome::err("Native file worker failed; re-read before retrying a mutation"),
+                    if self.steer.is_some() {
+                        cancel.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                }
+                Err(_) => {
+                    break tools::Outcome::err(
+                        "Native file worker failed; re-read before retrying a mutation",
+                    );
+                }
             }
         };
         if outcome.exit_code == Some(0) {
-            self.reads.observe_native(call, &outcome.body, self.workspace, self.tool_call_index);
+            self.reads
+                .observe_native(call, &outcome.body, self.workspace, self.tool_call_index);
         }
-        let mut body=outcome.body;
+        let mut body = outcome.body;
         if matches!(call.name.as_str(), "edit" | "write")
             && let Some(path) = call.arg_str("path")
-            && let Some(hint) = self.reads.staleness_hint(&self.workspace.join(path), self.tool_call_index) {
+            && let Some(hint) = self
+                .reads
+                .staleness_hint(&self.workspace.join(path), self.tool_call_index)
+        {
             body.push_str(&format!("\n{hint}"));
         }
-        let before=self.state.clone();
-        with_tool_bridge(self.workspace,&mut *self.state,&call.id,|bridge| {
-            self.extensions.rewrite_tool_result(&call.id,&call.name,&mut body,bridge)
+        let before = self.state.clone();
+        with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
+            self.extensions
+                .rewrite_tool_result(&call.id, &call.name, &mut body, bridge)
         });
-        if let Err(error)=self.persist_state_change(before) {body.push_str(&format!("\n{error}"));}
-        self.finish_tool(call,tools::Outcome {body,truncated:outcome.truncated,exit_code:outcome.exit_code,spill:outcome.spill});
-        for (kind,data) in self.extensions.drain_custom() {self.session.append(Record::Custom {kind,data});}
+        if let Err(error) = self.persist_state_change(before) {
+            body.push_str(&format!("\n{error}"));
+        }
+        self.finish_tool(
+            call,
+            tools::Outcome {
+                body,
+                truncated: outcome.truncated,
+                exit_code: outcome.exit_code,
+                spill: outcome.spill,
+            },
+        );
+        for (kind, data) in self.extensions.drain_custom() {
+            self.session.append(Record::Custom { kind, data });
+        }
     }
 
     fn authorization_refusal(&mut self, call: &ToolCall) -> Option<String> {
@@ -1687,7 +2003,8 @@ impl<'a> Agent<'a> {
             match verdict {
                 crate::hooks_shell::Verdict::Block(reason) => {
                     self.session.append(Record::Meta(format!(
-                        "hook blocked {name}: {reason}", name = call.name
+                        "hook blocked {name}: {reason}",
+                        name = call.name
                     )));
                     return self.finish_tool(
                         call,
@@ -1697,7 +2014,8 @@ impl<'a> Agent<'a> {
                 crate::hooks_shell::Verdict::Halt(reason) => {
                     self.steer = Some(String::new());
                     self.session.append(Record::Meta(format!(
-                        "hook halting turn at {name}: {reason}", name = call.name
+                        "hook halting turn at {name}: {reason}",
+                        name = call.name
                     )));
                     self.session.append(Record::Meta(
                         "error: pre-tool-use hook cancelled the rest of the turn".into(),
@@ -1836,8 +2154,19 @@ impl<'a> Agent<'a> {
                             .unwrap_or_else(|_| "error: state writer unavailable".into());
                     }
                     if tool == "bash" {
-                        let nested = ToolCall { id: format!("{}-nested", call.id), name: "bash".into(), arguments: arguments.to_owned() };
-                        return tools::bash_owned(&nested, workspace, &scope.cancel.shared_flag(), &crate::sandbox::SessionApprovals::default(), Some(&owner)).body;
+                        let nested = ToolCall {
+                            id: format!("{}-nested", call.id),
+                            name: "bash".into(),
+                            arguments: arguments.to_owned(),
+                        };
+                        return tools::bash_owned(
+                            &nested,
+                            workspace,
+                            &scope.cancel.shared_flag(),
+                            &crate::sandbox::SessionApprovals::default(),
+                            Some(&owner),
+                        )
+                        .body;
                     }
                     format!("error: extensions may only call bash or state, not `{tool}`")
                 };
@@ -1960,7 +2289,10 @@ impl<'a> Agent<'a> {
         // place every bash result passes through, whether it ran inline or on a
         // worker thread.
         let cwd = tools::bash_cwd(call, self.workspace).ok();
-        let touched = cwd.as_ref().map(|cwd| verify::written_paths(&command, cwd)).unwrap_or_default();
+        let touched = cwd
+            .as_ref()
+            .map(|cwd| verify::written_paths(&command, cwd))
+            .unwrap_or_default();
         for path in touched.iter().take(16) {
             if let Some(hint) = self.reads.staleness_hint(path, self.tool_call_index) {
                 body.push_str(&format!("\n{}: {hint}", path.display()));
@@ -1973,8 +2305,11 @@ impl<'a> Agent<'a> {
             }
         }
         // Record what the command read, so a later write can be allowed.
-        if outcome.exit_code == Some(0) && let Some(cwd) = &cwd {
-            self.reads.observe_at(&command, &outcome.body, cwd, self.tool_call_index);
+        if outcome.exit_code == Some(0)
+            && let Some(cwd) = &cwd
+        {
+            self.reads
+                .observe_at(&command, &outcome.body, cwd, self.tool_call_index);
         }
 
         let rewritten = with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
@@ -2031,23 +2366,33 @@ impl<'a> Agent<'a> {
     /// Creating a new file is never blocked, so this only ever gets in the way
     /// of a genuinely blind overwrite.
     fn read_before_write_refusal(&self, call: &ToolCall) -> Option<String> {
-        let targets = if matches!(call.name.as_str(),"edit"|"write") {
-            if call.arg_raw("preview").as_deref()==Some("true") {return None;}
+        let targets = if matches!(call.name.as_str(), "edit" | "write") {
+            if call.arg_raw("preview").as_deref() == Some("true") {
+                return None;
+            }
             vec![self.workspace.join(call.arg_str("path")?)]
         } else {
-            let command=call.arg_str("command")?;
-            verify::written_paths(&command,&tools::bash_cwd(call, self.workspace).ok()?)
+            let command = call.arg_str("command")?;
+            verify::written_paths(&command, &tools::bash_cwd(call, self.workspace).ok()?)
         };
         // Kernel/device control writes are commands, not document replacement.
         // Shell policy still authorizes them; unrestricted or explicitly approved calls must not demand
         // a native text read of a write-only kernel interface.
         let control_access = (crate::sandbox::permission_profile_label() == "unrestricted"
             && crate::sandbox::policy() == crate::sandbox::Policy::Off)
-            || call.arg_str("command").is_some_and(|command|self.command_approvals(call).permits_exact(&command));
-        let targets = targets.into_iter().filter(|path| {
-            !(call.name == "bash" && control_access
-                && ["/proc", "/sys", "/dev"].iter().any(|root| path.starts_with(root)))
-        }).collect::<Vec<_>>();
+            || call
+                .arg_str("command")
+                .is_some_and(|command| self.command_approvals(call).permits_exact(&command));
+        let targets = targets
+            .into_iter()
+            .filter(|path| {
+                !(call.name == "bash"
+                    && control_access
+                    && ["/proc", "/sys", "/dev"]
+                        .iter()
+                        .any(|root| path.starts_with(root)))
+            })
+            .collect::<Vec<_>>();
         let blocked = self.reads.blocked(&targets);
         if blocked.is_empty() {
             return None;
@@ -2090,7 +2435,8 @@ impl<'a> Agent<'a> {
             match verdict {
                 crate::hooks_shell::Verdict::Block(reason) => {
                     self.session.append(Record::Meta(format!(
-                        "hook blocked {name}: {reason}", name = call.name
+                        "hook blocked {name}: {reason}",
+                        name = call.name
                     )));
                     return self.finish_tool(
                         call,
@@ -2100,7 +2446,8 @@ impl<'a> Agent<'a> {
                 crate::hooks_shell::Verdict::Halt(reason) => {
                     self.steer = Some(String::new());
                     self.session.append(Record::Meta(format!(
-                        "hook halting turn at {name}: {reason}", name = call.name
+                        "hook halting turn at {name}: {reason}",
+                        name = call.name
                     )));
                     self.session.append(Record::Meta(
                         "error: pre-tool-use hook cancelled the rest of the turn".into(),
@@ -2122,13 +2469,11 @@ impl<'a> Agent<'a> {
 
         // Mods may add tools and may block them; core built-ins are always
         // present but a mod can still refuse to run one.
-        let known = crate::files::is_tool(&call.name) || call.name == "bash"
+        let known = crate::files::is_tool(&call.name)
+            || call.name == "bash"
             || call.name == "state"
             || (self.checkpoint_tools
-                && matches!(
-                    call.name.as_str(),
-                    "checkpoint" | "rewind" | "wait"
-                ))
+                && matches!(call.name.as_str(), "checkpoint" | "rewind" | "wait"))
             || self.extensions.has_tool(&call.name)
             || self
                 .mods
@@ -2149,7 +2494,15 @@ impl<'a> Agent<'a> {
                 .flat_map(|m| m.tools())
                 .map(|(n, _, _)| n)
                 .collect();
-            let mut avail = vec!["read".into(),"edit".into(),"write".into(),"display_image".into(),"view_image".into(),"bash".into(), "state".into()];
+            let mut avail = vec![
+                "read".into(),
+                "edit".into(),
+                "write".into(),
+                "display_image".into(),
+                "view_image".into(),
+                "bash".into(),
+                "state".into(),
+            ];
             avail.extend(extra);
             outcome.body = format!(
                 "error: no tool named `{}`. Available tools: {}.",
@@ -2166,10 +2519,20 @@ impl<'a> Agent<'a> {
         } else if call.name == "view_image" && !self.image_input {
             outcome = tools::Outcome::err("Image input is disabled for this model");
         } else if crate::files::is_tool(&call.name) {
-            if let Some(refusal)=self.read_before_write_refusal(call) {return self.finish_tool(call,tools::Outcome::err(refusal));}
-            outcome=crate::files::tool(&self.reads.native_call(call,self.workspace),self.workspace);
+            if let Some(refusal) = self.read_before_write_refusal(call) {
+                return self.finish_tool(call, tools::Outcome::err(refusal));
+            }
+            outcome = crate::files::tool(
+                &self.reads.native_call(call, self.workspace),
+                self.workspace,
+            );
             if outcome.exit_code == Some(0) {
-                self.reads.observe_native(call, &outcome.body, self.workspace, self.tool_call_index);
+                self.reads.observe_native(
+                    call,
+                    &outcome.body,
+                    self.workspace,
+                    self.tool_call_index,
+                );
             }
         } else if call.name == "bash" {
             if let Some(refusal) = self.read_before_write_refusal(call) {
@@ -2200,7 +2563,10 @@ impl<'a> Agent<'a> {
                     .into_iter()
                     .take(8)
                     .map(|v| {
-                        v.get("kind").and_then(|k| k.as_str()).unwrap_or("event").to_string()
+                        v.get("kind")
+                            .and_then(|k| k.as_str())
+                            .unwrap_or("event")
+                            .to_string()
                     })
                     .collect::<Vec<_>>();
                 let mut poll = move || rows.first().cloned();
@@ -2210,21 +2576,45 @@ impl<'a> Agent<'a> {
                 outcome = crate::checkpoint_tools::run(call, self.session, &mut noop);
             }
         } else if call.name == "state" {
-            let namespaces = ["guidance", "neuralnets", "capabilities", "items", "todo"].iter().filter(|key| call.arg_raw(key).is_some()).count();
+            let namespaces = ["guidance", "neuralnets", "capabilities", "items", "todo"]
+                .iter()
+                .filter(|key| call.arg_raw(key).is_some())
+                .count();
             if namespaces > 1 {
                 outcome = tools::Outcome::err("Use one state namespace per call");
             } else if let Some(raw) = call.arg_raw("guidance") {
-                outcome = match serde_json::from_str(&raw).map_err(|e|e.to_string()).and_then(|value|crate::guidance::request(&value)) { Ok(value)=>tools::Outcome::ok(value.to_string()), Err(error)=>tools::Outcome::err(error) };
+                outcome = match serde_json::from_str(&raw)
+                    .map_err(|e| e.to_string())
+                    .and_then(|value| crate::guidance::request(&value))
+                {
+                    Ok(value) => tools::Outcome::ok(value.to_string()),
+                    Err(error) => tools::Outcome::err(error),
+                };
             } else if let Some(raw) = call.arg_raw("neuralnets") {
-                let source = format!("session:{} tool:{}",self.session.id,call.id);
-                outcome = match serde_json::from_str(&raw).map_err(|e|e.to_string()).and_then(|value|crate::neuralnets::request(self.workspace,&value,Some(&source),self.read_only)) { Ok(value)=>tools::Outcome::ok(value.to_string()), Err(error)=>tools::Outcome::err(error) };
-            } else if let Some(capabilities)=call.arg_raw("capabilities") {
-                outcome=match serde_json::from_str(&capabilities).map_err(|e|e.to_string()).and_then(|value|self.extensions.capabilities(&value)) {
-                    Ok(value)=>tools::Outcome::ok(value.to_string()),Err(error)=>tools::Outcome::err(error),
+                let source = format!("session:{} tool:{}", self.session.id, call.id);
+                outcome = match serde_json::from_str(&raw)
+                    .map_err(|e| e.to_string())
+                    .and_then(|value| {
+                        crate::neuralnets::request(
+                            self.workspace,
+                            &value,
+                            Some(&source),
+                            self.read_only,
+                        )
+                    }) {
+                    Ok(value) => tools::Outcome::ok(value.to_string()),
+                    Err(error) => tools::Outcome::err(error),
+                };
+            } else if let Some(capabilities) = call.arg_raw("capabilities") {
+                outcome = match serde_json::from_str(&capabilities)
+                    .map_err(|e| e.to_string())
+                    .and_then(|value| self.extensions.capabilities(&value))
+                {
+                    Ok(value) => tools::Outcome::ok(value.to_string()),
+                    Err(error) => tools::Outcome::err(error),
                 };
             } else {
                 outcome = self.state.apply(call);
-
             }
         } else if self.extensions.has_tool(&call.name) {
             // The bridge lets an extension call tools on the host while it
@@ -2242,7 +2632,13 @@ impl<'a> Agent<'a> {
                 if let Some(keys) = input_keys {
                     let mut host_input = crate::input::mcp_input_callback(keys);
                     self.extensions
-                        .run_tool_with_input_scoped(&scope, &call.name, &call.arguments, bridge, &mut host_input)
+                        .run_tool_with_input_scoped(
+                            &scope,
+                            &call.name,
+                            &call.arguments,
+                            bridge,
+                            &mut host_input,
+                        )
                         .describe(&call.name)
                 } else {
                     self.extensions
@@ -2334,7 +2730,8 @@ impl<'a> Agent<'a> {
             body: output.body,
         });
         if !self.read_only
-            && let Some(reminder) = crate::guidance::progress_reminder(&self.session.records, &self.state.todo)
+            && let Some(reminder) =
+                crate::guidance::progress_reminder(&self.session.records, &self.state.todo)
         {
             self.session.append(Record::System(reminder.into()));
         }
@@ -2350,13 +2747,24 @@ impl<'a> Agent<'a> {
     /// history keeps the prompt it was made under, until the next
     /// compaction re-captures the current one.
     fn effective_system(&self) -> String {
-        if self.hosted.is_some() { return self.system_prompt(); }
+        if self.hosted.is_some() {
+            return self.system_prompt();
+        }
         if self.read_only {
             return self.system_prompt();
         }
         let system = latest_system_checkpoint(&self.session.history_records())
             .unwrap_or_else(|| self.system_prompt());
-        crate::permissions::model_context(crate::guidance::teammate_context(crate::guidance::model_context(crate::neuralnets::refresh_context(system, self.project_instructions.as_deref())), crate::team::enabled(&self.session.id)),self.input_keys.is_some() || self.human.is_some())
+        crate::permissions::model_context(
+            crate::guidance::teammate_context(
+                crate::guidance::model_context(crate::neuralnets::refresh_context(
+                    system,
+                    self.project_instructions.as_deref(),
+                )),
+                crate::team::enabled(&self.session.id),
+            ),
+            self.input_keys.is_some() || self.human.is_some(),
+        )
     }
 
     /// Assemble the system prompt: base, then mod contributions, then skills.
@@ -2435,7 +2843,7 @@ impl<'a> Agent<'a> {
                         .map_err(provider::Error::Config)?;
                 }
                 Ok(())
-            },
+            }
         }
     }
 
@@ -2475,7 +2883,11 @@ impl<'a> Agent<'a> {
                 dropped: evicted,
             });
         }
-        if provider::pressure(self.provider, &self.session.messages_with_images(self.image_input)) >= compact::COMPACT_AT {
+        if provider::pressure(
+            self.provider,
+            &self.session.messages_with_images(self.image_input),
+        ) >= compact::COMPACT_AT
+        {
             changed |= compact::fallback(self.session, self.state, "context overflow").is_ok();
         }
         changed
@@ -2520,7 +2932,9 @@ impl<'a> Agent<'a> {
         // Paid summarization is off for this session after repeated failures;
         // the deterministic passes above still ran, and they are free.
         if self.breaker.is_open() {
-            return Err(provider::Error::Transport("model compaction is paused after repeated failures".into()));
+            return Err(provider::Error::Transport(
+                "model compaction is paused after repeated failures".into(),
+            ));
         }
 
         // Ask for a summary using a bare request with no tools, so the model
@@ -2530,7 +2944,10 @@ impl<'a> Agent<'a> {
         let req = Request {
             model: &model,
             system: "You write precise technical summaries. Follow the instructions exactly.",
-            messages: &[Message::User(compact::fit_summary_prompt(self.provider, prompt))],
+            messages: &[Message::User(compact::fit_summary_prompt(
+                self.provider,
+                prompt,
+            ))],
             tools: &tools,
             max_tokens: compact::summary_output_limit(self.provider),
             reasoning: Some(0),
@@ -2543,7 +2960,7 @@ impl<'a> Agent<'a> {
         crate::context_audit::save(self.session, &manifest)
             .map_err(|e| provider::Error::Config(format!("cannot record summary context: {e}")))?;
 
-        let mut trace=crate::requests::Trace::compaction(self.session,&req);
+        let mut trace = crate::requests::Trace::compaction(self.session, &req);
         let stream = match provider::stream_with_retry(
             self.provider,
             &req,
@@ -2575,7 +2992,9 @@ impl<'a> Agent<'a> {
             // Leave the conversation alone rather than destroying context on a
             // failed summarization.
             self.note_summary_failure();
-            return Err(provider::Error::Transport("provider returned an empty compaction summary".into()));
+            return Err(provider::Error::Transport(
+                "provider returned an empty compaction summary".into(),
+            ));
         }
         self.breaker.record_success();
 
@@ -2681,11 +3100,34 @@ for line in sys.stdin:
         let mut extensions = Registry::load(&[format!("{py} {}", script.display())], &dir, "mock");
         assert_eq!(extensions.len(), 1);
         {
-            let mut agent = Agent::new(&MockTurnProvider, &mut session, &mut state, &mods, &mut extensions, &dir);
-            agent.apply_bash_result(&ToolCall { id: "bash".into(), name: "bash".into(), arguments: r#"{"command":"true"}"#.into() }, tools::Outcome { body: "[exit 0]\n(no output)".into(), truncated:false, exit_code:Some(0), spill:None });
+            let mut agent = Agent::new(
+                &MockTurnProvider,
+                &mut session,
+                &mut state,
+                &mods,
+                &mut extensions,
+                &dir,
+            );
+            agent.apply_bash_result(
+                &ToolCall {
+                    id: "bash".into(),
+                    name: "bash".into(),
+                    arguments: r#"{"command":"true"}"#.into(),
+                },
+                tools::Outcome {
+                    body: "[exit 0]\n(no output)".into(),
+                    truncated: false,
+                    exit_code: Some(0),
+                    spill: None,
+                },
+            );
         }
         assert_eq!(state.items(), &["from rewrite".to_string()]);
-        assert!(session.history_records().iter().any(|r| matches!(r, Record::State(items) if items == &["from rewrite".to_string()])));
+        assert!(
+            session.history_records().iter().any(
+                |r| matches!(r, Record::State(items) if items == &["from rewrite".to_string()])
+            )
+        );
         drop(extensions);
         drop(session);
         std::fs::remove_dir_all(dir).unwrap();
@@ -2699,23 +3141,55 @@ for line in sys.stdin:
         let mut state = State::new();
         let mods = Vec::new();
         let mut extensions = Registry::load(&[], &dir, "mock");
-        let set = ToolCall { id: "set".into(), name: "state".into(), arguments: r#"{"items":["remember"]}"#.into() };
-        let clear = ToolCall { id: "clear".into(), name: "state".into(), arguments: r#"{"items":[]}"#.into() };
+        let set = ToolCall {
+            id: "set".into(),
+            name: "state".into(),
+            arguments: r#"{"items":["remember"]}"#.into(),
+        };
+        let clear = ToolCall {
+            id: "clear".into(),
+            name: "state".into(),
+            arguments: r#"{"items":[]}"#.into(),
+        };
         {
-            let mut agent = Agent::new(&MockTurnProvider, &mut session, &mut state, &mods, &mut extensions, &dir);
+            let mut agent = Agent::new(
+                &MockTurnProvider,
+                &mut session,
+                &mut state,
+                &mods,
+                &mut extensions,
+                &dir,
+            );
             agent.run_tool(&set);
             agent.run_tool(&clear);
         }
         assert!(state.items().is_empty());
-        let states = session.history_records().into_iter().filter_map(|r| match r { Record::State(items) => Some(items), _ => None }).collect::<Vec<_>>();
+        let states = session
+            .history_records()
+            .into_iter()
+            .filter_map(|r| match r {
+                Record::State(items) => Some(items),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(states, vec![vec!["remember".to_string()], vec![]]);
         drop(session);
         let mut readonly = Session::open_readonly(&dir, &id).unwrap();
         {
-            let mut agent = Agent::new(&MockTurnProvider, &mut readonly, &mut state, &mods, &mut extensions, &dir);
+            let mut agent = Agent::new(
+                &MockTurnProvider,
+                &mut readonly,
+                &mut state,
+                &mods,
+                &mut extensions,
+                &dir,
+            );
             agent.run_tool(&set);
         }
-        assert!(state.items().is_empty(), "failed persistence must not change notes");
+        assert!(
+            state.items().is_empty(),
+            "failed persistence must not change notes"
+        );
         drop(readonly);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -2747,16 +3221,40 @@ for line in sys.stdin:
         let mut state = State::new();
         let mut extensions = Registry::load(&[], &dir, "mock");
         let mods = Vec::new();
-        let call = |command: &str, cwd: Option<&str>| ToolCall { id:"cwd".into(), name:"bash".into(), arguments:serde_json::json!({"command":command,"cwd":cwd}).to_string() };
+        let call = |command: &str, cwd: Option<&str>| ToolCall {
+            id: "cwd".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command":command,"cwd":cwd}).to_string(),
+        };
         {
-            let mut agent = Agent::new(&MockTurnProvider, &mut session, &mut state, &mods, &mut extensions, &dir);
+            let mut agent = Agent::new(
+                &MockTurnProvider,
+                &mut session,
+                &mut state,
+                &mods,
+                &mut extensions,
+                &dir,
+            );
             let write = call("printf changed > file.txt", Some("sub"));
             assert!(agent.read_before_write_refusal(&write).is_some());
-            agent.apply_bash_result(&call("cat file.txt", Some("sub")), tools::Outcome::err("permission denied"));
-            assert!(agent.read_before_write_refusal(&write).is_some(), "failed reads cannot authorize writes");
-            agent.apply_bash_result(&call("cat file.txt", Some("sub")), tools::Outcome::ok("sub contents".into()));
+            agent.apply_bash_result(
+                &call("cat file.txt", Some("sub")),
+                tools::Outcome::err("permission denied"),
+            );
+            assert!(
+                agent.read_before_write_refusal(&write).is_some(),
+                "failed reads cannot authorize writes"
+            );
+            agent.apply_bash_result(
+                &call("cat file.txt", Some("sub")),
+                tools::Outcome::ok("sub contents".into()),
+            );
             assert!(agent.read_before_write_refusal(&write).is_none());
-            let root_write = ToolCall { id:"root".into(), name:"bash".into(), arguments:r#"{"command":"printf changed > file.txt"}"#.into() };
+            let root_write = ToolCall {
+                id: "root".into(),
+                name: "bash".into(),
+                arguments: r#"{"command":"printf changed > file.txt"}"#.into(),
+            };
             assert!(agent.read_before_write_refusal(&root_write).is_some());
         }
         drop(session);
@@ -2764,33 +3262,66 @@ for line in sys.stdin:
     }
 
     #[test]
-    #[cfg(target_os="linux")]
+    #[cfg(target_os = "linux")]
     fn approved_kernel_controls_keep_ordinary_file_guards_and_expire() {
-        const CHILD:&str="GC_TEST_APPROVED_CONTROL_GUARD";
+        const CHILD: &str = "GC_TEST_APPROVED_CONTROL_GUARD";
         if std::env::var_os(CHILD).is_none() {
             assert!(std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","agent::tests::approved_kernel_controls_keep_ordinary_file_guards_and_expire","--test-threads=1"]).env(CHILD,"1").status().unwrap().success());
             return;
         }
-        if !std::path::Path::new("/proc/sys/vm/drop_caches").is_file() {return;}
-        let dir=std::env::temp_dir().join(format!("gc-approved-control-{}",std::process::id()));
-        let mut session=Session::create(&dir).unwrap();
-        let cfg=crate::config::Config {workspace:dir.clone(),permission_profile:crate::sandbox::PermissionProfile::WorkspaceEdit,..Default::default()};
+        if !std::path::Path::new("/proc/sys/vm/drop_caches").is_file() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("gc-approved-control-{}", std::process::id()));
+        let mut session = Session::create(&dir).unwrap();
+        let cfg = crate::config::Config {
+            workspace: dir.clone(),
+            permission_profile: crate::sandbox::PermissionProfile::WorkspaceEdit,
+            ..Default::default()
+        };
         crate::sandbox::init(&cfg);
-        let mut state=State::new();let mods=Vec::new();let mut extensions=Registry::load(&[],&dir,"mock");
-        let mut agent=Agent::new(&MockTurnProvider,&mut session,&mut state,&mods,&mut extensions,&dir);
-        let command="echo 3 > /proc/sys/vm/drop_caches";
-        let call=ToolCall{id:"approved-control".into(),name:"bash".into(),arguments:serde_json::json!({"command":command}).to_string()};
+        let mut state = State::new();
+        let mods = Vec::new();
+        let mut extensions = Registry::load(&[], &dir, "mock");
+        let mut agent = Agent::new(
+            &MockTurnProvider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &dir,
+        );
+        let command = "echo 3 > /proc/sys/vm/drop_caches";
+        let call = ToolCall {
+            id: "approved-control".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command":command}).to_string(),
+        };
         assert!(agent.read_before_write_refusal(&call).is_some());
-        agent.approved_calls.insert(call.id.clone(),command.into());
+        agent.approved_calls.insert(call.id.clone(), command.into());
         assert!(agent.read_before_write_refusal(&call).is_none());
-        std::fs::write(dir.join("ordinary"),"retain me").unwrap();
-        let ordinary=ToolCall{id:"ordinary".into(),name:"bash".into(),arguments:serde_json::json!({"command":"echo replacement > ordinary"}).to_string()};
-        agent.approved_calls.insert(ordinary.id.clone(),"echo replacement > ordinary".into());
+        std::fs::write(dir.join("ordinary"), "retain me").unwrap();
+        let ordinary = ToolCall {
+            id: "ordinary".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command":"echo replacement > ordinary"}).to_string(),
+        };
+        agent
+            .approved_calls
+            .insert(ordinary.id.clone(), "echo replacement > ordinary".into());
         assert!(agent.read_before_write_refusal(&ordinary).is_some());
-        agent.finish_tool(&call,tools::Outcome::err("Guard-only fixture; command never executed"));
+        agent.finish_tool(
+            &call,
+            tools::Outcome::err("Guard-only fixture; command never executed"),
+        );
         assert!(agent.read_before_write_refusal(&call).is_some());
-        assert_eq!(std::fs::read_to_string(dir.join("ordinary")).unwrap(),"retain me");
-        drop(agent);drop(session);std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("ordinary")).unwrap(),
+            "retain me"
+        );
+        drop(agent);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -2800,32 +3331,74 @@ for line in sys.stdin:
         let mut state = State::new();
         let mods = Vec::new();
         let mut extensions = Registry::load(&[], &dir, "mock");
-        let agent = Agent::new(&MockTurnProvider, &mut session, &mut state, &mods, &mut extensions, &dir);
-        let call = ToolCall { id:"control".into(), name:"bash".into(), arguments:serde_json::json!({"command":"echo 3 > /proc/sys/vm/drop_caches"}).to_string() };
+        let agent = Agent::new(
+            &MockTurnProvider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &dir,
+        );
+        let call = ToolCall {
+            id: "control".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command":"echo 3 > /proc/sys/vm/drop_caches"})
+                .to_string(),
+        };
         assert!(agent.read_before_write_refusal(&call).is_none());
         // Deliberately never execute this system-control command.
-        drop(agent); drop(session);
+        drop(agent);
+        drop(session);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn live_followups_keep_user_role_and_empty_interrupts_cancel() {
         for text in ["[main → teammate] review the patch", ""] {
-            let dir = std::env::temp_dir().join(format!("gc-steer-role-{}-{}", std::process::id(), text.len()));
+            let dir = std::env::temp_dir().join(format!(
+                "gc-steer-role-{}-{}",
+                std::process::id(),
+                text.len()
+            ));
             let mut session = Session::create(&dir).unwrap();
             session.append(Record::User("original task".into()));
             let mut state = State::new();
             let mods = Vec::new();
             let mut extensions = Registry::load(&[], &dir, "mock");
             let stop = {
-                let mut agent = Agent::new(&MockTurnProvider, &mut session, &mut state, &mods, &mut extensions, &dir);
-                agent.run_turn(|steer| { if steer.is_none() { *steer = Some(text.into()); } }).unwrap().1
+                let mut agent = Agent::new(
+                    &MockTurnProvider,
+                    &mut session,
+                    &mut state,
+                    &mods,
+                    &mut extensions,
+                    &dir,
+                );
+                agent
+                    .run_turn(|steer| {
+                        if steer.is_none() {
+                            *steer = Some(text.into());
+                        }
+                    })
+                    .unwrap()
+                    .1
             };
-            if text.is_empty() { assert_eq!(stop, Stop::Cancelled); }
-            else {
+            if text.is_empty() {
+                assert_eq!(stop, Stop::Cancelled);
+            } else {
                 assert_eq!(stop, Stop::Steered);
-                assert!(session.messages().iter().any(|m| matches!(m, Message::User(t) if t.contains(text))));
-                assert!(!session.messages().iter().any(|m| matches!(m, Message::System(t) if t.contains(text))));
+                assert!(
+                    session
+                        .messages()
+                        .iter()
+                        .any(|m| matches!(m, Message::User(t) if t.contains(text)))
+                );
+                assert!(
+                    !session
+                        .messages()
+                        .iter()
+                        .any(|m| matches!(m, Message::System(t) if t.contains(text)))
+                );
             }
             drop(session);
             std::fs::remove_dir_all(dir).unwrap();
@@ -2836,16 +3409,40 @@ for line in sys.stdin:
     fn async_reasoning_recovery_preserves_effective_budget() {
         struct ReasoningProvider(std::sync::Arc<std::sync::Mutex<Vec<Option<u32>>>>, bool);
         impl Provider for ReasoningProvider {
-            fn id(&self) -> &str { "reasoning" }
-            fn rate_card(&self) -> Option<crate::pricing::RateCard> {
-                self.1.then_some(crate::pricing::RateCard { input:1.0, output:1.0, cache_read:1.0, cache_write:1.0 })
+            fn id(&self) -> &str {
+                "reasoning"
             }
-            fn context_window(&self) -> u32 { 200_000 }
-            fn stream(&self, request: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+            fn rate_card(&self) -> Option<crate::pricing::RateCard> {
+                self.1.then_some(crate::pricing::RateCard {
+                    input: 1.0,
+                    output: 1.0,
+                    cache_read: 1.0,
+                    cache_write: 1.0,
+                })
+            }
+            fn context_window(&self) -> u32 {
+                200_000
+            }
+            fn stream(
+                &self,
+                request: &Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
                 let mut calls = self.0.lock().unwrap();
                 calls.push(request.reasoning);
-                let events = if calls.len() == 1 { vec![Event::Error("reasoning arrived without an answer".into())] }
-                    else { vec![Event::Text("recovered".into()), Event::Usage(provider::Usage { input:1, output:1, cache_read:0, cache_write:0 }), Event::Done] };
+                let events = if calls.len() == 1 {
+                    vec![Event::Error("reasoning arrived without an answer".into())]
+                } else {
+                    vec![
+                        Event::Text("recovered".into()),
+                        Event::Usage(provider::Usage {
+                            input: 1,
+                            output: 1,
+                            cache_read: 0,
+                            cache_write: 0,
+                        }),
+                        Event::Done,
+                    ]
+                };
                 Ok(Box::new(events.into_iter()))
             }
         }
@@ -2858,10 +3455,19 @@ for line in sys.stdin:
         let mods = Vec::new();
         let mut extensions = Registry::load(&[], &dir, "reasoning");
         {
-            let mut agent = Agent::new(&provider, &mut session, &mut state, &mods, &mut extensions, &dir);
+            let mut agent = Agent::new(
+                &provider,
+                &mut session,
+                &mut state,
+                &mods,
+                &mut extensions,
+                &dir,
+            );
             agent.reasoning = Some(8192);
             let factory_calls = calls.clone();
-            agent = agent.with_stream_factory(std::sync::Arc::new(move || Ok(Box::new(ReasoningProvider(factory_calls.clone(), true)))));
+            agent = agent.with_stream_factory(std::sync::Arc::new(move || {
+                Ok(Box::new(ReasoningProvider(factory_calls.clone(), true)))
+            }));
             let (output, stop) = agent.run_turn(no_pump).unwrap();
             assert_eq!(output.text, "recovered");
             assert_eq!(stop, Stop::Finished);
@@ -3030,7 +3636,14 @@ for line in sys.stdin:
         let mut session = Session::create(&dir).unwrap();
         let mut state = State::new();
         let no_mods: Vec<Box<dyn Mod_>> = Vec::new();
-        let mut extensions = Registry::load(&[format!("env GLASS_CACHE_WARMER_MIN_PREFIX_BYTES=16000 {}",warmer_extension())], Path::new("."), "mock");
+        let mut extensions = Registry::load(
+            &[format!(
+                "env GLASS_CACHE_WARMER_MIN_PREFIX_BYTES=16000 {}",
+                warmer_extension()
+            )],
+            Path::new("."),
+            "mock",
+        );
 
         let calls = Arc::new(AtomicU64::new(0));
         let warmer = Warmer::new(counting_factory(Arc::clone(&calls)));
@@ -3100,20 +3713,40 @@ for line in sys.stdin:
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    struct RecoveryProvider { requests: std::sync::Mutex<Vec<(String, Option<u32>)>> }
+    struct RecoveryProvider {
+        requests: std::sync::Mutex<Vec<(String, Option<u32>)>>,
+    }
     impl Provider for RecoveryProvider {
-        fn id(&self) -> &str { "recovery" }
-        fn context_window(&self) -> u32 { 200_000 }
-        fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item=Event> + '_>, Error> {
+        fn id(&self) -> &str {
+            "recovery"
+        }
+        fn context_window(&self) -> u32 {
+            200_000
+        }
+        fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
             let mut requests = self.requests.lock().unwrap();
             let index = requests.len();
             requests.push((req.system.to_string(), req.reasoning));
             let events = if index == 0 || index == 20 {
-                vec![Event::Reasoning("partial thought".into()), Event::Error("reasoning arrived without an answer".into())]
+                vec![
+                    Event::Reasoning("partial thought".into()),
+                    Event::Error("reasoning arrived without an answer".into()),
+                ]
             } else if index <= 30 {
-                if index == 1 { assert!(format!("{:?}", req.messages).contains("Keep reasoning brief")); }
-                vec![Event::ToolCall { id:format!("state-{index}"), name:"state".into(), arguments:"{}".into() }, Event::Done]
-            } else { vec![Event::Text("finished task".into()), Event::Done] };
+                if index == 1 {
+                    assert!(format!("{:?}", req.messages).contains("Keep reasoning brief"));
+                }
+                vec![
+                    Event::ToolCall {
+                        id: format!("state-{index}"),
+                        name: "state".into(),
+                        arguments: "{}".into(),
+                    },
+                    Event::Done,
+                ]
+            } else {
+                vec![Event::Text("finished task".into()), Event::Done]
+            };
             Ok(Box::new(events.into_iter()))
         }
     }
@@ -3124,9 +3757,18 @@ for line in sys.stdin:
         session.append(Record::User("complete the task".into()));
         let mut state = State::new();
         let mut extensions = Registry::empty();
-        let provider = RecoveryProvider { requests: std::sync::Mutex::new(Vec::new()) };
+        let provider = RecoveryProvider {
+            requests: std::sync::Mutex::new(Vec::new()),
+        };
         let mods = Vec::new();
-        let mut agent = Agent::new(&provider, &mut session, &mut state, &mods, &mut extensions, &dir);
+        let mut agent = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &dir,
+        );
         let (output, stop) = agent.run_turn(no_pump).unwrap();
         assert_eq!(output.text, "finished task");
         assert_eq!(stop, Stop::Finished);
@@ -3135,7 +3777,8 @@ for line in sys.stdin:
         assert!(requests.iter().all(|(system, _)| system == &requests[0].0));
         assert_eq!(requests[1].1, Some(0));
         assert_eq!(requests[21].1, Some(0));
-        drop(agent); drop(session);
+        drop(agent);
+        drop(session);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -3417,28 +4060,56 @@ mod recovery_tests {
     fn proactive_compaction_sends_the_rebuilt_context_on_the_first_request() {
         struct Capture(std::cell::Cell<usize>);
         impl Provider for Capture {
-            fn id(&self) -> &str { "mock" }
-            fn context_window(&self) -> u32 { 1000 }
-            fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item=Event> + '_>, provider::Error> {
+            fn id(&self) -> &str {
+                "mock"
+            }
+            fn context_window(&self) -> u32 {
+                1000
+            }
+            fn stream(
+                &self,
+                req: &Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = Event> + '_>, provider::Error> {
                 self.0.set(req.messages.len());
-                Ok(Box::new(vec![Event::Text("done".into()), Event::Done].into_iter()))
+                Ok(Box::new(
+                    vec![Event::Text("done".into()), Event::Done].into_iter(),
+                ))
             }
         }
-        let dir=scratch("fresh-projection");
-        let mut session=Session::create(&dir).unwrap();
+        let dir = scratch("fresh-projection");
+        let mut session = Session::create(&dir).unwrap();
         for i in 0..12 {
-            session.append(if i%2==0 { Record::User("u".repeat(1000)) } else { Record::Assistant("a".repeat(1000)) });
+            session.append(if i % 2 == 0 {
+                Record::User("u".repeat(1000))
+            } else {
+                Record::Assistant("a".repeat(1000))
+            });
         }
-        let mut state=State::new();
-        let mods:Vec<Box<dyn Mod_>>=Vec::new();
-        let mut registry=ext::Registry::empty();
-        let provider=Capture(std::cell::Cell::new(0));
-        let mut agent=Agent::new(&provider,&mut session,&mut state,&mods,&mut registry,Path::new("."));
+        let mut state = State::new();
+        let mods: Vec<Box<dyn Mod_>> = Vec::new();
+        let mut registry = ext::Registry::empty();
+        let provider = Capture(std::cell::Cell::new(0));
+        let mut agent = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut registry,
+            Path::new("."),
+        );
         agent.turn(no_pump).unwrap();
-        assert!(provider.0.get()<12,"request must use the compacted records immediately");
+        assert!(
+            provider.0.get() < 12,
+            "request must use the compacted records immediately"
+        );
         drop(agent);
-        assert!(session.records.iter().any(|r|matches!(r,Record::Compacted{..})));
-        let _=std::fs::remove_dir_all(dir);
+        assert!(
+            session
+                .records
+                .iter()
+                .any(|r| matches!(r, Record::Compacted { .. }))
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -3624,7 +4295,10 @@ mod ext_cancel_tests {
         let _ = std::fs::create_dir_all(&dir);
         let script = dir.join("ext.py");
         // A tool that answers only after a long sleep.
-        std::fs::write(&script, format!(r#"
+        std::fs::write(
+            &script,
+            format!(
+                r#"
 import json, sys, time
 def send(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
 for line in sys.stdin:
@@ -3639,9 +4313,16 @@ for line in sys.stdin:
         send({{"id":i,"output":"finished"}})
     elif t=="goodbye": break
     else: send({{"id":i,"allow":True}})
-"#, crate::ext::protocol::PROTOCOL_VERSION)).unwrap();
-        let mut extensions =
-            Registry::load(&[format!("{py} {}", script.display())], Path::new("."), "mock");
+"#,
+                crate::ext::protocol::PROTOCOL_VERSION
+            ),
+        )
+        .unwrap();
+        let mut extensions = Registry::load(
+            &[format!("{py} {}", script.display())],
+            Path::new("."),
+            "mock",
+        );
 
         let provider = CapturingProviderWithToolCall::default();
         let mut session = Session::create(&dir).unwrap();
@@ -3659,16 +4340,38 @@ for line in sys.stdin:
         // The provider asks for the slow tool; the steer arrives while the
         // tool is blocked, so the turn stops waiting for the extension.
         let started = std::time::Instant::now();
-        let tool = ToolCall { id: "call_slow".into(), name: "slow".into(), arguments: "{}".into() };
+        let tool = ToolCall {
+            id: "call_slow".into(),
+            name: "slow".into(),
+            arguments: "{}".into(),
+        };
         agent.run_tool_pumped_or_inline(&tool, &mut |steer| {
             if started.elapsed() >= std::time::Duration::from_millis(100) {
                 *steer = Some("do something else".into());
             }
         });
         assert!(started.elapsed() < std::time::Duration::from_secs(3));
-        assert!(agent.extensions.has_tool("slow"), "registry retained after cancellation");
-        assert_eq!(agent.session.records.iter().filter(|r| matches!(r, Record::ToolResult {call_id, ..} if call_id == "call_slow")).count(), 1);
-        assert!(!agent.session.records.iter().any(|r| matches!(r, Record::Bash {..})), "extension results are not shell results");
+        assert!(
+            agent.extensions.has_tool("slow"),
+            "registry retained after cancellation"
+        );
+        assert_eq!(
+            agent
+                .session
+                .records
+                .iter()
+                .filter(|r| matches!(r, Record::ToolResult {call_id, ..} if call_id == "call_slow"))
+                .count(),
+            1
+        );
+        assert!(
+            !agent
+                .session
+                .records
+                .iter()
+                .any(|r| matches!(r, Record::Bash { .. })),
+            "extension results are not shell results"
+        );
 
         // The token carried into the extension host is tripped, so the
         // extension's exchange is abandoned rather than waited out.
@@ -3708,7 +4411,9 @@ for line in sys.stdin:
                     .into_iter(),
                 ));
             }
-            Ok(Box::new(vec![Event::Text("ok".into()), Event::Done].into_iter()))
+            Ok(Box::new(
+                vec![Event::Text("ok".into()), Event::Done].into_iter(),
+            ))
         }
         fn context_window(&self) -> u32 {
             200_000

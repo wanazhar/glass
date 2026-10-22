@@ -11,12 +11,18 @@ use ratatui::{
 /// Shared status classification for live, replayed and completed tool cards.
 pub fn status(summary: &str) -> String {
     if let Some(rest) = summary.strip_prefix("[exit ")
-        && let Some((code, _)) = rest.split_once(']') {
+        && let Some((code, _)) = rest.split_once(']')
+    {
         return format!("exit {code}");
     }
-    if ["error:", "killed", "refused:", "blocked"].iter().any(|prefix|summary.starts_with(prefix)) {
+    if ["error:", "killed", "refused:", "blocked"]
+        .iter()
+        .any(|prefix| summary.starts_with(prefix))
+    {
         "failed".into()
-    } else { "completed".into() }
+    } else {
+        "completed".into()
+    }
 }
 
 pub fn lines(
@@ -55,17 +61,32 @@ pub fn lines(
             .add_modifier(Modifier::BOLD),
     ))];
     let body_width = width.saturating_sub(2).max(1);
-    if name=="state" && output.starts_with("## Tasks ") && !failed {
-        let preview=output.split("\n\nrevision:").next().unwrap_or(output);
-        let content=markdown::lines(preview,body_width);
-        let count=if compact{2}else{8};
+    if name == "state" && output.starts_with("## Tasks ") && !failed {
+        let preview = output.split("\n\nrevision:").next().unwrap_or(output);
+        let content = markdown::lines(preview, body_width);
+        let count = if compact { 2 } else { 8 };
         rows.extend(content.iter().take(count).cloned());
-        if content.len()>count {rows.push(line("  ","… /todo for full checklist",Tone::Muted,width));}
+        if content.len() > count {
+            rows.push(line("  ", "… /todo for full checklist", Tone::Muted, width));
+        }
         return rows;
     }
     if !compact && !command.is_empty() {
         let clipped = text::clip(&markdown::sanitize(command), body_width * 3);
-        let prefix = if matches!(name, "read" | "edit" | "write" | "view_image" | "web_fetch" | "web_search" | "browser_verify") { "◆" } else { "$" };
+        let prefix = if matches!(
+            name,
+            "read"
+                | "edit"
+                | "write"
+                | "view_image"
+                | "web_fetch"
+                | "web_search"
+                | "browser_verify"
+        ) {
+            "◆"
+        } else {
+            "$"
+        };
         let wrapped = text::wrap_words(&format!("{prefix} {clipped}"), body_width);
         for row in wrapped.iter().take(2) {
             rows.push(line("  ", row, Tone::Secondary, width));
@@ -79,13 +100,18 @@ pub fn lines(
     let skip_exit = first.is_some_and(|s| s.starts_with("[exit ") && s.ends_with(']'));
     let source = first.filter(|_| !skip_exit).into_iter().chain(source);
     let native_file = output.lines().take(2).any(|s| s.starts_with("[file "));
-    let visual = matches!(name, "view_image" | "web_fetch" | "web_search" | "browser_verify");
+    let visual = matches!(
+        name,
+        "view_image" | "web_fetch" | "web_search" | "browser_verify"
+    );
     let budget = if native_file || visual { 6 } else { 3 };
     let mut shown = 0;
     let mut hidden = 0;
     let mut partial = false;
     for raw in source {
-        if visual && raw.trim().is_empty() { continue; }
+        if visual && raw.trim().is_empty() {
+            continue;
+        }
         if shown >= budget || (compact && !failed) {
             hidden += 1;
             continue;
@@ -95,15 +121,26 @@ pub fn lines(
                 .map(|(path, _)| text::clip(&format!("◆ {}", &path[6..]), body_width))
                 .unwrap_or_else(|| raw.to_string())
         } else if visual && raw.starts_with("[web source · ") {
-            let status = raw.split(" · ").find(|part| part.starts_with("HTTP ")).unwrap_or("Page");
+            let status = raw
+                .split(" · ")
+                .find(|part| part.starts_with("HTTP "))
+                .unwrap_or("Page");
             format!("◎ Page · {status}")
         } else if visual && raw.starts_with("[web search · ") {
             let parts: Vec<_> = raw.trim_end_matches(']').split(" · ").collect();
-            format!("⌕ {} · {}", parts.get(2).unwrap_or(&"Sources"), parts.get(1).unwrap_or(&"web"))
-        } else if visual && (raw.trim_start().starts_with("http://") || raw.trim_start().starts_with("https://")) {
+            format!(
+                "⌕ {} · {}",
+                parts.get(2).unwrap_or(&"Sources"),
+                parts.get(1).unwrap_or(&"web")
+            )
+        } else if visual
+            && (raw.trim_start().starts_with("http://") || raw.trim_start().starts_with("https://"))
+        {
             text::clip(raw.trim(), body_width * 2)
         } else if visual && raw.starts_with("[image ") {
-            raw.split_once(" · ").map(|(_, rest)| format!("▧ {}", rest.trim_end_matches(']'))).unwrap_or_else(|| raw.to_string())
+            raw.split_once(" · ")
+                .map(|(_, rest)| format!("▧ {}", rest.trim_end_matches(']')))
+                .unwrap_or_else(|| raw.to_string())
         } else if native_file && raw.starts_with("[diagnostics ") {
             if raw.starts_with("[diagnostics ok") {
                 "✓ syntax checked".into()
@@ -150,15 +187,22 @@ pub fn lines(
 }
 /// Keep detailed and compact tool output colors consistent.
 pub(crate) fn output_tone(raw: &str, failed: bool, native_file: bool, visual: bool) -> Tone {
-    if failed || (native_file && (raw.starts_with("- ") || raw.starts_with("error ")
-        || raw.starts_with("[diagnostics error"))) {
+    if failed
+        || (native_file
+            && (raw.starts_with("- ")
+                || raw.starts_with("error ")
+                || raw.starts_with("[diagnostics error")))
+    {
         Tone::Error
     } else if native_file && (raw.starts_with("+ ") || raw.starts_with("[diagnostics ok")) {
         Tone::Success
-    } else if visual && (raw.starts_with("[web ") || raw.starts_with("[image ")
-        || raw.starts_with("[browser ")) {
+    } else if visual
+        && (raw.starts_with("[web ") || raw.starts_with("[image ") || raw.starts_with("[browser "))
+    {
         Tone::Accent
-    } else if visual && (raw.trim_start().starts_with("http://") || raw.trim_start().starts_with("https://")) {
+    } else if visual
+        && (raw.trim_start().starts_with("http://") || raw.trim_start().starts_with("https://"))
+    {
         Tone::Secondary
     } else if native_file && raw.starts_with("[file ") {
         Tone::Accent
@@ -252,7 +296,11 @@ mod tests {
     fn direct_file_paths_are_not_presented_as_shell_commands() {
         for name in ["read", "edit", "write"] {
             let rows = lines(name, "src/main.rs", true, 0.1, "error: refused", 40, false);
-            let rendered = rows.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+            let rendered = rows
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
             assert!(rendered.contains("◆ src/main.rs"), "{rendered}");
             assert!(!rendered.contains("$ src/main.rs"));
         }

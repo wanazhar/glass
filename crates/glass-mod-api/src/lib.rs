@@ -43,7 +43,9 @@ impl Message {
     pub fn role(&self) -> &'static str {
         match self {
             Message::User(_) | Message::Image { .. } => "user",
-            Message::Assistant(_) | Message::ToolCall { .. } | Message::ChatReasoning { .. } => "assistant",
+            Message::Assistant(_) | Message::ToolCall { .. } | Message::ChatReasoning { .. } => {
+                "assistant"
+            }
             Message::ToolResult { .. } => "user",
             Message::System(_) => "system",
         }
@@ -82,38 +84,57 @@ impl ToolCall {
         let mut rest = self.arguments.trim_start().strip_prefix('{')?;
         loop {
             rest = rest.trim_start();
-            if rest.starts_with('}') { return None; }
+            if rest.starts_with('}') {
+                return None;
+            }
             let key_text = rest.strip_prefix('"')?;
             let mut escaped = false;
             let mut key_end = None;
             for (i, c) in key_text.char_indices() {
-                if escaped { escaped = false; }
-                else if c == '\\' { escaped = true; }
-                else if c == '"' { key_end = Some(i); break; }
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    key_end = Some(i);
+                    break;
+                }
             }
             let key_end = key_end?;
             let matches = &key_text[..key_end] == key;
-            rest = key_text[key_end + 1..].trim_start().strip_prefix(':')?.trim_start();
+            rest = key_text[key_end + 1..]
+                .trim_start()
+                .strip_prefix(':')?
+                .trim_start();
             let mut depth = 0usize;
             let mut in_string = false;
             let mut escaped = false;
             let mut end = rest.len();
             for (i, b) in rest.bytes().enumerate() {
                 if in_string {
-                    if escaped { escaped = false; }
-                    else if b == b'\\' { escaped = true; }
-                    else if b == b'"' { in_string = false; }
+                    if escaped {
+                        escaped = false;
+                    } else if b == b'\\' {
+                        escaped = true;
+                    } else if b == b'"' {
+                        in_string = false;
+                    }
                     continue;
                 }
                 match b {
                     b'"' => in_string = true,
                     b'{' | b'[' => depth += 1,
                     b'}' | b']' if depth > 0 => depth -= 1,
-                    b'}' | b',' if depth == 0 => { end = i; break; }
+                    b'}' | b',' if depth == 0 => {
+                        end = i;
+                        break;
+                    }
                     _ => {}
                 }
             }
-            if matches { return Some(rest[..end].trim().to_string()); }
+            if matches {
+                return Some(rest[..end].trim().to_string());
+            }
             rest = rest[end..].strip_prefix(',')?;
         }
     }
@@ -143,14 +164,22 @@ impl ToolCall {
                 'f' => out.push('\u{c}'),
                 'u' => {
                     let hex: String = chars.by_ref().take(4).collect();
-                    if hex.len() != 4 { return None; }
+                    if hex.len() != 4 {
+                        return None;
+                    }
                     let mut cp = u32::from_str_radix(&hex, 16).ok()?;
                     if (0xd800..=0xdbff).contains(&cp) {
-                        if chars.next()? != '\\' || chars.next()? != 'u' { return None; }
+                        if chars.next()? != '\\' || chars.next()? != 'u' {
+                            return None;
+                        }
                         let low: String = chars.by_ref().take(4).collect();
-                        if low.len() != 4 { return None; }
+                        if low.len() != 4 {
+                            return None;
+                        }
                         let low = u32::from_str_radix(&low, 16).ok()?;
-                        if !(0xdc00..=0xdfff).contains(&low) { return None; }
+                        if !(0xdc00..=0xdfff).contains(&low) {
+                            return None;
+                        }
                         cp = 0x10000 + ((cp - 0xd800) << 10) + low - 0xdc00;
                     }
                     out.push(char::from_u32(cp)?);
@@ -385,15 +414,39 @@ mod tests {
 
     #[test]
     fn nested_and_quoted_keys_cannot_shadow_top_level_arguments() {
-        assert_eq!(call(r#"{"nested":{"command":"wrong"},"command":"correct"}"#).arg_str("command").as_deref(), Some("correct"));
-        assert_eq!(call(r#"{"note":"command","command":"correct"}"#).arg_str("command").as_deref(), Some("correct"));
-        assert!(call(r#"{"nested":{"command":"wrong"}}"#).arg_str("command").is_none());
+        assert_eq!(
+            call(r#"{"nested":{"command":"wrong"},"command":"correct"}"#)
+                .arg_str("command")
+                .as_deref(),
+            Some("correct")
+        );
+        assert_eq!(
+            call(r#"{"note":"command","command":"correct"}"#)
+                .arg_str("command")
+                .as_deref(),
+            Some("correct")
+        );
+        assert!(
+            call(r#"{"nested":{"command":"wrong"}}"#)
+                .arg_str("command")
+                .is_none()
+        );
     }
 
     #[test]
     fn decodes_surrogate_pairs_and_rejects_incomplete_unicode() {
-        assert_eq!(call(r#"{"command":"echo \ud83d\ude00"}"#).arg_str("command").as_deref(), Some("echo 😀"));
-        for input in [r#"{"command":"\ud83d"}"#, r#"{"command":"\ude00"}"#, r#"{"command":"\ud83d\u0041"}"#, r#"{"command":"\u123"}"#] {
+        assert_eq!(
+            call(r#"{"command":"echo \ud83d\ude00"}"#)
+                .arg_str("command")
+                .as_deref(),
+            Some("echo 😀")
+        );
+        for input in [
+            r#"{"command":"\ud83d"}"#,
+            r#"{"command":"\ude00"}"#,
+            r#"{"command":"\ud83d\u0041"}"#,
+            r#"{"command":"\u123"}"#,
+        ] {
             assert!(call(input).arg_str("command").is_none(), "{input}");
         }
     }

@@ -70,7 +70,10 @@ fn load_primary(path: &Path) -> Result<Store, String> {
         || store.entries.iter().any(|e| {
             e.text.len() > 4096
                 || e.source.len() > 1024
-                || !matches!(e.status.as_str(), "pending" | "confirmed" | "active" | "forgotten")
+                || !matches!(
+                    e.status.as_str(),
+                    "pending" | "confirmed" | "active" | "forgotten"
+                )
                 || !matches!(
                     e.kind.as_str(),
                     "preference" | "fact" | "procedure" | "lesson"
@@ -86,7 +89,9 @@ fn load_primary(path: &Path) -> Result<Store, String> {
     // Old pending proposals and confirmed entries are now ordinary active
     // memories. Persist the normalized lifecycle on the next explicit write.
     for entry in &mut store.entries {
-        if matches!(entry.status.as_str(), "pending" | "confirmed") { entry.status = "active".into(); }
+        if matches!(entry.status.as_str(), "pending" | "confirmed") {
+            entry.status = "active".into();
+        }
     }
     Ok(store)
 }
@@ -156,7 +161,9 @@ pub fn request(
     read_only: bool,
 ) -> Result<Value, String> {
     let r: Request = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-    if r.action == "read" && r.id.trim().is_empty() { return Err("Read requires an id from memory search or list".into()); }
+    if r.action == "read" && r.id.trim().is_empty() {
+        return Err("Read requires an id from memory search or list".into());
+    }
     let path = path(root)?;
     let mutating = !matches!(r.action.as_str(), "list" | "search" | "read");
     if mutating && read_only {
@@ -172,16 +179,30 @@ pub fn request(
             store.revision
         ));
     }
-    if r.action == "read" && !store.entries.iter().any(|entry| entry.id == r.id) { return Err("Unknown neuralnets id".into()); }
-    if model_source.is_some() && (r.action == "mode" || store.mode == Mode::Off || (mutating && store.mode != Mode::Auto)) {
+    if r.action == "read" && !store.entries.iter().any(|entry| entry.id == r.id) {
+        return Err("Unknown neuralnets id".into());
+    }
+    if model_source.is_some()
+        && (r.action == "mode" || store.mode == Mode::Off || (mutating && store.mode != Mode::Auto))
+    {
         return Err("Memory policy blocks this model action".into());
     }
     let source = model_source.unwrap_or("human CLI");
-    if source.len() > 1024 { return Err("Source exceeds 1024 bytes".into()); }
-    let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .map(|v| v.as_secs()).map_err(|e| e.to_string());
+    if source.len() > 1024 {
+        return Err("Source exceeds 1024 bytes".into());
+    }
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|v| v.as_secs())
+            .map_err(|e| e.to_string())
+    };
     let validate_text = |text: &str| -> Result<(), String> {
-        if text.trim().is_empty() || text.len() > 4096 { Err("Supply 1..4096 bytes of concise memory text".into()) } else { Ok(()) }
+        if text.trim().is_empty() || text.len() > 4096 {
+            Err("Supply 1..4096 bytes of concise memory text".into())
+        } else {
+            Ok(())
+        }
     };
     let mut selected_id = r.id.clone();
     let mut changed = false;
@@ -198,29 +219,55 @@ pub fn request(
         }
         "list" | "search" | "read" => {}
         "save" | "add" | "propose" => {
-            if !matches!(r.kind.as_str(), "preference" | "fact" | "procedure" | "lesson") {
+            if !matches!(
+                r.kind.as_str(),
+                "preference" | "fact" | "procedure" | "lesson"
+            ) {
                 return Err("Supply kind preference|fact|procedure|lesson".into());
             }
             validate_text(&r.text)?;
-            if let Some(entry) = store.entries.iter().find(|e| e.kind == r.kind && e.text == r.text) {
-                if entry.status == "forgotten" { return Err("This memory was removed; restore its id with the current expected revision if it is needed again".into()); }
+            if let Some(entry) = store
+                .entries
+                .iter()
+                .find(|e| e.kind == r.kind && e.text == r.text)
+            {
+                if entry.status == "forgotten" {
+                    return Err("This memory was removed; restore its id with the current expected revision if it is needed again".into());
+                }
                 selected_id = entry.id.clone();
             } else {
-                if store.entries.len() >= 512 { return Err("Neuralnets has 512 retained entries; forget stale memories and purge forgotten entries with the current revision before saving more".into()); }
+                if store.entries.len() >= 512 {
+                    return Err("Neuralnets has 512 retained entries; forget stale memories and purge forgotten entries with the current revision before saving more".into());
+                }
                 let mut id = crate::workspace::hash(format!("{}\0{}", r.kind, r.text).as_bytes());
                 if store.entries.iter().any(|e| e.id == id) {
                     id = crate::workspace::hash(format!("{id}\0{}", store.revision).as_bytes());
                 }
                 selected_id = id.clone();
-                store.entries.push(Entry {id, kind:r.kind, text:r.text, source:source.into(), status:"active".into(), saved_unix:now()?});
+                store.entries.push(Entry {
+                    id,
+                    kind: r.kind,
+                    text: r.text,
+                    source: source.into(),
+                    status: "active".into(),
+                    saved_unix: now()?,
+                });
                 changed = true;
             }
         }
         "update" => {
             validate_text(&r.text)?;
-            if r.expected.is_none() { return Err("Update requires expected revision from read or search".into()); }
-            let entry = store.entries.iter_mut().find(|e| e.id == r.id).ok_or("Unknown neuralnets id")?;
-            if entry.status == "forgotten" { return Err("Restore this memory before updating it".into()); }
+            if r.expected.is_none() {
+                return Err("Update requires expected revision from read or search".into());
+            }
+            let entry = store
+                .entries
+                .iter_mut()
+                .find(|e| e.id == r.id)
+                .ok_or("Unknown neuralnets id")?;
+            if entry.status == "forgotten" {
+                return Err("Restore this memory before updating it".into());
+            }
             if entry.text != r.text {
                 entry.text = r.text;
                 entry.source = source.into();
@@ -229,21 +276,35 @@ pub fn request(
             }
         }
         "purge" => {
-            if r.expected.is_none() { return Err("Purge requires expected revision from list".into()); }
+            if r.expected.is_none() {
+                return Err("Purge requires expected revision from list".into());
+            }
             let before = store.entries.len();
             store.entries.retain(|e| e.status != "forgotten");
             changed = store.entries.len() != before;
         }
         "approve" | "forget" | "remove" | "restore" => {
-            if r.expected.is_none() { return Err("Memory changes require expected revision from read or list".into()); }
-            let entry = store.entries.iter_mut().find(|e| e.id == r.id).ok_or("Unknown neuralnets id")?;
-            let status = if matches!(r.action.as_str(), "forget" | "remove") { "forgotten" } else { "active" };
+            if r.expected.is_none() {
+                return Err("Memory changes require expected revision from read or list".into());
+            }
+            let entry = store
+                .entries
+                .iter_mut()
+                .find(|e| e.id == r.id)
+                .ok_or("Unknown neuralnets id")?;
+            let status = if matches!(r.action.as_str(), "forget" | "remove") {
+                "forgotten"
+            } else {
+                "active"
+            };
             changed = entry.status != status;
             entry.status = status.into();
         }
         _ => return Err("Unknown neuralnets action".into()),
     }
-    if changed { save(&path, &mut store)?; }
+    if changed {
+        save(&path, &mut store)?;
+    }
     let query = r.query.to_lowercase();
     let entries: Vec<_> = store
         .entries
@@ -277,11 +338,31 @@ fn terms(text: &str) -> std::collections::HashSet<String> {
     text.split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|s| s.len() >= 3)
         .map(str::to_lowercase)
-        .filter(|s| !matches!(s.as_str(), "the" | "and" | "for" | "this" | "that" | "with" | "can" | "you" | "please" | "have" | "what" | "how" | "use"))
-        .take(128).collect()
+        .filter(|s| {
+            !matches!(
+                s.as_str(),
+                "the"
+                    | "and"
+                    | "for"
+                    | "this"
+                    | "that"
+                    | "with"
+                    | "can"
+                    | "you"
+                    | "please"
+                    | "have"
+                    | "what"
+                    | "how"
+                    | "use"
+            )
+        })
+        .take(128)
+        .collect()
 }
 fn context_for(store: &Store, query: &str) -> Result<Option<String>, String> {
-    if store.mode == Mode::Off { return Ok(None); }
+    if store.mode == Mode::Off {
+        return Ok(None);
+    }
     let reviewed = store.reviewed.as_ref().expect("loaded reviewed section");
     let facts = crate::project_memory::context_store(reviewed)?;
     // Match only facts actually emitted within the legacy retrieval budget.
@@ -294,8 +375,13 @@ fn context_for(store: &Store, query: &str) -> Result<Option<String>, String> {
     let mut entries = Vec::new();
     let mut bytes = 2;
     let query_terms = terms(query);
-    let mut ranked: Vec<_> = store.entries.iter().enumerate()
-        .filter(|(_, e)| matches!(e.status.as_str(), "active" | "confirmed") && !seen.contains(e.text.trim()))
+    let mut ranked: Vec<_> = store
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| {
+            matches!(e.status.as_str(), "active" | "confirmed") && !seen.contains(e.text.trim())
+        })
         .map(|(index, e)| {
             let words = terms(&e.text);
             let score = words.intersection(&query_terms).count();
@@ -305,7 +391,9 @@ fn context_for(store: &Store, query: &str) -> Result<Option<String>, String> {
         .collect();
     ranked.sort_unstable_by_key(|row| std::cmp::Reverse((row.0, row.1)));
     for (_, _, e) in ranked {
-        if entries.len() == 8 { break; }
+        if entries.len() == 8 {
+            break;
+        }
         let row = json!({"id":e.id,"kind":e.kind,"text":e.text,"source":e.source,"saved_unix":e.saved_unix});
         let size = row.to_string().replace('<', "\\u003c").len() + usize::from(!entries.is_empty());
         if bytes + size > 2048 {
@@ -326,14 +414,32 @@ fn context_for(store: &Store, query: &str) -> Result<Option<String>, String> {
 }
 /// Bounded local retrieval once per turn, no network calls or transcript copies.
 /// Direct capture deliberately recognizes only an explicit single-line directive.
-pub fn turn_context(root: &Path, query: &str, source: &str, read_only: bool) -> Result<Option<String>, String> {
-    if root.as_os_str().is_empty() { return Ok(None); }
+pub fn turn_context(
+    root: &Path,
+    query: &str,
+    source: &str,
+    read_only: bool,
+) -> Result<Option<String>, String> {
+    if root.as_os_str().is_empty() {
+        return Ok(None);
+    }
     let mut store = load(&path(root)?)?;
-    if !read_only && store.mode == Mode::Auto
-        && let Some(text) = query.trim().strip_prefix("remember:").or_else(|| query.trim().strip_prefix("Remember:"))
-        && !text.trim().is_empty() && text.len() <= 1024 && !text.contains('\n')
+    if !read_only
+        && store.mode == Mode::Auto
+        && let Some(text) = query
+            .trim()
+            .strip_prefix("remember:")
+            .or_else(|| query.trim().strip_prefix("Remember:"))
+        && !text.trim().is_empty()
+        && text.len() <= 1024
+        && !text.contains('\n')
     {
-        request(root, &json!({"action":"save","kind":"fact","text":text.trim()}), Some(source), false)?;
+        request(
+            root,
+            &json!({"action":"save","kind":"fact","text":text.trim()}),
+            Some(source),
+            false,
+        )?;
         store = load(&path(root)?)?;
     }
     let mut context = context_for(&store, query)?.unwrap_or_default();
@@ -341,7 +447,9 @@ pub fn turn_context(root: &Path, query: &str, source: &str, read_only: bool) -> 
         Mode::Off => "Memory is off. Do not read or write persistent memory.",
         Mode::Recall => "Memory is recall-only. Do not save or update persistent memory.",
         Mode::Auto if read_only => "Read-only turn: recall memory but do not save learning.",
-        Mode::Auto => "Before finishing or compacting, save a concise reusable user correction or verified lesson with state.neuralnets if this task produced one. Search/update existing entries instead of duplicating. Otherwise save nothing. Do not infer preferences from silence or save secrets, raw transcripts, temporary progress or unverified claims.",
+        Mode::Auto => {
+            "Before finishing or compacting, save a concise reusable user correction or verified lesson with state.neuralnets if this task produced one. Search/update existing entries instead of duplicating. Otherwise save nothing. Do not infer preferences from silence or save secrets, raw transcripts, temporary progress or unverified claims."
+        }
     };
     context.push_str(&format!("\n<memory_policy>{policy}</memory_policy>"));
     Ok(Some(context))
@@ -371,8 +479,12 @@ pub fn command(args: &[String]) -> Result<(), String> {
             json!({"action":"purge","expected":rev.parse::<u64>().map_err(|_|"Invalid revision")?})
         }
         ["read", id] => json!({"action":"read","id":id}),
-        [action, kind, text] if matches!(*action, "save" | "add" | "propose") => json!({"action":action,"kind":kind,"text":text}),
-        ["update", id, rev, text] => json!({"action":"update","id":id,"expected":rev.parse::<u64>().map_err(|_|"Invalid revision")?,"text":text}),
+        [action, kind, text] if matches!(*action, "save" | "add" | "propose") => {
+            json!({"action":action,"kind":kind,"text":text})
+        }
+        ["update", id, rev, text] => {
+            json!({"action":"update","id":id,"expected":rev.parse::<u64>().map_err(|_|"Invalid revision")?,"text":text})
+        }
         [action, id, rev] if matches!(*action, "approve" | "forget" | "remove" | "restore") => {
             json!({"action":action,"id":id,"expected":rev.parse::<u64>().map_err(|_|"Invalid revision")?})
         }
@@ -457,10 +569,7 @@ pub fn view(keys: &crate::input::KeyReader, root: &Path) {
         if offset > 0 {
             rows.push("← Previous page".into());
         }
-        rows.insert(
-            0,
-            "Memory mode / pinned facts / settings".into(),
-        );
+        rows.insert(0, "Memory mode / pinned facts / settings".into());
         let Some(index) = crate::modal::choose(
             keys,
             "Neuralnets",
@@ -470,10 +579,26 @@ pub fn view(keys: &crate::input::KeyReader, root: &Path) {
             return;
         };
         if index == 0 {
-            let options = vec!["Automatic learning and recall".into(), "Recall only".into(), "Off".into(), "Pinned facts".into()];
-            if let Some(choice) = crate::modal::choose(keys, "Memory settings", &format!("Current mode: {} · native project memory", value["mode"]), &options) {
-                if choice == 3 { view_facts(keys, root); }
-                else if let Err(error) = request(root, &json!({"action":"mode","text":(["auto", "recall", "off"][choice]),"expected":value["revision"]}), None, false) {
+            let options = vec![
+                "Automatic learning and recall".into(),
+                "Recall only".into(),
+                "Off".into(),
+                "Pinned facts".into(),
+            ];
+            if let Some(choice) = crate::modal::choose(
+                keys,
+                "Memory settings",
+                &format!("Current mode: {} · native project memory", value["mode"]),
+                &options,
+            ) {
+                if choice == 3 {
+                    view_facts(keys, root);
+                } else if let Err(error) = request(
+                    root,
+                    &json!({"action":"mode","text":(["auto", "recall", "off"][choice]),"expected":value["revision"]}),
+                    None,
+                    false,
+                ) {
                     crate::modal::info(keys, "Memory changed", &error);
                 }
             }
@@ -493,7 +618,11 @@ pub fn view(keys: &crate::input::KeyReader, root: &Path) {
         let actions = if forgotten {
             vec!["Read entry and source".into(), "Restore memory".into()]
         } else {
-            vec!["Read entry and source".into(), "Edit memory".into(), "Forget memory".into()]
+            vec![
+                "Read entry and source".into(),
+                "Edit memory".into(),
+                "Forget memory".into(),
+            ]
         };
         let Some(action) = crate::modal::choose(
             keys,
@@ -508,8 +637,18 @@ pub fn view(keys: &crate::input::KeyReader, root: &Path) {
             continue;
         }
         if action == 1 && !forgotten {
-            if let Some(text) = crate::modal::field(keys, "Edit memory", "Keep durable facts concise", entry["text"].as_str().unwrap_or(""), false)
-                && let Err(error) = request(root, &json!({"action":"update","id":entry["id"],"expected":value["revision"],"text":text}), None, false) {
+            if let Some(text) = crate::modal::field(
+                keys,
+                "Edit memory",
+                "Keep durable facts concise",
+                entry["text"].as_str().unwrap_or(""),
+                false,
+            ) && let Err(error) = request(
+                root,
+                &json!({"action":"update","id":entry["id"],"expected":value["revision"],"text":text}),
+                None,
+                false,
+            ) {
                 crate::modal::info(keys, "Memory changed", &error);
             }
             continue;
@@ -609,46 +748,127 @@ mod tests {
     use super::*;
     #[test]
     fn relevant_recall_beats_recency_and_fills_budget() {
-        let mut store = Store { reviewed: Some(Default::default()), ..Default::default() };
+        let mut store = Store {
+            reviewed: Some(Default::default()),
+            ..Default::default()
+        };
         for i in 0..20 {
-            store.entries.push(Entry { id: i.to_string(), kind: "lesson".into(), text: if i == 0 { "Run cargo tests for terminal layout".into() } else { format!("Unrelated database migration {i}") }, source: "test".into(), status: "active".into(), saved_unix: i });
+            store.entries.push(Entry {
+                id: i.to_string(),
+                kind: "lesson".into(),
+                text: if i == 0 {
+                    "Run cargo tests for terminal layout".into()
+                } else {
+                    format!("Unrelated database migration {i}")
+                },
+                source: "test".into(),
+                status: "active".into(),
+                saved_unix: i,
+            });
         }
         let recalled = context_for(&store, "fix terminal layout").unwrap().unwrap();
         assert!(recalled.contains("cargo tests"));
         assert!(!recalled.contains("database"));
         assert!(context_for(&store, "astronomy").unwrap().is_none());
         assert!(context_for(&store, "hi").unwrap().is_none());
-        store.entries.push(Entry { id: "large".into(), kind: "lesson".into(), text: "terminal ".repeat(450), source: "test".into(), status: "active".into(), saved_unix: 30 });
-        assert!(context_for(&store, "terminal").unwrap().unwrap().contains("cargo tests"));
+        store.entries.push(Entry {
+            id: "large".into(),
+            kind: "lesson".into(),
+            text: "terminal ".repeat(450),
+            source: "test".into(),
+            status: "active".into(),
+            saved_unix: 30,
+        });
+        assert!(
+            context_for(&store, "terminal")
+                .unwrap()
+                .unwrap()
+                .contains("cargo tests")
+        );
         store.mode = Mode::Off;
         assert!(context_for(&store, "terminal").unwrap().is_none());
     }
 
     #[test]
     fn automatic_capture_and_modes_survive_new_turns() {
-        let root = std::env::temp_dir().join(format!("gc-memory-policy-{}", crate::auth::random(8).unwrap()));
+        let root = std::env::temp_dir().join(format!(
+            "gc-memory-policy-{}",
+            crate::auth::random(8).unwrap()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let source = "session:test user directive";
-        let first = turn_context(&root, "remember: Run cargo test for terminal changes", source, false).unwrap().unwrap();
+        let first = turn_context(
+            &root,
+            "remember: Run cargo test for terminal changes",
+            source,
+            false,
+        )
+        .unwrap()
+        .unwrap();
         assert!(first.contains("Run cargo test"));
-        let revision = request(&root, &json!({"action":"list"}), None, true).unwrap()["revision"].clone();
-        turn_context(&root, "remember: Run cargo test for terminal changes", source, false).unwrap();
-        assert_eq!(request(&root, &json!({"action":"list"}), None, true).unwrap()["revision"], revision);
-        assert!(turn_context(&root, "terminal changes", "session:new", false).unwrap().unwrap().contains("Run cargo test"));
-        assert!(request(&root, &json!({"action":"mode","text":"off"}), Some(source), false).is_err());
-        request(&root, &json!({"action":"mode","text":"recall"}), None, false).unwrap();
+        let revision =
+            request(&root, &json!({"action":"list"}), None, true).unwrap()["revision"].clone();
+        turn_context(
+            &root,
+            "remember: Run cargo test for terminal changes",
+            source,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            request(&root, &json!({"action":"list"}), None, true).unwrap()["revision"],
+            revision
+        );
+        assert!(
+            turn_context(&root, "terminal changes", "session:new", false)
+                .unwrap()
+                .unwrap()
+                .contains("Run cargo test")
+        );
+        assert!(
+            request(
+                &root,
+                &json!({"action":"mode","text":"off"}),
+                Some(source),
+                false
+            )
+            .is_err()
+        );
+        request(
+            &root,
+            &json!({"action":"mode","text":"recall"}),
+            None,
+            false,
+        )
+        .unwrap();
         turn_context(&root, "remember: Do not capture this", source, false).unwrap();
-        assert!(request(&root, &json!({"action":"save","kind":"fact","text":"blocked"}), Some(source), false).is_err());
-        assert_eq!(request(&root, &json!({"action":"list"}), None, true).unwrap()["total"], 1);
+        assert!(
+            request(
+                &root,
+                &json!({"action":"save","kind":"fact","text":"blocked"}),
+                Some(source),
+                false
+            )
+            .is_err()
+        );
+        assert_eq!(
+            request(&root, &json!({"action":"list"}), None, true).unwrap()["total"],
+            1
+        );
         request(&root, &json!({"action":"mode","text":"off"}), None, false).unwrap();
         assert!(context(&root).unwrap().is_none());
         assert!(request(&root, &json!({"action":"search"}), Some(source), true).is_err());
-        let off = turn_context(&root, "terminal", source, false).unwrap().unwrap();
+        let off = turn_context(&root, "terminal", source, false)
+            .unwrap()
+            .unwrap();
         assert!(!off.contains("Run cargo"));
         assert!(off.contains("Memory is off"));
         request(&root, &json!({"action":"mode","text":"auto"}), None, false).unwrap();
         turn_context(&root, "remember: Read-only must not capture", source, true).unwrap();
-        assert_eq!(request(&root, &json!({"action":"list"}), None, true).unwrap()["total"], 1);
+        assert_eq!(
+            request(&root, &json!({"action":"list"}), None, true).unwrap()["total"],
+            1
+        );
         let file = path(&root).unwrap();
         std::fs::remove_file(&file).unwrap();
         std::fs::remove_file(file.with_extension("lock")).unwrap();
@@ -699,8 +919,10 @@ mod tests {
         assert_eq!(refresh_context(old, None), "base");
         let compacted = "base<memory_policy>old automatic learning</memory_policy><neuralnets path=\"reviewed-project-learning\">stale</neuralnets>";
         let disabled = "<memory_policy>Memory is off.</memory_policy>";
-        assert_eq!(refresh_context(compacted.into(), Some(disabled)), format!("base{disabled}"));
-
+        assert_eq!(
+            refresh_context(compacted.into(), Some(disabled)),
+            format!("base{disabled}")
+        );
     }
     #[test]
     fn reviewed_context_replaces_old_compaction_snapshot() {
@@ -730,29 +952,92 @@ mod tests {
     }
     #[test]
     fn agents_manage_memory_directly_and_legacy_pending_is_active() {
-        let root = std::env::temp_dir().join(format!("gc-neuralnets-direct-{}-{}", std::process::id(), crate::auth::random(8).unwrap()));
+        let root = std::env::temp_dir().join(format!(
+            "gc-neuralnets-direct-{}-{}",
+            std::process::id(),
+            crate::auth::random(8).unwrap()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let source = Some("session:test tool:memory");
-        assert!(request(&root, &json!({"action":"read"}), source, false).unwrap_err().contains("requires an id"));
-        let saved = request(&root, &json!({"action":"save","kind":"lesson","text":"Run focused checks"}), source, false).unwrap();
+        assert!(
+            request(&root, &json!({"action":"read"}), source, false)
+                .unwrap_err()
+                .contains("requires an id")
+        );
+        let saved = request(
+            &root,
+            &json!({"action":"save","kind":"lesson","text":"Run focused checks"}),
+            source,
+            false,
+        )
+        .unwrap();
         let id = saved["entries"][0]["id"].clone();
         assert_eq!(saved["entries"][0]["status"], "active");
-        assert!(context(&root).unwrap().unwrap().contains("Run focused checks"));
-        let duplicate = request(&root, &json!({"action":"save","kind":"lesson","text":"Run focused checks"}), source, false).unwrap();
-        assert_eq!(duplicate["revision"], saved["revision"], "retries must not write or grow memory");
+        assert!(
+            context(&root)
+                .unwrap()
+                .unwrap()
+                .contains("Run focused checks")
+        );
+        let duplicate = request(
+            &root,
+            &json!({"action":"save","kind":"lesson","text":"Run focused checks"}),
+            source,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            duplicate["revision"], saved["revision"],
+            "retries must not write or grow memory"
+        );
         let updated = request(&root, &json!({"action":"update","id":id,"expected":saved["revision"],"text":"Run focused release checks"}), source, false).unwrap();
         assert!(context(&root).unwrap().unwrap().contains("focused release"));
-        assert!(request(&root, &json!({"action":"forget","id":id,"expected":saved["revision"]}), source, false).unwrap_err().contains("Stale"));
-        let removed = request(&root, &json!({"action":"forget","id":id,"expected":updated["revision"]}), source, false).unwrap();
+        assert!(
+            request(
+                &root,
+                &json!({"action":"forget","id":id,"expected":saved["revision"]}),
+                source,
+                false
+            )
+            .unwrap_err()
+            .contains("Stale")
+        );
+        let removed = request(
+            &root,
+            &json!({"action":"forget","id":id,"expected":updated["revision"]}),
+            source,
+            false,
+        )
+        .unwrap();
         assert!(context(&root).unwrap().is_none());
-        assert!(request(&root, &json!({"action":"search","query":"focused"}), source, false).unwrap()["entries"].as_array().unwrap().is_empty());
-        request(&root, &json!({"action":"restore","id":id,"expected":removed["revision"]}), source, false).unwrap();
+        assert!(
+            request(
+                &root,
+                &json!({"action":"search","query":"focused"}),
+                source,
+                false
+            )
+            .unwrap()["entries"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        request(
+            &root,
+            &json!({"action":"restore","id":id,"expected":removed["revision"]}),
+            source,
+            false,
+        )
+        .unwrap();
         let file = path(&root).unwrap();
         let mut legacy: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
         legacy["entries"][0]["status"] = json!("pending");
         crate::auth::secure_write(&file, &serde_json::to_vec(&legacy).unwrap()).unwrap();
         assert!(context(&root).unwrap().unwrap().contains("focused release"));
-        assert_eq!(request(&root, &json!({"action":"list"}), source, true).unwrap()["entries"][0]["status"], "active");
+        assert_eq!(
+            request(&root, &json!({"action":"list"}), source, true).unwrap()["entries"][0]["status"],
+            "active"
+        );
         std::fs::remove_file(file).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

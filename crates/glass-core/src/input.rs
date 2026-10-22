@@ -263,7 +263,11 @@ impl ElicitationRequest {
         }
         let mut fields = Vec::new();
         for (name, spec) in properties {
-            if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) || !spec.is_object() {
+            if name.is_empty()
+                || name.len() > 128
+                || name.chars().any(char::is_control)
+                || !spec.is_object()
+            {
                 return Err("sensitive or unsupported form field".into());
             }
             if spec.as_object().unwrap().keys().any(|k| {
@@ -733,11 +737,17 @@ mod tests {
         ));
         assert!(!safe_form_value(&json!(["safe", "hidden\n"]), 1024));
         assert!(safe_form_value(&json!(["safe", "visible"]), 1024));
-        assert!(ElicitationRequest::parse("fixture", &json!({
-            "message":"Review", "requestedSchema":{"type":"object", "properties":{
-                "hidden\u{1b}]52;c;key\u{7}":{"type":"string"}
-            }}
-        })).is_err());
+        assert!(
+            ElicitationRequest::parse(
+                "fixture",
+                &json!({
+                    "message":"Review", "requestedSchema":{"type":"object", "properties":{
+                        "hidden\u{1b}]52;c;key\u{7}":{"type":"string"}
+                    }}
+                })
+            )
+            .is_err()
+        );
     }
 
     #[test]

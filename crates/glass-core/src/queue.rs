@@ -50,16 +50,26 @@ impl Queue {
                 serde_json::from_slice(&bytes).map_err(|e| format!("Invalid queue: {e}"))?
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self { path: Some(path), ..Self::default() });
+                return Ok(Self {
+                    path: Some(path),
+                    ..Self::default()
+                });
             }
             Err(e) => return Err(e.to_string()),
         };
         queue.path = Some(path);
-        if queue.is_empty() { return Ok(queue); }
+        if queue.is_empty() {
+            return Ok(queue);
+        }
         let records = Session::raw_records(&session.path).map_err(|e| e.to_string())?;
         for pair in records.windows(2) {
-            if !matches!(&pair[1], Record::User(_)) { continue; }
-            if let Record::Custom { kind, data: Some(data) } = &pair[0]
+            if !matches!(&pair[1], Record::User(_)) {
+                continue;
+            }
+            if let Record::Custom {
+                kind,
+                data: Some(data),
+            } = &pair[0]
                 && kind == "queue/delivery"
                 && let Ok(sequence) = data.parse::<u64>()
                 && sequence > queue.delivered
@@ -116,32 +126,58 @@ impl Queue {
         Ok(Some(text))
     }
 
-    pub fn correction(&self) -> Option<&str> { self.steer.as_deref() }
+    pub fn correction(&self) -> Option<&str> {
+        self.steer.as_deref()
+    }
 
     pub fn next_prompt(&self) -> Option<&str> {
-        self.steer.as_deref().or_else(|| self.pending.front().map(String::as_str))
+        self.steer
+            .as_deref()
+            .or_else(|| self.pending.front().map(String::as_str))
     }
 
     pub fn edit_saved(&mut self, action: &str, index: usize, text: &str) -> Result<(), String> {
         let mut next = self.clone();
-        if action == "clear" { next.pending.clear(); next.steer = None; }
-        else {
-            if index >= next.describe().len() { return Err("Choose a saved queue index from the list (starting at 1)".into()); }
+        if action == "clear" {
+            next.pending.clear();
+            next.steer = None;
+        } else {
+            if index >= next.describe().len() {
+                return Err("Choose a saved queue index from the list (starting at 1)".into());
+            }
             let steer = next.steer.is_some() && index == 0;
             let offset = usize::from(next.steer.is_some());
             let item = index.saturating_sub(offset);
             match action {
                 "edit" if !text.trim().is_empty() => {
-                    if steer { next.steer = Some(text.into()); } else { next.pending[item] = text.into(); }
+                    if steer {
+                        next.steer = Some(text.into());
+                    } else {
+                        next.pending[item] = text.into();
+                    }
                 }
                 "earlier" if !steer && item > 0 => next.pending.swap(item, item - 1),
-                "later" if !steer && item + 1 < next.pending.len() => next.pending.swap(item, item + 1),
+                "later" if !steer && item + 1 < next.pending.len() => {
+                    next.pending.swap(item, item + 1)
+                }
                 "promote" if !steer => {
                     let value = next.pending.remove(item).unwrap();
-                    if let Some(old) = next.steer.replace(value) { next.pending.push_front(old); }
+                    if let Some(old) = next.steer.replace(value) {
+                        next.pending.push_front(old);
+                    }
                 }
-                "remove" => { if steer { next.steer = None; } else { next.pending.remove(item); } }
-                _ => return Err("This saved queue action is not available for the selected item".into()),
+                "remove" => {
+                    if steer {
+                        next.steer = None;
+                    } else {
+                        next.pending.remove(item);
+                    }
+                }
+                _ => {
+                    return Err(
+                        "This saved queue action is not available for the selected item".into(),
+                    );
+                }
             }
         }
         next.save()?;
@@ -193,11 +229,11 @@ impl Queue {
                         crate::modal::field(keys, "Edit queued message", "Message", current, false)
                         && !text.trim().is_empty()
                     {
-                            if steer_selected {
-                                self.steer = Some(text);
-                            } else {
-                                self.pending[pending_index] = text;
-                            }
+                        if steer_selected {
+                            self.steer = Some(text);
+                        } else {
+                            self.pending[pending_index] = text;
+                        }
                     }
                 }
                 1 if !steer_selected && pending_index > 0 => {
@@ -307,15 +343,15 @@ mod tests {
         let mut queue = super::Queue::new();
         queue.push(super::Intent::FollowUp("first".into()));
         queue.push(super::Intent::FollowUp("second".into()));
-        queue.edit_saved("earlier",1,"").unwrap();
-        assert_eq!(queue.next_prompt(),Some("second"));
-        queue.edit_saved("edit",0,"updated").unwrap();
-        queue.edit_saved("promote",0,"").unwrap();
-        assert_eq!(queue.correction(),Some("updated"));
-        let before=queue.describe();
-        assert!(queue.edit_saved("remove",99,"").is_err());
-        assert_eq!(queue.describe(),before);
-        queue.edit_saved("clear",0,"").unwrap();
+        queue.edit_saved("earlier", 1, "").unwrap();
+        assert_eq!(queue.next_prompt(), Some("second"));
+        queue.edit_saved("edit", 0, "updated").unwrap();
+        queue.edit_saved("promote", 0, "").unwrap();
+        assert_eq!(queue.correction(), Some("updated"));
+        let before = queue.describe();
+        assert!(queue.edit_saved("remove", 99, "").is_err());
+        assert_eq!(queue.describe(), before);
+        queue.edit_saved("clear", 0, "").unwrap();
         assert!(queue.is_empty());
     }
 
@@ -471,13 +507,12 @@ mod tests {
     }
     #[test]
     fn preview_next_prompt_does_not_remove_saved_work() {
-        let mut queue=Queue::default();
+        let mut queue = Queue::default();
         queue.push(Intent::FollowUp("later".into()));
         queue.push(Intent::Steer("first".into()));
-        assert_eq!(queue.next_prompt(),Some("first"));
-        assert_eq!(queue.next_prompt(),Some("first"));
-        assert_eq!(queue.take_next().as_deref(),Some("first"));
-        assert_eq!(queue.next_prompt(),Some("later"));
+        assert_eq!(queue.next_prompt(), Some("first"));
+        assert_eq!(queue.next_prompt(), Some("first"));
+        assert_eq!(queue.take_next().as_deref(), Some("first"));
+        assert_eq!(queue.next_prompt(), Some("later"));
     }
-
 }

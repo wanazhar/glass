@@ -203,10 +203,18 @@ impl Live {
             }
             Progress::ProviderNotice(text) => {
                 let cooldown = text.starts_with("Provider cooldown");
-                self.phase = if cooldown { "Provider cooldown" } else { "Provider fallback" };
+                self.phase = if cooldown {
+                    "Provider cooldown"
+                } else {
+                    "Provider fallback"
+                };
                 self.provider_detail = Some(if cooldown {
-                    sanitize_provider_detail(text.strip_prefix("Provider cooldown · ").unwrap_or(text))
-                } else { format!("{} · /status /model", sanitize_provider_detail(text)) });
+                    sanitize_provider_detail(
+                        text.strip_prefix("Provider cooldown · ").unwrap_or(text),
+                    )
+                } else {
+                    format!("{} · /status /model", sanitize_provider_detail(text))
+                });
                 self.append_entry(
                     Role::System,
                     format!("Provider notice: {}", sanitize_provider_detail(text)),
@@ -348,7 +356,9 @@ impl Live {
         let thinking = self.view.as_ref().unwrap().1;
         let rows = self.view_entries(thinking);
         let reader = &mut self.view.as_mut().unwrap().0;
-        if thinking { reader.set_reasoning_streaming(self.phase == "Provider reasoning")?; }
+        if thinking {
+            reader.set_reasoning_streaming(self.phase == "Provider reasoning")?;
+        }
         reader.update(rows)?;
         self.dirty = false;
         Ok(())
@@ -531,7 +541,9 @@ mod tests {
     #[test]
     fn cooldown_is_waiting_not_provider_fallback() {
         let mut live = Live::new();
-        live.progress(&Progress::ProviderNotice("Provider cooldown · 2.0s · waiting"));
+        live.progress(&Progress::ProviderNotice(
+            "Provider cooldown · 2.0s · waiting",
+        ));
         assert_eq!(live.phase(), "Provider cooldown");
         assert_eq!(live.provider_detail(), Some("2.0s · waiting"));
         live.finish();

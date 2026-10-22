@@ -110,7 +110,9 @@ pub fn stable_prefix(text: &str) -> &str {
     for marker in markers {
         for size in 1..marker.len() {
             let prefix = &marker[..size];
-            if let Some(stripped) = text.strip_suffix(prefix) {return stripped;}
+            if let Some(stripped) = text.strip_suffix(prefix) {
+                return stripped;
+            }
         }
     }
     let hashes = text.bytes().rev().take_while(|c| *c == b'#').count();
@@ -386,7 +388,8 @@ pub fn line(text: &str, language: &str, state: &State) -> (Vec<Span<'static>>, S
             } else if family == "markup" && text[..at].trim_end().ends_with(['<', '/']) {
                 style(Tone::Accent).add_modifier(Modifier::BOLD)
             } else if (family == "markup" && tail[end..].trim_start().starts_with('='))
-                || tail[end..].trim_start().starts_with('(') {
+                || tail[end..].trim_start().starts_with('(')
+            {
                 style(Tone::Secondary)
             } else {
                 style(Tone::Body)

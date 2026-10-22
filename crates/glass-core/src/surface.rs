@@ -4,7 +4,10 @@ use glass_tui::{
     Editor,
     theme::{self, Tone},
 };
-use std::{cell::RefCell, io::{self, Write}};
+use std::{
+    cell::RefCell,
+    io::{self, Write},
+};
 thread_local! { static PRIMARY: RefCell<Option<Surface>> = const { RefCell::new(None) }; }
 struct Surface {
     width: u16,
@@ -92,11 +95,35 @@ impl Surface {
         write!(
             out,
             "\x1b[{row};1H\x1b[2K{}{}\x1b[0m",
-            theme::ansi(if self.todo.tasks.is_empty() || self.todo.hidden {Tone::Border}else{Tone::Accent}),
-            if self.todo.tasks.is_empty() || self.todo.hidden { separator_line(self.width) } else {
-                let active = self.todo.tasks.iter().find(|t|t.status == crate::todo::Status::InProgress);
-                let line = if self.width >= 40 { format!("{}{}",self.todo.summary(),active.map(|t|format!(" · ◆ {}",t.title)).unwrap_or_default()) } else {self.todo.compact_summary(usize::from(self.width.saturating_sub(1)))};
-                glass_tui::text::clip(&glass_tui::markdown::sanitize(&line),usize::from(self.width.saturating_sub(1)))
+            theme::ansi(if self.todo.tasks.is_empty() || self.todo.hidden {
+                Tone::Border
+            } else {
+                Tone::Accent
+            }),
+            if self.todo.tasks.is_empty() || self.todo.hidden {
+                separator_line(self.width)
+            } else {
+                let active = self
+                    .todo
+                    .tasks
+                    .iter()
+                    .find(|t| t.status == crate::todo::Status::InProgress);
+                let line = if self.width >= 40 {
+                    format!(
+                        "{}{}",
+                        self.todo.summary(),
+                        active
+                            .map(|t| format!(" · ◆ {}", t.title))
+                            .unwrap_or_default()
+                    )
+                } else {
+                    self.todo
+                        .compact_summary(usize::from(self.width.saturating_sub(1)))
+                };
+                glass_tui::text::clip(
+                    &glass_tui::markdown::sanitize(&line),
+                    usize::from(self.width.saturating_sub(1)),
+                )
             }
         )?;
         self.status_into(out)
@@ -244,14 +271,23 @@ pub fn emit(text: &str) -> io::Result<()> {
 }
 pub fn checklist(board: &crate::todo::Board) -> io::Result<()> {
     PRIMARY.with(|slot| {
-        let mut slot=slot.borrow_mut();
-        let Some(state)=slot.as_mut() else {return Ok(());};
-        if state.todo.tasks == board.tasks && state.todo.hidden == board.hidden {return Ok(());}
-        state.todo=board.clone();
-        if state.overlay {return Ok(());}
+        let mut slot = slot.borrow_mut();
+        let Some(state) = slot.as_mut() else {
+            return Ok(());
+        };
+        if state.todo.tasks == board.tasks && state.todo.hidden == board.hidden {
+            return Ok(());
+        }
+        state.todo = board.clone();
+        if state.overlay {
+            return Ok(());
+        }
         state.geometry()?;
-        let mut out=theme::TerminalWriter::new(io::stdout());
-        write!(out,"\x1b[s")?;state.chrome(&mut out)?;write!(out,"\x1b[u")?;out.flush()
+        let mut out = theme::TerminalWriter::new(io::stdout());
+        write!(out, "\x1b[s")?;
+        state.chrome(&mut out)?;
+        write!(out, "\x1b[u")?;
+        out.flush()
     })
 }
 pub fn status(text: &str) -> io::Result<()> {

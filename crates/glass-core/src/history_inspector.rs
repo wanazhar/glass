@@ -362,12 +362,20 @@ mod tests {
     use super::*;
     #[test]
     fn compaction_usage_reads_the_session_request_sidecar() {
-        let root=std::env::temp_dir().join(format!("gc-summary-receipts-{}",std::process::id()));
+        let root = std::env::temp_dir().join(format!("gc-summary-receipts-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let session=Session::create(&root).unwrap();
-        std::fs::write(session.path.with_extension("requests.jsonl"),"{\"kind\":\"compaction\",\"usage\":{\"input\":12,\"output\":3}}\n").unwrap();
-        assert_eq!(receipts(&session)["summary_requests"][0]["usage"]["output"],3);
-        drop(session);let _=std::fs::remove_dir_all(root);
+        let session = Session::create(&root).unwrap();
+        std::fs::write(
+            session.path.with_extension("requests.jsonl"),
+            "{\"kind\":\"compaction\",\"usage\":{\"input\":12,\"output\":3}}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            receipts(&session)["summary_requests"][0]["usage"]["output"],
+            3
+        );
+        drop(session);
+        let _ = std::fs::remove_dir_all(root);
     }
     #[test]
     fn excerpt_obeys_byte_budget_without_splitting_unicode() {

@@ -14,11 +14,26 @@ const START: &[Item] = &[
     ),
 ];
 const SESSIONS: &[Item] = &[
-    ("gc hub [--json]", "Search projects, conversations, branch families and unread events."),
-    ("gc handoff import FILE [--apply]", "Preview portable context, then explicitly create a receiving conversation."),
-    ("gc attention ID", "Find recorded failures and teammate event targets."),
-    ("gc history ID", "Inspect compaction boundaries and branch lineage."),
-    ("gc handoff ID [--json]", "Preview bounded context with omitted-history references."),
+    (
+        "gc hub [--json]",
+        "Search projects, conversations, branch families and unread events.",
+    ),
+    (
+        "gc handoff import FILE [--apply]",
+        "Preview portable context, then explicitly create a receiving conversation.",
+    ),
+    (
+        "gc attention ID",
+        "Find recorded failures and teammate event targets.",
+    ),
+    (
+        "gc history ID",
+        "Inspect compaction boundaries and branch lineage.",
+    ),
+    (
+        "gc handoff ID [--json]",
+        "Preview bounded context with omitted-history references.",
+    ),
     (
         "gc sessions [--json]",
         "List conversations in this project.",
@@ -39,16 +54,46 @@ const SESSIONS: &[Item] = &[
     ("gc export ID", "Export a conversation to Markdown."),
 ];
 const TOOLS: &[Item] = &[
-    ("gc neuralnets --help", "Review attributed local learning and pending proposals."),
-    ("gc guidance --help", "Discover model capabilities and workflow recipes."),
-    ("gc advisor SESSION", "Opt-in milestone reviews, separate usage and dispositions."),
-    ("gc pr --help", "Inspect PR checks and reviews; preview explicit draft publication."),
-    ("gc structure --help", "Lazy AST previews and stale-checked transactional edits."),
-    ("gc companion SOCKET [PORT]", "Optional authenticated loopback observer with explicit input control."),
-    ("gc usage ID", "Inspect reported usage, cache ratios and cost completeness."),
-    ("gc contract SCHEMA RESULT", "Validate a local JSON result contract."),
-    ("gc diagnostics ID", "Preview redacted local diagnostic metadata."),
-    ("gc memory --help", "Review opt-in attributed project memory."),
+    (
+        "gc neuralnets --help",
+        "Review attributed local learning and pending proposals.",
+    ),
+    (
+        "gc guidance --help",
+        "Discover model capabilities and workflow recipes.",
+    ),
+    (
+        "gc advisor SESSION",
+        "Opt-in milestone reviews, separate usage and dispositions.",
+    ),
+    (
+        "gc pr --help",
+        "Inspect PR checks and reviews; preview explicit draft publication.",
+    ),
+    (
+        "gc structure --help",
+        "Lazy AST previews and stale-checked transactional edits.",
+    ),
+    (
+        "gc companion SOCKET [PORT]",
+        "Optional authenticated loopback observer with explicit input control.",
+    ),
+    (
+        "gc usage ID",
+        "Inspect reported usage, cache ratios and cost completeness.",
+    ),
+    (
+        "gc contract SCHEMA RESULT",
+        "Validate a local JSON result contract.",
+    ),
+    (
+        "gc diagnostics ID",
+        "Preview redacted local diagnostic metadata.",
+    ),
+    (
+        "gc memory --help",
+        "Review opt-in attributed project memory.",
+    ),
     (
         "gc workspace --help",
         "Tasks, debug evidence, artifacts, handoffs and role budgets.",
@@ -91,7 +136,10 @@ const TOOLS: &[Item] = &[
     ),
 ];
 const CONNECT: &[Item] = &[
-    ("gc settings [--json]", "Inspect effective settings and configuration provenance."),
+    (
+        "gc settings [--json]",
+        "Inspect effective settings and configuration provenance.",
+    ),
     (
         "gc status [--json]",
         "Inspect the active provider, model and saved connections.",
@@ -110,20 +158,32 @@ const CONNECT: &[Item] = &[
     ),
 ];
 const INTEGRATE: &[Item] = &[
-    ("gc connect [status|stop]", "Open the shared web workspace privately through Tailscale."),
+    (
+        "gc connect [status|stop]",
+        "Open the shared web workspace privately through Tailscale.",
+    ),
     ("gc serve [ID]", "Host a session over a Unix socket."),
     (
         "gc attach [--socket PATH]",
         "Attach a terminal to a hosted session.",
     ),
     ("gc runtime", "Host-neutral JSON-RPC runtime over stdio."),
-    ("gc durable", "Runtime alias with optional checkpointed task APIs."),
+    (
+        "gc durable",
+        "Runtime alias with optional checkpointed task APIs.",
+    ),
     ("gc acp", "Serve the Agent Client Protocol over stdio."),
 ];
 const KEYS: &[Item] = &[
-    ("/queue-run", "Run saved follow-ups after resuming a conversation."),
+    (
+        "/queue-run",
+        "Run saved follow-ups after resuming a conversation.",
+    ),
     ("/turns", "Review observed workspace changes by turn."),
-    ("/rewind", "Fork earlier context and optionally restore checkpointed files."),
+    (
+        "/rewind",
+        "Fork earlier context and optionally restore checkpointed files.",
+    ),
     ("/ or Ctrl+P", "Open the command palette; Esc closes it."),
     (
         "PageUp / Ctrl+B",
@@ -143,11 +203,20 @@ const KEYS: &[Item] = &[
     ("Ctrl+D", "Confirm exit; Enter quits and Esc stays."),
 ];
 const RUN: &[Item] = &[
-    ("--restricted", "Launch with workspace edits, network disabled by default and explicit approvals."),
-    ("--yolo / --unrestricted", "Launch without local sandbox or approval prompts; administrator rules still apply."),
+    (
+        "--restricted",
+        "Launch with workspace edits, network disabled by default and explicit approvals.",
+    ),
+    (
+        "--yolo / --unrestricted",
+        "Launch without local sandbox or approval prompts; administrator rules still apply.",
+    ),
     ("--trust", "Allow this workspace’s AGENTS.md for the run."),
     ("--json", "Return structured JSON for scripts."),
-    ("--output-schema FILE", "Validate the final JSON answer; allow one format correction."),
+    (
+        "--output-schema FILE",
+        "Validate the final JSON answer; allow one format correction.",
+    ),
     ("--plan", "Inspect and plan with read-only tools."),
     ("--resume ID", "Continue a saved conversation."),
     (
@@ -329,7 +398,13 @@ pub fn show(args: &[String]) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 /// Shared human and model command discovery.
-pub fn catalogue() -> Vec<Item> { [START, SESSIONS, TOOLS, CONNECT, INTEGRATE, KEYS, RUN].into_iter().flatten().copied().collect() }
+pub fn catalogue() -> Vec<Item> {
+    [START, SESSIONS, TOOLS, CONNECT, INTEGRATE, KEYS, RUN]
+        .into_iter()
+        .flatten()
+        .copied()
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {

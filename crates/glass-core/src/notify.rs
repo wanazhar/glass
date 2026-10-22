@@ -78,9 +78,7 @@ impl TurnEvent {
     pub fn notifies(&self) -> bool {
         match self {
             TurnEvent::Failed { .. } => true,
-            TurnEvent::Finished { elapsed, .. } => {
-                wanted(false, true, *elapsed, NOTIFY_AFTER_S)
-            }
+            TurnEvent::Finished { elapsed, .. } => wanted(false, true, *elapsed, NOTIFY_AFTER_S),
             TurnEvent::Steered | TurnEvent::Waiting => false,
         }
     }
@@ -88,9 +86,7 @@ impl TurnEvent {
     /// Notification body for an event that earned one.
     pub fn message(&self) -> Option<String> {
         match self {
-            TurnEvent::Failed { seconds } => {
-                Some(format!("glass-core · turn failed · {seconds}s"))
-            }
+            TurnEvent::Failed { seconds } => Some(format!("glass-core · turn failed · {seconds}s")),
             TurnEvent::Finished { seconds, cost, .. } => Some(match cost {
                 Some(c) => format!("glass-core · {seconds}s · {c}"),
                 None => format!("glass-core · {seconds}s"),
@@ -109,7 +105,10 @@ mod turn_event_tests {
         // Failed always notifies, however fast.
         let failed = TurnEvent::Failed { seconds: 0 };
         assert!(failed.notifies());
-        assert_eq!(failed.message().as_deref(), Some("glass-core · turn failed · 0s"));
+        assert_eq!(
+            failed.message().as_deref(),
+            Some("glass-core · turn failed · 0s")
+        );
         // Finished notifies only past the threshold.
         let slow = TurnEvent::Finished {
             seconds: 9,
@@ -129,7 +128,10 @@ mod turn_event_tests {
             elapsed: Duration::from_secs(30),
             cost: Some("$0.01".into()),
         };
-        assert_eq!(priced.message().as_deref(), Some("glass-core · 30s · $0.01"));
+        assert_eq!(
+            priced.message().as_deref(),
+            Some("glass-core · 30s · $0.01")
+        );
         // Steered/Waiting never alert.
         assert!(!TurnEvent::Steered.notifies());
         assert!(!TurnEvent::Waiting.notifies());
@@ -269,7 +271,10 @@ mod tests {
         let osc777 = sequence(Mode::Osc777, None, Some("dumb"), "done").unwrap();
         assert!(osc777.starts_with("\x1b]777;notify;glass-core;"));
         assert!(osc777.ends_with('\x07'));
-        assert_eq!(sequence(Mode::Bell, None, Some("xterm-kitty"), "done").unwrap(), "\x07");
+        assert_eq!(
+            sequence(Mode::Bell, None, Some("xterm-kitty"), "done").unwrap(),
+            "\x07"
+        );
     }
 
     #[test]
@@ -284,7 +289,10 @@ mod tests {
             "ghostty must get OSC 777: {seq:?}"
         );
         let seq = sequence(Mode::Auto, Some("WezTerm"), Some("xterm"), "done").unwrap();
-        assert!(seq.starts_with("\x1b]777;notify;"), "WezTerm must get OSC 777");
+        assert!(
+            seq.starts_with("\x1b]777;notify;"),
+            "WezTerm must get OSC 777"
+        );
         let seq = sequence(Mode::Auto, None, Some("xterm-256color"), "done").unwrap();
         assert_eq!(seq, "\x07", "an unknown terminal gets the bell");
     }
@@ -307,7 +315,10 @@ mod tests {
         let slow = Duration::from_secs(30);
         assert!(!wanted(false, true, fast, NOTIFY_AFTER_S));
         assert!(wanted(false, true, slow, NOTIFY_AFTER_S));
-        assert!(wanted(true, false, fast, NOTIFY_AFTER_S), "failures always notify");
+        assert!(
+            wanted(true, false, fast, NOTIFY_AFTER_S),
+            "failures always notify"
+        );
         assert!(
             !wanted(false, false, slow, NOTIFY_AFTER_S),
             "cancelled or steered turns must stay silent"

@@ -71,7 +71,7 @@ pub fn markdown(session: &Session, thinking: bool, records: &[Record]) -> String
                 }
                 out.push_str("\n</details>\n\n");
             }
-            Record::Custom {kind,..} if kind==crate::reasoning::KIND=>{},
+            Record::Custom { kind, .. } if kind == crate::reasoning::KIND => {}
             Record::Custom { kind, data } => {
                 out.push_str(&format!(
                     "<details><summary>extension entry: {kind}</summary>\n\n{}\n</details>\n\n",
@@ -123,11 +123,7 @@ fn section(out: &mut String, title: &str, text: &str) {
 /// A fenced block whose fence is one backtick longer than the longest run in
 /// the body, so embedded fences cannot break the document.
 fn fence(body: &str, language: Option<&str>) -> String {
-    let longest = body
-        .split(|c| c != '`')
-        .map(str::len)
-        .max()
-        .unwrap_or(0);
+    let longest = body.split(|c| c != '`').map(str::len).max().unwrap_or(0);
     let ticks = "`".repeat((longest + 1).max(3));
     let lang = language.unwrap_or("");
     format!("{ticks}{lang}\n{}\n{ticks}", body.trim_end())
@@ -168,8 +164,7 @@ mod tests {
     }
 
     fn session_with(records: Vec<Record>) -> (Session, std::path::PathBuf) {
-        static NEXT_DIR: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
+        static NEXT_DIR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nonce = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
             "gc-export-{}-{}-{nonce}",
@@ -236,7 +231,11 @@ mod tests {
     fn raw_records_fall_back_to_the_projection_for_a_missing_log() {
         let (session, dir) = session_with(vec![Record::User("only record".into())]);
         let records = raw_records(&session);
-        assert!(records.iter().any(|r| matches!(r, Record::User(t) if t == "only record")));
+        assert!(
+            records
+                .iter()
+                .any(|r| matches!(r, Record::User(t) if t == "only record"))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

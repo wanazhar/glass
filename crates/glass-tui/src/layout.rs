@@ -70,11 +70,16 @@ impl Layout {
         self.entries.iter().zip(other).all(|(a, b)| a == b)
     }
 
-    pub fn cards(&self) -> HashMap<usize, crate::ToolCard> { self.cards.clone() }
+    pub fn cards(&self) -> HashMap<usize, crate::ToolCard> {
+        self.cards.clone()
+    }
 
     pub fn set_cards(&mut self, cards: HashMap<usize, crate::ToolCard>) -> bool {
-        if self.cards == cards { return false; }
-        self.cards = cards; self.dirty = true;
+        if self.cards == cards {
+            return false;
+        }
+        self.cards = cards;
+        self.dirty = true;
         true
     }
 
@@ -162,41 +167,91 @@ impl Layout {
     }
 
     fn lines(&self, idx: usize, text: &str, role: Role, width: u16) -> Vec<Line<'static>> {
-        let Some(card) = self.cards.get(&idx).filter(|_| role != Role::Meta) else { return entry_lines(text, role, width, idx > 0); };
+        let Some(card) = self.cards.get(&idx).filter(|_| role != Role::Meta) else {
+            return entry_lines(text, role, width, idx > 0);
+        };
         let status = card.status.split(" · ").next().unwrap_or(&card.status);
         let failed = !matches!(status, "exit 0" | "completed" | "running");
-        let name = if role == Role::Bash { "bash" } else { card.command.split_whitespace().next().unwrap_or("tool") };
-        let margin=if width>=24 {2} else if width>=10 {1} else {0};
-        let card_width=width.saturating_sub(margin+1).max(1) as usize;
-        let mut rows = crate::tool_output::lines(name, &card.command, failed,
-            card.elapsed_ms.unwrap_or(0) as f32 / 1000.0, if card.expanded { "" } else { &card.output }, card_width, false);
+        let name = if role == Role::Bash {
+            "bash"
+        } else {
+            card.command.split_whitespace().next().unwrap_or("tool")
+        };
+        let margin = if width >= 24 {
+            2
+        } else if width >= 10 {
+            1
+        } else {
+            0
+        };
+        let card_width = width.saturating_sub(margin + 1).max(1) as usize;
+        let mut rows = crate::tool_output::lines(
+            name,
+            &card.command,
+            failed,
+            card.elapsed_ms.unwrap_or(0) as f32 / 1000.0,
+            if card.expanded { "" } else { &card.output },
+            card_width,
+            false,
+        );
         if card.status == "running" {
-            rows[0] = Line::from(Span::styled(crate::text::clip(&format!("{} {name} running · {:.1}s", crate::theme::frame(0), card.elapsed_ms.unwrap_or(0) as f32 / 1000.0), card_width), role_style(Role::User)));
+            rows[0] = Line::from(Span::styled(
+                crate::text::clip(
+                    &format!(
+                        "{} {name} running · {:.1}s",
+                        crate::theme::frame(0),
+                        card.elapsed_ms.unwrap_or(0) as f32 / 1000.0
+                    ),
+                    card_width,
+                ),
+                role_style(Role::User),
+            ));
         }
         if card.expanded {
             rows.pop(); // trailing card spacer
             rows.pop(); // empty preview placeholder
-            if card.output.starts_with("## Tasks ") { rows.extend(crate::markdown::lines(&card.output,card_width)); }
-            else {
+            if card.output.starts_with("## Tasks ") {
+                rows.extend(crate::markdown::lines(&card.output, card_width));
+            } else {
                 let native_file = card.output.lines().take(2).any(|s| s.starts_with("[file "));
-                let visual = matches!(name, "view_image" | "web_fetch" | "web_search" | "browser_verify");
+                let visual = matches!(
+                    name,
+                    "view_image" | "web_fetch" | "web_search" | "browser_verify"
+                );
                 for raw in card.output.lines() {
                     let style = ratatui::style::Style::new().fg(crate::theme::color(
-                        crate::tool_output::output_tone(raw, failed, native_file, visual)));
-                    rows.extend(wrap_width(&crate::markdown::sanitize(raw), card_width)
-                        .into_iter().map(|row| Line::from(Span::styled(row, style))));
+                        crate::tool_output::output_tone(raw, failed, native_file, visual),
+                    ));
+                    rows.extend(
+                        wrap_width(&crate::markdown::sanitize(raw), card_width)
+                            .into_iter()
+                            .map(|row| Line::from(Span::styled(row, style))),
+                    );
                 }
             }
         }
-        for (show, text, role) in [(card.truncated, "Inline output truncated", Role::Meta),
-            (card.spill.is_some(), "Full output available · /details", Role::Tool)] {
+        for (show, text, role) in [
+            (card.truncated, "Inline output truncated", Role::Meta),
+            (
+                card.spill.is_some(),
+                "Full output available · /details",
+                Role::Tool,
+            ),
+        ] {
             if show {
-                rows.extend(crate::text::wrap_words(text, card_width).into_iter()
-                    .map(|row| Line::from(Span::styled(row, role_style(role)))));
+                rows.extend(
+                    crate::text::wrap_words(text, card_width)
+                        .into_iter()
+                        .map(|row| Line::from(Span::styled(row, role_style(role)))),
+                );
             }
         }
-        for row in &mut rows { row.spans.insert(0,Span::raw(" ".repeat(margin as usize))); }
-        if idx > 0 { rows.insert(0, Line::default()); }
+        for row in &mut rows {
+            row.spans.insert(0, Span::raw(" ".repeat(margin as usize)));
+        }
+        if idx > 0 {
+            rows.insert(0, Line::default());
+        }
         rows
     }
 
@@ -284,11 +339,21 @@ fn entry_lines(text: &str, role: Role, width: u16, boundary: bool) -> Vec<Line<'
 pub(crate) fn build_lines(text: &str, role: Role, width: u16) -> Vec<Line<'static>> {
     if role == Role::Meta && text.starts_with("error:") {
         return crate::text::wrap_words(&crate::markdown::sanitize(text), width.max(1) as usize)
-            .into_iter().map(|row| Line::from(Span::styled(row, ratatui::style::Style::new().fg(crate::theme::color(crate::theme::Tone::Error))))).collect();
+            .into_iter()
+            .map(|row| {
+                Line::from(Span::styled(
+                    row,
+                    ratatui::style::Style::new().fg(crate::theme::color(crate::theme::Tone::Error)),
+                ))
+            })
+            .collect();
     }
     if role == Role::Meta && text.starts_with("Context: request ") {
-        return text.lines().flat_map(|line| crate::text::wrap_words(line, width.max(1) as usize))
-            .map(|row| Line::from(Span::styled(row, role_style(role)))).collect();
+        return text
+            .lines()
+            .flat_map(|line| crate::text::wrap_words(line, width.max(1) as usize))
+            .map(|row| Line::from(Span::styled(row, role_style(role))))
+            .collect();
     }
     if role == Role::Meta {
         return vec![Line::from(Span::styled(
@@ -311,7 +376,13 @@ pub(crate) fn build_lines(text: &str, role: Role, width: u16) -> Vec<Line<'stati
     let wrapped: Vec<Line<'static>> = if role == Role::Assistant {
         // Assistant prose reads as a narrow indented column; tool cards keep
         // the full width. The margin collapses to zero on tiny terminals.
-        let margin = if width >= 24 { 2 } else if width >= 10 { 1 } else { 0 };
+        let margin = if width >= 24 {
+            2
+        } else if width >= 10 {
+            1
+        } else {
+            0
+        };
         let column = (width as usize).saturating_sub(margin * 2).clamp(1, 88);
         crate::markdown::lines(trim_leading_blank_lines(text), column)
             .into_iter()
@@ -361,10 +432,12 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 fn role_style(role: Role) -> ratatui::style::Style {
+    use crate::theme::{Tone, color};
     use ratatui::style::{Modifier, Style};
-    use crate::theme::{color,Tone};
     match role {
-        Role::User => Style::new().fg(color(Tone::Accent)).add_modifier(Modifier::BOLD),
+        Role::User => Style::new()
+            .fg(color(Tone::Accent))
+            .add_modifier(Modifier::BOLD),
         Role::Assistant => Style::new().fg(color(Tone::Body)),
         Role::Bash => Style::new().fg(color(Tone::Warning)),
         Role::Tool => Style::new().fg(color(Tone::Secondary)),
@@ -379,16 +452,30 @@ mod tests {
 
     #[test]
     fn detailed_tool_output_keeps_preview_colors_and_bounds_running_titles() {
-        use crate::theme::{color, Tone};
-        let card = crate::ToolCard { expanded: true, call_id: "file".into(),
-            command: "edit src/main.rs".into(), output: "[file src/main.rs]\n- removed\n+ added".into(),
-            status: "exit 0".into(), elapsed_ms: Some(100), spill: None, truncated: false };
+        use crate::theme::{Tone, color};
+        let card = crate::ToolCard {
+            expanded: true,
+            call_id: "file".into(),
+            command: "edit src/main.rs".into(),
+            output: "[file src/main.rs]\n- removed\n+ added".into(),
+            status: "exit 0".into(),
+            elapsed_ms: Some(100),
+            spill: None,
+            truncated: false,
+        };
         let mut layout = Layout::new(vec![(String::new(), Role::Tool, 0)]);
         layout.set_cards(HashMap::from([(0, card.clone())]));
         let rows = layout.lines(0, "", Role::Tool, 40);
         for (text, tone) in [("- removed", Tone::Error), ("+ added", Tone::Success)] {
-            let row = rows.iter().find(|row| row.to_string().contains(text)).unwrap();
-            assert!(row.spans.iter().any(|span| span.content.contains(text) && span.style.fg == Some(color(tone))));
+            let row = rows
+                .iter()
+                .find(|row| row.to_string().contains(text))
+                .unwrap();
+            assert!(
+                row.spans
+                    .iter()
+                    .any(|span| span.content.contains(text) && span.style.fg == Some(color(tone)))
+            );
         }
         let mut running = card;
         running.command = "very_long_extension_tool_name_with_no_spaces".repeat(3);
@@ -397,14 +484,27 @@ mod tests {
         running.spill = Some("fixture-only".into());
         layout.set_cards(HashMap::from([(0, running)]));
         for width in 1..=80 {
-            assert!(layout.lines(0, "", Role::Tool, width).iter()
-                .all(|row| crate::text::width(&row.to_string()) <= usize::from(width)));
+            assert!(
+                layout
+                    .lines(0, "", Role::Tool, width)
+                    .iter()
+                    .all(|row| crate::text::width(&row.to_string()) <= usize::from(width))
+            );
         }
     }
     #[test]
     fn tool_cards_use_bounded_colored_renderer_until_explicit_expansion() {
         let mut layout = Layout::new(vec![("legacy plain text".into(), Role::Bash, 1)]);
-        let card = crate::ToolCard { expanded:false, call_id:"id".into(), command:format!("cat {}", "large-command ".repeat(1000)), output:(0..30).map(|i| format!("output {i}\n")).collect(), status:"exit 0".into(), elapsed_ms:Some(200), spill:None, truncated:false };
+        let card = crate::ToolCard {
+            expanded: false,
+            call_id: "id".into(),
+            command: format!("cat {}", "large-command ".repeat(1000)),
+            output: (0..30).map(|i| format!("output {i}\n")).collect(),
+            status: "exit 0".into(),
+            elapsed_ms: Some(200),
+            spill: None,
+            truncated: false,
+        };
         layout.set_cards(HashMap::from([(0, card.clone())]));
         layout.set_width(40);
         let lines = layout.lines(0, "legacy plain text", Role::Bash, 40);
@@ -415,30 +515,58 @@ mod tests {
         truncated.status = "exit 0 · truncated".into();
         truncated.truncated = true;
         layout.set_cards(HashMap::from([(0, truncated)]));
-        assert!(layout.lines(0, "", Role::Bash, 40)[0].to_string().contains("✓ bash"));
+        assert!(
+            layout.lines(0, "", Role::Bash, 40)[0]
+                .to_string()
+                .contains("✓ bash")
+        );
         let mut expanded = card;
         expanded.expanded = true;
         layout.set_cards(HashMap::from([(0, expanded)]));
         layout.set_width(40);
-        assert!(layout.lines(0, "", Role::Bash, 40).iter().any(|l| l.to_string().contains("output 29")));
+        assert!(
+            layout
+                .lines(0, "", Role::Bash, 40)
+                .iter()
+                .any(|l| l.to_string().contains("output 29"))
+        );
     }
 
     #[test]
     fn turn_summary_replays_every_line() {
-        let rows=build_lines("Context: request 2 · /context\nTurn: 120 input · 20 output\n140 session total tokens\n8% context\ncost unavailable",Role::Meta,20);
-        let text=rows.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        let rows = build_lines(
+            "Context: request 2 · /context\nTurn: 120 input · 20 output\n140 session total tokens\n8% context\ncost unavailable",
+            Role::Meta,
+            20,
+        );
+        let text = rows
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(text.contains("cost unavailable"));
         assert!(text.contains("8% context"));
-        assert!(rows.iter().all(|r| crate::text::width(&r.to_string())<=20));
+        assert!(
+            rows.iter()
+                .all(|r| crate::text::width(&r.to_string()) <= 20)
+        );
     }
 
     #[test]
     fn persisted_errors_are_red_and_wrap_fully() {
-        let text="error: provider returned no text or tool calls; finish=stop";
-        let rows=build_lines(text,Role::Meta,20);
-        assert!(rows.len()>1);
-        assert!(rows.iter().flat_map(|r| &r.spans).all(|s| s.style.fg==Some(crate::theme::color(crate::theme::Tone::Error))));
-        assert!(rows.iter().flat_map(|r| &r.spans).any(|s| s.content.contains("finish=stop")));
+        let text = "error: provider returned no text or tool calls; finish=stop";
+        let rows = build_lines(text, Role::Meta, 20);
+        assert!(rows.len() > 1);
+        assert!(
+            rows.iter()
+                .flat_map(|r| &r.spans)
+                .all(|s| s.style.fg == Some(crate::theme::color(crate::theme::Tone::Error)))
+        );
+        assert!(
+            rows.iter()
+                .flat_map(|r| &r.spans)
+                .any(|s| s.content.contains("finish=stop"))
+        );
     }
 
     #[test]
@@ -458,16 +586,22 @@ mod tests {
             user[0].spans[0].style.fg,
             Some(crate::theme::color(crate::theme::Tone::Accent))
         );
-        assert!(user[0].spans[0]
-            .style
-            .add_modifier
-            .contains(ratatui::style::Modifier::BOLD));
+        assert!(
+            user[0].spans[0]
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
 
         // Aurora accent is the cyan-equivalent index the reader contract names.
         assert_eq!(crate::theme::current(), 0);
         assert_eq!(
             crate::theme::color(crate::theme::Tone::Accent),
-            if crate::theme::no_color() { ratatui::style::Color::Reset } else { ratatui::style::Color::Indexed(81) }
+            if crate::theme::no_color() {
+                ratatui::style::Color::Reset
+            } else {
+                ratatui::style::Color::Indexed(81)
+            }
         );
 
         let assistant = build_lines("A plain answer", Role::Assistant, 40);
@@ -488,7 +622,10 @@ mod tests {
 
     #[test]
     fn assistant_display_drops_only_leading_blank_lines() {
-        assert_eq!(trim_leading_blank_lines("\n \t\n  indented prose"), "  indented prose");
+        assert_eq!(
+            trim_leading_blank_lines("\n \t\n  indented prose"),
+            "  indented prose"
+        );
         let assistant = build_lines("\n\nanswer", Role::Assistant, 40);
         assert_eq!(assistant.len(), 1);
         assert_eq!(assistant[0].to_string().trim_start(), "answer");

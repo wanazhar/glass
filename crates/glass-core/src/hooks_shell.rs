@@ -112,7 +112,9 @@ pub fn run(hook: &PreToolUse, call_json: &str) -> Verdict {
         match child.try_wait() {
             Ok(Some(status)) => {
                 let code = status.code().unwrap_or(1);
-                let stdout = bounded(String::from_utf8_lossy(&stdout_t.join().unwrap_or_default()).into_owned());
+                let stdout = bounded(
+                    String::from_utf8_lossy(&stdout_t.join().unwrap_or_default()).into_owned(),
+                );
                 let _ = stderr_t.join();
                 return verdict_from(code, stdout);
             }
@@ -209,12 +211,20 @@ pub fn load_config() -> Option<PreToolUse> {
     let text = std::fs::read_to_string(path).ok()?;
     let value: toml::Value = toml::from_str(&text).ok()?;
     let table = value.get("hooks")?.get("pre_tool_use")?.as_table()?;
-    let command = table.get("command").and_then(|v| v.as_str())?.trim().to_string();
+    let command = table
+        .get("command")
+        .and_then(|v| v.as_str())?
+        .trim()
+        .to_string();
     if command.is_empty() {
         return None;
     }
     Some(PreToolUse {
-        matcher: table.get("matcher").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        matcher: table
+            .get("matcher")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         command,
     })
 }
@@ -224,7 +234,10 @@ mod tests {
     use super::*;
 
     fn hook(command: &str, matcher: &str) -> PreToolUse {
-        PreToolUse { command: command.into(), matcher: matcher.into() }
+        PreToolUse {
+            command: command.into(),
+            matcher: matcher.into(),
+        }
     }
 
     const CALL: &str = r#"{"name":"bash","arguments":{"command":"ls"}}"#;
@@ -234,7 +247,10 @@ mod tests {
         assert!(matches(&hook("true", ""), "bash"));
         assert!(matches(&hook("true", "bash"), "bash"));
         assert!(!matches(&hook("true", "edit"), "bash"));
-        assert!(!matches(&hook("   ", ""), "bash"), "empty command never fires");
+        assert!(
+            !matches(&hook("   ", ""), "bash"),
+            "empty command never fires"
+        );
     }
 
     #[test]
@@ -280,7 +296,8 @@ mod tests {
         // rc compares its whole stdin against the expected JSON: only an
         // exact byte match blocks, so this proves the JSON reaches the
         // hook stdin unmodified.
-        let cmd = r#"test "$(cat)" = '{"name":"bash","arguments":{"command":"ls"}}' && exit 2 || exit 3"#;
+        let cmd =
+            r#"test "$(cat)" = '{"name":"bash","arguments":{"command":"ls"}}' && exit 2 || exit 3"#;
         let v = run(&hook(cmd, ""), CALL);
         assert!(
             matches!(v, Verdict::Block(_)),
@@ -298,9 +315,19 @@ fn load_config_reads_the_hooks_table() {
     std::fs::write(dir.join("config.toml"), "[hooks.pre_tool_use]\ncommand = \"echo blocked\"\nmatcher = \"edit\"\n[pricing]\ninput = 0.0\n").unwrap();
     // load_config reads the default path only; test via a temp override is
     // out of reach here, so assert the shape on a hand-built config text.
-    let value: toml::Value = toml::from_str(&std::fs::read_to_string(dir.join("config.toml")).unwrap()).unwrap();
-    let table = value.get("hooks").unwrap().get("pre_tool_use").unwrap().as_table().unwrap();
-    assert_eq!(table.get("command").unwrap().as_str().unwrap(), "echo blocked");
+    let value: toml::Value =
+        toml::from_str(&std::fs::read_to_string(dir.join("config.toml")).unwrap()).unwrap();
+    let table = value
+        .get("hooks")
+        .unwrap()
+        .get("pre_tool_use")
+        .unwrap()
+        .as_table()
+        .unwrap();
+    assert_eq!(
+        table.get("command").unwrap().as_str().unwrap(),
+        "echo blocked"
+    );
     assert_eq!(table.get("matcher").unwrap().as_str().unwrap(), "edit");
     let _ = std::fs::remove_dir_all(&dir);
 }

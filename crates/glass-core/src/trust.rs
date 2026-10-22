@@ -145,7 +145,9 @@ pub fn gated_in(
     let allowed = force
         || cfg.trust == config::Trust::Always
         || remembered_in(store, &cfg.workspace, &digest) == Some(Decision::Allow);
-    allowed.then(|| crate::agents_md::render_all(instructions)).flatten()
+    allowed
+        .then(|| crate::agents_md::render_all(instructions))
+        .flatten()
 }
 
 #[cfg(test)]
@@ -228,9 +230,15 @@ mod tests {
 
         let digest = digest(&instructions);
         remember_in(&store, &ws, &digest, Decision::Deny).unwrap();
-        assert!(gated_in(&store, &cfg, &instructions, false).is_none(), "denied");
+        assert!(
+            gated_in(&store, &cfg, &instructions, false).is_none(),
+            "denied"
+        );
         remember_in(&store, &ws, &digest, Decision::Allow).unwrap();
-        assert!(gated_in(&store, &cfg, &instructions, false).is_some(), "allowed");
+        assert!(
+            gated_in(&store, &cfg, &instructions, false).is_some(),
+            "allowed"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

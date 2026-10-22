@@ -61,29 +61,47 @@ pub(crate) struct Table {
     align: Vec<Alignment>,
 }
 #[derive(Clone, Copy)]
-enum Alignment { Left, Center, Right }
+enum Alignment {
+    Left,
+    Center,
+    Right,
+}
 impl Table {
     pub(crate) fn new(headers: Vec<String>, separator: &str) -> Self {
-        let align = cells(separator).unwrap_or_default().iter().map(|cell| {
-            match (cell.starts_with(':'), cell.ends_with(':')) {
+        let align = cells(separator)
+            .unwrap_or_default()
+            .iter()
+            .map(|cell| match (cell.starts_with(':'), cell.ends_with(':')) {
                 (true, true) => Alignment::Center,
                 (false, true) => Alignment::Right,
                 _ => Alignment::Left,
-            }
-        }).collect();
-        Self { headers, row: 0, align }
+            })
+            .collect();
+        Self {
+            headers,
+            row: 0,
+            align,
+        }
     }
     fn columns(&self, width: usize) -> Option<Vec<usize>> {
         let n = self.headers.len();
         let available = width.saturating_sub((n - 1) * 3);
         let column = available / n;
-        (column >= 12).then(|| (0..n).map(|i| column + usize::from(i < available % n)).collect())
+        (column >= 12).then(|| {
+            (0..n)
+                .map(|i| column + usize::from(i < available % n))
+                .collect()
+        })
     }
     pub(crate) fn header(&self, width: usize) -> Vec<Line<'static>> {
         if let Some(columns) = self.columns(width) {
             let mut rows = self.grid(&self.headers, &columns, true);
             rows.push(Line::from(Span::styled(
-                columns.iter().map(|column| "─".repeat(*column)).collect::<Vec<_>>().join("─┼─"),
+                columns
+                    .iter()
+                    .map(|column| "─".repeat(*column))
+                    .collect::<Vec<_>>()
+                    .join("─┼─"),
                 crate::markdown::border_style(),
             )));
             rows
@@ -99,7 +117,8 @@ impl Table {
     }
     fn grid(&self, cells: &[String], columns: &[usize], header: bool) -> Vec<Line<'static>> {
         let wrapped = cells
-            .iter().zip(columns)
+            .iter()
+            .zip(columns)
             .map(|(cell, width)| crate::markdown::cell_lines(cell, *width))
             .collect::<Vec<_>>();
         let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
@@ -174,9 +193,14 @@ mod tests {
     #[test]
     fn table_rows_and_dividers_fit_every_viewport() {
         for count in 2..=8 {
-            let headers = (0..count).map(|i| format!("Column {i}")).collect::<Vec<_>>();
+            let headers = (0..count)
+                .map(|i| format!("Column {i}"))
+                .collect::<Vec<_>>();
             let separator = format!("|{}|", vec!["---:"; count].join("|"));
-            let raw = format!("|{}|", vec!["**界** long-value-without-spaces-1234567890"; count].join("|"));
+            let raw = format!(
+                "|{}|",
+                vec!["**界** long-value-without-spaces-1234567890"; count].join("|")
+            );
             for width in 1..=100 {
                 let mut table = Table::new(headers.clone(), &separator);
                 let header = table.header(width);
@@ -187,7 +211,10 @@ mod tests {
                     assert_eq!(divider.matches('┼').count(), count - 1);
                 }
                 for row in header.into_iter().chain(table.row(&raw, width).unwrap()) {
-                    assert!(crate::text::width(&row.to_string()) <= width, "width {width}: {row}");
+                    assert!(
+                        crate::text::width(&row.to_string()) <= width,
+                        "width {width}: {row}"
+                    );
                 }
             }
         }
@@ -195,7 +222,11 @@ mod tests {
     #[test]
     fn alignment_and_remainder_cells_are_preserved() {
         let mut table = Table::new(vec!["Name".into(), "Count".into()], "| :--- | ---: |");
-        let row = table.row("| sample | 42 |", 40).unwrap().remove(0).to_string();
+        let row = table
+            .row("| sample | 42 |", 40)
+            .unwrap()
+            .remove(0)
+            .to_string();
         assert!(row.starts_with("sample"));
         assert!(row.ends_with("42"));
         assert_eq!(crate::text::width(&row), 40);

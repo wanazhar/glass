@@ -21,14 +21,18 @@ pub(crate) fn replace_generated(mut system: String, marker: &str, replacement: &
     let needle = format!("\n\n{marker}");
     if let Some(at) = system.find(&needle) {
         let start = at + 2;
-        let end = system[start..].find("\n\n").map_or(system.len(), |end| start + end);
+        let end = system[start..]
+            .find("\n\n")
+            .map_or(system.len(), |end| start + end);
         if &system[start..end] == replacement && !system[end..].contains(&needle) {
             return system;
         }
     }
     while let Some(at) = system.find(&needle) {
         let start = at + 2;
-        let end = system[start..].find("\n\n").map_or(system.len(), |end| start + end);
+        let end = system[start..]
+            .find("\n\n")
+            .map_or(system.len(), |end| start + end);
         system.replace_range(at..end, "");
     }
     system.push_str("\n\n");
@@ -52,7 +56,10 @@ pub fn teammate_context(system: String, available: bool) -> String {
 
 /// Nudge only on an existing tool-loop boundary: no extra model call or timer.
 /// Once per turn, after twelve tool results since the last checklist update.
-pub fn progress_reminder(records: &[crate::session::Record], board: &crate::todo::Board) -> Option<&'static str> {
+pub fn progress_reminder(
+    records: &[crate::session::Record],
+    board: &crate::todo::Board,
+) -> Option<&'static str> {
     use crate::session::Record;
     let mut completed = 0;
     let mut updated = false;
@@ -61,17 +68,30 @@ pub fn progress_reminder(records: &[crate::session::Record], board: &crate::todo
             Record::User(_) => break,
             Record::System(text) if text.starts_with("[GC progress reminder]") => return None,
             Record::Custom { kind, .. } if kind == "state/todo" => updated = true,
-            Record::ToolResult { name, .. } if name == "state" => {},
+            Record::ToolResult { name, .. } if name == "state" => {}
             Record::ToolResult { .. } if !updated => completed += 1,
-            _ => {},
+            _ => {}
         }
     }
-    if completed < 12 { return None; }
+    if completed < 12 {
+        return None;
+    }
     if board.tasks.is_empty() {
-        Some("[GC progress reminder] This task has required substantial tool work. If work remains, create a concise state.todo checklist covering the remaining deliverables and verification, then continue. Do not invent completed checks.")
-    } else if board.tasks.iter().any(|task| matches!(task.status, crate::todo::Status::Pending | crate::todo::Status::InProgress)) {
-        Some("[GC progress reminder] Reconcile state.todo with actual progress: batch completed steps, the current in_progress step and blockers using returned IDs. Continue the user's task; checklist status is not verification evidence.")
-    } else { None }
+        Some(
+            "[GC progress reminder] This task has required substantial tool work. If work remains, create a concise state.todo checklist covering the remaining deliverables and verification, then continue. Do not invent completed checks.",
+        )
+    } else if board.tasks.iter().any(|task| {
+        matches!(
+            task.status,
+            crate::todo::Status::Pending | crate::todo::Status::InProgress
+        )
+    }) {
+        Some(
+            "[GC progress reminder] Reconcile state.todo with actual progress: batch completed steps, the current in_progress step and blockers using returned IDs. Continue the user's task; checklist status is not verification evidence.",
+        )
+    } else {
+        None
+    }
 }
 
 const RECIPES: &[(&str, &str)] = &[
@@ -166,9 +186,11 @@ pub fn request(value: &Value) -> Result<Value, String> {
         .filter(|(c, d)| format!("{c} {d}").to_lowercase().contains(&q))
         .map(|(c, d)| json!({"command":c,"purpose":d,"surface":if c.starts_with("gc") { "cli" } else { "human_ui_or_launch_option" }}))
         .collect();
-    let actions: Vec<_> = crate::actions::references().into_iter()
+    let actions: Vec<_> = crate::actions::references()
+        .into_iter()
         .filter(|(command, purpose)| format!("{command} {purpose}").to_lowercase().contains(&q))
-        .map(|(command,purpose)|json!({"command":command,"purpose":purpose})).collect();
+        .map(|(command, purpose)| json!({"command":command,"purpose":purpose}))
+        .collect();
     let topics: Vec<_> = RECIPES
         .iter()
         .filter(|(id, text)| format!("{id} {text}").to_lowercase().contains(&q))
@@ -216,7 +238,13 @@ mod tests {
         assert!(upgraded.starts_with(&old));
         assert_eq!(model_context(upgraded.clone()), upgraded);
         assert!(MODEL_PROTOCOL.len() <= 800);
-        for topic in ["checklist", "research", "integrations", "sessions", "delivery"] {
+        for topic in [
+            "checklist",
+            "research",
+            "integrations",
+            "sessions",
+            "delivery",
+        ] {
             assert!(request(&json!({"action":"read","topic":topic})).is_ok());
         }
     }
@@ -236,8 +264,14 @@ mod tests {
     #[test]
     fn catalogue_does_not_silently_drop_features() {
         let result = request(&json!({"action":"catalogue"})).unwrap();
-        assert_eq!(result["commands"].as_array().unwrap().len(), crate::help::catalogue().len());
-        assert_eq!(result["human_actions"].as_array().unwrap().len(), crate::actions::references().len());
+        assert_eq!(
+            result["commands"].as_array().unwrap().len(),
+            crate::help::catalogue().len()
+        );
+        assert_eq!(
+            result["human_actions"].as_array().unwrap().len(),
+            crate::actions::references().len()
+        );
     }
 
     #[test]
@@ -246,16 +280,31 @@ mod tests {
         let board = crate::todo::Board::default();
         let mut records = vec![Record::User("work".into())];
         for i in 0..11 {
-            records.push(Record::ToolResult { name:"read".into(), call_id:i.to_string(), body:"ok".into() });
+            records.push(Record::ToolResult {
+                name: "read".into(),
+                call_id: i.to_string(),
+                body: "ok".into(),
+            });
         }
         assert!(progress_reminder(&records, &board).is_none());
-        records.push(Record::ToolResult { name:"read".into(), call_id:"12".into(), body:"ok".into() });
+        records.push(Record::ToolResult {
+            name: "read".into(),
+            call_id: "12".into(),
+            body: "ok".into(),
+        });
         let reminder = progress_reminder(&records, &board).unwrap();
         records.push(Record::System(reminder.into()));
         assert!(progress_reminder(&records, &board).is_none());
-        records.push(Record::Custom {kind:"state/todo".into(),data:None});
+        records.push(Record::Custom {
+            kind: "state/todo".into(),
+            data: None,
+        });
         for i in 0..12 {
-            records.push(Record::ToolResult { name:"read".into(), call_id:i.to_string(), body:"ok".into() });
+            records.push(Record::ToolResult {
+                name: "read".into(),
+                call_id: i.to_string(),
+                body: "ok".into(),
+            });
         }
         assert!(progress_reminder(&records, &board).is_none());
         records.push(Record::User("next".into()));

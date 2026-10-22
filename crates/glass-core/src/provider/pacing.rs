@@ -53,11 +53,16 @@ pub(super) fn acquire(endpoint: &str, credential: &str, adaptive: bool) -> Resul
                 ));
             }
             let state = all.entry(key).or_default();
-            if let Some(shared) = &shared { shared.load(state); }
+            if let Some(shared) = &shared {
+                shared.load(state);
+            }
             let now = Instant::now();
             // Old pressure must not make a fresh session slow indefinitely.
-            if state.last.is_some_and(|last| now.duration_since(last) >= Duration::from_secs(300))
-                && state.cooldown.is_none_or(|deadline| deadline <= now) {
+            if state
+                .last
+                .is_some_and(|last| now.duration_since(last) >= Duration::from_secs(300))
+                && state.cooldown.is_none_or(|deadline| deadline <= now)
+            {
                 state.gap = Duration::ZERO;
                 state.healthy = 0;
                 state.previous = None;
@@ -65,11 +70,15 @@ pub(super) fn acquire(endpoint: &str, credential: &str, adaptive: bool) -> Resul
             let burst = state
                 .previous
                 .is_some_and(|t| now.duration_since(t) < Duration::from_secs(1));
-            let gap = if adaptive { state.gap.max(if burst {
-                Duration::from_millis(200)
+            let gap = if adaptive {
+                state.gap.max(if burst {
+                    Duration::from_millis(200)
+                } else {
+                    Duration::ZERO
+                })
             } else {
                 Duration::ZERO
-            }) } else { Duration::ZERO };
+            };
             let ready = state
                 .last
                 .map(|t| t + gap)
@@ -81,7 +90,9 @@ pub(super) fn acquire(endpoint: &str, credential: &str, adaptive: bool) -> Resul
             if ready <= now {
                 state.previous = state.last;
                 state.last = Some(now);
-                if let Some(shared) = &mut shared { shared.save(state)?; }
+                if let Some(shared) = &mut shared {
+                    shared.save(state)?;
+                }
                 Duration::ZERO
             } else {
                 ready.duration_since(now)
@@ -91,7 +102,14 @@ pub(super) fn acquire(endpoint: &str, credential: &str, adaptive: bool) -> Resul
             return Ok(key);
         }
         if !notified && wait >= Duration::from_millis(500) {
-            NOTICE.with(|slot| { if let Some(notice) = slot.borrow().as_ref() { notice(format!("Provider cooldown · {:.1}s · waiting before next request", wait.as_secs_f64())); } });
+            NOTICE.with(|slot| {
+                if let Some(notice) = slot.borrow().as_ref() {
+                    notice(format!(
+                        "Provider cooldown · {:.1}s · waiting before next request",
+                        wait.as_secs_f64()
+                    ));
+                }
+            });
             notified = true;
         }
         // Poll cancellation cheaply; reopen shared state at most once per
@@ -101,7 +119,11 @@ pub(super) fn acquire(endpoint: &str, credential: &str, adaptive: bool) -> Resul
             if super::cancellable::is_cancelled() {
                 return Err(Error::Transport("provider pacing cancelled".into()));
             }
-            std::thread::sleep(deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(25)));
+            std::thread::sleep(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(25)),
+            );
         }
     }
 }
@@ -138,7 +160,8 @@ pub(super) fn observe(key: [u8; 32], status: u16, header: impl Fn(&str) -> Optio
         duration(&v).or_else(|| {
             httpdate::parse_http_date(&v).ok().map(|t| {
                 t.duration_since(std::time::SystemTime::now())
-                    .unwrap_or_default().min(Duration::from_secs(86400))
+                    .unwrap_or_default()
+                    .min(Duration::from_secs(86400))
             })
         })
     });
@@ -149,7 +172,9 @@ pub(super) fn observe(key: [u8; 32], status: u16, header: impl Fn(&str) -> Optio
     let mut shared = super::pacing_shared::Shared::open(key).ok().flatten();
     let mut all = states().lock().unwrap_or_else(|e| e.into_inner());
     let state = all.entry(key).or_default();
-    if let Some(shared) = &shared { shared.load(state); }
+    if let Some(shared) = &shared {
+        shared.load(state);
+    }
     if status == 429 || status >= 500 {
         state.gap = (state.gap.max(Duration::from_secs(1)) * 2).min(Duration::from_secs(60));
         state.healthy = 0;
@@ -172,27 +197,54 @@ pub(super) fn observe(key: [u8; 32], status: u16, header: impl Fn(&str) -> Optio
     }
     if let Some(delay) = retry.into_iter().chain(reset).max() {
         state.server_cooldown = Some(
-            state.server_cooldown.unwrap_or_else(Instant::now).max(Instant::now() + delay),
+            state
+                .server_cooldown
+                .unwrap_or_else(Instant::now)
+                .max(Instant::now() + delay),
         );
     }
-    if let Some(shared) = &mut shared { let _ = shared.save(state); }
+    if let Some(shared) = &mut shared {
+        let _ = shared.save(state);
+    }
 }
 /// Status tags originate only from a structured provider error frame.
 pub(crate) fn stream_status(message: &str) -> Option<u16> {
-    let status = message.strip_prefix("provider rejected stream (HTTP ")?.split_once("):")?.0.parse::<u16>().ok()?;
+    let status = message
+        .strip_prefix("provider rejected stream (HTTP ")?
+        .split_once("):")?
+        .0
+        .parse::<u16>()
+        .ok()?;
     (400..600).contains(&status).then_some(status)
 }
 
 /// Only explicit throttling is safe to retry; quota and billing failures are not.
 pub(super) fn quota_limited(message: &str) -> bool {
     let text = message.to_ascii_lowercase().replace(['_', '-'], " ");
-    ["insufficient quota", "quota exceeded", "credits", "billing", "usage limit"].iter().any(|s| text.contains(s))
+    [
+        "insufficient quota",
+        "quota exceeded",
+        "credits",
+        "billing",
+        "usage limit",
+    ]
+    .iter()
+    .any(|s| text.contains(s))
 }
 
 pub(crate) fn rate_limited(message: &str) -> bool {
     let text = message.to_ascii_lowercase();
-    if quota_limited(&text) { return false; }
-    ["rate limit", "rate_limit", "too many requests", "too_many_requests"].iter().any(|s| text.contains(s))
+    if quota_limited(&text) {
+        return false;
+    }
+    [
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "too_many_requests",
+    ]
+    .iter()
+    .any(|s| text.contains(s))
 }
 
 #[cfg(test)]
@@ -214,8 +266,15 @@ mod tests {
     }
     #[test]
     fn idle_accounts_recover_the_fast_path() {
-        let k=key("idle-pacing-test", "");
-        states().lock().unwrap().insert(k, State { last: Some(Instant::now()-Duration::from_secs(600)), gap: Duration::from_secs(60), ..State::default() });
+        let k = key("idle-pacing-test", "");
+        states().lock().unwrap().insert(
+            k,
+            State {
+                last: Some(Instant::now() - Duration::from_secs(600)),
+                gap: Duration::from_secs(60),
+                ..State::default()
+            },
+        );
         acquire("idle-pacing-test", "", true).unwrap();
         assert_eq!(states().lock().unwrap()[&k].gap, Duration::ZERO);
     }
@@ -239,19 +298,32 @@ type Notice = Option<Box<dyn Fn(String)>>;
 thread_local! { static NOTICE: std::cell::RefCell<Notice> = const { std::cell::RefCell::new(None) }; }
 pub(crate) fn with_notice<T>(notice: impl Fn(String) + 'static, f: impl FnOnce() -> T) -> T {
     struct Restore(Notice);
-    impl Drop for Restore { fn drop(&mut self) { NOTICE.with(|slot| *slot.borrow_mut() = self.0.take()); } }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            NOTICE.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
     let _restore = Restore(NOTICE.with(|slot| slot.replace(Some(Box::new(notice)))));
     f()
 }
 
-#[cfg(test)] mod gate_tests {
+#[cfg(test)]
+mod gate_tests {
     use super::*;
-    #[test] fn retry_after_is_preserved() {
+    #[test]
+    fn retry_after_is_preserved() {
         let k = key("test-server-delay", "test");
         observe(k, 429, |name| (name == "retry-after").then(|| "2".into()));
-        assert!(states().lock().unwrap()[&k].cooldown.unwrap().duration_since(Instant::now()) > Duration::from_millis(1900));
+        assert!(
+            states().lock().unwrap()[&k]
+                .cooldown
+                .unwrap()
+                .duration_since(Instant::now())
+                > Duration::from_millis(1900)
+        );
     }
-    #[test] fn disabling_adaptation_skips_learned_pressure() {
+    #[test]
+    fn disabling_adaptation_skips_learned_pressure() {
         let k = key("off-pressure", "");
         observe(k, 429, |_| None);
         let start = Instant::now();
@@ -259,16 +331,22 @@ pub(crate) fn with_notice<T>(notice: impl Fn(String) + 'static, f: impl FnOnce()
         assert!(start.elapsed() < Duration::from_millis(100));
         assert!(states().lock().unwrap()[&k].cooldown.is_some());
     }
-    #[test] fn disabling_adaptation_preserves_server_deadline() {
+    #[test]
+    fn disabling_adaptation_preserves_server_deadline() {
         let k = key("off-server", "");
-        observe(k, 429, |name| (name == "retry-after").then(|| "0.12".into()));
+        observe(k, 429, |name| {
+            (name == "retry-after").then(|| "0.12".into())
+        });
         let start = Instant::now();
         acquire("off-server", "", false).unwrap();
         assert!(start.elapsed() >= Duration::from_millis(100));
         assert!(start.elapsed() < Duration::from_secs(1));
     }
-    #[test] fn cancelled_gate_does_not_send() {
+    #[test]
+    fn cancelled_gate_does_not_send() {
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        super::super::cancellable::scoped(flag, || assert!(acquire("cancel-test", "", true).is_err()));
+        super::super::cancellable::scoped(flag, || {
+            assert!(acquire("cancel-test", "", true).is_err())
+        });
     }
 }

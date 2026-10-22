@@ -151,12 +151,14 @@ pub trait Provider {
 /// add headroom, because under-counting triggers a context overflow while
 /// over-counting only compacts slightly early.
 pub fn default_estimate(messages: &[Message]) -> u32 {
-    default_estimate_for(messages,true)
+    default_estimate_for(messages, true)
 }
-pub fn default_estimate_for(messages:&[Message],chat_reasoning:bool)->u32 {
+pub fn default_estimate_for(messages: &[Message], chat_reasoning: bool) -> u32 {
     let mut chars: usize = 0;
     for m in messages {
-        if matches!(m,Message::ChatReasoning{content,..} if !chat_reasoning || content.is_none()) {continue;}
+        if matches!(m,Message::ChatReasoning{content,..} if !chat_reasoning || content.is_none()) {
+            continue;
+        }
         if matches!(m, Message::Image { .. }) {
             // Images are billed by pixels, not bytes; a flat allowance keeps
             // a base64 data URI from reading as millions of phantom tokens.
@@ -573,7 +575,8 @@ mod tests {
             vec![
                 "bash",
                 "state",
-                "display_image", "view_image",
+                "display_image",
+                "view_image",
                 "read",
                 "edit",
                 "write",

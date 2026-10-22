@@ -249,7 +249,13 @@ pub fn due_for(s: &mut Session, cfg: &crate::config::Config) -> Result<Option<St
     if skip {
         return Ok(None);
     }
-    let mut loops = match load_checked(s) {Ok(loops)=>loops,Err(error)=>{LAST.with(|last|*last.borrow_mut()=None);return Err(error);}};
+    let mut loops = match load_checked(s) {
+        Ok(loops) => loops,
+        Err(error) => {
+            LAST.with(|last| *last.borrow_mut() = None);
+            return Err(error);
+        }
+    };
     if recover {
         let mut changed = false;
         for record in s.history_records() {

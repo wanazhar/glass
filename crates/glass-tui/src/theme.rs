@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 static ACTIVE: AtomicU8 = AtomicU8::new(0);
 static ANIMATION: AtomicU8 = AtomicU8::new(0);
-pub const ANIMATION_NAMES: [&str; 8] = ["Dot", "MiniDot", "Pulse", "Spark", "Bounce", "Orbit", "Grow", "Blink"];
+pub const ANIMATION_NAMES: [&str; 8] = [
+    "Dot", "MiniDot", "Pulse", "Spark", "Bounce", "Orbit", "Grow", "Blink",
+];
 pub const ACTIVITY_INTERVAL_MS: u64 = 100;
 // Dot, MiniDot and Pulse frames follow Charm Bubbles (MIT); see THIRD_PARTY.md.
 const DOT: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
@@ -42,10 +44,19 @@ pub fn activity_glyph_tick(glyph: char) -> Option<usize> {
     (0..10).find(|tick| frame(*tick).starts_with(glyph))
 }
 pub fn is_activity_glyph(glyph: char) -> bool {
-    [&DOT[..], &MINI_DOT[..], &PULSE[..], &SPARK[..], &BOUNCE[..], &ORBIT[..], &GROW[..], &BLINK[..]]
-        .iter()
-        .flat_map(|frames| frames.iter())
-        .any(|frame| frame.starts_with(glyph))
+    [
+        &DOT[..],
+        &MINI_DOT[..],
+        &PULSE[..],
+        &SPARK[..],
+        &BOUNCE[..],
+        &ORBIT[..],
+        &GROW[..],
+        &BLINK[..],
+    ]
+    .iter()
+    .flat_map(|frames| frames.iter())
+    .any(|frame| frame.starts_with(glyph))
 }
 pub const NAMES: [&str; 5] = ["Aurora", "Amber", "Monochrome", "Orchid", "Ocean"];
 pub fn select(index: usize) {
@@ -233,15 +244,29 @@ mod tests {
     use super::*;
     #[test]
     fn formatted_style_and_text_are_one_surface_write() {
-        #[derive(Default)] struct Sink(Vec<Vec<u8>>);
+        #[derive(Default)]
+        struct Sink(Vec<Vec<u8>>);
         impl Write for Sink {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> { self.0.push(bytes.to_vec()); Ok(bytes.len()) }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.push(bytes.to_vec());
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
-        let mut writer = TerminalWriter { inner: Sink::default(), pending: Vec::new(), neutral: false };
-        let color="\x1b[31m"; let text="styled notice";
-        writeln!(writer,"{color}{text}\x1b[0m").unwrap();
-        assert_eq!(writer.inner.0, vec![b"\x1b[31mstyled notice\x1b[0m\n".to_vec()]);
+        let mut writer = TerminalWriter {
+            inner: Sink::default(),
+            pending: Vec::new(),
+            neutral: false,
+        };
+        let color = "\x1b[31m";
+        let text = "styled notice";
+        writeln!(writer, "{color}{text}\x1b[0m").unwrap();
+        assert_eq!(
+            writer.inner.0,
+            vec![b"\x1b[31mstyled notice\x1b[0m\n".to_vec()]
+        );
     }
     #[test]
     fn original_palette_indices_remain_compatible() {

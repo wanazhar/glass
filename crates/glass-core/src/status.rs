@@ -84,10 +84,7 @@ mod tests {
             "state=blocked:app=glass-core:kind=permission:msg=QWxsb3cgcmVhZGluZyBBR0VOVFMubWQ/"
         );
         // `kind` is only meaningful with blocked; others ignore it.
-        assert_eq!(
-            body("done", Some("auth"), ""),
-            "state=done:app=glass-core"
-        );
+        assert_eq!(body("done", Some("auth"), ""), "state=done:app=glass-core");
         // Unknown kinds are dropped so an older terminal never misreads them.
         assert_eq!(
             body("blocked", Some("nonsense"), ""),

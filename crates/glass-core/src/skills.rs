@@ -53,13 +53,18 @@ pub fn load_dir(dir: &Path) -> Vec<Skill> {
 pub(crate) fn load_metadata(path: PathBuf) -> Result<Skill, String> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
-    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK)
-        .open(&path).map_err(|e| e.to_string())?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("skill must be a regular file".into());
     }
     let mut prefix = Vec::new();
-    file.take(64 * 1024).read_to_end(&mut prefix).map_err(|e| e.to_string())?;
+    file.take(64 * 1024)
+        .read_to_end(&mut prefix)
+        .map_err(|e| e.to_string())?;
     parse(&String::from_utf8_lossy(&prefix), path)
 }
 
@@ -157,7 +162,8 @@ mod tests {
         let path = dir.join("large.md");
         let mut file = std::fs::File::create(&path).unwrap();
         use std::io::Write;
-        file.write_all(b"---\nname: bounded\ndescription: large body\n---\n").unwrap();
+        file.write_all(b"---\nname: bounded\ndescription: large body\n---\n")
+            .unwrap();
         file.set_len(64 * 1024 * 1024).unwrap();
         let skill = load_metadata(path.clone()).unwrap();
         assert_eq!(skill.name, "bounded");

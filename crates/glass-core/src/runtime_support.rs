@@ -385,9 +385,10 @@ pub fn tool_state(session: &Session, request: &str) -> Result<Option<Value>, Str
             && let Some(data) = v["d"]
                 .as_str()
                 .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                && data["requestId"] == request {
-                    found = Some(data);
-                }
+            && data["requestId"] == request
+        {
+            found = Some(data);
+        }
     })?;
     Ok(found)
 }
@@ -403,19 +404,19 @@ pub fn interrupted(session: &Session) -> Result<Value, String> {
             && let Some(data) = v["d"]
                 .as_str()
                 .and_then(|s| serde_json::from_str::<Value>(s).ok())
-            {
-                let id = data["requestId"].clone();
-                if let Some(index) = states.iter().position(|v| v["requestId"] == id) {
-                    states.remove(index);
-                }
-                if data["executionStatus"] == "unknown" {
-                    states.push_back(data);
-                }
-                if states.len() > 128 {
-                    states.pop_front();
-                    truncated = true;
-                }
+        {
+            let id = data["requestId"].clone();
+            if let Some(index) = states.iter().position(|v| v["requestId"] == id) {
+                states.remove(index);
             }
+            if data["executionStatus"] == "unknown" {
+                states.push_back(data);
+            }
+            if states.len() > 128 {
+                states.pop_front();
+                truncated = true;
+            }
+        }
     })?;
     Ok(json!({"tools":states,"truncated":truncated}))
 }

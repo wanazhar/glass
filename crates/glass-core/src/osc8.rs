@@ -119,7 +119,10 @@ mod tests {
         // Split characters stay outside the link.
         let out = link_urls("(https://a.b/c)");
         assert!(out.starts_with("("), "{out}");
-        assert!(out.contains(")\x1b]8;;\x1b\\") || out.ends_with(")"), "{out}");
+        assert!(
+            out.contains(")\x1b]8;;\x1b\\") || out.ends_with(")"),
+            "{out}"
+        );
         OSC8.store(1, Ordering::Relaxed);
     }
 

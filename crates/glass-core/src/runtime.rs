@@ -283,7 +283,7 @@ impl Wire {
                 })
         });
         if self.disconnected || durable_cancel {
-            self.steer=None;
+            self.steer = None;
             *slot = Some(String::new());
         } else if let Some(text) = self.steer.take() {
             *slot = Some(text);
@@ -320,12 +320,29 @@ impl Wire {
                     "Host disconnected; tool effects are unknown. Reconcile before repeating mutations.",
                 );
             }
-            let durable_abort=self.durable.as_ref().is_some_and(|shared|{
-                let store=shared.borrow();store.is_poisoned()||self.durable_task.as_ref().is_some_and(|id|store.state.tasks.get(id).is_some_and(|task|task.abort_requested))
+            let durable_abort = self.durable.as_ref().is_some_and(|shared| {
+                let store = shared.borrow();
+                store.is_poisoned()
+                    || self.durable_task.as_ref().is_some_and(|id| {
+                        store
+                            .state
+                            .tasks
+                            .get(id)
+                            .is_some_and(|task| task.abort_requested)
+                    })
             });
-            if durable_abort {self.steer=Some(String::new());}
-            let tool_abort=self.durable.as_ref().is_some_and(|shared|shared.borrow().state.tasks.values().any(|task|task.kind=="gc.tool"&&task.owner==self.durable_task&&task.input["callId"].as_str()==Some(&call.id)&&task.abort_requested));
-            if (self.steer.is_some()||tool_abort) && deadline.is_none() {
+            if durable_abort {
+                self.steer = Some(String::new());
+            }
+            let tool_abort = self.durable.as_ref().is_some_and(|shared| {
+                shared.borrow().state.tasks.values().any(|task| {
+                    task.kind == "gc.tool"
+                        && task.owner == self.durable_task
+                        && task.input["callId"].as_str() == Some(&call.id)
+                        && task.abort_requested
+                })
+            });
+            if (self.steer.is_some() || tool_abort) && deadline.is_none() {
                 event(
                     session,
                     turn,
@@ -1105,7 +1122,7 @@ fn run(
         let mut io = wire.borrow_mut();
         io.image_enabled = c.cfg.image_input;
         io.completing = false;
-        io.steer=None;
+        io.steer = None;
         io.steer_records.clear();
     }
     let mut extensions = ext::Registry::load(&[], &c.cfg.workspace, &c.cfg.model);

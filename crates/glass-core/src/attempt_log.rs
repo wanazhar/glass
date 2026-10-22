@@ -106,7 +106,8 @@ pub fn records(session_path: &Path) -> Result<Vec<Attempt>, String> {
 /// exist. The caller shows that as "lineage may be truncated" rather than
 /// presenting a short list as the whole history.
 pub fn window(session_path: &Path) -> Result<(Vec<Attempt>, bool), String> {
-    let (rows, complete): (Vec<Value>, bool) = crate::requests::tail_window(&path_for(session_path))?;
+    let (rows, complete): (Vec<Value>, bool) =
+        crate::requests::tail_window(&path_for(session_path))?;
     Ok((
         rows.into_iter()
             .filter_map(|value| serde_json::from_value::<Attempt>(value).ok())
@@ -134,7 +135,10 @@ mod tests {
             rows.iter().map(|r| r.attempt).collect::<Vec<_>>(),
             vec![1, 2]
         );
-        assert_eq!(rows.iter().map(|r| r.delay_s).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            rows.iter().map(|r| r.delay_s).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
         assert!(rows.iter().all(|r| r.cause.contains("503")));
         // The durable coordinate, not a clock reading, is what groups a retry
         // with the failure it belongs to.
@@ -151,7 +155,15 @@ mod tests {
         let log = dir.join("session.jsonl");
         std::fs::write(&log, "").unwrap();
         append(&log, 1, 0, "transport: connection reset", 1, None).unwrap();
-        append(&log, 1, 0, "transport: connection reset", 1, Some("resp_abc".into())).unwrap();
+        append(
+            &log,
+            1,
+            0,
+            "transport: connection reset",
+            1,
+            Some("resp_abc".into()),
+        )
+        .unwrap();
         let rows = records(&log).unwrap();
         assert_eq!(rows[0].request_id, None);
         assert_eq!(rows[1].request_id.as_deref(), Some("resp_abc"));

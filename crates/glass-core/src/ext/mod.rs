@@ -56,7 +56,7 @@ impl Registry {
             runner_factory: None,
             frozen_tools: None,
             freeze_noted: false,
-            deferred: std::env::var("GC_DEFER_TOOLS").as_deref()==Ok("1"),
+            deferred: std::env::var("GC_DEFER_TOOLS").as_deref() == Ok("1"),
             scope: std::collections::BTreeSet::new(),
             last_shutdown: None,
         }
@@ -209,14 +209,26 @@ impl Registry {
     }
 
     pub fn enable(&mut self, spec: &str, workspace: &Path, model: &str) -> Result<(), String> {
-        self.enable_with_reserved(spec,workspace,model,&[])
+        self.enable_with_reserved(spec, workspace, model, &[])
     }
-    pub fn enable_with_reserved(&mut self,spec:&str,workspace:&Path,model:&str,reserved:&[String])->Result<(),String>{
-        let mut extension=spawn_one(spec,workspace,model)?;
-        if extension.manifest.tools.iter().any(|tool|reserved.contains(&tool.name)) {
-            extension.shutdown();return Err("Extension tool conflicts with an enabled mod or core tool".into());
+    pub fn enable_with_reserved(
+        &mut self,
+        spec: &str,
+        workspace: &Path,
+        model: &str,
+        reserved: &[String],
+    ) -> Result<(), String> {
+        let mut extension = spawn_one(spec, workspace, model)?;
+        if extension
+            .manifest
+            .tools
+            .iter()
+            .any(|tool| reserved.contains(&tool.name))
+        {
+            extension.shutdown();
+            return Err("Extension tool conflicts with an enabled mod or core tool".into());
         }
-        self.register(extension,spec)
+        self.register(extension, spec)
     }
     pub fn register(&mut self, mut extension: Extension, spec: &str) -> Result<(), String> {
         let tools = extension
@@ -226,9 +238,12 @@ impl Registry {
             .map(|t| t.name.as_str())
             .collect::<Vec<_>>();
         let collision = self.names().contains(&extension.manifest.name.as_str())
-            || tools
-                .iter()
-                .any(|name| matches!(*name, "bash" | "state" | "read" | "edit" | "write" | "view_image" | "display_image") || self.has_tool(name))
+            || tools.iter().any(|name| {
+                matches!(
+                    *name,
+                    "bash" | "state" | "read" | "edit" | "write" | "view_image" | "display_image"
+                ) || self.has_tool(name)
+            })
             || tools
                 .iter()
                 .enumerate()
@@ -282,7 +297,14 @@ impl Registry {
     /// list buys (2.1.268).
     pub fn declared_tools(&mut self) -> (Vec<(String, String, String)>, FreezeDiff) {
         let live = self.tools();
-        if self.deferred { return (live.into_iter().filter(|(name,_,_)|self.scope.contains(name)).collect(),FreezeDiff::default()); }
+        if self.deferred {
+            return (
+                live.into_iter()
+                    .filter(|(name, _, _)| self.scope.contains(name))
+                    .collect(),
+                FreezeDiff::default(),
+            );
+        }
         let Some(frozen) = &self.frozen_tools else {
             self.frozen_tools = Some(live.clone());
             return (live, FreezeDiff::default());
@@ -307,21 +329,52 @@ impl Registry {
         (frozen.clone(), FreezeDiff { added, removed })
     }
 
-    pub fn clear_scope(&mut self) { if self.deferred { self.scope.clear(); } }
-    pub fn capabilities(&mut self, request:&serde_json::Value)->Result<serde_json::Value,String> {
-        let object=request.as_object().ok_or("capabilities must be an object")?;
-        if object.keys().any(|k|!matches!(k.as_str(),"search"|"activate")) {return Err("Unknown capability operation".into());}
-        if let Some(activate)=object.get("activate") {
-            if !self.deferred {return Err("Request-scoped tools require GC_DEFER_TOOLS=1; the default session schema remains frozen".into());}
-            let names=activate.as_array().ok_or("activate must be tool names")?;
-            if names.len()>16 {return Err("Activate at most 16 capabilities".into());}
-            let mut scope=std::collections::BTreeSet::new();
-            for name in names {let name=name.as_str().ok_or("Capability name must be text")?;if !self.has_tool(name) {return Err(format!("Unknown configured capability {name}"));}scope.insert(name.to_owned());}
-            self.scope=scope;
+    pub fn clear_scope(&mut self) {
+        if self.deferred {
+            self.scope.clear();
         }
-        let query=object.get("search").map(|v|v.as_str().ok_or("search must be text")).transpose()?.unwrap_or("").to_lowercase();
+    }
+    pub fn capabilities(
+        &mut self,
+        request: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let object = request
+            .as_object()
+            .ok_or("capabilities must be an object")?;
+        if object
+            .keys()
+            .any(|k| !matches!(k.as_str(), "search" | "activate"))
+        {
+            return Err("Unknown capability operation".into());
+        }
+        if let Some(activate) = object.get("activate") {
+            if !self.deferred {
+                return Err("Request-scoped tools require GC_DEFER_TOOLS=1; the default session schema remains frozen".into());
+            }
+            let names = activate.as_array().ok_or("activate must be tool names")?;
+            if names.len() > 16 {
+                return Err("Activate at most 16 capabilities".into());
+            }
+            let mut scope = std::collections::BTreeSet::new();
+            for name in names {
+                let name = name.as_str().ok_or("Capability name must be text")?;
+                if !self.has_tool(name) {
+                    return Err(format!("Unknown configured capability {name}"));
+                }
+                scope.insert(name.to_owned());
+            }
+            self.scope = scope;
+        }
+        let query = object
+            .get("search")
+            .map(|v| v.as_str().ok_or("search must be text"))
+            .transpose()?
+            .unwrap_or("")
+            .to_lowercase();
         let tools=self.tools().into_iter().filter(|(n,d,_)|format!("{n} {d}").to_lowercase().contains(&query)).take(64).map(|(name,description,_)|serde_json::json!({"name":name,"description":description.chars().take(240).collect::<String>(),"active":!self.deferred||self.scope.contains(&name)})).collect::<Vec<_>>();
-        Ok(serde_json::json!({"capabilities":tools,"deferred":self.deferred,"scope":"Current user turn; resets at the next user turn. Explicit activation changes tool-schema prefix; request audit records the fingerprint."}))
+        Ok(
+            serde_json::json!({"capabilities":tools,"deferred":self.deferred,"scope":"Current user turn; resets at the next user turn. Explicit activation changes tool-schema prefix; request audit records the fingerprint."}),
+        )
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
@@ -395,13 +448,8 @@ impl Registry {
         arguments: &str,
         host_tools: &mut HostToolBridge<'_>,
     ) -> Option<String> {
-        self.run_tool_scoped(
-            &CallScope::unscoped(),
-            name,
-            arguments,
-            host_tools,
-        )
-        .into_output()
+        self.run_tool_scoped(&CallScope::unscoped(), name, arguments, host_tools)
+            .into_output()
     }
 
     /// Run an extension tool, reporting exactly how the call ended.
@@ -555,12 +603,7 @@ impl Registry {
     }
 
     /// Invoke an extension slash command under an explicit scope.
-    pub fn run_command_scoped(
-        &mut self,
-        name: &str,
-        args: &str,
-        scope: &CallScope,
-    ) -> CallOutcome {
+    pub fn run_command_scoped(&mut self, name: &str, args: &str, scope: &CallScope) -> CallOutcome {
         let Some(idx) = self.exts.iter().position(|e| e.has_command(name)) else {
             return CallOutcome {
                 output: None,
@@ -728,14 +771,30 @@ for line in sys.stdin:
     fn extension_replies_require_unsigned_correlated_request_ids() {
         let Some(py) = python() else { return };
         for invalid in ["None", "'wrong'", "-1", "1.5", "'missing'"] {
-            let response = format!("\n        bad={{'output':'unsolicited'}}\n        if {invalid} != 'missing': bad['id']={invalid}\n        send(bad)\n        send({{'id':i,'output':'real'}})");
-            let body = helper_script().replace("elif t==\"run_tool\": send({\"id\":i,\"output\":\"pong\"})", &format!("elif t=='run_tool':{response}"));
+            let response = format!(
+                "\n        bad={{'output':'unsolicited'}}\n        if {invalid} != 'missing': bad['id']={invalid}\n        send(bad)\n        send({{'id':i,'output':'real'}})"
+            );
+            let body = helper_script().replace(
+                "elif t==\"run_tool\": send({\"id\":i,\"output\":\"pong\"})",
+                &format!("elif t=='run_tool':{response}"),
+            );
             let path = echo_ext(&body);
-            let mut ext = Extension::spawn(&format!("{py} {}",path.display()), "/tmp", "mock").unwrap();
+            let mut ext =
+                Extension::spawn(&format!("{py} {}", path.display()), "/tmp", "mock").unwrap();
             let mut bridge = |_name: &str, _args: &str| String::new();
-            let result = ext.run_tool_scoped("ping", "{}", &mut bridge, &CallScope::from_call("origin", Cancel::new()));
-            assert!(result.output.is_none(), "accepted {invalid} reply: {result:?}");
-            assert!(matches!(result.stop, CallStop::Failed(ref reason) if reason.contains("request id")));
+            let result = ext.run_tool_scoped(
+                "ping",
+                "{}",
+                &mut bridge,
+                &CallScope::from_call("origin", Cancel::new()),
+            );
+            assert!(
+                result.output.is_none(),
+                "accepted {invalid} reply: {result:?}"
+            );
+            assert!(
+                matches!(result.stop, CallStop::Failed(ref reason) if reason.contains("request id"))
+            );
             drop(ext);
             std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
         }
@@ -777,14 +836,23 @@ for line in sys.stdin:
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("extension.py");
-        std::fs::write(&file, script.replace("PROTO", &PROTOCOL_VERSION.to_string())).unwrap();
+        std::fs::write(
+            &file,
+            script.replace("PROTO", &PROTOCOL_VERSION.to_string()),
+        )
+        .unwrap();
         let session = crate::session::Session::create(&dir).unwrap();
         let mut reg = Registry::load(&[format!("{py} {}", file.display())], &dir, "mock");
         reg.bind_session_path(session.path.clone());
         let mut nohost = |_name: &str, _args: &str| String::new();
-        assert_eq!(reg.run_tool("durable_tool", "{}", &mut nohost).as_deref(), Some("True"));
+        assert_eq!(
+            reg.run_tool("durable_tool", "{}", &mut nohost).as_deref(),
+            Some("True")
+        );
         let records = crate::session::Session::raw_records(&session.path).unwrap();
-        assert!(matches!(records.as_slice(), [crate::session::Record::Custom { kind, data: Some(value) }] if kind == "durable/state" && value == "saved"));
+        assert!(
+            matches!(records.as_slice(), [crate::session::Record::Custom { kind, data: Some(value) }] if kind == "durable/state" && value == "saved")
+        );
         reg.shutdown();
         drop(session);
         let _ = std::fs::remove_dir_all(&dir);
@@ -800,12 +868,25 @@ for line in sys.stdin:
         let mut reg = Registry::load(&[format!("{py} {}", file.display())], dir, "mock");
         reg.bind_session_path(session.path.clone());
         let ext = &mut reg.exts[0];
-        ext.append_custom("t/state".into(), Some("x".repeat(1_700_000))).unwrap();
-        assert!(ext.append_custom("t/state".into(), Some("x".repeat(1_700_000))).unwrap_err().contains("not saved"));
-        assert_eq!(crate::session::Session::raw_records(&session.path).unwrap().len(), 1);
+        ext.append_custom("t/state".into(), Some("x".repeat(1_700_000)))
+            .unwrap();
+        assert!(
+            ext.append_custom("t/state".into(), Some("x".repeat(1_700_000)))
+                .unwrap_err()
+                .contains("not saved")
+        );
+        assert_eq!(
+            crate::session::Session::raw_records(&session.path)
+                .unwrap()
+                .len(),
+            1
+        );
         ext.seed_custom(vec![("t/legacy".into(), vec!["x".repeat(4_200_000)])]);
         let mut host = |_name: &str, _args: &str| String::new();
-        assert_eq!(reg.run_tool("ping", "{}", &mut host).as_deref(), Some("pong:0"));
+        assert_eq!(
+            reg.run_tool("ping", "{}", &mut host).as_deref(),
+            Some("pong:0")
+        );
         reg.shutdown();
     }
 
@@ -1258,10 +1339,9 @@ for line in sys.stdin:
         let mut nohost = |_n: &str, _a: &str| String::new();
         let scope = CallScope::from_call("call_round_trip", Cancel::new());
         let outcome = reg.run_tool_scoped(&scope, "lin", "{}", &mut nohost);
-        let body: serde_json::Value = serde_json::from_str(
-            &outcome.output.expect("the extension answered"),
-        )
-        .expect("the extension echoed valid JSON");
+        let body: serde_json::Value =
+            serde_json::from_str(&outcome.output.expect("the extension answered"))
+                .expect("the extension echoed valid JSON");
         assert_eq!(body["call_id"], "call_round_trip");
         let lineage = crate::ext::protocol::CallLineage::from_json(&body["lineage"])
             .expect("the extension received a well-formed lineage");
@@ -1277,7 +1357,9 @@ for line in sys.stdin:
         let Some(py) = python() else { return };
         let mut chain = crate::ext::protocol::CallLineage::root("call_root");
         for level in 1..=crate::ext::protocol::MAX_NESTED_CALL_DEPTH {
-            chain = chain.descend(&format!("n{level}")).expect("within the bound");
+            chain = chain
+                .descend(&format!("n{level}"))
+                .expect("within the bound");
         }
         assert_eq!(chain.depth(), crate::ext::protocol::MAX_NESTED_CALL_DEPTH);
         let p = echo_ext(&lineage_script());
@@ -1364,13 +1446,17 @@ while True:
     time.sleep(3600)
 "#
         .replace("PROTO", &PROTOCOL_VERSION.to_string());
-        let well = LINEAGE_HELPER.replace("PROTO", &PROTOCOL_VERSION.to_string())
+        let well = LINEAGE_HELPER
+            .replace("PROTO", &PROTOCOL_VERSION.to_string())
             .replace("\"lin\"", "\"polite\"")
             .replace("\"lin\"", "\"polite\"");
         let a = echo_ext(&stubborn);
         let b = echo_ext(&well);
         let mut reg = Registry::load(
-            &[format!("{py} {}", a.display()), format!("{py} {}", b.display())],
+            &[
+                format!("{py} {}", a.display()),
+                format!("{py} {}", b.display()),
+            ],
             std::path::Path::new("/tmp"),
             "test-model",
         );
@@ -1449,7 +1535,10 @@ for line in sys.stdin:
         let a = echo_ext(&stub);
         let b = echo_ext(&keeper);
         let mut reg = Registry::load(
-            &[format!("{py} {}", a.display()), format!("{py} {}", b.display())],
+            &[
+                format!("{py} {}", a.display()),
+                format!("{py} {}", b.display()),
+            ],
             std::path::Path::new("/tmp"),
             "test-model",
         );
@@ -1483,7 +1572,10 @@ for line in sys.stdin:
         );
         let mut nohost = |_n: &str, _a: &str| String::new();
         let scope = CallScope::unscoped();
-        assert!(reg.run_tool_scoped(&scope, "lin", "{}", &mut nohost).is_completed());
+        assert!(
+            reg.run_tool_scoped(&scope, "lin", "{}", &mut nohost)
+                .is_completed()
+        );
         assert!(reg.cancel("lin"), "the extension was found");
         assert!(reg.cancel_token("lin").is_some_and(|t| t.is_cancelled()));
         // Cancelling everything covers every loaded extension at once.
@@ -1495,9 +1587,7 @@ for line in sys.stdin:
         );
         reg2.cancel_all();
         assert!(
-            reg2
-                .cancel_token("lin2")
-                .is_some_and(|t| t.is_cancelled()),
+            reg2.cancel_token("lin2").is_some_and(|t| t.is_cancelled()),
             "cancel_all reaches every loaded extension"
         );
         let _ = std::fs::remove_dir_all(b.parent().unwrap());

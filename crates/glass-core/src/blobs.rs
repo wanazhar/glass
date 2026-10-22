@@ -10,12 +10,12 @@
 //! the gap between storing output and appending its referencing record.
 
 use ring::digest::{Context, SHA256};
-use std::io::{Read, Seek, SeekFrom};
 #[cfg(test)]
 use std::io::Write;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::path::{Path, PathBuf};
 
 /// Blob store root. Same isolation as the rest of the data tree.
 pub fn dir() -> PathBuf {
@@ -56,8 +56,13 @@ fn put(content: &[u8]) -> std::io::Result<(String, PathBuf)> {
 /// The caller retains the original path if hashing or the same-filesystem move fails.
 pub fn adopt_file(path: &Path) -> std::io::Result<(String, PathBuf)> {
     use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)?;
-    if !file.metadata()?.is_file() { return Err(std::io::Error::other("Spill is not a regular file")); }
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("Spill is not a regular file"));
+    }
     let mut digest = Context::new(&SHA256);
     let mut buffer = [0u8; 32 * 1024];
     loop {
@@ -65,7 +70,9 @@ pub fn adopt_file(path: &Path) -> std::io::Result<(String, PathBuf)> {
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             result => result?,
         };
-        if size == 0 { break; }
+        if size == 0 {
+            break;
+        }
         digest.update(&buffer[..size]);
     }
     let hex = encode_hex(digest.finish().as_ref());
@@ -76,7 +83,9 @@ pub fn adopt_file(path: &Path) -> std::io::Result<(String, PathBuf)> {
     // the destination atomically also repairs a corrupt existing digest path;
     // concurrent identical stores still leave exactly one correct file.
     file.set_modified(std::time::SystemTime::now())?;
-    if path != stored { std::fs::rename(path, &stored)?; }
+    if path != stored {
+        std::fs::rename(path, &stored)?;
+    }
     Ok((reference(&hex), stored))
 }
 
@@ -87,8 +96,17 @@ fn put_reader(mut reader: impl Read) -> std::io::Result<(String, PathBuf)> {
     let dir = dir();
     std::fs::create_dir_all(&dir)?;
     let (tmp, mut file) = loop {
-        let tmp = dir.join(format!(".tmp-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-        match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp) {
+        let tmp = dir.join(format!(
+            ".tmp-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+        {
             Ok(file) => break (tmp, file),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
@@ -102,7 +120,9 @@ fn put_reader(mut reader: impl Read) -> std::io::Result<(String, PathBuf)> {
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 value => value?,
             };
-            if size == 0 { break; }
+            if size == 0 {
+                break;
+            }
             digest.update(&buffer[..size]);
             file.write_all(&buffer[..size])?;
         }
@@ -111,7 +131,9 @@ fn put_reader(mut reader: impl Read) -> std::io::Result<(String, PathBuf)> {
         let path = dir.join(&hex);
         // Concurrent identical stores have unique temporaries and identical
         // final content, so neither caller loses a valid reference.
-        if !path.exists() { std::fs::rename(&tmp, &path)?; }
+        if !path.exists() {
+            std::fs::rename(&tmp, &path)?;
+        }
         Ok((reference(&hex), path))
     })();
     let _ = std::fs::remove_file(&tmp);
@@ -120,13 +142,17 @@ fn put_reader(mut reader: impl Read) -> std::io::Result<(String, PathBuf)> {
 
 /// Read only the requested range; oversized offsets and lengths cannot wrap.
 pub fn get(reference: &str, offset: usize, length: Option<usize>) -> std::io::Result<Vec<u8>> {
-    let hex = hex_of(reference)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a blob reference"))?;
+    let hex = hex_of(reference).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a blob reference")
+    })?;
     let mut file = std::fs::File::open(dir().join(hex))?;
     let size = file.metadata()?.len();
     let start = (offset as u64).min(size);
     file.seek(SeekFrom::Start(start))?;
-    let count = length.map(|n| n as u64).unwrap_or(u64::MAX).min(size - start);
+    let count = length
+        .map(|n| n as u64)
+        .unwrap_or(u64::MAX)
+        .min(size - start);
     let mut data = Vec::new();
     file.take(count).read_to_end(&mut data)?;
     Ok(data)
@@ -150,12 +176,17 @@ const RECENT_SECS: u64 = 300;
 fn referenced_hexes(data_dir: &Path) -> Result<std::collections::HashSet<String>, String> {
     fn scan(bytes: &[u8], eof: bool, refs: &mut std::collections::HashSet<String>) {
         for (at, prefix) in bytes.windows(5).enumerate() {
-            if prefix != b"blob:" { continue; }
+            if prefix != b"blob:" {
+                continue;
+            }
             let end = at + 69;
-            if end > bytes.len() || (end == bytes.len() && !eof) { continue; }
+            if end > bytes.len() || (end == bytes.len() && !eof) {
+                continue;
+            }
             let hex = &bytes[at + 5..end];
             if hex.iter().all(u8::is_ascii_hexdigit)
-                && bytes.get(end).is_none_or(|byte| !byte.is_ascii_hexdigit()) {
+                && bytes.get(end).is_none_or(|byte| !byte.is_ascii_hexdigit())
+            {
                 refs.insert(String::from_utf8_lossy(hex).to_ascii_lowercase());
             }
         }
@@ -167,36 +198,59 @@ fn referenced_hexes(data_dir: &Path) -> Result<std::collections::HashSet<String>
         for entry in std::fs::read_dir(&directory).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             visited += 1;
-            if visited > 100_000 { return Err("Blob reference scan exceeds 100000 entries; nothing removed".into()); }
+            if visited > 100_000 {
+                return Err("Blob reference scan exceeds 100000 entries; nothing removed".into());
+            }
             let path = entry.path();
             let kind = entry.file_type().map_err(|e| e.to_string())?;
-            if kind.is_symlink() && (depth > 0 || entry.file_name() == "agents" || entry.file_name() == "subagents") {
+            if kind.is_symlink()
+                && (depth > 0 || entry.file_name() == "agents" || entry.file_name() == "subagents")
+            {
                 return Err("Symlink in managed session storage; nothing removed".into());
             }
             if kind.is_dir() {
                 let name = entry.file_name();
-                if (depth == 0 && name != "agents" && name != "subagents") || name == "worktrees" { continue; }
-                if depth >= 16 { return Err("Blob reference scan exceeds 16 directory levels; nothing removed".into()); }
+                if (depth == 0 && name != "agents" && name != "subagents") || name == "worktrees" {
+                    continue;
+                }
+                if depth >= 16 {
+                    return Err(
+                        "Blob reference scan exceeds 16 directory levels; nothing removed".into(),
+                    );
+                }
                 pending.push((path, depth + 1));
                 continue;
             }
-            if path.extension().is_none_or(|ext| ext != "jsonl") { continue; }
-            if !kind.is_file() { return Err("Non-regular session log; nothing removed".into()); }
+            if path.extension().is_none_or(|ext| ext != "jsonl") {
+                continue;
+            }
+            if !kind.is_file() {
+                return Err("Non-regular session log; nothing removed".into());
+            }
             use std::os::unix::fs::OpenOptionsExt;
-            let mut file = std::fs::OpenOptions::new().read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&path).map_err(|e|e.to_string())?;
-            if !file.metadata().map_err(|e|e.to_string())?.is_file() {return Err("Non-regular session log; nothing removed".into());}
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(&path)
+                .map_err(|e| e.to_string())?;
+            if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+                return Err("Non-regular session log; nothing removed".into());
+            }
             let mut buffer = [0u8; 32 * 1024];
             let mut carry = Vec::new();
             loop {
                 let size = match file.read(&mut buffer) {
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                    result => result.map_err(|e|e.to_string())?,
+                    result => result.map_err(|e| e.to_string())?,
                 };
                 carry.extend_from_slice(&buffer[..size]);
                 scan(&carry, size == 0, &mut refs);
-                if size == 0 { break; }
-                if carry.len() > 69 { carry.drain(..carry.len() - 69); }
+                if size == 0 {
+                    break;
+                }
+                if carry.len() > 69 {
+                    carry.drain(..carry.len() - 69);
+                }
             }
         }
     }
@@ -216,14 +270,21 @@ pub fn sweep(data_dir: &Path) -> Result<SweepReport, String> {
         .unwrap_or_default()
         .as_secs();
     let blob_dir = data_dir.join("blobs");
-    let entries = std::fs::read_dir(&blob_dir).map_err(|e| format!("{}: {e}", blob_dir.display()))?;
+    let entries =
+        std::fs::read_dir(&blob_dir).map_err(|e| format!("{}: {e}", blob_dir.display()))?;
     for entry in entries {
-        let entry = entry.map_err(|e| { report.errors += 1; e.to_string() })?;
+        let entry = entry.map_err(|e| {
+            report.errors += 1;
+            e.to_string()
+        })?;
         let path = entry.path();
         report.scanned += 1;
         let name = match path.file_name().and_then(|n| n.to_str()) {
             Some(n) => n.to_string(),
-            None => { report.errors += 1; continue; }
+            None => {
+                report.errors += 1;
+                continue;
+            }
         };
         let mtime_secs = entry
             .metadata()
@@ -326,7 +387,9 @@ mod sweep_tests {
         ] {
             let p = dir.join(name);
             std::fs::write(&p, b"x").unwrap();
-            if aged > 0 { age(&p, aged); }
+            if aged > 0 {
+                age(&p, aged);
+            }
         }
         // The referenced one is named by a session log.
         std::fs::write(
@@ -374,7 +437,11 @@ mod tests {
     #[test]
     fn adopted_spills_move_once_and_deduplicate() {
         use std::os::unix::fs::MetadataExt;
-        let base = std::env::temp_dir().join(format!("gc-adopt-{}-{}", std::process::id(), crate::partial::now()));
+        let base = std::env::temp_dir().join(format!(
+            "gc-adopt-{}-{}",
+            std::process::id(),
+            crate::partial::now()
+        ));
         std::fs::create_dir_all(&base).unwrap();
         let first = base.join("first.log");
         let second = base.join("second.log");
@@ -411,16 +478,27 @@ mod tests {
     #[test]
     fn ranged_reads_do_not_wrap_oversized_lengths() {
         let (reference, _) = put(b"range overflow regression").unwrap();
-        assert_eq!(get(&reference, 6, Some(usize::MAX)).unwrap(), b"overflow regression");
-        assert!(get(&reference, usize::MAX, Some(usize::MAX)).unwrap().is_empty());
+        assert_eq!(
+            get(&reference, 6, Some(usize::MAX)).unwrap(),
+            b"overflow regression"
+        );
+        assert!(
+            get(&reference, usize::MAX, Some(usize::MAX))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
     fn concurrent_identical_streams_store_successfully() {
-        let workers: Vec<_> = (0..8).map(|_| std::thread::spawn(|| {
-            let content = vec![b'x'; 1024 * 1024];
-            put_reader(content.as_slice()).unwrap()
-        })).collect();
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    let content = vec![b'x'; 1024 * 1024];
+                    put_reader(content.as_slice()).unwrap()
+                })
+            })
+            .collect();
         let results: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
         assert!(results.iter().all(|result| result == &results[0]));
         assert_eq!(get(&results[0].0, 999_999, Some(4)).unwrap(), b"xxxx");

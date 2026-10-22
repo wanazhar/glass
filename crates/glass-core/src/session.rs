@@ -184,9 +184,11 @@ impl Record {
                 "sum": summary, "tail": tail_start, "sys": system
             }),
             Record::Custom { kind, data } => {
-                if kind==crate::reasoning::KIND {
+                if kind == crate::reasoning::KIND {
                     json!({"_private":"provider/chat-reasoning","k":"custom","c":kind,"d":data})
-                } else {json!({ "k": "custom", "c": kind, "d": data })}
+                } else {
+                    json!({ "k": "custom", "c": kind, "d": data })
+                }
             }
             Record::ServeRequest { id, status } => {
                 json!({"k":"serve_request", "id":id, "status":status})
@@ -272,7 +274,9 @@ impl Record {
 
     /// Project into the model context. `None` means display-only.
     pub(crate) fn to_message(&self) -> Option<Message> {
-        if let Some(message)=crate::reasoning::message(self) {return Some(message);}
+        if let Some(message) = crate::reasoning::message(self) {
+            return Some(message);
+        }
         match self {
             Record::Custom {
                 kind,
@@ -1362,17 +1366,20 @@ impl Session {
                     })
                 });
                 if edit_invalidates_summary {
-                    self.project_messages(&bounded_edited_context(
-                        &apply_checkpoint_projection(raw),
-                        &edits,
-                    ), image_input)
+                    self.project_messages(
+                        &bounded_edited_context(&apply_checkpoint_projection(raw), &edits),
+                        image_input,
+                    )
                 } else {
                     let edited = apply_edits(&raw, &edits);
                     let (projected, _) = apply_projection(edited);
                     self.project_messages(&projected, image_input)
                 }
             }
-            None => self.project_messages(&apply_checkpoint_projection(self.records.clone()), image_input),
+            None => self.project_messages(
+                &apply_checkpoint_projection(self.records.clone()),
+                image_input,
+            ),
         }
     }
 
@@ -1388,7 +1395,8 @@ impl Session {
             .iter()
             .filter_map(|a| a.data.as_deref())
             .collect();
-        let mut messages = crate::compact::project_filtered_for_model(records, Some(&active), image_input);
+        let mut messages =
+            crate::compact::project_filtered_for_model(records, Some(&active), image_input);
         if !image_input {
             if !active.is_empty() {
                 messages.push(Message::User("[Image attachments remain available to the user but are omitted from this text-only model's input. Their visual contents are unknown.]".into()));
@@ -1799,7 +1807,8 @@ fn canonical_entries(records: &[Record]) -> Vec<glass_tui::Entry> {
 
     let mut entries = Vec::new();
     for (record_index, (record, (turn, epoch))) in records.iter().zip(scopes).enumerate() {
-        if matches!(record, Record::Custom { kind, .. } if kind==crate::todo::KIND || kind==crate::reasoning::KIND) {
+        if matches!(record, Record::Custom { kind, .. } if kind==crate::todo::KIND || kind==crate::reasoning::KIND)
+        {
             continue;
         }
         if matches!(record, Record::Custom { kind, .. } if matches!(kind.as_str(), "queue/delivery" | "constraints/delivery" | "session/branch" | "turn/checkpoint"))
@@ -2257,7 +2266,7 @@ fn apply_projection(records: Vec<Record>) -> (Vec<Record>, usize) {
         out.remove(0);
     }
 
-    let out=crate::reasoning::retain(&records,out);
+    let out = crate::reasoning::retain(&records, out);
     let turn = out.iter().filter(|r| matches!(r, Record::User(_))).count();
     (out, turn)
 }
@@ -2293,11 +2302,12 @@ fn apply_checkpoint_projection(mut records: Vec<Record>) -> Vec<Record> {
                     _ => {}
                 }
             }
-            let markers=crate::reasoning::checkpoint_markers(&records,start+1..index,&pending);
-            for (relative,record) in records[start + 1..index].iter_mut().enumerate() {
+            let markers =
+                crate::reasoning::checkpoint_markers(&records, start + 1..index, &pending);
+            for (relative, record) in records[start + 1..index].iter_mut().enumerate() {
                 let keep = matches!(record, Record::User(_))
                     || matches!(record, Record::ToolCall { id, .. } if pending.contains(id))
-                    || markers.contains(&(start+1+relative));
+                    || markers.contains(&(start + 1 + relative));
                 if !keep {
                     *record = Record::Meta("Checkpoint exploration hidden from context".into());
                 }

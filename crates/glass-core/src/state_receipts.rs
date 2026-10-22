@@ -293,9 +293,13 @@ pub fn receipts_in(records: &[Record]) -> Vec<Receipt> {
     records
         .iter()
         .filter_map(|record| match record {
-            Record::Custom { kind, data: Some(data) } if kind == RECEIPT_KIND => {
-                serde_json::from_str::<Value>(data).ok().as_ref().and_then(Receipt::from_json)
-            }
+            Record::Custom {
+                kind,
+                data: Some(data),
+            } if kind == RECEIPT_KIND => serde_json::from_str::<Value>(data)
+                .ok()
+                .as_ref()
+                .and_then(Receipt::from_json),
             _ => None,
         })
         .collect()
@@ -321,7 +325,11 @@ mod tests {
     fn a_receipt_round_trips_through_the_log_record() {
         let original = receipt("req-1", "abcdef0123456789");
         let record = original.record();
-        let Record::Custom { kind, data: Some(_) } = &record else {
+        let Record::Custom {
+            kind,
+            data: Some(_),
+        } = &record
+        else {
             panic!("a receipt is a namespaced custom entry")
         };
         assert_eq!(kind, RECEIPT_KIND);
@@ -375,7 +383,10 @@ mod tests {
             items: items.clone(),
             receipt: receipt("req-4", "after"),
         });
-        assert_eq!(take_receipt("before", &items).map(|r| r.request_id), Some("req-4".into()));
+        assert_eq!(
+            take_receipt("before", &items).map(|r| r.request_id),
+            Some("req-4".into())
+        );
         assert_eq!(take_receipt("before", &items), None);
     }
 }

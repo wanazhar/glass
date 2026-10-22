@@ -1,44 +1,80 @@
 //! Local diagnostic previews contain metadata only, never prompts, shell commands or credentials.
-use crate::{config, session::{Record, Session}};
-use serde_json::{json, Value};
+use crate::{
+    config,
+    session::{Record, Session},
+};
+use serde_json::{Value, json};
 use std::path::Path;
 
 pub fn snapshot(session: &Session) -> Result<Value, String> {
     let records = Session::raw_records(&session.path).map_err(|e| e.to_string())?;
-    let events = records.iter().rev().take(64).map(|record| {
-        let (kind, bytes) = match record {
-            Record::User(text) => ("user", text.len()),
-            Record::Assistant(text) => ("answer", text.len()),
-            Record::Reasoning(text) => ("reasoning", text.len()),
-            Record::Bash { output, .. } => ("shell_result", output.len()),
-            Record::ToolCall { arguments, .. } => ("tool_call", arguments.len()),
-            Record::ToolResult { body, .. } => ("tool_result", body.len()),
-            Record::Compacted { .. } => ("compaction", 0),
-            Record::Meta(text) if text.starts_with("error:") => ("failure", text.len()),
-            _ => ("metadata", 0),
-        };
-        json!({"kind":kind,"bytes":bytes})
-    }).collect::<Vec<_>>();
+    let events = records
+        .iter()
+        .rev()
+        .take(64)
+        .map(|record| {
+            let (kind, bytes) = match record {
+                Record::User(text) => ("user", text.len()),
+                Record::Assistant(text) => ("answer", text.len()),
+                Record::Reasoning(text) => ("reasoning", text.len()),
+                Record::Bash { output, .. } => ("shell_result", output.len()),
+                Record::ToolCall { arguments, .. } => ("tool_call", arguments.len()),
+                Record::ToolResult { body, .. } => ("tool_result", body.len()),
+                Record::Compacted { .. } => ("compaction", 0),
+                Record::Meta(text) if text.starts_with("error:") => ("failure", text.len()),
+                _ => ("metadata", 0),
+            };
+            json!({"kind":kind,"bytes":bytes})
+        })
+        .collect::<Vec<_>>();
     let reports = crate::requests::reports(&session.path).unwrap_or_default();
-    let requests = reports.iter().rev().take(16).map(|report| {
-        let outcome = report["outcome"].as_str().unwrap_or("");
-        // One classifier, shared with /recovery, so the shareable bundle and the
-        // local inspector can never disagree about what a failure was.
-        let failure = crate::recovery::FailureClass::classify(outcome);
-        let mut safe = serde_json::Map::new();
-        for key in ["elapsed_ms", "first_event_ms", "text_bytes", "reasoning_bytes", "tool_calls", "transport_retries", "usage", "cost_usd"] {
-            safe.insert(key.into(), report[key].clone());
-        }
-        safe.insert("failure_class".into(), json!(failure.label()));
-        // Hashes disclose change boundaries without copying instruction paths or content.
-        safe.insert("prefix_fingerprint".into(), report["prefix_fingerprint"].clone());
-        for key in ["model_changed", "system_changed", "tools_changed", "prefix_changed", "unchanged_message_prefix", "estimated_token_delta"] {
-            safe.insert(key.into(), report["context_delta"][key].clone());
-        }
-        Value::Object(safe)
-    }).collect::<Vec<_>>();
-    let dimensions = glass_tui::crossterm::terminal::size().ok().map(|(columns, rows)| json!({"columns":columns,"rows":rows}));
-    Ok(json!({"schema_version":1,"application":"glass-core","version":env!("CARGO_PKG_VERSION"),"terminal":dimensions,"managed_surface":crate::surface::managed(),"event_count":records.len(),"recent_events_newest_first":events,"recent_requests_newest_first":requests,"redaction":"Allowlisted numeric metadata, event kinds and prefix hashes only. Prompts, reasoning text, commands, output, paths, model IDs, endpoint URLs, response IDs and credentials are omitted. Provider request identifiers are kept out of this bundle entirely, including the ones `gc diagnostics --inspector` shows locally.","sharing":"Review locally before sharing. Nothing is uploaded."}))
+    let requests = reports
+        .iter()
+        .rev()
+        .take(16)
+        .map(|report| {
+            let outcome = report["outcome"].as_str().unwrap_or("");
+            // One classifier, shared with /recovery, so the shareable bundle and the
+            // local inspector can never disagree about what a failure was.
+            let failure = crate::recovery::FailureClass::classify(outcome);
+            let mut safe = serde_json::Map::new();
+            for key in [
+                "elapsed_ms",
+                "first_event_ms",
+                "text_bytes",
+                "reasoning_bytes",
+                "tool_calls",
+                "transport_retries",
+                "usage",
+                "cost_usd",
+            ] {
+                safe.insert(key.into(), report[key].clone());
+            }
+            safe.insert("failure_class".into(), json!(failure.label()));
+            // Hashes disclose change boundaries without copying instruction paths or content.
+            safe.insert(
+                "prefix_fingerprint".into(),
+                report["prefix_fingerprint"].clone(),
+            );
+            for key in [
+                "model_changed",
+                "system_changed",
+                "tools_changed",
+                "prefix_changed",
+                "unchanged_message_prefix",
+                "estimated_token_delta",
+            ] {
+                safe.insert(key.into(), report["context_delta"][key].clone());
+            }
+            Value::Object(safe)
+        })
+        .collect::<Vec<_>>();
+    let dimensions = glass_tui::crossterm::terminal::size()
+        .ok()
+        .map(|(columns, rows)| json!({"columns":columns,"rows":rows}));
+    Ok(
+        json!({"schema_version":1,"application":"glass-core","version":env!("CARGO_PKG_VERSION"),"terminal":dimensions,"managed_surface":crate::surface::managed(),"event_count":records.len(),"recent_events_newest_first":events,"recent_requests_newest_first":requests,"redaction":"Allowlisted numeric metadata, event kinds and prefix hashes only. Prompts, reasoning text, commands, output, paths, model IDs, endpoint URLs, response IDs and credentials are omitted. Provider request identifiers are kept out of this bundle entirely, including the ones `gc diagnostics --inspector` shows locally.","sharing":"Review locally before sharing. Nothing is uploaded."}),
+    )
 }
 
 /// What the caller asked `gc diagnostics` to produce.
@@ -54,7 +90,8 @@ enum Request {
     Inspector { json: bool },
 }
 
-const USAGE: &str = "gc diagnostics SESSION [--json] [--save FILE] | gc diagnostics SESSION --inspector [--json]";
+const USAGE: &str =
+    "gc diagnostics SESSION [--json] [--save FILE] | gc diagnostics SESSION --inspector [--json]";
 
 fn parse(args: &[String]) -> Result<Request, String> {
     let mut save = None;
@@ -91,23 +128,38 @@ pub fn command(args: &[String]) -> Result<(), String> {
     match parse(args)? {
         Request::Inspector { json } => {
             let value = crate::recovery::inspector(&session);
-            if json { crate::emit_json(value); }
-            else { crate::cli::report("Failure recovery inspector (local)", &value); }
+            if json {
+                crate::emit_json(value);
+            } else {
+                crate::cli::report("Failure recovery inspector (local)", &value);
+            }
         }
         Request::Bundle { save } => {
             let value = snapshot(&session)?;
             if let Some(path) = save {
                 let path = Path::new(&path);
-                if path.exists() { return Err("Choose a new bundle filename; existing files are preserved".into()); }
+                if path.exists() {
+                    return Err("Choose a new bundle filename; existing files are preserved".into());
+                }
                 let bytes = serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?;
                 // create_new protects against a competing writer and symlink replacement.
                 use std::io::Write;
                 use std::os::unix::fs::OpenOptionsExt;
-                let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path).map_err(|e| e.to_string())?;
-                file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|e| e.to_string())?;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(path)
+                    .map_err(|e| e.to_string())?;
+                file.write_all(&bytes)
+                    .and_then(|_| file.sync_all())
+                    .map_err(|e| e.to_string())?;
             }
-            if args.iter().any(|a| a == "--json") { crate::emit_json(value); }
-            else { crate::cli::report("Diagnostic bundle preview", &value); }
+            if args.iter().any(|a| a == "--json") {
+                crate::emit_json(value);
+            } else {
+                crate::cli::report("Diagnostic bundle preview", &value);
+            }
         }
     }
     Ok(())
@@ -161,7 +213,10 @@ mod tests {
             "BUNDLE_OUTPUT_SENTINEL",
             "BUNDLE_RESPONSE_ID_SENTINEL",
         ] {
-            assert!(!bundle.contains(sentinel), "bundle leaked {sentinel}: {bundle}");
+            assert!(
+                !bundle.contains(sentinel),
+                "bundle leaked {sentinel}: {bundle}"
+            );
         }
         // The local inspector is the only place the id belongs, and it says so.
         let local = serde_json::to_string(&crate::recovery::inspector(&session)).unwrap();
@@ -178,7 +233,10 @@ mod tests {
             ("http 503: overloaded", "provider_or_transport"),
             ("context length exceeded", "context_limit"),
             ("output limit reached", "output_limit"),
-            ("reasoning arrived without an answer", "reasoning_without_answer"),
+            (
+                "reasoning arrived without an answer",
+                "reasoning_without_answer",
+            ),
             ("transport: connection reset", "provider_or_transport"),
             ("something else", "none_or_unspecified"),
         ] {
@@ -206,7 +264,9 @@ mod tests {
         );
         assert_eq!(
             parse(&["session".into(), "--save".into(), "/tmp/b.json".into()]).unwrap(),
-            Request::Bundle { save: Some("/tmp/b.json".into()) }
+            Request::Bundle {
+                save: Some("/tmp/b.json".into())
+            }
         );
         assert!(parse(&["session".into(), "--nope".into()]).is_err());
         assert!(parse(&["session".into(), "--save".into()]).is_err());

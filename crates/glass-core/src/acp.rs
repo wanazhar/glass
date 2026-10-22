@@ -252,7 +252,11 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                     }
                 };
                 if let Err(error) = conversation.session.append_checked(&[Record::User(text)]) {
-                    reply_error(&id, -32000, &format!("cannot durably record prompt; it was not run: {error}"));
+                    reply_error(
+                        &id,
+                        -32000,
+                        &format!("cannot durably record prompt; it was not run: {error}"),
+                    );
                     continue;
                 }
 
@@ -333,7 +337,9 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                                 "status": "in_progress"
                             }));
                         }
-                        Progress::ToolEnd { summary, output, .. } => {
+                        Progress::ToolEnd {
+                            summary, output, ..
+                        } => {
                             let call_id = {
                                 let mut open = open_tools.borrow_mut();
                                 if open.is_empty() {

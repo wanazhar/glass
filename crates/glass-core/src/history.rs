@@ -9,8 +9,13 @@
 //! One JSON string per line: prompts can be multi-line, so a
 //! plain-text format cannot store them.
 
-use std::{collections::VecDeque, fs::{File, OpenOptions}, io::{self, Read, Seek, SeekFrom, Write}, path::Path};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::{
+    collections::VecDeque,
+    fs::{File, OpenOptions},
+    io::{self, Read, Seek, SeekFrom, Write},
+    path::Path,
+};
 
 /// Visible recall entries; the physical journal compacts in small batches.
 pub const MAX: usize = 200;
@@ -18,15 +23,25 @@ const COMPACT_AT: usize = MAX + 32;
 const MAX_BYTES: usize = 1024 * 1024;
 const MAX_ENTRY_BYTES: usize = 64 * 1024;
 
-fn path(dir: &Path) -> std::path::PathBuf { dir.join("history.jsonl") }
+fn path(dir: &Path) -> std::path::PathBuf {
+    dir.join("history.jsonl")
+}
 
 fn open_regular(path: &Path, append: bool) -> io::Result<File> {
     let mut options = OpenOptions::new();
-    options.read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    if append { options.append(true).create(true).mode(0o600); }
+    options
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    if append {
+        options.append(true).create(true).mode(0o600);
+    }
     let file = options.open(path)?;
     let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.nlink() != 1 { return Err(io::Error::other("History must be a regular file without hard links")); }
+    if !metadata.is_file() || metadata.nlink() != 1 {
+        return Err(io::Error::other(
+            "History must be a regular file without hard links",
+        ));
+    }
     Ok(file)
 }
 
@@ -43,7 +58,10 @@ fn window(dir: &Path) -> io::Result<(Vec<u8>, u64)> {
     let mut bytes = Vec::with_capacity(size.min(MAX_BYTES as u64) as usize);
     file.take(MAX_BYTES as u64).read_to_end(&mut bytes)?;
     if start > 0 {
-        let end = bytes.iter().position(|byte| *byte == b'\n').map_or(bytes.len(), |at| at + 1);
+        let end = bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(bytes.len(), |at| at + 1);
         bytes.drain(..end);
     }
     Ok((bytes, size))
@@ -51,10 +69,14 @@ fn window(dir: &Path) -> io::Result<(Vec<u8>, u64)> {
 fn entries(bytes: &[u8]) -> VecDeque<(String, &[u8])> {
     let mut out = VecDeque::new();
     for line in bytes.split(|byte| *byte == b'\n') {
-        if line.len() > MAX_ENTRY_BYTES { continue; }
+        if line.len() > MAX_ENTRY_BYTES {
+            continue;
+        }
         if let Ok(text) = serde_json::from_slice::<String>(line) {
             out.push_back((text, line));
-            if out.len() > MAX { out.pop_front(); }
+            if out.len() > MAX {
+                out.pop_front();
+            }
         }
     }
     out
@@ -62,32 +84,62 @@ fn entries(bytes: &[u8]) -> VecDeque<(String, &[u8])> {
 
 /// Recent bounded recall. Oversized pasted prompts remain in conversation logs.
 pub fn load(dir: &Path) -> Vec<String> {
-    window(dir).map(|(bytes, _)| entries(&bytes).into_iter().map(|(text, _)|text).collect()).unwrap_or_default()
+    window(dir)
+        .map(|(bytes, _)| entries(&bytes).into_iter().map(|(text, _)| text).collect())
+        .unwrap_or_default()
 }
 
 /// Best-effort recall only: a busy writer never delays the current conversation.
 pub fn record(dir: &Path, text: &str) {
-    if text.trim().is_empty() || text.len() > MAX_ENTRY_BYTES { return; }
-    let Ok(line) = serde_json::to_vec(text) else { return; };
-    if line.len() > MAX_ENTRY_BYTES { return; }
-    let lock = OpenOptions::new().write(true).create(true).truncate(false).mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(dir.join("history.lock"));
-    let Ok(lock) = lock else { return; };
-    if !lock.metadata().is_ok_and(|meta|meta.is_file() && meta.nlink() == 1)
-        || fs2::FileExt::try_lock_exclusive(&lock).is_err() { return; }
-    let Ok((bytes, size)) = window(dir) else { return; };
+    if text.trim().is_empty() || text.len() > MAX_ENTRY_BYTES {
+        return;
+    }
+    let Ok(line) = serde_json::to_vec(text) else {
+        return;
+    };
+    if line.len() > MAX_ENTRY_BYTES {
+        return;
+    }
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(dir.join("history.lock"));
+    let Ok(lock) = lock else {
+        return;
+    };
+    if !lock
+        .metadata()
+        .is_ok_and(|meta| meta.is_file() && meta.nlink() == 1)
+        || fs2::FileExt::try_lock_exclusive(&lock).is_err()
+    {
+        return;
+    }
+    let Ok((bytes, size)) = window(dir) else {
+        return;
+    };
     let separator = usize::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
     let line_count = bytes.iter().filter(|byte| **byte == b'\n').count() + separator;
-    let duplicate = bytes.rsplit(|byte| *byte == b'\n')
+    let duplicate = bytes
+        .rsplit(|byte| *byte == b'\n')
         .find(|line| !line.is_empty())
         .filter(|line| line.len() <= MAX_ENTRY_BYTES)
         .and_then(|line| serde_json::from_slice::<String>(line).ok())
         .is_some_and(|previous| previous == text);
-    if duplicate && size <= MAX_BYTES as u64 && line_count <= COMPACT_AT { return; }
-    if size <= MAX_BYTES as u64 && size + line.len() as u64 + (separator as u64) < MAX_BYTES as u64
-        && line_count < COMPACT_AT && !duplicate {
+    if duplicate && size <= MAX_BYTES as u64 && line_count <= COMPACT_AT {
+        return;
+    }
+    if size <= MAX_BYTES as u64
+        && size + line.len() as u64 + (separator as u64) < MAX_BYTES as u64
+        && line_count < COMPACT_AT
+        && !duplicate
+    {
         if let Ok(mut file) = open_regular(&path(dir), true) {
-            if separator > 0 && file.write_all(b"\n").is_err() { return; }
+            if separator > 0 && file.write_all(b"\n").is_err() {
+                return;
+            }
             let mut record = line;
             record.push(b'\n');
             let _ = file.write_all(&record);
@@ -95,13 +147,20 @@ pub fn record(dir: &Path, text: &str) {
         return;
     }
     let mut saved = entries(&bytes);
-    if !duplicate { saved.push_back((text.to_owned(), &line)); }
-    let mut total: usize = saved.iter().map(|(_, line)|line.len() + 1).sum();
+    if !duplicate {
+        saved.push_back((text.to_owned(), &line));
+    }
+    let mut total: usize = saved.iter().map(|(_, line)| line.len() + 1).sum();
     while saved.len() > MAX || total > MAX_BYTES {
-        if let Some((_, line)) = saved.pop_front() { total -= line.len() + 1; }
+        if let Some((_, line)) = saved.pop_front() {
+            total -= line.len() + 1;
+        }
     }
     let mut compacted = Vec::with_capacity(total);
-    for (_, line) in saved { compacted.extend_from_slice(line); compacted.push(b'\n'); }
+    for (_, line) in saved {
+        compacted.extend_from_slice(line);
+        compacted.push(b'\n');
+    }
     let _ = crate::auth::secure_write(&path(dir), &compacted);
 }
 
@@ -124,12 +183,18 @@ mod tests {
         let d = scratch("bytes");
         record(&d, &"x".repeat(MAX_ENTRY_BYTES + 1));
         assert!(!path(&d).exists());
-        for index in 0..40 { record(&d, &format!("{index}:{}", "z".repeat(40_000))); }
+        for index in 0..40 {
+            record(&d, &format!("{index}:{}", "z".repeat(40_000)));
+        }
         assert!(std::fs::metadata(path(&d)).unwrap().len() <= MAX_BYTES as u64);
         assert!(load(&d).last().unwrap().starts_with("39:"));
         // A legacy oversized file is bounded on reads and compacted even when
         // the next eligible prompt is identical to its newest valid entry.
-        std::fs::write(path(&d), format!("{}\n\"last\"\n", "x".repeat(MAX_BYTES * 2))).unwrap();
+        std::fs::write(
+            path(&d),
+            format!("{}\n\"last\"\n", "x".repeat(MAX_BYTES * 2)),
+        )
+        .unwrap();
         assert_eq!(load(&d), vec!["last"]);
         record(&d, "last");
         assert!(std::fs::metadata(path(&d)).unwrap().len() <= MAX_BYTES as u64);
@@ -144,11 +209,16 @@ mod tests {
         let original = std::fs::read(path(&d)).unwrap();
         record(&d, "first");
         assert_eq!(std::fs::read(path(&d)).unwrap(), original);
-        for index in 1..COMPACT_AT { record(&d, &format!("prompt {index}")); }
+        for index in 1..COMPACT_AT {
+            record(&d, &format!("prompt {index}"));
+        }
         assert_eq!(std::fs::metadata(path(&d)).unwrap().ino(), inode);
         assert_eq!(load(&d).len(), MAX);
         record(&d, "compact now");
-        assert_eq!(std::fs::read_to_string(path(&d)).unwrap().lines().count(), MAX);
+        assert_eq!(
+            std::fs::read_to_string(path(&d)).unwrap().lines().count(),
+            MAX
+        );
         assert_eq!(load(&d).last().unwrap(), "compact now");
         std::fs::remove_dir_all(d).unwrap();
     }
@@ -163,7 +233,10 @@ mod tests {
         assert!(load(&d).is_empty());
         assert_eq!(std::fs::read_to_string(outside).unwrap(), "\"private\"\n");
         std::fs::remove_file(path(&d)).unwrap();
-        let lock = OpenOptions::new().write(true).open(d.join("history.lock")).unwrap();
+        let lock = OpenOptions::new()
+            .write(true)
+            .open(d.join("history.lock"))
+            .unwrap();
         fs2::FileExt::try_lock_exclusive(&lock).unwrap();
         record(&d, "busy");
         assert!(!path(&d).exists());
@@ -226,10 +299,19 @@ mod tests {
     fn a_torn_tail_does_not_suppress_a_repeated_prompt() {
         let d = scratch("repeated-torn");
         record(&d, "again");
-        OpenOptions::new().append(true).open(path(&d)).unwrap().write_all(b"{torn").unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(path(&d))
+            .unwrap()
+            .write_all(b"{torn")
+            .unwrap();
         record(&d, "again");
         assert_eq!(load(&d), vec!["again", "again"]);
-        assert!(std::fs::read_to_string(path(&d)).unwrap().ends_with("{torn\n\"again\"\n"));
+        assert!(
+            std::fs::read_to_string(path(&d))
+                .unwrap()
+                .ends_with("{torn\n\"again\"\n")
+        );
         std::fs::remove_dir_all(d).unwrap();
     }
 

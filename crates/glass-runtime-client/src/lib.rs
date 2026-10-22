@@ -185,13 +185,42 @@ impl RuntimeClient {
         )
     }
     /// Create an independently checkpointed conversation. Storage opens lazily.
-    pub fn durable_create(&mut self, options:&SessionOptions)->io::Result<String>{self.request("durable/create",serde_json::to_value(options)?)}
+    pub fn durable_create(&mut self, options: &SessionOptions) -> io::Result<String> {
+        self.request("durable/create", serde_json::to_value(options)?)
+    }
     /// Admit input once; request IDs persist across process restarts.
-    pub fn durable_submit(&mut self, conversation:&str, request:&str,input:&TurnInput)->io::Result<String>{self.request("durable/submit",json!({"conversationId":conversation,"requestId":request,"input":input}))}
-    pub fn durable_run(&mut self, task:Option<&str>)->io::Result<String>{self.request("durable/run",task.map_or(json!({}),|id|json!({"taskId":id})))}
-    pub fn durable_commit(&mut self, sequence:u64,operations:Vec<Value>)->io::Result<String>{self.request("durable/commit",json!({"expectedSequence":sequence,"operations":operations}))}
-    pub fn durable_changes(&mut self,cursor:u64,limit:u32)->io::Result<String>{self.request("durable/changes",json!({"cursor":cursor,"limit":limit}))}
-    pub fn durable_abort(&mut self,task:&str,include_background:bool)->io::Result<String>{self.request("durable/abort",json!({"taskId":task,"includeBackground":include_background}))}
+    pub fn durable_submit(
+        &mut self,
+        conversation: &str,
+        request: &str,
+        input: &TurnInput,
+    ) -> io::Result<String> {
+        self.request(
+            "durable/submit",
+            json!({"conversationId":conversation,"requestId":request,"input":input}),
+        )
+    }
+    pub fn durable_run(&mut self, task: Option<&str>) -> io::Result<String> {
+        self.request(
+            "durable/run",
+            task.map_or(json!({}), |id| json!({"taskId":id})),
+        )
+    }
+    pub fn durable_commit(&mut self, sequence: u64, operations: Vec<Value>) -> io::Result<String> {
+        self.request(
+            "durable/commit",
+            json!({"expectedSequence":sequence,"operations":operations}),
+        )
+    }
+    pub fn durable_changes(&mut self, cursor: u64, limit: u32) -> io::Result<String> {
+        self.request("durable/changes", json!({"cursor":cursor,"limit":limit}))
+    }
+    pub fn durable_abort(&mut self, task: &str, include_background: bool) -> io::Result<String> {
+        self.request(
+            "durable/abort",
+            json!({"taskId":task,"includeBackground":include_background}),
+        )
+    }
     pub fn structured_result(&mut self, id: Value, result: &ToolResult) -> io::Result<()> {
         self.send(json!({"jsonrpc":"2.0","id":id,"result":result}))
     }

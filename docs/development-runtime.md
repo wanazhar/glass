@@ -95,7 +95,9 @@ switching agents restores that thread's text and cursor. A send result stays
 with the AgentId captured at submission, including a first-send agent created
 by the result. AgentId and transcripts are process-local. On Unix, composer
 text and its UTF-8 byte cursor are saved by durable ThreadId in the private
-thread ledger and restored after restart; Windows keeps drafts process-local
+thread ledger by a coalescing background worker and restored after restart.
+Agent switches do not wait on registry writes; quit waits for a bounded flush
+and requires explicit discard confirmation after a save failure. Windows keeps drafts process-local
 because the ledger inherits workspace ACLs and does not provide private draft
 durability.
 

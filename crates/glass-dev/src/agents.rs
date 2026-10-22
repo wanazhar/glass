@@ -2830,6 +2830,58 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn full_worker_queue_fails_only_the_new_send_attempt() {
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let id = AgentId::parse("agent-full-send-queue").unwrap();
+        let (command, commands) = mpsc::sync_channel(COMMAND_CAPACITY);
+        for index in 0..COMMAND_CAPACITY {
+            command
+                .try_send(WorkerCommand::ApproveTool {
+                    frame_id: format!("queued-frame-{index}"),
+                    approved: false,
+                })
+                .unwrap();
+        }
+        let (release_worker, wait_for_release) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let _ = wait_for_release.recv();
+        });
+        insert_test_worker(&mut registry, id.clone(), command, worker);
+
+        let error = registry
+            .send_with_context_and_client_message_id(
+                &id,
+                "prompt",
+                "This message cannot enter the full worker queue",
+                None,
+                Some("message-rejected-1"),
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("command queue is full"),
+            "unexpected queue rejection: {error}"
+        );
+        let thread_id = registry.records[&id].thread_id.clone();
+        let attempts = registry.thread_store.send_attempts(&thread_id).unwrap();
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].client_message_id, "message-rejected-1");
+        assert_eq!(attempts[0].status, SendAttemptStatus::Failed);
+        assert!(matches!(
+            commands.try_recv().unwrap(),
+            WorkerCommand::ApproveTool { frame_id, approved: false }
+                if frame_id == "queued-frame-0"
+        ));
+
+        release_worker.send(()).unwrap();
+        registry.cancel(&id).unwrap();
+        drop(commands);
+        drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn worker_persists_core_session_before_ready_notification() {
         let root = test_root();

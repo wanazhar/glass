@@ -95,14 +95,17 @@ def run_turn(identifier, params: dict) -> None:
         os.path.join(gate_root, "e2e-core-recovery-gate")
     ):
         with open(
-            os.path.join(gate_root, "e2e-core-recovery-started"), "w", encoding="utf-8"
-        ) as marker:
-            marker.write("started")
-        with open(
             os.path.join(gate_root, "e2e-core-recovery-pid"), "w", encoding="utf-8"
         ) as marker:
             marker.write(str(os.getpid()))
+        with open(
+            os.path.join(gate_root, "e2e-core-recovery-started"), "w", encoding="utf-8"
+        ) as marker:
+            marker.write("started")
+        deadline = time.monotonic() + 30
         while not os.path.exists(os.path.join(gate_root, "e2e-core-recovery-release")):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("timed out waiting for recovery test release")
             time.sleep(0.02)
     if gate_tag and os.path.exists(os.path.join(gate_root, "e2e-core-concurrency")):
         with open(os.path.join(gate_root, f"e2e-core-started-{gate_tag}"), "w", encoding="utf-8") as marker:

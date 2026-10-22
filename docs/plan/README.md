@@ -45,10 +45,12 @@ per-thread editable follow-up queues are tracked in the
 The discoverable project-local thread picker is tracked in the
 [thread picker task](tasks/issue64-project-thread-picker-001.md).
 The [attention inbox](tasks/issue63-attention-inbox-001.md) and its allocated
-PTY journey are complete. Per-send crash reconciliation and project-centered
-thread navigation remain open issue #64 work. The bounded per-send attempt
-record and conservative restart handling are in progress in the
+PTY journey are complete. Project-local thread navigation and the bounded
+per-send attempt record with conservative restart handling are also complete;
+see the [thread picker task](tasks/issue64-project-thread-picker-001.md) and
 [send-attempt recovery task](tasks/issue64-send-attempt-recovery-001.md).
+Issue #64 remains active for follow-up queue delivery and the broader combined
+homespace journeys, including attention, review, and recovery workflows.
 
 ## Current source line: Glass 0.3.14
 

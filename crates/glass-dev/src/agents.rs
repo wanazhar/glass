@@ -2644,6 +2644,14 @@ mod tests {
             .find(|attempt| attempt.client_message_id == "message-stable-2")
             .unwrap()
             .attempt_id;
+        let attempt_ids = registry
+            .thread_store
+            .send_attempts(&thread_id)
+            .unwrap()
+            .into_iter()
+            .map(|attempt| attempt.attempt_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(attempt_ids.len(), 2);
         registry
             .apply_worker_event(WorkerEvent::RequestStarted(
                 id.clone(),
@@ -2756,6 +2764,66 @@ mod tests {
                 .unwrap()
                 .status,
             SendAttemptStatus::Settled
+        );
+        registry
+            .send_with_context_and_client_message_id(
+                &id,
+                "steer",
+                "Keep the active response focused",
+                None,
+                Some("message-stable-3"),
+            )
+            .unwrap();
+        let third_attempt_id = registry
+            .thread_store
+            .send_attempts(&thread_id)
+            .unwrap()
+            .into_iter()
+            .find(|attempt| attempt.client_message_id == "message-stable-3")
+            .unwrap()
+            .attempt_id;
+        let third_attempt = registry
+            .thread_store
+            .send_attempts(&thread_id)
+            .unwrap()
+            .into_iter()
+            .find(|attempt| attempt.attempt_id == third_attempt_id)
+            .unwrap();
+        assert_eq!(third_attempt.client_message_id, "message-stable-3");
+        assert_eq!(third_attempt.mode, SendAttemptMode::Steer);
+        assert_eq!(third_attempt.status, SendAttemptStatus::Dispatching);
+        assert!(!attempt_ids.contains(&third_attempt_id));
+        registry
+            .apply_worker_event(WorkerEvent::RequestFailed(
+                id.clone(),
+                third_attempt_id.clone(),
+                "fixture runtime rejected this request".into(),
+            ))
+            .unwrap();
+        let attempts = registry.thread_store.send_attempts(&thread_id).unwrap();
+        assert_eq!(
+            attempts
+                .iter()
+                .find(|attempt| attempt.attempt_id == attempt_id)
+                .unwrap()
+                .status,
+            SendAttemptStatus::Settled
+        );
+        assert_eq!(
+            attempts
+                .iter()
+                .find(|attempt| attempt.attempt_id == second_attempt_id)
+                .unwrap()
+                .status,
+            SendAttemptStatus::Settled
+        );
+        assert_eq!(
+            attempts
+                .iter()
+                .find(|attempt| attempt.attempt_id == third_attempt_id)
+                .unwrap()
+                .status,
+            SendAttemptStatus::Failed
         );
         registry.cancel(&id).unwrap();
         drop(registry);

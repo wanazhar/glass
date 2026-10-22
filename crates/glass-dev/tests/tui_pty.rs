@@ -1000,6 +1000,93 @@ fn three_fake_core_tasks_complete_without_stealing_selected_thread() {
 }
 
 #[test]
+fn follow_up_queue_edits_persist_without_automatic_dispatch() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.trust_project();
+    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    session.send(b":agent spawn queue-owner queue persistence\r");
+    assert!(session.wait_for("Spawned agent-0001", Duration::from_secs(5)));
+    send_ctrl_shift_t(&mut session);
+    assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
+    assert!(session.wait_for("queue-owner", Duration::from_secs(5)));
+    session.send(b"\r\r");
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+
+    session.send(b"\x11"); // Ctrl-Q opens this thread's follow-up queue.
+    assert!(session.wait_for("THREAD FOLLOW-UP QUEUE", Duration::from_secs(5)));
+    session.send(b"a");
+    session.send(b"first queued follow-up");
+    session.send(b"\r");
+    assert!(session.wait_for("first queued follow-up", Duration::from_secs(5)));
+    session.send(b"a");
+    session.send(b"second queued follow-up");
+    session.send(b"\r");
+    assert!(session.wait_for("second queued follow-up", Duration::from_secs(5)));
+    session.send(b"e");
+    session.send(&[0x7f; 23]); // Remove the existing row text with Backspace.
+    session.send(b"edited queued follow-up");
+    session.send(b"\r");
+    assert!(
+        session.wait_for("edited queued follow-up", Duration::from_secs(5)),
+        "queue row did not render after edit\n{}",
+        session.output_tail()
+    );
+
+    // Reorder the second row ahead of the first, then remove the old first row.
+    session.send(b"<");
+    session.send(b"j");
+    session.send(b"d");
+    let registry_path = fixture_state.join("threads/registry.json");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let queue = registry["threads"][0]["followUpQueue"].as_array();
+        if queue.is_some_and(|entries| entries.len() == 1) || Instant::now() >= deadline {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    let queue = registry["threads"][0]["followUpQueue"]
+        .as_array()
+        .expect("queue persists in the owning thread record");
+    assert_eq!(
+        queue.len(),
+        1,
+        "only the retained row should remain: {registry}"
+    );
+    assert_eq!(queue[0]["text"], "edited queued follow-up");
+    assert_eq!(queue[0]["state"], "ready");
+
+    // Queue edits are local preparation. Only Enter on a selected ready row dispatches.
+    let requests = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+        .expect("fake Core request log is present");
+    assert!(
+        !requests.lines().any(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .is_some_and(|request| {
+                    request["method"] == "turn/prompt"
+                        && request["params"]["text"] == "edited queued follow-up"
+                })
+        }),
+        "editing a queue must not dispatch a prompt"
+    );
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn agent_update_route_requires_confirmation_in_tui() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;

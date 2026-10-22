@@ -1114,8 +1114,14 @@ fn render_session_picker(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect)
             .add_modifier(Modifier::BOLD),
     )];
     if state.session_picker_items.is_empty() {
+        let empty_label =
+            if crate::ResidentHarnessKind::from_env() == crate::ResidentHarnessKind::GlassCore {
+                "No persisted conversations"
+            } else {
+                "No persisted Pi sessions"
+            };
         lines.push(palette_fixed_line(
-            "No persisted Pi sessions",
+            empty_label,
             inner.width,
             Style::default().fg(MUTED),
         ));
@@ -5874,8 +5880,12 @@ mod tests {
         assert!(!state.command_mode);
         match crate::ResidentHarnessKind::from_env() {
             crate::ResidentHarnessKind::GlassCore => {
-                assert!(state.status.contains("Glass Core manages provider login"));
-                assert!(!state.agent_login_requested);
+                assert!(
+                    state
+                        .status
+                        .contains("Glass Core login will open in this terminal")
+                );
+                assert!(state.agent_login_requested);
             }
             crate::ResidentHarnessKind::Pi => assert!(state.agent_login_requested),
         }

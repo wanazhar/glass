@@ -1545,11 +1545,7 @@ fn run_agent_login(state: &mut DevTuiState, guard: &mut TerminalGuard) {
     if crate::resident_harness::ResidentHarnessKind::from_env()
         == crate::resident_harness::ResidentHarnessKind::GlassCore
     {
-        // Glass Core owns its own provider login; Glass does not hand the
-        // terminal to the legacy Pi CLI for it.
-        state.agent_login_provider = None;
-        state.status = "Glass Core owns provider login · run `glass-core` and use /login, or set a provider API key"
-            .into();
+        run_core_login(state, guard);
         return;
     }
     if let Err(error) = guard.suspend() {
@@ -1586,6 +1582,69 @@ fn run_agent_login(state: &mut DevTuiState, guard: &mut TerminalGuard) {
         }
         (Err(error), Err(resume_error)) => {
             state.status = format!("Pi login failed: {error}; TUI resume failed: {resume_error}");
+            state.quit = true;
+        }
+    }
+}
+
+fn run_core_login(state: &mut DevTuiState, guard: &mut TerminalGuard) {
+    let root = state.ws().map(|workspace| workspace.root().to_path_buf());
+    let root = match root {
+        Ok(root) => root,
+        Err(error) => {
+            state.status = format!("Glass Core login unavailable · {error}");
+            return;
+        }
+    };
+    let binary = match crate::core_runtime::resolve_core_binary(None).and_then(|binary| {
+        std::fs::canonicalize(&binary).map_err(|error| {
+            crate::development::DevelopmentError::NotFound(format!(
+                "could not resolve Glass Core executable {}: {error}",
+                binary.display()
+            ))
+        })
+    }) {
+        Ok(binary) => binary,
+        Err(error) => {
+            state.status = format!("Glass Core login unavailable · {error}");
+            return;
+        }
+    };
+    if let Err(error) = guard.suspend() {
+        state.status = format!("Could not hand the terminal to Glass Core: {error}");
+        return;
+    }
+    // The helper uses `status`, which inherits stdin/stdout/stderr so Core
+    // owns the interactive terminal. Glass passes no provider values.
+    let result = crate::core_runtime::launch_interactive(&binary, &root);
+    let resume = guard.resume();
+    match (result, resume) {
+        (Ok(status), Ok(())) => {
+            let readiness = state.refresh_agent_readiness();
+            let exit = status
+                .code()
+                .map_or_else(|| "a signal".into(), |code| format!("status {code}"));
+            state.status = match readiness {
+                Ok(true) => format!(
+                    "Glass Core exited ({exit}) · readiness refreshed. New settings apply to a newly spawned resident agent (`:agent spawn`); existing conversations remain available."
+                ),
+                Ok(false) => format!(
+                    "Glass Core exited ({exit}) · provider setup is still incomplete. Use `:agent setup login` to continue. Existing conversations remain available."
+                ),
+                Err(error) => format!(
+                    "Glass Core exited ({exit}), but readiness refresh failed: {error}. Existing conversations remain available."
+                ),
+            };
+        }
+        (Err(error), Ok(())) => state.status = format!("Glass Core login failed: {error}"),
+        (Ok(_), Err(error)) => {
+            state.status =
+                format!("Glass Core login finished, but Glass could not resume: {error}");
+            state.quit = true;
+        }
+        (Err(error), Err(resume_error)) => {
+            state.status =
+                format!("Glass Core login failed: {error}; Glass resume failed: {resume_error}");
             state.quit = true;
         }
     }

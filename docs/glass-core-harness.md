@@ -70,6 +70,27 @@ looks for `glass-core` on `PATH`, then `gc`, and reads its version. Run
 protocol version, provider readiness, session directory, and repair steps.
 These commands do not print credentials.
 
+From the Glass TUI, `:agent setup login` resolves the same Core executable,
+suspends the Glass screen, and starts `glass-core` in its interactive mode in
+the current workspace with the terminal streams attached. Use Core's `/login`
+there, then exit Core to return to Glass. Glass does not receive or store
+provider credentials. After return, Glass refreshes Core readiness. The
+resident Core process and its existing conversation are left running with
+their current in-memory settings; a newly spawned resident agent starts a new
+Core runtime and reads the updated configuration. `:agent new` reuses the
+existing runtime and therefore does not reload provider settings.
+
+The Agent palette labels the Core login and model controls explicitly. `:agent
+models [AGENT_ID]` and `:agent model [AGENT_ID] PROVIDER MODEL` operate on the
+selected resident session (or the workspace's first active session when none
+is selected) using the negotiated `models/list` and `session/configure`
+methods. Model catalog responses appear in the Agent conversation with the
+provider, model IDs, and labels when Core supplies them. Without a selected or
+active resident session, these controls report that a session must be started
+first. With `GLASS_AGENT_HARNESS=pi`, the palette and
+readiness panel instead describe the legacy Pi runtime and preserve its managed
+setup and interactive login behavior.
+
 The standalone source product is maintained in this repository at
 [`products/glass-core`](../products/glass-core/README.md). To install its
 current checkout for Glass, run

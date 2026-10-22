@@ -199,6 +199,20 @@ def main() -> None:
                     "toolMode": "mixed",
                 },
             )
+        elif method == "models/list":
+            assert params.get("sessionId") == SESSION_ID
+            assert params.get("cursor") == 0
+            reply(
+                identifier,
+                {
+                    "provider": "anthropic",
+                    "models": [
+                        {"id": "claude-opus-4", "label": "Claude Opus 4"},
+                        {"id": "claude-sonnet-4", "label": "claude-sonnet-4"},
+                    ],
+                    "nextCursor": None,
+                },
+            )
         elif method in ("turn/prompt", "turn/followUp"):
             run_turn(identifier, params)
         elif method == "turn/steer":

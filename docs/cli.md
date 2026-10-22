@@ -686,6 +686,18 @@ accepts loaded extension, prompt-template, and skill commands by name. Slash
 results are emitted into the Agent transcript and More; `/login` hands the
 terminal to Pi for interactive authentication. See [Glass Core resident harness](glass-core-harness.md) and [Native Pi SDK runtime](pi-sdk-runtime.md).
 
+With the default Core backend, `:agent setup login` suspends Glass and opens
+the resolved `glass-core` interactive UI in the current workspace. Use Core's
+`/login`, then exit to return; Glass never prompts for or stores provider
+secrets. Glass refreshes readiness but leaves existing resident processes and
+conversations intact. `:agent spawn ROLE TASK` starts a separate resident
+runtime that reads the updated Core settings; `:agent new` reuses the current
+runtime. `:agent models [AGENT_ID]` lists models for the selected session, or
+the workspace's first active session when none is selected. `:agent model
+[AGENT_ID] PROVIDER MODEL` configures that session through Core's negotiated
+runtime methods. Model catalog responses appear in the Agent conversation.
+These controls require an active resident session.
+
 The standard Glass tool behavior is explicit and bounded. `read` accepts
 one-based `offset` and `limit`; `ls` accepts a path prefix and limit; `grep`
 is a literal UTF-8 search with optional path prefix, `*`/`?` glob, case

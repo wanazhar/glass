@@ -11,7 +11,7 @@ use crate::agents::ResidentAgentBroker;
 use crate::development::{DevelopmentError, DevelopmentResult, ToolCall};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -162,6 +162,7 @@ pub(crate) struct GlassCoreRuntime {
     unrestricted: bool,
     next_id: u64,
     host_events: VecDeque<Value>,
+    pending_operations: HashMap<String, String>,
     pending_tool_approval: Option<PendingCoreToolApproval>,
     active_turn: Option<Value>,
 }
@@ -221,6 +222,7 @@ impl GlassCoreRuntime {
             unrestricted: options.unrestricted,
             next_id: 1,
             host_events: VecDeque::new(),
+            pending_operations: HashMap::new(),
             pending_tool_approval: None,
             active_turn: None,
         };
@@ -417,10 +419,12 @@ impl GlassCoreRuntime {
             Ok((method, params)) => {
                 self.send_frame(&json!({
                     "jsonrpc": "2.0",
-                    "id": id,
+                    "id": id.clone(),
                     "method": method,
                     "params": params,
                 }))?;
+                self.pending_operations
+                    .insert(id.clone(), request_operation(&request).into());
             }
             Err(reason) => {
                 self.host_events.push_back(json!({
@@ -517,11 +521,17 @@ impl GlassCoreRuntime {
                 let Some(id) = value.get("id").cloned() else {
                     return Ok(());
                 };
+                let operation = id
+                    .as_str()
+                    .and_then(|id| self.pending_operations.remove(id));
                 let mut event = json!({
                     "type": "response",
                     "id": id,
                     "ok": value.get("error").is_none(),
                 });
+                if let Some(operation) = operation {
+                    event["operation"] = Value::String(operation);
+                }
                 if let Some(result) = value.get("result") {
                     event["result"] = result.clone();
                 }
@@ -1199,6 +1209,18 @@ pub fn resolve_core_binary(explicit: Option<&Path>) -> DevelopmentResult<PathBuf
     )))
 }
 
+/// Start Core's standalone interactive UI in a workspace, with inherited
+/// standard streams so the Core process owns the terminal while it runs.
+pub(crate) fn launch_interactive(
+    binary: &Path,
+    root: &Path,
+) -> Result<std::process::ExitStatus, String> {
+    std::process::Command::new(binary)
+        .current_dir(root)
+        .status()
+        .map_err(|error| format!("{} failed to start: {error}", binary.display()))
+}
+
 fn search_path(binary: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
@@ -1481,6 +1503,41 @@ mod tests {
     use crate::pi_runtime::PiSessionRequest;
     use std::sync::Arc;
 
+    #[cfg(unix)]
+    #[test]
+    fn interactive_handoff_runs_without_arguments_in_workspace() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "glass-core-handoff-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create fixture workspace");
+        let binary = root.join("fake-glass-core");
+        fs::write(
+            &binary,
+            "#!/bin/sh\ntest \"$#\" -eq 0 || exit 21\npwd > handoff-cwd\n",
+        )
+        .expect("write fake executable");
+        let mut permissions = fs::metadata(&binary).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).expect("make executable");
+
+        let status = launch_interactive(&binary, &root).expect("launch fake Core");
+        assert!(status.success(), "fake Core exited with {status}");
+        assert_eq!(
+            fs::read_to_string(root.join("handoff-cwd"))
+                .expect("read cwd marker")
+                .trim(),
+            root.to_string_lossy()
+        );
+        fs::remove_dir_all(root).expect("remove fixture workspace");
+    }
+
     fn python3() -> Option<PathBuf> {
         search_path("python3")
     }
@@ -1507,6 +1564,31 @@ mod tests {
         mode: &str,
     ) -> GlassCoreRuntime {
         spawn_mode(root, unrestricted, executor, mode).unwrap()
+    }
+
+    #[test]
+    fn model_catalog_response_keeps_its_operation_and_models() {
+        if python3().is_none() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "glass-core-models-response-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut runtime = harness(&root, true, None);
+        runtime.start_request(PiSessionRequest::Models).unwrap();
+        let response = runtime
+            .recv_event_timeout(Duration::from_secs(2))
+            .unwrap()
+            .expect("model catalog response");
+        assert_eq!(response["operation"], "models");
+        assert_eq!(response["result"]["provider"], "anthropic");
+        assert_eq!(response["result"]["models"][0]["id"], "claude-opus-4");
+        drop(runtime);
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn spawn_mode(
@@ -1547,6 +1629,11 @@ mod tests {
 
     #[test]
     fn turn_requests_map_onto_the_runtime_surface() {
+        let (method, params) = request_parts("s-1", &PiSessionRequest::Models).unwrap();
+        assert_eq!(method, "models/list");
+        assert_eq!(params["sessionId"], "s-1");
+        assert_eq!(params["cursor"], 0);
+
         let (method, params) = request_parts(
             "s-1",
             &PiSessionRequest::Prompt {

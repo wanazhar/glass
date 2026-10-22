@@ -52,7 +52,7 @@ class Adapter:
         try:
             os.set_blocking(self.child.stdin.fileno(), False)
             os.set_blocking(self.child.stdout.fileno(), False)
-            self.initialize_id = self.send('initialize', {'protocolVersion': spec.get('version', 1), 'clientCapabilities': {}, 'clientInfo': {'name': 'glass-core', 'version': '0.1.0'}} if self.protocol == 'acp' else {'clientID': 'glass-core', 'adapterID': name, 'pathFormat': 'path', 'linesStartAt1': True, 'columnsStartAt1': True, 'supportsRunInTerminalRequest': False})
+            self.initialize_id = self.send('initialize', {'protocolVersion': spec.get('version', 1), 'clientCapabilities': {}, 'clientInfo': {'name': 'glass-core', 'version': '0.3.14'}} if self.protocol == 'acp' else {'clientID': 'glass-core', 'adapterID': name, 'pathFormat': 'path', 'linesStartAt1': True, 'columnsStartAt1': True, 'supportsRunInTerminalRequest': False})
         except BaseException:
             self.stop()
             raise

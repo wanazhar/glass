@@ -270,7 +270,7 @@ fn main() {
         Some("structure") => {
             let status = std::process::Command::new("python3")
                 .arg("-c")
-                .arg(include_str!("../../../extensions/structure/structure.py"))
+                .arg(include_str!("../../../products/glass-core/extensions/structure/structure.py"))
                 .args(&args[1..])
                 .env(
                     "GC_BIN",
@@ -288,7 +288,7 @@ fn main() {
         Some("companion") => {
             let status = std::process::Command::new("python3")
                 .arg("-c")
-                .arg(include_str!("../../../extensions/companion/companion.py"))
+                .arg(include_str!("../../../products/glass-core/extensions/companion/companion.py"))
                 .args(&args[1..])
                 .status();
             match status {

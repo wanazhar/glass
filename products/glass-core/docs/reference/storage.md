@@ -97,7 +97,7 @@ provider. Use `/context`, `/requests`, and `/usage` to inspect reported costs.
 ## Measuring changes
 
 ```sh
-export GLASS_CORE_TEST_BINARY="$PWD/target/release/glass-core"
+export GLASS_CORE_TEST_BINARY="$(git rev-parse --show-toplevel)/target/core-release/glass-core"
 GC_PERF_REPORT=/tmp/gc-performance.json python3 scripts/check-performance.py
 python3 scripts/check-native-performance.py
 python3 scripts/check-runtime-footprint.py --bounded

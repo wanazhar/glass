@@ -2,7 +2,7 @@ import { runExtension } from '@glass-core/extension-sdk';
 
 await runExtension({
   name: 'typescript-demo',
-  version: '0.1.0',
+  version: '0.3.14',
   tools: [{
     definition: {
       name: 'ts_preview',

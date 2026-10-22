@@ -230,9 +230,9 @@ workers keep the same session, tool, and retention records as normal served GC.
 
 ```sh
 npm run build:web
-cargo test --workspace
-cargo build --release -p glass-core --bin glass-core
-GLASS_CORE_TEST_BINARY="$PWD/target/release/glass-core" python3 scripts/smoke-connect.py
+cargo test -p glass-core -p glass-mod-api -p glass-runtime-client -p glass-tui --locked
+cargo build --profile core-release -p glass-core --bin glass-core --locked
+GLASS_CORE_TEST_BINARY="$(git rev-parse --show-toplevel)/target/core-release/glass-core" python3 scripts/smoke-connect.py
 ```
 
 The browser smoke script uses Playwright Core and an installed Chromium. Set

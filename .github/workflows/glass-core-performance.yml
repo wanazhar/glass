@@ -4,8 +4,13 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - "products/glass-core/crates/glass/**"
-      - "products/glass-core/crates/glass-tui/**"
+      - "crates/glass-core/**"
+      - "crates/glass-tui/**"
+      - "crates/glass-mod-api/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "products/glass-core/extensions/**"
+      - "products/glass-core/web/**"
       - "products/glass-core/scripts/check-performance.py"
       - "products/glass-core/scripts/smoke-workflow-next.py"
       - "products/glass-core/.github/workflows/performance.yml"
@@ -25,10 +30,10 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Build standalone engine
-        run: cargo build --release --locked --package glass-core --bin glass-core
+        run: cargo build --profile core-release --locked --package glass-core --bin glass-core
       - name: Measure startup, terminal interaction, and history reading
         env:
-          GLASS_CORE_TEST_BINARY: ${{ github.workspace }}/products/glass-core/target/release/glass-core
+          GLASS_CORE_TEST_BINARY: ${{ github.workspace }}/target/core-release/glass-core
           GC_PERF_REPORT: perf-report.json
           GC_PERF_STARTUP_BUDGET_MS: "250"
           GC_PERF_PROMPT_BUDGET_MS: "750"
@@ -39,6 +44,8 @@ jobs:
           GC_PERF_RSS_BUDGET_KIB: "131072"
         run: python3 scripts/check-performance.py
       - name: Measure deterministic coding workflow
+        env:
+          GLASS_CORE_TEST_BINARY: ${{ github.workspace }}/target/core-release/glass-core
         run: python3 scripts/smoke-workflow-next.py > workflow-report.json
       - uses: actions/upload-artifact@v4
         if: always()

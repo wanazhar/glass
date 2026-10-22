@@ -17,7 +17,7 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Lazy external ACP agents and DAP debuggers",
         interpreter: "python3",
         file: "adapters.py",
-        source: include_str!("../../../extensions/adapters/adapters.py"),
+        source: include_str!("../../../products/glass-core/extensions/adapters/adapters.py"),
         access: "Starts only explicitly configured argv in adapters.json, at tool invocation. External agents and debugger execution require separate opt-in flags. Reverse execution requests are refused; processes are stopped when disabled.",
     },
     Bundle {
@@ -25,7 +25,7 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Browser screenshots and console verification",
         interpreter: "python3",
         file: "browser.py",
-        source: include_str!("../../../extensions/browser/browser.py"),
+        source: include_str!("../../../products/glass-core/extensions/browser/browser.py"),
         access: "Requires optional Python playwright and an explicitly exposed local CDP browser. Creates an isolated browser context and writes screenshots/reports to workspace .gc-artifacts. Does not launch or close your browser.",
     },
     Bundle {
@@ -33,7 +33,7 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Legacy todo compatibility adapter",
         interpreter: "python3",
         file: "todo.py",
-        source: include_str!("../../../extensions/todo/todo.py"),
+        source: include_str!("../../../products/glass-core/extensions/todo/todo.py"),
         access: "Forwards legacy todo actions to the durable native state.todo checklist. No separate list is maintained; native checklists need no extension.",
     },
     Bundle {
@@ -41,7 +41,7 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Read and edit files with line hashes",
         interpreter: "python3",
         file: "hashline.py",
-        source: include_str!("../../../extensions/hashline/hashline.py"),
+        source: include_str!("../../../products/glass-core/extensions/hashline/hashline.py"),
         access: "Reads and writes workspace files.",
     },
     Bundle {
@@ -49,7 +49,7 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Run scripts over host tools",
         interpreter: "node",
         file: "codemode.js",
-        source: include_str!("../../../extensions/codemode/codemode.js"),
+        source: include_str!("../../../products/glass-core/extensions/codemode/codemode.js"),
         access: "Executes JavaScript and calls host tools. Can change files and run commands.",
     },
     Bundle {
@@ -57,7 +57,7 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Delegate a task to a fresh agent",
         interpreter: "python3",
         file: "subagent.py",
-        source: include_str!("../../../extensions/subagent/subagent.py"),
+        source: include_str!("../../../products/glass-core/extensions/subagent/subagent.py"),
         access: "Starts account-backed delegated agents with shell access. Uses model quota.",
     },
     Bundle {
@@ -65,7 +65,7 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Refresh prompt cache while idle",
         interpreter: "python3",
         file: "cache-warmer.py",
-        source: include_str!("../../../extensions/cache-warmer/cache-warmer.py"),
+        source: include_str!("../../../products/glass-core/extensions/cache-warmer/cache-warmer.py"),
         access: "Requests background provider cache refreshes. Uses model quota even while idle.",
     },
     Bundle {
@@ -73,7 +73,7 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Read pages and search the web",
         interpreter: "python3",
         file: "web.py",
-        source: include_str!("../../../extensions/web/web.py"),
+        source: include_str!("../../../products/glass-core/extensions/web/web.py"),
         access: "Makes outbound HTTP requests to URLs and search backends; reads ~/.config/glass-core/web.json.",
     },
     Bundle {
@@ -81,7 +81,7 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Call MCP servers' tools",
         interpreter: "python3",
         file: "mcp_bridge.py",
-        source: include_str!("../../../extensions/mcp-bridge/mcp_bridge.py"),
+        source: include_str!("../../../products/glass-core/extensions/mcp-bridge/mcp_bridge.py"),
         access: "Spawns configured MCP servers and calls their tools; reads ~/.config/glass-core/mcp.json.",
     },
     Bundle {
@@ -89,7 +89,7 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Run the project verifier after writes",
         interpreter: "python3",
         file: "verify.py",
-        source: include_str!("../../../extensions/verify/verify.py"),
+        source: include_str!("../../../products/glass-core/extensions/verify/verify.py"),
         access: "Runs the configured or detected verify command through the host's bash tool after file writes.",
     },
     Bundle {
@@ -97,7 +97,7 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Durable project memory across sessions",
         interpreter: "python3",
         file: "memory.py",
-        source: include_str!("../../../extensions/memory/memory.py"),
+        source: include_str!("../../../products/glass-core/extensions/memory/memory.py"),
         access: "Reads and writes ~/.config/glass-core/memory/<project>/; injects the index into the system prompt.",
     },
     Bundle {
@@ -105,7 +105,7 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Second opinion from an alternate model",
         interpreter: "python3",
         file: "oracle.py",
-        source: include_str!("../../../extensions/oracle/oracle.py"),
+        source: include_str!("../../../products/glass-core/extensions/oracle/oracle.py"),
         access: "Sends the current diff to a configured alternate model on your account, read-only; uses model quota.",
     },
     Bundle {
@@ -113,7 +113,7 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Outline source files before reading them",
         interpreter: "python3",
         file: "index.py",
-        source: include_str!("../../../extensions/index/index.py"),
+        source: include_str!("../../../products/glass-core/extensions/index/index.py"),
         access: "Reads files in the workspace to report symbol outlines; runs ripgrep when available.",
     },
     Bundle {
@@ -121,7 +121,7 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Language-server diagnostics after edits",
         interpreter: "python3",
         file: "lsp.py",
-        source: include_str!("../../../extensions/lsp/lsp.py"),
+        source: include_str!("../../../products/glass-core/extensions/lsp/lsp.py"),
         access: "Spawns configured language servers in the workspace and reads their diagnostics; reads ~/.config/glass-core/lsp.json.",
     },
 ];

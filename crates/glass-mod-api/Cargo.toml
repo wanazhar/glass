@@ -3,7 +3,7 @@ name = "glass-mod-api"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license = "MIT OR Apache-2.0"
 repository.workspace = true
 description = "Stable extension surface for glass. Zero dependencies by design."
 

@@ -814,7 +814,7 @@ mod tests {
             Record::Assistant("Refactored the cache module after profiling.".into()),
             Record::Bash {
                 call_id: None,
-                command: "cargo build crates/glass/src/cache.rs".into(),
+                command: "cargo build crates/glass-core/src/cache.rs".into(),
                 output: "".into(),
                 exit_code: Some(0),
                 truncated: false,
@@ -831,7 +831,7 @@ mod tests {
         ];
         let line = branch_summary(&dropped).unwrap();
         assert!(line.contains("last action — Refactored"), "{line}");
-        assert!(line.contains("crates/glass/src/cache.rs"), "{line}");
+        assert!(line.contains("crates/glass-core/src/cache.rs"), "{line}");
         // Flag-looking tokens are never "files".
         assert!(!line.contains("--verbose"), "{line}");
 

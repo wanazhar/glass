@@ -2964,7 +2964,7 @@ for line in sys.stdin:
     fn warmer_extension() -> String {
         let root = env!("CARGO_MANIFEST_DIR");
         format!(
-            "python3 {}/../../extensions/cache-warmer/cache-warmer.py",
+            "python3 {}/../../products/glass-core/extensions/cache-warmer/cache-warmer.py",
             root
         )
     }

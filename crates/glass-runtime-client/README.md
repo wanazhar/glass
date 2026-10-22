@@ -40,9 +40,9 @@ the runtime through pipe backpressure. Dropping the client kills and reaps its
 owned child; it does not cancel tools executed by the host. For graceful closure,
 cancel and settle any active turn, then send `shutdown`.
 
-The [protocol reference](../../docs/reference/runtime.md) defines messages,
+The [protocol reference](../../products/glass-core/docs/reference/runtime.md) defines messages,
 ownership, limits, persistence, and error handling. The
-[Python reference host](../../examples/runtime_host.py) demonstrates a complete
+[Python reference host](../../products/glass-core/examples/runtime_host.py) demonstrates a complete
 conversation without requiring a GUI or terminal framework.
 
 ## Typed host operations
@@ -65,6 +65,6 @@ creation parameters.
 To run the actual subprocess client test after building GC:
 
 ```sh
-GLASS_CORE_TEST_BINARY="$PWD/target/release/glass-core" \
+GLASS_CORE_TEST_BINARY="$PWD/target/core-release/glass-core" \
   cargo test -p glass-runtime-client --test runtime -- --ignored
 ```

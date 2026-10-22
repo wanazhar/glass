@@ -209,7 +209,7 @@ GC does not automatically replay host mutations after disconnect.
 
 ## Clients and first integration
 
-[glass-runtime-client](../../crates/glass-runtime-client/src/lib.rs) provides a
+[glass-runtime-client](../../../../crates/glass-runtime-client/src/lib.rs) provides a
 Rust subprocess client with bounded input/output, asynchronous request IDs,
 message polling, and tool results. It does not depend on GC's UI or engine.
 
@@ -235,9 +235,9 @@ its existing capability response.
 ## Verification
 
 ```sh
-cargo test --workspace --locked
-cargo build --release --locked -p glass-core --bin glass-core
-GLASS_CORE_TEST_BINARY="$PWD/target/release/glass-core" \
+cargo test -p glass-core -p glass-mod-api -p glass-runtime-client -p glass-tui --locked
+cargo build --profile core-release --locked -p glass-core --bin glass-core
+GLASS_CORE_TEST_BINARY="$(git rev-parse --show-toplevel)/target/core-release/glass-core" \
   python3 scripts/smoke-runtime.py
 ```
 
@@ -371,21 +371,21 @@ and tool execution status must also be checked.
 
 The [TypeScript client](../../packages/runtime-client/README.md) supplies typed
 requests, events, results, controls, and bounded asynchronous writes. The
-[Rust client](../../crates/glass-runtime-client/README.md) provides typed protocol
+[Rust client](../../../../crates/glass-runtime-client/README.md) provides typed protocol
 values and event polling. Both have actual subprocess acceptance tests.
 
 The external conformance suite imports only the reference client and drives a
 release executable through public messages:
 
 ```sh
-GLASS_CORE_TEST_BINARY="$PWD/target/release/glass-core"   python3 scripts/conformance-runtime.py
+GLASS_CORE_TEST_BINARY="$(git rev-parse --show-toplevel)/target/core-release/glass-core" python3 scripts/conformance-runtime.py
 ```
 
 The live trial uses the machine's selected GC connection and changes only a
 temporary fixture project. It requires explicit opt-in:
 
 ```sh
-python3 scripts/host-kilo-trial.py --live --binary target/release/glass-core
+python3 scripts/host-kilo-trial.py --live --binary "$(git rev-parse --show-toplevel)/target/core-release/glass-core"
 ```
 
 It exercises a real coding task, host-owned tools and approvals, a custom user

@@ -1178,7 +1178,7 @@ flowchart TD
     }
     #[test]
     fn actual_kilo_architecture_has_boxed_components_and_complete_edges() {
-        let source=include_str!("../../../scripts/fixtures/mermaid-architecture-kilo.mmd");
+        let source=include_str!("../../../products/glass-core/scripts/fixtures/mermaid-architecture-kilo.mmd");
         let chart=parse(source).unwrap();
         for width in [16,18,20,34,40,60,88] {
             let rows=render(&chart,width).unwrap();

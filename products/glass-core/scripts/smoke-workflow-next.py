@@ -16,7 +16,8 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', ROOT / 'target/release/glass-core')).resolve()
+REPO = Path(__file__).resolve().parents[3]
+BIN = Path(os.environ.get('GLASS_CORE_TEST_BINARY', REPO / 'target/core-release/glass-core')).resolve()
 spec = importlib.util.spec_from_file_location('features', ROOT / 'scripts/smoke-features.py')
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)

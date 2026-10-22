@@ -16,16 +16,17 @@ glass-core --version
 gc --version
 ```
 
-The Cargo package and executable are named `glass-core`. The installer uses
+The Cargo package and executable are named `glass-core`. The monorepo installer uses
 `${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin` and creates `gc` as a
-relative symlink. It refuses to replace an unrelated `gc` command. The separate
-`glass` package and executable belong to another project.
+relative symlink. It refuses to replace an unrelated `gc` command. The root
+`glass` package and executable remain a separate product.
 
 To build without installing:
 
 ```sh
-cargo build --release --package glass-core --bin glass-core
-./target/release/glass-core
+cd ../..
+cargo build --profile core-release --package glass-core --bin glass-core
+./target/core-release/glass-core
 ```
 
 Run the command from the project you want to work on. Git is optional for chat

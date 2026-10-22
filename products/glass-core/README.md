@@ -32,15 +32,15 @@ teammate's transcript while work continues.
 
 ## Get started
 
-From a standalone source checkout, with Rust 1.88 or newer:
+From the product directory in a monorepo checkout, with Rust 1.88 or newer:
 
 ```sh
 ./scripts/install.sh
 gc
 ```
 
-In the Glass monorepo, run the same installer from the repository root as
-`products/glass-core/scripts/install.sh`.
+The installer locates the repository root and uses the shared Cargo lockfile
+and the `core-release` profile.
 
 Open `/login` to connect an account, then `/model` to select a model. Start with a
 specific task:
@@ -86,7 +86,7 @@ Headless runs save resumable sessions. JSON results go to stdout; diagnostics go
 to stderr. Optional ACP, served sessions, and companion integrations connect the
 same runtime to other interfaces. With `gc runtime`, your editor or agent
 environment can supply its own tools and UI while GC runs the model loop.
-Use the [Rust client](crates/glass-runtime-client/README.md),
+Use the [Rust client](../../crates/glass-runtime-client/README.md),
 [TypeScript client](packages/runtime-client/README.md), or any JSON-RPC host.
 The [host protocol](docs/reference/runtime.md) covers structured sessions, images,
 progress, cancellation, and isolated completion. See [Automation](docs/automation.md)

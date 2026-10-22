@@ -1788,6 +1788,321 @@ fn follow_up_queue_edits_persist_without_automatic_dispatch() {
 }
 
 #[test]
+fn task_thread_queue_restart_requires_explicit_core_recovery() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let fixture_state = root.join(".glass");
+    let data_home = root.join(".glass/xdg-data");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    std::fs::write(fixture_state.join("e2e-core-task-recovery-gate"), "enabled").unwrap();
+    std::fs::write(fixture_state.join("e2e-core-unique-session-ids"), "enabled").unwrap();
+    let fake_core = fake_core_binary(&root);
+    let mut fixture_child =
+        FixtureChildGuard::new(fixture_state.join("e2e-core-task-recovery-pid"));
+    let mut resumed_fixture_child =
+        FixtureChildGuard::new(fixture_state.join("e2e-core-task-recovery-resumed-pid"));
+    let mut session = Session::start_with_data_home_options(
+        &binary(),
+        &root,
+        100,
+        30,
+        "glass-core",
+        Some(&fake_core),
+        Some(&data_home),
+    );
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.trust_project();
+    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+
+    let task_spec = serde_json::json!({
+        "title": "Recovery task",
+        "goal": "issue64-task-recovery",
+        "prompt": "issue64-task-recovery-prompt",
+        "verification": {"kind": "settled"}
+    });
+    paste_command(&mut session, &format!("tool glass.task.create {task_spec}"));
+    assert!(session.wait_for("one-use confirmation required", Duration::from_secs(5)));
+    session.send(b"y");
+    assert!(session.wait_for("glass.task.create", Duration::from_secs(8)));
+    let old_turn_started = fixture_state.join("e2e-core-task-recovery-started");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !old_turn_started.exists() && Instant::now() < deadline {
+        session.settle(Duration::from_millis(50));
+    }
+    assert!(
+        old_turn_started.exists(),
+        "fake Core did not hold the task prompt open\n{}",
+        session.output_tail()
+    );
+
+    let scheduler_path = fixture_state.join("tasks/scheduler.json");
+    let thread_registry_path = fixture_state.join("threads/registry.json");
+    let initial_scheduler: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&scheduler_path).unwrap()).unwrap();
+    let initial_task = &initial_scheduler["tasks"][0]["snapshot"];
+    assert_eq!(initial_task["id"], "task-0001");
+    assert_eq!(initial_task["state"], "running");
+    let old_agent_id = initial_task["assignedAgent"].as_str().unwrap().to_owned();
+    let initial_threads: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&thread_registry_path).unwrap()).unwrap();
+    assert_eq!(initial_threads["threads"].as_array().unwrap().len(), 1);
+    let old_thread = &initial_threads["threads"][0];
+    let old_thread_id = old_thread["threadId"].as_str().unwrap().to_owned();
+    let old_run_id = old_thread["runs"][0]["runId"].as_str().unwrap().to_owned();
+    let old_core_session_id = old_thread["runs"][0]["coreSessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let old_process_id =
+        std::fs::read_to_string(fixture_state.join("e2e-core-task-recovery-pid")).unwrap();
+    assert_eq!(
+        old_core_session_id,
+        format!("fixture-session-{}", old_process_id.trim())
+    );
+
+    // Persist a real queue row through the selected task thread's queue UI.
+    session.send(b"1");
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    send_ctrl_shift_t(&mut session);
+    assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
+    assert!(session.wait_for("task-0001 · Recovery task", Duration::from_secs(5)));
+    session.send(b"\r");
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    session.send(b"\x11");
+    assert!(session.wait_for("THREAD FOLLOW-UP QUEUE", Duration::from_secs(5)));
+    assert!(session.wait_for("No queued follow-ups", Duration::from_secs(5)));
+    session.send(b"a");
+    assert!(
+        session.wait_for("EDIT FOLLOW-UP", Duration::from_secs(5)),
+        "queue add did not open its editor\n{}",
+        session.output_tail()
+    );
+    session.send(b"queued recovery follow-up");
+    session.send(b"\r");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let queued = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&thread_registry_path).unwrap()).unwrap();
+        let row = registry["threads"][0]["followUpQueue"][0].clone();
+        if row["text"] == "queued recovery follow-up"
+            && row["targetRunId"] == old_run_id
+            && row["state"] == "ready"
+        {
+            break registry;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "task queue row did not persist against its initial RunId: {registry}"
+        );
+        session.settle(Duration::from_millis(100));
+    };
+    let old_queue_entry_id = queued["threads"][0]["followUpQueue"][0]["entryId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    session.send(b"\x1b");
+    session.kill();
+    fixture_child.terminate();
+    let _ = std::fs::remove_file(fixture_state.join("e2e-core-task-recovery-gate"));
+
+    let mut reopened = Session::start_with_data_home_options(
+        &binary(),
+        &root,
+        100,
+        30,
+        "glass-core",
+        Some(&fake_core),
+        Some(&data_home),
+    );
+    assert!(reopened.wait_for("GLASS", Duration::from_secs(8)));
+    assert!(reopened.wait_for("✓ Ready", Duration::from_secs(8)));
+    let recovered_scheduler: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&scheduler_path).unwrap()).unwrap();
+    let recovered_task = &recovered_scheduler["tasks"][0]["snapshot"];
+    assert_eq!(recovered_task["state"], "paused");
+    assert_eq!(recovered_task["recoveryPending"], true);
+    assert_eq!(recovered_task["assignedAgent"], old_agent_id);
+
+    let recovered_threads: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&thread_registry_path).unwrap()).unwrap();
+    assert_eq!(recovered_threads["threads"].as_array().unwrap().len(), 1);
+    let recovered_old_thread = &recovered_threads["threads"][0];
+    assert_eq!(recovered_old_thread["threadId"], old_thread_id);
+    assert_eq!(recovered_old_thread["runs"][0]["runId"], old_run_id);
+    assert_eq!(
+        recovered_old_thread["runs"][0]["coreSessionId"],
+        old_core_session_id
+    );
+    assert_eq!(recovered_old_thread["runs"][0]["classification"], "working");
+    assert_eq!(
+        recovered_old_thread["followUpQueue"][0]["entryId"],
+        old_queue_entry_id
+    );
+    assert_eq!(
+        recovered_old_thread["followUpQueue"][0]["targetRunId"],
+        old_run_id
+    );
+    assert_eq!(recovered_old_thread["followUpQueue"][0]["state"], "ready");
+
+    // Assert the scheduler's persisted AgentId still joins to the recovered
+    // thread before allowing task recovery to create another assignment.
+    send_ctrl_shift_t(&mut reopened);
+    assert!(reopened.wait_for("PROJECT THREADS", Duration::from_secs(5)));
+    assert!(
+        reopened.wait_for(
+            "developer · task-0001 · Recovery task",
+            Duration::from_secs(5)
+        ),
+        "reconstructed AgentRegistry ID did not join to the recovered task assignment\n{}",
+        reopened.output_tail()
+    );
+    assert!(reopened.wait_for("recovery pending", Duration::from_secs(5)));
+    reopened.send(b"\r");
+    assert!(reopened.wait_for("CONVERSATION", Duration::from_secs(5)));
+
+    // Keep the interrupted conversation queue pinned to its original RunId.
+    // Task resume below must not implicitly retarget or dispatch it.
+    reopened.send(b"\x11");
+    assert!(reopened.wait_for("THREAD FOLLOW-UP QUEUE", Duration::from_secs(5)));
+    assert!(reopened.wait_for("queued recovery follow-up", Duration::from_secs(5)));
+    let requests_path = fixture_state.join("e2e-core-requests.jsonl");
+    let prompt_count = |requests: &str| {
+        requests
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|request| request["method"] == "turn/prompt")
+            .count()
+    };
+    let requests_before_task_resume = std::fs::read_to_string(&requests_path).unwrap();
+    assert_eq!(prompt_count(&requests_before_task_resume), 1);
+    assert!(
+        !requests_before_task_resume.contains("queued recovery follow-up"),
+        "restart replayed the queued follow-up"
+    );
+    let queue_before_task_resume: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&thread_registry_path).unwrap()).unwrap();
+    assert_eq!(
+        queue_before_task_resume["threads"][0]["followUpQueue"][0]["targetRunId"],
+        old_run_id
+    );
+    assert_eq!(
+        queue_before_task_resume["threads"][0]["followUpQueue"][0]["entryId"],
+        old_queue_entry_id
+    );
+    assert_eq!(
+        queue_before_task_resume["threads"][0]["followUpQueue"][0]["state"],
+        "ready"
+    );
+    reopened.send(b"\x1b");
+
+    // Explicit task recovery must produce one new worker, Core session, and
+    // prompt request, without touching the old thread's queue.
+    std::fs::write(
+        fixture_state.join("e2e-core-task-recovery-resumed"),
+        "enabled",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture_state.join("e2e-core-task-recovery-resume-gate"),
+        "enabled",
+    )
+    .unwrap();
+    paste_command(
+        &mut reopened,
+        "tool glass.task.resume {\"taskId\":\"task-0001\"}",
+    );
+    assert!(reopened.wait_for("one-use confirmation required", Duration::from_secs(5)));
+    reopened.send(b"y");
+    assert!(reopened.wait_for("glass.task.resume", Duration::from_secs(8)));
+    let resumed_turn_started = fixture_state.join("e2e-core-task-recovery-resume-started");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !resumed_turn_started.exists() && Instant::now() < deadline {
+        reopened.settle(Duration::from_millis(50));
+    }
+    assert!(
+        resumed_turn_started.exists(),
+        "explicit task resume did not reach a new Core runtime\n{}",
+        reopened.output_tail()
+    );
+    let resumed_pid_path = fixture_state.join("e2e-core-task-recovery-resumed-pid");
+    let resumed_pid = std::fs::read_to_string(&resumed_pid_path).unwrap();
+    assert_ne!(resumed_pid.trim(), old_process_id.trim());
+    let deadline = Instant::now() + Duration::from_secs(12);
+    let resumed_scheduler = loop {
+        let scheduler: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&scheduler_path).unwrap()).unwrap();
+        let snapshot = &scheduler["tasks"][0]["snapshot"];
+        if snapshot["state"] == "running" || Instant::now() >= deadline {
+            break scheduler;
+        }
+        reopened.settle(Duration::from_millis(100));
+    };
+    let resumed_task = &resumed_scheduler["tasks"][0]["snapshot"];
+    assert_eq!(resumed_task["state"], "running");
+    assert_eq!(resumed_task["recoveryPending"], false);
+    let new_agent_id = resumed_task["assignedAgent"].as_str().unwrap();
+    assert_ne!(new_agent_id, old_agent_id);
+    let requests_after_task_resume = std::fs::read_to_string(&requests_path).unwrap();
+    assert_eq!(prompt_count(&requests_after_task_resume), 2);
+    assert!(
+        requests_after_task_resume.contains("issue64-task-recovery-prompt"),
+        "Core did not receive the explicit task recovery prompt"
+    );
+    assert!(
+        !requests_after_task_resume.contains("queued recovery follow-up"),
+        "explicit task resume dispatched the old thread's queue row"
+    );
+    let after_task_resume_threads: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&thread_registry_path).unwrap()).unwrap();
+    assert_eq!(
+        after_task_resume_threads["threads"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let new_task_thread = after_task_resume_threads["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|thread| thread["threadId"] != old_thread_id)
+        .unwrap();
+    assert_eq!(
+        new_task_thread["runs"][0]["coreSessionId"],
+        format!("fixture-session-{}", resumed_pid.trim())
+    );
+    let old_queue_after_resume = after_task_resume_threads["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|thread| thread["threadId"] == old_thread_id)
+        .unwrap();
+    assert_eq!(
+        old_queue_after_resume["followUpQueue"][0]["entryId"],
+        old_queue_entry_id
+    );
+    assert_eq!(
+        old_queue_after_resume["followUpQueue"][0]["targetRunId"],
+        old_run_id
+    );
+    assert_eq!(old_queue_after_resume["followUpQueue"][0]["state"], "ready");
+
+    std::fs::write(
+        fixture_state.join("e2e-core-task-recovery-resume-release"),
+        "release",
+    )
+    .unwrap();
+    reopened.kill();
+    fixture_child.terminate();
+    resumed_fixture_child.terminate();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn active_run_queue_steer_reaches_its_run_and_settles_truthfully() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;

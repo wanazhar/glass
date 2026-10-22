@@ -1,5 +1,21 @@
 # Glass delivery plans
 
+## Active plan: shared Glass and Glass Core workspace
+
+Issue [#63](https://github.com/wanazhar/glass/issues/63) now makes the
+repository's root Cargo workspace the shared package boundary for Glass and
+Glass Core. The shared Rust package version follows Glass's current source
+version, `0.3.14`; historical Core versions and tags remain historical. The
+Core binary, installer alias, web UI, extensions, licenses, and independent
+package build must continue to work without selecting Glass development or
+browser packages.
+
+The structural and version migration is tracked in the
+[workspace design](analysis/shared-workspace.md) and
+[implementation task](tasks/workspace-glass-core-001.md). Mixed runtime tools
+and the collaboration TUI remain subsequent issue #63 slices, with their own
+contracts and acceptance evidence.
+
 ## Current source line: Glass 0.3.14
 
 Status: Current 0.3.14 source behavior for the 2026-08-29 release record.

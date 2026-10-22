@@ -19,6 +19,9 @@ issue #63 slices, with their own contracts and acceptance evidence. The
 negotiated Core-coding/Glass-integration runtime slice is documented in the
 [mixed-runtime analysis](analysis/mixed-runtime-tools.md) and tracked in the
 [issue #63 task checklist](tasks/issue63-mixed-tools-001.md).
+External Core edits to already-open Glass buffers are tracked in the
+[buffer reconciliation analysis](analysis/editor-buffer-external-reconcile.md)
+and [acceptance task](tasks/editor-buffer-reconcile-001.md).
 
 ## Current source line: Glass 0.3.14
 

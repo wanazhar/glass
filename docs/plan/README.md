@@ -71,8 +71,13 @@ PTY restart journey also passes: task recovery, task-to-thread identity, and
 queue identity survive reopen without automatic task or queue prompt replay;
 explicit task resume creates one new Core session. See the [combined task,
 thread, and queue recovery journey](tasks/issue64-task-thread-queue-restart-001.md).
-The final broader keyboard, review, provider-coding, and package-validation
-acceptance remains open.
+The broader keyboard and review journeys are complete, and the standalone Core
+installer was verified in an isolated install root with the `gc` alias at
+0.3.14. The live provider journey reached Core's native bash tool and created
+the exact requested fixture file, but Core did not return the correlated final
+response within the test's 90-second window. Full live turn settlement remains
+open; see the [failed Core response recovery record](tasks/issue64-failed-core-response-recovery-001.md)
+for the two protocol fixes and live evidence.
 The completed [TaskScheduler project-thread journey](tasks/issue64-task-thread-journey-001.md)
 verifies that task creation, task snapshots, task-labeled conversations, and
 durable thread drafts are connected in the live TUI, including cursor

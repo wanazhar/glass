@@ -1524,6 +1524,15 @@ struct RuntimeProbe {
     model: Option<String>,
 }
 
+fn auth_status_is_ready(status: &Value) -> bool {
+    status
+        .get("credentialReady")
+        .and_then(Value::as_bool)
+        .or_else(|| status.get("connected").and_then(Value::as_bool))
+        .or_else(|| status.get("ready").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
 fn probe_runtime(binary: Option<&Path>, storage_dir: &Path) -> DevelopmentResult<RuntimeProbe> {
     let binary = binary.ok_or_else(|| {
         DevelopmentError::NotFound("no Glass Core executable was resolved".into())
@@ -1603,11 +1612,7 @@ fn probe_runtime(binary: Option<&Path>, storage_dir: &Path) -> DevelopmentResult
     let _ = child.wait();
     let _ = reader.join();
     let status = result?;
-    let connected = status
-        .get("connected")
-        .and_then(Value::as_bool)
-        .or_else(|| status.get("ready").and_then(Value::as_bool))
-        .unwrap_or(false);
+    let connected = auth_status_is_ready(&status);
     let provider = status
         .get("provider")
         .and_then(Value::as_str)
@@ -1648,6 +1653,43 @@ mod tests {
     use super::*;
     use crate::pi_runtime::PiSessionRequest;
     use std::sync::Arc;
+
+    #[test]
+    fn auth_status_uses_core_credential_ready_field_and_keeps_legacy_fallbacks() {
+        assert!(auth_status_is_ready(&json!({"credentialReady": true})));
+        assert!(!auth_status_is_ready(&json!({"credentialReady": false})));
+        assert!(auth_status_is_ready(&json!({"connected": true})));
+        assert!(auth_status_is_ready(&json!({"ready": true})));
+        assert!(!auth_status_is_ready(&json!({})));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_readiness_accepts_core_credential_ready_response() {
+        if python3().is_none() {
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "glass-core-readiness-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let binary = root.join("fake-glass-core.py");
+        fs::copy(fixture(), &binary).unwrap();
+        let mut permissions = fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).unwrap();
+
+        let probe = probe_runtime(Some(&binary), &root.join("sessions")).unwrap();
+        assert_eq!(probe.authentication.state, CoreReadinessState::Ready);
+        assert_eq!(probe.provider.as_deref(), Some("fixture"));
+        assert_eq!(probe.model.as_deref(), Some("fixture-model"));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]

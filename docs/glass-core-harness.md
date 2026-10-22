@@ -68,7 +68,10 @@ Glass does not install the engine when it starts. Without an explicit path, it
 looks for `glass-core` on `PATH`, then `gc`, and reads its version. Run
 `glass agent doctor` or `glass agent status` to see the selected engine,
 protocol version, provider readiness, session directory, and repair steps.
-These commands do not print credentials.
+These commands do not print credentials. The runtime readiness probe reads
+Core's `auth/status.credentialReady` result; provider setup remains in Core.
+`glass-core doctor --probe` is a separate provider check and does not change the
+saved configuration.
 
 From the Glass TUI, `:agent setup login` resolves the same Core executable,
 suspends the Glass screen, and starts `glass-core` in its interactive mode in

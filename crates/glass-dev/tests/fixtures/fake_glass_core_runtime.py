@@ -6,6 +6,7 @@ resident harness adapter can be exercised without a provider account, a model
 call, or a network. It mirrors the real engine's ordering:
 
 * `initialize` reports protocol v2 with negotiated mixed tool ownership.
+* `auth/status` reports Core's `credentialReady` provider-readiness field.
 * `session/new` returns a fixed session id.
 * `turn/prompt` emits `turn_start`, requests exactly one host tool, waits for
   the host result, streams text, and only then answers the prompt request.
@@ -228,7 +229,8 @@ def main() -> None:
             reply(
                 identifier,
                 {
-                    "connected": True,
+                    "credentialReady": True,
+                    "requiresRefresh": False,
                     "provider": "fixture",
                     "model": "fixture-model",
                     "detail": "fixture provider configuration",

@@ -171,6 +171,8 @@ pub mod resident_harness;
 pub mod tasks;
 /// Test execution and result collection.
 pub mod testing;
+/// Durable Glass-owned identities for resident project conversations.
+pub(crate) mod thread_store;
 /// Workspace-local Agent todos persisted at `.glass/todos/session.json` (not the overnight task DAG).
 pub mod todos;
 /// Governed development-tool routing.

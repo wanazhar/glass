@@ -371,7 +371,13 @@ failed and restores its draft for edit-and-retry. Each live resident AgentId
 has its own transcript, draft, and character cursor; switching threads restores
 the matching context, and late send results remain attached to their submitting
 thread without changing the selected thread's focus or draft. AgentId and its
-draft state are process-local and do not survive TUI restart. Workspace-local todos
+draft state are process-local and do not survive TUI restart. Glass persists
+random ThreadId/RunId identity and actual Core session references in the
+project's private `.glass/threads/registry.json`; reopened entries with Core
+session references are labelled `recovery pending`, while work queued or
+stopped before initialization is `unavailable`. Both reject sends. This
+checkpoint does not reattach to Core, replay prompts, or persist drafts,
+transcripts, or follow-up queues. Workspace-local todos
 (`glass.todo.*`) persist at `.glass/todos/session.json` and form the Agent
 checklist shown on Agent and Tasks; they are not the overnight task DAG.
 

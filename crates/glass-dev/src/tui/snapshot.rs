@@ -1048,6 +1048,21 @@ mod tests {
             "[package]\nname='x'\nversion='0.1.0'\n",
         )
         .unwrap();
+        let store = crate::thread_store::ThreadStore::open(&root).unwrap();
+        store
+            .create(crate::thread_store::ThreadRecord {
+                thread_id: crate::thread_store::random_id("thread").unwrap(),
+                title: "reopened conversation".into(),
+                role: "builder".into(),
+                created_at_ms: 1,
+                runs: vec![crate::thread_store::RunRecord {
+                    run_id: crate::thread_store::random_id("run").unwrap(),
+                    engine: "glass-core".into(),
+                    core_session_id: Some("fixture-session-reference".into()),
+                    classification: crate::thread_store::RunClassification::RecoveryPending,
+                }],
+            })
+            .unwrap();
         let state = crate::tui::state::DevTuiState::open(
             &root,
             glass_browser::cli::args::TuiLayout::Desktop,
@@ -1069,6 +1084,16 @@ mod tests {
         assert!(!snapshot.tasks.is_empty());
         assert!(!snapshot.processes.is_empty());
         assert!(!snapshot.browser.is_empty());
+        assert_eq!(snapshot.agent_states.len(), 1);
+        assert_eq!(
+            snapshot.agent_states[0].1,
+            crate::AgentStatus::RecoveryPending
+        );
+        assert_eq!(
+            snapshot.agent_chrome[0].status,
+            crate::AgentStatus::RecoveryPending
+        );
+        assert!(snapshot.agents.contains("recovery pending"));
         // The conversation cursor starts at zero and only moves when events exist.
         let cursor = worker.conversation_cursor();
         worker.request_conversation();

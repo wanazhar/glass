@@ -32,12 +32,15 @@ teammate's transcript while work continues.
 
 ## Get started
 
-From a source checkout, with Rust 1.88 or newer:
+From a standalone source checkout, with Rust 1.88 or newer:
 
 ```sh
 ./scripts/install.sh
 gc
 ```
+
+In the Glass monorepo, run the same installer from the repository root as
+`products/glass-core/scripts/install.sh`.
 
 Open `/login` to connect an account, then `/model` to select a model. Start with a
 specific task:
@@ -47,8 +50,8 @@ Find the cause of the failing parser test. Explain the bug, then fix it.
 ```
 
 The installer creates `glass-core` and a relative `gc` symlink. It preserves
-unrelated commands, including the separate `glass` project. For a build without
-installation, see [Getting started](docs/getting-started.md).
+the separate `glass` command. For a build without installation, see
+[Getting started](docs/getting-started.md).
 
 ## Stay in control of the work
 

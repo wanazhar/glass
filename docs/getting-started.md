@@ -27,6 +27,7 @@ Check the current support and release boundary before deployment:
 |---|---|---|
 | `glass-dev` | `glass`, `glass-browser` | Complete CLI/TUI/MCP product, project runtime, agents, remote cockpit, and browser control |
 | `glass-browser` | `glass-browser` and Rust crate `glass_browser` | Standalone browser control plane and embeddable Rust API |
+| `glass-core` | `glass-core`, `gc` | Standalone coding harness and default resident-agent engine |
 
 Install the complete environment:
 
@@ -72,7 +73,10 @@ glass agent status
 
 `doctor` and `status` report the selected engine, its runtime protocol version,
 provider readiness, session storage, and ordered repair steps without printing
-secrets. `GLASS_CORE_BINARY` selects a specific engine executable. An existing
+secrets. `GLASS_CORE_BINARY` selects a specific engine executable. Install the
+current monorepo checkout with `products/glass-core/scripts/install.sh`; the
+[standalone product guide](glass-core-product.md) covers its independent
+workspace and install options. An existing
 Pi installation keeps working with `GLASS_AGENT_HARNESS=pi`, where
 `glass agent setup` installs or repairs the pinned managed SDK, `--login` opens
 Pi's provider login flow in the terminal, and `--update` forces a reinstall of

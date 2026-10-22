@@ -70,7 +70,10 @@ the separate `glass-core` agent engine, Pi, or Node.
 Glass Core runs resident agents in `glass-dev`. Install the `glass-core`
 program separately or set `GLASS_CORE_BINARY` to its path. Run
 `glass agent doctor` to see the selected engine and repair steps. See the
-[Glass Core resident harness guide](glass-core-harness.md).
+[Glass Core resident harness guide](glass-core-harness.md). The engine source
+and its standalone installer are now part of this repository; see the
+[standalone product guide](glass-core-product.md) for a scoped build and local
+install.
 
 Use these explicit ownership transitions; `cargo install --list` shows the
 current owner before you change it:

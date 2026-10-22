@@ -113,8 +113,9 @@ State helpers prefix short kinds with the extension name: `notes` becomes
 `my-extension/notes`. An already qualified kind in that namespace is preserved.
 Seeded entries retain their wire names.
 
-The current host bridge permits `bash` and `state`. It does not recursively call
-extension tools or expose every model tool. The SDK types reflect that contract.
+The Glass bridge provided to an extension permits `bash` and `state`. It does
+not recursively call extension tools or expose every model tool. The SDK types
+reflect that contract.
 
 Host replies are correlated by call ID. Pending calls have timeouts and a maximum
 count of 16. A custom-entry append acknowledges a queued record; glass-core persists it

@@ -32,6 +32,7 @@ project access and tool execution; Glass Core runs the model session. See the
 |---|---|---|
 | `glass-dev` | `glass`, `glass-browser` | The complete coding workspace, resident agent integration, MCP server, and browser tools. |
 | `glass-browser` | `glass-browser` | Browser automation and the reusable `glass_browser` Rust library. |
+| `glass-core` | `glass-core`, `gc` | The standalone coding harness used by Glass resident agents. |
 
 The two packages provide the same `glass-browser` command, so install only one
 of them in a Cargo install root. Read the [installation guide](docs/installation.md)
@@ -50,8 +51,10 @@ glass
 
 Glass can inspect and work with a project without starting a browser. To use
 resident agents, install or configure the Glass Core engine as described in
-[Getting started](docs/getting-started.md). To automate a browser without the
-full workspace, install `glass-browser` instead.
+[Getting started](docs/getting-started.md). Glass Core's source, independent
+Cargo workspace, lockfile, and standalone installer live under
+[`products/glass-core`](products/glass-core/README.md). To automate a browser
+without the full workspace, install `glass-browser` instead.
 
 ## Documentation
 
@@ -62,6 +65,8 @@ full workspace, install `glass-browser` instead.
   processes, diagnostics, collaboration, and agents.
 - [Glass Core resident harness](docs/glass-core-harness.md) — configure and use
   the default agent engine.
+- [Standalone Glass Core](docs/glass-core-product.md) — build and install the
+  independently versioned coding harness from this monorepo.
 - [Browser automation](docs/INDEX.md#browser-operations-and-safety) — inspect
   pages, perform actions, and verify results.
 - [CLI reference](docs/cli.md) and [MCP integration](docs/mcp.md) — command-line

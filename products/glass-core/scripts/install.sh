@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install only glass-core, with gc as a symlink. Glass belongs to another project.
+# Install only Glass Core, with gc as a symlink.
 set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)

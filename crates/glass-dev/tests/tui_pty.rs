@@ -1163,6 +1163,266 @@ fn follow_up_queue_edits_persist_without_automatic_dispatch() {
 }
 
 #[test]
+fn active_run_queue_steer_reaches_its_run_and_settles_truthfully() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+
+    let root = workspace_root();
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    std::fs::write(fixture_state.join("e2e-core-active-steer"), "enabled").unwrap();
+    let fake_core = fake_core_binary(&root);
+    let fixture_guard = FixtureChildGuard::new(fixture_state.join("e2e-core-active-steer-pid"));
+    let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.trust_project();
+    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    session.send(b":agent spawn queue-owner active-run-queue-target\r");
+    assert!(
+        session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
+        "active queue target did not spawn\n{}",
+        session.output_tail()
+    );
+    send_ctrl_shift_t(&mut session);
+    assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
+    assert!(
+        session.wait_for("idle", Duration::from_secs(12)),
+        "spawned queue target never became ready\n{}",
+        session.output_tail()
+    );
+    session.send(b"\r\r");
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    session.send(b"active-run-queue-target");
+    session.send(b"\r");
+    let started = fixture_state.join("e2e-core-active-steer-started");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !started.exists() && Instant::now() < deadline {
+        session.settle(Duration::from_millis(100));
+    }
+    assert!(
+        started.exists(),
+        "fake Core did not hold the target run active\n{}",
+        session.output_tail()
+    );
+    let registry_path = fixture_state.join("threads/registry.json");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let active_registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        if registry["threads"][0]["sendAttempts"][0]["status"] == "working"
+            || Instant::now() >= deadline
+        {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    assert_eq!(
+        active_registry["threads"][0]["sendAttempts"][0]["status"], "working",
+        "the target run must be recorded active before queue steering: {active_registry}"
+    );
+
+    send_ctrl_shift_t(&mut session);
+    assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
+    assert!(session.wait_for("queue-owner", Duration::from_secs(5)));
+    session.send(b"\r\r");
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    session.send(b"\x11");
+    assert!(session.wait_for("THREAD FOLLOW-UP QUEUE", Duration::from_secs(5)));
+    session.send(b"s");
+    session.send(b"steer active queue target");
+    session.send(b"\r");
+    assert!(
+        session.wait_for("steer active queue target", Duration::from_secs(5)),
+        "active-run steer row was not added\n{}",
+        session.output_tail()
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let ready = registry["threads"].as_array().is_some_and(|threads| {
+            threads.len() == 1
+                && threads[0]["followUpQueue"][0]["state"] == "ready"
+                && threads[0]["followUpQueue"][0]["mode"] == "steer"
+        });
+        if ready || Instant::now() >= deadline {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    let thread = &registry["threads"][0];
+    let target_run_id = thread["runs"][0]["runId"]
+        .as_str()
+        .expect("the active run has a stable RunId")
+        .to_owned();
+    assert_eq!(thread["followUpQueue"][0]["targetRunId"], target_run_id);
+    assert_eq!(thread["followUpQueue"][0]["state"], "ready");
+
+    session.settle(Duration::from_millis(300));
+    let mut dispatch_started = false;
+    for _ in 0..4 {
+        session.send(b"\r");
+        if session.wait_for("awaiting acknowledgement", Duration::from_secs(2)) {
+            dispatch_started = true;
+            break;
+        }
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let still_ready = registry["threads"][0]["followUpQueue"][0]["state"] == "ready";
+        let no_steer_attempt = registry["threads"][0]["sendAttempts"]
+            .as_array()
+            .is_some_and(|attempts| {
+                !attempts.iter().any(|attempt| {
+                    attempt["mode"] == "steer" && attempt["text"] == "steer active queue target"
+                })
+            });
+        let requests = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+            .expect("fake Core request log is present");
+        let no_steer_request = !requests.lines().any(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .is_some_and(|request| {
+                    request["method"] == "turn/steer"
+                        && request["params"]["text"] == "steer active queue target"
+                })
+        });
+        assert!(
+            still_ready && no_steer_attempt && no_steer_request,
+            "only a still-ready row with no attempt or Core request may be dispatched again: {registry}"
+        );
+        session.settle(Duration::from_millis(300));
+    }
+    assert!(
+        dispatch_started,
+        "explicit active-run queue delivery did not start\n{}",
+        session.output_tail()
+    );
+    let received = fixture_state.join("e2e-core-active-steer-received");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !received.exists() && Instant::now() < deadline {
+        session.settle(Duration::from_millis(100));
+    }
+    assert!(
+        received.exists(),
+        "steering was not delivered while the target prompt remained active\n{}",
+        session.output_tail()
+    );
+    let steer_params: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&received).unwrap()).unwrap();
+    assert_eq!(steer_params["sessionId"], "fixture-session");
+    assert_eq!(steer_params["text"], "steer active queue target");
+    assert_eq!(steer_params["context"]["targetRunId"], target_run_id);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let item_accepted = registry["threads"][0]["followUpQueue"][0]["state"] == "accepted";
+        if item_accepted || Instant::now() >= deadline {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    assert_eq!(
+        registry["threads"][0]["followUpQueue"][0]["state"], "accepted",
+        "positive Core steer acknowledgement should accept the queue row: {registry}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let attempts = registry["threads"][0]["sendAttempts"].as_array();
+        let steer_settled = attempts.is_some_and(|attempts| {
+            attempts.iter().any(|attempt| {
+                attempt["targetRunId"] == target_run_id
+                    && attempt["mode"] == "steer"
+                    && attempt["status"] == "settled"
+            })
+        });
+        if steer_settled || Instant::now() >= deadline {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    let attempts = registry["threads"][0]["sendAttempts"]
+        .as_array()
+        .expect("send attempts persist beside the queue");
+    assert!(
+        attempts.iter().any(|attempt| {
+            attempt["targetRunId"] == target_run_id
+                && attempt["mode"] == "steer"
+                && attempt["status"] == "settled"
+        }),
+        "the exact turn/steer response must settle its attempt before the original prompt is released: {registry}"
+    );
+    assert!(
+        attempts.iter().any(|attempt| {
+            attempt["mode"] == "prompt"
+                && attempt["status"] == "working"
+                && attempt["targetRunId"] == target_run_id
+        }),
+        "the held prompt must remain active while the steer response settles: {registry}"
+    );
+    std::fs::write(
+        fixture_state.join("e2e-core-active-steer-release"),
+        "release",
+    )
+    .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(12);
+    let registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let settled = registry["threads"].as_array().is_some_and(|threads| {
+            threads[0]["sendAttempts"]
+                .as_array()
+                .is_some_and(|attempts| {
+                    attempts.len() == 2
+                        && attempts
+                            .iter()
+                            .all(|attempt| attempt["status"] == "settled")
+                })
+        });
+        if settled || Instant::now() >= deadline {
+            break registry;
+        }
+        session.settle(Duration::from_millis(100));
+    };
+    assert!(
+        registry["threads"][0]["sendAttempts"]
+            .as_array()
+            .is_some_and(|attempts| {
+                attempts.len() == 2
+                    && attempts
+                        .iter()
+                        .all(|attempt| attempt["status"] == "settled")
+            }),
+        "accepted steer should settle only from its correlated response, with both run attempts terminal: {registry}"
+    );
+    let requests = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+        .expect("fake Core request log is present");
+    assert!(
+        requests.lines().any(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .is_some_and(|request| {
+                    request["method"] == "turn/steer"
+                        && request["params"]["text"] == "steer active queue target"
+                        && request["params"]["context"]["targetRunId"] == target_run_id
+                })
+        }),
+        "the active run's exact target must reach Core as a steer"
+    );
+    session.kill();
+    drop(fixture_guard);
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn agent_update_route_requires_confirmation_in_tui() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;

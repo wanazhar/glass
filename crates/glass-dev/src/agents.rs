@@ -504,6 +504,7 @@ impl AgentRegistry {
             role: spec.role.clone(),
             created_at_ms: now,
             composer_draft: None,
+            follow_up_queue: None,
             runs: vec![RunRecord {
                 run_id: run_id.clone(),
                 engine: harness.id().into(),
@@ -604,6 +605,21 @@ impl AgentRegistry {
             .map(|record| record.thread_id.clone())
             .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))?;
         Ok((self.thread_store.clone(), thread_id))
+    }
+
+    pub(crate) fn follow_up_queue_target(
+        &self,
+        id: &AgentId,
+    ) -> DevelopmentResult<(ThreadStore, String, String)> {
+        let record = self
+            .records
+            .get(id)
+            .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))?;
+        Ok((
+            self.thread_store.clone(),
+            record.thread_id.clone(),
+            record.run_id.clone(),
+        ))
     }
 
     /// Return refreshed snapshots for all registered agents.
@@ -1966,6 +1982,7 @@ mod tests {
                 role: spec.role.clone(),
                 created_at_ms: now,
                 composer_draft: None,
+                follow_up_queue: None,
                 runs: vec![RunRecord {
                     run_id: run_id.clone(),
                     engine: "glass-core".into(),
@@ -2076,6 +2093,7 @@ mod tests {
                 role: "builder".into(),
                 created_at_ms: 1,
                 composer_draft: None,
+                follow_up_queue: None,
                 runs: vec![RunRecord {
                     run_id: crate::thread_store::random_id("run").unwrap(),
                     engine: "glass-core".into(),
@@ -2184,6 +2202,7 @@ mod tests {
                 role: "builder".into(),
                 created_at_ms: 1,
                 composer_draft: None,
+                follow_up_queue: None,
                 runs: vec![RunRecord {
                     run_id: run_id.clone(),
                     engine: "glass-core".into(),

@@ -383,8 +383,11 @@ confirmation. Windows drafts remain process-local because the ledger inherits wo
 and Glass does not claim private draft durability there. Reopened entries with Core
 session references are labelled `recovery pending`, while work queued or
 stopped before initialization is `unavailable`. Both reject sends. This
-checkpoint does not reattach to Core, replay prompts, or persist transcripts
-or follow-up queues. Workspace-local todos
+checkpoint does not reattach to Core, replay prompts, or persist transcripts.
+Durable editable follow-up queues, with explicit run destinations and no
+automatic restart replay, are tracked in the
+[follow-up queue task](../plan/tasks/issue63-durable-followup-queue-001.md).
+Workspace-local todos
 (`glass.todo.*`) persist at `.glass/todos/session.json` and form the Agent
 checklist shown on Agent and Tasks; they are not the overnight task DAG.
 

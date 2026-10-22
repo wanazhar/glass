@@ -1216,6 +1216,17 @@ impl DevelopmentToolRouter {
                 let text = string("text")?;
                 let context = call.arguments.get("context").cloned();
                 let mode = optional_string(call, "mode").unwrap_or("follow-up");
+                let expected_run_id = match call.arguments.get("expectedRunId") {
+                    Some(Value::String(value)) if !value.is_empty() && value.len() <= 64 => {
+                        Some(value.as_str())
+                    }
+                    Some(_) => {
+                        return Err(DevelopmentError::InvalidInput(
+                            "expectedRunId must be a bounded string".into(),
+                        ));
+                    }
+                    None => None,
+                };
                 let client_message_id = match call.arguments.get("clientMessageId") {
                     Some(Value::String(value)) => Some(value.as_str()),
                     Some(_) => {
@@ -1273,14 +1284,31 @@ impl DevelopmentToolRouter {
                         return Ok(serde_json::json!({"queued":true,"agentId":id}));
                     }
                 };
+                if let Some(expected_run_id) = expected_run_id {
+                    let (_, _, actual_run_id) = workspace
+                        .agents()
+                        .follow_up_queue_target(&agent)?;
+                    validate_expected_run_id(expected_run_id, &actual_run_id)?;
+                }
                 let mut status = workspace.agents().snapshot(&agent)?.status;
                 let restarted = matches!(
                     status,
                     crate::AgentStatus::Failed | crate::AgentStatus::Cancelled
                 );
                 if restarted {
+                    if expected_run_id.is_some() {
+                        return Err(DevelopmentError::Conflict(
+                            "follow-up destination is no longer active; review and retarget the queue item"
+                                .into(),
+                        ));
+                    }
                     workspace.agents().restart(&agent)?;
                     status = workspace.agents().snapshot(&agent)?.status;
+                }
+                if expected_run_id.is_some() && mode == "steer" && status != crate::AgentStatus::Working {
+                    return Err(DevelopmentError::Conflict(
+                        "steering destination is not an active run".into(),
+                    ));
                 }
                 let effective_mode = if status == crate::AgentStatus::Working
                     && matches!(mode, "steer" | "follow-up")
@@ -2282,6 +2310,7 @@ fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
                     "text": {"type": "string", "minLength": 1, "maxLength": 65536},
                     "mode": {"type": "string", "enum": ["prompt", "follow-up", "steer"]},
                     "agentId": {"type": "string", "minLength": 1, "maxLength": 64},
+                    "expectedRunId": {"type": "string", "minLength": 1, "maxLength": 64},
                     "context": {"type": "object"},
                     "intent": {"type": "string", "maxLength": 2048},
                     "verify": {"type": "object"},
@@ -2403,6 +2432,16 @@ fn required_string<'a>(call: &'a ToolCall, name: &str) -> DevelopmentResult<&'a 
         .ok_or_else(|| {
             DevelopmentError::InvalidInput(format!("{} requires bounded string {name}", call.name))
         })
+}
+
+fn validate_expected_run_id(expected: &str, actual: &str) -> DevelopmentResult<()> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(DevelopmentError::Conflict(
+            "follow-up destination changed; review the queue item before sending".into(),
+        ))
+    }
 }
 
 fn optional_string<'a>(call: &'a ToolCall, name: &str) -> Option<&'a str> {
@@ -3054,6 +3093,22 @@ mod tests {
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
         }
+    }
+
+    #[test]
+    fn stale_expected_run_guard_rejects_before_any_restart_action() {
+        let current_run = "run-11111111111111111111111111111111";
+        let expected_run = "run-22222222222222222222222222222222";
+        let mut restart_called = false;
+
+        let guard = validate_expected_run_id(expected_run, current_run);
+        if guard.is_ok() {
+            restart_called = true;
+        }
+
+        assert!(matches!(guard, Err(DevelopmentError::Conflict(_))));
+        assert!(!restart_called);
+        assert_eq!(current_run, "run-11111111111111111111111111111111");
     }
 
     #[test]

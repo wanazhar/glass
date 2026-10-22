@@ -375,6 +375,258 @@ enum ComposerDraftWrite {
 }
 
 #[cfg(unix)]
+type PendingFollowUpQueueLoad = (
+    u64,
+    std::sync::mpsc::Receiver<Result<FollowUpQueueSnapshot, String>>,
+);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct FollowUpQueueSnapshot {
+    current_run_id: String,
+    entries: Vec<crate::thread_store::FollowUpQueueRecord>,
+}
+
+#[cfg(unix)]
+enum FollowUpQueueCommand {
+    Save {
+        workspace: crate::workspace::SharedDevelopmentWorkspace,
+        agent_id: crate::AgentId,
+        entries: Vec<crate::thread_store::FollowUpQueueRecord>,
+        generation: u64,
+    },
+    Load {
+        workspace: crate::workspace::SharedDevelopmentWorkspace,
+        agent_id: crate::AgentId,
+        reply: std::sync::mpsc::Sender<Result<FollowUpQueueSnapshot, String>>,
+    },
+    Shutdown,
+}
+
+#[cfg(unix)]
+enum FollowUpQueueEvent {
+    Saved(crate::AgentId, u64),
+    SaveFailed(crate::AgentId, u64, String),
+}
+
+#[cfg(unix)]
+fn clear_pending_queue_dispatch_if_matches(
+    pending: &mut Option<(crate::AgentId, String, u64)>,
+    agent_id: &crate::AgentId,
+    generation: u64,
+) -> bool {
+    if pending
+        .as_ref()
+        .is_some_and(|(owner, _, pending_generation)| {
+            owner == agent_id && *pending_generation == generation
+        })
+    {
+        *pending = None;
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(unix)]
+struct FollowUpQueueWriter {
+    tx: std::sync::mpsc::Sender<FollowUpQueueCommand>,
+    events: std::sync::mpsc::Receiver<FollowUpQueueEvent>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(unix)]
+impl FollowUpQueueWriter {
+    fn spawn() -> Self {
+        use std::collections::BTreeMap;
+        use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
+        use std::time::Duration;
+
+        type PendingQueueWrites = BTreeMap<
+            crate::AgentId,
+            (
+                crate::workspace::SharedDevelopmentWorkspace,
+                Vec<crate::thread_store::FollowUpQueueRecord>,
+                u64,
+            ),
+        >;
+
+        let (tx, rx) = mpsc::channel();
+        let (events_tx, events) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut pending = PendingQueueWrites::new();
+            let flush = |pending: &mut PendingQueueWrites,
+                         events: &mpsc::Sender<FollowUpQueueEvent>| {
+                let owners = pending.keys().cloned().collect::<Vec<_>>();
+                for owner in owners {
+                    let Some((workspace, entries, generation)) = pending.remove(&owner) else {
+                        continue;
+                    };
+                    let result = workspace
+                        .lock()
+                        .and_then(|mut workspace| {
+                            let (store, thread_id, _) =
+                                workspace.agents().follow_up_queue_target(&owner)?;
+                            store.set_follow_up_queue(&thread_id, entries)
+                        })
+                        .map_err(|error| error.to_string());
+                    let event = match result {
+                        Ok(()) => FollowUpQueueEvent::Saved(owner, generation),
+                        Err(error) => FollowUpQueueEvent::SaveFailed(owner, generation, error),
+                    };
+                    let _ = events.send(event);
+                }
+            };
+            loop {
+                match rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(FollowUpQueueCommand::Save {
+                        workspace,
+                        agent_id,
+                        entries,
+                        generation,
+                    }) => {
+                        pending.insert(agent_id, (workspace, entries, generation));
+                        loop {
+                            match rx.try_recv() {
+                                Ok(FollowUpQueueCommand::Save {
+                                    workspace,
+                                    agent_id,
+                                    entries,
+                                    generation,
+                                }) => {
+                                    pending.insert(agent_id, (workspace, entries, generation));
+                                }
+                                Ok(FollowUpQueueCommand::Load {
+                                    workspace,
+                                    agent_id,
+                                    reply,
+                                }) => {
+                                    flush(&mut pending, &events_tx);
+                                    let result = workspace
+                                        .lock()
+                                        .and_then(|mut workspace| {
+                                            let (store, thread_id, run_id) = workspace
+                                                .agents()
+                                                .follow_up_queue_target(&agent_id)?;
+                                            let mut entries = store.follow_up_queue(&thread_id)?;
+                                            for entry in &mut entries {
+                                                if entry.state
+                                                    == crate::thread_store::FollowUpQueueState::Dispatching
+                                                {
+                                                    entry.state = crate::thread_store::FollowUpQueueState::NeedsReview;
+                                                }
+                                            }
+                                            Ok(FollowUpQueueSnapshot {
+                                                current_run_id: run_id,
+                                                entries,
+                                            })
+                                        })
+                                        .map_err(|error| error.to_string());
+                                    let _ = reply.send(result);
+                                }
+                                Ok(FollowUpQueueCommand::Shutdown) => {
+                                    flush(&mut pending, &events_tx);
+                                    return;
+                                }
+                                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                            }
+                        }
+                    }
+                    Ok(FollowUpQueueCommand::Load {
+                        workspace,
+                        agent_id,
+                        reply,
+                    }) => {
+                        flush(&mut pending, &events_tx);
+                        let result = workspace
+                            .lock()
+                            .and_then(|mut workspace| {
+                                let (store, thread_id, run_id) =
+                                    workspace.agents().follow_up_queue_target(&agent_id)?;
+                                let mut entries = store.follow_up_queue(&thread_id)?;
+                                for entry in &mut entries {
+                                    if entry.state
+                                        == crate::thread_store::FollowUpQueueState::Dispatching
+                                    {
+                                        entry.state =
+                                            crate::thread_store::FollowUpQueueState::NeedsReview;
+                                    }
+                                }
+                                Ok(FollowUpQueueSnapshot {
+                                    current_run_id: run_id,
+                                    entries,
+                                })
+                            })
+                            .map_err(|error| error.to_string());
+                        let _ = reply.send(result);
+                    }
+                    Ok(FollowUpQueueCommand::Shutdown) => {
+                        flush(&mut pending, &events_tx);
+                        return;
+                    }
+                    Err(RecvTimeoutError::Timeout) => flush(&mut pending, &events_tx),
+                    Err(RecvTimeoutError::Disconnected) => {
+                        flush(&mut pending, &events_tx);
+                        return;
+                    }
+                }
+            }
+        });
+        Self {
+            tx,
+            events,
+            worker: Some(worker),
+        }
+    }
+
+    fn load(
+        &self,
+        workspace: crate::workspace::SharedDevelopmentWorkspace,
+        agent_id: crate::AgentId,
+    ) -> Result<std::sync::mpsc::Receiver<Result<FollowUpQueueSnapshot, String>>, String> {
+        let (reply, result) = std::sync::mpsc::channel();
+        self.tx
+            .send(FollowUpQueueCommand::Load {
+                workspace,
+                agent_id,
+                reply,
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(result)
+    }
+
+    fn save(
+        &self,
+        workspace: crate::workspace::SharedDevelopmentWorkspace,
+        agent_id: crate::AgentId,
+        entries: Vec<crate::thread_store::FollowUpQueueRecord>,
+        generation: u64,
+    ) -> Result<(), String> {
+        self.tx
+            .send(FollowUpQueueCommand::Save {
+                workspace,
+                agent_id,
+                entries,
+                generation,
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    fn try_event(&self) -> Option<FollowUpQueueEvent> {
+        self.events.try_recv().ok()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for FollowUpQueueWriter {
+    fn drop(&mut self) {
+        let _ = self.tx.send(FollowUpQueueCommand::Shutdown);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+#[cfg(unix)]
 enum ComposerDraftTarget {
     Agent {
         workspace: crate::workspace::SharedDevelopmentWorkspace,
@@ -1073,6 +1325,23 @@ pub struct DevTuiState {
     pub pending_chat_messages: Vec<PendingChatMessage>,
     pub agent_send_job: Option<u64>,
     pub selected_agent: Option<crate::AgentId>,
+    pub follow_up_queue_open: bool,
+    pub follow_up_queue_selection: usize,
+    pub follow_up_queue_edit_text: String,
+    pub follow_up_queue_edit_cursor: usize,
+    pub(crate) follow_up_queue_edit_mode: Option<crate::thread_store::FollowUpQueueMode>,
+    pub follow_up_queue_edit_index: Option<usize>,
+    follow_up_queue_edit_target_run_id: Option<String>,
+    pub follow_up_queue_retry_confirmation: Option<String>,
+    follow_up_queue_snapshots: std::collections::BTreeMap<crate::AgentId, FollowUpQueueSnapshot>,
+    follow_up_queue_generations: std::collections::BTreeMap<crate::AgentId, u64>,
+    follow_up_queue_pending_dispatch: Option<(crate::AgentId, String, u64)>,
+    follow_up_queue_dispatch_jobs: std::collections::BTreeMap<u64, (crate::AgentId, String)>,
+    #[cfg(unix)]
+    follow_up_queue_writer: Option<FollowUpQueueWriter>,
+    #[cfg(unix)]
+    pending_follow_up_queue_loads:
+        std::collections::BTreeMap<crate::AgentId, PendingFollowUpQueueLoad>,
     /// Drafts keyed by process-local resident agent identity; `None` is the
     /// composer before an agent thread is selected.
     thread_drafts: std::collections::BTreeMap<Option<crate::AgentId>, ComposerDraft>,
@@ -1445,6 +1714,22 @@ impl DevTuiState {
             pending_chat_messages: Vec::new(),
             agent_send_job: None,
             selected_agent: None,
+            follow_up_queue_open: false,
+            follow_up_queue_selection: 0,
+            follow_up_queue_edit_text: String::new(),
+            follow_up_queue_edit_cursor: 0,
+            follow_up_queue_edit_mode: None,
+            follow_up_queue_edit_index: None,
+            follow_up_queue_edit_target_run_id: None,
+            follow_up_queue_retry_confirmation: None,
+            follow_up_queue_snapshots: std::collections::BTreeMap::new(),
+            follow_up_queue_generations: std::collections::BTreeMap::new(),
+            follow_up_queue_pending_dispatch: None,
+            follow_up_queue_dispatch_jobs: std::collections::BTreeMap::new(),
+            #[cfg(unix)]
+            follow_up_queue_writer: None,
+            #[cfg(unix)]
+            pending_follow_up_queue_loads: std::collections::BTreeMap::new(),
             thread_drafts: std::collections::BTreeMap::new(),
             #[cfg(unix)]
             persisted_composer_draft: None,
@@ -3783,6 +4068,702 @@ impl DevTuiState {
         );
     }
 
+    pub fn open_follow_up_queue(&mut self) {
+        let Some(agent_id) = self.selected_agent.clone() else {
+            self.status = "Select a resident thread before opening its follow-up queue".into();
+            return;
+        };
+        self.follow_up_queue_open = true;
+        self.follow_up_queue_selection = 0;
+        if self.follow_up_queue_snapshots.contains_key(&agent_id) {
+            let _ = self.refresh_follow_up_queue_run(&agent_id);
+            self.status =
+                "Thread queue · a add · e edit · J/K reorder · d remove · Enter send".into();
+            return;
+        }
+        #[cfg(unix)]
+        {
+            let writer = self
+                .follow_up_queue_writer
+                .get_or_insert_with(FollowUpQueueWriter::spawn);
+            match writer.load(self.workspace.clone(), agent_id.clone()) {
+                Ok(reply) => {
+                    let generation = self
+                        .follow_up_queue_generations
+                        .get(&agent_id)
+                        .copied()
+                        .unwrap_or_default();
+                    self.pending_follow_up_queue_loads
+                        .insert(agent_id, (generation, reply));
+                    self.status = "Loading this thread’s follow-up queue…".into();
+                }
+                Err(error) => {
+                    self.status = format!("Could not load follow-up queue: {error}");
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            let target = self.workspace.try_lock().and_then(|mut workspace| {
+                workspace
+                    .agents()
+                    .follow_up_queue_target(&agent_id)
+                    .map(|(_, _, run_id)| run_id)
+            });
+            match target {
+                Ok(current_run_id) => {
+                    self.follow_up_queue_snapshots.insert(
+                        agent_id,
+                        FollowUpQueueSnapshot {
+                            current_run_id,
+                            entries: Vec::new(),
+                        },
+                    );
+                    self.status = "Queue is available for this session only on Windows".into();
+                }
+                Err(error) => self.status = format!("Could not open follow-up queue: {error}"),
+            }
+        }
+    }
+
+    pub fn close_follow_up_queue(&mut self) {
+        self.follow_up_queue_open = false;
+        self.cancel_follow_up_queue_edit();
+    }
+
+    pub(crate) fn follow_up_queue_view(
+        &self,
+    ) -> Option<(&str, &[crate::thread_store::FollowUpQueueRecord])> {
+        self.selected_agent
+            .as_ref()
+            .and_then(|agent_id| self.follow_up_queue_snapshots.get(agent_id))
+            .map(|snapshot| {
+                (
+                    snapshot.current_run_id.as_str(),
+                    snapshot.entries.as_slice(),
+                )
+            })
+    }
+
+    pub fn follow_up_queue_is_editing(&self) -> bool {
+        self.follow_up_queue_edit_mode.is_some()
+    }
+
+    pub fn poll_follow_up_queue_io(
+        &mut self,
+        worker: &mut super::snapshot::SnapshotWorker,
+    ) -> bool {
+        let mut changed = false;
+        #[cfg(unix)]
+        {
+            let events = self
+                .follow_up_queue_writer
+                .as_ref()
+                .map(|writer| std::iter::from_fn(|| writer.try_event()).collect::<Vec<_>>())
+                .unwrap_or_default();
+            for event in events {
+                match event {
+                    FollowUpQueueEvent::Saved(agent_id, generation) => {
+                        if self.follow_up_queue_generations.get(&agent_id) == Some(&generation) {
+                            changed = true;
+                            if self.follow_up_queue_pending_dispatch.as_ref().is_some_and(
+                                |(owner, _, pending_generation)| {
+                                    owner == &agent_id && *pending_generation == generation
+                                },
+                            ) {
+                                self.submit_follow_up_queue_dispatch(worker);
+                            }
+                        }
+                    }
+                    FollowUpQueueEvent::SaveFailed(agent_id, generation, error) => {
+                        if self.follow_up_queue_generations.get(&agent_id) == Some(&generation) {
+                            clear_pending_queue_dispatch_if_matches(
+                                &mut self.follow_up_queue_pending_dispatch,
+                                &agent_id,
+                                generation,
+                            );
+                            if let Some(snapshot) =
+                                self.follow_up_queue_snapshots.get_mut(&agent_id)
+                                && let Some(entry) = snapshot.entries.iter_mut().find(|entry| {
+                                    entry.state
+                                        == crate::thread_store::FollowUpQueueState::Dispatching
+                                })
+                            {
+                                entry.state = crate::thread_store::FollowUpQueueState::Ready;
+                            }
+                            self.status = format!("Could not save follow-up queue: {error}");
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            let owners = self
+                .pending_follow_up_queue_loads
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            for agent_id in owners {
+                let Some((generation, reply)) =
+                    self.pending_follow_up_queue_loads.remove(&agent_id)
+                else {
+                    continue;
+                };
+                match reply.try_recv() {
+                    Ok(Ok(snapshot)) => {
+                        let unchanged = self
+                            .follow_up_queue_generations
+                            .get(&agent_id)
+                            .copied()
+                            .unwrap_or_default()
+                            == generation
+                            && !self.follow_up_queue_snapshots.contains_key(&agent_id);
+                        if unchanged {
+                            self.follow_up_queue_snapshots
+                                .insert(agent_id.clone(), snapshot);
+                            if self.follow_up_queue_open
+                                && self.selected_agent.as_ref() == Some(&agent_id)
+                            {
+                                self.status = "Thread queue loaded · persisted rows are never sent automatically".into();
+                            }
+                            changed = true;
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        if self.follow_up_queue_open
+                            && self.selected_agent.as_ref() == Some(&agent_id)
+                        {
+                            self.status = format!("Could not load follow-up queue: {error}");
+                            changed = true;
+                        }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        self.pending_follow_up_queue_loads
+                            .insert(agent_id, (generation, reply));
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        if self.follow_up_queue_open
+                            && self.selected_agent.as_ref() == Some(&agent_id)
+                        {
+                            self.status = "Follow-up queue worker disconnected".into();
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    fn save_follow_up_queue(&mut self, agent_id: crate::AgentId) -> Option<u64> {
+        let Some(snapshot) = self.follow_up_queue_snapshots.get(&agent_id).cloned() else {
+            self.status = "Follow-up queue is still loading".into();
+            return None;
+        };
+        let generation = self
+            .follow_up_queue_generations
+            .entry(agent_id.clone())
+            .or_default();
+        *generation = generation.wrapping_add(1);
+        let generation = *generation;
+        #[cfg(unix)]
+        {
+            let writer = self
+                .follow_up_queue_writer
+                .get_or_insert_with(FollowUpQueueWriter::spawn);
+            if let Err(error) = writer.save(
+                self.workspace.clone(),
+                agent_id,
+                snapshot.entries,
+                generation,
+            ) {
+                self.status = format!("Could not queue follow-up queue save: {error}");
+                return None;
+            }
+        }
+        #[cfg(windows)]
+        {
+            let _ = snapshot;
+            self.status = "Queue changes are process-local on Windows".into();
+        }
+        Some(generation)
+    }
+
+    pub fn move_follow_up_queue_selection(&mut self, delta: i32) {
+        let Some(agent_id) = self.selected_agent.as_ref() else {
+            return;
+        };
+        let count = self
+            .follow_up_queue_snapshots
+            .get(agent_id)
+            .map_or(0, |snapshot| snapshot.entries.len());
+        if count == 0 {
+            return;
+        }
+        let next = self.follow_up_queue_selection as i32 + delta;
+        self.follow_up_queue_selection = next.clamp(0, count as i32 - 1) as usize;
+    }
+
+    pub(crate) fn begin_follow_up_queue_add(
+        &mut self,
+        mode: crate::thread_store::FollowUpQueueMode,
+    ) {
+        let Some(agent_id) = self.selected_agent.clone() else {
+            return;
+        };
+        if !self.refresh_follow_up_queue_run(&agent_id) {
+            self.status = "Could not verify the current run destination".into();
+            return;
+        }
+        let Some(snapshot) = self.follow_up_queue_snapshots.get(&agent_id) else {
+            self.status = "Wait for the thread queue to load".into();
+            return;
+        };
+        if snapshot.entries.len() >= 32 {
+            self.status = "Thread queue reached its 32 item limit".into();
+            return;
+        }
+        if mode == crate::thread_store::FollowUpQueueMode::Steer
+            && !self.selected_agent_is_working(&agent_id)
+        {
+            self.status = "Steering needs an active run; choose a follow-up instead".into();
+            return;
+        }
+        self.follow_up_queue_edit_text = self.composer_input.clone();
+        self.follow_up_queue_edit_cursor = self.follow_up_queue_edit_text.len();
+        self.follow_up_queue_edit_mode = Some(mode);
+        self.follow_up_queue_edit_index = None;
+        self.follow_up_queue_edit_target_run_id = Some(snapshot.current_run_id.clone());
+    }
+
+    pub fn begin_follow_up_queue_edit(&mut self) {
+        let Some(agent_id) = self.selected_agent.as_ref() else {
+            return;
+        };
+        let Some(entry) = self
+            .follow_up_queue_snapshots
+            .get(agent_id)
+            .and_then(|snapshot| snapshot.entries.get(self.follow_up_queue_selection))
+            .cloned()
+        else {
+            return;
+        };
+        self.follow_up_queue_edit_text = entry.text;
+        self.follow_up_queue_edit_cursor = self.follow_up_queue_edit_text.len();
+        self.follow_up_queue_edit_mode = Some(entry.mode);
+        self.follow_up_queue_edit_target_run_id = Some(entry.target_run_id);
+        self.follow_up_queue_edit_index = Some(self.follow_up_queue_selection);
+    }
+
+    pub fn follow_up_queue_edit_char(&mut self, character: char) {
+        if self.follow_up_queue_edit_text.len() + character.len_utf8() > 16 * 1024
+            || character == '\0'
+        {
+            self.status = "Follow-up text limit reached".into();
+            return;
+        }
+        self.follow_up_queue_edit_text
+            .insert(self.follow_up_queue_edit_cursor, character);
+        self.follow_up_queue_edit_cursor += character.len_utf8();
+    }
+
+    pub fn follow_up_queue_edit_backspace(&mut self) {
+        if self.follow_up_queue_edit_cursor == 0 {
+            return;
+        }
+        let previous = self.follow_up_queue_edit_text[..self.follow_up_queue_edit_cursor]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        self.follow_up_queue_edit_text
+            .drain(previous..self.follow_up_queue_edit_cursor);
+        self.follow_up_queue_edit_cursor = previous;
+    }
+
+    pub fn cancel_follow_up_queue_edit(&mut self) {
+        self.follow_up_queue_edit_text.clear();
+        self.follow_up_queue_edit_cursor = 0;
+        self.follow_up_queue_edit_mode = None;
+        self.follow_up_queue_edit_index = None;
+        self.follow_up_queue_edit_target_run_id = None;
+    }
+
+    pub fn commit_follow_up_queue_edit(&mut self) {
+        let Some(agent_id) = self.selected_agent.clone() else {
+            return;
+        };
+        if !self.refresh_follow_up_queue_run(&agent_id) {
+            self.status = "Could not verify the current run destination".into();
+            return;
+        }
+        let text = self.follow_up_queue_edit_text.clone();
+        let Some(mode) = self.follow_up_queue_edit_mode else {
+            return;
+        };
+        let Some(target_run_id) = self.follow_up_queue_edit_target_run_id.clone() else {
+            return;
+        };
+        if text.trim().is_empty() || text.contains('\0') || text.len() > 16 * 1024 {
+            self.status = "Follow-up text must contain 1 to 16 KiB of text".into();
+            return;
+        }
+        if mode == crate::thread_store::FollowUpQueueMode::Steer
+            && (!self.selected_agent_is_working(&agent_id)
+                || self
+                    .follow_up_queue_snapshots
+                    .get(&agent_id)
+                    .is_none_or(|snapshot| snapshot.current_run_id != target_run_id))
+        {
+            self.status = "Steering destination must be this thread’s active run".into();
+            return;
+        }
+        let Some(snapshot) = self.follow_up_queue_snapshots.get_mut(&agent_id) else {
+            return;
+        };
+        if let Some(index) = self.follow_up_queue_edit_index {
+            let Some(entry) = snapshot.entries.get_mut(index) else {
+                return;
+            };
+            entry.text = text;
+            entry.mode = mode;
+            entry.target_run_id = target_run_id;
+            if entry.state != crate::thread_store::FollowUpQueueState::Accepted {
+                entry.state = crate::thread_store::FollowUpQueueState::Ready;
+            }
+        } else {
+            snapshot
+                .entries
+                .push(crate::thread_store::FollowUpQueueRecord {
+                    entry_id: match crate::thread_store::random_id("queue") {
+                        Ok(id) => id,
+                        Err(error) => {
+                            self.status = format!("Could not create queue item: {error}");
+                            return;
+                        }
+                    },
+                    target_run_id,
+                    mode,
+                    text,
+                    state: crate::thread_store::FollowUpQueueState::Ready,
+                });
+            self.follow_up_queue_selection = snapshot.entries.len().saturating_sub(1);
+        }
+        self.cancel_follow_up_queue_edit();
+        if self.save_follow_up_queue(agent_id).is_some() {
+            self.status = "Follow-up saved to this thread’s queue".into();
+        }
+    }
+
+    pub fn remove_selected_follow_up_queue_entry(&mut self) {
+        let Some(agent_id) = self.selected_agent.clone() else {
+            return;
+        };
+        let Some(snapshot) = self.follow_up_queue_snapshots.get_mut(&agent_id) else {
+            return;
+        };
+        if self.follow_up_queue_selection >= snapshot.entries.len() {
+            return;
+        }
+        snapshot.entries.remove(self.follow_up_queue_selection);
+        self.follow_up_queue_selection = self
+            .follow_up_queue_selection
+            .min(snapshot.entries.len().saturating_sub(1));
+        if self.save_follow_up_queue(agent_id).is_some() {
+            self.status = "Removed follow-up from this thread’s queue".into();
+        }
+    }
+
+    pub fn reorder_selected_follow_up_queue_entry(&mut self, delta: i32) {
+        let Some(agent_id) = self.selected_agent.clone() else {
+            return;
+        };
+        let Some(snapshot) = self.follow_up_queue_snapshots.get_mut(&agent_id) else {
+            return;
+        };
+        let next = self.follow_up_queue_selection as i32 + delta;
+        if next < 0 || next as usize >= snapshot.entries.len() {
+            return;
+        }
+        snapshot
+            .entries
+            .swap(self.follow_up_queue_selection, next as usize);
+        self.follow_up_queue_selection = next as usize;
+        let _ = self.save_follow_up_queue(agent_id);
+    }
+
+    pub fn retarget_selected_follow_up_queue_entry(&mut self) {
+        let Some(agent_id) = self.selected_agent.clone() else {
+            return;
+        };
+        if !self.refresh_follow_up_queue_run(&agent_id) {
+            self.status = "Could not verify the current run destination".into();
+            return;
+        }
+        let Some((run_id, mode)) =
+            self.follow_up_queue_snapshots
+                .get(&agent_id)
+                .and_then(|snapshot| {
+                    snapshot
+                        .entries
+                        .get(self.follow_up_queue_selection)
+                        .map(|entry| (snapshot.current_run_id.clone(), entry.mode))
+                })
+        else {
+            return;
+        };
+        if mode == crate::thread_store::FollowUpQueueMode::Steer
+            && !self.selected_agent_is_working(&agent_id)
+        {
+            self.status = "Steering destination must be an active run".into();
+            return;
+        }
+        let Some(entry) = self
+            .follow_up_queue_snapshots
+            .get_mut(&agent_id)
+            .and_then(|snapshot| snapshot.entries.get_mut(self.follow_up_queue_selection))
+        else {
+            return;
+        };
+        entry.target_run_id = run_id;
+        if entry.state != crate::thread_store::FollowUpQueueState::Accepted {
+            entry.state = crate::thread_store::FollowUpQueueState::Ready;
+        }
+        let _ = self.save_follow_up_queue(agent_id);
+    }
+
+    pub fn dispatch_selected_follow_up_queue_entry(
+        &mut self,
+        _worker: &mut super::snapshot::SnapshotWorker,
+    ) {
+        let Some(agent_id) = self.selected_agent.clone() else {
+            return;
+        };
+        if let Some(entry) = self
+            .follow_up_queue_snapshots
+            .get(&agent_id)
+            .and_then(|snapshot| snapshot.entries.get(self.follow_up_queue_selection))
+            .filter(|entry| entry.state == crate::thread_store::FollowUpQueueState::NeedsReview)
+        {
+            self.follow_up_queue_retry_confirmation = Some(entry.entry_id.clone());
+            self.status = "Runtime acceptance is unknown; retry may duplicate this message. Press Enter again to confirm".into();
+            return;
+        }
+        if !self.refresh_follow_up_queue_run(&agent_id) {
+            self.status = "Could not verify the current run destination".into();
+            return;
+        }
+        let Some((entry_id, target_run_id, current_run_id, mode, state)) = self
+            .follow_up_queue_snapshots
+            .get(&agent_id)
+            .and_then(|snapshot| {
+                snapshot
+                    .entries
+                    .get(self.follow_up_queue_selection)
+                    .map(|entry| {
+                        (
+                            entry.entry_id.clone(),
+                            entry.target_run_id.clone(),
+                            snapshot.current_run_id.clone(),
+                            entry.mode,
+                            entry.state,
+                        )
+                    })
+            })
+        else {
+            return;
+        };
+        if state != crate::thread_store::FollowUpQueueState::Ready {
+            self.status = "Only ready or review-required rows can be sent".into();
+            return;
+        }
+        if target_run_id != current_run_id {
+            self.status = "This item targets an older run · press t to retarget explicitly".into();
+            return;
+        }
+        if mode == crate::thread_store::FollowUpQueueMode::Steer
+            && !self.selected_agent_is_working(&agent_id)
+        {
+            self.status = "Steering needs the explicitly targeted active run".into();
+            return;
+        }
+        self.start_follow_up_queue_dispatch(agent_id, entry_id);
+    }
+
+    pub fn confirm_follow_up_queue_retry(&mut self) {
+        let Some(entry_id) = self.follow_up_queue_retry_confirmation.take() else {
+            return;
+        };
+        let Some(agent_id) = self.selected_agent.clone() else {
+            return;
+        };
+        if !self.refresh_follow_up_queue_run(&agent_id) {
+            self.status = "Could not verify the current run destination".into();
+            return;
+        }
+        let target = self
+            .follow_up_queue_snapshots
+            .get(&agent_id)
+            .and_then(|snapshot| {
+                snapshot
+                    .entries
+                    .get(self.follow_up_queue_selection)
+                    .filter(|entry| {
+                        entry.entry_id == entry_id
+                            && entry.state == crate::thread_store::FollowUpQueueState::NeedsReview
+                    })
+                    .map(|entry| {
+                        (
+                            entry.target_run_id.clone(),
+                            entry.mode,
+                            snapshot.current_run_id.clone(),
+                        )
+                    })
+            });
+        let Some((target_run_id, mode, current_run_id)) = target else {
+            self.status = "Queue item changed; review it again before retrying".into();
+            return;
+        };
+        if target_run_id != current_run_id {
+            self.status = "This item targets an older run · retarget it before retrying".into();
+            return;
+        }
+        if mode == crate::thread_store::FollowUpQueueMode::Steer
+            && !self.selected_agent_is_working(&agent_id)
+        {
+            self.status = "Steering destination is no longer active".into();
+            return;
+        }
+        self.start_follow_up_queue_dispatch(agent_id, entry_id);
+    }
+
+    pub fn cancel_follow_up_queue_retry(&mut self) {
+        self.follow_up_queue_retry_confirmation = None;
+    }
+
+    fn start_follow_up_queue_dispatch(&mut self, agent_id: crate::AgentId, entry_id: String) {
+        let Some(entry) = self
+            .follow_up_queue_snapshots
+            .get_mut(&agent_id)
+            .and_then(|snapshot| {
+                snapshot
+                    .entries
+                    .iter_mut()
+                    .find(|entry| entry.entry_id == entry_id)
+            })
+        else {
+            return;
+        };
+        entry.state = crate::thread_store::FollowUpQueueState::Dispatching;
+        let Some(generation) = self.save_follow_up_queue(agent_id.clone()) else {
+            return;
+        };
+        self.follow_up_queue_pending_dispatch = Some((agent_id, entry_id, generation));
+        self.status = "Saving queue state before sending…".into();
+    }
+
+    fn submit_follow_up_queue_dispatch(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        let Some((agent_id, entry_id, _)) = self.follow_up_queue_pending_dispatch.take() else {
+            return;
+        };
+        let Some(entry) = self
+            .follow_up_queue_snapshots
+            .get(&agent_id)
+            .and_then(|snapshot| {
+                snapshot
+                    .entries
+                    .iter()
+                    .find(|entry| entry.entry_id == entry_id)
+            })
+            .cloned()
+        else {
+            return;
+        };
+        let mode = match entry.mode {
+            crate::thread_store::FollowUpQueueMode::Steer => "steer",
+            crate::thread_store::FollowUpQueueMode::FollowUp => "follow-up",
+        };
+        let arguments = serde_json::json!({
+            "agentId": agent_id.as_str(),
+            "text": entry.text,
+            "mode": mode,
+            "clientMessageId": entry.entry_id,
+            "expectedRunId": entry.target_run_id,
+            "context": {"source": "thread-follow-up-queue", "targetRunId": entry.target_run_id},
+        });
+        let (call, context) = match self.tool_request("glass.agent.send", arguments, true) {
+            Ok(request) => request,
+            Err(error) => {
+                self.mark_queue_dispatch_failed(&agent_id, &entry_id, &error);
+                return;
+            }
+        };
+        match worker.submit_tool(call, context) {
+            Ok(job_id) => {
+                self.follow_up_queue_dispatch_jobs
+                    .insert(job_id, (agent_id.clone(), entry_id.clone()));
+                self.agent_send_job = Some(job_id);
+                self.pending_chat_messages.push(PendingChatMessage {
+                    agent_id: Some(agent_id),
+                    message_id: entry_id,
+                    text: entry.text,
+                    state: ChatMessageState::Sending,
+                    job_id: Some(job_id),
+                    error: None,
+                });
+                self.status =
+                    "Queue item sent to the resident runtime · awaiting acknowledgement".into();
+            }
+            Err(error) => self.mark_queue_dispatch_failed(&agent_id, &entry_id, &error),
+        }
+    }
+
+    fn mark_queue_dispatch_failed(
+        &mut self,
+        agent_id: &crate::AgentId,
+        entry_id: &str,
+        error: &str,
+    ) {
+        if let Some(entry) = self
+            .follow_up_queue_snapshots
+            .get_mut(agent_id)
+            .and_then(|snapshot| {
+                snapshot
+                    .entries
+                    .iter_mut()
+                    .find(|entry| entry.entry_id == entry_id)
+            })
+        {
+            entry.state = crate::thread_store::FollowUpQueueState::NeedsReview;
+        }
+        self.status = format!("Queue delivery needs review · {error}");
+        let _ = self.save_follow_up_queue(agent_id.clone());
+    }
+
+    fn selected_agent_is_working(&self, agent_id: &crate::AgentId) -> bool {
+        self.workspace
+            .try_lock()
+            .ok()
+            .and_then(|mut workspace| workspace.agents().snapshot(agent_id).ok())
+            .is_some_and(|snapshot| snapshot.status == crate::AgentStatus::Working)
+    }
+
+    fn refresh_follow_up_queue_run(&mut self, agent_id: &crate::AgentId) -> bool {
+        let target = self.workspace.try_lock().and_then(|mut workspace| {
+            workspace
+                .agents()
+                .follow_up_queue_target(agent_id)
+                .map(|(_, _, run_id)| run_id)
+        });
+        let Ok(run_id) = target else {
+            return false;
+        };
+        let Some(snapshot) = self.follow_up_queue_snapshots.get_mut(agent_id) else {
+            return false;
+        };
+        snapshot.current_run_id = run_id;
+        true
+    }
+
     fn select_agent(&mut self, selected: Option<crate::AgentId>) -> bool {
         if self.selected_agent == selected {
             return true;
@@ -5459,6 +6440,62 @@ impl DevTuiState {
     }
 
     pub fn apply_tool_job_result(&mut self, result: super::snapshot::ToolJobResult) {
+        if result.tool == "glass.agent.send"
+            && let Some((agent_id, entry_id)) =
+                self.follow_up_queue_dispatch_jobs.remove(&result.id)
+        {
+            let accepted = matches!(
+                &result.result,
+                Ok(value)
+                    if value.get("queued").and_then(serde_json::Value::as_bool) == Some(true)
+            );
+            let error = result.result.as_ref().err().map(ToString::to_string);
+            if let Some(entry) =
+                self.follow_up_queue_snapshots
+                    .get_mut(&agent_id)
+                    .and_then(|snapshot| {
+                        snapshot
+                            .entries
+                            .iter_mut()
+                            .find(|entry| entry.entry_id == entry_id)
+                    })
+            {
+                entry.state = if accepted {
+                    crate::thread_store::FollowUpQueueState::Accepted
+                } else {
+                    crate::thread_store::FollowUpQueueState::NeedsReview
+                };
+            }
+            if let Some(message) = self
+                .pending_chat_messages
+                .iter_mut()
+                .find(|message| message.job_id == Some(result.id))
+            {
+                message.state = if accepted {
+                    ChatMessageState::Sent
+                } else {
+                    ChatMessageState::Failed
+                };
+                message.job_id = None;
+                message.error.clone_from(&error);
+            }
+            self.agent_send_job = self
+                .pending_chat_messages
+                .iter()
+                .rev()
+                .find(|message| message.state == ChatMessageState::Sending)
+                .and_then(|message| message.job_id);
+            self.status = if accepted {
+                "Runtime acknowledged the queued follow-up".into()
+            } else {
+                format!(
+                    "Follow-up delivery is unresolved · {} · review before retry",
+                    error.unwrap_or_else(|| "runtime did not confirm acceptance".into())
+                )
+            };
+            let _ = self.save_follow_up_queue(agent_id);
+            return;
+        }
         let mut publish_preview_status = true;
         if result.tool == "glass.agent.send"
             && self
@@ -12928,6 +13965,7 @@ mod tests {
             role: role.into(),
             created_at_ms: 1,
             composer_draft: None,
+            follow_up_queue: None,
             runs: vec![crate::thread_store::RunRecord {
                 run_id: crate::thread_store::random_id("run").unwrap(),
                 engine: "glass-core".into(),
@@ -13017,6 +14055,7 @@ mod tests {
                     classification: crate::thread_store::RunClassification::Starting,
                 }],
                 composer_draft: None,
+                follow_up_queue: None,
             })
             .unwrap();
         store
@@ -13091,6 +14130,7 @@ mod tests {
                     classification: crate::thread_store::RunClassification::Completed,
                 }],
                 composer_draft: None,
+                follow_up_queue: None,
             })
             .unwrap();
         let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop).unwrap();
@@ -13175,6 +14215,7 @@ mod tests {
                     classification: crate::thread_store::RunClassification::Completed,
                 }],
                 composer_draft: None,
+                follow_up_queue: None,
             })
             .unwrap();
 
@@ -13315,6 +14356,7 @@ mod tests {
                 classification: crate::thread_store::RunClassification::Completed,
             }],
             composer_draft: None,
+            follow_up_queue: None,
         };
         let agent_thread = make_thread("agent A");
         let other_thread = make_thread("agent B");
@@ -13410,6 +14452,7 @@ mod tests {
             role: role.into(),
             created_at_ms: 1,
             composer_draft: None,
+            follow_up_queue: None,
             runs: vec![crate::thread_store::RunRecord {
                 run_id: crate::thread_store::random_id("run").unwrap(),
                 engine: "glass-core".into(),
@@ -13619,6 +14662,7 @@ mod tests {
                     classification: crate::thread_store::RunClassification::Starting,
                 }],
                 composer_draft: None,
+                follow_up_queue: None,
             })
             .unwrap();
         store
@@ -16727,6 +17771,60 @@ mod tests {
         assert_eq!(phone.surface, DevSurface::Agent);
 
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn delayed_queue_save_failure_does_not_clear_another_owner_dispatch() {
+        let owner_a = crate::AgentId::parse("agent-0001").unwrap();
+        let owner_b = crate::AgentId::parse("agent-0002").unwrap();
+        let mut pending = Some((owner_b.clone(), "queue-b".to_owned(), 7));
+
+        assert!(!clear_pending_queue_dispatch_if_matches(
+            &mut pending,
+            &owner_a,
+            3
+        ));
+        assert_eq!(pending, Some((owner_b.clone(), "queue-b".to_owned(), 7)));
+        assert!(clear_pending_queue_dispatch_if_matches(
+            &mut pending,
+            &owner_b,
+            7
+        ));
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn unresolved_queue_row_requires_duplicate_risk_confirmation_before_dispatch() {
+        let (mut state, root) = routed_state("queue-needs-review-confirmation");
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let run_id = crate::thread_store::random_id("run").unwrap();
+        let entry_id = crate::thread_store::random_id("queue").unwrap();
+        state.selected_agent = Some(agent_id.clone());
+        state.follow_up_queue_snapshots.insert(
+            agent_id,
+            FollowUpQueueSnapshot {
+                current_run_id: run_id.clone(),
+                entries: vec![crate::thread_store::FollowUpQueueRecord {
+                    entry_id: entry_id.clone(),
+                    target_run_id: run_id,
+                    mode: crate::thread_store::FollowUpQueueMode::FollowUp,
+                    text: "Check this result".into(),
+                    state: crate::thread_store::FollowUpQueueState::NeedsReview,
+                }],
+            },
+        );
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+
+        state.dispatch_selected_follow_up_queue_entry(&mut worker);
+
+        assert_eq!(state.follow_up_queue_retry_confirmation, Some(entry_id));
+        assert!(state.follow_up_queue_pending_dispatch.is_none());
+        assert!(state.follow_up_queue_dispatch_jobs.is_empty());
+        assert!(state.status.contains("may duplicate"));
+        drop(worker);
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

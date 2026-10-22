@@ -569,6 +569,13 @@ pub(crate) fn run_with_browser_policy(
                             KeyCode::Home => state.help_scroll = 0,
                             _ => {}
                         }
+                    } else if matches!(
+                        active_overlay,
+                        None | Some(overlay::ActiveOverlay::Composer)
+                    ) && key.code == KeyCode::Char('q')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        state.open_follow_up_queue();
                     } else if active_overlay.is_none() && key.code == KeyCode::Char('?') {
                         state.toggle_help();
                     } else if active_overlay == Some(overlay::ActiveOverlay::CommandCenterMenu) {
@@ -597,6 +604,93 @@ pub(crate) fn run_with_browser_policy(
                                 state.insert_browser_target_query(character)
                             }
                             _ => {}
+                        }
+                    } else if active_overlay == Some(overlay::ActiveOverlay::FollowUpQueue) {
+                        if state.follow_up_queue_retry_confirmation.is_some() {
+                            match key.code {
+                                KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
+                                    state.confirm_follow_up_queue_retry()
+                                }
+                                KeyCode::Esc | KeyCode::Char('n' | 'N') => {
+                                    state.cancel_follow_up_queue_retry()
+                                }
+                                _ => {}
+                            }
+                        } else if state.follow_up_queue_is_editing() {
+                            match (key.code, key.modifiers) {
+                                (KeyCode::Esc, _) => state.cancel_follow_up_queue_edit(),
+                                (KeyCode::Enter, value) if value.contains(KeyModifiers::SHIFT) => {
+                                    state
+                                        .follow_up_queue_edit_text
+                                        .insert(state.follow_up_queue_edit_cursor, '\n');
+                                    state.follow_up_queue_edit_cursor += 1;
+                                }
+                                (KeyCode::Enter, _) => state.commit_follow_up_queue_edit(),
+                                (KeyCode::Backspace, _) => state.follow_up_queue_edit_backspace(),
+                                (KeyCode::Left, _) => {
+                                    state.follow_up_queue_edit_cursor = state
+                                        .follow_up_queue_edit_text
+                                        [..state.follow_up_queue_edit_cursor]
+                                        .char_indices()
+                                        .next_back()
+                                        .map_or(0, |(index, _)| index);
+                                }
+                                (KeyCode::Right, _) => {
+                                    if let Some(character) = state.follow_up_queue_edit_text
+                                        [state.follow_up_queue_edit_cursor..]
+                                        .chars()
+                                        .next()
+                                    {
+                                        state.follow_up_queue_edit_cursor += character.len_utf8();
+                                    }
+                                }
+                                (KeyCode::Char('a'), value)
+                                    if value.contains(KeyModifiers::CONTROL) =>
+                                {
+                                    state.follow_up_queue_edit_cursor = 0;
+                                }
+                                (KeyCode::Char('e'), value)
+                                    if value.contains(KeyModifiers::CONTROL) =>
+                                {
+                                    state.follow_up_queue_edit_cursor =
+                                        state.follow_up_queue_edit_text.len();
+                                }
+                                (KeyCode::Char(character), _) => {
+                                    state.follow_up_queue_edit_char(character)
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            match key.code {
+                                KeyCode::Esc => state.close_follow_up_queue(),
+                                KeyCode::Enter => {
+                                    state.dispatch_selected_follow_up_queue_entry(&mut worker)
+                                }
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    state.move_follow_up_queue_selection(-1)
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    state.move_follow_up_queue_selection(1)
+                                }
+                                KeyCode::Char('a') => state.begin_follow_up_queue_add(
+                                    crate::thread_store::FollowUpQueueMode::FollowUp,
+                                ),
+                                KeyCode::Char('s') => state.begin_follow_up_queue_add(
+                                    crate::thread_store::FollowUpQueueMode::Steer,
+                                ),
+                                KeyCode::Char('e') => state.begin_follow_up_queue_edit(),
+                                KeyCode::Char('d') => state.remove_selected_follow_up_queue_entry(),
+                                KeyCode::Char('<') => {
+                                    state.reorder_selected_follow_up_queue_entry(-1)
+                                }
+                                KeyCode::Char('>') => {
+                                    state.reorder_selected_follow_up_queue_entry(1)
+                                }
+                                KeyCode::Char('t') => {
+                                    state.retarget_selected_follow_up_queue_entry()
+                                }
+                                _ => {}
+                            }
                         }
                     } else if active_overlay == Some(overlay::ActiveOverlay::BrowserRecovery) {
                         match key.code {
@@ -1195,6 +1289,7 @@ pub(crate) fn run_with_browser_policy(
         {
             render_requested |= state.poll_composer_draft_io();
         }
+        render_requested |= state.poll_follow_up_queue_io(&mut worker);
         if last_editor_reconcile.elapsed() >= Duration::from_millis(500) {
             render_requested |= state.tick_editor_reconcile();
             last_editor_reconcile = Instant::now();

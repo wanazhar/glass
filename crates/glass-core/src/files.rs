@@ -34,12 +34,23 @@ fn open_at(dir: &File, name: &CString, flags: i32, mode: u32) -> Result<File, St
     }
 }
 thread_local! { static APPROVED_CALL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
-fn approved() -> bool { APPROVED_CALL.with(|value|value.get()) }
-pub fn tool_cancellable_approved(call:&glass_mod_api::ToolCall, root:&Path, cancel:&std::sync::atomic::AtomicBool, granted:bool) -> crate::tools::Outcome {
+fn approved() -> bool {
+    APPROVED_CALL.with(|value| value.get())
+}
+pub fn tool_cancellable_approved(
+    call: &glass_mod_api::ToolCall,
+    root: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+    granted: bool,
+) -> crate::tools::Outcome {
     struct Restore(bool);
-    impl Drop for Restore { fn drop(&mut self) {APPROVED_CALL.with(|value|value.set(self.0));} }
-    let _restore=Restore(APPROVED_CALL.with(|value|value.replace(granted)));
-    tool_cancellable(call,root,cancel)
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            APPROVED_CALL.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(APPROVED_CALL.with(|value| value.replace(granted)));
+    tool_cancellable(call, root, cancel)
 }
 
 struct Target {
@@ -54,20 +65,31 @@ impl Target {
     fn with_parents(root: &Path, path: &str, mutating: bool, create: bool) -> Result<Self, String> {
         let workspace = root.canonicalize().map_err(error)?;
         let requested = Path::new(path);
-        let unrestricted = approved() || (!mutating && crate::sandbox::policy()!=crate::sandbox::Policy::Strict)
+        let unrestricted = approved()
+            || (!mutating && crate::sandbox::policy() != crate::sandbox::Policy::Strict)
             || (crate::sandbox::permission_profile_label() == "unrestricted"
-            && crate::sandbox::policy() == crate::sandbox::Policy::Off);
-        let absolute = if requested.is_absolute() { requested.to_path_buf() } else { workspace.join(requested) };
+                && crate::sandbox::policy() == crate::sandbox::Policy::Off);
+        let absolute = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            workspace.join(requested)
+        };
         // Normalize lexically, then retain descriptor-relative NOFOLLOW traversal.
         let mut normalized = std::path::PathBuf::new();
         for component in absolute.components() {
             match component {
-                Component::ParentDir => { normalized.pop(); },
-                Component::CurDir => {},
+                Component::ParentDir => {
+                    normalized.pop();
+                }
+                Component::CurDir => {}
                 other => normalized.push(other.as_os_str()),
             }
         }
-        let root = if unrestricted { Path::new("/").to_path_buf() } else { workspace.clone() };
+        let root = if unrestricted {
+            Path::new("/").to_path_buf()
+        } else {
+            workspace.clone()
+        };
         let path = normalized.strip_prefix(&root)
             .map_err(|_| "permission profile confines native files to the workspace; choose an allowed path or ask the user to change permissions")?;
         let parts = path
@@ -93,7 +115,11 @@ impl Target {
         Ok(Self {
             dir,
             name: c(parts.last().unwrap().as_os_str())?,
-            label: normalized.strip_prefix(&workspace).unwrap_or(&normalized).display().to_string(),
+            label: normalized
+                .strip_prefix(&workspace)
+                .unwrap_or(&normalized)
+                .display()
+                .to_string(),
         })
     }
     fn read(&self) -> Result<Option<(Vec<u8>, std::fs::Metadata)>, String> {
@@ -281,25 +307,47 @@ fn execute_cancellable(
     if cancelled() {
         return Err("File operation cancelled before execution".into());
     }
-    if !matches!(action, "read" | "check" | "edit" | "write" | "view_image" | "display_image") {
+    if !matches!(
+        action,
+        "read" | "check" | "edit" | "write" | "view_image" | "display_image"
+    ) {
         return Err("action must be read, edit, write, or check".into());
     }
-    if !approved() && let Some(reason) = crate::sandbox::refusal() { return Err(reason.to_string()); }
-    if matches!(action, "edit" | "write") && v["preview"] != true
-        && crate::sandbox::permission_profile_label() == "read-only" && !approved() {
-        return Err("Read-only permission profile blocks file mutations; preview:true remains available".into());
+    if !approved()
+        && let Some(reason) = crate::sandbox::refusal()
+    {
+        return Err(reason.to_string());
     }
-    let create_parents = action == "write" && v["preview"] != true && v.get("expected").is_some_and(Value::is_null);
+    if matches!(action, "edit" | "write")
+        && v["preview"] != true
+        && crate::sandbox::permission_profile_label() == "read-only"
+        && !approved()
+    {
+        return Err(
+            "Read-only permission profile blocks file mutations; preview:true remains available"
+                .into(),
+        );
+    }
+    let create_parents =
+        action == "write" && v["preview"] != true && v.get("expected").is_some_and(Value::is_null);
     if create_parents {
         let content = required(v, "text")?;
-        if content.len() > MAX_FILE { return Err("result exceeds 8 MiB".into()); }
+        if content.len() > MAX_FILE {
+            return Err("result exceeds 8 MiB".into());
+        }
         text(content.as_bytes())?;
         if v.get("preview").is_some_and(|value| !value.is_boolean())
-            || v.get("validate").is_some_and(|value| !value.is_boolean()) {
+            || v.get("validate").is_some_and(|value| !value.is_boolean())
+        {
             return Err("preview and validate must be booleans".into());
         }
     }
-    let target = Target::with_parents(root, required(v, "path")?, matches!(action,"edit"|"write") && v["preview"]!=true, create_parents)?;
+    let target = Target::with_parents(
+        root,
+        required(v, "path")?,
+        matches!(action, "edit" | "write") && v["preview"] != true,
+        create_parents,
+    )?;
     let mutation = matches!(action, "edit" | "write");
     if mutation {
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -325,10 +373,14 @@ fn execute_cancellable(
         .unwrap_or_default();
     if action == "view_image" || action == "display_image" {
         if action == "display_image" {
-            if existing.is_none() { return Err("image file does not exist".into()); }
+            if existing.is_none() {
+                return Err("image file does not exist".into());
+            }
             return crate::images::share(bytes, &target.label);
         }
-        if existing.is_none() { return Err("image file does not exist".into()); }
+        if existing.is_none() {
+            return Err("image file does not exist".into());
+        }
         return crate::images::prepare(bytes, &target.label, cancelled);
     }
     let source = text(bytes)?;
@@ -510,7 +562,9 @@ fn execute_cancellable(
                         index + 1
                     ));
                 };
-                if haystack[start + haystack[start..].chars().next().unwrap().len_utf8()..].contains(&old_match) {
+                if haystack[start + haystack[start..].chars().next().unwrap().len_utf8()..]
+                    .contains(&old_match)
+                {
                     return Err(format!(
                         "edit {}: old text matches more than once; nothing written. Use original-file line ranges for repeated text",
                         index + 1
@@ -524,14 +578,19 @@ fn execute_cancellable(
                         let mut original = 0;
                         let mut remaining = offset;
                         while remaining > 0 {
-                            if source.as_bytes()[original..].starts_with(b"\r\n") { original += 1; }
+                            if source.as_bytes()[original..].starts_with(b"\r\n") {
+                                original += 1;
+                            }
                             original += 1;
                             remaining -= 1;
                         }
                         original
                     };
-                    spans.push((original_offset(start), original_offset(start + old_match.len()),
-                        new.replace("\r\n", "\n").replace('\n', ending)));
+                    spans.push((
+                        original_offset(start),
+                        original_offset(start + old_match.len()),
+                        new.replace("\r\n", "\n").replace('\n', ending),
+                    ));
                 }
             } else {
                 let start = number(op, "start", 0)?;
@@ -665,7 +724,9 @@ pub(crate) fn snapshot_text(root: &Path, path: &str) -> Result<Option<String>, S
         .transpose()
 }
 pub(crate) fn remove_created(root: &Path, path: &str, expected: &str) -> Result<(), String> {
-    if crate::sandbox::permission_profile_label()=="read-only" && !approved() {return Err("Read-only permission profile blocks recovery mutations".into());}
+    if crate::sandbox::permission_profile_label() == "read-only" && !approved() {
+        return Err("Read-only permission profile blocks recovery mutations".into());
+    }
     let target = Target::new(root, path, true)?;
     fs2::FileExt::try_lock_exclusive(&target.dir).map_err(error)?;
     let Some((bytes, _)) = target.read()? else {
@@ -696,11 +757,23 @@ pub fn command(args: &[String]) -> Result<(), String> {
         );
         return Ok(());
     }
-    let action = if args[0] == "image" { "view_image".to_string() } else if args[0] == "display" { "display_image".to_string() } else { args[0].clone() };
-    if !matches!(action.as_str(), "read" | "check" | "edit" | "write" | "view_image" | "display_image") {
+    let action = if args[0] == "image" {
+        "view_image".to_string()
+    } else if args[0] == "display" {
+        "display_image".to_string()
+    } else {
+        args[0].clone()
+    };
+    if !matches!(
+        action.as_str(),
+        "read" | "check" | "edit" | "write" | "view_image" | "display_image"
+    ) {
         return Err("action must be read, edit, write, or check; see file --help".into());
     }
-    let v = if matches!(action.as_str(), "read" | "check" | "view_image" | "display_image") {
+    let v = if matches!(
+        action.as_str(),
+        "read" | "check" | "view_image" | "display_image"
+    ) {
         let path = args.get(1).ok_or("path required")?;
         let mut request = json!({"path":path});
         let mut positional = 0;
@@ -750,7 +823,9 @@ pub fn command(args: &[String]) -> Result<(), String> {
     crate::profiles::apply_active(&mut cfg)?;
     let requirements = crate::requirements::load(&crate::config::config_dir())?;
     crate::requirements::apply(&requirements, &mut cfg);
-    for warning in crate::sandbox::init(&cfg) { eprintln!("glass-core: {warning}"); }
+    for warning in crate::sandbox::init(&cfg) {
+        eprintln!("glass-core: {warning}");
+    }
     let out = execute(&std::env::current_dir().map_err(error)?, &action, &v)?;
     if json_output {
         crate::emit_json(out.clone());
@@ -768,11 +843,17 @@ pub fn command(args: &[String]) -> Result<(), String> {
 }
 
 pub(crate) fn read_workspace_bytes(root: &Path, path: &str) -> Result<Vec<u8>, String> {
-    Target::new(root, path, false)?.read()?.map(|(bytes, _)| bytes).ok_or_else(|| "file does not exist".into())
+    Target::new(root, path, false)?
+        .read()?
+        .map(|(bytes, _)| bytes)
+        .ok_or_else(|| "file does not exist".into())
 }
 
 pub fn is_tool(name: &str) -> bool {
-    matches!(name, "read" | "edit" | "write" | "view_image" | "display_image")
+    matches!(
+        name,
+        "read" | "edit" | "write" | "view_image" | "display_image"
+    )
 }
 
 pub fn schemas() -> Vec<(String, String, String)> {
@@ -781,8 +862,9 @@ pub fn schemas() -> Vec<(String, String, String)> {
         "byte_offset":{"type":"integer","minimum":0},"expected":{"type":"string"}}});
     let mut mutation = json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{
         "path":{"type":"string"},"expected":{"type":["string","null"]},"preview":{"type":"boolean"},"validate":{"type":"boolean"}}});
-    mutation["properties"]["permission"]=json!({"type":"string","enum":["use_default","require_escalated"]});
-    mutation["properties"]["justification"]=json!({"type":"string","maxLength":2048});
+    mutation["properties"]["permission"] =
+        json!({"type":"string","enum":["use_default","require_escalated"]});
+    mutation["properties"]["justification"] = json!({"type":"string","maxLength":2048});
     let mut write = mutation.clone();
     write["required"]
         .as_array_mut()
@@ -814,7 +896,9 @@ pub fn tool_cancellable(
     root: &Path,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> crate::tools::Outcome {
-    if !approved() && let Some(reason) = crate::sandbox::refusal() {
+    if !approved()
+        && let Some(reason) = crate::sandbox::refusal()
+    {
         return crate::tools::Outcome::err(reason);
     }
     let mut value: Value = match serde_json::from_str(&call.arguments) {
@@ -823,13 +907,17 @@ pub fn tool_cancellable(
     };
     if matches!(call.name.as_str(), "edit" | "write")
         && value["preview"] != true
-        && crate::sandbox::permission_profile_label() == "read-only" && !approved()
+        && crate::sandbox::permission_profile_label() == "read-only"
+        && !approved()
     {
         return crate::tools::Outcome::err(
             "Read-only permission profile blocks file mutations; preview:true remains available",
         );
     }
-    if let Some(object)=value.as_object_mut() {object.remove("permission");object.remove("justification");}
+    if let Some(object) = value.as_object_mut() {
+        object.remove("permission");
+        object.remove("justification");
+    }
     match execute_cancellable(root, &call.name, &value, cancel) {
         Ok(value) => {
             let mut body = display_inner(&value, false);
@@ -957,11 +1045,22 @@ mod tests {
         let d = dir();
         std::fs::write(d.0.join("a"), "one\r\ntwo\r\none\r\ntwo\r\n").unwrap();
         let rev = read(&d, "a")["revision"].clone();
-        assert!(execute(&d.0, "edit", &json!({"path":"a","expected":rev,"edits":[{"old":"one\ntwo","new":"lost"}]})).unwrap_err().contains("more than once"));
+        assert!(
+            execute(
+                &d.0,
+                "edit",
+                &json!({"path":"a","expected":rev,"edits":[{"old":"one\ntwo","new":"lost"}]})
+            )
+            .unwrap_err()
+            .contains("more than once")
+        );
         std::fs::write(d.0.join("a"), "one\r\ntwo\r\nthree\r\n").unwrap();
         let rev = read(&d, "a")["revision"].clone();
         assert!(execute(&d.0, "edit", &json!({"path":"a","expected":rev,"edits":[{"old":"one\ntwo","new":"first"},{"old":"two\nthree","new":"last"}]})).unwrap_err().contains("overlapping"));
-        assert_eq!(std::fs::read(d.0.join("a")).unwrap(), b"one\r\ntwo\r\nthree\r\n");
+        assert_eq!(
+            std::fs::read(d.0.join("a")).unwrap(),
+            b"one\r\ntwo\r\nthree\r\n"
+        );
     }
 
     #[test]
@@ -969,12 +1068,36 @@ mod tests {
         let d = dir();
         let created = execute(&d.0, "write", &json!({"path":"nested/deep/a.txt","expected":null,"text":"é\r\none\r\ntwo\r\nend\r\n"})).unwrap();
         execute(&d.0, "edit", &json!({"path":"nested/deep/a.txt","expected":created["revision"],"edits":[{"old":"one\ntwo","new":"ONE\nTWO"}]})).unwrap();
-        assert_eq!(std::fs::read(d.0.join("nested/deep/a.txt")).unwrap(), "é\r\nONE\r\nTWO\r\nend\r\n".as_bytes());
-        assert!(execute(&d.0, "write", &json!({"path":"nested/deep/a.txt","expected":null,"text":"lost"})).is_err());
-        assert!(execute(&d.0, "write", &json!({"path":"preview/new.txt","expected":null,"text":"test","preview":true})).is_err());
+        assert_eq!(
+            std::fs::read(d.0.join("nested/deep/a.txt")).unwrap(),
+            "é\r\nONE\r\nTWO\r\nend\r\n".as_bytes()
+        );
+        assert!(
+            execute(
+                &d.0,
+                "write",
+                &json!({"path":"nested/deep/a.txt","expected":null,"text":"lost"})
+            )
+            .is_err()
+        );
+        assert!(
+            execute(
+                &d.0,
+                "write",
+                &json!({"path":"preview/new.txt","expected":null,"text":"test","preview":true})
+            )
+            .is_err()
+        );
         assert!(!d.0.join("preview").exists());
         std::os::unix::fs::symlink(d.0.join("nested"), d.0.join("link")).unwrap();
-        assert!(execute(&d.0,"write",&json!({"path":"link/escape/x","expected":null,"text":"lost"})).is_err());
+        assert!(
+            execute(
+                &d.0,
+                "write",
+                &json!({"path":"link/escape/x","expected":null,"text":"lost"})
+            )
+            .is_err()
+        );
         assert!(!d.0.join("nested/escape").exists());
     }
 
@@ -984,13 +1107,24 @@ mod tests {
         write(&d, "a", &"one line\n".repeat(300));
         let value = read(&d, "a");
         assert!(display(&value).contains("continue with file read"));
-        let call = glass_mod_api::ToolCall { id:"read".into(), name:"read".into(), arguments:r#"{"path":"a"}"#.into() };
+        let call = glass_mod_api::ToolCall {
+            id: "read".into(),
+            name: "read".into(),
+            arguments: r#"{"path":"a"}"#.into(),
+        };
         let output = tool(&call, &d.0);
         assert!(!output.body.contains("continue with file read"));
         assert_eq!(output.body.matches("next_read:").count(), 1);
-        let next:Value = serde_json::from_str(output.body.split("next_read: ").nth(1).unwrap()).unwrap();
+        let next: Value =
+            serde_json::from_str(output.body.split("next_read: ").nth(1).unwrap()).unwrap();
         assert!(execute(&d.0, "read", &next).is_ok());
-        assert_eq!(output.body.matches(value["revision"].as_str().unwrap()).count(), 2);
+        assert_eq!(
+            output
+                .body
+                .matches(value["revision"].as_str().unwrap())
+                .count(),
+            2
+        );
     }
     #[test]
     fn batch_ranges_and_exact_edits() {
@@ -1126,8 +1260,16 @@ mod tests {
         let path = external.0.join("outside").display().to_string();
         let read = execute(&workspace.0, "read", &json!({"path":path})).unwrap();
         assert_eq!(read["revision"], revision(b"original"));
-        execute(&workspace.0, "write", &json!({"path":path,"expected":revision(b"original"),"text":"changed"})).unwrap();
-        assert_eq!(std::fs::read_to_string(external.0.join("outside")).unwrap(), "changed");
+        execute(
+            &workspace.0,
+            "write",
+            &json!({"path":path,"expected":revision(b"original"),"text":"changed"}),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(external.0.join("outside")).unwrap(),
+            "changed"
+        );
     }
 
     #[test]

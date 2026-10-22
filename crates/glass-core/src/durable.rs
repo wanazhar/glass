@@ -318,9 +318,10 @@ fn apply(state: &mut State, op: &Op, sequence: u64) -> Result<(), String> {
                 return Err("invalid or reused provider identity".into());
             }
             if let Some(owner) = owner
-                && !state.tasks.contains_key(owner) {
-                    return Err("unknown owner task".into());
-                }
+                && !state.tasks.contains_key(owner)
+            {
+                return Err("unknown owner task".into());
+            }
             if let Some(parent) = parent {
                 require_cv(state, parent)?;
                 if fork_at.is_none_or(|at| at > state.sequence) {
@@ -494,7 +495,7 @@ fn apply(state: &mut State, op: &Op, sequence: u64) -> Result<(), String> {
             if task.status == "completing" {
                 return Err("task outcome is already decided; wait for owned work".into());
             }
-            if task.abort_requested && !matches!(status.as_str(),"aborted"|"failed") {
+            if task.abort_requested && !matches!(status.as_str(), "aborted" | "failed") {
                 return Err("task abort must be acknowledged".into());
             }
             if !matches!(
@@ -914,17 +915,20 @@ impl Store {
                     conversation: cv,
                     record,
                 } = op
-                    && cv == conversation {
-                        if reset {
-                            result.clear();
-                        }
-                        result.push(crate::session::Record::from_json(&record).unwrap_or_else(
-                            || crate::session::Record::Custom {
+                    && cv == conversation
+                {
+                    if reset {
+                        result.clear();
+                    }
+                    result.push(
+                        crate::session::Record::from_json(&record).unwrap_or_else(|| {
+                            crate::session::Record::Custom {
                                 kind: "durable/entry".into(),
                                 data: Some(record.to_string()),
-                            },
-                        ));
-                    }
+                            }
+                        }),
+                    );
+                }
             }
         }
         Ok(result)

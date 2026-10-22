@@ -920,7 +920,7 @@ pub fn animation(keys: &KeyReader) -> Option<usize> {
 }
 
 /// Ctrl-D confirmation preserves the caller's composer and conversation.
-pub fn confirm_exit(keys: &KeyReader, editor:&glass_tui::Editor, busy:bool) -> bool {
+pub fn confirm_exit(keys: &KeyReader, editor: &glass_tui::Editor, busy: bool) -> bool {
     take_back();
     let managed = crate::surface::managed();
     if managed {
@@ -933,7 +933,7 @@ pub fn confirm_exit(keys: &KeyReader, editor:&glass_tui::Editor, busy:bool) -> b
         if managed {
             // Repaint the chat and draft before relocating the compact dialog.
             crate::surface::overlay(false).ok();
-            crate::surface::composer(editor,false,busy);
+            crate::surface::composer(editor, false, busy);
             crate::surface::overlay(true).ok();
         }
         let (width, height) = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));

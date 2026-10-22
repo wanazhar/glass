@@ -669,17 +669,18 @@ impl Host {
         wire.borrow_mut().durable = None;
         wire.borrow_mut().durable_task = None;
         if self.store.borrow().state.tasks[&task.id].status == "running"
-            && let Some(context) = &conversation.durable {
-                context.finish(
-                    if wire.borrow().disconnected {
-                        "interrupted"
-                    } else {
-                        "failed"
-                    },
-                    result.as_ref().err().map(String::as_str),
-                    request,
-                )?;
-            }
+            && let Some(context) = &conversation.durable
+        {
+            context.finish(
+                if wire.borrow().disconnected {
+                    "interrupted"
+                } else {
+                    "failed"
+                },
+                result.as_ref().err().map(String::as_str),
+                request,
+            )?;
+        }
         result
     }
 }
@@ -888,12 +889,16 @@ impl Context {
             .get(&self.task)
             .cloned()
             .ok_or("generation task missing")?;
-        let status = if task.abort_requested{"aborted"}else{match reason {
-            "completed" => "completed",
-            "cancelled" => "aborted",
-            "interrupted" => "pending",
-            _ => "failed",
-        }};
+        let status = if task.abort_requested {
+            "aborted"
+        } else {
+            match reason {
+                "completed" => "completed",
+                "cancelled" => "aborted",
+                "interrupted" => "pending",
+                _ => "failed",
+            }
+        };
         let mut ops = vec![update(
             &task,
             status,

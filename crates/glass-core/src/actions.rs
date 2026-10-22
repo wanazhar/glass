@@ -73,7 +73,12 @@ const BUILTIN: &[(&str, &str, &str, bool)] = &[
         false,
     ),
     ("help", "", "Show help", false),
-    ("todo", "", "Inspect and manage the session checklist", false),
+    (
+        "todo",
+        "",
+        "Inspect and manage the session checklist",
+        false,
+    ),
     (
         "neuralnets",
         "",
@@ -341,8 +346,18 @@ const BUILTIN: &[(&str, &str, &str, bool)] = &[
         false,
     ),
     ("theme", "", "Choose a terminal color palette", false),
-    ("pacing", "", "Choose adaptive provider pacing or maximum frequency", false),
-    ("animation", "", "Preview and choose the activity animation", false),
+    (
+        "pacing",
+        "",
+        "Choose adaptive provider pacing or maximum frequency",
+        false,
+    ),
+    (
+        "animation",
+        "",
+        "Preview and choose the activity animation",
+        false,
+    ),
     (
         "dashboard",
         "",

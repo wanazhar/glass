@@ -86,7 +86,9 @@ fn projection(session: &crate::session::Session, jobs: &str, scope: Scope) -> Ve
         let mut call_counts = std::collections::HashMap::new();
         for (index, record) in records.iter().enumerate() {
             let (counts, id) = match record {
-                crate::session::Record::Bash { call_id: Some(id), .. } => (&mut shell_counts, id),
+                crate::session::Record::Bash {
+                    call_id: Some(id), ..
+                } => (&mut shell_counts, id),
                 crate::session::Record::ToolResult { call_id, .. } => (&mut result_counts, call_id),
                 crate::session::Record::ToolCall { id, .. } => (&mut call_counts, id),
                 _ => continue,
@@ -220,10 +222,7 @@ pub fn view(
             return None;
         }
         let labels: Vec<_> = items.iter().map(|item| item.label.clone()).collect();
-        let searchable: Vec<_> = items
-            .iter()
-            .map(|item| item.label.clone())
-            .collect();
+        let searchable: Vec<_> = items.iter().map(|item| item.label.clone()).collect();
         let title = match scope {
             Scope::All => "Work",
             Scope::Activity => "Activity",

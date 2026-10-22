@@ -108,10 +108,18 @@ pub fn command(args: &[String]) -> Result<(), String> {
         }
         Some("explain") => {
             let command = &args[1];
-            if command.len()>32768 || command.contains('\0') {return Err("Command exceeds dry-run bounds".into());}
-            let cfg=crate::config::load(&crate::config::default_path()).map_err(|e|e.to_string())?;
-            let matched=p.deny_shell.iter().filter(|pattern|matches(pattern,command)).cloned().collect::<Vec<_>>();
-            let approvals=crate::permissions::approvals_for_command(command)?;
+            if command.len() > 32768 || command.contains('\0') {
+                return Err("Command exceeds dry-run bounds".into());
+            }
+            let cfg =
+                crate::config::load(&crate::config::default_path()).map_err(|e| e.to_string())?;
+            let matched = p
+                .deny_shell
+                .iter()
+                .filter(|pattern| matches(pattern, command))
+                .cloned()
+                .collect::<Vec<_>>();
+            let approvals = crate::permissions::approvals_for_command(command)?;
             serde_json::json!({"execution":"none","decision":if matched.is_empty(){"no global text denial; confinement and runtime approvals still apply"}else{"deny"},
                 "matched_global_rules":matched,"configured_permission_profile":format!("{:?}",cfg.permission_profile),
                 "configured_sandbox":format!("{:?}",cfg.sandbox),"runtime_sandbox":crate::sandbox::security_summary(),
@@ -121,10 +129,14 @@ pub fn command(args: &[String]) -> Result<(), String> {
                 "scope":"This command never launches the shell and cannot predict filesystem, network or dynamic shell expansion outcomes."})
         }
         Some("extension") => {
-            let workspace=std::env::current_dir().map_err(|e|e.to_string())?;
-            match crate::sandbox::inspect_extension_capabilities(&args[1],&workspace) {
-                Ok(caps)=>serde_json::json!({"execution":"none","declaration":"validated before launch","filesystem":{"read":caps.filesystem.read,"write":caps.filesystem.write},"network_ports":caps.network,"subprocess":caps.subprocess,"scope":"Inspection only; does not activate or grant capabilities."}),
-                Err(error)=>serde_json::json!({"execution":"none","declaration":"rejected or unavailable","reason":error}),
+            let workspace = std::env::current_dir().map_err(|e| e.to_string())?;
+            match crate::sandbox::inspect_extension_capabilities(&args[1], &workspace) {
+                Ok(caps) => {
+                    serde_json::json!({"execution":"none","declaration":"validated before launch","filesystem":{"read":caps.filesystem.read,"write":caps.filesystem.write},"network_ports":caps.network,"subprocess":caps.subprocess,"scope":"Inspection only; does not activate or grant capabilities."})
+                }
+                Err(error) => {
+                    serde_json::json!({"execution":"none","declaration":"rejected or unavailable","reason":error})
+                }
             }
         }
         Some("shell") => {

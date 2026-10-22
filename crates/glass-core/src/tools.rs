@@ -1,8 +1,8 @@
 //! Shell execution and shared outcomes for core tool dispatch.
 
 use std::io::{Read, Write};
-use std::os::unix::process::CommandExt;
 use std::os::fd::AsRawFd;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,16 +35,24 @@ pub const MAX_TIMEOUT_MS: u64 = 900_000;
 /// Resolve the same working directory for execution, read guards and verification.
 pub(crate) fn bash_cwd(call: &ToolCall, workspace: &Path) -> Result<PathBuf, String> {
     if call.arg_raw("job").is_some() && call.arg_raw("cwd").is_some() {
-        return Err("`cwd` is not supported for job control; use explicit paths in the command".into());
+        return Err(
+            "`cwd` is not supported for job control; use explicit paths in the command".into(),
+        );
     }
     match call.arg_raw("cwd") {
         Some(_) => {
             let Some(rel) = call.arg_str("cwd").filter(|s| !s.trim().is_empty()) else {
-                return Err("`cwd` must be a nonempty directory path string; omit it to use the workspace".into());
+                return Err(
+                    "`cwd` must be a nonempty directory path string; omit it to use the workspace"
+                        .into(),
+                );
             };
             let joined = workspace.join(&rel);
             if !joined.is_dir() {
-                return Err(format!("`cwd` is not an accessible directory: {}; nothing executed", joined.display()));
+                return Err(format!(
+                    "`cwd` is not an accessible directory: {}; nothing executed",
+                    joined.display()
+                ));
             }
             Ok(joined)
         }
@@ -78,7 +86,11 @@ impl Outcome {
         Self {
             body: {
                 let message = msg.into();
-                if message.starts_with("error:") { message } else { format!("error: {message}") }
+                if message.starts_with("error:") {
+                    message
+                } else {
+                    format!("error: {message}")
+                }
             },
             truncated: false,
             exit_code: None,
@@ -123,7 +135,9 @@ pub fn bash_owned(
     owner: Option<&str>,
 ) -> Outcome {
     if call.arg_raw("job").is_some() && call.arg_raw("cwd").is_some() {
-        return Outcome::err("`cwd` is not supported for job control; use explicit paths in the command");
+        return Outcome::err(
+            "`cwd` is not supported for job control; use explicit paths in the command",
+        );
     }
     if call.arg_raw("job").is_some() {
         if cancel.load(Ordering::Relaxed) {
@@ -133,7 +147,7 @@ pub fn bash_owned(
             return Outcome::err("error: job control requires an owned agent session");
         };
         return match crate::jobs::dispatch(call, workspace, owner, approvals) {
-            Ok(v) => Outcome::ok(format!("[exit 0]\n{}",crate::jobs::render(&v))),
+            Ok(v) => Outcome::ok(format!("[exit 0]\n{}", crate::jobs::render(&v))),
             Err(e) => Outcome::err(format!("error: {e}")),
         };
     }
@@ -150,7 +164,10 @@ pub fn bash_owned(
         ));
     }
 
-    let cwd = match bash_cwd(call, workspace) { Ok(cwd) => cwd, Err(error) => return Outcome::err(error) };
+    let cwd = match bash_cwd(call, workspace) {
+        Ok(cwd) => cwd,
+        Err(error) => return Outcome::err(error),
+    };
     if exception
         && !matches!((cwd.canonicalize(), workspace.canonicalize()), (Ok(cwd), Ok(root)) if cwd == root)
     {
@@ -172,7 +189,9 @@ pub fn bash_owned(
                 _ => None,
             };
             let Some(millis) = millis.filter(|n| *n > 0) else {
-                return Outcome::err("`timeout_ms` must be a positive integer in milliseconds; nothing executed");
+                return Outcome::err(
+                    "`timeout_ms` must be a positive integer in milliseconds; nothing executed",
+                );
             };
             millis.clamp(100, MAX_TIMEOUT_MS)
         }
@@ -267,12 +286,18 @@ pub fn bash_owned(
     // Foreground calls own their process group; persistent work uses jobs.
     // Kill remaining group members before joining readers, without adding the
     // graceful-shutdown delay to every successful command.
-    let descendants_stopped = !cancelled && !timed_out && child.id() > 1
+    let descendants_stopped = !cancelled
+        && !timed_out
+        && child.id() > 1
         && unsafe { kill(-(child.id() as i32), SIGKILL) } == 0;
 
     capture_done.store(true, Ordering::Release);
-    let (out, out_spill, out_cut) = out_buf.join().unwrap_or_else(|_| (String::new(), None, true));
-    let (err, err_spill, err_cut) = err_buf.join().unwrap_or_else(|_| (String::new(), None, true));
+    let (out, out_spill, out_cut) = out_buf
+        .join()
+        .unwrap_or_else(|_| (String::new(), None, true));
+    let (err, err_spill, err_cut) = err_buf
+        .join()
+        .unwrap_or_else(|_| (String::new(), None, true));
 
     let mut body = String::new();
     if !out.is_empty() {
@@ -292,8 +317,13 @@ pub fn bash_owned(
     // A stream that overran the cap left a file behind. Point the model at it
     // rather than discarding the remainder: losing the tail of a build log or a
     // search result is exactly the information the model came for.
-    if out_spill.is_some() && let Some(path) = &err_spill {
-        body.push_str(&format!("\n[stderr overflow saved to {} — read with `tail` or `rg`]\n", path.display()));
+    if out_spill.is_some()
+        && let Some(path) = &err_spill
+    {
+        body.push_str(&format!(
+            "\n[stderr overflow saved to {} — read with `tail` or `rg`]\n",
+            path.display()
+        ));
     }
     let spill = out_spill.or(err_spill);
     if let Some(p) = &spill {
@@ -403,7 +433,14 @@ fn read_capped(
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
         cutoff.fetch_max(2, Ordering::AcqRel);
-        return (format!("[output capture setup failed: {}]", std::io::Error::last_os_error()), None, true);
+        return (
+            format!(
+                "[output capture setup failed: {}]",
+                std::io::Error::last_os_error()
+            ),
+            None,
+            true,
+        );
     }
     let mut drain_deadline = None;
     let mut head: Vec<u8> = Vec::new();
@@ -417,7 +454,9 @@ fn read_capped(
 
     loop {
         if done.load(Ordering::Acquire) {
-            let deadline = drain_deadline.get_or_insert_with(|| std::time::Instant::now() + std::time::Duration::from_millis(100));
+            let deadline = drain_deadline.get_or_insert_with(|| {
+                std::time::Instant::now() + std::time::Duration::from_millis(100)
+            });
             if std::time::Instant::now() >= *deadline {
                 cutoff.fetch_max(1, Ordering::AcqRel);
                 break;
@@ -432,7 +471,9 @@ fn read_capped(
             }
             Err(error) => {
                 cutoff.fetch_max(3, Ordering::AcqRel);
-                head.extend_from_slice(format!("\n[output capture read failed: {error}]\n").as_bytes());
+                head.extend_from_slice(
+                    format!("\n[output capture read failed: {error}]\n").as_bytes(),
+                );
                 break;
             }
             Ok(n) => n,
@@ -451,15 +492,25 @@ fn read_capped(
             storage_failed = spill.is_none();
         }
         let extra = &chunk[room..n];
-        let keep = if storage_failed { 0 } else { extra.len().min(MAX_SPILL_BYTES.saturating_sub(written)) };
-        if keep > 0 && let Some((file, _)) = spill.as_mut() {
+        let keep = if storage_failed {
+            0
+        } else {
+            extra.len().min(MAX_SPILL_BYTES.saturating_sub(written))
+        };
+        if keep > 0
+            && let Some((file, _)) = spill.as_mut()
+        {
             if file.write_all(&extra[..keep]).is_ok() {
                 written += keep;
             } else {
                 storage_failed = true;
             }
         }
-        let lost = if storage_failed { extra } else { &extra[keep..] };
+        let lost = if storage_failed {
+            extra
+        } else {
+            &extra[keep..]
+        };
         discarded = discarded.saturating_add(lost.len() as u64);
         if !lost.is_empty() {
             let start = lost.len().saturating_sub(DROPPED_TAIL_BYTES);
@@ -486,12 +537,18 @@ fn read_capped(
     }
     let mut text = String::from_utf8_lossy(&head).into_owned();
     if discarded > 0 {
-        let reason = if storage_failed { "overflow storage failed" } else { "4 MiB overflow limit reached" };
-        text.push_str(&format!("\n[{reason}; {discarded} bytes discarded; final {} bytes follow]\n", tail.len()));
+        let reason = if storage_failed {
+            "overflow storage failed"
+        } else {
+            "4 MiB overflow limit reached"
+        };
+        text.push_str(&format!(
+            "\n[{reason}; {discarded} bytes discarded; final {} bytes follow]\n",
+            tail.len()
+        ));
         text.push_str(&String::from_utf8_lossy(&tail));
     }
     (text, path, overflowed)
-
 }
 
 /// Side channel from a spill write to its blob reference: one entry per
@@ -501,8 +558,9 @@ pub fn blob_reference_for(spill_path: &std::path::Path) -> Option<String> {
     blob_refs().lock().ok()?.get(spill_path).cloned()
 }
 
-static BLOB_REFS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, String>>> =
-    std::sync::OnceLock::new();
+static BLOB_REFS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, String>>,
+> = std::sync::OnceLock::new();
 
 fn blob_refs() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, String>> {
     BLOB_REFS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
@@ -584,21 +642,40 @@ impl State {
         Ok(())
     }
     pub fn load_todo_once(&mut self, session: &crate::session::Session) -> Result<(), String> {
-        if !self.todo_loaded { self.restore_todo(&session.history_records())?; }
+        if !self.todo_loaded {
+            self.restore_todo(&session.history_records())?;
+        }
         Ok(())
     }
-    pub fn persist(&mut self, session: &mut crate::session::Session, before: Self) -> Result<(), String> {
-        self.persist_with(session,before,Vec::new())
+    pub fn persist(
+        &mut self,
+        session: &mut crate::session::Session,
+        before: Self,
+    ) -> Result<(), String> {
+        self.persist_with(session, before, Vec::new())
     }
-    pub fn persist_with(&mut self, session: &mut crate::session::Session, before: Self, extra: Vec<crate::session::Record>) -> Result<(), String> {
+    pub fn persist_with(
+        &mut self,
+        session: &mut crate::session::Session,
+        before: Self,
+        extra: Vec<crate::session::Record>,
+    ) -> Result<(), String> {
         let mut records = Vec::new();
-        if before.items != self.items { records.push(crate::session::Record::State(self.items.clone())); }
-        if before.todo != self.todo { records.push(self.todo.record()); }
+        if before.items != self.items {
+            records.push(crate::session::Record::State(self.items.clone()));
+        }
+        if before.todo != self.todo {
+            records.push(self.todo.record());
+        }
         records.extend(extra);
-        if records.is_empty() { return Ok(()); }
+        if records.is_empty() {
+            return Ok(());
+        }
         if let Err(error) = session.append_checked(&records) {
             *self = before;
-            return Err(format!("error: state update was not persisted and was rolled back: {error}"));
+            return Err(format!(
+                "error: state update was not persisted and was rolled back: {error}"
+            ));
         }
         crate::todo::publish(&self.todo);
         Ok(())
@@ -616,7 +693,10 @@ impl State {
     /// Handle a `state` tool call. No `items` argument means read-back.
     pub fn apply(&mut self, call: &ToolCall) -> Outcome {
         if call.arg_raw("todo").is_some() {
-            if ["items", "guidance", "neuralnets", "capabilities"].iter().any(|key| call.arg_raw(key).is_some()) {
+            if ["items", "guidance", "neuralnets", "capabilities"]
+                .iter()
+                .any(|key| call.arg_raw(key).is_some())
+            {
                 return Outcome::err("Use one state namespace per call");
             }
             self.todo_loaded = true;
@@ -662,12 +742,16 @@ impl State {
         if let Some(expected) = call.arg_raw("expected")
             && serde_json::from_str::<String>(&expected).ok().as_deref() != Some(base.as_str())
         {
-            return Outcome::err("Stale state revision; read state with revision:true before replacing notes");
+            return Outcome::err(
+                "Stale state revision; read state with revision:true before replacing notes",
+            );
         }
         if items.is_none() && call.arg_raw("revision").as_deref() == Some("true") {
             return Outcome::ok(self.revision_read_back(&base));
         }
-        let Some(items) = items else { return Outcome::ok(self.render()) };
+        let Some(items) = items else {
+            return Outcome::ok(self.render());
+        };
 
         let count = items.len();
         let bytes: usize = items.iter().map(String::len).sum();
@@ -1090,7 +1174,10 @@ mod tests {
             args["command"] = serde_json::json!("touch should-not-exist");
             let out = bash(&call(&args.to_string()), &root);
             assert_eq!(out.exit_code, None, "{}", out.body);
-            assert!(!marker.exists(), "invalid arguments executed the shell: {args}");
+            assert!(
+                !marker.exists(),
+                "invalid arguments executed the shell: {args}"
+            );
         }
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1120,7 +1207,10 @@ mod tests {
             std::path::Path::new("."),
         );
         assert!(out.body.contains("killed"), "{}", out.body);
-        assert!(started.elapsed() < std::time::Duration::from_secs(3), "descendant retained the output pipe");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "descendant retained the output pipe"
+        );
     }
 
     #[test]
@@ -1143,7 +1233,10 @@ mod tests {
     #[test]
     fn exited_shell_cannot_leave_descendants_holding_capture_pipes() {
         let start = std::time::Instant::now();
-        let out = bash(&call(r#"{"command":"sleep 30 & echo done","timeout_ms":200}"#), std::path::Path::new("."));
+        let out = bash(
+            &call(r#"{"command":"sleep 30 & echo done","timeout_ms":200}"#),
+            std::path::Path::new("."),
+        );
         assert!(start.elapsed() < std::time::Duration::from_secs(2));
         assert_eq!(out.exit_code, Some(0));
         assert!(out.body.contains("done"));
@@ -1158,14 +1251,24 @@ mod tests {
         let quoted = format!("'{}'", marker.to_string_lossy().replace('\'', "'\\''"));
         // Wait for setsid to finish before the parent exits; otherwise the
         // process-group cleanup may legitimately kill the child before escape.
-        let command = format!("setsid sh -c 'echo $$ > \"$1\"; sleep 30' sh {quoted} & while [ ! -s {quoted} ]; do sleep 0.01; done; echo done");
+        let command = format!(
+            "setsid sh -c 'echo $$ > \"$1\"; sleep 30' sh {quoted} & while [ ! -s {quoted} ]; do sleep 0.01; done; echo done"
+        );
         let start = std::time::Instant::now();
         let mut approvals = crate::sandbox::SessionApprovals::default();
         approvals.approve_exact(&command); // Other tests may have installed a read-only policy.
-        let out = bash_with_approvals(&call(&serde_json::json!({"command":command,"timeout_ms":1000}).to_string()), &dir, &std::sync::atomic::AtomicBool::new(false), &approvals);
+        let out = bash_with_approvals(
+            &call(&serde_json::json!({"command":command,"timeout_ms":1000}).to_string()),
+            &dir,
+            &std::sync::atomic::AtomicBool::new(false),
+            &approvals,
+        );
         if let Ok(pid) = std::fs::read_to_string(&marker)
-            && let Ok(pid) = pid.trim().parse::<i32>() {
-            unsafe { kill(-pid, SIGKILL); }
+            && let Ok(pid) = pid.trim().parse::<i32>()
+        {
+            unsafe {
+                kill(-pid, SIGKILL);
+            }
         }
         let _ = std::fs::remove_dir_all(dir);
         assert!(start.elapsed() < std::time::Duration::from_secs(2));
@@ -1181,7 +1284,11 @@ mod tests {
         let data = vec![b'z'; MAX_OUTPUT_BYTES + 17];
         let sent = data.clone();
         let task = std::thread::spawn(move || writer.write_all(&sent).unwrap());
-        let (text, path, truncated) = read_capped(&mut Some(reader), &std::sync::atomic::AtomicBool::new(false), &std::sync::atomic::AtomicU8::new(0));
+        let (text, path, truncated) = read_capped(
+            &mut Some(reader),
+            &std::sync::atomic::AtomicBool::new(false),
+            &std::sync::atomic::AtomicU8::new(0),
+        );
         task.join().unwrap();
         assert!(truncated);
         assert_eq!(text.as_bytes(), &data[..MAX_OUTPUT_BYTES]);
@@ -1192,23 +1299,47 @@ mod tests {
 
     #[test]
     fn excessive_output_is_drained_bounded_and_keeps_final_tail() {
-        let out = bash(&call(r#"{"command":"seq 1 1000000; printf GC_FINAL_TAIL"}"#), std::path::Path::new("."));
+        let out = bash(
+            &call(r#"{"command":"seq 1 1000000; printf GC_FINAL_TAIL"}"#),
+            std::path::Path::new("."),
+        );
         assert_eq!(out.exit_code, Some(0));
         assert!(out.truncated, "{}", out.body);
         assert!(out.body.contains("4 MiB overflow limit reached"));
         assert!(out.body.contains("bytes discarded"));
         assert!(out.body.contains("GC_FINAL_TAIL"));
         assert!(out.body.len() < MAX_OUTPUT_BYTES + DROPPED_TAIL_BYTES + 1024);
-        assert_eq!(std::fs::metadata(out.spill.unwrap()).unwrap().len(), MAX_SPILL_BYTES as u64);
+        assert_eq!(
+            std::fs::metadata(out.spill.unwrap()).unwrap().len(),
+            MAX_SPILL_BYTES as u64
+        );
     }
 
     #[test]
     fn both_overflow_streams_remain_accessible() {
-        let out = bash(&call(r#"{"command":"seq 1 40000; seq 40001 80000 >&2"}"#), std::path::Path::new("."));
+        let out = bash(
+            &call(r#"{"command":"seq 1 40000; seq 40001 80000 >&2"}"#),
+            std::path::Path::new("."),
+        );
         let stdout_path = out.spill.as_ref().unwrap();
-        assert!(std::fs::read_to_string(stdout_path).unwrap().contains("40000"));
-        let stderr_path = out.body.split("[stderr overflow saved to ").nth(1).unwrap().split(" — ").next().unwrap();
-        assert!(std::fs::read_to_string(stderr_path).unwrap().contains("80000"));
+        assert!(
+            std::fs::read_to_string(stdout_path)
+                .unwrap()
+                .contains("40000")
+        );
+        let stderr_path = out
+            .body
+            .split("[stderr overflow saved to ")
+            .nth(1)
+            .unwrap()
+            .split(" — ")
+            .next()
+            .unwrap();
+        assert!(
+            std::fs::read_to_string(stderr_path)
+                .unwrap()
+                .contains("80000")
+        );
         let _ = std::fs::remove_file(stdout_path);
         let _ = std::fs::remove_file(stderr_path);
     }
@@ -1386,7 +1517,9 @@ mod tests {
         s.apply(&state_call(r#"{"request_id":"req-2","items":["one"]}"#));
         let conflict = s.apply(&state_call(r#"{"request_id":"req-2","items":["two"]}"#));
         assert!(
-            conflict.body.contains("already applied with different content"),
+            conflict
+                .body
+                .contains("already applied with different content"),
             "{}",
             conflict.body
         );
@@ -1400,11 +1533,17 @@ mod tests {
     fn a_concurrent_update_still_trips_the_stale_revision_guard() {
         let mut s = State::new();
         let revision = s.revision();
-        s.apply(&state_call(r#"{"request_id":"a","items":["someone else wrote this"]}"#));
-        let stale = s.apply(&state_call(
-            &format!(r#"{{"request_id":"b","items":["mine"],"expected":"{revision}"}}"#),
+        s.apply(&state_call(
+            r#"{"request_id":"a","items":["someone else wrote this"]}"#,
         ));
-        assert!(stale.body.contains("Stale state revision"), "{}", stale.body);
+        let stale = s.apply(&state_call(&format!(
+            r#"{{"request_id":"b","items":["mine"],"expected":"{revision}"}}"#
+        )));
+        assert!(
+            stale.body.contains("Stale state revision"),
+            "{}",
+            stale.body
+        );
         assert_eq!(s.items(), &["someone else wrote this".to_string()]);
     }
 
@@ -1473,17 +1612,22 @@ mod tests {
                 r#"{{"request_id":"req-{i}","items":["note {i}"]}}"#
             )));
         }
-        assert_eq!(s.retained_receipts(), crate::session::state_receipts::LEDGER_CAPACITY);
+        assert_eq!(
+            s.retained_receipts(),
+            crate::session::state_receipts::LEDGER_CAPACITY
+        );
         // The evicted id is applied afresh rather than silently deduped.
-        let evicted = s.apply(&state_call(
-            r#"{"request_id":"req-0","items":["note 0"]}"#,
-        ));
+        let evicted = s.apply(&state_call(r#"{"request_id":"req-0","items":["note 0"]}"#));
         assert!(
             evicted.body.contains("state recorded"),
             "an evicted id must not still be treated as applied: {}",
             evicted.body
         );
-        assert!(evicted.body.contains("evicted oldest id"), "{}", evicted.body);
+        assert!(
+            evicted.body.contains("evicted oldest id"),
+            "{}",
+            evicted.body
+        );
         assert!(evicted.body.contains("ledger:"), "{}", evicted.body);
 
         let read = s.apply(&state_call(r#"{"revision":true}"#));

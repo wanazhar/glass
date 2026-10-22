@@ -516,7 +516,9 @@ impl Extension {
                 return Err(format!("extension `{cmd}` startup cancelled"));
             }
             RequestOutcome::Unavailable(reason) => {
-                return Err(format!("extension `{cmd}` closed before the handshake: {reason}"));
+                return Err(format!(
+                    "extension `{cmd}` closed before the handshake: {reason}"
+                ));
             }
         };
         ext.manifest = parse_manifest(&reply).map_err(|e| format!("extension `{cmd}`: {e}"))?;
@@ -592,8 +594,14 @@ impl Extension {
         host_tools: Option<&mut HostToolBridge<'_>>,
         host_input: Option<&mut HostInputFn<'_>>,
     ) -> Option<serde_json::Value> {
-        self.request_scoped(req, timeout_ms, host_tools, host_input, &CallScope::unscoped())
-            .into_value()
+        self.request_scoped(
+            req,
+            timeout_ms,
+            host_tools,
+            host_input,
+            &CallScope::unscoped(),
+        )
+        .into_value()
     }
 
     /// The full exchange, carrying the call's lineage and cancel token.
@@ -666,7 +674,11 @@ impl Extension {
         let id = self.next_id;
         let mut line = match serde_json::to_string(&req.to_json(id)) {
             Ok(l) => l,
-            Err(e) => return Err(RequestOutcome::Unavailable(format!("cannot encode request: {e}"))),
+            Err(e) => {
+                return Err(RequestOutcome::Unavailable(format!(
+                    "cannot encode request: {e}"
+                )));
+            }
         };
         line.push('\n');
 
@@ -678,10 +690,14 @@ impl Extension {
         }
         {
             let Some(stdin) = self.stdin.as_mut() else {
-                return Err(RequestOutcome::Unavailable("the extension closed its input pipe".into()));
+                return Err(RequestOutcome::Unavailable(
+                    "the extension closed its input pipe".into(),
+                ));
             };
             if stdin.write_all(line.as_bytes()).is_err() || stdin.flush().is_err() {
-                return Err(RequestOutcome::Unavailable("the extension closed its input pipe".into()));
+                return Err(RequestOutcome::Unavailable(
+                    "the extension closed its input pipe".into(),
+                ));
             }
         }
 
@@ -707,9 +723,7 @@ impl Extension {
         // anywhere, and the caller's covers one scoped to this call.
         let extension_token = self.cancel.clone();
         let call_token = scope.cancel.clone();
-        let watch = move || {
-            extension_token.is_cancelled() || call_token.is_cancelled()
-        };
+        let watch = move || extension_token.is_cancelled() || call_token.is_cancelled();
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
@@ -740,7 +754,11 @@ impl Extension {
                         Err(e) => {
                             let call_id =
                                 v.get("call_id").cloned().unwrap_or(serde_json::Value::Null);
-                            self.reply_or_fail(protocol::subagents_result_json(&call_id, &[], Some(&e)))?;
+                            self.reply_or_fail(protocol::subagents_result_json(
+                                &call_id,
+                                &[],
+                                Some(&e),
+                            ))?;
                             deadline = std::time::Instant::now()
                                 + std::time::Duration::from_millis(timeout_ms);
                             continue;
@@ -767,8 +785,8 @@ impl Extension {
                         &[],
                         Some("no subagent runner is installed for this extension"),
                     ))?;
-                    deadline = std::time::Instant::now()
-                        + std::time::Duration::from_millis(timeout_ms);
+                    deadline =
+                        std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
                     continue;
                 };
                 let outputs = runner(&tasks);
@@ -823,8 +841,17 @@ impl Extension {
                 let entries = self.read_custom(&kind);
                 let reply = protocol::custom_result_json(&call_id, true, &entries, None);
                 if serde_json::to_vec(&reply).map_or(true, |v| v.len() > MAX_CUSTOM_STATE_BYTES) {
-                    self.reply_or_fail(protocol::custom_result_json(&call_id, false, &[], Some("saved custom entries exceed the replay limit; inspect the session log")))?;
-                } else { self.reply_or_fail(reply)?; }
+                    self.reply_or_fail(protocol::custom_result_json(
+                        &call_id,
+                        false,
+                        &[],
+                        Some(
+                            "saved custom entries exceed the replay limit; inspect the session log",
+                        ),
+                    ))?;
+                } else {
+                    self.reply_or_fail(reply)?;
+                }
                 deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
                 continue;
             }
@@ -897,8 +924,8 @@ impl Extension {
                             claimed.as_ref(),
                             &chain,
                         ))?;
-                        deadline =
-                            std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+                        deadline = std::time::Instant::now()
+                            + std::time::Duration::from_millis(timeout_ms);
                         continue;
                     }
                 };
@@ -935,7 +962,9 @@ impl Extension {
             // Only an unsigned request ID can correlate a reply. Nested host
             // requests have already been dispatched above using their own types.
             let Some(reply_id) = v.get("id").and_then(serde_json::Value::as_u64) else {
-                return Err(RequestOutcome::Unavailable("extension reply is missing a valid unsigned request id".into()));
+                return Err(RequestOutcome::Unavailable(
+                    "extension reply is missing a valid unsigned request id".into(),
+                ));
             };
             if reply_id != id {
                 continue; // A late reply to an earlier exchange.
@@ -1163,12 +1192,7 @@ impl Extension {
     /// failed: the command may have started work the extension is still doing,
     /// and saying "did not return a result" would imply the same silence as a
     /// command that was never offered.
-    pub fn run_command_scoped(
-        &mut self,
-        name: &str,
-        args: &str,
-        scope: &CallScope,
-    ) -> CallOutcome {
+    pub fn run_command_scoped(&mut self, name: &str, args: &str, scope: &CallScope) -> CallOutcome {
         if !self.has_command(name) {
             return CallOutcome::stopped(CallStop::Unknown);
         }
@@ -1182,9 +1206,9 @@ impl Extension {
                 // A reply without an output is a protocol failure, not an
                 // empty success: inventing an empty string here is how a
                 // broken extension becomes a confident wrong answer.
-                None => CallOutcome::stopped(CallStop::Failed(
-                    "replied without an output field".into(),
-                )),
+                None => {
+                    CallOutcome::stopped(CallStop::Failed("replied without an output field".into()))
+                }
             },
             RequestOutcome::Cancelled(_) => {
                 // A half-finished serial exchange cannot be reused: its late
@@ -1259,11 +1283,21 @@ impl Extension {
     ) -> CallOutcome {
         match self.request_scoped(req, REQUEST_TIMEOUT_MS * 10, host_tools, host_input, scope) {
             RequestOutcome::Answered(v) => match v.get("output").and_then(|o| o.as_str()) {
-                Some(out) if !out.is_empty() => CallOutcome::completed(if v.get("is_error").and_then(|x| x.as_bool()) == Some(true) && !out.starts_with("error:") { format!("error: {out}") } else { out.to_string() }),
-                Some(_) => CallOutcome::stopped(CallStop::Failed("returned an empty result".into())),
-                None => CallOutcome::stopped(CallStop::Failed(
-                    "replied without an output field".into(),
-                )),
+                Some(out) if !out.is_empty() => CallOutcome::completed(
+                    if v.get("is_error").and_then(|x| x.as_bool()) == Some(true)
+                        && !out.starts_with("error:")
+                    {
+                        format!("error: {out}")
+                    } else {
+                        out.to_string()
+                    },
+                ),
+                Some(_) => {
+                    CallOutcome::stopped(CallStop::Failed("returned an empty result".into()))
+                }
+                None => {
+                    CallOutcome::stopped(CallStop::Failed("replied without an output field".into()))
+                }
             },
             RequestOutcome::Cancelled(_) => {
                 // The pending reply must never become the next call's reply.
@@ -1288,8 +1322,16 @@ impl Extension {
         if !kind.starts_with(&prefix) {
             return Err(format!("custom kinds are namespaced: `{prefix}…`"));
         }
-        let added = data.as_ref().map_or(0, |text| serde_json::to_vec(text).map_or(usize::MAX, |v| v.len().saturating_add(1)))
-            .saturating_add(if self.custom.contains_key(&kind) { 0 } else { serde_json::to_vec(&kind).map_or(usize::MAX, |v| v.len().saturating_add(32)) });
+        let added = data
+            .as_ref()
+            .map_or(0, |text| {
+                serde_json::to_vec(text).map_or(usize::MAX, |v| v.len().saturating_add(1))
+            })
+            .saturating_add(if self.custom.contains_key(&kind) {
+                0
+            } else {
+                serde_json::to_vec(&kind).map_or(usize::MAX, |v| v.len().saturating_add(32))
+            });
         if self.custom_bytes.saturating_add(added) > MAX_CUSTOM_STATE_BYTES {
             return Err("custom state exceeds the 3 MiB serialized replay limit; entry was not saved. Store large data in files and append a reference".into());
         }
@@ -1324,7 +1366,13 @@ impl Extension {
             .into_iter()
             .filter(|(kind, _)| kind.starts_with(&prefix))
             .collect();
-        let seed_bytes = serde_json::to_vec(&Request::SeedCustom { entries: mine.clone() }.to_json(0)).map_or(usize::MAX, |v| v.len());
+        let seed_bytes = serde_json::to_vec(
+            &Request::SeedCustom {
+                entries: mine.clone(),
+            }
+            .to_json(0),
+        )
+        .map_or(usize::MAX, |v| v.len());
         self.custom_bytes = seed_bytes;
         let had_custom = !self.custom.is_empty();
         self.custom.clear();
@@ -1337,8 +1385,17 @@ impl Extension {
         if seed_bytes > MAX_CUSTOM_STATE_BYTES {
             // Clear the extension-side view on session switches; never leave
             // another session's state active when this seed cannot be replayed.
-            let _ = self.request(&Request::SeedCustom { entries: Vec::new() }, REQUEST_TIMEOUT_MS, None);
-            eprintln!("extension {}: saved custom state exceeds the 3 MiB replay limit; state remains in the session log and was not sent", self.manifest.name);
+            let _ = self.request(
+                &Request::SeedCustom {
+                    entries: Vec::new(),
+                },
+                REQUEST_TIMEOUT_MS,
+                None,
+            );
+            eprintln!(
+                "extension {}: saved custom state exceeds the 3 MiB replay limit; state remains in the session log and was not sent",
+                self.manifest.name
+            );
             return;
         }
         if !mine.is_empty() || had_custom {

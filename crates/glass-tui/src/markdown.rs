@@ -110,13 +110,22 @@ fn inline_depth(text: &str, depth: usize) -> Vec<Span<'static>> {
             } else {
                 body
             };
-            if !body.starts_with(char::is_whitespace) && !body.ends_with(char::is_whitespace) && !(open=="$"&&tail[open.len()+end+close.len()..].starts_with(|c:char|c.is_ascii_digit())) {
-                let consumed=open.len()+end+close.len();
+            if !body.starts_with(char::is_whitespace)
+                && !body.ends_with(char::is_whitespace)
+                && !(open == "$"
+                    && tail[open.len() + end + close.len()..]
+                        .starts_with(|c: char| c.is_ascii_digit()))
+            {
+                let consumed = open.len() + end + close.len();
                 match crate::math::render(body) {
-                    Ok(rendered)=>spans.push(Span::styled(rendered,Style::new().fg(crate::theme::color(crate::theme::Tone::Secondary)))),
-                    Err(_)=>spans.push(Span::raw(tail[..consumed].to_owned())),
+                    Ok(rendered) => spans.push(Span::styled(
+                        rendered,
+                        Style::new().fg(crate::theme::color(crate::theme::Tone::Secondary)),
+                    )),
+                    Err(_) => spans.push(Span::raw(tail[..consumed].to_owned())),
                 }
-                rest=&tail[consumed..];continue;
+                rest = &tail[consumed..];
+                continue;
             }
         }
         if let Some(escaped) = tail.strip_prefix('\\')
@@ -498,12 +507,33 @@ impl Presentation {
                 },
             }];
         }
-        if let Some(rest)=trimmed.strip_prefix("> [!")&&let Some((kind,body))=rest.split_once(']') {
-            let tone=match kind{"NOTE"=>Some(crate::theme::Tone::Secondary),"TIP"=>Some(crate::theme::Tone::Success),"IMPORTANT"=>Some(crate::theme::Tone::Accent),"WARNING"=>Some(crate::theme::Tone::Warning),"CAUTION"=>Some(crate::theme::Tone::Error),_=>None};
-            if let Some(tone)=tone {if !complete{return Vec::new();}
-                let title=kind[..1].to_owned()+&kind[1..].to_ascii_lowercase();let mut spans=vec![Span::styled(title,Style::new().fg(crate::theme::color(tone)).add_modifier(Modifier::BOLD))];
-                if !body.trim().is_empty(){spans.push(Span::raw(" · "));spans.extend(inline(body.trim()));}
-                return wrap_spans(spans,width,"│ ","│ ",cursor);
+        if let Some(rest) = trimmed.strip_prefix("> [!")
+            && let Some((kind, body)) = rest.split_once(']')
+        {
+            let tone = match kind {
+                "NOTE" => Some(crate::theme::Tone::Secondary),
+                "TIP" => Some(crate::theme::Tone::Success),
+                "IMPORTANT" => Some(crate::theme::Tone::Accent),
+                "WARNING" => Some(crate::theme::Tone::Warning),
+                "CAUTION" => Some(crate::theme::Tone::Error),
+                _ => None,
+            };
+            if let Some(tone) = tone {
+                if !complete {
+                    return Vec::new();
+                }
+                let title = kind[..1].to_owned() + &kind[1..].to_ascii_lowercase();
+                let mut spans = vec![Span::styled(
+                    title,
+                    Style::new()
+                        .fg(crate::theme::color(tone))
+                        .add_modifier(Modifier::BOLD),
+                )];
+                if !body.trim().is_empty() {
+                    spans.push(Span::raw(" · "));
+                    spans.extend(inline(body.trim()));
+                }
+                return wrap_spans(spans, width, "│ ", "│ ", cursor);
             }
         }
         let heading = trimmed.chars().take_while(|c| *c == '#').count();
@@ -630,25 +660,34 @@ fn native_block_enabled(line: &str) -> bool {
 // A document fence is not a single equation. Preview only the inert document
 // wrapper; leave unsupported preamble commands visible through source fallback.
 fn latex_document(body: &str, width: usize) -> Option<Vec<Line<'static>>> {
-    if body.len() > 16 * 1024 { return None; }
+    if body.len() > 16 * 1024 {
+        return None;
+    }
     let (preamble, rest) = body.split_once("\\begin{document}")?;
     let (content, trailing) = rest.rsplit_once("\\end{document}")?;
-    if !trailing.trim().is_empty() || content.contains("\\begin{document}") { return None; }
+    if !trailing.trim().is_empty() || content.contains("\\begin{document}") {
+        return None;
+    }
     if !preamble.lines().all(|line| {
         let line = line.trim();
-        line.is_empty() || line.starts_with('%') ||
-            (line.starts_with("\\documentclass{") && line.ends_with('}'))
-    }) { return None; }
+        line.is_empty()
+            || line.starts_with('%')
+            || (line.starts_with("\\documentclass{") && line.ends_with('}'))
+    }) {
+        return None;
+    }
     let mut rows = vec![Line::from(Span::styled(
         crate::text::clip("LaTeX · document preview", width),
-        Style::new().fg(crate::theme::color(crate::theme::Tone::Accent)).add_modifier(Modifier::BOLD),
+        Style::new()
+            .fg(crate::theme::color(crate::theme::Tone::Accent))
+            .add_modifier(Modifier::BOLD),
     ))];
     rows.extend(lines(content.trim(), width));
     Some(rows)
 }
 fn math_block(body: &str, source: &str, width: usize) -> Vec<Line<'static>> {
     let color = Style::new().fg(crate::theme::color(crate::theme::Tone::Secondary));
-    match crate::math::display(body,width) {
+    match crate::math::display(body, width) {
         Ok(text) => {
             let mut rows = vec![Line::from(Span::styled(
                 crate::text::clip("∑ Math", width),
@@ -656,9 +695,13 @@ fn math_block(body: &str, source: &str, width: usize) -> Vec<Line<'static>> {
             ))];
             for line in text {
                 rows.extend(
-                    if crate::text::width(&line)<=width{vec![line]}else{crate::text::wrap_words(&line, width)}
-                        .into_iter()
-                        .map(|line| Line::from(Span::styled(line, color))),
+                    if crate::text::width(&line) <= width {
+                        vec![line]
+                    } else {
+                        crate::text::wrap_words(&line, width)
+                    }
+                    .into_iter()
+                    .map(|line| Line::from(Span::styled(line, color))),
                 );
             }
             rows
@@ -765,7 +808,10 @@ fn mermaid_diagram(text: &str, width: usize) -> Option<Vec<Line<'static>>> {
             "math" | "latex" | "tex"
         ) {
             if !language.trim().eq_ignore_ascii_case("math")
-                && let Some(rows) = latex_document(&body, width) { return Some(rows); }
+                && let Some(rows) = latex_document(&body, width)
+            {
+                return Some(rows);
+            }
             return Some(math_block(&body, text, width));
         }
         if !language.trim().eq_ignore_ascii_case("mermaid") {
@@ -806,14 +852,23 @@ fn mermaid_diagram(text: &str, width: usize) -> Option<Vec<Line<'static>>> {
                 line.as_str(),
                 "Nodes" | "Connections" | "Participants" | "Messages"
             ) || line.starts_with("Group · ")
-                || line.starts_with('╭') || line.starts_with("Section ·") || line.starts_with("Bars ·") || line.starts_with("Line ·") || line.starts_with("Gantt ·") || line.starts_with("Sankey ·") || line.starts_with("Pie proportions");
+                || line.starts_with('╭')
+                || line.starts_with("Section ·")
+                || line.starts_with("Bars ·")
+                || line.starts_with("Line ·")
+                || line.starts_with("Gantt ·")
+                || line.starts_with("Sankey ·")
+                || line.starts_with("Pie proportions");
             let tone = if heading {
                 crate::theme::Tone::Accent
             } else if line.contains("──▶")
                 || line.contains("┄┄▶")
                 || line.contains("━━▶")
                 || line.trim() == "▼"
-                || line.trim() == "│" || line.contains('█') || line.contains('━') || line.contains('●')
+                || line.trim() == "│"
+                || line.contains('█')
+                || line.contains('━')
+                || line.contains('●')
             {
                 crate::theme::Tone::Secondary
             } else {
@@ -1354,8 +1409,8 @@ mod tests {
     }
 
     #[test]
-    fn expanded_code_math_and_callouts_match_streaming(){
-        let source=r####"> [!WARNING] Review before applying.
+    fn expanded_code_math_and_callouts_match_streaming() {
+        let source = r####"> [!WARNING] Review before applying.
 > Preserve this detail.
 
 ```rust
@@ -1391,26 +1446,80 @@ $$
 
 Costs $5-$10; math $x^2$.
 "####;
-        for width in [10usize,20,40,90]{let margin=if width>=24{2}else{1};let expected=lines(source,width-margin*2).iter().map(|r|r.to_string().trim_end().to_owned()).filter(|r|!r.is_empty()).collect::<Vec<_>>();let mut stream=Stream::default();let mut output=Vec::new();for c in source.chars(){stream.write(&mut output,&c.to_string(),width);}stream.flush(&mut output,width);let actual=project(&output).iter().map(|r|r.trim_end().strip_prefix(&" ".repeat(margin)).unwrap_or(r.trim_end()).to_owned()).filter(|r|!r.is_empty()).collect::<Vec<_>>();assert_eq!(actual,expected,"{width}");}
-        assert_eq!(inline("Costs $5-$10").iter().map(|s|s.content.as_ref()).collect::<String>(),"Costs $5-$10");
+        for width in [10usize, 20, 40, 90] {
+            let margin = if width >= 24 { 2 } else { 1 };
+            let expected = lines(source, width - margin * 2)
+                .iter()
+                .map(|r| r.to_string().trim_end().to_owned())
+                .filter(|r| !r.is_empty())
+                .collect::<Vec<_>>();
+            let mut stream = Stream::default();
+            let mut output = Vec::new();
+            for c in source.chars() {
+                stream.write(&mut output, &c.to_string(), width);
+            }
+            stream.flush(&mut output, width);
+            let actual = project(&output)
+                .iter()
+                .map(|r| {
+                    r.trim_end()
+                        .strip_prefix(&" ".repeat(margin))
+                        .unwrap_or(r.trim_end())
+                        .to_owned()
+                })
+                .filter(|r| !r.is_empty())
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "{width}");
+        }
+        assert_eq!(
+            inline("Costs $5-$10")
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>(),
+            "Costs $5-$10"
+        );
     }
     #[test]
-    fn unsupported_inline_math_keeps_delimiters_and_source(){
-        for source in [r"\(\unknown_{x}\)",r"$\unknown_{x}$",r"$$\input{x}$$"]{
-            assert_eq!(inline(source).iter().map(|span|span.content.as_ref()).collect::<String>(),source);
+    fn unsupported_inline_math_keeps_delimiters_and_source() {
+        for source in [r"\(\unknown_{x}\)", r"$\unknown_{x}$", r"$$\input{x}$$"] {
+            assert_eq!(
+                inline(source)
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+                source
+            );
         }
     }
     #[test]
     fn syntax_and_math_stream_match_replay() {
-        let source="```python\ndef fib(n): # readable\n    return \"text\" + 12\n```\nInline $E=mc^2$ and \\(\\alpha_i\\).\n\n$$\n\\frac{a}{b} \\leq \\infty\n$$\n\n```latex\n\\sqrt{x+1}\n```\nDone";
-        for width in [20usize,39,65,90] {
-            let margin=if width>=24{2}else{1};
-            let expected=lines(source,width-margin*2).iter().map(|r|r.to_string().trim_end().to_owned()).filter(|r|!r.is_empty()).collect::<Vec<_>>();
-            let mut stream=Stream::default();let mut output=Vec::new();
-            for c in source.chars(){stream.write(&mut output,&c.to_string(),width);}stream.flush(&mut output,width);
-            let actual=project(&output).iter().map(|r|r.trim_end().strip_prefix(&" ".repeat(margin)).unwrap_or(r.trim_end()).to_owned()).filter(|r|!r.is_empty()).collect::<Vec<_>>();
-            assert_eq!(actual,expected,"width {width}");
-            assert!(actual.iter().any(|r|r.contains("mc²")));assert!(actual.iter().any(|r|r.contains("a⁄b")));
+        let source = "```python\ndef fib(n): # readable\n    return \"text\" + 12\n```\nInline $E=mc^2$ and \\(\\alpha_i\\).\n\n$$\n\\frac{a}{b} \\leq \\infty\n$$\n\n```latex\n\\sqrt{x+1}\n```\nDone";
+        for width in [20usize, 39, 65, 90] {
+            let margin = if width >= 24 { 2 } else { 1 };
+            let expected = lines(source, width - margin * 2)
+                .iter()
+                .map(|r| r.to_string().trim_end().to_owned())
+                .filter(|r| !r.is_empty())
+                .collect::<Vec<_>>();
+            let mut stream = Stream::default();
+            let mut output = Vec::new();
+            for c in source.chars() {
+                stream.write(&mut output, &c.to_string(), width);
+            }
+            stream.flush(&mut output, width);
+            let actual = project(&output)
+                .iter()
+                .map(|r| {
+                    r.trim_end()
+                        .strip_prefix(&" ".repeat(margin))
+                        .unwrap_or(r.trim_end())
+                        .to_owned()
+                })
+                .filter(|r| !r.is_empty())
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "width {width}");
+            assert!(actual.iter().any(|r| r.contains("mc²")));
+            assert!(actual.iter().any(|r| r.contains("a⁄b")));
         }
     }
     #[test]
@@ -1796,12 +1905,22 @@ mod latex_document_regression {
         let source = "```latex\n\\documentclass{article}\n\\begin{document}\nHello, world!\n\n\\[\nE = mc^2\n\\]\n\\end{document}\n```";
         for width in [20, 40, 88] {
             let rows = super::lines(source, width);
-            let text = rows.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+            let text = rows
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
             assert!(text.contains("Hello, world!"), "{text}");
             assert!(text.contains("mc²"), "{text}");
             assert!(!text.contains("unsupported math"), "{text}");
-            assert!(rows.iter().all(|row| crate::text::width(&row.to_string()) <= width));
+            assert!(
+                rows.iter()
+                    .all(|row| crate::text::width(&row.to_string()) <= width)
+            );
         }
-        assert!(super::latex_document("\\usepackage{evil}\n\\begin{document}x\\end{document}", 40).is_none());
+        assert!(
+            super::latex_document("\\usepackage{evil}\n\\begin{document}x\\end{document}", 40)
+                .is_none()
+        );
     }
 }

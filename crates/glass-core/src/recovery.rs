@@ -694,14 +694,20 @@ pub fn view(
     if reset_offered {
         entries.push("Reset provider transport · keeps the session log".to_string());
     } else {
-        entries.push(format!("Reset provider transport · unavailable: {reset_reason}"));
+        entries.push(format!(
+            "Reset provider transport · unavailable: {reset_reason}"
+        ));
     }
 
     let note = format!(
         "Newest first · {}/{} failures shown · attempt lineage {} · Esc back",
         listed.len(),
         MAX_FAILURES,
-        if complete { "complete" } else { "possibly truncated" }
+        if complete {
+            "complete"
+        } else {
+            "possibly truncated"
+        }
     );
     while let Some(choice) = crate::modal::choose(keys, "Failure recovery", &note, &entries) {
         match choice {
@@ -738,19 +744,19 @@ pub fn view(
                     &detail.to_string(),
                 );
             }
-            index if index == listed.len() => {
-                match crate::diagnostic_bundle::snapshot(session) {
-                    Ok(bundle) => crate::structured::view(
-                        keys,
-                        "Diagnostic bundle",
-                        &bundle.to_string(),
-                    ),
-                    Err(error) => crate::modal::info(keys, "Diagnostics unavailable", &error),
+            index if index == listed.len() => match crate::diagnostic_bundle::snapshot(session) {
+                Ok(bundle) => {
+                    crate::structured::view(keys, "Diagnostic bundle", &bundle.to_string())
                 }
-            }
+                Err(error) => crate::modal::info(keys, "Diagnostics unavailable", &error),
+            },
             index if index == listed.len() + 1 => {
                 let value = inspector(session);
-                crate::structured::view(keys, "Recovery inspector · local JSON", &value.to_string());
+                crate::structured::view(
+                    keys,
+                    "Recovery inspector · local JSON",
+                    &value.to_string(),
+                );
             }
             _ => match crate::transport::reset(session, factory) {
                 Ok((_provider, receipt)) => crate::modal::info(
@@ -781,10 +787,8 @@ mod tests {
 
     impl Fixture {
         fn create(name: &str) -> (Self, Session) {
-            let dir = std::env::temp_dir().join(format!(
-                "gc-recovery-{name}-{}",
-                std::process::id()
-            ));
+            let dir =
+                std::env::temp_dir().join(format!("gc-recovery-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let session = Session::create(&dir).unwrap();
@@ -809,7 +813,10 @@ mod tests {
     #[test]
     fn every_known_failure_class_maps_to_exactly_one_bounded_action() {
         let classes = [
-            (FailureClass::Authentication, SafeAction::CheckAuthentication),
+            (
+                FailureClass::Authentication,
+                SafeAction::CheckAuthentication,
+            ),
             (FailureClass::RateLimit, SafeAction::Wait),
             (FailureClass::ContextLimit, SafeAction::RaiseContextWindow),
             (FailureClass::OutputLimit, SafeAction::FixInput),
@@ -891,10 +898,12 @@ mod tests {
         assert_eq!(failures[0].mutation_state, MutationState::Completed);
         assert_eq!(failures[0].recommendation.action(), SafeAction::Retry);
         assert!(!failures[0].recommendation.replays_completed_mutation());
-        assert!(failures[0]
-            .recommendation
-            .detail()
-            .contains("does not run them again"));
+        assert!(
+            failures[0]
+                .recommendation
+                .detail()
+                .contains("does not run them again")
+        );
     }
 
     #[test]
@@ -931,7 +940,10 @@ mod tests {
         assert_eq!(entry["cooldown"]["provider_retry_after_known"], false);
         assert!(entry["cooldown"]["provider_retry_after_s"].is_null());
         assert!(entry["last_applied_backoff_s"].is_null());
-        assert_eq!(entry["recommended_action"]["replays_completed_mutation"], false);
+        assert_eq!(
+            entry["recommended_action"]["replays_completed_mutation"],
+            false
+        );
     }
 
     #[test]
@@ -959,7 +971,10 @@ mod tests {
             "the lineage is chronological: attempt 1 happened first"
         );
         assert!(failures[0].attempts.iter().all(|a| a.cause.contains("503")));
-        assert!(failures[0].timestamp_ms.is_some(), "a retry is a real clock reading");
+        assert!(
+            failures[0].timestamp_ms.is_some(),
+            "a retry is a real clock reading"
+        );
         assert_eq!(failures[0].last_applied_backoff_s(), Some(2));
     }
 
@@ -1061,7 +1076,10 @@ mod tests {
             "LEAK_ENDPOINT_SENTINEL",
             "LEAK_KEY_SENTINEL",
         ] {
-            assert!(!text.contains(sentinel), "inspector leaked {sentinel}: {text}");
+            assert!(
+                !text.contains(sentinel),
+                "inspector leaked {sentinel}: {text}"
+            );
         }
     }
 
@@ -1114,8 +1132,14 @@ mod tests {
         assert_eq!(value["bounds"]["max_failures"], MAX_FAILURES);
         assert_eq!(value["bounds"]["transcript_bodies_loaded"], false);
         let text = value.to_string();
-        assert!(!text.contains("BODY_SENTINEL"), "no transcript body was loaded");
-        assert!(!text.contains("LEAK_PROMPT_SENTINEL"), "no user prompt was loaded");
+        assert!(
+            !text.contains("BODY_SENTINEL"),
+            "no transcript body was loaded"
+        );
+        assert!(
+            !text.contains("LEAK_PROMPT_SENTINEL"),
+            "no user prompt was loaded"
+        );
     }
 
     #[test]
@@ -1125,9 +1149,11 @@ mod tests {
         let value = inspector(&session);
         assert!(value["failures"].as_array().unwrap().is_empty());
         assert_eq!(value["transport_reset"]["offered"], false);
-        assert!(value["transport_reset"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("no recorded provider failure"));
+        assert!(
+            value["transport_reset"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("no recorded provider failure")
+        );
     }
 }

@@ -6,9 +6,18 @@
 use crate::{config, input::KeyReader, modal, sandbox};
 use std::sync::{Mutex, OnceLock};
 
-pub fn model_context(system:String, interactive:bool) -> String {
-    let context=format!("[GC permissions] Profile: {}; sandbox: {:?}. {} For a confined bash/edit/write exception use permission=\"require_escalated\" plus justification; wait for human approval. Denial grants nothing. Approval is one call; file revision/read guards remain.",sandbox::permission_profile_label(),sandbox::policy(),if interactive {"Ask consequential missing decisions with ask_user_question; answers grant no permissions."}else{"No interactive human: never invent answers or approval; report blockers."});
-    crate::guidance::replace_generated(system,"[GC permissions]",&context)
+pub fn model_context(system: String, interactive: bool) -> String {
+    let context = format!(
+        "[GC permissions] Profile: {}; sandbox: {:?}. {} For a confined bash/edit/write exception use permission=\"require_escalated\" plus justification; wait for human approval. Denial grants nothing. Approval is one call; file revision/read guards remain.",
+        sandbox::permission_profile_label(),
+        sandbox::policy(),
+        if interactive {
+            "Ask consequential missing decisions with ask_user_question; answers grant no permissions."
+        } else {
+            "No interactive human: never invent answers or approval; report blockers."
+        }
+    );
+    crate::guidance::replace_generated(system, "[GC permissions]", &context)
 }
 
 static SESSION_APPROVALS: OnceLock<Mutex<sandbox::SessionApprovals>> = OnceLock::new();

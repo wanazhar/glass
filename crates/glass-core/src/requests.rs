@@ -29,7 +29,19 @@ fn message_hash(m: &glass_mod_api::Message) -> String {
     let (tag, fields, count): (&str, [&str; 3], usize) = match m {
         Message::User(t) => ("user", [t, "", ""], 1),
         Message::Assistant(t) => ("assistant", [t, "", ""], 1),
-        Message::ChatReasoning{content,assistant_hash,..}=>("chat_reasoning",[content.as_deref().unwrap_or(""),assistant_hash.as_deref().unwrap_or(""),""],2),
+        Message::ChatReasoning {
+            content,
+            assistant_hash,
+            ..
+        } => (
+            "chat_reasoning",
+            [
+                content.as_deref().unwrap_or(""),
+                assistant_hash.as_deref().unwrap_or(""),
+                "",
+            ],
+            2,
+        ),
         Message::System(t) => ("system", [t, "", ""], 1),
         Message::ToolCall {
             id,
@@ -48,8 +60,11 @@ fn message_hash(m: &glass_mod_api::Message) -> String {
         digest.update(&(field.len() as u64).to_le_bytes());
         digest.update(field.as_bytes());
     }
-    if let Message::ChatReasoning{tool_call_ids,..}=m {
-        for id in tool_call_ids {digest.update(&(id.len() as u64).to_le_bytes());digest.update(id.as_bytes());}
+    if let Message::ChatReasoning { tool_call_ids, .. } = m {
+        for id in tool_call_ids {
+            digest.update(&(id.len() as u64).to_le_bytes());
+            digest.update(id.as_bytes());
+        }
     }
     crate::hashing::hex(digest.finish().as_ref())
 }
@@ -61,7 +76,12 @@ impl Snapshot {
         let prefix = hash(format!("{}:{system}:{tools}", req.model).as_bytes());
         let messages = req.messages.iter().map(message_hash).collect();
         let mut sources = std::collections::BTreeMap::new();
-        for tag in ["project_instructions", "attached_file", "project_memory", "neuralnets"] {
+        for tag in [
+            "project_instructions",
+            "attached_file",
+            "project_memory",
+            "neuralnets",
+        ] {
             for rest in req.system.split(&format!("<{tag} path=")).skip(1).take(128) {
                 if let Some((path, body)) = rest.split_once(">\n")
                     && let Some((body, _)) = body.split_once(&format!("</{tag}>"))
@@ -145,8 +165,10 @@ impl Trace {
         Self::at(&session.path, req, false)
     }
     pub fn compaction(session: &Session, req: &Request<'_>) -> Self {
-        let mut trace=Self::at(&session.path,req,false);
-        trace.workflow="compaction";trace.raw_record=Some(session.log_len());trace
+        let mut trace = Self::at(&session.path, req, false);
+        trace.workflow = "compaction";
+        trace.raw_record = Some(session.log_len());
+        trace
     }
     pub fn background(path: &Path, req: &Request<'_>) -> Self {
         Self::at(path, req, true)
@@ -160,7 +182,7 @@ impl Trace {
         Self {
             path: path.to_owned(),
             background,
-            workflow: if background {"cache_warmer"} else {"agent"},
+            workflow: if background { "cache_warmer" } else { "agent" },
             raw_record: None,
             rate: None,
             serving_model: None,
@@ -214,7 +236,7 @@ impl Drop for Trace {
             "cache_note":"Prefix fingerprint is not a provider cache key. Missing usage cannot establish cache behavior."});
         let result = (|| -> Result<(), String> {
             append(&self.path.with_extension("requests.jsonl"), &report)?;
-            if self.background || self.workflow=="compaction" {
+            if self.background || self.workflow == "compaction" {
                 return Ok(());
             }
             crate::auth::secure_write(
@@ -299,7 +321,9 @@ pub fn tail_window(path: &Path) -> Result<(Vec<serde_json::Value>, bool), String
     let mut reader = BufReader::new(file.take(256 * 1024));
     if offset > 0 {
         let mut partial = Vec::new();
-        reader.read_until(b'\n', &mut partial).map_err(|e| e.to_string())?;
+        reader
+            .read_until(b'\n', &mut partial)
+            .map_err(|e| e.to_string())?;
     }
     let mut rows = reader
         .split(b'\n')
@@ -353,26 +377,56 @@ pub fn view(keys: &crate::input::KeyReader, session: &Session) {
 /// Aggregate only the bounded recent request window; absent usage is unknown.
 pub fn usage_summary(session: &Session) -> Result<serde_json::Value, String> {
     let rows = reports(&session.path)?;
-    let (mut input, mut output, mut read, mut write) = (0u64,0u64,0u64,0u64);
-    let (mut known, mut unknown, mut priced) = (0usize,0usize,0usize);
+    let (mut input, mut output, mut read, mut write) = (0u64, 0u64, 0u64, 0u64);
+    let (mut known, mut unknown, mut priced) = (0usize, 0usize, 0usize);
     let mut cost = 0.0;
     let mut failures = 0;
     let mut invalidations = 0;
     for row in &rows {
         if let Some(usage) = row["usage"].as_object() {
             known += 1;
-            input = input.saturating_add(usage.get("input").and_then(serde_json::Value::as_u64).unwrap_or(0));
-            output = output.saturating_add(usage.get("output").and_then(serde_json::Value::as_u64).unwrap_or(0));
-            read = read.saturating_add(usage.get("cache_read").and_then(serde_json::Value::as_u64).unwrap_or(0));
-            write = write.saturating_add(usage.get("cache_write").and_then(serde_json::Value::as_u64).unwrap_or(0));
-        } else { unknown += 1; }
-        if let Some(value) = row["cost_usd"].as_f64() { cost += value; priced += 1; }
-        if row["outcome"].as_str().is_some_and(|s| s != "completed") { failures += 1; }
-        if row["context_delta"]["prefix_changed"] == true { invalidations += 1; }
+            input = input.saturating_add(
+                usage
+                    .get("input")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+            );
+            output = output.saturating_add(
+                usage
+                    .get("output")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+            );
+            read = read.saturating_add(
+                usage
+                    .get("cache_read")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+            );
+            write = write.saturating_add(
+                usage
+                    .get("cache_write")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+            );
+        } else {
+            unknown += 1;
+        }
+        if let Some(value) = row["cost_usd"].as_f64() {
+            cost += value;
+            priced += 1;
+        }
+        if row["outcome"].as_str().is_some_and(|s| s != "completed") {
+            failures += 1;
+        }
+        if row["context_delta"]["prefix_changed"] == true {
+            invalidations += 1;
+        }
     }
     let prompt = input.saturating_add(read).saturating_add(write);
     let teammates = crate::team::get(&session.id).map(|hub| hub.snapshot().iter().map(|info|serde_json::json!({"name":info.name,"status":info.status,"input":info.input,"output":info.output,"usage_known":info.usage_known,"estimated_tokens":info.estimated_tokens,"cost_usd":info.cost_usd,"cost_complete":info.cost_complete})).collect::<Vec<_>>()).unwrap_or_default();
-    Ok(serde_json::json!({"session":session.id,"scope":"Recent request diagnostics only; includes cache warmer and correction requests when present. Not a lifetime session total.","requests":rows.len(),"requests_with_usage":known,"requests_without_usage":unknown,
+    Ok(
+        serde_json::json!({"session":session.id,"scope":"Recent request diagnostics only; includes cache warmer and correction requests when present. Not a lifetime session total.","requests":rows.len(),"requests_with_usage":known,"requests_without_usage":unknown,
         "reported_uncached_input":input,"reported_cache_read":read,"reported_cache_write":write,
         "reported_prompt_total":prompt,"reported_output":output,
         "reported_cache_hit_ratio":if prompt>0 {Some(read as f64/prompt as f64)} else {None},
@@ -380,7 +434,8 @@ pub fn usage_summary(session: &Session) -> Result<serde_json::Value, String> {
         "non_completed_requests":failures,"observed_prefix_changes":invalidations,
         "fs_scan":crate::fs_scan::diagnostics(),
         "quota":null,"quota_note":"No authoritative provider quota is available from request usage.","teammates":teammates,
-        "cache_note":"Prefix changes explain local invalidation boundaries, not a provider cache-miss cause. Missing usage is never assumed to be zero."}))
+        "cache_note":"Prefix changes explain local invalidation boundaries, not a provider cache-miss cause. Missing usage is never assumed to be zero."}),
+    )
 }
 
 #[cfg(test)]
@@ -389,40 +444,86 @@ mod tests {
     #[test]
     fn allocation_changes_preserve_legacy_message_fingerprints() {
         use glass_mod_api::Message;
-        let samples = [Message::User("界".into()), Message::Assistant("answer".into()),
+        let samples = [
+            Message::User("界".into()),
+            Message::Assistant("answer".into()),
             Message::System("instructions".into()),
-            Message::ToolCall {id:"".into(),name:"read".into(),arguments:"{}".into()},
-            Message::ToolResult {call_id:"1".into(),name:"read".into(),body:"".into()},
-            Message::Image {media_type:"image/png".into(),data:"YQ==".into()}];
+            Message::ToolCall {
+                id: "".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+            },
+            Message::ToolResult {
+                call_id: "1".into(),
+                name: "read".into(),
+                body: "".into(),
+            },
+            Message::Image {
+                media_type: "image/png".into(),
+                data: "YQ==".into(),
+            },
+        ];
         for message in samples {
-            let (tag, fields):(&str,Vec<&str>) = match &message {
-                Message::User(text)=>("user",vec![text]),
-                Message::Assistant(text)=>("assistant",vec![text]),
-                Message::System(text)=>("system",vec![text]),
-                Message::ToolCall{id,name,arguments}=>("call",vec![id,name,arguments]),
-                Message::ToolResult{call_id,name,body}=>("result",vec![call_id,name,body]),
-                Message::Image{media_type,data}=>("image",vec![media_type,data]),
-                Message::ChatReasoning{content,assistant_hash,..}=>("chat_reasoning",vec![content.as_deref().unwrap_or(""),assistant_hash.as_deref().unwrap_or("")]),
+            let (tag, fields): (&str, Vec<&str>) = match &message {
+                Message::User(text) => ("user", vec![text]),
+                Message::Assistant(text) => ("assistant", vec![text]),
+                Message::System(text) => ("system", vec![text]),
+                Message::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                } => ("call", vec![id, name, arguments]),
+                Message::ToolResult {
+                    call_id,
+                    name,
+                    body,
+                } => ("result", vec![call_id, name, body]),
+                Message::Image { media_type, data } => ("image", vec![media_type, data]),
+                Message::ChatReasoning {
+                    content,
+                    assistant_hash,
+                    ..
+                } => (
+                    "chat_reasoning",
+                    vec![
+                        content.as_deref().unwrap_or(""),
+                        assistant_hash.as_deref().unwrap_or(""),
+                    ],
+                ),
             };
-            let mut digest=ring::digest::Context::new(&ring::digest::SHA256);
+            let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
             digest.update(tag.as_bytes());
-            for field in fields {digest.update(&(field.len() as u64).to_le_bytes());digest.update(field.as_bytes());}
-            let previous:String=digest.finish().as_ref().iter().map(|byte|format!("{byte:02x}")).collect();
-            assert_eq!(message_hash(&message),previous);
+            for field in fields {
+                digest.update(&(field.len() as u64).to_le_bytes());
+                digest.update(field.as_bytes());
+            }
+            let previous: String = digest
+                .finish()
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            assert_eq!(message_hash(&message), previous);
         }
     }
 
     #[test]
     fn byte_tail_skips_partial_unicode_and_reports_byte_truncation() {
-        let path = std::env::temp_dir().join(format!("gc-tail-unicode-{}.jsonl", std::process::id()));
-        let mut bytes = serde_json::to_vec(&serde_json::json!({"long":"€".repeat(100_000)})).unwrap();
+        let path =
+            std::env::temp_dir().join(format!("gc-tail-unicode-{}.jsonl", std::process::id()));
+        let mut bytes =
+            serde_json::to_vec(&serde_json::json!({"long":"€".repeat(100_000)})).unwrap();
         bytes.extend_from_slice(b"\n{\"last\":true}\n");
         std::fs::write(&path, &bytes).unwrap();
         let (rows, complete) = tail_window(&path).unwrap();
         assert!(!complete);
         assert_eq!(rows, vec![serde_json::json!({"last":true})]);
         std::fs::write(&path, b"{\"first\":true}\n\xff\n{\"last\":true}\n").unwrap();
-        assert_eq!(tail(&path).unwrap().len(), 2, "corrupt UTF-8 must not hide later rows");
+        assert_eq!(
+            tail(&path).unwrap().len(),
+            2,
+            "corrupt UTF-8 must not hide later rows"
+        );
         std::fs::remove_file(path).unwrap();
     }
 

@@ -122,8 +122,10 @@ pub fn browser(
     current: &Session,
     workspace: &Path,
 ) -> Result<Option<Session>, String> {
-    match crate::navigation::choose(keys,workspace,Some(current),false,false,false)? {
-        Some(pick) if pick.id!=current.id => Session::open(&config::data_dir(),&pick.id).map(Some).map_err(|e|e.to_string()),
+    match crate::navigation::choose(keys, workspace, Some(current), false, false, false)? {
+        Some(pick) if pick.id != current.id => Session::open(&config::data_dir(), &pick.id)
+            .map(Some)
+            .map_err(|e| e.to_string()),
         _ => Ok(None),
     }
 }
@@ -161,28 +163,57 @@ pub fn attach(s: &mut Session, workspace: &Path, path: &str) -> Result<(), Strin
     let bytes = crate::requests::bounded(&p, 8 * 1024 * 1024)?;
     let mut m = metadata(s);
     m.attachments.retain(|a| a.path != p);
-    if m.attachments.len() >= 128 {return Err("Attachment limit reached (128); remove an attachment in /context".into());}
+    if m.attachments.len() >= 128 {
+        return Err("Attachment limit reached (128); remove an attachment in /context".into());
+    }
     if image_media_type(&bytes).is_some() {
         let prepared = crate::images::prepare(&bytes, path, || false)?;
-        let reference = prepared["reference"].as_str().ok_or("missing image reference")?;
+        let reference = prepared["reference"]
+            .as_str()
+            .ok_or("missing image reference")?;
         let data_bytes = crate::files::read_workspace_bytes(
-            &crate::config::data_dir().join("images"), &format!("{reference}.jpg"))?;
-        let existing: usize = m.attachments.iter()
-            .filter_map(|a| a.data.as_ref().map(|d| d.len() * 3 / 4)).sum();
+            &crate::config::data_dir().join("images"),
+            &format!("{reference}.jpg"),
+        )?;
+        let existing: usize = m
+            .attachments
+            .iter()
+            .filter_map(|a| a.data.as_ref().map(|d| d.len() * 3 / 4))
+            .sum();
         if existing + data_bytes.len() > 2_097_152 {
             return Err("Image attachments exceed 2 MiB total. Remove one in /context.".into());
         }
         use base64::Engine;
         let data = base64::engine::general_purpose::STANDARD.encode(&data_bytes);
-        let duplicate = metadata(s).attachments.iter().any(|a| a.data.as_deref() == Some(data.as_str()))
+        let duplicate = metadata(s)
+            .attachments
+            .iter()
+            .any(|a| a.data.as_deref() == Some(data.as_str()))
             && matches!(s.records.last(), Some(Record::Image {data: old, ..}) if old == &data);
         if !duplicate {
-            s.append(Record::Image {media_type: "image/jpeg".into(), data: data.clone()});
-            if let Some(error) = s.write_error() { return Err(error.into()); }
+            s.append(Record::Image {
+                media_type: "image/jpeg".into(),
+                data: data.clone(),
+            });
+            if let Some(error) = s.write_error() {
+                return Err(error.into());
+            }
         }
-        m.attachments.push(Attachment {path: p,
-            source: Some(format!("image · {}×{} → {}×{} · {} KiB", prepared["width"], prepared["height"], prepared["sent_width"], prepared["sent_height"], data_bytes.len().div_ceil(1024))),
-            text: String::new(), media_type: Some("image/jpeg".into()), data: Some(data), citation: None});
+        m.attachments.push(Attachment {
+            path: p,
+            source: Some(format!(
+                "image · {}×{} → {}×{} · {} KiB",
+                prepared["width"],
+                prepared["height"],
+                prepared["sent_width"],
+                prepared["sent_height"],
+                data_bytes.len().div_ceil(1024)
+            )),
+            text: String::new(),
+            media_type: Some("image/jpeg".into()),
+            data: Some(data),
+            citation: None,
+        });
         save(s, &m)?;
         return Ok(());
     }
@@ -639,7 +670,11 @@ pub fn context(
                 "Remove {} · {} · ~{} tokens",
                 a.path.display(),
                 a.source.as_deref().unwrap_or("snapshot"),
-                if a.data.is_some() { 2300 } else { a.text.len().div_ceil(4) }
+                if a.data.is_some() {
+                    2300
+                } else {
+                    a.text.len().div_ceil(4)
+                }
             )
         }));
         match modal::choose(
@@ -1077,23 +1112,62 @@ mod tests {
         let mut session = Session::create(&root).unwrap();
         bind(&session, &root).unwrap();
         let mut png = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::new_rgb8(3, 3).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        image::DynamicImage::new_rgb8(3, 3)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
         std::fs::write(root.join("shot.png"), png.into_inner()).unwrap();
         attach(&mut session, &root, "shot.png").unwrap();
         session.append(Record::User("later turn".into()));
         attach(&mut session, &root, "shot.png").unwrap();
         let messages = session.messages();
-        assert!(matches!(messages.last(), Some(glass_mod_api::Message::Image {..})), "reattach must occur after the later user turn");
-        assert_eq!(session.messages().iter().filter(|m| matches!(m, glass_mod_api::Message::Image {..})).count(), 1);
+        assert!(
+            matches!(messages.last(), Some(glass_mod_api::Message::Image { .. })),
+            "reattach must occur after the later user turn"
+        );
+        assert_eq!(
+            session
+                .messages()
+                .iter()
+                .filter(|m| matches!(m, glass_mod_api::Message::Image { .. }))
+                .count(),
+            1
+        );
         let mut meta = metadata(&session);
-        meta.attachments.clear(); save(&session, &meta).unwrap();
-        assert!(!session.messages().iter().any(|m| matches!(m, glass_mod_api::Message::Image {..})));
-        assert!(session.records.iter().any(|r| matches!(r, Record::Image {..})));
+        meta.attachments.clear();
+        save(&session, &meta).unwrap();
+        assert!(
+            !session
+                .messages()
+                .iter()
+                .any(|m| matches!(m, glass_mod_api::Message::Image { .. }))
+        );
+        assert!(
+            session
+                .records
+                .iter()
+                .any(|r| matches!(r, Record::Image { .. }))
+        );
         attach(&mut session, &root, "shot.png").unwrap();
-        assert_eq!(session.messages().iter().filter(|m| matches!(m, glass_mod_api::Message::Image {..})).count(), 1);
+        assert_eq!(
+            session
+                .messages()
+                .iter()
+                .filter(|m| matches!(m, glass_mod_api::Message::Image { .. }))
+                .count(),
+            1
+        );
         // Simulate a compacted retained window that no longer contains pixels.
-        session.records.retain(|r| !matches!(r, Record::Image {..}));
-        assert_eq!(session.messages().iter().filter(|m| matches!(m, glass_mod_api::Message::Image {..})).count(), 1);
+        session
+            .records
+            .retain(|r| !matches!(r, Record::Image { .. }));
+        assert_eq!(
+            session
+                .messages()
+                .iter()
+                .filter(|m| matches!(m, glass_mod_api::Message::Image { .. }))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -1102,7 +1176,9 @@ mod tests {
         let mut s = Session::create(&root).unwrap();
         bind(&s, &root).unwrap();
         let mut png = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::new_rgb8(2, 2).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
         let png = png.into_inner();
         std::fs::write(root.join("shot.png"), png).unwrap();
         attach(&mut s, &root, "shot.png").unwrap();

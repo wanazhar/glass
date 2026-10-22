@@ -21,19 +21,25 @@ const MAX_JOBS: usize = 16;
 fn viewer_page((width, height): (u16, u16)) -> usize {
     let framed = width >= 24 && height >= 12;
     let capacity = usize::from(height).saturating_sub(if framed { 4 } else { 0 });
-    capacity.saturating_sub(2 + usize::from(capacity > 10)).max(1)
+    capacity
+        .saturating_sub(2 + usize::from(capacity > 10))
+        .max(1)
 }
 /// Peek at most four bytes so a tail preview starts at a complete scalar.
 fn aligned_tail_cursor(path: &Path, size: u64, window: u64) -> Result<u64, String> {
     let offset = size.saturating_sub(window);
-    if offset == 0 { return Ok(0); }
+    if offset == 0 {
+        return Ok(0);
+    }
     let start = offset.saturating_sub(3);
     let mut file = std::fs::File::open(path).map_err(err)?;
     file.seek(SeekFrom::Start(start)).map_err(err)?;
     let mut bytes = [0; 4];
     let mut index = (offset - start) as usize;
     file.read_exact(&mut bytes[..=index]).map_err(err)?;
-    while index > 0 && bytes[index] & 0xc0 == 0x80 { index -= 1; }
+    while index > 0 && bytes[index] & 0xc0 == 0x80 {
+        index -= 1;
+    }
     Ok(start + index as u64)
 }
 
@@ -170,8 +176,11 @@ impl Jobs {
                     // A detached writer can keep the pipe readable forever. Allow
                     // final buffered output, but bound capture even under continuous reads.
                     if stopping.load(Ordering::Relaxed) {
-                        let deadline = stop_deadline.get_or_insert_with(|| Instant::now() + Duration::from_millis(100));
-                        if Instant::now() >= *deadline { break }
+                        let deadline = stop_deadline
+                            .get_or_insert_with(|| Instant::now() + Duration::from_millis(100));
+                        if Instant::now() >= *deadline {
+                            break;
+                        }
                     }
                     let n = match pipe.read(&mut buffer) {
                         Ok(0) => break,
@@ -299,7 +308,9 @@ impl Jobs {
             .read_to_end(&mut bytes)
             .map_err(err)?;
         if offset > 0 && bytes.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
-            return Err("offset is inside a UTF-8 character; use the previous next_offset cursor".into());
+            return Err(
+                "offset is inside a UTF-8 character; use the previous next_offset cursor".into(),
+            );
         }
         let mut end = limit.min(bytes.len());
         while end < bytes.len() && bytes[end] & 0xc0 == 0x80 {
@@ -362,7 +373,9 @@ impl Jobs {
         let j = self.jobs.get_mut(&id).ok_or("unknown job")?;
         if j.closed {
             j.stopping.store(true, Ordering::Relaxed);
-            for h in j.drains.drain(..) { let _ = h.join(); }
+            for h in j.drains.drain(..) {
+                let _ = h.join();
+            }
             return Ok(format!("job {id} already exited"));
         }
         j.input.take();
@@ -408,14 +421,23 @@ fn registry() -> &'static Mutex<BTreeMap<String, Jobs>> {
 fn owner_key(workspace: &Path, owner: &str) -> String {
     format!("{}\0{owner}", crate::concurrency::canonical_key(workspace))
 }
-pub fn has_running(workspace:&Path,owner:&str)->bool {
-    let Ok(mut registry)=registry().lock()else{return true;};
-    let Some(jobs)=registry.get_mut(&owner_key(workspace,owner))else{return false;};
-    jobs.refresh();jobs.jobs.values().any(|job|job.exit.is_none())
+pub fn has_running(workspace: &Path, owner: &str) -> bool {
+    let Ok(mut registry) = registry().lock() else {
+        return true;
+    };
+    let Some(jobs) = registry.get_mut(&owner_key(workspace, owner)) else {
+        return false;
+    };
+    jobs.refresh();
+    jobs.jobs.values().any(|job| job.exit.is_none())
 }
-pub fn attention(workspace:&Path,owner:&str)->Vec<Value> {
-    let Ok(mut registry)=registry().lock() else{return Vec::new();};
-    let Some(jobs)=registry.get_mut(&owner_key(workspace,owner)) else{return Vec::new();};
+pub fn attention(workspace: &Path, owner: &str) -> Vec<Value> {
+    let Ok(mut registry) = registry().lock() else {
+        return Vec::new();
+    };
+    let Some(jobs) = registry.get_mut(&owner_key(workspace, owner)) else {
+        return Vec::new();
+    };
     jobs.refresh();
     jobs.jobs.iter().filter(|(_,job)|job.exit.is_some()).take(16).map(|(id,job)|json!({
         "session":owner,"kind":"background completion","job":id,"raw_record":null,"turn":null,"exit_code":job.exit,
@@ -435,7 +457,10 @@ impl Handle {
     }
     /// Temporary inspectors share job state without owning session cleanup.
     pub fn observer(workspace: &Path, owner: &str) -> Self {
-        Self { key: owner_key(workspace, owner), cleanup_on_drop: false }
+        Self {
+            key: owner_key(workspace, owner),
+            cleanup_on_drop: false,
+        }
     }
     pub fn set_owner(&mut self, workspace: &Path, owner: &str) {
         let key = owner_key(workspace, owner);
@@ -465,46 +490,124 @@ impl Handle {
             .ok_or("unknown job")?
             .output(id)
     }
-    pub fn inspect(&mut self, keys:&crate::input::KeyReader,id:u32)->Result<(),String> {
-        use glass_tui::crossterm::event::{Event,KeyCode,KeyModifiers};
-        let screen=crate::modal::Screen::new();
-        let poll=|offset|registry().lock().map_err(err)?.get_mut(&self.key).ok_or("unknown job")?.poll(id,offset,8192);
-        let mut cursor=registry().lock().map_err(err)?.get_mut(&self.key).ok_or("unknown job")?.tail_cursor(id,24576)?;
-        let mut text=String::new();let mut follow=true;let mut offset=0usize;
-        let mut previous=(0,0);let mut lines=Vec::new();
+    pub fn inspect(&mut self, keys: &crate::input::KeyReader, id: u32) -> Result<(), String> {
+        use glass_tui::crossterm::event::{Event, KeyCode, KeyModifiers};
+        let screen = crate::modal::Screen::new();
+        let poll = |offset| {
+            registry()
+                .lock()
+                .map_err(err)?
+                .get_mut(&self.key)
+                .ok_or("unknown job")?
+                .poll(id, offset, 8192)
+        };
+        let mut cursor = registry()
+            .lock()
+            .map_err(err)?
+            .get_mut(&self.key)
+            .ok_or("unknown job")?
+            .tail_cursor(id, 24576)?;
+        let mut text = String::new();
+        let mut follow = true;
+        let mut offset = 0usize;
+        let mut previous = (0, 0);
+        let mut lines = Vec::new();
         loop {
-            let value=poll(cursor)?;
-            cursor=value["next_offset"].as_u64().ok_or("Invalid output cursor")?;
-            let delta=value["output"].as_str().unwrap_or("");
+            let value = poll(cursor)?;
+            cursor = value["next_offset"]
+                .as_u64()
+                .ok_or("Invalid output cursor")?;
+            let delta = value["output"].as_str().unwrap_or("");
             text.push_str(delta);
-            if text.len()>65536 {
-                let mut start=text.len()-65536;while !text.is_char_boundary(start){start+=1;}
+            if text.len() > 65536 {
+                let mut start = text.len() - 65536;
+                while !text.is_char_boundary(start) {
+                    start += 1;
+                }
                 text.drain(..start);
             }
-            let dimensions=glass_tui::crossterm::terminal::size().unwrap_or((80,24));
-            if !delta.is_empty()||dimensions!=previous||lines.is_empty() {
-                let width=usize::from(dimensions.0).saturating_sub(if dimensions.0>=24&&dimensions.1>=12 {6}else{0}).clamp(1,100);
-                lines=text.lines().flat_map(|row|glass_tui::text::wrap_words(&glass_tui::markdown::sanitize(row),width)).collect();
-                previous=dimensions;
+            let dimensions = glass_tui::crossterm::terminal::size().unwrap_or((80, 24));
+            if !delta.is_empty() || dimensions != previous || lines.is_empty() {
+                let width = usize::from(dimensions.0)
+                    .saturating_sub(if dimensions.0 >= 24 && dimensions.1 >= 12 {
+                        6
+                    } else {
+                        0
+                    })
+                    .clamp(1, 100);
+                lines = text
+                    .lines()
+                    .flat_map(|row| {
+                        glass_tui::text::wrap_words(&glass_tui::markdown::sanitize(row), width)
+                    })
+                    .collect();
+                previous = dimensions;
             }
-            let page=viewer_page(dimensions);
-            if follow{offset=lines.len().saturating_sub(page);}else{offset=offset.min(lines.len().saturating_sub(page));}
-            let title=format!("Job {id} · {} · exit {} · {:.1}s",value["state"].as_str().unwrap_or("unknown"),value["exit_code"],value["elapsed_seconds"].as_f64().unwrap_or(0.0));
-            screen.draw(&title,&lines,&format!("↑↓ scroll · End follow · I stdin · Ctrl-D EOF · Esc close · {} dropped bytes",value["dropped_bytes"]),offset);
+            let page = viewer_page(dimensions);
+            if follow {
+                offset = lines.len().saturating_sub(page);
+            } else {
+                offset = offset.min(lines.len().saturating_sub(page));
+            }
+            let title = format!(
+                "Job {id} · {} · exit {} · {:.1}s",
+                value["state"].as_str().unwrap_or("unknown"),
+                value["exit_code"],
+                value["elapsed_seconds"].as_f64().unwrap_or(0.0)
+            );
+            screen.draw(
+                &title,
+                &lines,
+                &format!(
+                    "↑↓ scroll · End follow · I stdin · Ctrl-D EOF · Esc close · {} dropped bytes",
+                    value["dropped_bytes"]
+                ),
+                offset,
+            );
             match keys.next_timeout(Duration::from_millis(100)) {
-                Some(Event::Key(k))=>match k.code {
-                    KeyCode::Esc|KeyCode::Char('q')=>return Ok(()),
-                    KeyCode::Up|KeyCode::PageUp=>{follow=false;offset=offset.saturating_sub(if k.code==KeyCode::Up{1}else{page});},
-                    KeyCode::Down|KeyCode::PageDown=>{offset=offset.saturating_add(if k.code==KeyCode::Down{1}else{page});},
-                    KeyCode::End=>follow=true,
-                    KeyCode::Char('i')=>if let Some(input)=crate::modal::field(keys,"Owned job stdin","Send a line (no shell interpretation by GC)","",false) {
-                        let receipt=registry().lock().map_err(err)?.get_mut(&self.key).ok_or("unknown job")?.input(id,&format!("{input}\n"),false)?;
-                        if receipt["remaining_bytes"].as_u64().unwrap_or(0)>0 {crate::modal::info(keys,"Partial input",&receipt.to_string());}
-                    },
-                    KeyCode::Char('d') if k.modifiers.contains(KeyModifiers::CONTROL)=>{
-                        registry().lock().map_err(err)?.get_mut(&self.key).ok_or("unknown job")?.input(id,"",true)?;
-                    },_=>{},
-                },Some(Event::Resize(_, _))=>{},_=>{},
+                Some(Event::Key(k)) => match k.code {
+                    KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Up | KeyCode::PageUp => {
+                        follow = false;
+                        offset =
+                            offset.saturating_sub(if k.code == KeyCode::Up { 1 } else { page });
+                    }
+                    KeyCode::Down | KeyCode::PageDown => {
+                        offset =
+                            offset.saturating_add(if k.code == KeyCode::Down { 1 } else { page });
+                    }
+                    KeyCode::End => follow = true,
+                    KeyCode::Char('i') => {
+                        if let Some(input) = crate::modal::field(
+                            keys,
+                            "Owned job stdin",
+                            "Send a line (no shell interpretation by GC)",
+                            "",
+                            false,
+                        ) {
+                            let receipt = registry()
+                                .lock()
+                                .map_err(err)?
+                                .get_mut(&self.key)
+                                .ok_or("unknown job")?
+                                .input(id, &format!("{input}\n"), false)?;
+                            if receipt["remaining_bytes"].as_u64().unwrap_or(0) > 0 {
+                                crate::modal::info(keys, "Partial input", &receipt.to_string());
+                            }
+                        }
+                    }
+                    KeyCode::Char('d') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                        registry()
+                            .lock()
+                            .map_err(err)?
+                            .get_mut(&self.key)
+                            .ok_or("unknown job")?
+                            .input(id, "", true)?;
+                    }
+                    _ => {}
+                },
+                Some(Event::Resize(_, _)) => {}
+                _ => {}
             }
         }
     }
@@ -519,7 +622,9 @@ impl Handle {
 }
 impl Drop for Handle {
     fn drop(&mut self) {
-        if !self.cleanup_on_drop { return; }
+        if !self.cleanup_on_drop {
+            return;
+        }
         if let Ok(mut r) = registry().lock() {
             r.remove(&self.key);
         }
@@ -660,10 +765,17 @@ mod tests {
     #[test]
     fn escaped_continuous_writers_cannot_block_capture_shutdown() {
         for natural in [false, true] {
-            let dir = scratch(if natural { "escaped-exit" } else { "escaped-stop" });
+            let dir = scratch(if natural {
+                "escaped-exit"
+            } else {
+                "escaped-stop"
+            });
             let mut jobs = Jobs::default();
             // SIGPIPE ends this test-owned descendant once capture closes.
-            let command = format!("setsid sh -c 'echo $$ > escaped.pid; while printf xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; do :; done' & {}", if natural { "sleep 0.1; exit 0" } else { "wait" });
+            let command = format!(
+                "setsid sh -c 'echo $$ > escaped.pid; while printf xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; do :; done' & {}",
+                if natural { "sleep 0.1; exit 0" } else { "wait" }
+            );
             jobs.start(&command, &dir, &dir).unwrap();
             let deadline = Instant::now() + Duration::from_secs(3);
             while !dir.join("escaped.pid").exists() {
@@ -683,8 +795,11 @@ mod tests {
             assert!(jobs.jobs[&1].drains.is_empty());
             // Reap only the descendant launched by this test if still exiting.
             if let Ok(pid) = std::fs::read_to_string(dir.join("escaped.pid"))
-                && let Ok(pid) = pid.trim().parse::<i32>() {
-                unsafe { libc::kill(pid, libc::SIGKILL); }
+                && let Ok(pid) = pid.trim().parse::<i32>()
+            {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
             }
             drop(jobs);
             std::fs::remove_dir_all(dir).unwrap();
@@ -796,7 +911,8 @@ mod tests {
         owner.start("echo COMPLETED", &dir, &dir).unwrap();
         owner.start("echo RUNNING; sleep 30", &dir, &dir).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
-        while !owner.list().contains("1: exit 0") || !owner.output(1).unwrap().contains("COMPLETED") {
+        while !owner.list().contains("1: exit 0") || !owner.output(1).unwrap().contains("COMPLETED")
+        {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -808,7 +924,12 @@ mod tests {
         assert!(owner.output(1).unwrap().contains("COMPLETED"));
         owner.stop(2).unwrap();
         drop(owner);
-        assert!(!registry().lock().unwrap().contains_key(&owner_key(&dir, "session")));
+        assert!(
+            !registry()
+                .lock()
+                .unwrap()
+                .contains_key(&owner_key(&dir, "session"))
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
@@ -823,8 +944,12 @@ mod tests {
             let chunk = jobs.poll(1, cursor, 1).unwrap();
             output.push_str(chunk["output"].as_str().unwrap());
             cursor = chunk["next_offset"].as_u64().unwrap();
-            if chunk["state"] == "exited" && chunk["draining"] == false
-                && cursor == chunk["captured_bytes"].as_u64().unwrap() { break; }
+            if chunk["state"] == "exited"
+                && chunk["draining"] == false
+                && cursor == chunk["captured_bytes"].as_u64().unwrap()
+            {
+                break;
+            }
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -867,7 +992,11 @@ mod tests {
         let mut jobs = Jobs::default();
         jobs.start("printf '😀Z'", &dir, &dir).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
-        while jobs.poll(1, 0, 100).unwrap()["captured_bytes"].as_u64().unwrap() < 5 {
+        while jobs.poll(1, 0, 100).unwrap()["captured_bytes"]
+            .as_u64()
+            .unwrap()
+            < 5
+        {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(10));
         }

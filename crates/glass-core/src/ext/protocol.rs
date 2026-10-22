@@ -129,8 +129,7 @@ impl CallLineage {
         if self.path.iter().any(|id| id == &link) {
             return Err(format!(
                 "nested tool call refused: `{}` is already in the lineage of `{}`; the chain is cyclic",
-                link,
-                self.origin
+                link, self.origin
             ));
         }
         let mut path = self.path.clone();
@@ -161,7 +160,8 @@ impl CallLineage {
                 claimed.path.len()
             ));
         }
-        if claimed.path.len() < self.path.len() || claimed.path[..self.path.len()] != self.path[..] {
+        if claimed.path.len() < self.path.len() || claimed.path[..self.path.len()] != self.path[..]
+        {
             return Err(format!(
                 "lineage refused: nested call does not extend the host's chain from `{}`",
                 self.origin
@@ -173,7 +173,11 @@ impl CallLineage {
                 self.origin
             ));
         }
-        if claimed.path.iter().collect::<std::collections::BTreeSet<_>>().len()
+        if claimed
+            .path
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
             != claimed.path.len()
         {
             return Err(format!(
@@ -230,7 +234,11 @@ impl CallLineage {
         if path.iter().collect::<std::collections::BTreeSet<_>>().len() != path.len() {
             return Err("lineage refused: the chain repeats a call id".into());
         }
-        let lineage = CallLineage { origin, depth, path };
+        let lineage = CallLineage {
+            origin,
+            depth,
+            path,
+        };
         if lineage.depth != lineage.path.len().saturating_sub(lineage.root_len()) {
             return Err(format!(
                 "lineage refused: depth {} does not match {} ids",
@@ -400,9 +408,7 @@ pub enum Request {
     /// Seed an extension with its existing durable entries, sent once
     /// after the session opens. The extension acks; the entries are
     /// `(kind, data)` pairs it appended in earlier sessions.
-    SeedCustom {
-        entries: Vec<(String, Vec<String>)>,
-    },
+    SeedCustom { entries: Vec<(String, Vec<String>)> },
 }
 
 impl Request {
@@ -467,9 +473,7 @@ impl Request {
             Request::SeedCustom { entries } => {
                 let entries: Vec<Value> = entries
                     .iter()
-                    .map(|(kind, data)| {
-                        json!({ "kind": kind, "entries": data })
-                    })
+                    .map(|(kind, data)| json!({ "kind": kind, "entries": data }))
                     .collect();
                 json!({ "type": "seed_custom", "id": id, "entries": entries })
             }
@@ -944,8 +948,14 @@ mod tests {
         let batch = json!({ "type": "run_subagents", "tasks": [{ "task": "a" }] });
         assert!(is_subagents_call(&batch));
         assert!(!is_subagent_call(&batch), "a batch is not the legacy form");
-        assert!(!is_subagents_call(&json!({ "type": "run_subagent", "task": "a" })));
-        assert!(!is_subagents_call(&subagents_result_json(&json!("c1"), &[], None)));
+        assert!(!is_subagents_call(
+            &json!({ "type": "run_subagent", "task": "a" })
+        ));
+        assert!(!is_subagents_call(&subagents_result_json(
+            &json!("c1"),
+            &[],
+            None
+        )));
     }
 
     #[test]
@@ -1068,7 +1078,9 @@ mod tests {
     /// nested work cannot be traced back to the model call that caused it.
     #[test]
     fn run_tool_carries_the_originating_call_id_through_the_wire() {
-        let lineage = CallLineage::root("call_42").descend("cm-1").expect("one level is legal");
+        let lineage = CallLineage::root("call_42")
+            .descend("cm-1")
+            .expect("one level is legal");
         for j in [
             Request::RunTool {
                 call_id: "call_42".into(),
@@ -1123,7 +1135,9 @@ mod tests {
     fn a_chain_past_the_depth_bound_is_refused_rather_than_extended() {
         let mut chain = CallLineage::root("c1");
         for level in 1..MAX_NESTED_CALL_DEPTH {
-            chain = chain.descend(&format!("n{level}")).expect("within the bound");
+            chain = chain
+                .descend(&format!("n{level}"))
+                .expect("within the bound");
         }
         assert_eq!(chain.depth(), MAX_NESTED_CALL_DEPTH - 1);
         let at_bound = chain.descend("last").expect("the last legal level");
@@ -1162,7 +1176,10 @@ mod tests {
         // The extension reports a lineage rooted at a different model call.
         let foreign = CallLineage::root("c2").descend("n2").expect("descend");
         let err = host.verify_child(&foreign, "n2").unwrap_err();
-        assert!(err.contains("origin"), "the origin mismatch is named: {err}");
+        assert!(
+            err.contains("origin"),
+            "the origin mismatch is named: {err}"
+        );
 
         // Nor can it claim a chain the host never granted.
         let short = CallLineage::root("c1");
@@ -1203,10 +1220,7 @@ mod tests {
             json!({ "origin": "c1", "depth": 9, "path": ["c1"] }),
             json!({ "origin": "c1", "depth": 0, "path": [1, 2] }),
         ] {
-            assert!(
-                CallLineage::from_json(&bad).is_err(),
-                "must refuse {bad}"
-            );
+            assert!(CallLineage::from_json(&bad).is_err(), "must refuse {bad}");
         }
     }
 

@@ -267,7 +267,8 @@ fn assets() -> Result<PathBuf, String> {
     {
         paths.push(parent.join("../share/glass-core/web"));
     }
-    paths.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../products/glass-core/web/dist"));
+    paths
+        .push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../products/glass-core/web/dist"));
     paths.into_iter().find(|p|p.join("app.js").is_file()&&p.join("index.html").is_file()).and_then(|p|p.canonicalize().ok()).ok_or("Web assets are missing. Install the GC web asset bundle, or build it with npm run build:web. Set GC_WEB_ASSETS to its directory.".into())
 }
 pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String> {
@@ -837,10 +838,10 @@ fn request(stream: &mut TcpStream) -> Result<Request, String> {
         .transpose()
         .map_err(|_| "Invalid body length")?
         .unwrap_or(0);
-    let limit = match (method.as_str(),path.split('?').next()) {
-        ("POST",Some("/api/upload"))=>8*1024*1024,
-        ("POST",Some("/api/artifact"))=>512*1024,
-        _=>MAX_BODY,
+    let limit = match (method.as_str(), path.split('?').next()) {
+        ("POST", Some("/api/upload")) => 8 * 1024 * 1024,
+        ("POST", Some("/api/artifact")) => 512 * 1024,
+        _ => MAX_BODY,
     };
     if len > limit {
         return Err(format!("Input exceeds {} bytes", limit));
@@ -955,16 +956,18 @@ fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> 
             continue;
         }
         let record: Value = serde_json::from_slice(line).map_err(|e| e.to_string())?;
-        if crate::reasoning::private_value(&record) {continue;}
+        if crate::reasoning::private_value(&record) {
+            continue;
+        }
         if records.len() >= 60 {
             records.pop_front();
         }
         records.push_back(json!({"index":index,"record":record}));
     }
     let mut omitted = Vec::new();
-    let mut private_before=None;
+    let mut private_before = None;
     if starts_mid_record {
-        let mut prefix_file = std::fs::File::open(path).map_err(|e|e.to_string())?;
+        let mut prefix_file = std::fs::File::open(path).map_err(|e| e.to_string())?;
         let floor = offset.saturating_sub(8 * 1024 * 1024);
         let mut cursor = offset;
         let mut record_start = None;
@@ -972,20 +975,31 @@ fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> 
         // an 8 MiB prefix eagerly for an ordinary history page.
         while cursor > floor {
             let start = cursor.saturating_sub(32768).max(floor);
-            prefix_file.seek(SeekFrom::Start(start as u64)).map_err(|e|e.to_string())?;
-            let mut chunk=vec![0;cursor-start];
-            prefix_file.read_exact(&mut chunk).map_err(|e|e.to_string())?;
-            if let Some(n)=chunk.iter().rposition(|b|*b==b'\n') {
-                record_start=Some(start+n+1);break;
+            prefix_file
+                .seek(SeekFrom::Start(start as u64))
+                .map_err(|e| e.to_string())?;
+            let mut chunk = vec![0; cursor - start];
+            prefix_file
+                .read_exact(&mut chunk)
+                .map_err(|e| e.to_string())?;
+            if let Some(n) = chunk.iter().rposition(|b| *b == b'\n') {
+                record_start = Some(start + n + 1);
+                break;
             }
-            cursor=start;
+            cursor = start;
         }
-        if record_start.is_none() && cursor==0 {record_start=Some(0);}
-        let record_end = bytes.iter().position(|b| *b==b'\n').map(|n|offset+n+1)
-            .or_else(||(end<length).then_some(end));
-        if let (Some(start),Some(finish))=(record_start,record_end) {
-            if crate::reasoning::private_at(path,start as u64)? {private_before=Some(start as u64);}
-            else if finish-start > 512*1024 {
+        if record_start.is_none() && cursor == 0 {
+            record_start = Some(0);
+        }
+        let record_end = bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map(|n| offset + n + 1)
+            .or_else(|| (end < length).then_some(end));
+        if let (Some(start), Some(finish)) = (record_start, record_end) {
+            if crate::reasoning::private_at(path, start as u64)? {
+                private_before = Some(start as u64);
+            } else if finish - start > 512 * 1024 {
                 omitted.push(json!({"recordOffset":start,"bytes":finish-start,"readable":finish-start<=8*1024*1024}));
             }
         }
@@ -993,7 +1007,12 @@ fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> 
     let start = records
         .front()
         .and_then(|v| v["index"].as_u64())
-        .unwrap_or_else(||omitted.first().and_then(|v|v["recordOffset"].as_u64()).unwrap_or(private_before.unwrap_or(offset as u64)));
+        .unwrap_or_else(|| {
+            omitted
+                .first()
+                .and_then(|v| v["recordOffset"].as_u64())
+                .unwrap_or(private_before.unwrap_or(offset as u64))
+        });
     Ok(
         json!({"omitted":omitted,"records":records,"before":start,"totalBytes":length,"windowBytes":512*1024,"omittedLargeRecord":records.is_empty()&&end>0}),
     )
@@ -1003,103 +1022,216 @@ fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> 
 // lines must not shift quote/rewrite indices.
 fn activity_location(id: &str, requested: usize) -> Result<Value, String> {
     use std::io::BufRead;
-    if requested > 64*1024*1024 {return Err("Activity mapping exceeds 64 MiB; use native history controls".into());}
-    let file=std::fs::File::open(thread_path(id)?).map_err(|e|e.to_string())?;
-    let mut reader=std::io::BufReader::new(file.take((requested+8*1024*1024+1) as u64));
-    let mut offset=0usize;let mut ordinal=0usize;let mut turn=0usize;
-    let mut line=Vec::new();
+    if requested > 64 * 1024 * 1024 {
+        return Err("Activity mapping exceeds 64 MiB; use native history controls".into());
+    }
+    let file = std::fs::File::open(thread_path(id)?).map_err(|e| e.to_string())?;
+    let mut reader = std::io::BufReader::new(file.take((requested + 8 * 1024 * 1024 + 1) as u64));
+    let mut offset = 0usize;
+    let mut ordinal = 0usize;
+    let mut turn = 0usize;
+    let mut line = Vec::new();
     loop {
         line.clear();
-        let n=reader.by_ref().take(8*1024*1024+1).read_until(b'\n',&mut line).map_err(|e|e.to_string())?;
-        if n==0 {break;}
-        if n>8*1024*1024 {return Err("Activity record exceeds 8 MiB".into());}
-        if let Ok(value)=serde_json::from_slice::<Value>(&line)
-            && let Some(record)=crate::session::Record::from_json(&value)
+        let n = reader
+            .by_ref()
+            .take(8 * 1024 * 1024 + 1)
+            .read_until(b'\n', &mut line)
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        if n > 8 * 1024 * 1024 {
+            return Err("Activity record exceeds 8 MiB".into());
+        }
+        if let Ok(value) = serde_json::from_slice::<Value>(&line)
+            && let Some(record) = crate::session::Record::from_json(&value)
         {
-            if matches!(record,crate::session::Record::User(_)) {turn+=1;}
-            if offset==requested {return Ok(json!({"recordOffset":offset,"record":ordinal,"turn":turn,"revision":match &record {
+            if matches!(record, crate::session::Record::User(_)) {
+                turn += 1;
+            }
+            if offset == requested {
+                return Ok(
+                    json!({"recordOffset":offset,"record":ordinal,"turn":turn,"revision":match &record {
                 crate::session::Record::User(t)|crate::session::Record::Assistant(t)=>Some(crate::workspace::hash(t.as_bytes())),
                 crate::session::Record::ToolResult{body:t,..}|crate::session::Record::Bash{output:t,..}=>Some(crate::workspace::hash(t.as_bytes())),
-                _=>None}}));}
-            ordinal+=1;
+                _=>None}}),
+                );
+            }
+            ordinal += 1;
         }
-        offset+=n;
-        if offset>requested {break;}
+        offset += n;
+        if offset > requested {
+            break;
+        }
     }
     Err("Activity no longer exists at this byte cursor; reload history".into())
 }
-struct ActivityText {created:Instant,text:String,kind:String,revision:String}
-fn activity_texts()->&'static Mutex<HashMap<String,ActivityText>> {
-    static STORE:std::sync::OnceLock<Mutex<HashMap<String,ActivityText>>>=std::sync::OnceLock::new();
+struct ActivityText {
+    created: Instant,
+    text: String,
+    kind: String,
+    revision: String,
+}
+fn activity_texts() -> &'static Mutex<HashMap<String, ActivityText>> {
+    static STORE: std::sync::OnceLock<Mutex<HashMap<String, ActivityText>>> =
+        std::sync::OnceLock::new();
     STORE.get_or_init(Default::default)
 }
-fn activity_text(id:&str,record_offset:usize,offset:usize,expected:&str)->Result<Value,String> {
+fn activity_text(
+    id: &str,
+    record_offset: usize,
+    offset: usize,
+    expected: &str,
+) -> Result<Value, String> {
     use std::io::BufRead;
-    let path=thread_path(id)?;
-    if crate::reasoning::private_at(&path,record_offset as u64)? {return Err("Provider replay metadata is private; use the reasoning view".into());}
-    if offset>0 && expected.is_empty() {return Err("Text continuation requires its previous revision".into());}
-    let key=format!("{id}:{record_offset}:{expected}");
-    let page=|entry:&ActivityText|->Result<Value,String> {
-        if offset>entry.text.len() || !entry.text.is_char_boundary(offset) {return Err("Invalid UTF-8 text cursor".into());}
-        let mut end=(offset+128*1024).min(entry.text.len());
-        while !entry.text.is_char_boundary(end) {end-=1;}
-        Ok(json!({"recordOffset":record_offset,"offset":offset,"text":&entry.text[offset..end],"nextOffset":end,"eof":end==entry.text.len(),"totalBytes":entry.text.len(),"kind":entry.kind,"revision":entry.revision}))
+    let path = thread_path(id)?;
+    if crate::reasoning::private_at(&path, record_offset as u64)? {
+        return Err("Provider replay metadata is private; use the reasoning view".into());
+    }
+    if offset > 0 && expected.is_empty() {
+        return Err("Text continuation requires its previous revision".into());
+    }
+    let key = format!("{id}:{record_offset}:{expected}");
+    let page = |entry: &ActivityText| -> Result<Value, String> {
+        if offset > entry.text.len() || !entry.text.is_char_boundary(offset) {
+            return Err("Invalid UTF-8 text cursor".into());
+        }
+        let mut end = (offset + 128 * 1024).min(entry.text.len());
+        while !entry.text.is_char_boundary(end) {
+            end -= 1;
+        }
+        Ok(
+            json!({"recordOffset":record_offset,"offset":offset,"text":&entry.text[offset..end],"nextOffset":end,"eof":end==entry.text.len(),"totalBytes":entry.text.len(),"kind":entry.kind,"revision":entry.revision}),
+        )
     };
     {
-        let mut store=activity_texts().lock().map_err(|_|"Activity reader unavailable")?;
-        store.retain(|_,entry|entry.created.elapsed()<Duration::from_secs(120));
-        if offset>0 && let Some(entry)=store.get(&key) {return page(entry);}
+        let mut store = activity_texts()
+            .lock()
+            .map_err(|_| "Activity reader unavailable")?;
+        store.retain(|_, entry| entry.created.elapsed() < Duration::from_secs(120));
+        if offset > 0
+            && let Some(entry) = store.get(&key)
+        {
+            return page(entry);
+        }
     }
-    let mut file=std::fs::File::open(thread_path(id)?).map_err(|e|e.to_string())?;
-    if record_offset>0 {
-        file.seek(SeekFrom::Start(record_offset as u64-1)).map_err(|e|e.to_string())?;
-        let mut previous=[0];file.read_exact(&mut previous).map_err(|e|e.to_string())?;
-        if previous[0]!=b'\n' {return Err("recordOffset must identify a record boundary".into());}
+    let mut file = std::fs::File::open(thread_path(id)?).map_err(|e| e.to_string())?;
+    if record_offset > 0 {
+        file.seek(SeekFrom::Start(record_offset as u64 - 1))
+            .map_err(|e| e.to_string())?;
+        let mut previous = [0];
+        file.read_exact(&mut previous).map_err(|e| e.to_string())?;
+        if previous[0] != b'\n' {
+            return Err("recordOffset must identify a record boundary".into());
+        }
     }
-    file.seek(SeekFrom::Start(record_offset as u64)).map_err(|e|e.to_string())?;
-    let mut bytes=Vec::new();
-    std::io::BufReader::new(file.take(8*1024*1024+1)).read_until(b'\n',&mut bytes).map_err(|e|e.to_string())?;
-    if bytes.len()>8*1024*1024 {return Err("Activity exceeds 8 MiB; export the transcript".into());}
-    if !bytes.ends_with(b"\n") {return Err("Activity is incomplete; retry after it settles".into());}
-    let value:Value=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
-    let kind=value["k"].as_str().ok_or("Activity kind unavailable")?.to_string();
-    let text=value["t"].as_str().or_else(||value["out"].as_str()).or_else(||value["summary"].as_str())
-        .ok_or("This activity has no text body; use its normal viewer or transcript export")?.to_string();
-    let revision=crate::workspace::hash(text.as_bytes());
-    if !expected.is_empty() && revision!=expected {return Err("Activity changed; reopen the reader".into());}
-    let entry=ActivityText{created:Instant::now(),text,kind,revision};
-    let result=page(&entry)?;
-    let key=format!("{id}:{record_offset}:{}",entry.revision);
-    let mut store=activity_texts().lock().map_err(|_|"Activity reader unavailable")?;
-    store.retain(|_,entry|entry.created.elapsed()<Duration::from_secs(120));
+    file.seek(SeekFrom::Start(record_offset as u64))
+        .map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    std::io::BufReader::new(file.take(8 * 1024 * 1024 + 1))
+        .read_until(b'\n', &mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err("Activity exceeds 8 MiB; export the transcript".into());
+    }
+    if !bytes.ends_with(b"\n") {
+        return Err("Activity is incomplete; retry after it settles".into());
+    }
+    let value: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let kind = value["k"]
+        .as_str()
+        .ok_or("Activity kind unavailable")?
+        .to_string();
+    let text = value["t"]
+        .as_str()
+        .or_else(|| value["out"].as_str())
+        .or_else(|| value["summary"].as_str())
+        .ok_or("This activity has no text body; use its normal viewer or transcript export")?
+        .to_string();
+    let revision = crate::workspace::hash(text.as_bytes());
+    if !expected.is_empty() && revision != expected {
+        return Err("Activity changed; reopen the reader".into());
+    }
+    let entry = ActivityText {
+        created: Instant::now(),
+        text,
+        kind,
+        revision,
+    };
+    let result = page(&entry)?;
+    let key = format!("{id}:{record_offset}:{}", entry.revision);
+    let mut store = activity_texts()
+        .lock()
+        .map_err(|_| "Activity reader unavailable")?;
+    store.retain(|_, entry| entry.created.elapsed() < Duration::from_secs(120));
     store.remove(&key);
-    while store.len()>=16 || store.values().map(|v|v.text.len()).sum::<usize>()+entry.text.len()>16*1024*1024 {
-        let oldest=store.iter().min_by_key(|(_,v)|v.created).map(|(k,_)|k.clone());
-        if let Some(key)=oldest {store.remove(&key);} else {break;}
+    while store.len() >= 16
+        || store.values().map(|v| v.text.len()).sum::<usize>() + entry.text.len() > 16 * 1024 * 1024
+    {
+        let oldest = store
+            .iter()
+            .min_by_key(|(_, v)| v.created)
+            .map(|(k, _)| k.clone());
+        if let Some(key) = oldest {
+            store.remove(&key);
+        } else {
+            break;
+        }
     }
-    store.insert(key,entry);
+    store.insert(key, entry);
     Ok(result)
 }
 fn history_record(id: &str, record_offset: usize, offset: usize) -> Result<Value, String> {
     use base64::Engine;
-    let record_path=thread_path(id)?;
-    if crate::reasoning::private_at(&record_path,record_offset as u64)? {return Err("Provider replay metadata is private; use the reasoning view".into());}
-    if offset >= 8*1024*1024 {return Err("Large activity exceeds the 8 MiB reader limit; export the transcript".into());}
-    let mut file = std::fs::File::open(thread_path(id)?).map_err(|e|e.to_string())?;
-    if record_offset > 0 {
-        file.seek(SeekFrom::Start(record_offset as u64-1)).map_err(|e|e.to_string())?;
-        let mut previous=[0];file.read_exact(&mut previous).map_err(|e|e.to_string())?;
-        if previous[0]!=b'\n' {return Err("recordOffset must identify a record boundary".into());}
+    let record_path = thread_path(id)?;
+    if crate::reasoning::private_at(&record_path, record_offset as u64)? {
+        return Err("Provider replay metadata is private; use the reasoning view".into());
     }
-    file.seek(SeekFrom::Start(record_offset as u64)).map_err(|e|e.to_string())?;
-    let mut first=[0];file.read_exact(&mut first).map_err(|e|e.to_string())?;
-    if first[0]!=b'{' {return Err("recordOffset must identify JSON activity".into());}
-    file.seek(SeekFrom::Start(record_offset.checked_add(offset).ok_or("Invalid activity offset")? as u64)).map_err(|e|e.to_string())?;
-    let mut bytes=Vec::new();
-    file.take((32768usize.min(8*1024*1024-offset)) as u64).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
-    let eof=bytes.iter().position(|b|*b==b'\n').map(|n| {bytes.truncate(n+1);true}).unwrap_or(false);
-    if bytes.is_empty() {return Err("Activity is incomplete or no longer available".into());}
-    Ok(json!({"recordOffset":record_offset,"offset":offset,"nextOffset":offset+bytes.len(),"eof":eof,"data":base64::engine::general_purpose::STANDARD.encode(bytes)}))
+    if offset >= 8 * 1024 * 1024 {
+        return Err("Large activity exceeds the 8 MiB reader limit; export the transcript".into());
+    }
+    let mut file = std::fs::File::open(thread_path(id)?).map_err(|e| e.to_string())?;
+    if record_offset > 0 {
+        file.seek(SeekFrom::Start(record_offset as u64 - 1))
+            .map_err(|e| e.to_string())?;
+        let mut previous = [0];
+        file.read_exact(&mut previous).map_err(|e| e.to_string())?;
+        if previous[0] != b'\n' {
+            return Err("recordOffset must identify a record boundary".into());
+        }
+    }
+    file.seek(SeekFrom::Start(record_offset as u64))
+        .map_err(|e| e.to_string())?;
+    let mut first = [0];
+    file.read_exact(&mut first).map_err(|e| e.to_string())?;
+    if first[0] != b'{' {
+        return Err("recordOffset must identify JSON activity".into());
+    }
+    file.seek(SeekFrom::Start(
+        record_offset
+            .checked_add(offset)
+            .ok_or("Invalid activity offset")? as u64,
+    ))
+    .map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    file.take((32768usize.min(8 * 1024 * 1024 - offset)) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    let eof = bytes
+        .iter()
+        .position(|b| *b == b'\n')
+        .map(|n| {
+            bytes.truncate(n + 1);
+            true
+        })
+        .unwrap_or(false);
+    if bytes.is_empty() {
+        return Err("Activity is incomplete or no longer available".into());
+    }
+    Ok(
+        json!({"recordOffset":record_offset,"offset":offset,"nextOffset":offset+bytes.len(),"eof":eof,"data":base64::engine::general_purpose::STANDARD.encode(bytes)}),
+    )
 }
 fn browse_path(settings: &Settings, path: &str) -> Result<PathBuf, String> {
     let root = settings
@@ -1287,46 +1419,81 @@ fn disk_usage(settings: &Settings, path: &str) -> Result<Value, String> {
     }
     Ok(json!({"path":root,"bytes":bytes,"entries":count,"partial":partial}))
 }
-struct Artifact {created:Instant, html:Vec<u8>}
-fn artifacts() -> &'static Mutex<HashMap<String,Artifact>> {
-    static STORE:std::sync::OnceLock<Mutex<HashMap<String,Artifact>>>=std::sync::OnceLock::new();
+struct Artifact {
+    created: Instant,
+    html: Vec<u8>,
+}
+fn artifacts() -> &'static Mutex<HashMap<String, Artifact>> {
+    static STORE: std::sync::OnceLock<Mutex<HashMap<String, Artifact>>> =
+        std::sync::OnceLock::new();
     STORE.get_or_init(Default::default)
 }
-fn create_artifact(id: &str, html:&[u8])->Result<Value,String> {
+fn create_artifact(id: &str, html: &[u8]) -> Result<Value, String> {
     use ring::rand::SecureRandom;
     thread_path(id)?;
-    if html.is_empty() || html.len()>512*1024 {return Err("Interactive HTML must be between 1 byte and 512 KiB".into());}
-    std::str::from_utf8(html).map_err(|_|"Interactive HTML must be UTF-8")?;
-    let mut random=[0u8;32];
-    ring::rand::SystemRandom::new().fill(&mut random).map_err(|_|"Artifact token unavailable")?;
-    let token=crate::workspace::hash(&random);
-    let mut store=artifacts().lock().map_err(|_|"Artifact storage unavailable")?;
-    store.retain(|_,v|v.created.elapsed()<Duration::from_secs(600));
-    while store.len()>=16 || store.values().map(|v|v.html.len()).sum::<usize>()+html.len()>4*1024*1024 {
-        let oldest=store.iter().min_by_key(|(_,v)|v.created).map(|(k,_)|k.clone());
-        if let Some(key)=oldest {store.remove(&key);} else {break;}
+    if html.is_empty() || html.len() > 512 * 1024 {
+        return Err("Interactive HTML must be between 1 byte and 512 KiB".into());
     }
-    store.insert(token.clone(),Artifact{created:Instant::now(),html:html.to_vec()});
+    std::str::from_utf8(html).map_err(|_| "Interactive HTML must be UTF-8")?;
+    let mut random = [0u8; 32];
+    ring::rand::SystemRandom::new()
+        .fill(&mut random)
+        .map_err(|_| "Artifact token unavailable")?;
+    let token = crate::workspace::hash(&random);
+    let mut store = artifacts()
+        .lock()
+        .map_err(|_| "Artifact storage unavailable")?;
+    store.retain(|_, v| v.created.elapsed() < Duration::from_secs(600));
+    while store.len() >= 16
+        || store.values().map(|v| v.html.len()).sum::<usize>() + html.len() > 4 * 1024 * 1024
+    {
+        let oldest = store
+            .iter()
+            .min_by_key(|(_, v)| v.created)
+            .map(|(k, _)| k.clone());
+        if let Some(key) = oldest {
+            store.remove(&key);
+        } else {
+            break;
+        }
+    }
+    store.insert(
+        token.clone(),
+        Artifact {
+            created: Instant::now(),
+            html: html.to_vec(),
+        },
+    );
     Ok(json!({"token":token,"url":format!("/api/artifact?token={token}"),"expiresIn":600}))
 }
-fn artifact_document(stream:&mut TcpStream,token:&str)->Result<(),String> {
-    let html={
-        let mut store=artifacts().lock().map_err(|_|"Artifact storage unavailable")?;
-        store.retain(|_,v|v.created.elapsed()<Duration::from_secs(600));
-        store.get(token).ok_or("Artifact expired; choose Run scripts again")?.html.clone()
+fn artifact_document(stream: &mut TcpStream, token: &str) -> Result<(), String> {
+    let html = {
+        let mut store = artifacts()
+            .lock()
+            .map_err(|_| "Artifact storage unavailable")?;
+        store.retain(|_, v| v.created.elapsed() < Duration::from_secs(600));
+        store
+            .get(token)
+            .ok_or("Artifact expired; choose Run scripts again")?
+            .html
+            .clone()
     };
     // This response intentionally has its own policy, rather than trying to
     // relax the app's CSP from srcdoc. Both header and iframe sandbox omit
     // allow-same-origin: scripts receive an opaque origin, never host APIs.
     // Navigation by the frame itself is not an absolute no-network guarantee.
     write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nPermissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), clipboard-read=(), clipboard-write=()\r\nContent-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'\r\n\r\n",html.len()).map_err(|e|e.to_string())?;
-    stream.write_all(&html).map_err(|e|e.to_string())
+    stream.write_all(&html).map_err(|e| e.to_string())
 }
-fn context_attachments(id:&str)->Result<Value,String> {
+fn context_attachments(id: &str) -> Result<Value, String> {
     thread_path(id)?;
     // Context chips need metadata only, not a parse of the entire transcript.
-    let bytes=crate::requests::bounded(&crate::config::data_dir().join(format!("{id}.meta.json")),4*1024*1024)?;
-    let meta:crate::polish::Metadata=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
+    let bytes = crate::requests::bounded(
+        &crate::config::data_dir().join(format!("{id}.meta.json")),
+        4 * 1024 * 1024,
+    )?;
+    let meta: crate::polish::Metadata =
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     let attachments=meta.attachments.iter().take(128).map(|a|json!({"path":a.path,"source":a.source,"bytes":a.text.len()+a.data.as_ref().map(|d|d.len()*3/4).unwrap_or(0),"mediaType":a.media_type})).collect::<Vec<_>>();
     Ok(json!({"attachments":attachments,"usage":null}))
 }
@@ -1335,56 +1502,95 @@ fn context_attachments(id:&str)->Result<Value,String> {
 fn upload(app: &App, query: &HashMap<String, String>, body: &[u8]) -> Result<Value, String> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     static UPLOAD_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = UPLOAD_LOCK.lock().map_err(|_|"Upload storage unavailable")?;
+    let _guard = UPLOAD_LOCK
+        .lock()
+        .map_err(|_| "Upload storage unavailable")?;
     let id = query.get("id").ok_or("Missing thread")?;
     let b = bridge(app, id)?;
-    if b.feed.lock().map_err(|_| "Thread state unavailable")?.snapshot["can_write"] != true {
+    if b.feed
+        .lock()
+        .map_err(|_| "Thread state unavailable")?
+        .snapshot["can_write"]
+        != true
+    {
         return Err("Read-only observer: take control before uploading".into());
     }
-    if body.is_empty() { return Err("Attachment is empty".into()); }
+    if body.is_empty() {
+        return Err("Attachment is empty".into());
+    }
     let image = crate::polish::image_media_type(body).is_some();
     if !image && (body.len() > 32768 || std::str::from_utf8(body).is_err() || body.contains(&0)) {
         return Err("Choose an image up to 8 MiB or UTF-8 text up to 32 KiB".into());
     }
-    let name = query.get("name").map(String::as_str).unwrap_or("attachment");
-    let name: String = name.chars().filter(|c| !c.is_control() && *c != '/' && *c != '\\').take(120).collect();
+    let name = query
+        .get("name")
+        .map(String::as_str)
+        .unwrap_or("attachment");
+    let name: String = name
+        .chars()
+        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
+        .take(120)
+        .collect();
     let token = crate::workspace::hash(&[name.as_bytes(), b"\0", body].concat());
     let dir = crate::config::data_dir().join("web-uploads").join(id);
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).map_err(|e|e.to_string())?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| e.to_string())?;
     Directory::open(&dir)?;
     let path = dir.join(&token);
     if !path.exists() {
         let mut count = 0;
         let mut bytes = 0u64;
-        for entry in std::fs::read_dir(&dir).map_err(|e|e.to_string())?.take(65) {
-            let entry = entry.map_err(|e|e.to_string())?;
+        for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.take(65) {
+            let entry = entry.map_err(|e| e.to_string())?;
             count += 1;
-            bytes += entry.metadata().map_err(|e|e.to_string())?.len();
+            bytes += entry.metadata().map_err(|e| e.to_string())?.len();
         }
         if count >= 64 || bytes + body.len() as u64 > 32 * 1024 * 1024 {
             return Err("Thread upload budget reached (64 files / 32 MiB)".into());
         }
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true)
-            .mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&path).map_err(|e|e.to_string())?;
-        if let Err(error) = file.write_all(body).and_then(|_|file.sync_all()) {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        if let Err(error) = file.write_all(body).and_then(|_| file.sync_all()) {
             let _ = std::fs::remove_file(&path);
             return Err(error.to_string());
         }
     }
-    Ok(json!({"token":token,"name":name,"bytes":body.len(),"kind":if image {"image"} else {"text"}}))
+    Ok(
+        json!({"token":token,"name":name,"bytes":body.len(),"kind":if image {"image"} else {"text"}}),
+    )
 }
 fn edit_file(id: &str, path: &str) -> Result<Value, String> {
     let root = thread_workspace(id)?;
     let file = PathBuf::from(path);
-    let file = if file.is_absolute() {file} else {root.join(file)};
-    let file = file.canonicalize().map_err(|e|e.to_string())?;
-    let relative = file.strip_prefix(&root).map_err(|_|"Editing is limited to the thread workspace")?;
+    let file = if file.is_absolute() {
+        file
+    } else {
+        root.join(file)
+    };
+    let file = file.canonicalize().map_err(|e| e.to_string())?;
+    let relative = file
+        .strip_prefix(&root)
+        .map_err(|_| "Editing is limited to the thread workspace")?;
     let relative = relative.to_str().ok_or("File path must be UTF-8")?;
     let bytes = crate::files::read_workspace_bytes(&root, relative)?;
-    if bytes.len() > 32768 {return Err("Browser editing is limited to 32 KiB text files".into());}
-    let text = std::str::from_utf8(&bytes).map_err(|_|"Only UTF-8 text files can be edited")?;
-    if text.contains('\0') {return Err("Binary files cannot be edited as text".into());}
-    Ok(json!({"path":relative,"text":text,"revision":crate::files::revision(&bytes),"maxBytes":32768}))
+    if bytes.len() > 32768 {
+        return Err("Browser editing is limited to 32 KiB text files".into());
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|_| "Only UTF-8 text files can be edited")?;
+    if text.contains('\0') {
+        return Err("Binary files cannot be edited as text".into());
+    }
+    Ok(
+        json!({"path":relative,"text":text,"revision":crate::files::revision(&bytes),"maxBytes":32768}),
+    )
 }
 fn preview_file(id: &str, path: &str) -> Result<(String, Vec<u8>), String> {
     let root = thread_workspace(id)?;
@@ -1565,10 +1771,15 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
         .map_err(|e| e.to_string());
     }
     if path == "/api/artifact" && r.method == "GET" {
-        let result=artifact_document(&mut stream,query.get("token").map(String::as_str).unwrap_or(""));
+        let result = artifact_document(
+            &mut stream,
+            query.get("token").map(String::as_str).unwrap_or(""),
+        );
         return match result {
-            Ok(())=>Ok(()),
-            Err(error)=>json_response(&mut stream,410,json!({"error":error})).map_err(|e|e.to_string()),
+            Ok(()) => Ok(()),
+            Err(error) => {
+                json_response(&mut stream, 410, json!({"error":error})).map_err(|e| e.to_string())
+            }
         };
     }
     if path == "/api/export" && r.method == "GET" {
@@ -1698,10 +1909,15 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
             crate::web_commands::inspect_request(name, &value["values"], &session, &cfg)
                 .map(crate::web_commands::bounded_result)
         }
-        ("POST", "/api/artifact") => create_artifact(query.get("id").ok_or("Missing thread")?,&r.body),
+        ("POST", "/api/artifact") => {
+            create_artifact(query.get("id").ok_or("Missing thread")?, &r.body)
+        }
         ("GET", "/api/context") => context_attachments(query.get("id").ok_or("Missing thread")?),
         ("POST", "/api/upload") => upload(&app, &query, &r.body),
-        ("GET", "/api/edit") => edit_file(query.get("id").ok_or("Missing thread")?, query.get("path").ok_or("Missing file path")?),
+        ("GET", "/api/edit") => edit_file(
+            query.get("id").ok_or("Missing thread")?,
+            query.get("path").ok_or("Missing file path")?,
+        ),
         ("GET", "/api/changes") => {
             let id = query.get("id").ok_or("Missing thread")?;
             let mut cfg = app.cfg.clone();
@@ -1712,7 +1928,16 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
         ("GET", "/api/usage") => {
             disk_usage(&app.settings, query.get("path").ok_or("Missing directory")?)
         }
-        ("GET", "/api/threads") => Ok(crate::navigation::inspect_web(&app.settings.workspace, query.get("offset").and_then(|s|s.parse::<usize>().ok()).unwrap_or(0), query.get("q").map(String::as_str).unwrap_or(""), query.get("project").map(String::as_str).unwrap_or(""), query.get("id").map(String::as_str).unwrap_or(""))),
+        ("GET", "/api/threads") => Ok(crate::navigation::inspect_web(
+            &app.settings.workspace,
+            query
+                .get("offset")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0),
+            query.get("q").map(String::as_str).unwrap_or(""),
+            query.get("project").map(String::as_str).unwrap_or(""),
+            query.get("id").map(String::as_str).unwrap_or(""),
+        )),
         ("GET", "/api/agents") => {
             let id = query.get("id").ok_or("Missing thread")?;
             thread_path(id)?;
@@ -1726,14 +1951,36 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
                 &json!({"action":"transcript","id":query.get("agent").ok_or("Missing agent")?,"before":query.get("before").and_then(|v|v.parse::<u64>().ok())}),
             )
         }
-        ("GET", "/api/activity-location") => activity_location(query.get("id").ok_or("Missing thread")?,
-            query.get("recordOffset").and_then(|v|v.parse().ok()).ok_or("Missing recordOffset")?),
-        ("GET", "/api/activity-text") => activity_text(query.get("id").ok_or("Missing thread")?,
-            query.get("recordOffset").and_then(|v|v.parse().ok()).ok_or("Missing recordOffset")?,
-            query.get("offset").and_then(|v|v.parse().ok()).unwrap_or(0),query.get("expected").map(String::as_str).unwrap_or("")),
-        ("GET", "/api/history-record") => history_record(query.get("id").ok_or("Missing thread")?,
-            query.get("recordOffset").and_then(|v|v.parse().ok()).ok_or("Missing recordOffset")?,
-            query.get("offset").and_then(|v|v.parse().ok()).unwrap_or(0)),
+        ("GET", "/api/activity-location") => activity_location(
+            query.get("id").ok_or("Missing thread")?,
+            query
+                .get("recordOffset")
+                .and_then(|v| v.parse().ok())
+                .ok_or("Missing recordOffset")?,
+        ),
+        ("GET", "/api/activity-text") => activity_text(
+            query.get("id").ok_or("Missing thread")?,
+            query
+                .get("recordOffset")
+                .and_then(|v| v.parse().ok())
+                .ok_or("Missing recordOffset")?,
+            query
+                .get("offset")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            query.get("expected").map(String::as_str).unwrap_or(""),
+        ),
+        ("GET", "/api/history-record") => history_record(
+            query.get("id").ok_or("Missing thread")?,
+            query
+                .get("recordOffset")
+                .and_then(|v| v.parse().ok())
+                .ok_or("Missing recordOffset")?,
+            query
+                .get("offset")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+        ),
         ("GET", "/api/history") => history(
             query.get("id").ok_or("Missing thread")?,
             query

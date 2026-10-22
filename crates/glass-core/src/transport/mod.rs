@@ -119,7 +119,9 @@ impl Safety {
 
     pub fn reason(&self) -> &str {
         match self {
-            Safety::Safe => "the provider is rebuilt from the current configuration and the session log is only appended to",
+            Safety::Safe => {
+                "the provider is rebuilt from the current configuration and the session log is only appended to"
+            }
             Safety::Refused(reason) => reason,
         }
     }
@@ -208,10 +210,7 @@ mod tests {
             request_id("events=12, finish=length, response=resp_01H9Z, usage=unknown"),
             Some("resp_01H9Z".into())
         );
-        assert_eq!(
-            request_id("request-id: abc-123"),
-            Some("abc-123".into())
-        );
+        assert_eq!(request_id("request-id: abc-123"), Some("abc-123".into()));
         // Adapters substitute a placeholder when a stream carried no id.
         assert_eq!(request_id("response=not reported"), None);
         assert_eq!(request_id("events=3, finish=stop, model=m"), None);
@@ -239,9 +238,8 @@ mod tests {
         let before = Session::raw_records(&session.path).unwrap();
         assert_eq!(before.len(), 3);
 
-        let factory: ProviderFactory = std::sync::Arc::new(|| {
-            Err("no provider configured in this fixture".to_string())
-        });
+        let factory: ProviderFactory =
+            std::sync::Arc::new(|| Err("no provider configured in this fixture".to_string()));
         // A factory that cannot build anything must not touch the log.
         let refused = reset(&mut session, &factory);
         assert!(refused.is_err());
@@ -278,7 +276,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gc-transport-safe-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let session = Session::create(&dir).unwrap();
-        assert_eq!(reset_safety(&session, true), Safety::Refused("a turn is streaming; wait for it to finish".into()));
+        assert_eq!(
+            reset_safety(&session, true),
+            Safety::Refused("a turn is streaming; wait for it to finish".into())
+        );
         assert!(reset_safety(&session, false).is_safe());
         drop(session);
         let _ = std::fs::remove_dir_all(dir);

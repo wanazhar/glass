@@ -107,7 +107,14 @@ pub fn view(keys: &KeyReader, session: &Session, cfg: &crate::config::Config) {
         modal::info(keys, "Capture workflow", "No conversation turns yet.");
         return;
     }
-    if turns>4096{modal::info(keys,"Capture workflow","This session exceeds the 4096-turn selector cap. Use gc skill capture SESSION NAME FROM THROUGH for a bounded range.");return;}
+    if turns > 4096 {
+        modal::info(
+            keys,
+            "Capture workflow",
+            "This session exceeds the 4096-turn selector cap. Use gc skill capture SESSION NAME FROM THROUGH for a bounded range.",
+        );
+        return;
+    }
     let choices = (1..=turns).map(|i| format!("Turn {i}")).collect::<Vec<_>>();
     let Some(start) = modal::choose(
         keys,

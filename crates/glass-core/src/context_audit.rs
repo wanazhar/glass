@@ -89,7 +89,11 @@ pub fn capture(
     checkpoint: bool,
 ) -> String {
     let mut instructions = sources(req.system, "project_instructions");
-    instructions.extend(sources(req.system, "neuralnets").into_iter().map(|s|format!("Neuralnets: {s}")));
+    instructions.extend(
+        sources(req.system, "neuralnets")
+            .into_iter()
+            .map(|s| format!("Neuralnets: {s}")),
+    );
     let attachments = sources(req.system, "attached_file");
     let listed = catalogue.filter(|c| !c.is_empty() && req.system.contains(c));
     let skills = listed
@@ -112,7 +116,7 @@ pub fn capture(
             Message::ToolResult { .. } => results += 1,
             Message::ToolCall { .. } => calls += 1,
             Message::Image { .. } => images += 1,
-            Message::System(_) | Message::ChatReasoning{..} => {}
+            Message::System(_) | Message::ChatReasoning { .. } => {}
         }
     }
     let schema_bytes = req

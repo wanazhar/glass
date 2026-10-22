@@ -66,8 +66,7 @@ pub fn run_batch(
 ///
 /// Boxed rather than generic so the REPL's factory can be handed to the
 /// batch runner without threading type parameters through every call site.
-pub type MakeProvider<'a> =
-    dyn Fn(Option<&str>) -> Result<Box<dyn Provider>, String> + Sync + 'a;
+pub type MakeProvider<'a> = dyn Fn(Option<&str>) -> Result<Box<dyn Provider>, String> + Sync + 'a;
 
 /// Run one delegated task in a fresh context and return its report.
 ///
@@ -120,10 +119,16 @@ pub fn run_task(
 /// An agent definition body replaces the default framing; the task text
 /// is always appended so a custom persona cannot lose the assignment.
 fn task_prompt(task: &SubagentTask, parent: Option<&str>) -> String {
-    if task.prompt.as_ref().is_some_and(|prompt| !prompt.trim().is_empty()) {
+    if task
+        .prompt
+        .as_ref()
+        .is_some_and(|prompt| !prompt.trim().is_empty())
+    {
         compose_prompt(task)
     } else {
-        parent.map(str::to_owned).unwrap_or_else(|| compose_prompt(task))
+        parent
+            .map(str::to_owned)
+            .unwrap_or_else(|| compose_prompt(task))
     }
 }
 
@@ -197,8 +202,8 @@ fn unique_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicUsize;
     use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
     fn task(text: &str) -> SubagentTask {
@@ -338,8 +343,11 @@ mod tests {
         {
             self.seen.lock().unwrap().push(req.system.to_string());
             Ok(Box::new(
-                [crate::provider::Event::Text("done".into()), crate::provider::Event::Done]
-                    .into_iter(),
+                [
+                    crate::provider::Event::Text("done".into()),
+                    crate::provider::Event::Done,
+                ]
+                .into_iter(),
             ))
         }
         fn context_window(&self) -> u32 {
@@ -368,7 +376,14 @@ mod tests {
         let got = seen.lock().unwrap().clone();
         assert!(!got.is_empty(), "the subagent must have made a request");
         assert!(
-            got.iter().all(|s| s == &crate::permissions::model_context(crate::guidance::teammate_context(crate::guidance::model_context(parent.into()), false), false)),
+            got.iter().all(|s| s
+                == &crate::permissions::model_context(
+                    crate::guidance::teammate_context(
+                        crate::guidance::model_context(parent.into()),
+                        false
+                    ),
+                    false
+                )),
             "every request must preserve the inherited prefix with one shared workflow protocol, got: {got:?}"
         );
         let _ = std::fs::remove_dir_all(&scratch);

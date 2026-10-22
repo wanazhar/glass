@@ -41,7 +41,10 @@ impl Chain {
 
     /// Whether a failed attempt may be routed around.
     fn worth_falling_back(e: &Error) -> bool {
-        !matches!(e, Error::Status(401 | 403, _) | Error::Config(_) | Error::Transport(_))
+        !matches!(
+            e,
+            Error::Status(401 | 403, _) | Error::Config(_) | Error::Transport(_)
+        )
     }
 
     /// Start fresh: the primary is probed again. The live harness rebuilds
@@ -70,7 +73,9 @@ impl Provider for Chain {
         &self.primary
     }
 
-    fn model(&self) -> &str { self.serving_model() }
+    fn model(&self) -> &str {
+        self.serving_model()
+    }
 
     fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
         let mut first_error: Option<Error> = None;
@@ -123,16 +128,27 @@ impl Provider for Chain {
     }
 
     fn rate_card(&self) -> Option<crate::pricing::RateCard> {
-        self.levels.get(self.sticky.get()).and_then(|p| p.rate_card())
+        self.levels
+            .get(self.sticky.get())
+            .and_then(|p| p.rate_card())
     }
 
     fn context_window(&self) -> u32 {
         // A request may fall back before the parent can observe the serving model.
-        self.levels.iter().skip(self.sticky.get()).map(|p| p.context_window()).min().unwrap_or(0)
+        self.levels
+            .iter()
+            .skip(self.sticky.get())
+            .map(|p| p.context_window())
+            .min()
+            .unwrap_or(0)
     }
 
     fn estimate_tokens(&self, messages: &[Message]) -> u32 {
-        self.levels.iter().skip(self.sticky.get()).map(|p| p.estimate_tokens(messages)).max()
+        self.levels
+            .iter()
+            .skip(self.sticky.get())
+            .map(|p| p.estimate_tokens(messages))
+            .max()
             .unwrap_or_else(|| super::default_estimate(messages))
     }
 }
@@ -203,11 +219,7 @@ mod tests {
 
         fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
             self.handle.calls.fetch_add(1, Ordering::SeqCst);
-            self.handle
-                .seen
-                .lock()
-                .unwrap()
-                .push(req.model.to_string());
+            self.handle.seen.lock().unwrap().push(req.model.to_string());
             match &self.reply {
                 Reply::Text(t) => Ok(Box::new(
                     [Event::Text((*t).to_string()), Event::Done].into_iter(),
@@ -238,23 +250,58 @@ mod tests {
 
     #[test]
     fn fallback_context_and_pricing_follow_safe_serving_limits() {
-        struct Sized { window: u32, estimate: u32, rate: f64, fail: bool }
+        struct Sized {
+            window: u32,
+            estimate: u32,
+            rate: f64,
+            fail: bool,
+        }
         impl Provider for Sized {
-            fn id(&self) -> &str { "sized" }
-            fn context_window(&self) -> u32 { self.window }
-            fn estimate_tokens(&self, _: &[Message]) -> u32 { self.estimate }
-            fn rate_card(&self) -> Option<crate::pricing::RateCard> {
-                Some(crate::pricing::RateCard { input: self.rate, output: self.rate, cache_read: self.rate, cache_write: self.rate })
+            fn id(&self) -> &str {
+                "sized"
             }
-            fn stream(&self, _: &Request<'_>) -> Result<Box<dyn Iterator<Item=Event> + '_>, Error> {
-                if self.fail { Err(Error::Status(429, "busy".into())) }
-                else { Ok(Box::new([Event::Done].into_iter())) }
+            fn context_window(&self) -> u32 {
+                self.window
+            }
+            fn estimate_tokens(&self, _: &[Message]) -> u32 {
+                self.estimate
+            }
+            fn rate_card(&self) -> Option<crate::pricing::RateCard> {
+                Some(crate::pricing::RateCard {
+                    input: self.rate,
+                    output: self.rate,
+                    cache_read: self.rate,
+                    cache_write: self.rate,
+                })
+            }
+            fn stream(
+                &self,
+                _: &Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+                if self.fail {
+                    Err(Error::Status(429, "busy".into()))
+                } else {
+                    Ok(Box::new([Event::Done].into_iter()))
+                }
             }
         }
-        let chain = Chain::new("primary".into(), vec![
-            Box::new(Sized { window:200_000, estimate:10, rate:5.0, fail:true }),
-            Box::new(Sized { window:32_000, estimate:20, rate:1.0, fail:false }),
-        ]);
+        let chain = Chain::new(
+            "primary".into(),
+            vec![
+                Box::new(Sized {
+                    window: 200_000,
+                    estimate: 10,
+                    rate: 5.0,
+                    fail: true,
+                }),
+                Box::new(Sized {
+                    window: 32_000,
+                    estimate: 20,
+                    rate: 1.0,
+                    fail: false,
+                }),
+            ],
+        );
         assert_eq!(chain.context_window(), 32_000);
         assert_eq!(chain.estimate_tokens(&[]), 20);
         assert_eq!(chain.rate_card().unwrap().input, 5.0);
@@ -318,7 +365,9 @@ mod tests {
         let chain = Chain::new(
             "primary".into(),
             vec![
-                Box::new(Stub::failing("primary", || Error::Status(429, "busy".into()))),
+                Box::new(Stub::failing("primary", || {
+                    Error::Status(429, "busy".into())
+                })),
                 Box::new(Stub::failing("backup", || Error::Status(500, "sad".into()))),
             ],
         );
@@ -343,8 +392,12 @@ mod tests {
         let chain = Chain::new(
             "primary".into(),
             vec![
-                Box::new(Stub::failing("primary", || Error::Status(503, "overloaded".into()))),
-                Box::new(Stub::failing("backup", || Error::Status(502, "upstream".into()))),
+                Box::new(Stub::failing("primary", || {
+                    Error::Status(503, "overloaded".into())
+                })),
+                Box::new(Stub::failing("backup", || {
+                    Error::Status(502, "upstream".into())
+                })),
             ],
         );
         let err = events(&chain).unwrap_err().to_string();
@@ -354,14 +407,23 @@ mod tests {
     #[test]
     fn ambiguous_transport_failure_stops_primary_and_later_fallbacks() {
         for failed_level in [0, 1] {
-            let primary = if failed_level == 0 { Stub::failing("primary", || Error::Transport("POST accepted".into())) }
-                else { Stub::failing("primary", || Error::Status(429,"busy".into())) };
-            let backup = if failed_level == 1 { Stub::failing("backup", || Error::Transport("POST accepted".into())) }
-                else { Stub::ok("backup", "must not run") };
+            let primary = if failed_level == 0 {
+                Stub::failing("primary", || Error::Transport("POST accepted".into()))
+            } else {
+                Stub::failing("primary", || Error::Status(429, "busy".into()))
+            };
+            let backup = if failed_level == 1 {
+                Stub::failing("backup", || Error::Transport("POST accepted".into()))
+            } else {
+                Stub::ok("backup", "must not run")
+            };
             let backup_handle = backup.handle();
             let third = Stub::ok("third", "must not run");
             let third_handle = third.handle();
-            let chain = Chain::new("primary".into(), vec![Box::new(primary),Box::new(backup),Box::new(third)]);
+            let chain = Chain::new(
+                "primary".into(),
+                vec![Box::new(primary), Box::new(backup), Box::new(third)],
+            );
             assert!(matches!(events(&chain), Err(Error::Transport(_))));
             assert_eq!(backup_handle.calls(), usize::from(failed_level == 1));
             assert_eq!(third_handle.calls(), 0);
@@ -374,8 +436,11 @@ mod tests {
         let backup = Stub::failing("backup", || Error::Status(403, "denied".into()));
         let third = Stub::ok("third", "must not run");
         let handle = third.handle();
-        let chain = Chain::new("primary".into(), vec![Box::new(primary),Box::new(backup),Box::new(third)]);
-        assert!(matches!(events(&chain), Err(Error::Status(403,_))));
+        let chain = Chain::new(
+            "primary".into(),
+            vec![Box::new(primary), Box::new(backup), Box::new(third)],
+        );
+        assert!(matches!(events(&chain), Err(Error::Status(403, _))));
         assert_eq!(handle.calls(), 0);
     }
 
@@ -385,10 +450,7 @@ mod tests {
         let h = primary.handle().clone();
         let backup = Stub::ok("backup", "b");
         let bh = backup.handle().clone();
-        let chain = Chain::new(
-            "primary".into(),
-            vec![Box::new(primary), Box::new(backup)],
-        );
+        let chain = Chain::new("primary".into(), vec![Box::new(primary), Box::new(backup)]);
         // First request: falls to backup (1 primary attempt).
         events(&chain).expect("backup answers");
         assert_eq!(h.calls(), 1);
@@ -408,7 +470,9 @@ mod tests {
         let chain = Chain::new(
             "primary".into(),
             vec![
-                Box::new(Stub::failing("primary", || Error::Status(503, "overloaded".into()))),
+                Box::new(Stub::failing("primary", || {
+                    Error::Status(503, "overloaded".into())
+                })),
                 Box::new(Stub::ok("backup", "b")),
             ],
         );

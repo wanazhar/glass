@@ -81,16 +81,24 @@ impl Drop for Proxy {
     fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::Release);
         let _ = TcpStream::connect(("127.0.0.1", self.port));
-        if let Some(listener) = self.listener.take() { let _ = listener.join(); }
+        if let Some(listener) = self.listener.take() {
+            let _ = listener.join();
+        }
     }
 }
 
-fn serve(listener: TcpListener, policy: std::sync::Arc<HostPolicy>, stop: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+fn serve(
+    listener: TcpListener,
+    policy: std::sync::Arc<HostPolicy>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
     let relays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     loop {
         match listener.accept() {
             Ok((stream, _addr)) => {
-                if stop.load(std::sync::atomic::Ordering::Acquire) { break; }
+                if stop.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
                 if relays.load(std::sync::atomic::Ordering::SeqCst) >= MAX_RELAYS {
                     let mut s = stream;
                     let _ = s.write_all(b"HTTP/1.1 503 Service Unavailable\r\n\r\n");
@@ -134,7 +142,9 @@ fn handle(mut client: TcpStream, policy: std::sync::Arc<HostPolicy>) {
     let mut byte = [0u8; 1];
     loop {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() || client.set_read_timeout(Some(remaining)).is_err() { return; }
+        if remaining.is_zero() || client.set_read_timeout(Some(remaining)).is_err() {
+            return;
+        }
         match client.read(&mut byte) {
             Ok(1) => {
                 preamble.push(byte[0]);
@@ -142,7 +152,8 @@ fn handle(mut client: TcpStream, policy: std::sync::Arc<HostPolicy>) {
                     break;
                 }
                 if preamble.len() > HEADER_CAP {
-                    let _ = client.write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\n\r\n");
+                    let _ =
+                        client.write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\n\r\n");
                     return;
                 }
             }
@@ -192,7 +203,10 @@ fn handle(mut client: TcpStream, policy: std::sync::Arc<HostPolicy>) {
         }) {
         Ok(s) => s,
         Err(e) => {
-            let body = format!("HTTP/1.1 502 Bad Gateway\r\nContent-Length: {}\r\n\r\nupstream: {e}\n", (e.to_string().len())+10usize);
+            let body = format!(
+                "HTTP/1.1 502 Bad Gateway\r\nContent-Length: {}\r\n\r\nupstream: {e}\n",
+                (e.to_string().len()) + 10usize
+            );
             let _ = client.write_all(body.as_bytes());
             return;
         }
@@ -305,7 +319,11 @@ mod tests {
     #[test]
     fn proxy_url_is_loopback_only() {
         let proxy = Proxy::spawn(HostPolicy::new(vec!["127.0.0.1".into()], vec![])).unwrap();
-        assert!(proxy.url().starts_with("http://127.0.0.1:"), "{}", proxy.url());
+        assert!(
+            proxy.url().starts_with("http://127.0.0.1:"),
+            "{}",
+            proxy.url()
+        );
     }
     #[test]
     fn connect_uses_requested_port_and_drop_releases_listener() {
@@ -315,15 +333,19 @@ mod tests {
         let proxy = Proxy::spawn(HostPolicy::new(vec!["127.0.0.1".into()], vec![])).unwrap();
         let proxy_port = proxy.port();
         let mut client = TcpStream::connect(("127.0.0.1", proxy_port)).unwrap();
-        client.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
         write!(client, "CONNECT 127.0.0.1:{target_port} HTTP/1.1\r\n\r\n").unwrap();
         let mut response = [0; 128];
         let count = client.read(&mut response).unwrap();
         assert!(String::from_utf8_lossy(&response[..count]).contains("200 Connection Established"));
-        assert!(upstream.accept().is_ok(), "requested endpoint accepted the tunnel");
+        assert!(
+            upstream.accept().is_ok(),
+            "requested endpoint accepted the tunnel"
+        );
         drop(client);
         drop(proxy);
         assert!(TcpStream::connect(("127.0.0.1", proxy_port)).is_err());
     }
-
 }

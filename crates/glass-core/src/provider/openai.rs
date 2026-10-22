@@ -93,63 +93,120 @@ fn build_messages(system: &str, messages: &[glass_mod_api::Message]) -> Vec<Valu
     let mut reasoning: Option<&str> = None;
     let mut assistant_hash: Option<&str> = None;
     let mut pending = false;
-    let mut batch=Vec::new();
-    let mut emitted=std::collections::HashSet::new();
-    for (index,m) in messages.iter().enumerate() {
+    let mut batch = Vec::new();
+    let mut emitted = std::collections::HashSet::new();
+    for (index, m) in messages.iter().enumerate() {
         match m {
-            Message::User(s) => {reasoning=None;assistant_hash=None;batch.clear();emitted.clear();pending=false;out.push(json!({ "role": "user", "content": s }));},
-            Message::Image { media_type, data } => {reasoning=None;assistant_hash=None;batch.clear();emitted.clear();pending=false;out.push(json!({
-                "role": "user",
-                "content": [{
-                    "type": "image_url",
-                    "image_url": { "url": format!("data:{media_type};base64,{data}") }
-                }]
-            }));},
-            Message::ChatReasoning {content,assistant_hash:hash,tool_call_ids} => {
-                reasoning=content.as_deref();assistant_hash=hash.as_deref();let ids=tool_call_ids;pending=true;
-                emitted.clear();batch.clear();
-                for (relative,next) in messages[index+1..].iter().enumerate() {
+            Message::User(s) => {
+                reasoning = None;
+                assistant_hash = None;
+                batch.clear();
+                emitted.clear();
+                pending = false;
+                out.push(json!({ "role": "user", "content": s }));
+            }
+            Message::Image { media_type, data } => {
+                reasoning = None;
+                assistant_hash = None;
+                batch.clear();
+                emitted.clear();
+                pending = false;
+                out.push(json!({
+                    "role": "user",
+                    "content": [{
+                        "type": "image_url",
+                        "image_url": { "url": format!("data:{media_type};base64,{data}") }
+                    }]
+                }));
+            }
+            Message::ChatReasoning {
+                content,
+                assistant_hash: hash,
+                tool_call_ids,
+            } => {
+                reasoning = content.as_deref();
+                assistant_hash = hash.as_deref();
+                let ids = tool_call_ids;
+                pending = true;
+                emitted.clear();
+                batch.clear();
+                for (relative, next) in messages[index + 1..].iter().enumerate() {
                     match next {
                         Message::ChatReasoning{..}|Message::User(_)=>break,
                         Message::ToolCall{id,name,arguments} if ids.contains(id)=>batch.push((index+1+relative,json!({"id":id,"type":"function","function":{"name":name,"arguments":crate::tool_repair::wire_arguments(arguments)}}))),
                         Message::ToolCall{..}=>break,
                         _=>{},
                     }
-                    if batch.len()>=ids.len() {break;}
+                    if batch.len() >= ids.len() {
+                        break;
+                    }
                 }
             }
             Message::Assistant(s) => {
-                let mut value=json!({"role":"assistant","content":s});
-                if pending && assistant_hash==Some(crate::workspace::hash(s.as_bytes()).as_str()) {
-                    if let Some(text)=reasoning {value["reasoning_content"]=json!(text);}
-                } else {reasoning=None;batch.clear();emitted.clear();}
-                pending=false;
+                let mut value = json!({"role":"assistant","content":s});
+                if pending && assistant_hash == Some(crate::workspace::hash(s.as_bytes()).as_str())
+                {
+                    if let Some(text) = reasoning {
+                        value["reasoning_content"] = json!(text);
+                    }
+                } else {
+                    reasoning = None;
+                    batch.clear();
+                    emitted.clear();
+                }
+                pending = false;
                 out.push(value);
-            },
+            }
             Message::ToolCall {
                 id,
                 name,
                 arguments,
             } => {
-                if emitted.contains(&index) {continue;}
-                let associated=batch.iter().any(|(position,_)|*position==index);
+                if emitted.contains(&index) {
+                    continue;
+                }
+                let associated = batch.iter().any(|(position, _)| *position == index);
                 let call = json!({"id":id,"type":"function","function":{"name":name,"arguments":crate::tool_repair::wire_arguments(arguments)}});
-                let calls=if associated {
-                    batch.iter().map(|(position,call)|{emitted.insert(*position);call.clone()}).collect::<Vec<_>>()
-                } else {vec![call]};
-                let merge=!pending && out.last().is_some_and(|v|v["role"]=="assistant" && (associated || v.get("reasoning_content").is_none()));
+                let calls = if associated {
+                    batch
+                        .iter()
+                        .map(|(position, call)| {
+                            emitted.insert(*position);
+                            call.clone()
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![call]
+                };
+                let merge = !pending
+                    && out.last().is_some_and(|v| {
+                        v["role"] == "assistant"
+                            && (associated || v.get("reasoning_content").is_none())
+                    });
                 if merge {
-                    let last=out.last_mut().unwrap();
-                    if !last["tool_calls"].is_array() {last["tool_calls"]=json!([]);}
+                    let last = out.last_mut().unwrap();
+                    if !last["tool_calls"].is_array() {
+                        last["tool_calls"] = json!([]);
+                    }
                     last["tool_calls"].as_array_mut().unwrap().extend(calls);
                 } else {
-                    let mut value=json!({"role":"assistant","tool_calls":calls});
-                    if associated && let Some(text)=reasoning {value["reasoning_content"]=json!(text);}
+                    let mut value = json!({"role":"assistant","tool_calls":calls});
+                    if associated && let Some(text) = reasoning {
+                        value["reasoning_content"] = json!(text);
+                    }
                     out.push(value);
                 }
-                pending=false;
+                pending = false;
             }
-            Message::System(s) => {if pending {pending=false;reasoning=None;batch.clear();emitted.clear();} out.push(json!({ "role": "system", "content": s }));},
+            Message::System(s) => {
+                if pending {
+                    pending = false;
+                    reasoning = None;
+                    batch.clear();
+                    emitted.clear();
+                }
+                out.push(json!({ "role": "system", "content": s }));
+            }
             Message::ToolResult {
                 call_id,
                 name,
@@ -220,8 +277,8 @@ impl Provider for OpenAiCompat {
         "openai"
     }
 
-    fn estimate_tokens(&self,messages:&[glass_mod_api::Message])->u32 {
-        super::default_estimate_for(messages,self.flavour==Flavour::ChatCompletions)
+    fn estimate_tokens(&self, messages: &[glass_mod_api::Message]) -> u32 {
+        super::default_estimate_for(messages, self.flavour == Flavour::ChatCompletions)
     }
     fn context_window(&self) -> u32 {
         Self::window_for(&self.model)
@@ -487,7 +544,9 @@ impl<R: Read> StreamEvents<R> {
             return;
         }
         self.acc.sealed = true;
-        if self.acc.chat_response {self.outbox.push_back(Event::ChatResponse);}
+        if self.acc.chat_response {
+            self.outbox.push_back(Event::ChatResponse);
+        }
 
         if let Some(u) = self.acc.usage.take() {
             self.outbox.push_back(Event::Usage(u));
@@ -731,7 +790,10 @@ impl<R: Read> StreamEvents<R> {
         }
 
         self.acc.chat_response = true;
-        if let Some(t)=delta.and_then(|d|d.get("reasoning_content").or_else(||d.get("reasoning"))).and_then(Value::as_str) {
+        if let Some(t) = delta
+            .and_then(|d| d.get("reasoning_content").or_else(|| d.get("reasoning")))
+            .and_then(Value::as_str)
+        {
             self.outbox.push_back(Event::ChatReasoning(t.into()));
         }
         if let Some(t) = delta
@@ -1033,7 +1095,15 @@ mod shape_tests {
             .collect();
         assert_eq!(
             names,
-            vec!["bash", "state", "display_image", "view_image", "read", "edit", "write"]
+            vec![
+                "bash",
+                "state",
+                "display_image",
+                "view_image",
+                "read",
+                "edit",
+                "write"
+            ]
         );
         assert!(arr[0]["function"]["parameters"]["properties"].is_object());
     }

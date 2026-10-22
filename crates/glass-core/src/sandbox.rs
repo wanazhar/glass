@@ -152,7 +152,9 @@ impl HostPolicy {
             // Empty allowlist with denials = deny-list mode; without them
             // it denies everything (a pure policy proxy).
             if self.deny.is_empty() {
-                return Err(format!("egress denied by policy (no hosts allowed): {host}"));
+                return Err(format!(
+                    "egress denied by policy (no hosts allowed): {host}"
+                ));
             }
             return Ok(());
         }
@@ -1825,11 +1827,21 @@ mod tests {
             PathBuf::from("/lib64"),
             PathBuf::from("/etc"),
         ];
-        assert!(Command::new("git").args(["init", "--quiet"]).arg(&workspace).status().unwrap().success());
+        assert!(
+            Command::new("git")
+                .args(["init", "--quiet"])
+                .arg(&workspace)
+                .status()
+                .unwrap()
+                .success()
+        );
         let (fd, _) = landlock::build(&workspace, &[], &readable, true, Some(&[])).unwrap();
         let mut child = Command::new("/bin/sh");
         // Keep the fixture independent of intentionally unreadable user config.
-        child.env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").env("XDG_CONFIG_HOME", &workspace);
+        child
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("XDG_CONFIG_HOME", &workspace);
         child.arg("-c").arg(format!(
             "printf ok > /dev/null || exit 91; git -C '{}' status --short > /dev/null || exit 92; (printf no > '{}') && exit 93; (printf no > '{}') && exit 94; exit 0",
             workspace.display(), inside.display(), outside.display()
@@ -1837,7 +1849,10 @@ mod tests {
         unsafe {
             child.pre_exec(move || landlock::enter(fd));
         }
-        assert!(child.status().unwrap().success(), "read-only git and /dev/null must work while persistent writes stay denied");
+        assert!(
+            child.status().unwrap().success(),
+            "read-only git and /dev/null must work while persistent writes stay denied"
+        );
         assert!(!inside.exists(), "read-only must deny workspace writes");
         assert!(!outside.exists(), "read-only must deny outside writes");
         let _ = std::fs::remove_dir_all(dir);

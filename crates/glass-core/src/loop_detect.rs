@@ -33,7 +33,7 @@ impl LoopWindow {
     }
 
     fn hash(name: &str, arguments: &str) -> [u8; 32] {
-        use ring::digest::{digest, SHA256};
+        use ring::digest::{SHA256, digest};
         let mut input = Vec::with_capacity(name.len() + arguments.len() + 1);
         input.extend_from_slice(name.as_bytes());
         input.push(0);

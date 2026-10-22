@@ -304,7 +304,7 @@ mod tests {
         let mut mailbox = Mailbox::open(&session);
         mailbox.path = mailbox_path;
         assert!(mailbox.deliver(&mut session).unwrap().is_none());
-        std::fs::write(&mailbox.path,"changed mailbox boundary".repeat(10)).unwrap();
+        std::fs::write(&mailbox.path, "changed mailbox boundary".repeat(10)).unwrap();
         assert!(mailbox.deliver(&mut session).is_err());
         assert_eq!(
             session

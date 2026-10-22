@@ -88,7 +88,10 @@ pub fn line(report: &Report) -> String {
         parts.push("core dump limit unchanged".to_string());
     }
     if !report.stripped.is_empty() {
-        parts.push(format!("stripped {} injection env vars", report.stripped.len()));
+        parts.push(format!(
+            "stripped {} injection env vars",
+            report.stripped.len()
+        ));
     }
     parts.join(" · ")
 }
@@ -129,6 +132,10 @@ mod tests {
         assert!(KEPT_EXACT.contains(&"LD_LIBRARY_PATH"));
         assert!(KEPT_EXACT.contains(&"DYLD_LIBRARY_PATH"));
         // And the strip families would otherwise match them.
-        assert!(STRIPPED_PREFIXES.iter().any(|p| "LD_LIBRARY_PATH".starts_with(p)));
+        assert!(
+            STRIPPED_PREFIXES
+                .iter()
+                .any(|p| "LD_LIBRARY_PATH".starts_with(p))
+        );
     }
 }

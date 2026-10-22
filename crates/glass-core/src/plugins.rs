@@ -286,7 +286,9 @@ fn content_hash(root: &Path) -> Result<String, String> {
         while remaining > 0 {
             let limit = remaining.min(buffer.len() as u64) as usize;
             let n = file.read(&mut buffer[..limit]).map_err(|e| e.to_string())?;
-            if n == 0 { return Err("plugin changed during hashing".into()) }
+            if n == 0 {
+                return Err("plugin changed during hashing".into());
+            }
             hash.update(&buffer[..n]);
             remaining -= n as u64;
         }
@@ -306,13 +308,19 @@ fn streamed_plugin_hash_preserves_receipt_format() {
     std::fs::write(dir.join("nested/a"), &contents).unwrap();
     std::fs::write(dir.join("z"), b"hello").unwrap();
     let mut expected = Vec::new();
-    for (path, bytes) in [("nested/a", contents.as_slice()), ("z", b"hello".as_slice())] {
+    for (path, bytes) in [
+        ("nested/a", contents.as_slice()),
+        ("z", b"hello".as_slice()),
+    ] {
         expected.extend_from_slice(&(path.len() as u64).to_le_bytes());
         expected.extend_from_slice(path.as_bytes());
         expected.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
         expected.extend_from_slice(bytes);
     }
-    assert_eq!(content_hash(&dir).unwrap(), hex(digest(&SHA256, &expected).as_ref()));
+    assert_eq!(
+        content_hash(&dir).unwrap(),
+        hex(digest(&SHA256, &expected).as_ref())
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -355,23 +363,32 @@ fn load_lock() -> Lock {
 }
 
 fn read_lock() -> Result<Lock, String> {
-    let path=lock_path();
+    let path = lock_path();
     match std::fs::symlink_metadata(&path) {
-        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(Lock::default()),
-        Err(e)=>return Err(e.to_string()),
-        Ok(_)=>{},
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Lock::default()),
+        Err(e) => return Err(e.to_string()),
+        Ok(_) => {}
     }
-    serde_json::from_slice(&crate::requests::bounded(&path,1024*1024)?).map_err(|e|e.to_string())
+    serde_json::from_slice(&crate::requests::bounded(&path, 1024 * 1024)?)
+        .map_err(|e| e.to_string())
 }
 
 fn mutation_guard() -> Result<std::fs::File, String> {
-    std::fs::create_dir_all(plugins_dir()).map_err(|e|e.to_string())?;
+    std::fs::create_dir_all(plugins_dir()).map_err(|e| e.to_string())?;
     use std::os::unix::fs::OpenOptionsExt;
-    let file=std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
-        .mode(0o600).custom_flags(libc::O_NOFOLLOW|libc::O_NONBLOCK)
-        .open(plugins_dir().join("mutation.lock")).map_err(|e|e.to_string())?;
-    if !file.metadata().map_err(|e|e.to_string())?.is_file() {return Err("Invalid plugin mutation lock".into());}
-    fs2::FileExt::try_lock_exclusive(&file).map_err(|_|"Another plugin update is in progress")?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(plugins_dir().join("mutation.lock"))
+        .map_err(|e| e.to_string())?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("Invalid plugin mutation lock".into());
+    }
+    fs2::FileExt::try_lock_exclusive(&file).map_err(|_| "Another plugin update is in progress")?;
     read_lock()?;
     Ok(file)
 }
@@ -424,7 +441,16 @@ fn capabilities(dir: &Path) -> Result<serde_json::Value, String> {
 
 /// `gc plugin …` entry point.
 pub fn command(args: &[String]) -> Result<(), String> {
-    let _guard = if args.first().is_some_and(|a|matches!(a.as_str(),"add"|"remove"|"update"|"rollback"|"verify")) {Some(mutation_guard()?)} else {None};
+    let _guard = if args.first().is_some_and(|a| {
+        matches!(
+            a.as_str(),
+            "add" | "remove" | "update" | "rollback" | "verify"
+        )
+    }) {
+        Some(mutation_guard()?)
+    } else {
+        None
+    };
     match args.first().map(String::as_str) {
         Some("scaffold" | "validate" | "trace") => crate::plugin_dev::command(args),
         Some("list") => {
@@ -493,9 +519,11 @@ pub fn command(args: &[String]) -> Result<(), String> {
         }
         Some("verify") => verify(),
         Some("rollback") => {
-            if args.len() != 2 { return Err("gc plugin rollback NAME".into()); }
+            if args.len() != 2 {
+                return Err("gc plugin rollback NAME".into());
+            }
             rollback(&args[1])
-        },
+        }
         Some("update") => {
             let name = args
                 .get(1)
@@ -619,7 +647,12 @@ fn verify() -> Result<(), String> {
     }
 }
 
-fn update(name: &str, accept_permissions: bool, preview: bool, expected: Option<&str>) -> Result<(), String> {
+fn update(
+    name: &str,
+    accept_permissions: bool,
+    preview: bool,
+    expected: Option<&str>,
+) -> Result<(), String> {
     if !valid_name(name) {
         return Err("invalid plugin name".into());
     }
@@ -630,7 +663,12 @@ fn update(name: &str, accept_permissions: bool, preview: bool, expected: Option<
         .plugins
         .get(name)
         .ok_or("plugin is unmanaged; update is unavailable")?;
-    if content_hash(&dest)? != old.hash { return Err("Installed plugin changed since its receipt; preserve local changes before updating".into()); }
+    if content_hash(&dest)? != old.hash {
+        return Err(
+            "Installed plugin changed since its receipt; preserve local changes before updating"
+                .into(),
+        );
+    }
     let mut previous = old.clone();
     previous.previous = None;
     let source = old.source.clone();
@@ -661,13 +699,20 @@ fn update(name: &str, accept_permissions: bool, preview: bool, expected: Option<
     let old_caps = old.capabilities.clone();
     let new_caps = capabilities(&stage)?;
     let candidate_hash = content_hash(&stage)?;
-    if let Some(expected) = expected && expected != candidate_hash {
+    if let Some(expected) = expected
+        && expected != candidate_hash
+    {
         let _ = std::fs::remove_dir_all(&stage);
-        return Err("Candidate hash differs from the reviewed pin; update was not installed".into());
+        return Err(
+            "Candidate hash differs from the reviewed pin; update was not installed".into(),
+        );
     }
     if preview {
-        crate::cli::report("Plugin update preview", &serde_json::json!({"name":name,"installed_hash":old.hash,"candidate_hash":candidate_hash,"old_version":old.version,"new_version":candidate.version,"old_capabilities":old_caps,"new_capabilities":new_caps,"capabilities_changed":old_caps!=new_caps,"installed":false,"next":format!("gc plugin update {name} --expect-hash {candidate_hash}")}));
-        std::fs::remove_dir_all(&stage).map_err(|e|e.to_string())?;
+        crate::cli::report(
+            "Plugin update preview",
+            &serde_json::json!({"name":name,"installed_hash":old.hash,"candidate_hash":candidate_hash,"old_version":old.version,"new_version":candidate.version,"old_capabilities":old_caps,"new_capabilities":new_caps,"capabilities_changed":old_caps!=new_caps,"installed":false,"next":format!("gc plugin update {name} --expect-hash {candidate_hash}")}),
+        );
+        std::fs::remove_dir_all(&stage).map_err(|e| e.to_string())?;
         return Ok(());
     }
     if old_caps != new_caps {
@@ -684,8 +729,13 @@ fn update(name: &str, accept_permissions: bool, preview: bool, expected: Option<
     // Keep user data out of the replacement. A backup permits rollback if rename fails.
     let backup = plugins.join(format!(".rollback-{name}-{}", old.hash));
     if backup.exists() {
-        if content_hash(&backup)? != old.hash { return Err("Existing rollback snapshot differs from its pin; preserve it before updating".into()); }
-        std::fs::remove_dir_all(&backup).map_err(|e|e.to_string())?;
+        if content_hash(&backup)? != old.hash {
+            return Err(
+                "Existing rollback snapshot differs from its pin; preserve it before updating"
+                    .into(),
+            );
+        }
+        std::fs::remove_dir_all(&backup).map_err(|e| e.to_string())?;
     }
     let candidate_revision = git_revision(&stage);
     let receipt = LockEntry {
@@ -700,36 +750,61 @@ fn update(name: &str, accept_permissions: bool, preview: bool, expected: Option<
     lock.plugins.insert(name.to_string(), receipt);
     if let Err(e) = save_lock(&lock) {
         let remove = std::fs::remove_dir_all(&dest);
-        let restore = if remove.is_ok() { std::fs::rename(&backup, &dest) } else { Err(std::io::Error::other("replacement removal failed")) };
+        let restore = if remove.is_ok() {
+            std::fs::rename(&backup, &dest)
+        } else {
+            Err(std::io::Error::other("replacement removal failed"))
+        };
         return Err(format!(
-            "Could not save plugin receipt: {e}; replacement removal: {remove:?}; previous content restoration: {restore:?}; retained backup: {}", backup.display()
+            "Could not save plugin receipt: {e}; replacement removal: {remove:?}; previous content restoration: {restore:?}; retained backup: {}",
+            backup.display()
         ));
     }
-    crate::cli_println!("updated plugin `{name}`; previous pinned content retained for gc plugin rollback {name}");
+    crate::cli_println!(
+        "updated plugin `{name}`; previous pinned content retained for gc plugin rollback {name}"
+    );
     Ok(())
 }
 
 fn rollback(name: &str) -> Result<(), String> {
-    if !valid_name(name) { return Err("Invalid plugin name".into()); }
+    if !valid_name(name) {
+        return Err("Invalid plugin name".into());
+    }
     let mut lock = read_lock()?;
     let current = lock.plugins.get(name).ok_or("Plugin is unmanaged")?.clone();
-    let mut previous = *current.previous.clone().ok_or("No pinned rollback is recorded")?;
+    let mut previous = *current
+        .previous
+        .clone()
+        .ok_or("No pinned rollback is recorded")?;
     let dest = plugins_dir().join(name);
-    if content_hash(&dest)? != current.hash { return Err("Installed plugin changed; preserve local changes before rollback".into()); }
-    if previous.hash.len()!=64 || !previous.hash.bytes().all(|b|b.is_ascii_hexdigit()) { return Err("Invalid rollback pin".into()); }
-    let snapshot = plugins_dir().join(format!(".rollback-{name}-{}",previous.hash));
-    if content_hash(&snapshot)? != previous.hash { return Err("Rollback snapshot failed integrity verification".into()); }
-    let backup = plugins_dir().join(format!(".rollback-current-{}-{name}",std::process::id()));
-    if backup.exists() { return Err("A prior rollback recovery directory exists; inspect it first".into()); }
-    replace_staged(&snapshot,&dest,&backup)?;
-    previous.previous=None;
-    lock.plugins.insert(name.into(),previous);
-    if let Err(error)=save_lock(&lock) {
-        let restore_new=std::fs::rename(&dest,&snapshot);
-        let restore_old=std::fs::rename(&backup,&dest);
-        return Err(format!("Rollback receipt could not be saved: {error}; recovery results: {restore_new:?}, {restore_old:?}"));
+    if content_hash(&dest)? != current.hash {
+        return Err("Installed plugin changed; preserve local changes before rollback".into());
     }
-    crate::cli_println!("rolled back plugin `{name}`; replaced content retained at {}",backup.display());
+    if previous.hash.len() != 64 || !previous.hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("Invalid rollback pin".into());
+    }
+    let snapshot = plugins_dir().join(format!(".rollback-{name}-{}", previous.hash));
+    if content_hash(&snapshot)? != previous.hash {
+        return Err("Rollback snapshot failed integrity verification".into());
+    }
+    let backup = plugins_dir().join(format!(".rollback-current-{}-{name}", std::process::id()));
+    if backup.exists() {
+        return Err("A prior rollback recovery directory exists; inspect it first".into());
+    }
+    replace_staged(&snapshot, &dest, &backup)?;
+    previous.previous = None;
+    lock.plugins.insert(name.into(), previous);
+    if let Err(error) = save_lock(&lock) {
+        let restore_new = std::fs::rename(&dest, &snapshot);
+        let restore_old = std::fs::rename(&backup, &dest);
+        return Err(format!(
+            "Rollback receipt could not be saved: {error}; recovery results: {restore_new:?}, {restore_old:?}"
+        ));
+    }
+    crate::cli_println!(
+        "rolled back plugin `{name}`; replaced content retained at {}",
+        backup.display()
+    );
     Ok(())
 }
 

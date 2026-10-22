@@ -40,8 +40,7 @@ pub fn load(dir: &Path) -> Result<Requirements, String> {
         sandbox_env: Option<String>,
         allow_managed_hooks_only: Option<bool>,
     }
-    let raw: Raw = toml::from_str(&text)
-        .map_err(|e| format!("requirements.toml parse: {e}"))?;
+    let raw: Raw = toml::from_str(&text).map_err(|e| format!("requirements.toml parse: {e}"))?;
 
     let mut req = Requirements::default();
     if let Some(v) = raw.sandbox {
@@ -70,7 +69,8 @@ pub fn load(dir: &Path) -> Result<Requirements, String> {
 pub fn apply(req: &Requirements, cfg: &mut crate::config::Config) -> Vec<String> {
     let mut forced = Vec::new();
     if let Some(policy) = req.sandbox
-        && cfg.sandbox != policy {
+        && cfg.sandbox != policy
+    {
         let name = match policy {
             sandbox::Policy::Off => "off",
             sandbox::Policy::Workspace => "workspace",
@@ -80,7 +80,8 @@ pub fn apply(req: &Requirements, cfg: &mut crate::config::Config) -> Vec<String>
         cfg.sandbox = policy;
     }
     if let Some(env) = &req.sandbox_env
-        && cfg.sandbox_env != *env {
+        && cfg.sandbox_env != *env
+    {
         forced.push(format!("sandbox_env forced to `{env}`"));
         cfg.sandbox_env = env.clone();
     }
@@ -116,7 +117,12 @@ mod tests {
         };
         let forced = apply(&req, &mut cfg);
         assert_eq!(cfg.sandbox, sandbox::Policy::Strict);
-        assert!(forced.iter().any(|l| l.contains("sandbox forced to `strict`")), "{forced:?}");
+        assert!(
+            forced
+                .iter()
+                .any(|l| l.contains("sandbox forced to `strict`")),
+            "{forced:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

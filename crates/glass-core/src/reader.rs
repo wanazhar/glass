@@ -86,7 +86,11 @@ impl Reader {
     /// Refresh a parked live panel before its first frame, avoiding an old-position flash.
     pub fn reopen_latest(&mut self, entries: Vec<Entry>, streaming: bool) -> io::Result<()> {
         self.entries = entries;
-        self.transcript.replace_entries(render_entries(&self.entries, &self.expanded_cards, &self.loaded_spills));
+        self.transcript.replace_entries(render_entries(
+            &self.entries,
+            &self.expanded_cards,
+            &self.loaded_spills,
+        ));
         self.reasoning_streaming = streaming;
         self.terminal = make_clean_terminal(self.area())?;
         self.follow_latest()
@@ -311,9 +315,13 @@ impl Reader {
                 "Selected output · Enter expand/collapse · Esc back".to_string()
             }
         } else if self.title == "Provider reasoning" {
-            if !self.transcript.follow { "End latest · Esc back".to_string() }
-            else if self.reasoning_streaming { "Live · Esc back".to_string() }
-            else { "Latest · Esc back".to_string() }
+            if !self.transcript.follow {
+                "End latest · Esc back".to_string()
+            } else if self.reasoning_streaming {
+                "Live · Esc back".to_string()
+            } else {
+                "Latest · Esc back".to_string()
+            }
         } else if self.transcript.follow {
             String::new()
         } else if self.unread == 0 {
@@ -329,11 +337,22 @@ impl Reader {
         stdout.flush()?;
         let result = self.terminal.draw(|frame| {
             if self.title == "Provider reasoning" {
-                use glass_tui::ratatui::{style::{Color, Style}, widgets::Block};
+                use glass_tui::ratatui::{
+                    style::{Color, Style},
+                    widgets::Block,
+                };
                 let area = frame.area();
-                frame.render_widget(Block::default().style(Style::default().bg(Color::Reset).fg(Color::Gray)), area);
-                let label = if self.reasoning_streaming { "Reasoning · live" } else { "Reasoning" };
-                self.transcript.draw_in(frame, &[], label, reasoning_area(area, &self.title));
+                frame.render_widget(
+                    Block::default().style(Style::default().bg(Color::Reset).fg(Color::Gray)),
+                    area,
+                );
+                let label = if self.reasoning_streaming {
+                    "Reasoning · live"
+                } else {
+                    "Reasoning"
+                };
+                self.transcript
+                    .draw_in(frame, &[], label, reasoning_area(area, &self.title));
             } else {
                 self.transcript.draw(frame, &[], &self.title);
             }
@@ -487,7 +506,9 @@ fn render_entries(
 fn reasoning_area(area: Rect, title: &str) -> Rect {
     if title == "Provider reasoning" && area.width >= 30 && area.height >= 10 {
         area.inner(glass_tui::ratatui::layout::Margin::new(2, 1))
-    } else { area }
+    } else {
+        area
+    }
 }
 
 fn viewport(fullscreen: bool) -> Rect {

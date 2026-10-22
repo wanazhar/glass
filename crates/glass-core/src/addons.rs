@@ -65,7 +65,9 @@ pub const BUNDLES: &[Bundle] = &[
         description: "Refresh prompt cache while idle",
         interpreter: "python3",
         file: "cache-warmer.py",
-        source: include_str!("../../../products/glass-core/extensions/cache-warmer/cache-warmer.py"),
+        source: include_str!(
+            "../../../products/glass-core/extensions/cache-warmer/cache-warmer.py"
+        ),
         access: "Requests background provider cache refreshes. Uses model quota even while idle.",
     },
     Bundle {

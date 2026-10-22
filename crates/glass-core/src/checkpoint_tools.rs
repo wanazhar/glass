@@ -36,9 +36,17 @@ const MAX_GATE_SCAN: usize = 256;
 fn find_checkpoint_label(session: &Session) -> Option<String> {
     let mut open = Vec::new();
     for record in session.history_records() {
-        if let Record::Checkpoint { label, rewind_summary, .. } = record {
-            if rewind_summary.is_none() { open.push(label); }
-            else if let Some(index) = open.iter().rposition(|name| name == &label) { open.truncate(index); }
+        if let Record::Checkpoint {
+            label,
+            rewind_summary,
+            ..
+        } = record
+        {
+            if rewind_summary.is_none() {
+                open.push(label);
+            } else if let Some(index) = open.iter().rposition(|name| name == &label) {
+                open.truncate(index);
+            }
         }
     }
     open.pop()
@@ -49,7 +57,9 @@ pub fn checkpoint(call: &ToolCall, session: &mut Session) -> Outcome {
     let label = match call.arg_str("label").filter(|l| !l.trim().is_empty()) {
         Some(l) => l.trim().to_string(),
         None => {
-            return Outcome::err("error: checkpoint needs a short `label` naming what state you are preserving (e.g. \"before-cache-rework\")");
+            return Outcome::err(
+                "error: checkpoint needs a short `label` naming what state you are preserving (e.g. \"before-cache-rework\")",
+            );
         }
     };
     if label.len() > MAX_LABEL_BYTES {
@@ -113,7 +123,9 @@ pub fn rewind(call: &ToolCall, session: &mut Session) -> Outcome {
         log_len: session.log_len(),
         rewind_summary: Some(report),
     }]) {
-        return Outcome::err(format!("error: rewind could not be recorded; context unchanged: {e}"));
+        return Outcome::err(format!(
+            "error: rewind could not be recorded; context unchanged: {e}"
+        ));
     }
     session.reproject_history();
     Outcome::ok("Rewound. The exploration after the checkpoint is hidden from your context; the retained report above is what survives. Files and raw history are unchanged.".to_string())
@@ -121,12 +133,19 @@ pub fn rewind(call: &ToolCall, session: &mut Session) -> Outcome {
 
 /// Dispatch for the three wave-C tools by name; shared by the tool schema
 /// registration and tests.
-pub fn run(call: &ToolCall, session: &mut Session, wait_poll: &mut dyn FnMut() -> Option<String>) -> Outcome {
+pub fn run(
+    call: &ToolCall,
+    session: &mut Session,
+    wait_poll: &mut dyn FnMut() -> Option<String>,
+) -> Outcome {
     match call.name.as_str() {
         "checkpoint" => checkpoint(call, session),
         "rewind" => rewind(call, session),
         "wait" => wait(call, wait_poll),
-        _ => Outcome::err(format!("error: `{}` is not a checkpoint/rewind/wait tool", call.name)),
+        _ => Outcome::err(format!(
+            "error: `{}` is not a checkpoint/rewind/wait tool",
+            call.name
+        )),
     }
 }
 
@@ -161,7 +180,11 @@ pub fn wait(call: &ToolCall, poll: &mut dyn FnMut() -> Option<String>) -> Outcom
 /// Prewalk handoff (OMP prewalk): a one-shot, user-confirmed handoff after a
 /// plan exists — the planning model's session continues under a cheaper
 /// target model. Purely a routing note: the projection and log untouched.
-pub fn prewalk_note(session: &mut Session, from_model: &str, target_model: &str) -> Result<String, String> {
+pub fn prewalk_note(
+    session: &mut Session,
+    from_model: &str,
+    target_model: &str,
+) -> Result<String, String> {
     session.append(Record::System(format!(
         "Prewalk handoff: per the user, remaining work in this session routes to `{target_model}` (planned under `{from_model}`). Continue from the existing plan."
     )));
@@ -192,17 +215,14 @@ pub fn prewalk_gate(session: &Session, target_model: &str) -> serde_json::Value 
                     pending_plan = true;
                 }
             }
-            Record::Bash { command, exit_code, .. }
-                if exit_code.is_some_and(|code| code != 0) =>
-            {
+            Record::Bash {
+                command, exit_code, ..
+            } if exit_code.is_some_and(|code| code != 0) => {
                 failing_tool = true;
                 last_action = format!("failing bash: {command}");
             }
-            Record::ToolResult { .. }
-                if last_action.starts_with("failing bash") => {}
-            Record::ToolCall { name, .. }
-                if !last_action.starts_with("failing bash") =>
-            {
+            Record::ToolResult { .. } if last_action.starts_with("failing bash") => {}
+            Record::ToolCall { name, .. } if !last_action.starts_with("failing bash") => {
                 last_action = format!("tool call: {name}");
             }
             Record::ToolResult { .. } | Record::Bash { .. } => {
@@ -211,7 +231,9 @@ pub fn prewalk_gate(session: &Session, target_model: &str) -> serde_json::Value 
             _ => {}
         }
         scanned += 1;
-        if scanned >= MAX_GATE_SCAN { break; }
+        if scanned >= MAX_GATE_SCAN {
+            break;
+        }
     }
     let ready = pending_plan && !failing_tool && !target_model.is_empty();
     serde_json::json!({
@@ -268,7 +290,11 @@ mod tests {
             .records
             .iter()
             .find_map(|r| match r {
-                Record::Checkpoint { label, rewind_summary: None, .. } if label == "before-rework" => Some(()),
+                Record::Checkpoint {
+                    label,
+                    rewind_summary: None,
+                    ..
+                } if label == "before-rework" => Some(()),
                 _ => None,
             })
             .is_some();
@@ -318,7 +344,11 @@ mod tests {
         );
         assert!(!format!("{messages:?}").contains("messy exploration notes"));
         // ...but the raw log keeps it (transcript and exports are honest).
-        assert!(s.history_records().iter().any(|r| matches!(r, Record::Assistant(t) if t.contains("messy exploration notes"))));
+        assert!(
+            s.history_records().iter().any(
+                |r| matches!(r, Record::Assistant(t) if t.contains("messy exploration notes"))
+            )
+        );
     }
 
     #[test]
@@ -326,13 +356,26 @@ mod tests {
         let mut session = fresh_session();
         session.append(Record::User("original goal".into()));
         checkpoint(&call("checkpoint", r#"{"label":"before"}"#), &mut session);
-        for _ in 0..30 { session.append(Record::Assistant("EXPLORATION_SECRET".into())); }
+        for _ in 0..30 {
+            session.append(Record::Assistant("EXPLORATION_SECRET".into()));
+        }
         crate::compact::fallback(&mut session, &crate::tools::State::new(), "test").unwrap();
         assert!(format!("{:?}", session.messages()).contains("EXPLORATION_SECRET"));
-        session.append(Record::ToolCall { id:"rewind-call".into(), name:"rewind".into(), arguments:r#"{"report":"use retained finding"}"#.into() });
-        let outcome = rewind(&call("rewind", r#"{"report":"use retained finding"}"#), &mut session);
+        session.append(Record::ToolCall {
+            id: "rewind-call".into(),
+            name: "rewind".into(),
+            arguments: r#"{"report":"use retained finding"}"#.into(),
+        });
+        let outcome = rewind(
+            &call("rewind", r#"{"report":"use retained finding"}"#),
+            &mut session,
+        );
         assert!(!outcome.body.starts_with("error:"), "{}", outcome.body);
-        session.append(Record::ToolResult { name:"rewind".into(), call_id:"rewind-call".into(), body:outcome.body });
+        session.append(Record::ToolResult {
+            name: "rewind".into(),
+            call_id: "rewind-call".into(),
+            body: outcome.body,
+        });
         let text = format!("{:?}", session.messages());
         assert!(!text.contains("EXPLORATION_SECRET"), "{text}");
         assert!(text.contains("retained finding") && text.contains("rewind-call"));
@@ -349,10 +392,16 @@ mod tests {
         session.append(Record::User("goal".into()));
         checkpoint(&call("checkpoint", r#"{"label":"outer"}"#), &mut session);
         checkpoint(&call("checkpoint", r#"{"label":"inner"}"#), &mut session);
-        let inner = rewind(&call("rewind", r#"{"label":"inner","report":"inner finding"}"#), &mut session);
+        let inner = rewind(
+            &call("rewind", r#"{"label":"inner","report":"inner finding"}"#),
+            &mut session,
+        );
         assert!(!inner.body.starts_with("error:"));
         assert_eq!(find_checkpoint_label(&session).as_deref(), Some("outer"));
-        let outer = rewind(&call("rewind", r#"{"label":"outer","report":"outer finding"}"#), &mut session);
+        let outer = rewind(
+            &call("rewind", r#"{"label":"outer","report":"outer finding"}"#),
+            &mut session,
+        );
         assert!(!outer.body.starts_with("error:"), "{}", outer.body);
         assert!(find_checkpoint_label(&session).is_none());
         assert!(!format!("{:?}", session.messages()).contains("inner finding"));
@@ -364,7 +413,12 @@ mod tests {
         s.append(Record::User("start".into()));
         checkpoint(&call("checkpoint", r#"{"label":"alpha"}"#), &mut s);
         let out = rewind(&call("rewind", r#"{"label":"beta","report":"x"}"#), &mut s);
-        assert!(out.body.contains("`beta` is not the open checkpoint (`alpha`)"), "{}", out.body);
+        assert!(
+            out.body
+                .contains("`beta` is not the open checkpoint (`alpha`)"),
+            "{}",
+            out.body
+        );
     }
 
     #[test]
@@ -374,7 +428,10 @@ mod tests {
         checkpoint(&call("checkpoint", r#"{"label":"probe"}"#), &mut s);
         let long = format!("HEAD{}😀\n{}\n😀TAIL", "x".repeat(2043), "界".repeat(3_000));
         let out = rewind(
-            &call("rewind", &format!(r#"{{"report":{}}}"#, serde_json::to_string(&long).unwrap())),
+            &call(
+                "rewind",
+                &format!(r#"{{"report":{}}}"#, serde_json::to_string(&long).unwrap()),
+            ),
             &mut s,
         );
         assert!(!out.body.starts_with("error:"), "{}", out.body);
@@ -383,7 +440,10 @@ mod tests {
             .iter()
             .rev()
             .find_map(|r| match r {
-                Record::Checkpoint { rewind_summary: Some(w), .. } => Some(w.clone()),
+                Record::Checkpoint {
+                    rewind_summary: Some(w),
+                    ..
+                } => Some(w.clone()),
                 _ => None,
             })
             .expect("rewind stores the report");
@@ -396,8 +456,14 @@ mod tests {
     fn prewalk_gate_reports_plan_and_refuses_a_failing_tail() {
         let mut s = fresh_session();
         s.append(Record::User("plan it".into()));
-        s.append(Record::Assistant("plan: emoji width; next steps: implement".into()));
-        s.append(Record::ToolCall { id: "t".into(), name: "edit".into(), arguments: "{}".into() });
+        s.append(Record::Assistant(
+            "plan: emoji width; next steps: implement".into(),
+        ));
+        s.append(Record::ToolCall {
+            id: "t".into(),
+            name: "edit".into(),
+            arguments: "{}".into(),
+        });
         let ready = prewalk_gate(&s, "mock");
         assert_eq!(ready["pending_plan"], true);
         assert_eq!(ready["failing_tool"], false);

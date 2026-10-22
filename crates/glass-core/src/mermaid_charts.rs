@@ -235,9 +235,10 @@ fn xy(lines: &[&str], w: usize) -> Option<Vec<String>> {
         .map(|v| v.abs())
         .fold(0.0, f64::max);
     if let Some((a, b)) = y_range
-        && series.iter().flat_map(|(_, v)| v).any(|n| *n < a || *n > b) {
-            return None;
-        }
+        && series.iter().flat_map(|(_, v)| v).any(|n| *n < a || *n > b)
+    {
+        return None;
+    }
     for (index, (kind, points)) in series.iter().enumerate() {
         push(&mut out, format!("{kind} · series {}", index + 1), w);
         if *kind == "Line" {

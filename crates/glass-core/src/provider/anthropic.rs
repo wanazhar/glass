@@ -133,7 +133,7 @@ impl Anthropic {
 
         for m in messages {
             match m {
-                Message::ChatReasoning{..}=>{},
+                Message::ChatReasoning { .. } => {}
                 Message::User(s) => {
                     out.push(json!({ "role": "user", "content": [{ "type": "text", "text": s }] }));
                 }
@@ -268,8 +268,8 @@ impl Provider for Anthropic {
         "anthropic"
     }
 
-    fn estimate_tokens(&self,messages:&[glass_mod_api::Message])->u32 {
-        super::default_estimate_for(messages,false)
+    fn estimate_tokens(&self, messages: &[glass_mod_api::Message]) -> u32 {
+        super::default_estimate_for(messages, false)
     }
     fn context_window(&self) -> u32 {
         Self::window_for(&self.model)

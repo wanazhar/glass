@@ -21,7 +21,10 @@ mod tests {
         let bytes: Vec<u8> = (0..=255).collect();
         let previous: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
         assert_eq!(hex(&bytes), previous);
-        assert_eq!(sha256(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            sha256(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
         assert!(hex(&[]).is_empty());
     }
 }

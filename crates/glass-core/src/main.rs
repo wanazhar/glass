@@ -24,7 +24,6 @@ mod completions;
 mod concurrency;
 mod config;
 mod connect;
-mod web_commands;
 mod context_audit;
 mod contracts;
 mod diagnostic_bundle;
@@ -32,8 +31,8 @@ mod diagnostics;
 mod doctor;
 mod durable;
 mod egress;
-mod export;
 mod executable;
+mod export;
 mod ext;
 mod files;
 mod fs_scan;
@@ -76,11 +75,11 @@ mod questions;
 mod queue;
 mod reader;
 mod readguard;
+mod reasoning;
 mod recap;
 mod recovery;
 mod reminders;
 mod requests;
-mod reasoning;
 mod requirements;
 mod resume_picker;
 mod rewind;
@@ -106,6 +105,7 @@ mod transport;
 mod trust;
 mod verify;
 mod warmer;
+mod web_commands;
 mod workbench;
 mod workflows;
 mod workspace;
@@ -270,7 +270,9 @@ fn main() {
         Some("structure") => {
             let status = std::process::Command::new("python3")
                 .arg("-c")
-                .arg(include_str!("../../../products/glass-core/extensions/structure/structure.py"))
+                .arg(include_str!(
+                    "../../../products/glass-core/extensions/structure/structure.py"
+                ))
                 .args(&args[1..])
                 .env(
                     "GC_BIN",
@@ -288,7 +290,9 @@ fn main() {
         Some("companion") => {
             let status = std::process::Command::new("python3")
                 .arg("-c")
-                .arg(include_str!("../../../products/glass-core/extensions/companion/companion.py"))
+                .arg(include_str!(
+                    "../../../products/glass-core/extensions/companion/companion.py"
+                ))
                 .args(&args[1..])
                 .status();
             match status {
@@ -928,7 +932,7 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         _ => {}
     }
-    connect::inherit_security(&mut cfg,args)?;
+    connect::inherit_security(&mut cfg, args)?;
     crate::requirements::apply(&requirements, &mut cfg);
     for warning in sandbox::init(&cfg) {
         eprintln!("glass-core: {warning}");
@@ -969,7 +973,9 @@ fn run(args: &[String]) -> Result<(), String> {
                 .and_then(|chart| crate::mermaid::render(&chart, width))
                 .ok_or_else(|| "unsupported flowchart syntax or diagram limit".into());
         }
-        if let Some(chart)=crate::mermaid::render_chart(body,width){return chart;}
+        if let Some(chart) = crate::mermaid::render_chart(body, width) {
+            return chart;
+        }
         Err(format!(
             "unsupported diagram type: {}",
             glass_tui::text::clip(head, 48)
@@ -1015,10 +1021,13 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     if args.first().is_some_and(|a| a == "resume")
         && let Some(id) = args.get(1)
-            && !id.contains(['/', '\\']) {
-                let socket = config::data_dir().join(format!("serve-{id}.sock"));
-                if std::os::unix::net::UnixStream::connect(&socket).is_ok() { return serve::attach(socket.to_str()); }
-            }
+        && !id.contains(['/', '\\'])
+    {
+        let socket = config::data_dir().join(format!("serve-{id}.sock"));
+        if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            return serve::attach(socket.to_str());
+        }
+    }
     if args.first().is_some_and(|a| a == "serve") {
         let mut session_id: Option<&str> = None;
         let mut socket: Option<&str> = None;
@@ -2175,7 +2184,7 @@ fn repl(
                         continue;
                     }
                     glass_tui::crossterm::event::KeyCode::Char('d') => {
-                        if modal::confirm_exit(&keys,&editor,false) {
+                        if modal::confirm_exit(&keys, &editor, false) {
                             palette.close();
                             ui_println!("\nbye");
                             return Ok(());
@@ -4065,7 +4074,7 @@ fn drain_input(
     while let Some(ev) = keys.try_next() {
         if matches!(&ev, Event::Key(k) if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('d'))
         {
-            if modal::confirm_exit(keys,editor,true) {
+            if modal::confirm_exit(keys, editor, true) {
                 EXIT_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
                 palette.close();
                 surface::overlay(false).ok();

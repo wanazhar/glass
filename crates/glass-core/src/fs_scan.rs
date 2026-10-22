@@ -111,7 +111,11 @@ pub fn read_dir(dir: &Path) -> Option<Vec<std::fs::DirEntry>> {
         }
         cache.entries.insert(
             key.clone(),
-            Walk { names: fresh.clone(), dirs: Vec::new(), bytes },
+            Walk {
+                names: fresh.clone(),
+                dirs: Vec::new(),
+                bytes,
+            },
         );
         cache.bytes += bytes;
     });
@@ -120,7 +124,10 @@ pub fn read_dir(dir: &Path) -> Option<Vec<std::fs::DirEntry>> {
 }
 
 fn walk_uncached(dir: &Path) -> Option<Vec<std::fs::DirEntry>> {
-    std::fs::read_dir(dir).ok()?.collect::<Result<Vec<_>, _>>().ok()
+    std::fs::read_dir(dir)
+        .ok()?
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
 }
 
 /// Invalidate one directory after a write/edit/rename touched it.
@@ -209,7 +216,10 @@ mod tests {
         invalidate_all();
         let d = diagnostics();
         assert_eq!(d["cached_dirs"], 0, "{d}");
-        assert!(d["invalidations"].as_u64().unwrap() > before["invalidations"].as_u64().unwrap(), "{d}");
+        assert!(
+            d["invalidations"].as_u64().unwrap() > before["invalidations"].as_u64().unwrap(),
+            "{d}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

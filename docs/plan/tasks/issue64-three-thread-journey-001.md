@@ -1,6 +1,6 @@
 id: issue64-three-thread-journey-001
 scope: issue-64-concurrent-project-thread-journey
-status: in-progress
+status: complete
 depends-on: [issue64-project-thread-picker-001]
 ---
 
@@ -84,7 +84,7 @@ Validation passed: strict `cargo clippy -p glass-dev --test tui_pty --locked --
 documentation coverage (using the existing root debug binaries), documentation
 depth, release-truth, TUI shortcut inventory, and `git diff --check`.
 
-Independent review: the first review found that a picker-frame snapshot was
-being reused to claim conversation isolation. The test now captures the gamma
-conversation after closing the picker and waits for the alpha ledger state;
-independent re-review is pending.
+Independent review initially found that a picker-frame snapshot was being
+reused to claim conversation isolation. The remediation waits for the alpha
+ledger settlement and captures gamma's conversation after closing the picker.
+Re-review passed at commit `785212a6` with no remaining findings.

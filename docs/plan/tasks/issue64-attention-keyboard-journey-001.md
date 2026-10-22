@@ -1,7 +1,7 @@
 ---
 id: issue64-attention-keyboard-journey-001
 scope: issue-64-keyboard-attention-review-and-exit
-status: in-progress
+status: complete
 depends-on: [issue63-attention-inbox-001, issue64-project-thread-picker-001]
 ---
 
@@ -28,17 +28,17 @@ application exit using the keyboard alone.
 
 ## Acceptance
 
-- [ ] At 80×24 and 50×16, a seeded uncertain delivery and editor proposal
+- [x] At 80×24 and 50×16, a seeded uncertain delivery and editor proposal
       appear together in the Attention Inbox.
-- [ ] Activating the uncertain item opens its owning conversation with the
+- [x] Activating the uncertain item opens its owning conversation with the
       saved message and keeps the attempt uncertain without replay.
-- [ ] The unrelated proposal remains available after inspecting the uncertain
+- [x] The unrelated proposal remains available after inspecting the uncertain
       delivery.
-- [ ] Activating the remaining proposal opens its exact file review context.
-- [ ] Ctrl-C opens the review editor's unsaved-exit prompt; Escape keeps the
+- [x] Activating the remaining proposal opens its exact file review context.
+- [x] Ctrl-C opens the review editor's unsaved-exit prompt; Escape keeps the
       review active, and a later Ctrl-C followed by `Q` opens the application
       quit confirmation, which Enter confirms before exiting.
-- [ ] Focused PTY, scoped strict Clippy, formatting, docs
+- [x] Focused PTY, scoped strict Clippy, formatting, docs
       validators, and diff checks pass; evidence identifies the exact binary
       used and does not imply a fresh release build unless one was built.
 
@@ -52,4 +52,23 @@ coverage/depth/release-truth/shortcut checks, and `git diff
 
 ## Evidence
 
-Pending implementation and review.
+The combined offline PTY journey passed at both 80×24 and 50×16:
+
+```text
+GLASS_E2E=1 GLASS_E2E_BINARY=/home/ubuntu/work/glass/target/debug/glass \
+  cargo test -p glass-dev --test tui_pty \
+  attention_review_keyboard_journey_preserves_uncertain_send_and_exits_cleanly \
+  --locked -- --nocapture
+1 passed; 0 failed
+```
+
+The test used the existing local `glass 0.3.14` debug binary at the explicit
+path above; this task did not build a release binary. It verifies both inbox
+items together, uncertain-attempt activation without `turn/prompt` replay,
+proposal review on `a-first.txt`, Escape cancellation of the editor exit prompt,
+and the final Enter-confirmed discard-and-quit prompt.
+
+Scoped validation passed: `cargo clippy -p glass-dev --test tui_pty --locked --
+-D warnings`, `cargo fmt --all -- --check`, Python fixture syntax validation,
+documentation coverage/depth/release-truth/TUI-shortcut validators, and
+`git diff --check`.

@@ -607,7 +607,7 @@ pub struct DevTuiState {
     pending_editor_input: std::collections::VecDeque<PendingEditorInput>,
     /// Last editor buffer projection, available while a background task owns
     /// the workspace mutex. Writes still require the live workspace.
-    focused_editor_buffer: Option<crate::development::EditorBuffer>,
+    pub(crate) focused_editor_buffer: Option<crate::development::EditorBuffer>,
     pub focused_editor_path: String,
     /// Cached editor content used while the shared workspace is busy.
     pub focused_editor_content: String,
@@ -6262,6 +6262,81 @@ impl DevTuiState {
         }
     }
 
+    /// Bounded disk reconciliation for the open editor buffers. Returns true
+    /// when a visible projection should be repainted.
+    pub fn tick_editor_reconcile(&mut self) -> bool {
+        let changed = match self.workspace.try_lock() {
+            Ok(mut workspace) => {
+                let project = workspace.project_mut();
+                if project.buffers().next().is_none() {
+                    false
+                } else {
+                    project.reconcile_open_buffers().unwrap_or(false)
+                }
+            }
+            Err(_) => false,
+        };
+        if changed {
+            self.refresh_editor_projection();
+        }
+        changed
+    }
+
+    pub fn resolve_editor_external(&mut self, action: &str) -> Result<String, String> {
+        let path = self.focused_editor_path.clone();
+        if path.is_empty() {
+            return Err("no focused editor buffer".into());
+        }
+        let mut result = self
+            .workspace
+            .try_lock()
+            .map_err(|_| "workspace busy".to_string())?;
+        let project = result.project_mut();
+        let message = match action {
+            "compare" => {
+                let snapshot = project.compare_buffer(&path).map_err(|e| e.to_string())?;
+                if snapshot.exists {
+                    let local = project
+                        .buffer(&path)
+                        .map(|buffer| buffer.content.as_str())
+                        .unwrap_or_default();
+                    let external = snapshot.content.as_deref().unwrap_or_default();
+                    let diff = bounded_line_diff(local, external);
+                    self.git_diff = diff.clone();
+                    self.git_diff_open = true;
+                    self.git_diff_path = Some(format!("{path} · local vs disk"));
+                    self.surface_scroll.insert(DevSurface::Git, 0);
+                    self.surface = DevSurface::Git;
+                    self.status =
+                        "External editor compare · Esc closes · local buffer preserved".into();
+                    "External compare opened · local buffer preserved".into()
+                } else {
+                    "External file is deleted".into()
+                }
+            }
+            "reload" => {
+                let buffer = project
+                    .reload_buffer_from_disk(&path, crate::development::Actor::local())
+                    .map_err(|e| e.to_string())?;
+                format!(
+                    "Reloaded {} · {}",
+                    path,
+                    if buffer.dirty { "unsaved" } else { "clean" }
+                )
+            }
+            "keep-local" => {
+                project
+                    .keep_local_buffer(&path)
+                    .map_err(|e| e.to_string())?;
+                format!("Kept local text for {} · save rebased", path)
+            }
+            _ => return Err("editor external actions: compare, reload, keep-local".into()),
+        };
+        drop(result);
+        self.refresh_editor_projection();
+        Ok(message)
+    }
+
     pub fn refresh_editor_projection(&mut self) {
         let (buffers, comments, proposals, checkpoints, diagnostics) = self
             .workspace
@@ -10589,6 +10664,64 @@ impl DevTuiState {
     }
 }
 
+fn bounded_preview(value: &str) -> String {
+    const LIMIT: usize = 220;
+    let mut result = value.chars().take(LIMIT).collect::<String>();
+    if value.chars().count() > LIMIT {
+        result.push('…');
+    }
+    result
+}
+
+fn bounded_line_diff(local: &str, external: &str) -> String {
+    const MAX_CHANGED_LINES: usize = 8;
+    const MAX_LINE_CHARS: usize = 100;
+    let left = local.lines().collect::<Vec<_>>();
+    let right = external.lines().collect::<Vec<_>>();
+    let total = left.len().max(right.len());
+    let mut shown = 0;
+    let mut diff = vec![
+        "--- local buffer".to_string(),
+        "+++ external disk snapshot".to_string(),
+    ];
+    for index in 0..total {
+        let old = left.get(index).copied();
+        let new = right.get(index).copied();
+        if old == new {
+            continue;
+        }
+        if shown >= MAX_CHANGED_LINES {
+            break;
+        }
+        diff.push(format!("@@ -{} +{} @@", index + 1, index + 1));
+        if let Some(line) = old {
+            diff.push(format!(
+                "-{}",
+                bounded_preview(&line.chars().take(MAX_LINE_CHARS).collect::<String>())
+            ));
+        }
+        if let Some(line) = new {
+            diff.push(format!(
+                "+{}",
+                bounded_preview(&line.chars().take(MAX_LINE_CHARS).collect::<String>())
+            ));
+        }
+        shown += 1;
+    }
+    if shown == 0 {
+        return "no line differences".into();
+    }
+    let truncated = total > 0
+        && (0..total)
+            .filter(|index| left.get(*index).copied() != right.get(*index).copied())
+            .count()
+            > MAX_CHANGED_LINES;
+    if truncated {
+        diff.push("… diff truncated".into());
+    }
+    diff.join("\n")
+}
+
 fn diagnostic_matches_path(
     diagnostic: &crate::development::LanguageDiagnostic,
     path: &str,
@@ -11350,6 +11483,64 @@ mod tests {
         state.scroll_help(i32::MIN);
         assert_eq!(state.help_scroll, 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_editor_resolution_keeps_dirty_projection_and_exposes_bounded_diff() {
+        let (mut state, root) = routed_state("editor-external-resolution");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn base() {}\n").unwrap();
+        state
+            .ws_mut()
+            .unwrap()
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .unwrap();
+        state.editor_buffer_index = 0;
+        state.refresh_editor_projection();
+        state
+            .ws_mut()
+            .unwrap()
+            .project_mut()
+            .edit_buffer(
+                "src/main.rs",
+                "fn local() {}\n".into(),
+                crate::development::Actor::local(),
+            )
+            .unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn outside() {}\n").unwrap();
+
+        assert!(state.tick_editor_reconcile());
+        assert_eq!(state.focused_editor_content, "fn local() {}\n");
+        let comparison = state.resolve_editor_external("compare").unwrap();
+        assert!(comparison.contains("opened"));
+        assert!(state.git_diff.contains("-fn local() {}"));
+        assert!(state.git_diff.contains("+fn outside() {}"));
+        assert_eq!(state.surface, DevSurface::Git);
+        assert_eq!(state.focused_editor_content, "fn local() {}\n");
+        state.surface = DevSurface::Code;
+        state.resolve_editor_external("reload").unwrap();
+        assert_eq!(state.focused_editor_content, "fn outside() {}\n");
+        assert_eq!(
+            state.focused_buffer().unwrap().actor.kind,
+            crate::development::ActorKind::Unknown
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_compare_diff_is_bounded_and_marks_truncation() {
+        let local = (0..20)
+            .map(|line| format!("local {line}\n"))
+            .collect::<String>();
+        let external = (0..20)
+            .map(|line| format!("disk {line}\n"))
+            .collect::<String>();
+        let diff = bounded_line_diff(&local, &external);
+        assert!(diff.contains("-local 0"));
+        assert!(diff.contains("+disk 0"));
+        assert!(diff.contains("diff truncated"));
+        assert!(!diff.contains("-local 9"));
     }
 
     #[test]

@@ -2488,6 +2488,9 @@ fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
         state.refresh_editor_projection();
         return Ok(compact_result("glass.editor.checkpoint.restore", &result));
     }
+    if matches!(action, "compare" | "reload" | "keep-local") {
+        return state.resolve_editor_external(action);
+    }
     let path = parts.get(1).ok_or("editor action requires PATH")?;
     if matches!(action, "undo" | "redo") {
         require_trusted(state)?;
@@ -2543,7 +2546,7 @@ fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
         }
         _ => {
             return Err(
-                "editor actions: open, selection, replace, replace-selection, save, undo, redo, search, comments, comment, comment-selection, comment-resolve, proposals, propose, accept, reject, checkpoints, checkpoint, restore".into(),
+                "editor actions: open, selection, replace, replace-selection, save, undo, redo, compare, reload, keep-local, search, comments, comment, comment-selection, comment-resolve, proposals, propose, accept, reject, checkpoints, checkpoint, restore".into(),
             );
         }
     };

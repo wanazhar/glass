@@ -335,22 +335,22 @@ See the [legacy Pi runtime guide](../pi-sdk-runtime.md) for command details.
 
 ## First launch and agent composer
 
-On construction Glass reads workspace trust and resident engine readiness without blocking on
-the full projection. A trust-required project starts on Trust. Otherwise Agent
-is selected: a ready engine shows `Ready · describe a coding task`, while an
-unconfigured engine shows `Agent setup required · press :actions or Enter to continue`.
-The `:actions` routes are `agent doctor`, `agent setup`, `agent update`, and
-`agent setup login`; the setup routes apply to the legacy Pi backend, while
-Glass Core readiness is reported with its repair step. The resident agent session is unrestricted by default because Glass Dev is a
-human-controlled development suite. `--yolo` is the process-wide switch for
-direct Glass/browser policy paths and Glass Dev project execution; it bypasses
-the workspace-trust execution gate for that process without persisting a trust
-record and is shown in the header. It does not create a second workspace.
+On construction Glass reads workspace trust and resident engine readiness
+without blocking on the full projection. A trust-required project starts on
+Trust. Otherwise Agent is selected: a ready engine shows `Ready · describe a
+coding task`, while an unconfigured engine shows setup guidance. The resident
+engine defaults to Glass Core. Its `:actions` include `agent doctor`, setup and
+provider-login guidance, conversation management, and task routes. Setup and
+login guidance point to Glass Core configuration; they do not run the legacy
+Pi installer. Set `GLASS_AGENT_HARNESS=pi` to select Pi, whose action catalog
+includes Pi runtime installation, update, and authentication routes. See the
+[Glass Core resident harness guide](../glass-core-harness.md) and the
+[legacy Pi runtime guide](../pi-sdk-runtime.md) for engine-specific setup.
 
 The shared composer dock is a local draft with a character cursor. `Ctrl-L`
 opens it on any surface. `i`, Enter on the Agent surface, or typing a
 non-digit Agent character also opens it. Default mode is Agent. `Ctrl-Shift-A`
-cycles Ask, Plan, and Agent. Legacy `/ask`, `/plan`, and `/agent` aliases use
+cycles Ask, Plan, and Agent. Glass `/ask`, `/plan`, and `/agent` aliases use
 the same slash resolver whether typed in the modal or pasted into the
 composer: their arguments are the prompt sent in the selected mode, and any
 pre-existing composer draft remains intact. An alias without a prompt changes
@@ -358,10 +358,9 @@ the mode and returns to the composer. `/todo` opens the Tasks surface while
 retaining the composer text and cursor; composer focus becomes inactive so
 Tasks owns keyboard input. `/stats` and `/sessions` keep their Glass
 workspace-tool routes, and `/think LEVEL` keeps its Glass thinking-level tool
-route. Native Pi `/thinking` and extension commands use the dedicated `/`
-modal. Ask inspects only.
-Plan writes a bounded numbered plan. Only Agent may mutate. `Enter` submits
-immediately and keeps the composer open; submitted text is rendered optimistically, while the worker/event stream appends
+route. Ask inspects only. Plan writes a bounded numbered plan. Only Agent may
+mutate. `Enter` submits immediately and keeps the composer open; submitted
+text is rendered optimistically, while the worker/event stream appends
 assistant deltas and tool activity. `Ctrl-D` toggles steer mode for an active
 turn; `Ctrl-X` aborts the selected agent. `Ctrl-A/E/U/W` move to start/end,
 clear, or delete a word; Left/Right and Backspace edit the draft. Bracketed
@@ -371,6 +370,12 @@ retained and the send waits; a failed transport marks the pending message
 failed and restores its draft for edit-and-retry. Workspace-local todos
 (`glass.todo.*`) persist at `.glass/todos/session.json` and form the Agent
 checklist shown on Agent and Tasks; they are not the overnight task DAG.
+
+The resident agent session is unrestricted by default because Glass Dev is a
+human-controlled development suite. `--yolo` is the process-wide switch for
+direct Glass/browser policy paths and Glass Dev project execution; it bypasses
+the workspace-trust execution gate for that process without persisting a trust
+record and is shown in the header. It does not create a second workspace.
 
 ## Code projection and editor
 
@@ -415,6 +420,14 @@ one-based cursor to its visual row/column, and disables horizontal scrolling.
 Changing modes resets scroll and re-runs cursor visibility. Cursor visibility
 is kept synchronized after edits, movement, resize, projection refresh and
 selection changes.
+
+The full-screen editor reads through a cached projection while a workspace
+refresh holds the shared workspace lock. This keeps the last visible buffer on
+screen instead of replacing it with an empty view. If an edit arrives while
+the workspace is busy, Glass queues key and paste events in order and applies
+them after the lock is available. The queue is bounded; while it waits, the
+status line reports the pending input. This keeps terminal input responsive
+without writing to a stale buffer.
 
 ### Native editor physics and proof
 

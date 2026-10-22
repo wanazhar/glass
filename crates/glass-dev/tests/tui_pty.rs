@@ -11,6 +11,7 @@
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
+use std::os::unix::fs::PermissionsExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -25,6 +26,27 @@ struct Session {
 
 impl Session {
     fn start(binary: &str, root: &std::path::Path, cols: u16, rows: u16) -> Self {
+        Self::start_with_options(binary, root, cols, rows, "glass-core", None)
+    }
+
+    fn start_with_core_binary(
+        binary: &str,
+        root: &std::path::Path,
+        cols: u16,
+        rows: u16,
+        core_binary: Option<&std::path::Path>,
+    ) -> Self {
+        Self::start_with_options(binary, root, cols, rows, "glass-core", core_binary)
+    }
+
+    fn start_with_options(
+        binary: &str,
+        root: &std::path::Path,
+        cols: u16,
+        rows: u16,
+        harness: &str,
+        core_binary: Option<&std::path::Path>,
+    ) -> Self {
         let mut master_fd: libc::c_int = 0;
         let mut slave_fd: libc::c_int = 0;
         let window = libc::winsize {
@@ -49,8 +71,15 @@ impl Session {
             )
         };
         assert_eq!(result, 0, "openpty failed");
-        let child = Command::new(binary)
+        let mut command = Command::new(binary);
+        command
             .current_dir(root)
+            .env("GLASS_AGENT_HARNESS", harness)
+            .env("GLASS_TRUST_STORE_PATH", root.join(".glass/pty-trust.json"));
+        if let Some(core_binary) = core_binary {
+            command.env("GLASS_CORE_BINARY", core_binary);
+        }
+        let child = command
             .stdin(unsafe { Stdio::from(std::fs::File::from_raw_fd(slave_fd)) })
             .stdout(unsafe { Stdio::from(std::fs::File::from_raw_fd(libc::dup(slave_fd))) })
             .stderr(unsafe { Stdio::from(std::fs::File::from_raw_fd(libc::dup(slave_fd))) })
@@ -74,7 +103,7 @@ impl Session {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             self.settle(Duration::from_millis(200));
-            if self.output().contains(probe) {
+            if self.visible_output().contains(probe) {
                 return true;
             }
         }
@@ -86,6 +115,17 @@ impl Session {
         while Instant::now() < deadline {
             self.settle(Duration::from_millis(200));
             if self.visible_output().contains(probe) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn wait_for_raw(&mut self, probe: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            self.settle(Duration::from_millis(200));
+            if self.output().contains(probe) {
                 return true;
             }
         }
@@ -159,7 +199,14 @@ impl Session {
         // Otherwise a fast Escape + printable byte can be parsed as one
         // sequence and exercise the wrong input mode.
         if keys.contains(&0x1b) {
-            self.settle(Duration::from_millis(150));
+            self.settle(Duration::from_millis(300));
+        }
+    }
+
+    fn send_slowly(&mut self, keys: &[u8], interval: Duration) {
+        for key in keys {
+            self.send(std::slice::from_ref(key));
+            std::thread::sleep(interval);
         }
     }
 
@@ -192,6 +239,27 @@ impl Session {
         String::from_utf8_lossy(&self.buffer).into_owned()
     }
 
+    fn clear_output(&mut self) {
+        self.buffer.clear();
+    }
+
+    fn trust_project(&mut self) {
+        if !self.wait_for_visible("I inspect", Duration::from_millis(300)) {
+            self.send(b":trust inspect\r");
+            assert!(
+                self.wait_for_visible("I inspect", Duration::from_secs(5)),
+                "trust inspection surface did not render\n{}",
+                self.output_tail()
+            );
+        }
+        self.send(b"T");
+        assert!(
+            self.wait_for_raw("trusted project · guarded", Duration::from_secs(5)),
+            "project trust did not complete\n{}",
+            self.output_tail()
+        );
+    }
+
     fn output_tail(&self) -> String {
         let output = self.output();
         let visible = output
@@ -218,6 +286,29 @@ impl Session {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+fn fake_core_binary(_root: &std::path::Path) -> std::path::PathBuf {
+    let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "glass-e2e-fake-core-{}-{sequence}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(path.parent().expect("fake binary parent")).unwrap();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/fake_glass_core_runtime.py");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'glass-core 0.1.0\\n'; exit 0; fi\nexec python3 '{}' \"$@\"\n",
+            fixture.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    path
 }
 
 impl Drop for Session {
@@ -308,14 +399,18 @@ fn ctrl_c_requires_confirmation_from_every_input_mode() {
         !session.wait_for_exit(Duration::from_millis(300)),
         "Ctrl+C must not exit before confirmation"
     );
+    session.clear_output();
     session.send(b"\x1b");
+    session.send(b"y");
     assert!(
-        session.wait_for("Quit dismissed", Duration::from_secs(3)),
-        "Escape must dismiss quit confirmation"
+        !session.wait_for_exit(Duration::from_millis(300)),
+        "Escape must dismiss quit confirmation before a later key is processed\n{}",
+        session.output_tail()
     );
+    session.clear_output();
     session.send(b"\x03");
     assert!(
-        session.wait_for("QUIT?", Duration::from_secs(3)),
+        session.wait_for_raw("QUIT?", Duration::from_secs(3)),
         "Ctrl+C must reopen quit confirmation"
     );
     session.send(b"y");
@@ -327,19 +422,16 @@ fn ctrl_c_requires_confirmation_from_every_input_mode() {
     session.kill();
 
     // Composer mode: Ctrl+C must ask before quitting, not insert a literal 'c'.
-    let mut session = Session::start(&bin, &root, 100, 28);
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_core_binary(&bin, &root, 100, 28, Some(&fake_core));
     assert!(
         session.wait_for("GLASS", Duration::from_secs(8)),
         "composer navigation frame never rendered"
     );
-    session.send(b"T");
+    session.trust_project();
     assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        session.wait_for_raw("trusted project · guarded", Duration::from_secs(5)),
         "agent surface never rendered after trust"
-    );
-    assert!(
-        session.wait_for("✓ Ready", Duration::from_secs(5)),
-        "Pi runtime never became ready"
     );
     session.send(b"i");
     assert!(
@@ -362,6 +454,7 @@ fn ctrl_c_requires_confirmation_from_every_input_mode() {
         session.buffer.len()
     );
     session.kill();
+    let _ = std::fs::remove_file(fake_core);
 }
 
 #[test]
@@ -401,9 +494,9 @@ fn app_target_picker_failure_keeps_tui_recoverable() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.send(b"T");
+    session.trust_project();
     assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        session.wait_for("trusted project · guarded", Duration::from_secs(5)),
         "Agent surface never rendered after trust"
     );
     session.send(b"3");
@@ -426,24 +519,25 @@ fn app_target_picker_failure_keeps_tui_recoverable() {
 }
 
 #[test]
-fn agent_enter_and_typing_open_composer_without_cli_setup() {
+fn agent_enter_and_typing_open_composer_with_offline_core_fixture() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;
     }
     let root = workspace_root();
-    let mut session = Session::start(&binary(), &root, 118, 32);
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_core_binary(&binary(), &root, 118, 32, Some(&fake_core));
     assert!(
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.send(b"T");
+    session.trust_project();
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust"
     );
     assert!(
         session.wait_for("✓ Ready", Duration::from_secs(5)),
-        "Pi runtime never became ready\n{}",
+        "offline Glass Core fixture never became ready\n{}",
         session.output_tail()
     );
 
@@ -463,6 +557,7 @@ fn agent_enter_and_typing_open_composer_without_cli_setup() {
         session.output_tail()
     );
     session.kill();
+    let _ = std::fs::remove_file(fake_core);
 }
 
 #[test]
@@ -471,7 +566,7 @@ fn agent_update_route_requires_confirmation_in_tui() {
         return;
     }
     let root = workspace_root();
-    let mut session = Session::start(&binary(), &root, 118, 32);
+    let mut session = Session::start_with_options(&binary(), &root, 118, 32, "pi", None);
     assert!(
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
@@ -498,12 +593,7 @@ fn external_harness_routes_stay_inside_tui_until_confirmed() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.send(b"T");
-    assert!(
-        session.wait_for("Workspace opened with", Duration::from_secs(5)),
-        "workspace trust did not complete\n{}",
-        session.output_tail()
-    );
+    session.trust_project();
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust\n{}",
@@ -534,6 +624,11 @@ fn palette_and_help_survive_real_key_sequences() {
     }
     let root = workspace_root();
     let mut session = Session::start(&binary(), &root, 118, 32);
+    session.trust_project();
+    assert!(
+        session.wait_for_raw("trusted project · guarded", Duration::from_secs(5)),
+        "workspace trust did not complete"
+    );
     session.send(b":");
     assert!(
         session.wait_for_visible("SELECT AN ACTION", Duration::from_secs(5)),
@@ -548,10 +643,11 @@ fn palette_and_help_survive_real_key_sequences() {
     for _ in 0..2 {
         session.send(b"\x1b[B");
     }
+    session.clear_output();
     session.send(b"\r");
     assert!(
-        session.wait_for_visible("CONFIRMATION", Duration::from_secs(5)),
-        "arrow selection did not route to the selected action\n{}",
+        session.wait_for_raw("Glass Core is the resident engine", Duration::from_secs(5)),
+        "arrow selection did not route to the Glass Core setup guidance\n{}",
         session.output_tail()
     );
     session.send(b"\x1b");
@@ -602,7 +698,7 @@ fn phone_size_keeps_primary_surfaces_reachable() {
     );
     session.send(b"\x1b[B");
     assert!(
-        session.wait_for_visible("Setup Pi", Duration::from_secs(5)),
+        session.wait_for_raw("Readiness doctor", Duration::from_secs(5)),
         "phone palette did not expose guided actions\n{}",
         session.output_tail()
     );
@@ -621,7 +717,7 @@ fn desktop_surface_tabs_render_every_workbench() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.send(b"T");
+    session.trust_project();
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust"
@@ -663,7 +759,7 @@ fn phone_surface_tabs_keep_the_compact_workbench_reachable() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first phone frame never rendered"
     );
-    session.send(b"T");
+    session.trust_project();
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after phone trust"
@@ -702,7 +798,7 @@ fn arrow_keys_cycle_surfaces_without_numeric_shortcuts() {
         "first frame never rendered"
     );
     session.settle(Duration::from_millis(600));
-    session.send(b"T");
+    session.trust_project();
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust"
@@ -740,12 +836,7 @@ fn compact_surface_tabs_keep_primary_workbenches_reachable() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first compact frame never rendered"
     );
-    session.send(b"T");
-    assert!(
-        session.wait_for("Workspace opened with", Duration::from_secs(5)),
-        "workspace trust did not complete\n{}",
-        session.output_tail()
-    );
+    session.trust_project();
     for (key, marker) in [
         (b'2', "FILES"),
         (b'3', "VISUAL PLANE"),
@@ -753,6 +844,7 @@ fn compact_surface_tabs_keep_primary_workbenches_reachable() {
         (b'5', "SUMMARY"),
         (b'6', "GIT"),
         (b'7', "TESTS"),
+        (b'8', "ROUTES"),
     ] {
         session.send(&[key]);
         assert!(
@@ -781,12 +873,7 @@ fn launcher_routes_and_surface_actions_remain_interactive() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.send(b"T");
-    assert!(
-        session.wait_for("Workspace opened with", Duration::from_secs(5)),
-        "workspace trust did not complete\n{}",
-        session.output_tail()
-    );
+    session.trust_project();
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust"
@@ -824,6 +911,7 @@ fn launcher_routes_and_surface_actions_remain_interactive() {
         (b'5', "SUMMARY"),
         (b'6', "GIT"),
         (b'7', "TESTS"),
+        (b'8', "ROUTES"),
     ] {
         session.send(&[key]);
         assert!(
@@ -850,27 +938,17 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
         return;
     }
     let root = workspace_root();
-    let mut session = Session::start(&binary(), &root, 118, 32);
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_core_binary(&binary(), &root, 118, 32, Some(&fake_core));
     assert!(
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.send(b"T");
+    session.trust_project();
     assert!(
-        session.wait_for("Workspace opened with", Duration::from_secs(5)),
-        "workspace trust did not complete\n{}",
-        session.output_tail()
-    );
-    assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        session.wait_for_raw("trusted project · guarded", Duration::from_secs(5)),
         "Agent surface never rendered after trust"
     );
-    assert!(
-        session.wait_for("✓ Ready", Duration::from_secs(5)),
-        "Pi runtime never became ready\n{}",
-        session.output_tail()
-    );
-
     session.send(b"i");
     assert!(
         session.wait_for("▌", Duration::from_secs(5)),
@@ -982,6 +1060,7 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
     session.send(b"\x1b");
     session.settle(Duration::from_millis(300));
     session.kill();
+    let _ = std::fs::remove_file(fake_core);
 }
 
 #[test]
@@ -995,18 +1074,12 @@ fn git_file_selection_opens_the_focused_diff_in_place() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.send(b"T");
+    session.trust_project();
     assert!(
         session.wait_for_visible("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust\n{}",
         session.output_tail()
     );
-    assert!(
-        session.wait_for_visible("✓ Ready", Duration::from_secs(5)),
-        "Pi runtime never became ready\n{}",
-        session.output_tail()
-    );
-
     session.send(b"6");
     assert!(
         session.wait_for_visible("a-first.txt", Duration::from_secs(8)),
@@ -1031,4 +1104,134 @@ fn git_file_selection_opens_the_focused_diff_in_place() {
         session.output_tail()
     );
     session.kill();
+}
+
+#[test]
+fn code_editor_accepts_and_saves_typed_text_through_pty() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    std::fs::create_dir_all(root.join("src")).expect("create source directory");
+    let source = root.join("src/main.rs");
+    std::fs::write(&source, "fn main() {}\n").expect("write source file");
+    let mut session = Session::start(&binary(), &root, 100, 28);
+    assert!(
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "first frame never rendered"
+    );
+    session.trust_project();
+    session.send(b"2");
+    assert!(
+        session.wait_for_visible("FILES", Duration::from_secs(5)),
+        "Code surface did not render\n{}",
+        session.output_tail()
+    );
+    session.send_slowly(b":open src/main.rs\r", Duration::from_millis(35));
+    assert!(
+        session.wait_for_visible("EDITOR", Duration::from_secs(5)),
+        "file did not open in the editor\n{}",
+        session.output_tail()
+    );
+    session.send(b"i");
+    assert!(
+        session.wait_for_visible("INSERT", Duration::from_secs(3)),
+        "editor did not enter insert mode\n{}",
+        session.output_tail()
+    );
+    session.send_slowly(b"// PTY saved\r", Duration::from_millis(35));
+    session.send(b"\x13");
+    assert!(
+        session.wait_for_visible("saved", Duration::from_secs(5)),
+        "Ctrl-S did not save the buffer\n{}",
+        session.output_tail()
+    );
+    session.kill();
+    assert_eq!(
+        std::fs::read_to_string(&source).expect("read saved source"),
+        "// PTY saved\nfn main() {}\n"
+    );
+    std::fs::remove_dir_all(root).expect("remove temporary workspace");
+}
+
+#[test]
+fn git_stage_and_commit_work_in_an_isolated_local_repository() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = git_workspace_root();
+    std::fs::write(root.join(".git/info/exclude"), ".glass/\n")
+        .expect("exclude the fixture trust store from Git changes");
+    let mut session = Session::start(&binary(), &root, 110, 30);
+    assert!(
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "first frame never rendered"
+    );
+    session.trust_project();
+    session.send(b"6");
+    assert!(
+        session.wait_for_visible("a-first.txt", Duration::from_secs(8)),
+        "Git surface did not load the isolated repository\n{}",
+        session.output_tail()
+    );
+
+    session.send_slowly(b":git stage .\r", Duration::from_millis(30));
+    assert!(
+        session.wait_for("one-use confirmation required", Duration::from_secs(5)),
+        "staging did not request confirmation\n{}",
+        session.output_tail()
+    );
+    session.send(b"y");
+    assert!(
+        session.wait_for("glass.git.stage", Duration::from_secs(8)),
+        "staging did not report its result\n{}",
+        session.output_tail()
+    );
+    let staged = Command::new("git")
+        .current_dir(&root)
+        .args(["diff", "--cached", "--name-only"])
+        .output()
+        .expect("inspect staged files");
+    assert!(staged.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&staged.stdout).lines().count(),
+        2,
+        "the TUI stage action should stage both modified fixture files"
+    );
+
+    session.send_slowly(b":git commit PTY local commit\r", Duration::from_millis(30));
+    assert!(
+        session.wait_for("one-use confirmation required", Duration::from_secs(5)),
+        "commit did not request confirmation\n{}",
+        session.output_tail()
+    );
+    session.send(b"y");
+    assert!(
+        session.wait_for("glass.git.commit", Duration::from_secs(8)),
+        "commit did not report its result\n{}",
+        session.output_tail()
+    );
+    session.kill();
+
+    let commit = Command::new("git")
+        .current_dir(&root)
+        .args(["log", "-1", "--format=%s"])
+        .output()
+        .expect("inspect local commit");
+    assert!(commit.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&commit.stdout).trim(),
+        "PTY local commit"
+    );
+    let status = Command::new("git")
+        .current_dir(&root)
+        .args(["status", "--porcelain"])
+        .output()
+        .expect("inspect local repository status");
+    assert!(status.status.success());
+    assert!(
+        status.stdout.is_empty(),
+        "the local commit should leave a clean tree"
+    );
+    std::fs::remove_dir_all(root).expect("remove temporary Git workspace");
 }

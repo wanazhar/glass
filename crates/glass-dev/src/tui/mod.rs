@@ -1183,6 +1183,7 @@ pub(crate) fn run_with_browser_policy(
         for event in visual_events {
             handle_herdr_event(&mut state, &mut visual, event);
         }
+        render_requested |= state.flush_pending_editor_input();
         state.flush_pending_trust();
         state.flush_pending_open_file();
         if state.git_diff_requested {
@@ -1411,6 +1412,7 @@ fn route_paste(state: &mut DevTuiState, text: &str) {
             }
         }
         Some(overlay::ActiveOverlay::CommandPalette) => state.insert_palette_text(text),
+        Some(overlay::ActiveOverlay::FullscreenEditor) => state.paste_editor_text(text),
         _ => {}
     }
 }
@@ -2403,6 +2405,40 @@ mod tests {
         assert_eq!(
             overlay::active_overlay(&state),
             Some(overlay::ActiveOverlay::FilePicker)
+        );
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn full_screen_editor_receives_bracketed_paste() {
+        let (mut state, root) = overlay_test_state();
+        std::fs::create_dir_all(root.join("src")).expect("create source directory");
+        std::fs::write(root.join("src/main.rs"), "main\n").expect("write source");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
+            .expect("trust test workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .expect("open editor buffer");
+        state.refresh_editor_projection();
+        state.enter_code_edit();
+
+        route_paste(&mut state, "// pasted from terminal\n");
+
+        assert!(
+            state
+                .focused_editor_content
+                .starts_with("// pasted from terminal\nmain\n")
+        );
+        assert_eq!(
+            state.focused_buffer().expect("updated buffer").content,
+            "// pasted from terminal\nmain\n"
         );
         drop(state);
         std::fs::remove_dir_all(root).expect("remove test workspace");

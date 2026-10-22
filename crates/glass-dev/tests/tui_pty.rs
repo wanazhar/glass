@@ -3172,7 +3172,7 @@ fn attention_review_keyboard_journey_preserves_uncertain_send_and_exits_cleanly(
         // Proposal sorts before the uncertain send; move to the latter.
         session.send(b"\x1b[B");
         session.send(b"\r");
-        assert!(session.wait_for("Message delivery is uncertain", Duration::from_secs(5)));
+        assert!(session.wait_for("Message delivery uncertain", Duration::from_secs(5)));
         assert!(session.wait_for(prompt, Duration::from_secs(3)));
         let registry_path = fixture_state.join("threads/registry.json");
         let registry: serde_json::Value =

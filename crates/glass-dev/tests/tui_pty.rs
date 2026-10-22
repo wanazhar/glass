@@ -25,6 +25,7 @@ import os
 import select
 import subprocess
 import sys
+import time
 
 binary, trace_path, pid_path = BINARY, TRACE_PATH, PID_PATH
 arguments = sys.argv[1:]
@@ -36,9 +37,16 @@ child = subprocess.Popen(
 )
 with open(pid_path, "w", encoding="utf-8") as pid_file:
     pid_file.write(f"{child.pid}\n")
+trace_started = time.monotonic()
+trace_sequence = 0
 
 def trace(direction, frame):
+    global trace_sequence
+    trace_sequence += 1
     record = {"direction": direction}
+    record["process_id"] = child.pid
+    record["sequence"] = trace_sequence
+    record["elapsed_ms"] = int((time.monotonic() - trace_started) * 1000)
     request_id = frame.get("id")
     if request_id is not None:
         record["id_sha256"] = hashlib.sha256(str(request_id).encode()).hexdigest()
@@ -108,6 +116,29 @@ fn write_live_core_trace_wrapper(
     let mut permissions = std::fs::metadata(wrapper).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(wrapper, permissions).unwrap();
+}
+
+fn preserve_live_core_trace(trace_path: &std::path::Path) {
+    let Some(evidence_dir) = std::env::var_os("GLASS_LIVE_TRACE_EVIDENCE_DIR") else {
+        return;
+    };
+    let evidence_dir = std::path::PathBuf::from(evidence_dir);
+    std::fs::create_dir_all(&evidence_dir).expect("create live trace evidence directory");
+    let mut directory_permissions = std::fs::metadata(&evidence_dir)
+        .expect("stat live trace evidence directory")
+        .permissions();
+    directory_permissions.set_mode(0o700);
+    std::fs::set_permissions(&evidence_dir, directory_permissions)
+        .expect("restrict live trace evidence directory");
+    let file_name = format!("live-provider-core-trace-{}.jsonl", std::process::id());
+    let evidence_path = evidence_dir.join(file_name);
+    std::fs::copy(trace_path, &evidence_path).expect("preserve sanitized live Core trace");
+    let mut file_permissions = std::fs::metadata(&evidence_path)
+        .expect("stat sanitized live Core trace")
+        .permissions();
+    file_permissions.set_mode(0o600);
+    std::fs::set_permissions(&evidence_path, file_permissions)
+        .expect("restrict sanitized live Core trace");
 }
 
 #[test]
@@ -2483,7 +2514,6 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     let file_path = root.join("provider-smoke.txt");
     let expected = b"glass live provider smoke\n";
     let registry_path = fixture_state.join("threads/registry.json");
-    let deadline = Instant::now() + Duration::from_secs(90);
     let mut completed = false;
     let mut observed_429 = false;
     let mut run_classification = "missing".to_owned();
@@ -2491,6 +2521,11 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     let mut engine_request_id_present = false;
     let mut failed_status_observed_at = None;
     let mut projected_failure_class = "unobserved";
+    // Core's default provider request deadline is 600 seconds. Stop only
+    // after that bounded request timeout can produce its correlated runtime
+    // response; the former 90-second cutoff killed a still-running child and
+    // could not distinguish a slow provider stream from a missing reply.
+    let deadline = Instant::now() + Duration::from_secs(610);
     while Instant::now() < deadline {
         session.settle(Duration::from_millis(200));
         let terminal_output = session.output().to_ascii_lowercase();
@@ -2604,6 +2639,17 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
             .iter()
             .any(|record| record["direction"] == "response" && record["id_sha256"] == digest)
     });
+    let correlated_response_position = request_id_digest.as_deref().and_then(|digest| {
+        trace_records
+            .iter()
+            .position(|record| record["direction"] == "response" && record["id_sha256"] == digest)
+    });
+    let settled_position = trace_records
+        .iter()
+        .rposition(|record| record["event_type"] == "settled");
+    let settled_precedes_correlated_response = settled_position
+        .zip(correlated_response_position)
+        .is_some_and(|(settled, response)| settled < response);
     let safe_error_frames = trace_records
         .iter()
         .filter(|record| record["direction"] == "response" && record.get("error_code").is_some())
@@ -2618,41 +2664,46 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
             )
         })
         .collect::<Vec<_>>();
-    let safe_event_types = trace_records
+    let ordered_trace = trace_records
         .iter()
-        .filter_map(|record| record["event_type"].as_str())
-        .filter(|event_type| {
-            matches!(
-                *event_type,
-                "turn_start"
-                    | "text"
-                    | "reasoning"
-                    | "tool_start"
-                    | "tool_end"
-                    | "tool_cancel"
-                    | "tool_progress"
-                    | "usage"
-                    | "waiting"
-                    | "compacted"
-                    | "steered"
-                    | "queued"
-                    | "notice"
-                    | "error"
-                    | "settled"
+        .map(|record| {
+            format!(
+                "pid{}:{}ms:{}:{}:{}",
+                record["process_id"].as_u64().unwrap_or_default(),
+                record["elapsed_ms"].as_u64().unwrap_or_default(),
+                record["direction"].as_str().unwrap_or("unknown"),
+                record["method"]
+                    .as_str()
+                    .or_else(|| record["event_type"].as_str())
+                    .unwrap_or("frame"),
+                record["error_kind"].as_str().unwrap_or("-")
             )
         })
         .collect::<Vec<_>>();
     let trace_summary = format!(
-        "prompt_request_count={}, attempt_matches_prompt={}, correlated_response={}, safe_error_frames={:?}, runtime_event_types={:?}",
+        "prompt_request_count={}, attempt_matches_prompt={}, correlated_response={}, safe_error_frames={:?}, ordered_frames={:?}",
         prompt_request_digests.len(),
         attempt_matches_prompt,
         matching_response,
         safe_error_frames,
-        safe_event_types
+        ordered_trace
     );
+    preserve_live_core_trace(&trace_path);
     assert!(
         completed,
         "live provider verification incomplete: file_exists={file_exists}, file_length={file_length}, run_classification={run_classification}, send_status={send_status}, engine_request_id_present={engine_request_id_present}, projected_failure_class={projected_failure_class}, observed_429={observed_429}, trace=({trace_summary}); no retry was attempted"
+    );
+    assert!(
+        attempt_matches_prompt,
+        "stored send attempt does not match the prompt request ID: {trace_summary}"
+    );
+    assert!(
+        matching_response,
+        "no JSON-RPC response matches the prompt attempt ID: {trace_summary}"
+    );
+    assert!(
+        settled_precedes_correlated_response,
+        "Core did not settle the turn before its matching response: {trace_summary}"
     );
     assert_eq!(std::fs::read(&file_path).unwrap(), expected);
 

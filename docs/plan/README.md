@@ -73,11 +73,14 @@ explicit task resume creates one new Core session. See the [combined task,
 thread, and queue recovery journey](tasks/issue64-task-thread-queue-restart-001.md).
 The broader keyboard and review journeys are complete, and the standalone Core
 installer was verified in an isolated install root with the `gc` alias at
-0.3.14. The live provider journey reached Core's native bash tool and created
-the exact requested fixture file, but Core did not return the correlated final
-response within the test's 90-second window. Full live turn settlement remains
-open; see the [failed Core response recovery record](tasks/issue64-failed-core-response-recovery-001.md)
-for the two protocol fixes and live evidence.
+0.3.14. The live provider journey passed with the configured Kilo via SW proxy
+provider and `kilo-auto/free` model: Core's native bash tools created and read
+back the exact fixture file, then returned final text, usage, a settled event,
+and the correlated response. The earlier 90-second cutoff was shorter than
+Core's 600-second provider timeout and did not establish a cause for that
+incomplete attempt. See the [failed Core response recovery
+record](tasks/issue64-failed-core-response-recovery-001.md) for protocol fixes,
+the later successful run, and its evidence limits.
 The completed [TaskScheduler project-thread journey](tasks/issue64-task-thread-journey-001.md)
 verifies that task creation, task snapshots, task-labeled conversations, and
 durable thread drafts are connected in the live TUI, including cursor

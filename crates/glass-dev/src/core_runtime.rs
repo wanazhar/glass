@@ -112,6 +112,8 @@ pub struct CoreRuntimeOptions {
     pub additional_system_prompt: Option<String>,
     /// Resume the newest stored session for this workspace.
     pub resume: bool,
+    /// Resume this exact persisted session during Glass thread recovery.
+    pub resume_session_id: Option<String>,
     /// Session id to fork from, when the caller wants a branch.
     pub fork_from: Option<PathBuf>,
     /// Explicit `glass-core` executable. `GLASS_CORE_BINARY` and `PATH` are
@@ -137,6 +139,7 @@ impl std::fmt::Debug for CoreRuntimeOptions {
             )
             .field("additional_system_prompt", &self.additional_system_prompt)
             .field("resume", &self.resume)
+            .field("resume_session_id", &self.resume_session_id)
             .field("fork_from", &self.fork_from)
             .field("binary", &self.binary)
             .field("binary_args", &self.binary_args)
@@ -162,6 +165,7 @@ pub(crate) struct GlassCoreRuntime {
     unrestricted: bool,
     next_id: u64,
     host_events: VecDeque<Value>,
+    startup_events: Vec<Value>,
     pending_operations: HashMap<String, String>,
     pending_tool_approval: Option<PendingCoreToolApproval>,
     active_turn: Option<Value>,
@@ -222,6 +226,7 @@ impl GlassCoreRuntime {
             unrestricted: options.unrestricted,
             next_id: 1,
             host_events: VecDeque::new(),
+            startup_events: Vec::new(),
             pending_operations: HashMap::new(),
             pending_tool_approval: None,
             active_turn: None,
@@ -271,6 +276,61 @@ impl GlassCoreRuntime {
     }
 
     fn open_session(&mut self, root: &Path, options: &CoreRuntimeOptions) -> DevelopmentResult<()> {
+        if let Some(session) = options.resume_session_id.as_deref() {
+            if session.is_empty() || session.len() > 256 || session.chars().any(char::is_control) {
+                return Err(DevelopmentError::InvalidInput(
+                    "invalid persisted Core session reference".into(),
+                ));
+            }
+            let id = self.send_request(
+                "session/resume",
+                json!({"sessionId": session, "expectedToolMode": "mixed"}),
+            )?;
+            let result = self.wait_response(&id, STARTUP_TIMEOUT)?;
+            let resumed = result
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if resumed != session {
+                return Err(DevelopmentError::Process(
+                    "Glass Core resumed a different session than the stored thread reference"
+                        .into(),
+                ));
+            }
+            self.session_id = session.to_owned();
+
+            let id = self.send_request("session/describe", json!({"sessionId": session}))?;
+            let description = self.wait_response(&id, STARTUP_TIMEOUT)?;
+            if description.get("sessionId").and_then(Value::as_str) != Some(session) {
+                return Err(DevelopmentError::Process(
+                    "Glass Core session/describe returned a different session ID".into(),
+                ));
+            }
+            if description.get("toolMode").and_then(Value::as_str) != Some("mixed") {
+                return Err(DevelopmentError::Process(
+                    "stored Core session does not use mixed Core/Glass tool ownership".into(),
+                ));
+            }
+            let described_root =
+                description
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        DevelopmentError::Process("stored Core session has no project cwd".into())
+                    })?;
+            let described_root = fs::canonicalize(described_root).map_err(|error| {
+                DevelopmentError::Process(format!(
+                    "stored Core session project cwd is unavailable: {error}"
+                ))
+            })?;
+            if described_root != root {
+                return Err(DevelopmentError::Process(
+                    "stored Core session belongs to a different project directory".into(),
+                ));
+            }
+            self.startup_events = self.read_session_transcript(session)?;
+            return Ok(());
+        }
         if options.resume
             && let Some(session) = self.newest_workspace_session(root)?
         {
@@ -340,6 +400,93 @@ impl GlassCoreRuntime {
             }
         }
         Ok(())
+    }
+
+    fn read_session_transcript(&mut self, session: &str) -> DevelopmentResult<Vec<Value>> {
+        const MAX_RECOVERED_ENTRIES: usize = 2_000;
+        const MAX_RECOVERED_BYTES: usize = 2 * 1024 * 1024;
+        const MAX_ENTRY_PAGES: usize = 100;
+        let mut cursor = 0_u64;
+        let mut pages = 0_usize;
+        let mut events = Vec::new();
+        let mut total_bytes = 0_usize;
+        let mut truncated = false;
+        loop {
+            if pages >= MAX_ENTRY_PAGES {
+                return Err(DevelopmentError::Process(
+                    "Glass Core session/entries exceeded the recovery page limit".into(),
+                ));
+            }
+            pages += 1;
+            let id = self.send_request(
+                "session/entries",
+                json!({"sessionId":session,"cursor":cursor,"limit":100}),
+            )?;
+            let page = self.wait_response(&id, STARTUP_TIMEOUT)?;
+            let entries = page
+                .get("entries")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    DevelopmentError::Process(
+                        "Glass Core session/entries returned no entry list".into(),
+                    )
+                })?;
+            for entry in entries {
+                if events.len() >= MAX_RECOVERED_ENTRIES {
+                    truncated = true;
+                    break;
+                }
+                let entry_bytes = entry.to_string().len();
+                if total_bytes.saturating_add(entry_bytes) > MAX_RECOVERED_BYTES {
+                    truncated = true;
+                    break;
+                }
+                total_bytes += entry_bytes;
+                let Some(entry_id) = entry.get("entryId").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(record) = entry.get("record") else {
+                    continue;
+                };
+                let Some(text) = record.get("t").and_then(Value::as_str) else {
+                    continue;
+                };
+                let kind = match record.get("k").and_then(Value::as_str) {
+                    Some("user") => "user",
+                    Some("assistant") => "message_end",
+                    _ => continue,
+                };
+                events.push(json!({"type":kind,"text":text,"entryId":entry_id}));
+            }
+            if truncated
+                || !page
+                    .get("hasMore")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            {
+                break;
+            }
+            let next = page.get("cursor").and_then(Value::as_u64).ok_or_else(|| {
+                DevelopmentError::Process("Glass Core session/entries returned no cursor".into())
+            })?;
+            if next <= cursor {
+                return Err(DevelopmentError::Process(
+                    "Glass Core session/entries cursor did not advance".into(),
+                ));
+            }
+            cursor = next;
+        }
+        if truncated {
+            events.push(json!({
+                "type":"notice",
+                "text":"Core transcript recovery reached Glass's display bound; older entries are not shown."
+            }));
+        }
+        Ok(events)
+    }
+
+    pub(crate) fn take_startup_events(&mut self) -> Vec<Value> {
+        std::mem::take(&mut self.startup_events)
     }
 
     fn session_params(&self, root: &Path, options: &CoreRuntimeOptions) -> Value {
@@ -1611,6 +1758,20 @@ mod tests {
         )
     }
 
+    fn spawn_exact_mode(root: &Path, mode: &str) -> DevelopmentResult<GlassCoreRuntime> {
+        let python = python3().expect("python3 is required for this fixture test");
+        GlassCoreRuntime::spawn(
+            root,
+            CoreRuntimeOptions {
+                session_dir: root.join("sessions"),
+                resume_session_id: Some("fixture-session".into()),
+                binary: Some(python),
+                binary_args: vec![fixture().display().to_string(), mode.into()],
+                ..CoreRuntimeOptions::default()
+            },
+        )
+    }
+
     fn drain(runtime: &mut GlassCoreRuntime, timeout: Duration) -> Vec<Value> {
         let deadline = Instant::now() + timeout;
         let mut events = Vec::new();
@@ -1930,6 +2091,85 @@ mod tests {
         // session for this workspace was listed and resumed.
         assert_eq!(runtime.session_id(), "resumed-fixture-session");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exact_session_recovery_verifies_and_hydrates_before_accepting_requests() {
+        if python3().is_none() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "glass-core-exact-resume-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut runtime = spawn_exact_mode(&root, "exact-resume").unwrap();
+        assert_eq!(runtime.session_id(), "fixture-session");
+        let hydrated = runtime.take_startup_events();
+        assert_eq!(hydrated.len(), 2, "{hydrated:?}");
+        assert_eq!(hydrated[0]["type"], "user");
+        assert_eq!(hydrated[0]["text"], "prior question");
+        assert_eq!(hydrated[0]["entryId"], "fixture-session@0");
+        assert_eq!(hydrated[1]["type"], "message_end");
+        assert_eq!(hydrated[1]["text"], "prior answer");
+        let calls = fs::read_to_string(root.join("sessions/fixture-requests.jsonl")).unwrap();
+        let calls = calls
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let methods = calls
+            .iter()
+            .filter_map(|call| call.get("method").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            methods,
+            ["session/resume", "session/describe", "session/entries"]
+        );
+        assert_eq!(calls[0]["params"]["sessionId"], "fixture-session");
+        assert!(
+            calls
+                .iter()
+                .all(|call| !call.to_string().contains("must-not-be-copied"))
+        );
+        drop(runtime);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exact_session_recovery_fails_closed_without_creating_a_replacement() {
+        if python3().is_none() {
+            return;
+        }
+        for (mode, expected) in [
+            ("missing-session", "session not found"),
+            ("resume-mismatch", "different session"),
+            ("describe-mismatch", "different session ID"),
+            ("wrong-tool-mode", "does not use mixed"),
+            ("wrong-cwd", "different project directory"),
+            ("endless-empty-entries", "exceeded the recovery page limit"),
+        ] {
+            let root = std::env::temp_dir().join(format!(
+                "glass-core-exact-resume-reject-{mode}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).unwrap();
+            let error = spawn_exact_mode(&root, mode).unwrap_err();
+            assert!(error.to_string().contains(expected), "{mode}: {error}");
+            let log = root.join("sessions/fixture-requests.jsonl");
+            if log.exists() {
+                let calls = fs::read_to_string(log).unwrap();
+                assert!(!calls.contains("session/new"), "{mode}: {calls}");
+                assert!(!calls.contains("turn/prompt"), "{mode}: {calls}");
+                if mode == "endless-empty-entries" {
+                    assert_eq!(calls.matches("session/entries").count(), 100);
+                }
+            }
+            let _ = fs::remove_dir_all(&root);
+        }
     }
 
     #[test]

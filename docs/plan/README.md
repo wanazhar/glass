@@ -33,8 +33,10 @@ restart recovery are tracked in the [durable thread analysis](analysis/issue63-d
 and [acceptance task](tasks/issue63-durable-threads-001.md). The first ledger
 checkpoint stores stable IDs and actual Core session references, then restores
 prior runs as recovery-pending or unavailable rows without replay. Exact Core
-session reattachment, draft/queue persistence, editable queues, and the attention
-inbox remain subsequent tasks.
+session reattachment is specified in the [exact-session recovery analysis](analysis/issue63-core-session-resume.md)
+and tracked in the [acceptance task](tasks/issue63-core-session-resume-001.md).
+Draft/queue persistence, editable queues, and the attention inbox remain
+subsequent tasks.
 
 ## Current source line: Glass 0.3.14
 

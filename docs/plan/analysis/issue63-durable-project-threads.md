@@ -7,9 +7,9 @@ The registry allocates process-local `AgentId` values from `agent-0001`, keeps
 agent specs, status, event history, and worker handles in memory, and drops the
 records when Glass exits. The default Core runtime already stores conversations
 durably and returns a `sessionId` from `session/new`; its protocol also supports
-`session/list`, `session/describe`, and `session/resume`. Glass currently keeps
-only transient runtime state and can resume the newest matching Core session,
-not a particular Glass conversation identity.
+`session/list`, `session/describe`, and `session/resume`. The first ledger
+checkpoint stored a Core session reference but did not reconnect it. Exact
+reattachment is now specified in the [Core session recovery analysis](issue63-core-session-resume.md).
 
 The live thread-isolation checkpoint groups transcripts and drafts by
 `AgentId`. That is correct while one registry is alive, but `AgentId` changes
@@ -54,9 +54,10 @@ dependency queue is shown as unavailable, with queued work identified as never
 started. Completed, failed, and cancelled rows retain their terminal
 classification. Glass regenerates ephemeral `AgentId` values for all rows and
 shows them through the existing Agent picker. A recovered row is not treated as
-idle or working, and attempts to send fail with an explicit message until a
-later checkpoint implements verified Core `session/describe` plus explicit
-`session/resume`. Glass does not create a replacement or replay a prior turn.
+idle or working. Explicit resume verifies the stored Core session ID, mixed
+tool mode, and project cwd before restoring bounded transcript entries and
+enabling sends. A failed reattach remains retryable. Glass does not create a
+replacement or replay a prior turn.
 
 ## State flow
 
@@ -69,17 +70,16 @@ initialized Core runtime returns sessionId
         ▼
 active in-memory AgentId ── Glass exits/crashes ──► recoveryPending row
                                                        │
-                                         next slice: describe + resume exact
-                                         Core session; never auto-replay turn
+                                       explicit verified exact-session resume
+                                       transcript restored; no turn replay
 ```
 
 The first checkpoint proves ledger atomicity/version rejection, captures a real
 Core runtime session reference through the adapter boundary, and proves
 restart-like registry reopen retains the ThreadId/RunId/session reference and
 classifies each row truthfully without dispatching another prompt. It does not yet promise
-conversation reattachment or draft recovery; those are follow-up tasks. Editable
-follow-up queues and an attention inbox follow after thread/run identity and
-verified resume exist.
+draft recovery; that remains a follow-up task. Editable follow-up queues and
+an attention inbox follow after verified resume.
 
 ## Module and integration boundaries
 
@@ -92,9 +92,7 @@ verified resume exist.
 
 ## Later issue #63 slices
 
-1. Explicitly describe and resume the exact stored Core session, handle missing
-   or incompatible sessions without fallback, and verify one closed/reopened
-   Core conversation without a duplicate turn.
+1. Completed in [the exact-session recovery task](../tasks/issue63-core-session-resume-001.md): describe and resume the exact stored Core session, handle missing or incompatible sessions without fallback, and verify a closed/reopened conversation without a duplicate turn.
 2. Persist and edit/reorder/remove follow-up queue entries against stable
    `ThreadId`/`RunId`.
 3. Add an attention inbox ordered by durable run lifecycle and link each item

@@ -102,12 +102,23 @@ actual initialized Glass Core session ID in the
 directories use private modes. On Windows files inherit workspace ACLs; this
 checkpoint does not strengthen those ACLs, so reopened rows remain unavailable
 there until protected ACL support is implemented. Reopened rows with initialized Core
-sessions appear as `recovery pending`; runs that never initialized, including
-work still queued at shutdown, appear as `unavailable`. Both reject sends.
-This ledger does not reattach to Core sessions or replay prompts; exact-session
-describe/resume is a separate capability. Composer drafts, transcripts, and
-follow-up queues are not persisted, and these rows must not be treated as live
-workers.
+sessions appear as `recovery pending` on supported hosts; runs that never
+initialized, including work still queued at shutdown, appear as `unavailable`.
+Windows rows remain unavailable under the current inherited-ACL policy. These
+states reject sends.
+Use `:agent resume [AGENT_ID]` on a recovery-pending row to reattach its exact
+stored Core session. Glass verifies the returned session ID, mixed tool mode,
+and canonical project directory, then restores bounded user/assistant history
+from Core session entries before enabling sends. Missing or mismatched sessions
+remain recovery-pending with an error; Glass does not create a replacement or
+replay a prompt. Only ThreadId, RunId, and the opaque Core session reference are
+stored by the Glass ledger; provider configuration and credentials remain Core
+owned. Composer drafts and follow-up queues are not persisted, and reopened
+rows are not live workers until an explicit resume succeeds. See the
+[exact-session recovery contract](plan/analysis/issue63-core-session-resume.md).
+The TUI uses its ordinary confirmation for the resume action; subsequent
+conversation follows the existing session flow without per-tool-call
+confirmation.
 
 Every governed tool carries expected workspace generation and project revision. A stale call fails with `Conflict`; reread state and issue a new call. Mutations also require a trusted workspace, actor attribution, and the applicable mutation authority or confirmation.
 

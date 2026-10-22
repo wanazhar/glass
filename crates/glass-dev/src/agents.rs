@@ -246,6 +246,8 @@ struct AgentRecord {
     dropped_events: Arc<AtomicU64>,
     thread_id: String,
     run_id: String,
+    resume_session_id: Option<String>,
+    recovering: bool,
 }
 
 struct WorkerRuntime {
@@ -258,6 +260,9 @@ struct WorkerRuntime {
     thread_id: String,
     run_id: String,
     thread_store: ThreadStore,
+    resume_session_id: Option<String>,
+    core_binary: Option<PathBuf>,
+    core_binary_args: Vec<String>,
 }
 
 /// Registry and scheduler for independent resident agent processes.
@@ -283,6 +288,10 @@ pub(crate) struct AgentRegistry {
     default_thinking: Option<String>,
     default_unrestricted: bool,
     thread_store: ThreadStore,
+    #[cfg(test)]
+    core_binary: Option<PathBuf>,
+    #[cfg(test)]
+    core_binary_args: Vec<String>,
 }
 
 impl AgentRegistry {
@@ -308,6 +317,10 @@ impl AgentRegistry {
             default_thinking: None,
             default_unrestricted: false,
             thread_store,
+            #[cfg(test)]
+            core_binary: None,
+            #[cfg(test)]
+            core_binary_args: Vec::new(),
         };
         for thread in registry.thread_store.list()? {
             let Some(run) = thread.runs.last() else {
@@ -373,6 +386,8 @@ impl AgentRegistry {
                     dropped_events: Arc::new(AtomicU64::new(0)),
                     thread_id: thread.thread_id,
                     run_id: run.run_id.clone(),
+                    resume_session_id: None,
+                    recovering: false,
                 },
             );
         }
@@ -535,6 +550,8 @@ impl AgentRegistry {
                 dropped_events: Arc::new(AtomicU64::new(0)),
                 thread_id,
                 run_id,
+                resume_session_id: None,
+                recovering: false,
             },
         );
         if status == AgentStatus::Starting {
@@ -594,6 +611,85 @@ impl AgentRegistry {
             .filter(|event| event.sequence > since)
             .cloned()
             .collect())
+    }
+
+    /// Explicitly reattach a recovery-pending thread to its stored Core session.
+    pub(crate) fn resume(&mut self, id: &AgentId) -> DevelopmentResult<()> {
+        self.refresh()?;
+        let (thread_id, previous_run_id, status) = {
+            let record = self.record_mut(id)?;
+            (
+                record.thread_id.clone(),
+                record.run_id.clone(),
+                record.snapshot.status,
+            )
+        };
+        if status != AgentStatus::RecoveryPending {
+            return Err(DevelopmentError::Conflict(format!(
+                "agent {} can only resume while recovery is pending",
+                id.as_str()
+            )));
+        }
+        if crate::resident_harness::ResidentHarnessKind::from_env()
+            != crate::resident_harness::ResidentHarnessKind::GlassCore
+        {
+            return Err(DevelopmentError::Conflict(
+                "durable thread recovery requires GLASS_AGENT_HARNESS=glass-core".into(),
+            ));
+        }
+        let thread = self
+            .thread_store
+            .list()?
+            .into_iter()
+            .find(|thread| thread.thread_id == thread_id)
+            .ok_or_else(|| DevelopmentError::NotFound("durable Glass thread".into()))?;
+        let prior = thread
+            .runs
+            .iter()
+            .find(|run| run.run_id == previous_run_id)
+            .ok_or_else(|| DevelopmentError::NotFound("durable Glass run".into()))?;
+        if prior.engine != "glass-core" {
+            return Err(DevelopmentError::Conflict(
+                "this durable thread was not created by Glass Core".into(),
+            ));
+        }
+        let session_id = prior.core_session_id.clone().ok_or_else(|| {
+            DevelopmentError::Conflict("the durable thread has no Core session reference".into())
+        })?;
+        let new_run_id = crate::thread_store::random_id("run")?;
+        self.thread_store.append_run(
+            &thread_id,
+            RunRecord {
+                run_id: new_run_id.clone(),
+                engine: "glass-core".into(),
+                core_session_id: Some(session_id.clone()),
+                classification: RunClassification::RecoveryPending,
+            },
+        )?;
+        {
+            let record = self.record_mut(id)?;
+            record.run_id = new_run_id.clone();
+            record.resume_session_id = Some(session_id);
+            record.recovering = true;
+            record.snapshot.status = AgentStatus::Starting;
+            record.snapshot.last_error = None;
+            record.snapshot.started_at_ms = Some(now_ms());
+            record.snapshot.updated_at_ms = now_ms();
+        }
+        if let Err(error) = self.spawn(id) {
+            let record = self.record_mut(id)?;
+            record.snapshot.status = AgentStatus::RecoveryPending;
+            record.snapshot.last_error =
+                Some(format!("Core session recovery could not start: {error}"));
+            record.recovering = true;
+            return Err(error);
+        }
+        self.record_event(
+            id,
+            "recovering",
+            serde_json::json!({"threadId":thread_id,"runId":new_run_id}),
+        );
+        Ok(())
     }
 
     /// Send an initial prompt to an agent, subject to prompt-size bounds.
@@ -923,21 +1019,35 @@ impl AgentRegistry {
     }
 
     fn spawn(&mut self, id: &AgentId) -> DevelopmentResult<()> {
-        let (thread_id, run_id) = {
+        let (thread_id, run_id, resume_session_id) = {
             let record = self
                 .records
                 .get(id)
                 .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))?;
-            (record.thread_id.clone(), record.run_id.clone())
+            (
+                record.thread_id.clone(),
+                record.run_id.clone(),
+                record.resume_session_id.clone(),
+            )
         };
-        self.thread_store
-            .classify_run(&thread_id, &run_id, RunClassification::Starting)?;
+        if resume_session_id.is_none() {
+            self.thread_store
+                .classify_run(&thread_id, &run_id, RunClassification::Starting)?;
+        }
         let sessions_dir = self.sessions_dir.clone();
         let events = self.events_tx.clone();
         let broker = self.broker.clone();
         let additional_system_prompt = self.additional_system_prompt.clone();
         let local_tool_executor = self.local_tool_executor.clone();
         let thread_store = self.thread_store.clone();
+        #[cfg(test)]
+        let core_binary = self.core_binary.clone();
+        #[cfg(not(test))]
+        let core_binary: Option<PathBuf> = None;
+        #[cfg(test)]
+        let core_binary_args = self.core_binary_args.clone();
+        #[cfg(not(test))]
+        let core_binary_args = Vec::new();
         let record = self.record_mut(id)?;
         let dropped_events = Arc::clone(&record.dropped_events);
         let spec = record.spec.clone();
@@ -967,6 +1077,9 @@ impl AgentRegistry {
                         thread_id,
                         run_id,
                         thread_store,
+                        resume_session_id,
+                        core_binary,
+                        core_binary_args,
                     },
                     commands_rx,
                     events,
@@ -1098,6 +1211,8 @@ impl AgentRegistry {
                 {
                     record.snapshot.status = AgentStatus::Idle;
                     record.snapshot.updated_at_ms = now_ms();
+                    record.recovering = false;
+                    record.resume_session_id = None;
                 }
                 self.record_event(&id, "ready", Value::Null);
             }
@@ -1153,13 +1268,21 @@ impl AgentRegistry {
                     self.thread_store.classify_run(
                         &record.thread_id,
                         &record.run_id,
-                        RunClassification::Failed,
+                        if record.recovering {
+                            RunClassification::RecoveryPending
+                        } else {
+                            RunClassification::Failed
+                        },
                     )?;
                 }
                 if let Some(record) = self.records.get_mut(&id)
                     && !record.snapshot.status.terminal()
                 {
-                    record.snapshot.status = AgentStatus::Failed;
+                    record.snapshot.status = if record.recovering {
+                        AgentStatus::RecoveryPending
+                    } else {
+                        AgentStatus::Failed
+                    };
                     record.snapshot.last_error = Some(error.clone());
                     record.snapshot.updated_at_ms = now_ms();
                     record.command = None;
@@ -1241,6 +1364,10 @@ impl AgentRegistry {
                 .get_mut(&id)
                 .and_then(|record| record.worker.take());
             let panicked = worker.is_some_and(|worker| worker.join().is_err());
+            let recovering = self
+                .records
+                .get(&id)
+                .is_some_and(|record| record.recovering);
             let should_fail = panicked
                 || self
                     .records
@@ -1250,7 +1377,11 @@ impl AgentRegistry {
                 self.thread_store.classify_run(
                     &record.thread_id,
                     &record.run_id,
-                    RunClassification::Failed,
+                    if recovering {
+                        RunClassification::RecoveryPending
+                    } else {
+                        RunClassification::Failed
+                    },
                 )?;
             }
             let mut event = None;
@@ -1258,7 +1389,11 @@ impl AgentRegistry {
                 record.command = None;
                 if panicked {
                     let error = format!("agent {} worker panicked", id.as_str());
-                    record.snapshot.status = AgentStatus::Failed;
+                    record.snapshot.status = if recovering {
+                        AgentStatus::RecoveryPending
+                    } else {
+                        AgentStatus::Failed
+                    };
                     record.snapshot.last_error = Some(error.clone());
                     record.snapshot.updated_at_ms = now_ms();
                     event = Some((
@@ -1270,12 +1405,18 @@ impl AgentRegistry {
                             "error":error,
                         }),
                     ));
-                } else if !record.snapshot.status.terminal() {
+                } else if !record.snapshot.status.terminal()
+                    && !(recovering && record.snapshot.last_error.is_some())
+                {
                     let error = format!(
                         "agent {} worker exited before a terminal outcome",
                         id.as_str()
                     );
-                    record.snapshot.status = AgentStatus::Failed;
+                    record.snapshot.status = if recovering {
+                        AgentStatus::RecoveryPending
+                    } else {
+                        AgentStatus::Failed
+                    };
                     record.snapshot.last_error = Some(error.clone());
                     record.snapshot.updated_at_ms = now_ms();
                     event = Some(("workerExited", Value::String(error)));
@@ -1346,6 +1487,9 @@ fn run_worker(
         local_tool_executor: runtime.local_tool_executor,
         additional_system_prompt: runtime.additional_system_prompt,
         resume: false,
+        resume_session_id: runtime.resume_session_id,
+        binary: runtime.core_binary,
+        binary_args: runtime.core_binary_args,
         fork_from: runtime.fork_from,
     };
     let mut harness = match ResidentHarness::spawn(
@@ -1360,6 +1504,9 @@ fn run_worker(
         }
     };
     let session_id = harness.core_session_id().map(str::to_owned);
+    for startup_event in harness.take_startup_events() {
+        send_critical_worker_event(&events, WorkerEvent::Engine(id.clone(), startup_event));
+    }
     if let Err(error) = announce_worker_ready(
         &events,
         id.clone(),
@@ -1596,6 +1743,43 @@ mod tests {
         root
     }
 
+    #[cfg(unix)]
+    fn configure_fake_core(registry: &mut AgentRegistry, mode: &str) {
+        registry.core_binary = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|directory| directory.join("python3"))
+            .find(|candidate| candidate.is_file());
+        assert!(registry.core_binary.is_some(), "python3 is required");
+        registry.core_binary_args = vec![
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/fake_glass_core_runtime.py")
+                .display()
+                .to_string(),
+            mode.into(),
+        ];
+    }
+
+    fn wait_for_agent(
+        registry: &mut AgentRegistry,
+        id: &AgentId,
+        status: AgentStatus,
+    ) -> AgentSnapshot {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            registry.refresh().unwrap();
+            let snapshot = registry.snapshot(id).unwrap();
+            if snapshot.status == status {
+                return snapshot;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "agent did not reach {status:?}; got {:?} ({:?})",
+                snapshot.status,
+                snapshot.last_error
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn lossy_worker_queue_reports_dropped_events() {
         let (sender, _receiver) = mpsc::sync_channel(1);
@@ -1608,6 +1792,146 @@ mod tests {
             &dropped,
         );
         assert_eq!(dropped.load(Ordering::Relaxed), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reopened_thread_recovers_exact_session_hydrates_before_ready_and_never_replays() {
+        let root = test_root();
+        let mut first = AgentRegistry::new(&root).unwrap();
+        configure_fake_core(&mut first, "exact-resume");
+        let id = first
+            .create(AgentSpec::new("builder", "initial session"))
+            .unwrap();
+        wait_for_agent(&mut first, &id, AgentStatus::Idle);
+        first.prompt(&id, "first explicit prompt").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            first.refresh().unwrap();
+            if first
+                .history(0)
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "agent_settled")
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "initial turn did not settle"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let original = first.thread_store.list().unwrap().remove(0);
+        let original_run = original.runs.last().unwrap().run_id.clone();
+        let session_id = original
+            .runs
+            .last()
+            .unwrap()
+            .core_session_id
+            .clone()
+            .unwrap();
+        let thread_id = original.thread_id.clone();
+        drop(first);
+
+        let mut recovered = AgentRegistry::new(&root).unwrap();
+        configure_fake_core(&mut recovered, "missing-session");
+        let recovered_id = recovered.list().unwrap().remove(0).id;
+        assert_eq!(
+            recovered.snapshot(&recovered_id).unwrap().status,
+            AgentStatus::RecoveryPending
+        );
+        recovered.resume(&recovered_id).unwrap();
+        assert!(recovered.prompt(&recovered_id, "must wait").is_err());
+        let failed = wait_for_agent(&mut recovered, &recovered_id, AgentStatus::RecoveryPending);
+        assert!(
+            failed
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("session not found")
+        );
+        let after_failure = recovered.thread_store.list().unwrap().remove(0);
+        assert_eq!(after_failure.thread_id, thread_id);
+        assert_eq!(
+            after_failure
+                .runs
+                .last()
+                .unwrap()
+                .core_session_id
+                .as_deref(),
+            Some(session_id.as_str())
+        );
+        assert_ne!(after_failure.runs.last().unwrap().run_id, original_run);
+        let request_log = root.join(".glass/pi-sessions/fixture-requests.jsonl");
+        let first_log = std::fs::read_to_string(&request_log).unwrap();
+        assert_eq!(first_log.matches("turn/prompt").count(), 1);
+        assert_eq!(first_log.matches("session/new").count(), 1);
+
+        configure_fake_core(&mut recovered, "exact-resume");
+        recovered.resume(&recovered_id).unwrap();
+        assert!(
+            recovered
+                .prompt(&recovered_id, "still initializing")
+                .is_err()
+        );
+        wait_for_agent(&mut recovered, &recovered_id, AgentStatus::Idle);
+        let resumed = recovered.thread_store.list().unwrap().remove(0);
+        assert_eq!(resumed.thread_id, thread_id);
+        assert_eq!(
+            resumed.runs.last().unwrap().core_session_id.as_deref(),
+            Some(session_id.as_str())
+        );
+        assert_ne!(
+            resumed.runs.last().unwrap().run_id,
+            after_failure.runs.last().unwrap().run_id
+        );
+        let events = recovered.history(0).unwrap();
+        let user_at = events
+            .iter()
+            .position(|event| event.kind == "user")
+            .unwrap();
+        let answer_at = events
+            .iter()
+            .position(|event| event.kind == "message_end")
+            .unwrap();
+        let ready_at = events
+            .iter()
+            .position(|event| event.kind == "ready")
+            .unwrap();
+        assert!(user_at < answer_at && answer_at < ready_at, "{events:?}");
+        assert_eq!(events[user_at].payload["text"], "prior question");
+        assert_eq!(events[answer_at].payload["text"], "prior answer");
+
+        let before_send = std::fs::read_to_string(&request_log).unwrap();
+        assert_eq!(before_send.matches("turn/prompt").count(), 1);
+        assert_eq!(before_send.matches("session/new").count(), 1);
+        recovered
+            .prompt(&recovered_id, "second explicit prompt")
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            recovered.refresh().unwrap();
+            let events = recovered.history(0).unwrap();
+            if events
+                .iter()
+                .filter(|event| event.kind == "agent_settled")
+                .count()
+                >= 1
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "post-recovery turn did not settle"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let all_requests = std::fs::read_to_string(request_log).unwrap();
+        assert_eq!(all_requests.matches("turn/prompt").count(), 2);
+        assert_eq!(all_requests.matches("session/new").count(), 1);
+        drop(recovered);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn insert_test_worker(
@@ -1665,6 +1989,8 @@ mod tests {
                 dropped_events: Arc::new(AtomicU64::new(0)),
                 thread_id,
                 run_id,
+                resume_session_id: None,
+                recovering: false,
             },
         );
     }

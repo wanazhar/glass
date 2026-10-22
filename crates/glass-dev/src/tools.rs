@@ -1184,6 +1184,11 @@ impl DevelopmentToolRouter {
                 Ok(serde_json::json!({"stopped":string("session")?}))
             }
             "glass.agent.list" => map_service(workspace.agents().list()),
+            "glass.agent.resume" => {
+                let id = agent_id(workspace, string("agentId")?)?;
+                map_service(workspace.agents().resume(&id))?;
+                Ok(serde_json::json!({"resuming":true,"agentId":id.as_str()}))
+            }
             "glass.agent.setup" => map_service(crate::pi_runtime::setup_pi_runtime(
                 None,
                 None,
@@ -1833,6 +1838,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.debug.stop",
         "glass.agent.spawn",
         "glass.agent.setup",
+        "glass.agent.resume",
         "glass.agent.delegate",
         "glass.agent.prompt",
         "glass.agent.send",
@@ -2256,7 +2262,18 @@ fn lsp_debug_schema(name: &str) -> Option<serde_json::Value> {
 }
 
 fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
-    let (description, input_schema) = if name == "glass.agent.send" {
+    let (description, input_schema) = if name == "glass.agent.resume" {
+        (
+            "Explicitly reattach a recovery-pending Glass thread to its stored Core session"
+                .to_string(),
+            serde_json::json!({
+                "type":"object",
+                "properties":{"agentId":{"type":"string","minLength":1,"maxLength":64}},
+                "required":["agentId"],
+                "additionalProperties":false
+            }),
+        )
+    } else if name == "glass.agent.send" {
         (
             "Send a user message to the resident Glass Agent session".to_string(),
             serde_json::json!({
@@ -3063,6 +3080,33 @@ mod tests {
         );
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn agent_resume_is_registered_and_routes_to_the_registry() {
+        let descriptor = service_descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.name == "glass.agent.resume")
+            .expect("resume service is advertised");
+        assert!(descriptor.mutating);
+        assert!(tool_requires_mutation("glass.agent.resume"));
+        assert!(!is_integration_tool("glass.agent.resume"));
+        assert_eq!(descriptor.input_schema["required"], json!(["agentId"]));
+
+        let mut workspace = workspace();
+        let authorized = context(&workspace, true);
+        let error = DevelopmentToolRouter::default()
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "resume-missing".into(),
+                    name: "glass.agent.resume".into(),
+                    arguments: json!({"agentId":"agent-missing"}),
+                },
+                &authorized,
+            )
+            .expect_err("unknown thread must fail through the registered dispatcher");
+        assert!(error.to_string().contains("agent"), "{error}");
     }
 
     #[test]

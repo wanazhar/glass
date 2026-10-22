@@ -61,7 +61,7 @@ matches that run.
 
 ## Acceptance
 
-- [ ] Every user prompt, follow-up, and steer has a stable client message ID and
+- [x] Every user prompt, follow-up, and steer has a stable client message ID and
       a unique persisted attempt ID before dispatch on supported hosts.
 - [ ] Queue rejection and runtime errors update only the matching attempt;
       successful responses use exact engine request-ID correlation.
@@ -108,6 +108,8 @@ startup does not send another prompt, and the retained record becomes
 `uncertain` with its original message. This is a process-interruption test with
 the offline runtime fixture, not a provider-backed timing test.
 
-The remaining unchecked criteria cover per-mode ID coverage, explicit queue
-rejection/runtime-error correlation, and the task-level final package and
-documentation review.
+The lifecycle unit test also registers a steer with a stable client ID and
+unique dispatching attempt ID, then applies a runtime failure to that attempt
+and verifies the two unrelated settled attempts remain unchanged. The remaining
+unchecked criteria cover queue-full rejection behavior and the task-level final
+package/documentation review.

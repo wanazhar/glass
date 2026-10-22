@@ -367,7 +367,11 @@ clear, or delete a word; Left/Right and Backspace edit the draft. Bracketed
 paste is inserted as one bounded edit. A send is a governed background request
 and never executes from the input loop. If another job is active, the draft is
 retained and the send waits; a failed transport marks the pending message
-failed and restores its draft for edit-and-retry. Workspace-local todos
+failed and restores its draft for edit-and-retry. Each live resident AgentId
+has its own transcript, draft, and character cursor; switching threads restores
+the matching context, and late send results remain attached to their submitting
+thread without changing the selected thread's focus or draft. AgentId and its
+draft state are process-local and do not survive TUI restart. Workspace-local todos
 (`glass.todo.*`) persist at `.glass/todos/session.json` and form the Agent
 checklist shown on Agent and Tasks; they are not the overnight task DAG.
 

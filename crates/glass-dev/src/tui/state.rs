@@ -325,11 +325,19 @@ impl DebugPane {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingChatMessage {
+    /// Process-local owner captured when the send was submitted.
+    pub agent_id: Option<crate::AgentId>,
     pub message_id: String,
     pub text: String,
     pub state: ChatMessageState,
     pub job_id: Option<u64>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ComposerDraft {
+    text: String,
+    cursor: usize,
 }
 
 /// In-TUI recovery choices offered when a browser start collides or fails.
@@ -552,6 +560,8 @@ pub struct DevTuiState {
     pub session_picker_items: Vec<SessionPickerItem>,
     pub session_picker_selection: usize,
     pub conversation_items: Vec<super::projection::ConversationEntry>,
+    pub agent_conversations:
+        std::collections::BTreeMap<crate::AgentId, super::snapshot::AgentConversation>,
     pub agent_model: String,
     pub agent_thinking: String,
     pub agent_session_name: String,
@@ -567,6 +577,9 @@ pub struct DevTuiState {
     pub pending_chat_messages: Vec<PendingChatMessage>,
     pub agent_send_job: Option<u64>,
     pub selected_agent: Option<crate::AgentId>,
+    /// Drafts keyed by process-local resident agent identity; `None` is the
+    /// composer before an agent thread is selected.
+    thread_drafts: std::collections::BTreeMap<Option<crate::AgentId>, ComposerDraft>,
     pub pending_confirmation: Option<PendingConfirmation>,
     /// URL retained while the TUI launches a detached browser before navigation.
     pub pending_browser_navigation: Option<String>,
@@ -899,6 +912,7 @@ impl DevTuiState {
             session_picker_items: Vec::new(),
             session_picker_selection: 0,
             conversation_items: Vec::new(),
+            agent_conversations: std::collections::BTreeMap::new(),
             agent_model: String::new(),
             agent_thinking: String::new(),
             agent_session_name: String::new(),
@@ -914,6 +928,7 @@ impl DevTuiState {
             pending_chat_messages: Vec::new(),
             agent_send_job: None,
             selected_agent: None,
+            thread_drafts: std::collections::BTreeMap::new(),
             pending_confirmation: None,
             editor_exit_prompt: None,
             pending_agent_approval: None,
@@ -2775,6 +2790,9 @@ impl DevTuiState {
             .filter_map(|entry| entry.client_message_id.as_deref())
             .collect::<std::collections::HashSet<_>>();
         for message in &self.pending_chat_messages {
+            if message.agent_id != self.selected_agent {
+                continue;
+            }
             if message.state != ChatMessageState::Failed
                 && observed.contains(message.message_id.as_str())
             {
@@ -2810,6 +2828,9 @@ impl DevTuiState {
             entries = parse_conversation_view(&self.agent_conversation);
         }
         for message in &self.pending_chat_messages {
+            if message.agent_id != self.selected_agent {
+                continue;
+            }
             if message.state != ChatMessageState::Failed
                 && entries.iter().any(|entry| {
                     entry.kind == super::projection::ConversationKind::User
@@ -3101,7 +3122,7 @@ impl DevTuiState {
             }
         };
         if agents.is_empty() {
-            self.selected_agent = None;
+            self.select_agent(None);
             self.status = "No resident agents · Enter starts the Glass Agent".into();
             return;
         }
@@ -3116,11 +3137,44 @@ impl DevTuiState {
             (current + (delta as usize % agents.len())) % agents.len()
         };
         let selected = agents[next].id.clone();
-        self.selected_agent = Some(selected.clone());
+        self.select_agent(Some(selected.clone()));
         self.status = format!(
             "Selected {} · Enter chats · ]/[ switches agent",
             selected.as_str()
         );
+    }
+
+    fn select_agent(&mut self, selected: Option<crate::AgentId>) {
+        if self.selected_agent == selected {
+            return;
+        }
+        let current = self.selected_agent.clone();
+        self.thread_drafts.insert(
+            current,
+            ComposerDraft {
+                text: self.composer_input.clone(),
+                cursor: self.composer_cursor,
+            },
+        );
+        self.selected_agent = selected.clone();
+        if let Some(conversation) = selected
+            .as_ref()
+            .and_then(|id| self.agent_conversations.get(id))
+        {
+            self.agent_conversation = conversation.text.clone();
+            self.conversation_items = conversation.items.clone();
+        } else {
+            self.agent_conversation =
+                "No conversation yet. Press Enter or start typing to compose a message.".into();
+            self.conversation_items.clear();
+        }
+        let draft = self
+            .thread_drafts
+            .get(&selected)
+            .cloned()
+            .unwrap_or_default();
+        self.composer_input = draft.text;
+        self.composer_cursor = draft.cursor.min(self.composer_input.len());
     }
 
     pub fn open_composer(&mut self) {
@@ -4081,7 +4135,9 @@ impl DevTuiState {
         }
         let prove = compile_prove_it(&text);
         let steer = self.composer_steer;
-        let queued_follow_up = self.agent_send_job.is_some();
+        let queued_follow_up = self.pending_chat_messages.iter().any(|message| {
+            message.state == ChatMessageState::Sending && message.agent_id == self.selected_agent
+        });
         self.composer_steer = false;
         self.composer_mode = true;
         let _ = self.ws_mut().map(|mut workspace| {
@@ -4179,6 +4235,7 @@ impl DevTuiState {
         if let Some(agent) = self.selected_agent.as_ref() {
             arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
         }
+        let owner = self.selected_agent.clone();
         let (call, context) = match self.tool_request("glass.agent.send", arguments, true) {
             Ok(request) => request,
             Err(error) => {
@@ -4194,6 +4251,7 @@ impl DevTuiState {
             Ok(id) => {
                 self.agent_send_job = Some(id);
                 self.pending_chat_messages.push(PendingChatMessage {
+                    agent_id: owner,
                     message_id,
                     text: display_text,
                     state: ChatMessageState::Sending,
@@ -4482,26 +4540,38 @@ impl DevTuiState {
         {
             match result.result {
                 Ok(value) => {
-                    let agent = value
-                        .get("agentId")
-                        .and_then(serde_json::Value::as_str)
-                        .and_then(|value| crate::AgentId::parse(value).ok());
                     let restarted = value
                         .get("restarted")
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
-                    if let Some(agent_id) = agent {
-                        self.selected_agent = Some(agent_id.clone());
+                    let returned_agent = value
+                        .get("agentId")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|value| crate::AgentId::parse(value).ok());
+                    let owner = self
+                        .pending_chat_messages
+                        .iter_mut()
+                        .find(|message| message.job_id == Some(result.id))
+                        .and_then(|message| {
+                            if message.agent_id.is_none() {
+                                message.agent_id = returned_agent.clone();
+                            }
+                            message.agent_id.clone()
+                        });
+                    if self.selected_agent.is_none() && owner.is_some() {
+                        self.select_agent(owner.clone());
+                    }
+                    if owner == self.selected_agent {
                         self.status = if restarted {
-                            format!("Restarted {} · Glass Agent is thinking…", agent_id.as_str())
+                            format!(
+                                "Restarted {} · Glass Agent is thinking…",
+                                owner.as_ref().map_or("Glass Agent", crate::AgentId::as_str)
+                            )
                         } else {
-                            format!("Sent to {} · Glass Agent is thinking…", agent_id.as_str())
-                        };
-                    } else {
-                        self.status = if restarted {
-                            "Restarted Glass Agent · thinking…".into()
-                        } else {
-                            "Sent · Glass Agent is thinking…".into()
+                            format!(
+                                "Sent to {} · Glass Agent is thinking…",
+                                owner.as_ref().map_or("Glass Agent", crate::AgentId::as_str)
+                            )
                         };
                     }
                     if let Some(message) = self
@@ -4514,7 +4584,7 @@ impl DevTuiState {
                     }
                 }
                 Err(error) => {
-                    let failed_text = self
+                    let failed = self
                         .pending_chat_messages
                         .iter_mut()
                         .find(|message| message.job_id == Some(result.id))
@@ -4522,16 +4592,25 @@ impl DevTuiState {
                             message.state = ChatMessageState::Failed;
                             message.job_id = None;
                             message.error = Some(error.clone());
-                            message.text.clone()
+                            (message.agent_id.clone(), message.text.clone())
                         });
-                    if self.composer_input.is_empty()
-                        && let Some(text) = failed_text
-                    {
-                        self.composer_input = text;
-                        self.composer_cursor = self.composer_input.len();
+                    if let Some((owner, text)) = failed {
+                        if owner == self.selected_agent {
+                            if self.composer_input.is_empty() {
+                                self.composer_input = text.clone();
+                                self.composer_cursor = self.composer_input.len();
+                            }
+                            self.composer_mode = true;
+                            self.status =
+                                format!("Could not send message · edit and retry: {error}");
+                        } else {
+                            let draft = self.thread_drafts.entry(owner).or_default();
+                            if draft.text.is_empty() {
+                                draft.cursor = text.len();
+                                draft.text = text;
+                            }
+                        }
                     }
-                    self.composer_mode = true;
-                    self.status = format!("Could not send message · edit and retry: {error}");
                 }
             }
             self.agent_send_job = self
@@ -4577,13 +4656,6 @@ impl DevTuiState {
                     let pending_args = std::mem::take(&mut self.pi_command_pending_args);
                     if value.get("queued").and_then(serde_json::Value::as_bool) == Some(true) {
                         let command = pending_command.unwrap_or_else(|| "command".into());
-                        if let Some(agent_id) = value
-                            .get("agentId")
-                            .and_then(serde_json::Value::as_str)
-                            .and_then(|value| crate::AgentId::parse(value).ok())
-                        {
-                            self.selected_agent = Some(agent_id);
-                        }
                         self.status = format!(
                             "Pi /{command} queued · resident session will report the result"
                         );
@@ -4748,7 +4820,6 @@ impl DevTuiState {
                         .and_then(serde_json::Value::as_str)
                         .and_then(|value| crate::AgentId::parse(value).ok())
                     {
-                        self.selected_agent = Some(agent_id.clone());
                         self.status =
                             format!("Sent to {} · Glass Agent is thinking…", agent_id.as_str());
                     } else {
@@ -8818,8 +8889,24 @@ impl DevTuiState {
                 .min(self.session_todos.items.len().saturating_sub(1));
         }
         self.agents = snapshot.agents.clone();
-        self.agent_conversation = snapshot.agent_conversation.clone();
-        self.conversation_items = snapshot.conversation_items.clone();
+        self.agent_conversations = snapshot.agent_conversations.clone();
+        if self.selected_agent.is_none()
+            && let Some(chrome) = snapshot.agent_chrome.first()
+        {
+            self.select_agent(Some(chrome.id.clone()));
+        }
+        if let Some(conversation) = self
+            .selected_agent
+            .as_ref()
+            .and_then(|id| snapshot.agent_conversations.get(id))
+        {
+            self.agent_conversation = conversation.text.clone();
+            self.conversation_items = conversation.items.clone();
+        } else {
+            self.agent_conversation =
+                "No conversation yet. Press Enter or start typing to compose a message.".into();
+            self.conversation_items.clear();
+        }
         if let Some(chrome) = self
             .selected_agent
             .as_ref()
@@ -8831,9 +8918,6 @@ impl DevTuiState {
             })
             .or_else(|| snapshot.agent_chrome.first())
         {
-            if self.selected_agent.is_none() {
-                self.selected_agent = Some(chrome.id.clone());
-            }
             self.agent_model = chrome.model.clone().unwrap_or_default();
             self.agent_thinking = chrome.thinking.clone().unwrap_or_default();
             if let Some(path) = chrome.session_file.as_deref() {
@@ -14606,6 +14690,168 @@ mod tests {
     }
 
     #[test]
+    fn late_chat_result_stays_with_originating_agent_thread() {
+        let (mut state, root) = routed_state("thread-isolation-late-result");
+        let agent_a = crate::AgentId::parse("agent-0001").unwrap();
+        let agent_b = crate::AgentId::parse("agent-0002").unwrap();
+        let entry = |id: &str, text: &str| super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::User,
+            text: text.into(),
+            streaming: false,
+            entry_id: Some(format!("entry-{id}")),
+            client_message_id: Some(format!("chat-{id}")),
+            tool_name: None,
+        };
+        state.agent_conversations.insert(
+            agent_a.clone(),
+            super::super::snapshot::AgentConversation {
+                text: "transcript A".into(),
+                items: vec![entry("a", "message A")],
+            },
+        );
+        state.agent_conversations.insert(
+            agent_b.clone(),
+            super::super::snapshot::AgentConversation {
+                text: "transcript B".into(),
+                items: vec![entry("b", "message B")],
+            },
+        );
+        state.select_agent(Some(agent_a.clone()));
+        assert_eq!(state.agent_conversation, "transcript A");
+        state.composer_input = "draft alpha".into();
+        state.composer_cursor = 5;
+        state.select_agent(Some(agent_b.clone()));
+        assert_eq!(state.agent_conversation, "transcript B");
+        assert!(state.composer_input.is_empty());
+        state.composer_input = "draft bravo".into();
+        state.composer_cursor = 6;
+        state.composer_mode = true;
+        state.surface = DevSurface::Agent;
+        state.status = "B remains focused".into();
+        state.pending_chat_messages.push(PendingChatMessage {
+            agent_id: Some(agent_a.clone()),
+            message_id: "chat-late-a".into(),
+            text: "message sent in A".into(),
+            state: ChatMessageState::Sending,
+            job_id: Some(71),
+            error: None,
+        });
+
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 71,
+            tool: "glass.agent.send".into(),
+            result: Ok(serde_json::json!({"agentId": agent_a.as_str()})),
+        });
+
+        assert_eq!(state.selected_agent, Some(agent_b.clone()));
+        assert_eq!(state.agent_conversation, "transcript B");
+        assert_eq!(state.composer_input, "draft bravo");
+        assert_eq!(state.composer_cursor, 6);
+        assert_eq!(state.status, "B remains focused");
+        assert!(state.composer_mode);
+        assert_eq!(state.surface, DevSurface::Agent);
+        assert_eq!(
+            state.pending_chat_messages[0].agent_id,
+            Some(agent_a.clone())
+        );
+        assert_eq!(state.pending_chat_messages[0].state, ChatMessageState::Sent);
+        state.select_agent(Some(agent_a));
+        assert_eq!(state.agent_conversation, "transcript A");
+        assert_eq!(state.composer_input, "draft alpha");
+        assert_eq!(state.composer_cursor, 5);
+        assert!(state.conversation_view().contains("message sent in A"));
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn late_chat_failure_is_recoverable_only_in_its_originating_thread() {
+        let (mut state, root) = routed_state("thread-isolation-late-failure");
+        let agent_a = crate::AgentId::parse("agent-0001").unwrap();
+        let agent_b = crate::AgentId::parse("agent-0002").unwrap();
+        state.agent_conversations.insert(
+            agent_a.clone(),
+            super::super::snapshot::AgentConversation {
+                text: "transcript A".into(),
+                items: Vec::new(),
+            },
+        );
+        state.agent_conversations.insert(
+            agent_b.clone(),
+            super::super::snapshot::AgentConversation {
+                text: "transcript B".into(),
+                items: Vec::new(),
+            },
+        );
+        state.select_agent(Some(agent_a.clone()));
+        state.select_agent(Some(agent_b.clone()));
+        state.composer_input = "B draft".into();
+        state.composer_cursor = 2;
+        state.composer_mode = true;
+        state.surface = DevSurface::Agent;
+        state.status = "B stays focused".into();
+        state.pending_chat_messages.push(PendingChatMessage {
+            agent_id: Some(agent_a.clone()),
+            message_id: "chat-failed-a".into(),
+            text: "recover this A message".into(),
+            state: ChatMessageState::Sending,
+            job_id: Some(74),
+            error: None,
+        });
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 74,
+            tool: "glass.agent.send".into(),
+            result: Err("transport closed".into()),
+        });
+        assert_eq!(state.selected_agent, Some(agent_b));
+        assert_eq!(state.composer_input, "B draft");
+        assert_eq!(state.composer_cursor, 2);
+        assert_eq!(state.status, "B stays focused");
+        assert!(state.composer_mode);
+        assert_eq!(state.surface, DevSurface::Agent);
+        state.select_agent(Some(agent_a));
+        assert_eq!(state.composer_input, "recover this A message");
+        assert_eq!(state.composer_cursor, "recover this A message".len());
+        assert!(state.conversation_view().contains("send failed"));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn bootstrap_chat_result_attaches_to_created_agent_without_stealing_selection() {
+        let (mut state, root) = routed_state("thread-isolation-bootstrap");
+        let agent_b = crate::AgentId::parse("agent-0002").unwrap();
+        let agent_a = crate::AgentId::parse("agent-0001").unwrap();
+        state.select_agent(Some(agent_b.clone()));
+        state.composer_input = "B draft".into();
+        state.composer_cursor = 2;
+        state.status = "B focused".into();
+        state.pending_chat_messages.push(PendingChatMessage {
+            agent_id: None,
+            message_id: "chat-bootstrap".into(),
+            text: "first message".into(),
+            state: ChatMessageState::Sending,
+            job_id: Some(72),
+            error: None,
+        });
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 72,
+            tool: "glass.agent.send".into(),
+            result: Ok(serde_json::json!({"agentId": agent_a.as_str()})),
+        });
+        assert_eq!(
+            state.pending_chat_messages[0].agent_id,
+            Some(agent_a.clone())
+        );
+        assert_eq!(state.selected_agent, Some(agent_b));
+        assert_eq!(state.composer_input, "B draft");
+        assert_eq!(state.composer_cursor, 2);
+        assert_eq!(state.status, "B focused");
+        state.select_agent(Some(agent_a));
+        assert!(state.conversation_view().contains("first message"));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn conversation_view_does_not_echo_pending_message_after_snapshot() {
         let root = std::env::temp_dir().join(format!("glass-chat-merge-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create temporary workspace");
@@ -14613,6 +14859,7 @@ mod tests {
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
         state.agent_conversation = "YOU\ninspect the failing test\n\nGLASS AGENT\nworking".into();
         state.pending_chat_messages.push(PendingChatMessage {
+            agent_id: None,
             message_id: "chat-inspect-1".into(),
             text: "inspect the failing test".into(),
             state: ChatMessageState::Sent,
@@ -14643,6 +14890,7 @@ mod tests {
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
         state.agent_conversation = "YOU\nfix the same test".into();
         let pending = |message_id: &str| PendingChatMessage {
+            agent_id: None,
             message_id: message_id.into(),
             text: "fix the same test".into(),
             state: ChatMessageState::Sent,
@@ -14829,6 +15077,7 @@ mod tests {
         state.agent_send_job = Some(12);
         state.pending_chat_messages = vec![
             PendingChatMessage {
+                agent_id: None,
                 message_id: "first".into(),
                 text: "first message".into(),
                 state: ChatMessageState::Sending,
@@ -14836,6 +15085,7 @@ mod tests {
                 error: None,
             },
             PendingChatMessage {
+                agent_id: None,
                 message_id: "second".into(),
                 text: "second message".into(),
                 state: ChatMessageState::Sending,

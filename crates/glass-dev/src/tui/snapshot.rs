@@ -84,6 +84,8 @@ pub struct DisplaySnapshot {
     pub harnesses: String,
     pub agent_conversation: String,
     pub conversation_items: Vec<super::projection::ConversationEntry>,
+    /// Conversation projections partitioned by their process-local resident agent.
+    pub agent_conversations: std::collections::BTreeMap<crate::AgentId, AgentConversation>,
     pub agent_chrome: Vec<AgentChrome>,
     pub tasks: String,
     pub editor: String,
@@ -120,6 +122,36 @@ pub struct DisplaySnapshot {
     pub duration: Duration,
     /// Browser supervision verdict for this pass.
     pub browser_health: BrowserHealth,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AgentConversation {
+    pub text: String,
+    pub items: Vec<super::projection::ConversationEntry>,
+}
+
+fn agent_conversations(
+    events: &[crate::AgentEvent],
+) -> std::collections::BTreeMap<crate::AgentId, AgentConversation> {
+    let mut grouped = std::collections::BTreeMap::<crate::AgentId, Vec<crate::AgentEvent>>::new();
+    for event in events {
+        grouped
+            .entry(event.agent_id.clone())
+            .or_default()
+            .push(event.clone());
+    }
+    grouped
+        .into_iter()
+        .map(|(id, events)| {
+            let items = crate::tui::projection::conversation_entries(&events);
+            let text = if items.is_empty() {
+                String::new()
+            } else {
+                crate::tui::projection::conversation(&events)
+            };
+            (id, AgentConversation { text, items })
+        })
+        .collect()
 }
 
 impl DisplaySnapshot {
@@ -388,6 +420,7 @@ fn worker_loop(
                         .unwrap_or(cursor);
                     conversation_events.extend(events);
                     let items = crate::tui::projection::conversation_entries(&conversation_events);
+                    let by_agent = agent_conversations(&conversation_events);
                     conversation_tail = if items.is_empty() {
                         "No conversation yet. Press Enter or start typing to compose a message."
                             .into()
@@ -399,6 +432,7 @@ fn worker_loop(
                         && let Some(snapshot) = slot.as_mut()
                     {
                         snapshot.conversation_items = items;
+                        snapshot.agent_conversations = by_agent;
                     }
                 }
                 if let Ok(mut slot) = snapshots.lock()
@@ -465,6 +499,7 @@ fn worker_loop(
                 {
                     conversation_events = latest;
                     let items = crate::tui::projection::conversation_entries(&conversation_events);
+                    let by_agent = agent_conversations(&conversation_events);
                     conversation_tail = if items.is_empty() {
                         "No conversation yet. Press Enter or start typing to compose a message."
                             .into()
@@ -472,6 +507,7 @@ fn worker_loop(
                         crate::tui::projection::conversation(&conversation_events)
                     };
                     snapshot.conversation_items = items;
+                    snapshot.agent_conversations = by_agent;
                     if let Some(highest) =
                         conversation_events.iter().map(|event| event.sequence).max()
                     {
@@ -578,10 +614,12 @@ fn compute_snapshot(
     snapshot.agent_conversation = match locked.agents().history(0) {
         Ok(events) if events.is_empty() => {
             snapshot.conversation_items.clear();
+            snapshot.agent_conversations.clear();
             "No conversation yet. Press Enter or start typing to compose a message.".into()
         }
         Ok(events) => {
             snapshot.conversation_items = crate::tui::projection::conversation_entries(&events);
+            snapshot.agent_conversations = agent_conversations(&events);
             crate::tui::projection::conversation(&events)
         }
         Err(error) => format!("Conversation unavailable: {error}"),
@@ -978,6 +1016,27 @@ fn workspace_status_projection(workspace: &mut crate::DevelopmentWorkspace) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_conversation_projection_partitions_events_by_owner() {
+        let agent_a = crate::AgentId::parse("agent-0001").unwrap();
+        let agent_b = crate::AgentId::parse("agent-0002").unwrap();
+        let event = |sequence, agent_id: crate::AgentId, text: &str| crate::AgentEvent {
+            sequence,
+            agent_id,
+            timestamp_ms: 0,
+            kind: "message_end".into(),
+            payload: serde_json::json!({"message":{"role":"assistant","content":[{"type":"text","text":text}]}}),
+        };
+        let grouped = agent_conversations(&[
+            event(1, agent_a.clone(), "private to A"),
+            event(2, agent_b.clone(), "private to B"),
+        ]);
+        assert!(grouped[&agent_a].text.contains("private to A"));
+        assert!(!grouped[&agent_a].text.contains("private to B"));
+        assert!(grouped[&agent_b].text.contains("private to B"));
+        assert!(!grouped[&agent_b].text.contains("private to A"));
+    }
 
     #[test]
     fn snapshot_worker_publishes_and_applies_without_blocking_ui() {

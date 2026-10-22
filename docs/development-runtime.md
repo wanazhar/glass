@@ -90,6 +90,12 @@ model APIs. Model catalog responses are shown in the Agent conversation. Setting
 `GLASS_AGENT_HARNESS=pi` retains the Pi-specific setup, login, and model path;
 see the [resident harness guide](glass-core-harness.md).
 
+Live resident agents have separate Agent TUI transcripts and composer drafts;
+switching agents restores that thread's text and cursor. A send result stays
+with the AgentId captured at submission, including a first-send agent created
+by the result. AgentId and these drafts are process-local: they are not restored
+after Glass restarts and are not durable project thread identities.
+
 Every governed tool carries expected workspace generation and project revision. A stale call fails with `Conflict`; reread state and issue a new call. Mutations also require a trusted workspace, actor attribution, and the applicable mutation authority or confirmation.
 
 ## Project files and tree

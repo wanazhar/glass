@@ -14,7 +14,7 @@ remains the authority for installed flags, defaults, and positional arguments.
 
 | Option | Default | Function |
 |---|---|---|
-| `--yolo` | off | Run Glass Dev and browser operations without process-level mutation confirmation; Glass Dev also bypasses the workspace-trust execution gate for this process without persisting trust. The resident TUI Pi session is human-controlled and unrestricted by default. |
+| `--yolo` | off | Run Glass Dev and browser operations without process-level mutation confirmation; Glass Dev also bypasses the workspace-trust execution gate for this process without persisting trust. It does not change persistent workspace trust. |
 | `--policy development\|ci\|polite\|hardened\|untrusted-mcp` | `development` | Select the browser safety preset. |
 | `--policy-allow CAPABILITY` | none | Explicitly allow a privileged capability; repeatable. |
 | `--policy-confirm CAPABILITY` | none | Require a typed confirmation result; repeatable. |

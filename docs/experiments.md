@@ -1,8 +1,9 @@
 # Measured experiments
 
-Glass experiments compare isolated Git worktrees using observable evidence,
-not an agent's preferred narrative. Experiment creation requires workspace
-trust and child worktrees inherit only process-lifetime `TrustedOnce` authority.
+Glass experiments compare isolated Git worktrees using recorded results.
+Experiment creation requires a trusted workspace. A child worktree receives
+trust only for the lifetime of its experiment; Glass does not save a new trust
+record for it.
 
 Use the TUI command palette:
 
@@ -14,18 +15,19 @@ Use the TUI command palette:
 :experiment select approach-a
 ```
 
-The shared router exposes matching `glass.experiment.create`, `collect`,
-`list`, `compare`, `select`, and `remove` operations to MCP, daemon, and Pi
-clients.
+The shared router exposes `glass.experiment.create`, `collect`, `list`,
+`compare`, `select`, and `remove` to MCP, daemon, and resident-agent clients.
+Resident agents use Glass Core by default. The legacy Pi backend uses the same
+router.
 
 ## Automatic providers
 
-`collect` runs configured build and test commands with bounded execution and
-collects the current Git change surface, resident process startup/crash health,
-LSP diagnostic observations, debugger stops, and—when a browser/workflow is
-attached—workflow verification and semantic diff evidence. Browser visual and
-performance metrics are explicitly marked unavailable until their provider has
-current evidence; they are never converted into favorable zeroes.
+`collect` runs configured build and test commands with time and output limits.
+It records current Git changes, process startup and crash state, LSP
+diagnostics, and debugger stops. If a browser or workflow is attached, it also
+records workflow verification and semantic differences. Browser visual and
+performance metrics stay unavailable until their provider returns current
+evidence. Glass does not treat missing measurements as zero.
 
 Every evidence family records:
 

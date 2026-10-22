@@ -2,24 +2,26 @@
 
 ## Requirements
 
-The full native browser session requires:
+The native browser session needs:
 
-- stable Rust for a source build;
-- a Linux or macOS environment with a declared Rust target; and
-- Chrome, Chromium, or Chrome for Testing.
+- stable Rust if you build Glass from source;
+- Linux or macOS with a supported Rust target; and
+- Chrome, Chromium, or Chrome for Testing only for the Chromium/CDP path.
 
-The portable alternative session does not require Chrome: Firefox can expose a
-WebDriver BiDi endpoint, and macOS Safari can be controlled through an
-externally started safaridriver W3C WebDriver endpoint. These runtimes expose
-only the bounded command set documented in the [CLI
-reference](cli.md#alternative-browser-runtimes).
+The default native browser runtime does not need a separate browser process.
+The optional Chromium/CDP runtime does.
+
+The alternative session can use Firefox or Safari without installing Chrome.
+Start Firefox with WebDriver BiDi, or start `safaridriver` on macOS. Then pass
+the driver's endpoint to Glass. These runtimes support only the command set in
+the [CLI reference](cli.md#alternative-browser-runtimes).
 
 Validate browser behavior in the environment where you deploy Glass.
 
-The release line runs browser-free Windows CI, but native Windows browser,
-PTY, and TUI behavior is not certified. Do not infer deployment support from a
-successful source build. Glass does not install Playwright, Firefox, Safari, or
-another browser runtime.
+The release line runs browser-free Windows CI. Native Windows browser, PTY,
+and TUI behavior is not certified. A successful build does not prove that
+these features work on Windows. Glass does not install Playwright, Firefox,
+Safari, or another browser runtime.
 
 ## Install from source
 
@@ -58,12 +60,17 @@ cargo install glass-dev --locked
 cargo install glass-browser --locked
 ```
 
-`glass-dev` owns both installed executable names for the complete product;
-`glass-browser` independently owns `glass-browser` for core-only installs and
-exports the `glass_browser` Rust library. Cargo therefore rejects installing
-both packages into the same root. Choose one product, or uninstall the old
-owner before switching. `glass-dev` depends one-way on the exact matching
-browser crate version. Neither package installs Pi or Node.
+`glass-dev` owns both executable names for the complete product. `glass-browser`
+owns only `glass-browser` and exports the `glass_browser` Rust library. Cargo
+does not allow both packages to install that same executable into one root.
+Choose one package, or remove the existing owner before you switch. `glass-dev`
+depends on the exact matching `glass-browser` version. Neither package installs
+the separate `glass-core` agent engine, Pi, or Node.
+
+Glass Core runs resident agents in `glass-dev`. Install the `glass-core`
+program separately or set `GLASS_CORE_BINARY` to its path. Run
+`glass agent doctor` to see the selected engine and repair steps. See the
+[Glass Core resident harness guide](glass-core-harness.md).
 
 Use these explicit ownership transitions; `cargo install --list` shows the
 current owner before you change it:

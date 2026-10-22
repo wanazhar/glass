@@ -1,31 +1,30 @@
 # Glass documentation
 
-Status: Current 0.3.14 source behavior; release documentation is dated
-2026-08-29 and external publication evidence is tracked separately.
+These guides describe the current Glass source tree. They do not claim that
+every change in this tree is part of a published release. The
+[release evidence](release-evidence.md) records which packages and artifacts
+were published. The [feature parity guide](feature-parity.md) records platform
+checks and their limits.
 
-These guides describe the complete Glass product in the current `0.3.14`
-source checkout. The `0.3.14` release notes and migration guide route the
-current source contract; the signed `v0.3.13` release and its migration record
-remain historical. Published docs.rs pages currently match crate `0.3.14`.
-The working-tree changelog `Unreleased` section records changes after this
-release. `Local only` means a capability exists in the checkout but is not part
-of an external release record.
-Platform certification remains separate from source availability; see
-[cross-platform feature parity](feature-parity.md).
-
-Glass has two installable product boundaries:
+Glass has two installable products and one browser implementation crate:
 
 ```text
 glass-dev (complete product)
-  ├─ glass            project runtime · TUI · agents · MCP · browser
-  └─ glass-browser    browser-only compatible entry point
+  ├─ glass            project workspace · TUI · agents · MCP
+  └─ glass-browser    browser CLI and library
           │
-          └─ exact dependency on glass-browser (focused package/library)
+          └─ glass-browser-core (native browser engine implementation)
 ```
 
-Start with the complete product unless you specifically need only browser
-automation or the embeddable Rust crate. Package READMEs describe crates.io
-installation; this index owns the cross-product documentation map.
+Install `glass-dev` for the project workspace. Install `glass-browser` when
+you need only browser tools or its Rust API. `glass-browser-core` is an
+implementation crate used by `glass-browser`; it is not a third user-facing
+product.
+
+The resident agent engine has a similar name but a different role:
+`glass-core` runs resident agent sessions. `glass-browser-core` contains the
+native browser engine. Glass uses `glass-core` by default for resident agents;
+the [resident harness guide](glass-core-harness.md) explains its setup.
 
 ## Choose your path
 

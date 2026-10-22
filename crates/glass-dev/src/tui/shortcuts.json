@@ -28,9 +28,9 @@
   ],
   "documentation": [
     {
-      "path": "README.md",
+      "path": "docs/architecture/development-tui.md",
       "markers": [
-        "`1`", "`2`", "`3`", "`4`", "`5`", "`6`", "`7`", "`8`",
+        "`1`–`8`",
         "`Tab`", "`Shift-Tab`", "`?`", "`/`", "`:`", "`a`",
         "`Ctrl-L`", "`Ctrl-P`", "`Ctrl-K`", "`Ctrl-Shift-P`", "`Ctrl-G`",
         "`Alt-Left`", "`Alt-Right`", "`Ctrl-R`", "`Alt-W`", "`Ctrl-S`",

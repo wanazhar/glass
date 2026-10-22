@@ -130,9 +130,11 @@ token to a log or file.
 ## Project-session registry
 
 Development clients use the daemon process's bounded canonical-root registry.
-A retained actor owns buffers, PTYs, language servers, Pi sessions, task DAGs,
-kernels, debuggers, experiments, and its authoritative browser service. Fresh
-socket clients inspect the same actor identity and resources.
+A retained workspace actor owns buffers, PTYs, language servers, resident-agent
+sessions, task DAGs, kernels, debuggers, experiments, and its browser service.
+Glass Core is the default agent engine; Pi session files remain separate when
+the legacy Pi backend is selected. New socket clients inspect the same actor
+and its resources.
 
 The native daemon protocol provides `workspace.open`, `workspace.list`,
 `workspace.inspect`, `workspace.tool`, `workspace.events`, and
@@ -140,7 +142,7 @@ The native daemon protocol provides `workspace.open`, `workspace.list`,
 `operation.submit`, `operation.inspect`, `operation.list`, `operation.events`,
 `operation.cancel`, and `operation.reconcile`. Close explicitly
 shuts the actor down and reaps owned resources; it does not delete project
-files, Pi session JSONL, or persistent timeline data.
+files, legacy Pi session files, or persistent timeline data.
 
 The registry keeps a workspace entry until its actor acknowledges shutdown
 after dropping its owned workspace. Concurrent close requests are serialized.

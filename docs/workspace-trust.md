@@ -38,7 +38,7 @@ Untrusted mode blocks repository-controlled execution, including:
 - `workspace.opened` and other project hooks;
 - project commands and shell-backed custom tools;
 - configured tests, LSP commands, and DAP commands;
-- PTYs, kernels, Pi project execution, Neovim, and experiment worktrees;
+- PTYs, kernels, resident-agent project execution, Neovim, and experiment worktrees;
 - file/Git mutations through development-agent routes; and
 - compatibility routes exposed by the legacy project CLI/MCP catalog.
 
@@ -78,8 +78,8 @@ glass.workspace.trust.inspect
 
 Inspection reports the exact source and command plus `static`, `agentContext`,
 or `executable` risk and `userGlobal`, `trustedProject`, or
-`untrustedProject` authority. MCP, daemon clients, Pi workers, kernels, custom
-tools, and repository hooks can inspect but cannot mutate trust.
+`untrustedProject` authority. MCP, daemon clients, resident agents, kernels,
+custom tools, and repository hooks can inspect trust, but they cannot change it.
 
 ## TUI decision
 
@@ -113,11 +113,11 @@ current trust state so a stale TUI snapshot cannot grant project authority.
 ## Skills and experiments
 
 User-global skills are labelled `userGlobal`. Project skills remain visible as
-`untrustedProject` instructions. The human-controlled Glass Dev resident Pi
-session loads its configured project resources, while project mutations,
-project hooks, and other project execution still require the workspace trust
-decision. Once trust is active, resources are labelled `trustedProject` with
-their exact source path.
+`untrustedProject` instructions. The default Glass Core agent and the optional
+legacy Pi agent can read configured user resources. Project resources remain
+labelled `untrustedProject` until the workspace is trusted. Project hooks and
+other project execution still require a trust decision. After trust, project
+resources are labelled `trustedProject` and keep their source paths.
 
 Creating experiment worktrees requires a trusted parent. The explicit current
 policy grants each child `TrustedOnce` for the owning experiment-manager

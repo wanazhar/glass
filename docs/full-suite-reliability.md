@@ -14,13 +14,15 @@ LSP, DAP, test discovery, process inspection, and bounded event delivery.
 | workspace actor commands | 64 | sender backpressure is explicit |
 | workspace event history | newest 512 | `droppedEvents` and `lostBefore` report loss |
 | daemon event batch | 256 | larger/empty request is rejected |
-| Pi commands per worker | 32 | caller receives queue-full conflict |
-| Pi worker events | 256 shared | per-agent `droppedEventCount` increments |
-| Pi retained history | newest 512 | older history is not presented as retained |
+| Legacy Pi commands per worker | 32 | caller receives a queue-full conflict |
+| Legacy Pi worker events | 256 shared | the affected agent's `droppedEventCount` increments |
+| Legacy Pi retained history | newest 512 | older history is not presented as retained |
 
-The TUI displays each agent's retained and dropped event counts. Daemon clients
-resume an exclusive sequence cursor and can distinguish “no new events” from
-“history was lost.” No queue silently grows with session duration.
+These three limits apply to the legacy Pi adapter. Other services report their
+own limits in their contracts. The TUI displays each agent's retained and
+dropped event counts. Daemon clients resume from an event cursor and can
+distinguish “no new events” from “history was lost.” No queue silently grows
+with session duration.
 
 ## Deterministic stress scenarios
 
@@ -36,7 +38,8 @@ The library suite proves:
    cannot retain the daemon registry or serialize unrelated workspaces.
 3. A fresh daemon client handle resumes the same workspace actor after its
    saved event cursor.
-4. Daemon event-ring and Pi worker-channel overflow are bounded and reported.
+4. Daemon event-ring and legacy Pi worker-channel overflow are bounded and
+   reported.
 
 The fixture DAP test exercises actual Content-Length framing and an owned
 adapter process, but adapter-family certification remains in the separate real

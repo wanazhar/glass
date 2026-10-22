@@ -1,26 +1,33 @@
 # Native browser engine
 
-Status: issue #40 remains open. The earlier loopback-listener denial is stale.
-The current checkout has targeted process-backed HTTP evidence through Slice
-873, including parent-owned image preloads; this does not cover every request
-class or establish browser conformance. Slice 874 tracks parent-owned video
-poster requests and rendering as the next uncovered media initiator. WPT,
-remote CI for unpushed changes,
-and cross-platform certification remain open. Slice 832's corrected two-origin
-regression passed (1 passed; 905 filtered; 19.33 seconds); Slices 833-836 also
-have recorded passing process-backed cases. Slice 843 records browser-owned
-SharedWorker EventSource routed through the parent coordinator; its
-process-backed cookie and stream regression passed (1 passed; 910 filtered;
-29.94 seconds). The shipped runtime entrypoints in both product packages now
-configure 4 MiB Tokio thread stacks after the default stack overflowed in this
-event-pump path. Local Slice 845 adds a process-backed Service Worker
-`waitUntil(fetch())`
-regression: the parent selects and accepts HttpOnly cookies, and the independent
-navigation commits before the held lifetime response is released, even after
-six seconds. An operation gate keeps the async-effect pump behind the backend
-operation that produced it; once a pump turn starts, later operations still
-serialize behind it. Scoped local checks and the focused test pass. This
-checkpoint is unpushed, so no remote CI result is claimed.
+Status: Issue #40 remains open. The native engine is the default browser
+runtime in feature-enabled Glass builds. This guide describes the current
+engine and the versioned profile it is working toward. The process-backed
+regressions below cover specific request and event paths; they do not establish
+full browser conformance. Web Platform Tests and cross-platform certification
+remain separate checks.
+
+The slice notes below record results from the source snapshot where each test
+ran. Their words “local” and “unpushed” describe those earlier checkpoints,
+not the state of the current checkout. Keep each result scoped to its named
+regression; a passing focused test does not establish support for every related
+web feature.
+
+Earlier process-backed tests covered external HTTP resources through Slice
+873, including parent-owned image preloads. Slice 874 adds parent-owned video
+poster requests and rendering. Slice 832's corrected two-origin regression
+passed (1 passed; 905 filtered; 19.33 seconds); Slices 833-836 also recorded
+passing process-backed cases. Slice 843 records browser-owned SharedWorker
+EventSource routed through the parent coordinator; its process-backed cookie
+and stream regression passed (1 passed; 910 filtered; 29.94 seconds). The
+shipped runtime entrypoints in both product packages configure 4 MiB Tokio
+thread stacks after the default stack overflowed in this event-pump path.
+Slice 845 adds a process-backed Service Worker `waitUntil(fetch())` regression.
+The parent selects and accepts HttpOnly cookies. The independent navigation
+commits before the held lifetime response is released, including after six
+seconds. An operation gate keeps the async-effect pump behind the backend
+operation that produced it. Once a pump turn starts, later operations still
+serialize behind it. The scoped local checks and focused test passed.
 Local Slice 846 adds a bounded owner turn for due page timers while a
 process-backed document is idle. Its BrowserSession regression passes: after
 navigation returns, `setTimeout` inserts an HTTP stylesheet and its CSS
@@ -6246,12 +6253,13 @@ and content-box geometry,
 bounded base64 data-URL loading, plus native runtime/CLI integration; not a
 stable browser compatibility or security
 boundary.
-This document is the repository contract for the Glass-owned native browser
-engine described by [issue #40](https://github.com/wanazhar/glass/issues/40).
-The current implementation is the primary local backend inside
-`glass-browser`; it is undergoing production conformance work toward replacing
-the CDP path for the declared Glass Core Web Profile. It is not a third crate,
-a protocol adapter, or an embedded copy of another browser.
+This guide describes the native browser engine tracked by
+[issue #40](https://github.com/wanazhar/glass/issues/40). The engine code lives
+in `glass-browser-core`. The `glass-browser` package provides the session and
+backend adapters that use it. Feature-enabled `glass-browser` builds select
+the native backend by default. The engine is still being tested against the
+versioned Glass Core Web Profile; it is not a claim of full browser
+conformance.
 
 ## Browser-complete expansion target
 
@@ -8275,12 +8283,14 @@ siblings, and live collection filtering. Text mutation still routes through
 the existing typed Rust transaction; full Web IDL descriptors, observer
 delivery, and browser-wide parity remain separate promotion work.
 
-The engine remains inside the existing two-crate workspace. Internal modules,
-helper binaries, and an out-of-process content worker are allowed; a third
-installable crate is not. The native feature and backend are now the
-feature-enabled product default while the remaining Core Web Profile and
-security gates are completed. Chromium/CDP remains an explicit compatibility
-path during that work, with no silent fallback.
+The workspace separates the engine from the product adapter:
+`glass-dev -> glass-browser -> glass-browser-core`. The core crate contains the
+engine implementation. It is not a third user-facing browser product.
+Internal modules, helper binaries, and an out-of-process content worker remain
+implementation details. Feature-enabled `glass-browser` builds select the
+native backend by default. Chromium/CDP remains an explicit compatibility
+path. Selecting native does not silently switch to Chromium when an operation
+is unsupported.
 
 ## Purpose and boundary
 
@@ -10538,6 +10548,8 @@ NativeEngine              <- the only mutable page-state owner
 ```
 
 The native engine is the primary local runtime in feature-enabled products.
+Its implementation is in `glass-browser-core`; `glass-browser` owns the
+session API and backend integration.
 Chromium/CDP remains the explicit full-session migration path for operations
 that are not yet certified in the Glass Core Web Profile. Firefox BiDi and
 Safari WebDriver remain externally managed experimental adapters. Native
@@ -10555,10 +10567,10 @@ cargo test -p glass-browser --test native_engine --locked
 cargo check -p glass-browser --no-default-features --locked
 ```
 
-The feature adds the optional `rquickjs` dependency to the native-first
-product build. An explicit `--no-default-features` check keeps the Chromium
-migration surface observable without changing the product default. The first
-public construction path is:
+The `native-engine` feature enables the JavaScript runtime and other native
+engine dependencies through `glass-browser-core`. An explicit
+`--no-default-features` check builds the browser package without that runtime.
+It does not change the package's default. The public construction path is:
 
 ```rust,no_run
 use glass_browser::browser::native_engine::NativeEngineConfig;

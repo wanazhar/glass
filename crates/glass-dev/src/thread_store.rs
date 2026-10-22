@@ -770,6 +770,26 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn invalid_classification_mutation_preserves_registry_bytes() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        let row = record();
+        let thread_id = row.thread_id.clone();
+        let run_id = row.runs[0].run_id.clone();
+        store.create(row).unwrap();
+        let path = root.join(".glass/threads/registry.json");
+        let before = fs::read(&path).unwrap();
+
+        let error = store
+            .classify_run(&thread_id, &run_id, RunClassification::RecoveryPending)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("actual Core session reference"));
+        assert_eq!(fs::read(path).unwrap(), before);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[cfg(unix)]
     #[test]
     fn reports_uncertain_durability_when_directory_sync_fails_after_replace() {

@@ -1,0 +1,176 @@
+/* Inlined by the build: startup and recovery must survive a missing app stylesheet. */
+.app[hidden],
+.launch[hidden],
+#launch-retry[hidden] {
+  display: none;
+}
+.launch {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  --launch-bg: #141916;
+  --launch-text: #e4e9e2;
+  --launch-muted: #8c9a8e;
+  --launch-accent: #bed7ab;
+  --launch-line: #2b342d;
+  background: var(--bg, var(--launch-bg));
+  color: var(--text, var(--launch-text));
+  font: 14px/1.6 "Glass Sans", system-ui, sans-serif;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: calc(32px + env(safe-area-inset-top, 0px)) max(28px, env(safe-area-inset-right, 0px))
+    calc(32px + env(safe-area-inset-bottom, 0px)) max(28px, env(safe-area-inset-left, 0px));
+}
+.launch-composition {
+  width: min(280px, 100%);
+  position: relative;
+  text-align: center;
+  margin-bottom: 64px;
+}
+.launch-cube {
+  display: block;
+  width: 52px;
+  height: 52px;
+  margin: 0;
+  fill: none;
+  stroke: var(--accent, var(--launch-accent));
+  stroke-width: 7;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.launch-outline {
+  stroke-dasharray: 380;
+  stroke-dashoffset: 0;
+  animation: launch-outline 0.28s ease-out both;
+}
+.launch-joint {
+  animation: launch-joint 0.24s ease-out both;
+}
+.launch-wordmark {
+  font-size: 48px;
+  letter-spacing: -0.065em;
+  line-height: 1.05;
+  font-weight: 450;
+}
+.launch-wordmark span {
+  color: var(--accent, var(--launch-accent));
+}
+.launch-rule {
+  width: 100%;
+  height: 1px;
+  background: var(--line, var(--launch-line));
+  margin: 24px 0 0;
+}
+.launch-status p {
+  margin: 0;
+}
+#launch-status {
+  color: var(--muted, var(--launch-muted));
+  font-size: 12px;
+  letter-spacing: 0.015em;
+}
+.launch-detail {
+  font-size: 12px;
+  color: var(--muted, var(--launch-muted));
+  line-height: 1.65;
+  margin: 10px 0 0 !important;
+  max-width: 280px;
+  overflow-wrap: anywhere;
+}
+.launch-detail:empty {
+  display: none;
+}
+#launch-retry {
+  margin-top: 20px;
+  font-size: 12px;
+  padding: 8px 18px;
+}
+.launch[data-state="error"] .launch-cube {
+  animation: none;
+}
+.launch[data-state="error"] .launch-outline,
+.launch[data-state="error"] .launch-joint {
+  animation: none;
+}
+@keyframes launch-outline {
+  from {
+    stroke-dashoffset: 380;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes launch-joint {
+  from {
+    opacity: 0.25;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .launch-outline,
+  .launch-joint {
+    animation: none;
+  }
+}
+
+.launch-fallback {
+  visibility: hidden;
+  animation: launch-recovery 0s 15s forwards;
+  font-size: 12px;
+  color: var(--muted, var(--launch-muted));
+  margin-top: 20px;
+}
+.launch[data-booted] .launch-fallback {
+  display: none;
+}
+@keyframes launch-recovery {
+  to {
+    visibility: visible;
+  }
+}
+
+.launch-lockup {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .launch-fallback {
+    visibility: visible;
+  }
+}
+
+
+.launch, .launch * { box-sizing: border-box; }
+.launch-feedback {
+  position: absolute;
+  inset: 100% 0 auto;
+  padding-top: 14px;
+  padding-bottom: 32px;
+}
+.launch button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid var(--line, var(--launch-line));
+  border-radius: 8px;
+  background: transparent;
+}
+.launch button:focus-visible {
+  outline: 2px solid var(--accent, var(--launch-accent));
+  outline-offset: 3px;
+}
+@media (prefers-color-scheme: light) {
+  .launch {
+    --launch-bg: #f7f8f3;
+    --launch-text: #28332a;
+    --launch-muted: #637360;
+    --launch-accent: #456d37;
+    --launch-line: #d7ddcf;
+  }
+}

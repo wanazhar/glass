@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: light)"
+      content="#f7f8f3"
+    />
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: dark)"
+      content="#141916"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <style>__LAUNCH_CSS__</style>
+    <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="/style.css?version=__SHELL_VERSION__" />
+    <title>Glass · workspace</title>
+    <link rel="modulepreload" href="/app.js?version=__SHELL_VERSION__" />
+    <script type="module" src="/boot.js?version=__SHELL_VERSION__"></script>
+  </head>
+  <body>
+    <section id="launch" class="launch" aria-label="Opening Glass">
+      <div class="launch-composition">
+        <div class="launch-lockup">
+          <svg class="launch-cube" viewBox="0 0 192 192" aria-hidden="true">
+            <path
+              class="launch-outline"
+              d="M96 35 150 66v60l-54 31-54-31V66z"
+            />
+            <path class="launch-joint" d="m69 82 27 16 27-16M96 98v31" />
+          </svg>
+          <div class="launch-wordmark" aria-label="Glass">
+            glass<span>.</span>
+          </div>
+        </div>
+        <div class="launch-rule" aria-hidden="true"></div>
+        <div class="launch-feedback">
+        <div class="launch-status" role="status" aria-live="polite">
+          <p id="launch-status">Opening workspace</p>
+          <p id="launch-detail" class="launch-detail"></p>
+        </div>
+        <button id="launch-retry" class="quiet" type="button" hidden>
+          Try again
+        </button>
+        <p class="launch-fallback">
+          Reload this page or reopen Glass to try again.
+        </p>
+        <noscript
+          ><p class="launch-detail">
+            Enable JavaScript to open your workspace.
+          </p></noscript
+        >
+        </div>
+      </div>
+    </section>
+    <div class="app" hidden inert>
+      <aside class="sidebar" id="sidebar" aria-label="Threads">
+        <div class="brand">
+          <a class="brand-home" href="/" aria-label="Glass home">
+            <img src="/icon.svg" alt="" /><span
+              >glass<span class="brand-dot">.</span></span
+            > </a
+          ><button
+            class="icon-button"
+            id="new"
+            title="New thread"
+            aria-label="New thread"
+          >
+            ＋
+          </button>
+        </div>
+        <button
+          id="sidebar-close"
+          class="icon-button sidebar-close"
+          aria-label="Close threads"
+        >
+          ×
+        </button>
+        <label class="search"
+          ><span>⌕</span
+          ><input
+            id="search"
+            placeholder="Find a thread…"
+            aria-label="Find a thread"
+          /><kbd>⌘ K</kbd></label
+        >
+        <div class="project-filter">
+          <select
+            id="project-scope"
+            aria-label="Filter conversations by project"
+          >
+            <option value="">All projects</option></select
+          ><span id="thread-count"></span>
+        </div>
+        <nav id="threads" aria-label="Conversations"></nav>
+        <button id="more-threads" class="quiet hidden" type="button">
+          Load older threads
+        </button>
+        <footer class="sidebar-footer">
+          <button type="button" id="notifications" class="quiet">
+            Notifications</button
+          ><span class="host-dot"></span>
+          <div><strong id="host">Connecting</strong><small></small></div>
+          <button
+            id="theme"
+            class="icon-button"
+            aria-label="Toggle color theme"
+          >
+            ◐
+          </button>
+        </footer>
+      </aside>
+      <div class="scrim" id="scrim"></div>
+      <main class="workspace">
+        <header class="toolbar">
+          <button
+            class="icon-button mobile-menu"
+            id="menu"
+            aria-label="Show threads"
+            aria-controls="sidebar"
+            aria-expanded="false"
+          >
+            ☰
+          </button>
+          <div class="breadcrumbs">
+            <span id="workspace-name">Workspace</span
+            ><span class="crumb-separator">/</span
+            ><strong id="thread-name">New thread</strong>
+          </div>
+          <div class="toolbar-actions">
+            <button type="button" id="agent-activity" class="icon-button" aria-label="Agent activity" title="Agent activity">›_</button>
+            <button
+              type="button"
+              id="changes-toggle"
+              class="icon-button"
+              aria-label="Review changes"
+              title="Changes"
+            >
+              ±
+            </button>
+            <span id="connection" class="connection"><i></i>Connecting</span
+            ><button
+              class="icon-button"
+              id="files-toggle"
+              aria-label="Browse files"
+              title="Files"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                aria-hidden="true"
+              >
+                <path d="M3 7V5h7l2 2h9v13H3Z" />
+              </svg></button
+            ><button
+              class="icon-button"
+              id="details-toggle"
+              title="Thread activity"
+              aria-label="Thread activity"
+              aria-controls="details"
+              aria-expanded="false"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                aria-hidden="true"
+              >
+                <path d="M3 6h18M3 12h18M3 18h12" />
+              </svg>
+            </button>
+          </div>
+        </header>
+        <div class="conversation" id="conversation">
+          <button id="older" class="older hidden">
+            ↑ Load earlier activity
+          </button>
+          <section id="welcome" class="welcome">
+            <img class="welcome-mark" src="/icon.svg" alt="" />
+            <h1>glass<span>.</span></h1>
+            <div class="welcome-actions">
+              <button id="welcome-new" class="primary">
+                New thread <span>＋</span></button
+              ><button id="welcome-files" class="quiet">Open folder</button>
+            </div>
+          </section>
+          <div id="timeline" class="timeline" aria-label="Conversation"></div>
+          <div id="interaction" class="interaction hidden" aria-label="Your input is needed"></div>
+        </div>
+        <button id="latest" class="latest hidden">↓ Back to latest</button>
+        <section class="compose-zone">
+          <div id="notice" class="notice hidden" role="status"></div>
+          <div id="activity" class="activity">
+            <span class="activity-dot"></span
+            ><span id="activity-text">Ready</span
+            ><button id="ownership">Take control</button>
+          </div>
+          <div
+            id="context-chips"
+            class="context-chips"
+            aria-label="Recent attachments"
+          ></div>
+          <input type="file" id="attachment-input" multiple hidden />
+          <form id="composer" class="composer">
+            <textarea
+              id="prompt"
+              rows="2"
+              placeholder="Message…"
+              aria-label="Message"
+              maxlength="60000"
+            ></textarea>
+            <div class="composer-bottom">
+              <div class="composer-meta">
+                <button
+                  type="button"
+                  id="attach"
+                  class="icon-button"
+                  aria-label="Attach files"
+                  title="Attach files"
+                >
+                  ＋</button
+                ><span id="model">Glass Core</span
+                ><span class="meta-divider"></span
+                ><span id="profile">Host execution</span>
+              </div>
+              <div class="composer-actions">
+                <button
+                  type="button"
+                  id="send-mode"
+                  class="quiet hidden"
+                  data-mode="steer"
+                >
+                  Steer task
+                </button>
+                <button
+                  type="button"
+                  id="stop"
+                  class="stop hidden"
+                  aria-label="Stop current turn"
+                >
+                  ■</button
+                ><button
+                  type="submit"
+                  id="send"
+                  class="send"
+                  aria-label="Send message"
+                >
+                  ↑
+                </button>
+              </div>
+            </div>
+          </form>
+          <div class="compose-foot">
+            <button
+              type="button"
+              id="open-commands"
+              class="quiet"
+              aria-label="Open commands"
+            >
+              /</button
+            ><button type="button" id="context-toggle" class="quiet">
+              Context</button
+            ><button type="button" id="work-toggle" class="quiet">Work</button
+            ><button type="button" id="queue-toggle" class="quiet">Queue</button
+            ><span id="usage"></span
+            ><span class="keyboard-hint"
+              >Enter to send <span>·</span> Shift Enter for a new line</span
+            >
+          </div>
+        </section>
+      </main>
+      <aside class="details" id="details" aria-label="Thread details">
+        <header>
+          <h2>Thread details</h2>
+          <button id="reasoning-latest" class="quiet reasoning-latest" hidden>
+            ↓ Latest
+          </button>
+          <button
+            class="icon-button"
+            id="details-close"
+            aria-label="Close details"
+          >
+            ×
+          </button>
+        </header>
+        <div class="detail-tabs">
+          <button class="selected" data-tab="activity">Activity</button
+          ><button data-tab="reasoning">Reasoning</button
+          ><button data-tab="context">Context</button
+          ><button data-tab="files">Files</button>
+        </div>
+        <div
+          id="detail-content"
+          tabindex="0"
+          aria-label="Thread detail content"
+        ></div>
+      </aside>
+    </div>
+    <dialog id="commands" aria-label="Commands">
+      <header>
+        <h2 id="commands-title">Commands</h2>
+        <button
+          type="button"
+          id="commands-close"
+          autofocus
+          class="icon-button"
+          aria-label="Close commands"
+        >
+          ×
+        </button>
+      </header>
+      <input
+        id="command-search"
+        placeholder="Find a command…"
+        aria-label="Find a command"
+        autocomplete="off"
+      />
+      <div id="command-list" role="listbox" aria-label="Commands"></div>
+      <footer id="command-help">↑ ↓ select · Enter choose · Esc back</footer>
+    </dialog>
+    <dialog id="draft-editor" aria-label="Draft editor">
+      <header>
+        <h2>Draft</h2>
+        <button
+          type="button"
+          id="draft-cancel"
+          class="icon-button"
+          aria-label="Cancel draft editing"
+        >
+          ×
+        </button>
+      </header>
+      <textarea id="draft-text" aria-label="Draft text"></textarea>
+      <footer>
+        <button type="button" id="draft-save" class="command-run">
+          Use draft
+        </button>
+      </footer>
+    </dialog>
+    <dialog id="animations" aria-label="Working animation">
+      <header><h2>Working animation</h2></header>
+      <div class="animation-choices">
+        <button data-animation="dots">••• Dots</button
+        ><button data-animation="pulse">◇ Pulse</button
+        ><button data-animation="breathe">◌ Breathe</button
+        ><button data-animation="none">— Still</button>
+      </div>
+    </dialog>
+    <dialog id="command-view" aria-label="Command">
+      <header>
+        <h2 id="command-title">Command</h2>
+        <button
+          type="button"
+          id="command-close"
+          class="icon-button"
+          aria-label="Close command"
+        >
+          ×
+        </button>
+      </header>
+      <div id="command-content">
+        <form id="command-form"><div class="command-actions"><div id="command-status" role="status" aria-atomic="true" tabindex="0"></div></div></form>
+        <div id="command-result" class="command-data" role="region" aria-label="Command results" aria-busy="false"></div>
+      </div>
+    </dialog>
+    <dialog id="preview">
+      <header>
+        <div>
+          <span class="eyebrow" id="preview-kind">PREVIEW</span>
+          <h2 id="preview-title">Preview</h2>
+        </div>
+        <div>
+          <button id="download" class="quiet">Download</button
+          ><button
+            id="preview-close"
+            class="icon-button"
+            aria-label="Close preview"
+          >
+            ×
+          </button>
+        </div>
+      </header>
+      <div id="preview-body"></div>
+    </dialog>
+  </body>
+</html>

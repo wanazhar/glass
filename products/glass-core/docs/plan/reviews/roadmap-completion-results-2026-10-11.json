@@ -1,0 +1,378 @@
+{
+  "binary": "target/release/glass-core",
+  "binary_sha256": "be10a0da26f422481b49af5f392feb7c37c5dfaa9b1658c2f6c3bc42f14707d4",
+  "unit_tests": {
+    "core": 713,
+    "mod_api": 13,
+    "tui": 93,
+    "total": 819,
+    "ignored_doc_examples": 1
+  },
+  "clippy": "--workspace --all-targets -- -D warnings: passed",
+  "release_acceptance": [
+    {
+      "script": "smoke-transaction-recovery.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-tooling-foundation.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-native-files-jobs.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-turn-recovery.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-egress.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-state-receipts.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-checkpoint-rewind.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-wait.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-hooks-shell.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-recovery.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-cli.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-roadmap-completion.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-companion.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-presentation.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-blocks.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-scroll-submit.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-context.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-inbox.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-loop.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-worktree.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-workflow-next.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-plugin-integrity.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-memory.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-agent-limits.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-lsp.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-serve.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-adapter-bounds.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-tool-repair.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-queue.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-workflows.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-job-unicode.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-security.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-permissions-pty.py",
+      "size": null,
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-ext-steer-pty.py",
+      "size": "80x30",
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-ext-steer-pty.py",
+      "size": "40x24",
+      "exit_code": 0
+    },
+    {
+      "script": "smoke-ext-steer-pty.py",
+      "size": "20x8",
+      "exit_code": 0
+    }
+  ],
+  "performance": {
+    "binary": "target/release/glass-core",
+    "fixture_records": 12000,
+    "startup_help_median_ms": 2.148098312318325,
+    "pty_by_size": {
+      "40x24": {
+        "interactive_prompt_startup_median_ms": 5.492089316248894,
+        "key_visible_median_ms": 0.11264067143201828,
+        "frame_visible_redraw_median_ms": 0.25812163949012756
+      },
+      "20x8": {
+        "interactive_prompt_startup_median_ms": 5.592010915279388,
+        "key_visible_median_ms": 0.09060092270374298,
+        "frame_visible_redraw_median_ms": 0.2583228051662445
+      }
+    },
+    "interactive_prompt_startup_worst_median_ms": 5.592010915279388,
+    "key_visible_worst_median_ms": 0.11264067143201828,
+    "frame_visible_redraw_worst_median_ms": 0.2583228051662445,
+    "long_history_reader_frame_median_ms": {
+      "40x24": 133.51533561944962,
+      "20x8": 138.45794089138508
+    },
+    "long_history_reader_frame_worst_median_ms": 138.45794089138508,
+    "long_history_search_ms": 1.7260154709219933,
+    "long_history_child_peak_rss_kib": 3748
+  },
+  "native_file_performance": {
+    "read_99988_bytes_median_ms": 1.583215780556202,
+    "read_999992_bytes_median_ms": 3.6117136478424072,
+    "read_7999992_bytes_median_ms": 24.26926139742136,
+    "edit_1mb_median_ms": 35.302842035889626,
+    "ordinary_python_write_spawns_checker": false
+  },
+  "edit_format_benchmark": {
+    "method": "Fresh process per read/edit for both paths; filesystem cache not flushed. Hashline worker uses bundled read_lines/apply_ops; no model success-rate inference.",
+    "repeats": 3,
+    "rows": [
+      {
+        "fixture": "small",
+        "format": "revision",
+        "source_bytes": 30000,
+        "read_median_ms": 1.741296,
+        "edit_median_ms": 7.128425,
+        "edit_request_bytes": 163,
+        "read_and_edit_response_bytes": 925,
+        "exact_expected_bytes": true,
+        "stale_edit_rejected": true,
+        "result_sha256": "a52bbd2c52e7540ee153dcf6408129b4c61dd198a0af1dc05573fddcf0eec195"
+      },
+      {
+        "fixture": "small",
+        "format": "hashline",
+        "source_bytes": 30000,
+        "read_median_ms": 65.472196,
+        "edit_median_ms": 66.328645,
+        "edit_request_bytes": 123,
+        "read_and_edit_response_bytes": 58,
+        "exact_expected_bytes": true,
+        "stale_edit_rejected": true,
+        "result_sha256": "a52bbd2c52e7540ee153dcf6408129b4c61dd198a0af1dc05573fddcf0eec195"
+      },
+      {
+        "fixture": "large",
+        "format": "revision",
+        "source_bytes": 1125000,
+        "read_median_ms": 6.925583,
+        "edit_median_ms": 28.892743,
+        "edit_request_bytes": 165,
+        "read_and_edit_response_bytes": 936,
+        "exact_expected_bytes": true,
+        "stale_edit_rejected": true,
+        "result_sha256": "11c243811252f91997bcc26776f30bfe0e65ae9c28ae83d9509b463a1455dd86"
+      },
+      {
+        "fixture": "large",
+        "format": "hashline",
+        "source_bytes": 1125000,
+        "read_median_ms": 96.082115,
+        "edit_median_ms": 110.489806,
+        "edit_request_bytes": 124,
+        "read_and_edit_response_bytes": 61,
+        "exact_expected_bytes": true,
+        "stale_edit_rejected": true,
+        "result_sha256": "11c243811252f91997bcc26776f30bfe0e65ae9c28ae83d9509b463a1455dd86"
+      },
+      {
+        "fixture": "unicode_repeated",
+        "format": "revision",
+        "source_bytes": 72000,
+        "read_median_ms": 2.23874,
+        "edit_median_ms": 9.007762,
+        "edit_request_bytes": 163,
+        "read_and_edit_response_bytes": 931,
+        "exact_expected_bytes": true,
+        "stale_edit_rejected": true,
+        "result_sha256": "5ab866cd14657abc07883ee0f04784ea0f9ef2584df07ac07d3e6e87e1e23997"
+      },
+      {
+        "fixture": "unicode_repeated",
+        "format": "hashline",
+        "source_bytes": 72000,
+        "read_median_ms": 65.620878,
+        "edit_median_ms": 68.317582,
+        "edit_request_bytes": 123,
+        "read_and_edit_response_bytes": 68,
+        "exact_expected_bytes": true,
+        "stale_edit_rejected": true,
+        "result_sha256": "5ab866cd14657abc07883ee0f04784ea0f9ef2584df07ac07d3e6e87e1e23997"
+      },
+      {
+        "fixture": "crlf",
+        "format": "revision",
+        "source_bytes": 44000,
+        "read_median_ms": 2.588663,
+        "edit_median_ms": 11.919828,
+        "edit_request_bytes": 163,
+        "read_and_edit_response_bytes": 915,
+        "exact_expected_bytes": true,
+        "stale_edit_rejected": true,
+        "result_sha256": "5eb9164feb7f0fd6fba74cff13feecf21e4465247a812c57ee9c3936824d2b0c"
+      },
+      {
+        "fixture": "crlf",
+        "format": "hashline",
+        "source_bytes": 44000,
+        "read_median_ms": 109.989681,
+        "edit_median_ms": 75.520368,
+        "edit_request_bytes": 123,
+        "read_and_edit_response_bytes": 53,
+        "exact_expected_bytes": true,
+        "stale_edit_rejected": true,
+        "result_sha256": "5eb9164feb7f0fd6fba74cff13feecf21e4465247a812c57ee9c3936824d2b0c"
+      },
+      {
+        "fixture": "mixed_endings",
+        "format": "revision",
+        "source_bytes": 46000,
+        "read_median_ms": 2.332581,
+        "edit_median_ms": 9.221164,
+        "edit_request_bytes": 163,
+        "read_and_edit_response_bytes": 919,
+        "exact_expected_bytes": true,
+        "stale_edit_rejected": true,
+        "result_sha256": "ddaad36d826dc9bc5469f55f1793ffecf41d2575e9e1feda2aaa5f5b763b3445"
+      },
+      {
+        "fixture": "mixed_endings",
+        "format": "hashline",
+        "source_bytes": 46000,
+        "read_median_ms": 64.926831,
+        "edit_median_ms": 67.265013,
+        "edit_request_bytes": 123,
+        "read_and_edit_response_bytes": 55,
+        "exact_expected_bytes": true,
+        "stale_edit_rejected": true,
+        "result_sha256": "ddaad36d826dc9bc5469f55f1793ffecf41d2575e9e1feda2aaa5f5b763b3445"
+      },
+      {
+        "fixture": "no_final_newline",
+        "format": "revision",
+        "source_bytes": 20004,
+        "read_median_ms": 1.799376,
+        "edit_median_ms": 7.810631,
+        "edit_request_bytes": 163,
+        "read_and_edit_response_bytes": 914,
+        "exact_expected_bytes": true,
+        "stale_edit_rejected": true,
+        "result_sha256": "ce69b83ebd79a30b2537b8d4558444ff74442299d8be0a6671b299e53eac8997"
+      },
+      {
+        "fixture": "no_final_newline",
+        "format": "hashline",
+        "source_bytes": 20004,
+        "read_median_ms": 68.208621,
+        "edit_median_ms": 66.489206,
+        "edit_request_bytes": 123,
+        "read_and_edit_response_bytes": 53,
+        "exact_expected_bytes": true,
+        "stale_edit_rejected": true,
+        "result_sha256": "ce69b83ebd79a30b2537b8d4558444ff74442299d8be0a6671b299e53eac8997"
+      }
+    ]
+  }
+}

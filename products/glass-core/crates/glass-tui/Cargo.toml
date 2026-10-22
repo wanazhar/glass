@@ -1,0 +1,17 @@
+[package]
+name = "glass-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Terminal rendering and input for glass."
+
+[dependencies]
+unicode-width = "0.2"
+glass-mod-api.workspace = true
+crossterm = { version = "0.29", default-features = false, features = ["events"] }
+ratatui-core = "0.1"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

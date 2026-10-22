@@ -1,0 +1,25 @@
+{
+  "name": "@glass-core/extension-sdk",
+  "version": "0.1.0",
+  "description": "Typed subprocess extensions for glass-core",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build"
+  },
+  "license": "MIT"
+}

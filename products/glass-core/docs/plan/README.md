@@ -1,0 +1,159 @@
+# Implementation records
+
+[Documentation](../INDEX.md)
+
+These records preserve source observations, implementation scope, and verification
+at their recorded checkpoint. Consult the current guides for supported behavior.
+External project observations have not been revalidated by this editorial update.
+
+## Latest delivery
+
+- [Web workflow delivery](tasks/web-workflow-delivery.md): performance-first reading, composition, review, and mobile workflows (in progress).
+
+- [Output presentation review](reviews/output-presentation-2026-10-15.md)
+
+- [Pre-integration runtime delivery](reviews/preintegration-runtime-2026-10-15.md)
+
+## Design and contracts
+
+- [Chat readability](chat-readability.md)
+- [Execution lifecycle consolidation](execution-lifecycle-audit.md)
+- [Feature consolidation audit](feature-consolidation-audit.md)
+- [Inline conversation scrolling](inline-scroll.md)
+- [Live turn UI](live-turn-ui.md)
+- [Native execution checklist](native-checklist.md)
+- [Direct native file tools](native-file-tools.md)
+- [Native files, diagnostics, and owned jobs](native-files-jobs.md)
+- [Neuralnets and model guidance protocol](neuralnets.md)
+- [Persistent teammates](persistent-agents.md)
+- [Twenty-item shipping round](ship-next-20.md)
+- [Six-codebase feature wave — delivery plan](six-codebases-wave.md)
+- [Bounded tool-call repair](tool-call-repair.md)
+- [Color and motion](visual-polish.md)
+- [Welcome-back recap](welcome-back-recap.md)
+- [Coding workflow delivery](workflow-next-20.md)
+
+## Tasks
+
+- [ACP](tasks/acp-001.md)
+- [Auto verify](tasks/auto-verify-001.md)
+- [Chat readability](tasks/chat-readability-001.md)
+- [Chat scroll spacing](tasks/chat-scroll-spacing-001.md)
+- [Compaction hardening](tasks/compaction-hardening-001.md)
+- [Composer greeting](tasks/composer-greeting-001.md)
+- [Context edit](tasks/context-edit-001.md)
+- [Durability](tasks/durability-001.md)
+- [Export](tasks/export-001.md)
+- [Extension cancellation, shutdown and call lineage](tasks/ext-lifecycle-001.md)
+- [History and handoff contracts](tasks/history-contracts-001.md)
+- [Image input](tasks/image-input-001.md)
+- [Index](tasks/index-001.md)
+- [Init](tasks/init-001.md)
+- [Inline scroll](tasks/inline-scroll-001.md)
+- [Live turn UI](tasks/live-turn-ui-001.md)
+- [Loops](tasks/loops-001.md)
+- [LSP](tasks/lsp-001.md)
+- [LSP diagnostic deltas and stale-checked code actions](tasks/lsp-deltas-001.md)
+- [MCP bridge](tasks/mcp-bridge-001.md)
+- [MCP HTTP regressions](tasks/mcp-http-regressions-001.md)
+- [MCP v2](tasks/mcp-v2-001.md)
+- [Memory](tasks/memory-001.md)
+- [Model fallback](tasks/model-fallback-001.md)
+- [Notifications](tasks/notifications-001.md)
+- [October 8 regressions](tasks/oct8-regressions-001.md)
+- [Oracle](tasks/oracle-001.md)
+- [Pi shipping](tasks/pi-shipping-001.md)
+- [Plugins](tasks/plugins-001.md)
+- [Program status](tasks/program-status-001.md)
+- [Reader redraw](tasks/reader-redraw-001.md)
+- [Failure recovery inspector](tasks/recovery-inspector-001.md)
+- [Roadmap workflow completion sweep](tasks/roadmap-completion-002.md)
+- [Full roadmap delivery ledger](tasks/roadmap-delivery.md)
+- [Round 3 ports](tasks/round3-ports-001.md)
+- [Round 3 regressions](tasks/round3-regressions-001.md)
+- [Sandbox](tasks/sandbox-001.md)
+- [Sandbox egress](tasks/sandbox-egress-001.md)
+- [Serve attach](tasks/serve-attach-001.md)
+- [Session comms](tasks/session-comms-001.md)
+- [Delivery: diagnostics](tasks/ship-diagnostics-001.md)
+- [Delivery: input](tasks/ship-input-001.md)
+- [Delivery: plugin integrity](tasks/ship-plugin-integrity-001.md)
+- [Delivery: reader](tasks/ship-reader-001.md)
+- [Delivery: reliability](tasks/ship-reliability-001.md)
+- [Delivery: security](tasks/ship-security-001.md)
+- [Delivery: terminal](tasks/ship-terminal-001.md)
+- [Wave A: agent-loop correctness](tasks/six-wave-a-001.md)
+- [Wave B: security hardening](tasks/six-wave-b-001.md)
+- [Wave C: context management](tasks/six-wave-c-001.md)
+- [Wave D: representation + perf](tasks/six-wave-d-001.md)
+- [Wave E: extensibility + review](tasks/six-wave-e-001.md)
+- [State receipts, duplicate-request detection and ownership](tasks/state-receipts-001.md)
+- [Subagent fanout](tasks/subagent-fanout-001.md)
+- [Tool navigation](tasks/tool-navigation-001.md)
+- [Tooling foundation: file recovery and explicit shell inputs](tasks/tooling-foundation-001.md)
+- [Trust gate](tasks/trust-gate-001.md)
+- [Turn recovery and consistent tool cards](tasks/turn-recovery-001.md)
+- [Visual polish](tasks/visual-polish-001.md)
+- [Web extension](tasks/web-extension-001.md)
+- [Workbench contracts sweep](tasks/workbench-contracts-001.md)
+- [Worktree apply](tasks/worktree-apply-001.md)
+
+## Reviews
+
+- [Runtime footprint and performance — 2026-10-15](reviews/runtime-footprint-2026-10-15.md)
+- [Runtime footprint, round 2 — 2026-10-15](reviews/runtime-footprint-round2-2026-10-15.md)
+
+- [Documentation audit — 2026-10-15](reviews/documentation-2026-10-15.md)
+
+- [Model-managed teammate limits — 2026-10-10](reviews/agent-core-limits-001.md)
+- [Review: chat-readability-001](reviews/chat-readability-001-01.md)
+- [Review: chat-scroll-spacing-001](reviews/chat-scroll-spacing-001-01.md)
+- [Consistent CLI presentation and resume picker](reviews/cli-design-resume-001-01.md)
+- [CLI help presentation](reviews/cli-help-001-01.md)
+- [Review: composer-greeting-001](reviews/composer-greeting-001-01.md)
+- [Request context transparency](reviews/context-transparency-001-01.md)
+- [Empty provider responses and transcript error styling](reviews/empty-provider-response-001-01.md)
+- [Review: inline-scroll-001](reviews/inline-scroll-001-01.md)
+- [Review: live-turn-ui-001](reviews/live-turn-ui-001-01.md)
+- [Integrated roadmap implementation review](reviews/merged-roadmap-2026-10-11.md)
+- [Native checklist verification](reviews/native-checklist-001.md)
+- [Scoped approvals and native questions](reviews/interaction-001.md)
+- [Reasoning reader and unrestricted file access](reviews/reasoning-access-001.md)
+- [Native files and owned jobs verification](reviews/native-files-jobs-001-01.md)
+- [Native output and structured tool blocks](reviews/native-output-blocks-001-01.md)
+- [Oct 8 shipping ports independent review](reviews/oct8-regressions-001-01.md)
+- [Slash palette Escape restoration](reviews/palette-escape-001-01.md)
+- [Persistent teammates verification](reviews/persistent-agents-001-01.md)
+- [Pi shipping independent verification](reviews/pi-shipping-001-01.md)
+- [Review: reader-redraw-001](reviews/reader-redraw-001-01.md)
+- [Release binary: 15 edge-case suites and live Kilo task](reviews/release-edge-15-001-01.md)
+- [Original roadmap acceptance map](reviews/roadmap-completion-2026-10-11.md)
+- [Round 3 ports](reviews/round3-ports-001-01.md)
+- [Round 3 regressions](reviews/round3-regressions-001-01.md)
+- [Scroll redraw and return-to-tail verification](reviews/scroll-redraw-001-01.md)
+- [Scroll submission and Chat Completions steering](reviews/scroll-submit-steer-001-01.md)
+- [Conversation scrollbar range](reviews/scrollbar-range-001-01.md)
+- [Twenty-item final verification](reviews/ship-final-001-01.md)
+- [Reliability and plugin focused review](reviews/ship-reliability-focused-001-01.md)
+- [Ship security and MCP integration review 001-02](reviews/ship-security-input-001-02.md)
+- [Terminal shipping review 10–14](reviews/ship-terminal-001-02.md)
+- [Ship Next 20: Wave 1 Independent Verification](reviews/ship-wave1-001-01.md)
+- [Streaming and scrolling presentation](reviews/stream-scroll-presentation-001-01.md)
+- [Tool-call repair verification](reviews/tool-call-repair-001-01.md)
+- [Review: tool-navigation-001](reviews/tool-navigation-001-01.md)
+- [Tooling foundation and turn recovery review](reviews/tooling-foundation-001.md)
+- [Independent review: visual-polish-001](reviews/visual-polish-001-01.md)
+- [Workflow delivery verification — 2026-10-10](reviews/workflow-next-20-001.md)
+
+- [Host runtime delivery — 2026-10-15](reviews/host-runtime-2026-10-15.md)
+
+- [Native rendering audit — 2026-10-15](reviews/rendering-audit-2026-10-15.md)
+
+- [Live Kilo architecture rendering — 2026-10-15](reviews/live-architecture-rendering-2026-10-15.md)
+
+- [Flowchart branch layout — 2026-10-15](reviews/flowchart-branch-layout-2026-10-15.md)
+
+## Previous guide locations
+
+- [Workbench guide](../workbench.md): retained entry point for links written
+  before user guides and detailed references were separated.

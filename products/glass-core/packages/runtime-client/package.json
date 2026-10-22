@@ -1,0 +1,12 @@
+{
+  "name":"@glass-core/runtime-client",
+  "version":"0.1.0",
+  "description":"Typed host client for glass-core runtime",
+  "type":"module",
+  "exports":{".":{"types":"./dist/index.d.ts","import":"./dist/index.js"}},
+  "files":["dist","README.md","LICENSE"],
+  "engines":{"node":">=22"},
+  "scripts":{"build":"tsc -p tsconfig.json","test":"npm run build && node --test test/*.test.mjs"},
+  "devDependencies":{"@types/node":"^22.0.0","typescript":"~5.9.3"},
+  "license":"MIT"
+}

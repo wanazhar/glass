@@ -1,0 +1,29 @@
+[package]
+name = "glass-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "A minimal, fast coding harness."
+default-run = "glass-core"
+
+[[bin]]
+name = "glass-core"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+httpdate = "1"
+glass-mod-api.workspace = true
+glass-tui.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+
+base64 = "0.22"
+ring = "0.17"
+url = "2"
+fs2 = "0.4"
+
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

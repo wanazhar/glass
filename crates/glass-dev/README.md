@@ -101,7 +101,10 @@ Ask and Plan are fail-closed for mutations. `Enter` sends and keeps the dock
 open; `Esc` closes it. `Ctrl-D` toggles steer mode; follow-up mode queues a
 message. Sent prompts remain as `YOU`, and `GLASS AGENT` streams replies and
 tool activity. A failed send restores the draft for edit-and-retry; busy
-background work retains new text. Mutations pause on a Glass approval card
+background work retains new text. If Core rejects a `turn/prompt` or
+`turn/followUp` request, Glass returns its agent phase to idle and keeps the
+failed attempt available for retry. This settles the Glass send state; it does
+not recover from a provider-side failure. Mutations pause on a Glass approval card
 (`Enter`/`Y` approve once, `Esc`/`N` deny). Type in the dock to talk, `:` to
 search commands, and `a` to open this surface's actions. `:process start dev`
 starts the detected suite, Tasks owns the workspace-local Agent checklist

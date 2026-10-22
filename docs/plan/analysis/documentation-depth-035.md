@@ -40,7 +40,7 @@ of the version they recorded and are not rewritten as current user guides.
 
 | Surface | Files | Disposition in this pass |
 |---|---|---|
-| Repository entry | `README.md`, `docs/INDEX.md`, `docs/getting-started.md`, `docs/features.md` | Rewrite the product hierarchy, audience routes, quick starts, operational model, and limitations. |
+| Repository entry | `README.md`, `docs/INDEX.md`, `docs/credits-and-inspiration.md`, `docs/getting-started.md`, `docs/features.md` | Rewrite the product hierarchy, audience routes, quick starts, operational model, and limitations. |
 | Installation and governance | `docs/installation.md`, `docs/customization-governance.md`, `SECURITY.md`, `CONTRIBUTING.md`, `docs/documentation-style.md`, `docs/ownership.md` | Preserve verified install/uninstall detail; deepen customization authority/evidence, lifecycle, contribution, trust, and documentation acceptance where missing. |
 | Product packages | `crates/glass-dev/README.md`, `crates/glass-browser/README.md` | Keep self-contained crates.io pages; make the complete-versus-core boundary unmistakable. |
 | Development workspace | `docs/development-runtime.md`, `docs/glass-core-harness.md`, `docs/workspace-trust.md`, `docs/pi-sdk-runtime.md`, `docs/task-dag.md`, `docs/experiments.md`, `docs/debugger.md`, `docs/kernels.md`, `docs/development-graph.md`, `docs/full-suite-reliability.md`, `docs/architecture/development-tui.md`, `docs/architecture/mobile-cockpit.md`, `docs/architecture/tui.md`, `docs/harness-architecture.md` | Expand the resident engine, trust, the legacy Pi backend, task, experiment, debugger, kernel, typed graph/replay, bounded concurrent load, files/editor/process/LSP/timeline/agent lifecycles, views, errors, and recovery. |

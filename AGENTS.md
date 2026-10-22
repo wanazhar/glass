@@ -71,7 +71,11 @@ For documentation changes, follow the versioned [maintainer
 handbook](docs/maintainers/README.md). Every non-ignored Markdown file is
 covered by the repository documentation inventory; current guides must be
 routed from `docs/INDEX.md`, and historical or generated material must keep
-its scope explicit.
+its scope explicit. Update the [documentation index](docs/INDEX.md) and
+regenerate `docs/documentation-catalog.json` in the same change. Run
+`python3 scripts/check-documentation-wiki.py --base <base-sha>` to review page,
+heading, anchor, and body-only changes; this reports structure, not semantic
+freshness.
 
 ## Security & Configuration Tips
 

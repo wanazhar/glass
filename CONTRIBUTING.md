@@ -8,7 +8,9 @@ you need to run browser tests.
 Read the [documentation style](docs/documentation-style.md) before you edit a
 user guide. Read the [maintainer handbook](docs/maintainers/README.md) before
 you add or classify a Markdown document. Keep commands, field names, and
-status statements exact.
+status statements exact. Update the [documentation index](docs/INDEX.md) and
+regenerate its catalog whenever a Markdown page or its section structure
+changes.
 
 ## Build and test
 

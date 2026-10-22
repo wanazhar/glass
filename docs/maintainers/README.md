@@ -24,6 +24,15 @@ Every non-ignored Markdown file is part of the documentation inventory. The
 release-truth audit and the link/depth checks discover the inventory from Git;
 they do not use a manually maintained list of filenames.
 
+The [documentation index](../INDEX.md) is the topic-oriented home and routes
+readers to canonical guides. Its generated
+[Markdown catalog](../documentation-catalog.json) records class, topic,
+canonical route, and section anchors for every discovered Markdown file. New
+or edited pages must update the index or routing rules and regenerate the
+catalog in the same change. The change report is structural: it detects page,
+heading, and anchor changes and calls unchanged-heading edits “body-only”; it
+cannot judge whether prose is semantically fresh.
+
 Use one of these classes:
 
 - `current`: describes the behavior, interface, installation, support, or
@@ -40,6 +49,36 @@ The checker derives these classes from repository paths and reserved record
 files. If a new document does not have a historical or generated path, it is
 audited as current. This fail-closed default prevents a new file from silently
 escaping the current-claim audit.
+
+## Repository-wide Markdown review
+
+The generated [Markdown catalog](../documentation-catalog.json) extends that
+inventory with an audience, path-derived status, topic route, heading anchors,
+and a conservative disposition recommendation for each page. It includes all
+Git-discovered Markdown, including root instructions, package docs, Core
+product material, plans, research, reviews, records, fixtures, and generated
+assets. Cargo package README entries name their consuming package. Other
+entries identify repository-local links and the index route as their navigation
+dependencies.
+
+The recommendations are review guidance, not authorization to delete, move,
+or rewrite files:
+
+| Recommendation | How to use it |
+|---|---|
+| `KEEP_PUBLIC` | Keep current guides, package documentation, active instructions, generated inputs, and dated release evidence at their canonical paths. |
+| `ARCHIVE_PUBLIC` | Keep proposals, plans, design notes, research, reviews, and migrations in a clearly historical area, routed separately from current user guidance. |
+| `REWRITE_CONSOLIDATE` | Use only when a documented duplicate claim has an identified canonical owner; preserve source evidence and package consumers. |
+| `MOVE_PRIVATE` | Requires a specific path/category basis and an explicit owner decision. This path-only catalog does not inspect content or identify private material. |
+| `REMOVE_FROM_CURRENT_TREE` | Requires verified source/package/fixture consumers and separate authorization. This catalog recommends no removals. |
+
+Audience and status are path-family metadata; plan/task/review pages retain
+their more precise status inside the record itself. The catalog does not inspect
+document prose for secrets, infer semantic freshness, or claim that historical
+or proposed work is implemented. It records no inferred successor where the
+source record names none. Keep legal notices, release evidence, fixtures,
+`include_str!` inputs, and Cargo package files unless their owner and consumers
+are explicitly audited.
 
 ## Add or change a document
 
@@ -71,6 +110,8 @@ python3 scripts/check-release-documentation.py \
   --report /tmp/glass-release-documentation.json
 python3 scripts/check-documentation-depth.py
 python3 scripts/check-tui-shortcuts.py
+python3 scripts/check-documentation-wiki.py --write
+python3 scripts/check-documentation-wiki.py --base origin/main
 git diff --check
 ```
 

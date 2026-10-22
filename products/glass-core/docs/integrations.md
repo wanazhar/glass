@@ -147,4 +147,4 @@ server must never break the edit loop.
 
 Web source references, cached continuation, network policy and configuration are
 documented in the [Web extension](../extensions/web/README.md). Screenshots can be
-read through native [Image viewing](tools.md#image-viewing).
+read through native [Image viewing](tools.md#image-sharing-and-viewing).

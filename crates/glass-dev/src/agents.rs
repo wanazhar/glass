@@ -1368,26 +1368,39 @@ impl AgentRegistry {
             }
             WorkerEvent::Engine(id, value) => {
                 let event_type = value.get("type").and_then(Value::as_str);
-                let phase = match event_type {
-                    Some("waiting") => Some(RunClassification::Waiting),
-                    Some("agent_settled") => Some(RunClassification::Idle),
-                    Some("response")
-                        if self
-                            .records
-                            .get(&id)
-                            .is_some_and(|record| !record.awaiting_agent_settle) =>
-                    {
-                        Some(RunClassification::Idle)
+                let response_failed_attempt = if event_type == Some("response") {
+                    self.persist_send_attempt_response(&id, &value)?
+                } else {
+                    false
+                };
+                let failed_turn_response = response_failed_attempt
+                    && value.get("ok").and_then(Value::as_bool) == Some(false)
+                    && matches!(
+                        value.get("operation").and_then(Value::as_str),
+                        Some("turn/prompt" | "turn/followUp")
+                    );
+                let phase = if failed_turn_response {
+                    Some(RunClassification::Idle)
+                } else {
+                    match event_type {
+                        Some("waiting") => Some(RunClassification::Waiting),
+                        Some("agent_settled") => Some(RunClassification::Idle),
+                        Some("response")
+                            if self
+                                .records
+                                .get(&id)
+                                .is_some_and(|record| !record.awaiting_agent_settle) =>
+                        {
+                            Some(RunClassification::Idle)
+                        }
+                        _ => None,
                     }
-                    _ => None,
                 };
                 if let Some(phase) = phase {
                     self.persist_run_phase(&id, phase)?;
                 }
                 if event_type == Some("waiting") {
                     self.persist_unambiguous_active_send_attempt(&id, SendAttemptStatus::Waiting)?;
-                } else if event_type == Some("response") {
-                    self.persist_send_attempt_response(&id, &value)?;
                 }
                 if let Some(record) = self.records.get_mut(&id) {
                     if let Some(file) = value
@@ -1407,6 +1420,9 @@ impl AgentRegistry {
                     if event_type == Some("agent_settled") && !record.snapshot.status.terminal() {
                         record.awaiting_agent_settle = false;
                         record.snapshot.status = AgentStatus::Idle;
+                    }
+                    if failed_turn_response && !record.snapshot.status.terminal() {
+                        record.awaiting_agent_settle = false;
                     }
                     if event_type == Some("response")
                         && !record.awaiting_agent_settle
@@ -1666,20 +1682,22 @@ impl AgentRegistry {
         &self,
         id: &AgentId,
         response: &Value,
-    ) -> DevelopmentResult<()> {
+    ) -> DevelopmentResult<bool> {
         let Some(request_id) = response.get("id").and_then(Value::as_str) else {
-            return Ok(());
+            return Ok(false);
         };
         let record = self
             .records
             .get(id)
             .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))?;
+        let run_id = &record.run_id;
         let attempt = self
             .thread_store
             .send_attempts(&record.thread_id)?
             .into_iter()
             .find(|attempt| {
-                attempt.engine_request_id.as_deref() == Some(request_id)
+                attempt.target_run_id == *run_id
+                    && attempt.engine_request_id.as_deref() == Some(request_id)
                     && matches!(
                         attempt.status,
                         SendAttemptStatus::Accepted
@@ -1694,8 +1712,10 @@ impl AgentRegistry {
                 SendAttemptStatus::Failed
             };
             self.persist_send_attempt(id, &attempt.attempt_id, status, None)?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        Ok(())
     }
 
     fn mark_inflight_attempts_uncertain(&self, id: &AgentId) -> DevelopmentResult<()> {
@@ -2613,6 +2633,19 @@ mod tests {
             let record = registry.records.get(&id).unwrap();
             (record.thread_id.clone(), record.run_id.clone())
         };
+        let run = |registry: &AgentRegistry| {
+            registry
+                .thread_store
+                .list()
+                .unwrap()
+                .into_iter()
+                .find(|thread| thread.thread_id == thread_id)
+                .unwrap()
+                .runs
+                .into_iter()
+                .find(|run| run.run_id == run_id)
+                .unwrap()
+        };
         let attempt = registry
             .thread_store
             .list()
@@ -2821,6 +2854,60 @@ mod tests {
             attempts
                 .iter()
                 .find(|attempt| attempt.attempt_id == third_attempt_id)
+                .unwrap()
+                .status,
+            SendAttemptStatus::Failed
+        );
+
+        registry
+            .send_with_context_and_client_message_id(
+                &id,
+                "prompt",
+                "Send a prompt whose runtime request is rejected before turn start",
+                None,
+                Some("message-stable-4"),
+            )
+            .unwrap();
+        let fourth_attempt_id = registry
+            .thread_store
+            .send_attempts(&thread_id)
+            .unwrap()
+            .into_iter()
+            .find(|attempt| attempt.client_message_id == "message-stable-4")
+            .unwrap()
+            .attempt_id;
+        registry
+            .apply_worker_event(WorkerEvent::RequestStarted(
+                id.clone(),
+                "core-request-3".into(),
+                true,
+                Some(fourth_attempt_id.clone()),
+            ))
+            .unwrap();
+        assert_eq!(run(&registry).classification, RunClassification::Working);
+        registry
+            .apply_worker_event(WorkerEvent::Engine(
+                id.clone(),
+                serde_json::json!({
+                    "type":"response",
+                    "id":"core-request-3",
+                    "operation":"turn/prompt",
+                    "ok":false,
+                    "error":{"code":-32000,"message":"provider unavailable"},
+                }),
+            ))
+            .unwrap();
+        assert_eq!(run(&registry).classification, RunClassification::Idle);
+        let record = registry.records.get(&id).unwrap();
+        assert_eq!(record.snapshot.status, AgentStatus::Idle);
+        assert!(!record.awaiting_agent_settle);
+        assert_eq!(
+            registry
+                .thread_store
+                .send_attempts(&thread_id)
+                .unwrap()
+                .into_iter()
+                .find(|attempt| attempt.attempt_id == fourth_attempt_id)
                 .unwrap()
                 .status,
             SendAttemptStatus::Failed

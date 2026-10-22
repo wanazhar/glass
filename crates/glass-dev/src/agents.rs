@@ -338,9 +338,21 @@ impl AgentRegistry {
                     RunClassification::Starting if run.core_session_id.is_none() => {
                         AgentStatus::Unavailable
                     }
-                    RunClassification::RecoveryPending | RunClassification::Starting => {
+                    RunClassification::RecoveryPending => AgentStatus::RecoveryPending,
+                    RunClassification::Starting if run.core_session_id.is_some() => {
                         AgentStatus::RecoveryPending
                     }
+                    RunClassification::Idle
+                    | RunClassification::Working
+                    | RunClassification::Waiting
+                        if run.core_session_id.is_some() =>
+                    {
+                        AgentStatus::RecoveryPending
+                    }
+                    RunClassification::Starting
+                    | RunClassification::Idle
+                    | RunClassification::Working
+                    | RunClassification::Waiting => AgentStatus::Unavailable,
                     RunClassification::Completed => AgentStatus::Completed,
                     RunClassification::Failed => AgentStatus::Failed,
                     RunClassification::Cancelled => AgentStatus::Cancelled,
@@ -350,7 +362,10 @@ impl AgentRegistry {
                 Some("Durable thread recovery is unavailable on Windows until protected registry ACL support is available; registry files inherit workspace ACLs.".into())
             } else {
                 match status {
-                AgentStatus::RecoveryPending => Some("This resident session needs explicit Core recovery before it can accept messages.".into()),
+                AgentStatus::RecoveryPending => Some(format!(
+                    "This resident session was last known to be {} and needs explicit Core recovery before it can accept messages.",
+                    run.classification.label()
+                )),
                 AgentStatus::Unavailable if run.classification == RunClassification::Queued => Some("This thread was queued but never initialized; it will not resume or replay automatically.".into()),
                 AgentStatus::Unavailable => Some("The prior run stopped before an engine session reference was initialized and cannot be resumed.".into()),
                 _ => None,
@@ -1236,6 +1251,7 @@ impl AgentRegistry {
     fn apply_worker_event(&mut self, event: WorkerEvent) -> DevelopmentResult<()> {
         match event {
             WorkerEvent::Ready(id) => {
+                self.persist_run_phase(&id, RunClassification::Idle)?;
                 if let Some(record) = self.records.get_mut(&id)
                     && !record.snapshot.status.terminal()
                 {
@@ -1247,6 +1263,7 @@ impl AgentRegistry {
                 self.record_event(&id, "ready", Value::Null);
             }
             WorkerEvent::RequestStarted(id, request_id, waits_for_agent) => {
+                self.persist_run_phase(&id, RunClassification::Working)?;
                 if let Some(record) = self.records.get_mut(&id)
                     && !record.snapshot.status.terminal()
                 {
@@ -1258,6 +1275,23 @@ impl AgentRegistry {
                 self.record_event(&id, "requestStarted", Value::String(request_id));
             }
             WorkerEvent::Engine(id, value) => {
+                let event_type = value.get("type").and_then(Value::as_str);
+                let phase = match event_type {
+                    Some("waiting") => Some(RunClassification::Waiting),
+                    Some("agent_settled") => Some(RunClassification::Idle),
+                    Some("response")
+                        if self
+                            .records
+                            .get(&id)
+                            .is_some_and(|record| !record.awaiting_agent_settle) =>
+                    {
+                        Some(RunClassification::Idle)
+                    }
+                    _ => None,
+                };
+                if let Some(phase) = phase {
+                    self.persist_run_phase(&id, phase)?;
+                }
                 if let Some(record) = self.records.get_mut(&id) {
                     if let Some(file) = value
                         .pointer("/result/sessionFile")
@@ -1269,6 +1303,10 @@ impl AgentRegistry {
                         record.snapshot.session_file = Some(file.into());
                     }
                     let event_type = value.get("type").and_then(Value::as_str);
+                    if event_type == Some("waiting") && !record.snapshot.status.terminal() {
+                        record.awaiting_agent_settle = true;
+                        record.snapshot.status = AgentStatus::Waiting;
+                    }
                     if event_type == Some("agent_settled") && !record.snapshot.status.terminal() {
                         record.awaiting_agent_settle = false;
                         record.snapshot.status = AgentStatus::Idle;
@@ -1457,6 +1495,15 @@ impl AgentRegistry {
             }
         }
         Ok(())
+    }
+
+    fn persist_run_phase(&self, id: &AgentId, phase: RunClassification) -> DevelopmentResult<()> {
+        let record = self
+            .records
+            .get(id)
+            .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))?;
+        self.thread_store
+            .classify_run(&record.thread_id, &record.run_id, phase)
     }
 
     fn record_event(&mut self, id: &AgentId, kind: &str, payload: Value) {
@@ -2075,6 +2122,21 @@ mod tests {
                 RunClassification::RecoveryPending,
                 Some("actual-core-session".to_string()),
             ),
+            (
+                "prior idle",
+                RunClassification::Idle,
+                Some("idle-core-session".to_string()),
+            ),
+            (
+                "prior working",
+                RunClassification::Working,
+                Some("working-core-session".to_string()),
+            ),
+            (
+                "prior waiting",
+                RunClassification::Waiting,
+                Some("waiting-core-session".to_string()),
+            ),
             ("not initialized", RunClassification::Starting, None),
             (
                 "waiting in dependency queue",
@@ -2108,7 +2170,7 @@ mod tests {
         drop(registry);
         let mut reopened = AgentRegistry::new(&root).unwrap();
         let snapshots = reopened.list().unwrap();
-        assert_eq!(snapshots.len(), 4);
+        assert_eq!(snapshots.len(), 7);
         if cfg!(windows) {
             assert!(
                 snapshots
@@ -2130,7 +2192,7 @@ mod tests {
                 .iter()
                 .filter(|s| s.status == AgentStatus::RecoveryPending)
                 .count(),
-            1
+            4
         );
         assert_eq!(
             snapshots
@@ -2186,6 +2248,69 @@ mod tests {
                 .all(|event| event.kind != "user")
         );
         drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn worker_lifecycle_phases_are_durable_and_waiting_is_visible() {
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let id = AgentId::parse("agent-durable-phases").unwrap();
+        let (command, commands) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let worker = thread::spawn(move || {
+            while let Ok(command) = commands.recv() {
+                if matches!(command, WorkerCommand::Shutdown) {
+                    break;
+                }
+            }
+        });
+        insert_test_worker(&mut registry, id.clone(), command, worker);
+        let run = |registry: &AgentRegistry| {
+            let record = registry.records.get(&id).unwrap();
+            registry
+                .thread_store
+                .list()
+                .unwrap()
+                .into_iter()
+                .find(|thread| thread.thread_id == record.thread_id)
+                .unwrap()
+                .runs
+                .into_iter()
+                .find(|run| run.run_id == record.run_id)
+                .unwrap()
+        };
+
+        registry
+            .apply_worker_event(WorkerEvent::Ready(id.clone()))
+            .unwrap();
+        assert_eq!(run(&registry).classification, RunClassification::Idle);
+        registry
+            .apply_worker_event(WorkerEvent::RequestStarted(
+                id.clone(),
+                "request-1".into(),
+                true,
+            ))
+            .unwrap();
+        assert_eq!(run(&registry).classification, RunClassification::Working);
+        registry
+            .apply_worker_event(WorkerEvent::Engine(
+                id.clone(),
+                serde_json::json!({"type":"waiting"}),
+            ))
+            .unwrap();
+        assert_eq!(registry.records[&id].snapshot.status, AgentStatus::Waiting);
+        assert_eq!(run(&registry).classification, RunClassification::Waiting);
+        registry
+            .apply_worker_event(WorkerEvent::Engine(
+                id.clone(),
+                serde_json::json!({"type":"agent_settled"}),
+            ))
+            .unwrap();
+        assert_eq!(registry.records[&id].snapshot.status, AgentStatus::Idle);
+        assert_eq!(run(&registry).classification, RunClassification::Idle);
+
+        registry.cancel(&id).unwrap();
+        drop(registry);
         std::fs::remove_dir_all(root).unwrap();
     }
 

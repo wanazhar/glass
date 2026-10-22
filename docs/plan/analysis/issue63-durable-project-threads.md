@@ -48,13 +48,16 @@ Core session ID is captured from the initialized runtime, then persisted before
 the agent can accept a prompt. If that write fails, the agent remains
 unavailable and no prompt is delivered.
 
-On reopen, prior runs with an actual Core session ID are shown as
-`recoveryPending`; a run that crashed during initialization or remained in a
-dependency queue is shown as unavailable, with queued work identified as never
-started. Completed, failed, and cancelled rows retain their terminal
-classification. Glass regenerates ephemeral `AgentId` values for all rows and
-shows them through the existing Agent picker. A recovered row is not treated as
-idle or working. Explicit resume verifies the stored Core session ID, mixed
+The ledger retains `queued`, `starting`, `idle`, `working`, `waiting`, and
+terminal phases for each worker incarnation. On reopen, prior runs with an
+actual Core session ID are shown as `recoveryPending`; the last phase appears
+in the recovery explanation, while a run that crashed during initialization or
+remained in a dependency queue is shown as unavailable, with queued work
+identified as never started. Completed, failed, and cancelled rows retain
+their terminal classification. Glass regenerates ephemeral `AgentId` values
+for all rows and shows them through the existing Agent picker. A recovered row
+is never treated as live or sent work automatically. Explicit resume verifies
+the stored Core session ID, mixed
 tool mode, and project cwd before restoring bounded transcript entries and
 enabling sends. A failed reattach remains retryable. Glass does not create a
 replacement or replay a prior turn.
@@ -97,5 +100,8 @@ an attention inbox follow after verified resume.
    persist and edit/reorder/remove queue entries against stable
    `ThreadId`/`RunId`, with an explicit destination for steering and no
    automatic replay after restart.
-3. Add an attention inbox ordered by durable run lifecycle and link each item
-   back to its owning thread.
+3. The [attention inbox task](../tasks/issue63-attention-inbox-001.md) adds
+   cross-thread attention items and direct links to their owning thread or
+   proposal. Per-send dispatch reconciliation remains open: messages submitted
+   within a worker incarnation do not yet have durable attempt records, so an
+   interrupted send cannot be reconstructed exactly.

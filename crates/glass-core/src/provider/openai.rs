@@ -1298,7 +1298,14 @@ mod protocol_regressions {
                 &[json!({"choices":[{"delta":delta,"finish_reason":"stop"}]})],
                 true,
             );
-            assert_eq!(output, vec![Event::Text("visible".into()), Event::Done]);
+            assert_eq!(
+                output,
+                vec![
+                    Event::Text("visible".into()),
+                    Event::ChatResponse,
+                    Event::Done
+                ]
+            );
         }
     }
 
@@ -1306,7 +1313,7 @@ mod protocol_regressions {
     fn chat_stream_is_finite() {
         assert_eq!(
             events(&[json!({"choices":[{"delta":{"content":"ok"}}]})], true),
-            vec![Event::Text("ok".into()), Event::Done]
+            vec![Event::Text("ok".into()), Event::ChatResponse, Event::Done]
         );
     }
     #[test]
@@ -1328,7 +1335,8 @@ mod protocol_regressions {
             ],
             true,
         );
-        assert!(matches!(&output[0], Event::ToolCall { arguments, .. } if arguments == "{"));
+        assert!(matches!(output.first(), Some(Event::ChatResponse)));
+        assert!(matches!(&output[1], Event::ToolCall { arguments, .. } if arguments == "{"));
         assert!(matches!(output.last(), Some(Event::Done)));
     }
     #[test]

@@ -1,7 +1,7 @@
 ---
 id: workspace-glass-core-001
 scope: shared Cargo workspace and synchronized product version
-status: in-progress
+status: done
 depends-on: []
 ---
 

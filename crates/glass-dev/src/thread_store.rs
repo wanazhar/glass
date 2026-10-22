@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 const VERSION: u32 = 1;
 const MAX_BYTES: u64 = 256 * 1024;
 const MAX_THREADS: usize = 256;
+#[cfg(unix)]
+const MAX_DRAFT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -18,6 +20,20 @@ pub(crate) struct ThreadRecord {
     pub role: String,
     pub created_at_ms: u128,
     pub runs: Vec<RunRecord>,
+    #[cfg(unix)]
+    #[serde(default)]
+    pub composer_draft: Option<ComposerDraftRecord>,
+    #[cfg(windows)]
+    #[serde(default)]
+    pub composer_draft: Option<serde_json::Value>,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ComposerDraftRecord {
+    pub text: String,
+    pub cursor: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +113,37 @@ impl ThreadStore {
 
     pub(crate) fn list(&self) -> DevelopmentResult<Vec<ThreadRecord>> {
         Ok(self.load()?.threads)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn composer_draft(
+        &self,
+        thread_id: &str,
+    ) -> DevelopmentResult<Option<ComposerDraftRecord>> {
+        self.load()?
+            .threads
+            .into_iter()
+            .find(|thread| thread.thread_id == thread_id)
+            .map(|thread| thread.composer_draft)
+            .ok_or_else(|| config("composer draft thread was not found"))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn set_composer_draft(
+        &self,
+        thread_id: &str,
+        draft: ComposerDraftRecord,
+    ) -> DevelopmentResult<()> {
+        validate_composer_draft(&draft)?;
+        self.mutate(|doc| {
+            let thread = doc
+                .threads
+                .iter_mut()
+                .find(|thread| thread.thread_id == thread_id)
+                .ok_or_else(|| config("composer draft thread was not found"))?;
+            thread.composer_draft = Some(draft);
+            Ok(())
+        })
     }
 
     pub(crate) fn create(&self, thread: ThreadRecord) -> DevelopmentResult<()> {
@@ -257,6 +304,7 @@ impl ThreadStore {
         let result = (|| {
             let mut doc = self.load()?;
             f(&mut doc)?;
+            validate_draft_budget(&doc)?;
             self.save(&doc)
         })();
         let _ = fs2::FileExt::unlock(&lock);
@@ -323,6 +371,7 @@ impl ThreadStore {
                 }
             }
         }
+        validate_draft_budget(&doc)?;
         Ok(doc)
     }
 
@@ -511,10 +560,47 @@ fn validate_thread(thread: &ThreadRecord) -> DevelopmentResult<()> {
     {
         return Err(config("thread registry record exceeds its field limits"));
     }
+    #[cfg(unix)]
+    if let Some(draft) = &thread.composer_draft {
+        validate_composer_draft(draft)?;
+    }
     for run in &thread.runs {
         validate_id(&run.run_id, "run")?;
         validate_run(run)?;
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_composer_draft(draft: &ComposerDraftRecord) -> DevelopmentResult<()> {
+    if draft.text.len() > 16 * 1024
+        || draft.text.contains('\0')
+        || draft.cursor > draft.text.len()
+        || !draft.text.is_char_boundary(draft.cursor)
+    {
+        return Err(config("thread composer draft exceeds its field limits"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_draft_budget(doc: &Document) -> DevelopmentResult<()> {
+    let total = doc
+        .threads
+        .iter()
+        .filter_map(|thread| thread.composer_draft.as_ref())
+        .try_fold(0usize, |total, draft| total.checked_add(draft.text.len()))
+        .ok_or_else(|| config("thread composer drafts exceed their aggregate limit"))?;
+    if total > MAX_DRAFT_BYTES {
+        return Err(config(
+            "thread composer drafts exceed their aggregate limit",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_draft_budget(_doc: &Document) -> DevelopmentResult<()> {
     Ok(())
 }
 
@@ -577,6 +663,7 @@ mod tests {
             title: "Build feature".into(),
             role: "builder".into(),
             created_at_ms: 1,
+            composer_draft: None,
             runs: vec![RunRecord {
                 run_id: random_id("run").unwrap(),
                 engine: "glass-core".into(),
@@ -597,6 +684,67 @@ mod tests {
         let text = String::from_utf8(bytes).unwrap();
         assert!(!text.contains("agent-"));
         assert!(!text.contains("job"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn composer_draft_round_trips_and_rejects_invalid_cursor_without_overwrite() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        let row = record();
+        let thread_id = row.thread_id.clone();
+        store.create(row).unwrap();
+        let draft = ComposerDraftRecord {
+            text: "hello λ".into(),
+            cursor: "hello ".len(),
+        };
+        store.set_composer_draft(&thread_id, draft.clone()).unwrap();
+        assert_eq!(
+            ThreadStore::open(&root)
+                .unwrap()
+                .composer_draft(&thread_id)
+                .unwrap(),
+            Some(draft)
+        );
+        let before = fs::read(&store.path).unwrap();
+        let error = store
+            .set_composer_draft(
+                &thread_id,
+                ComposerDraftRecord {
+                    text: "λ".into(),
+                    cursor: 1,
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("composer draft"));
+        assert_eq!(fs::read(&store.path).unwrap(), before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn aggregate_composer_draft_limit_preserves_the_last_committed_registry() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        let mut thread_ids = Vec::new();
+        for _ in 0..5 {
+            let row = record();
+            thread_ids.push(row.thread_id.clone());
+            store.create(row).unwrap();
+        }
+        let draft = ComposerDraftRecord {
+            text: "x".repeat(16 * 1024),
+            cursor: 16 * 1024,
+        };
+        for thread_id in &thread_ids[..4] {
+            store.set_composer_draft(thread_id, draft.clone()).unwrap();
+        }
+        let before = fs::read(&store.path).unwrap();
+        let error = store.set_composer_draft(&thread_ids[4], draft).unwrap_err();
+        assert!(error.to_string().contains("aggregate limit"));
+        assert_eq!(fs::read(&store.path).unwrap(), before);
+        assert_eq!(store.list().unwrap().len(), 5);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -634,6 +782,48 @@ mod tests {
         let corrupt = fs::read(&path).unwrap();
         assert!(ThreadStore::open(&root).is_err());
         assert_eq!(fs::read(path).unwrap(), corrupt);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn old_thread_records_without_composer_draft_still_open() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        store.create(record()).unwrap();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&store.path).unwrap()).unwrap();
+        value["threads"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("composerDraft");
+        fs::write(&store.path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let reopened = ThreadStore::open(&root).unwrap();
+        assert_eq!(reopened.list().unwrap()[0].composer_draft, None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_preserves_opaque_composer_draft_during_other_registry_mutations() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        let row = record();
+        let thread_id = row.thread_id.clone();
+        let run_id = row.runs[0].run_id.clone();
+        store.create(row).unwrap();
+        let draft = serde_json::json!({ "text": "private draft", "cursor": 7 });
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&store.path).unwrap()).unwrap();
+        value["threads"][0]["composerDraft"] = draft.clone();
+        fs::write(&store.path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let reopened = ThreadStore::open(&root).unwrap();
+        reopened
+            .classify_run(&thread_id, &run_id, RunClassification::Failed)
+            .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&store.path).unwrap()).unwrap();
+        assert_eq!(saved["threads"][0]["composerDraft"], draft);
         let _ = fs::remove_dir_all(root);
     }
 

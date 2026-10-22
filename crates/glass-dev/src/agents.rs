@@ -503,6 +503,7 @@ impl AgentRegistry {
             title: spec.role.clone(),
             role: spec.role.clone(),
             created_at_ms: now,
+            composer_draft: None,
             runs: vec![RunRecord {
                 run_id: run_id.clone(),
                 engine: harness.id().into(),
@@ -590,6 +591,19 @@ impl AgentRegistry {
             .get(id)
             .map(|record| record.snapshot.clone())
             .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn composer_draft_target(
+        &self,
+        id: &AgentId,
+    ) -> DevelopmentResult<(ThreadStore, String)> {
+        let thread_id = self
+            .records
+            .get(id)
+            .map(|record| record.thread_id.clone())
+            .ok_or_else(|| DevelopmentError::NotFound(format!("agent {}", id.as_str())))?;
+        Ok((self.thread_store.clone(), thread_id))
     }
 
     /// Return refreshed snapshots for all registered agents.
@@ -1951,6 +1965,7 @@ mod tests {
                 title: spec.role.clone(),
                 role: spec.role.clone(),
                 created_at_ms: now,
+                composer_draft: None,
                 runs: vec![RunRecord {
                     run_id: run_id.clone(),
                     engine: "glass-core".into(),
@@ -2060,6 +2075,7 @@ mod tests {
                 title: title.into(),
                 role: "builder".into(),
                 created_at_ms: 1,
+                composer_draft: None,
                 runs: vec![RunRecord {
                     run_id: crate::thread_store::random_id("run").unwrap(),
                     engine: "glass-core".into(),
@@ -2167,6 +2183,7 @@ mod tests {
                 title: "test".into(),
                 role: "builder".into(),
                 created_at_ms: 1,
+                composer_draft: None,
                 runs: vec![RunRecord {
                     run_id: run_id.clone(),
                     engine: "glass-core".into(),

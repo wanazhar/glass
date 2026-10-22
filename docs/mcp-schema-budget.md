@@ -13,9 +13,9 @@ reports:
 
 | Metric | Measured value |
 |---|---:|
-| Negotiated tools | 341 |
-| Serialized `tools` array | 180,804 UTF-8 bytes |
-| Four-bytes-per-token estimate | 45,201 tokens (rounded up) |
+| Negotiated tools | 342 |
+| Serialized `tools` array | 181,498 UTF-8 bytes |
+| Four-bytes-per-token estimate | 45,375 tokens (rounded up) |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,
@@ -64,7 +64,7 @@ namespaced resource.
 The measured full-product catalog is 10,987 bytes above the 160 KiB ceiling on this checkout. Treat that as an active budget exception: release documentation must not call the catalog within budget until the catalog is reduced or the ceiling is deliberately changed with compatibility and release evidence.
 
 The increase from the published 0.3.4 measurement of 129,444 bytes to the
-current 180,804-byte development inventory covers explicit trust, autonomous
+current 181,498-byte development inventory covers explicit trust, autonomous
 task, measured experiment, debugger inspection, governed-kernel operations,
 the governed Agent composer/runtime setup routes, workspace-local Agent todos, and Git
 fetch/pull/merge/rebase.
@@ -128,7 +128,7 @@ effective agreement. Inspect `glassAgreement`, then use `tools/list` and
 capability/schema checks for optional behavior. A reconnect creates a new
 agreement and requires fresh discovery.
 
-The current `glass` executable advertises the 341-tool canonical catalog in the
+The current `glass` executable advertises the 342-tool canonical catalog in the
 reproducible scoreboard; `glass-browser` retains its independently measured
 browser catalog. The effective capability
 agreement determines which optional operations are usable. Context reduction

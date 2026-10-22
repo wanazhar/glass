@@ -1055,6 +1055,7 @@ mod tests {
                 title: "reopened conversation".into(),
                 role: "builder".into(),
                 created_at_ms: 1,
+                composer_draft: None,
                 runs: vec![crate::thread_store::RunRecord {
                     run_id: crate::thread_store::random_id("run").unwrap(),
                     engine: "glass-core".into(),

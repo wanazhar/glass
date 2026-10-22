@@ -7,19 +7,18 @@ ones recorded in the task file, not independently rerun here.
 
 ## Findings
 
-- **P2, non-blocking — insertion/deletion comparisons can misrepresent the
-  changed region.** The design calls for a bounded unified diff
-  ([analysis, Contract](../analysis/editor-buffer-external-reconcile.md)); the
-  implementation compares lines only at identical indexes and emits a
-  synthetic `@@` marker for each mismatch
-  (`crates/glass-dev/src/tui/state.rs:10676`).
-  A one-line insertion near the beginning shifts all following lines, so the
-  display can report unchanged content as changed and spend its eight-line
-  budget before reaching the actual end of the insertion. The current test
-  checks the bound and truncation for same-index replacements, but not shifted
-  alignment (`crates/glass-dev/src/tui/state.rs:11532`).
-  Consider a bounded LCS/patience-style alignment or an existing diff helper;
-  keep the character and changed-line caps.
+- **P2, non-blocking — resolved by `6a2cdf66`.** The initial index-by-index
+  comparison could misrepresent insertions and deletions. The follow-up aligns
+  common lines with LCS when the product of input line counts is at most
+  1,000,000, and falls back to a common-prefix/suffix replacement block above
+  that cap; output remains capped
+  at eight changed lines and 100 characters per line (`crates/glass-dev/src/tui/state.rs`,
+  `aligned_line_operations` and `bounded_line_diff`). Work is bounded by the
+  table cap or a linear fallback, plus linear processing of the bounded buffer
+  and snapshot inputs. The new `external_compare_aligns_insertions_before_bounding_changed_lines`
+  regression asserts an insertion at the start and a later line replacement
+  both appear, and separately asserts that many changes emit the truncation
+  marker (`crates/glass-dev/src/tui/state.rs`, test of that name).
 
 ## Contract checks
 
@@ -36,10 +35,15 @@ ones recorded in the task file, not independently rerun here.
 
 The task record reports 22 project tests, focused TUI reconciliation/diff tests,
 scoped strict Clippy, formatting, diff checks, and documentation validators as
-passing. These were not repeated because the review request prohibited builds
-and recorded results were available.
+passing. The follow-up adds the insertion/later-change/truncation diff test and
+unchanged/changed-identity reload attribution test. The coordinator separately
+reports this post-follow-up check passed:
+`CARGO_TARGET_DIR=/home/ubuntu/work/glass/.worktrees/issue63-mixed-tools-001/target cargo clippy -p glass-dev --lib --locked -- -D warnings`.
+No builds or tests were rerun as part of this review.
 
 ## Conclusion
 
-**pass** — no blocking contract mismatch found. Record the bounded diff
-alignment improvement as non-blocking follow-up.
+**pass** — no blocking contract mismatch found. The prior P2 diff-alignment
+finding is resolved by `6a2cdf66`; its regression coverage verifies later
+changes remain visible after an insertion and that omitted changes are marked
+as truncated.

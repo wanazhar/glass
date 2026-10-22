@@ -44,8 +44,9 @@ other tools.
 - [ ] Return from Core resumes Glass and refreshes readiness; child resolution,
       launch, and terminal-resume errors are surfaced truthfully.
 - [ ] The current resident process/session is not automatically restarted after
-      Core changes configuration. Tell the user that a new conversation uses
-      the newly selected Core settings and leave the existing session intact.
+      Core changes configuration. `:agent new` is not a fresh process; tell the
+      user to start a new independent resident agent/runtime process (such as
+      `:agent spawn`) for new settings and leave the existing session intact.
 - [ ] Default Core action catalog, doctor, setup and auth remediation use
       Core-specific wording. Explicit `GLASS_AGENT_HARNESS=pi` keeps accurate
       Pi setup/login labels and the current Pi login behavior.

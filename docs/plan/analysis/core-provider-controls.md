@@ -37,10 +37,12 @@ provider token, key, login hint, or credential path. Core's interactive UI
 starts in the workspace directory and owns its own configuration lifecycle.
 After it exits, Glass resumes its terminal and reports the new Core readiness
 state. The already-running resident runtime retains its in-memory per-session
-configuration; Glass will not restart it, including when a turn may be active.
-The handoff result explains that a new conversation starts with newly selected
-Core settings and that the existing conversation remains available. This
-avoids an unrequested process restart and preserves the old session reference.
+configuration; even `:agent new` opens a session in that same process. Glass
+will not restart it, including when a turn may be active. The handoff result
+explains that the user must start a new independent resident agent/runtime
+process (for example, `:agent spawn`) to use newly selected Core settings;
+the existing conversation remains available. This avoids an unrequested
+process restart and preserves the old session reference.
 If the binary cannot be resolved or the terminal cannot be suspended, Glass
 gives an actionable error without pretending login occurred.
 
@@ -52,7 +54,7 @@ resolved glass-core executable (inherited stdin/stdout/stderr, workspace cwd)
     │ human uses Core's /login, then exits Core
     ▼
 Glass resumes terminal guard and refreshes Core auth/status
-    │ existing runtime/session remains untouched; new conversation gets fresh process config
+    │ existing runtime/session remains untouched; a new independent agent process reads fresh config
 ```
 
 The command catalog remains selected by the configured harness. Core wording
@@ -67,8 +69,9 @@ the same split.
 - [ ] The child is resolved from the configured Core binary/PATH, receives
       inherited terminal streams and workspace cwd, and the TUI resumes and
       refreshes readiness after exit or reports launch/resume failure. It does
-      not restart the current runtime; the result explains how to use updated
-      Core settings in a new conversation while preserving the old session.
+      not restart the current runtime; the result explains that a new
+      independent agent process (not `:agent new` in the old process) is needed
+      to use updated Core settings while preserving the old session.
 - [ ] Core action labels and readiness text name Glass Core and its provider
       flow; explicit Pi mode retains its Pi-specific setup/login labels.
 - [ ] Core model-list and model-selection commands target the selected

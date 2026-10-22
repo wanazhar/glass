@@ -1911,7 +1911,9 @@ fn follow_up_queue_old_run_retarget_and_review_retry_are_explicit() {
                     && attempts[1]["text"] == "review this retry exactly once"
                     && attempts[1]["status"] == "settled"
             });
-        if accepted && attempt_settled {
+        let queue_target_current =
+            registry["threads"][0]["followUpQueue"][1]["targetRunId"] == current_run_id;
+        if accepted && attempt_settled && queue_target_current {
             break registry;
         }
         assert!(
@@ -1936,6 +1938,10 @@ fn follow_up_queue_old_run_retarget_and_review_retry_are_explicit() {
     assert_eq!(attempts[0]["status"], "uncertain");
     assert_eq!(attempts[1]["mode"], "prompt");
     assert_eq!(attempts[1]["targetRunId"], current_run_id);
+    assert_eq!(
+        settled["threads"][0]["followUpQueue"][1]["targetRunId"],
+        current_run_id
+    );
     assert_eq!(
         settled["threads"][0]["followUpQueue"][1]["mode"],
         "followUp"

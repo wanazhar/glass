@@ -381,7 +381,7 @@ def main() -> None:
                         "error": {
                             "code": -32000,
                             "message": "fixture provider detail that must not be shown",
-                            "data": {"kind": "provider", "retryable": False},
+                            "data": {"kind": "operation", "retryable": False},
                         },
                     }
                 )

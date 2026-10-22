@@ -69,5 +69,17 @@ safe class. The attempts are separate observations; the later non-429 result
 does not identify the cause of the earlier capacity failure. No automatic
 retry was attempted. The direct Core readiness/provider probe and a direct
 Core response had succeeded earlier, but they do not prove coding through the
-Glass composer. The current live failure class and cause remain unknown; the
-offline fixture proves only the host error-projection and recovery behavior.
+Glass composer.
+
+A later diagnostic attempt recorded only sanitized protocol metadata in the
+isolated test project: the exact prompt request ID matched the failed send
+attempt and response, Core returned code `-32000` with kind `operation` and
+`retryable=false`, and no runtime events followed. The Glass composer still
+produced no file and the PTY did not observe the safe failure bubble within
+five seconds. The raw Core error message and prompt were never written to the
+trace. The offline correlated-response PTY now uses the same `operation` class
+and confirms that it is rendered and retry still requires confirmation. This
+leaves a live Core/runtime-to-TUI observation discrepancy; the provider's
+underlying reason remains unknown because its raw message is intentionally not
+retained. No retry was attempted. A sanitized trace-wrapper fixture, all 34
+PTY tests, and strict PTY Clippy passed.

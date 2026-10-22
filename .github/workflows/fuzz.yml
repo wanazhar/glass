@@ -2,9 +2,12 @@ name: Parser fuzz smoke
 
 on:
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
   push:
     branches:
-      - "**"
+      - main
   schedule:
     - cron: "17 3 * * 1"
 

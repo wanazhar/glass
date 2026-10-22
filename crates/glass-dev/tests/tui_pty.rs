@@ -47,6 +47,18 @@ impl Session {
         harness: &str,
         core_binary: Option<&std::path::Path>,
     ) -> Self {
+        Self::start_with_data_home_options(binary, root, cols, rows, harness, core_binary, None)
+    }
+
+    fn start_with_data_home_options(
+        binary: &str,
+        root: &std::path::Path,
+        cols: u16,
+        rows: u16,
+        harness: &str,
+        core_binary: Option<&std::path::Path>,
+        data_home: Option<&std::path::Path>,
+    ) -> Self {
         let mut master_fd: libc::c_int = 0;
         let mut slave_fd: libc::c_int = 0;
         let window = libc::winsize {
@@ -76,6 +88,9 @@ impl Session {
             .current_dir(root)
             .env("GLASS_AGENT_HARNESS", harness)
             .env("GLASS_TRUST_STORE_PATH", root.join(".glass/pty-trust.json"));
+        if let Some(data_home) = data_home {
+            command.env("XDG_DATA_HOME", data_home);
+        }
         if let Some(core_binary) = core_binary {
             command.env("GLASS_CORE_BINARY", core_binary);
         }
@@ -244,6 +259,10 @@ impl Session {
     }
 
     fn trust_project(&mut self) {
+        self.trust_project_with_probe("trusted project · guarded");
+    }
+
+    fn trust_project_with_probe(&mut self, probe: &str) {
         if !self.wait_for_visible("I inspect", Duration::from_millis(300)) {
             self.send(b":trust inspect\r");
             assert!(
@@ -254,7 +273,7 @@ impl Session {
         }
         self.send(b"T");
         assert!(
-            self.wait_for_raw("trusted project · guarded", Duration::from_secs(5)),
+            self.wait_for_raw(probe, Duration::from_secs(5)),
             "project trust did not complete\n{}",
             self.output_tail()
         );
@@ -367,6 +386,44 @@ fn git_workspace_root() -> std::path::PathBuf {
     root
 }
 
+fn seed_attention_proposal(root: &std::path::Path, data_home: &std::path::Path) {
+    use sha2::Digest;
+
+    let root = std::fs::canonicalize(root).expect("canonicalize attention workspace");
+    let digest = sha2::Sha256::digest(root.to_string_lossy().as_bytes());
+    let project_id = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let timeline_path = data_home
+        .join("glass/development")
+        .join(project_id)
+        .join("timeline.jsonl");
+    let mut timeline = glass_dev::development::Timeline::open(timeline_path)
+        .expect("open isolated attention timeline");
+    let actor = glass_dev::development::Actor::external("pty-fixture");
+    timeline
+        .record(
+            actor.clone(),
+            glass_dev::development::DevelopmentEventKind::EditorProposalCreated,
+            root.to_string_lossy(),
+            serde_json::json!({
+                "id": "proposal-pty-inbox",
+                "path": "a-first.txt",
+                "summary": "inbox-review",
+                "actor": actor,
+                "baseHash": "fixture-base",
+                "baseRevision": 1,
+                "original": "before\na-first change\n",
+                "proposed": "before\nproposal change\n",
+                "state": "pending",
+                "createdRevision": 1,
+                "updatedRevision": 1
+            }),
+        )
+        .expect("seed attention proposal event");
+}
+
 fn binary() -> String {
     std::env::var("GLASS_E2E_BINARY").unwrap_or_else(|_| {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -374,6 +431,12 @@ fn binary() -> String {
             .display()
             .to_string()
     })
+}
+
+fn send_ctrl_shift_a(session: &mut Session) {
+    // CSI-u reports the physical A key together with Ctrl+Shift. A plain
+    // Ctrl+A byte loses Shift and cannot exercise this shortcut.
+    session.send(b"\x1b[65;6u");
 }
 
 #[test]
@@ -616,6 +679,103 @@ fn external_harness_routes_stay_inside_tui_until_confirmed() {
     session.send(b"\x1b");
     session.settle(Duration::from_millis(300));
     session.kill();
+}
+
+#[test]
+fn attention_inbox_keyboard_journey_keeps_composer_and_opens_proposal_context() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+
+    // Exercise the normal desktop size and compact layout with a proposal
+    // seeded into the isolated project timeline. No provider or service runs.
+    for (cols, rows) in [(80, 24), (50, 16)] {
+        let root = git_workspace_root();
+        let data_home = root.join(".glass/xdg-data");
+        seed_attention_proposal(&root, &data_home);
+        let fake_core = fake_core_binary(&root);
+        let mut session = Session::start_with_data_home_options(
+            &binary(),
+            &root,
+            cols,
+            rows,
+            "glass-core",
+            Some(&fake_core),
+            Some(&data_home),
+        );
+        assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+        if cols <= 50 {
+            session.trust_project_with_probe("trusted project");
+        } else {
+            session.trust_project();
+        }
+        assert!(
+            session.wait_for("✓ Ready", Duration::from_secs(8)),
+            "offline Core did not become ready at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+
+        // Keep a composer draft underneath the asynchronous inbox refresh.
+        // Closing the overlay must restore composer input, proven by appending
+        // text before reopening the item list.
+        session.send(b"\r");
+        assert!(
+            session.wait_for("CONVERSATION", Duration::from_secs(5)),
+            "Agent composer did not open at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        session.send(b"draft");
+        send_ctrl_shift_a(&mut session);
+        assert!(
+            session.wait_for("ATTENTION INBOX", Duration::from_secs(5)),
+            "keyboard shortcut did not open inbox at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        assert!(
+            session.wait_for("Review · inbox-review", Duration::from_secs(8)),
+            "async inbox refresh did not show the proposal at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        session.send(b"\x1b");
+        session.send(b"Z");
+        assert!(
+            session.wait_for("Z", Duration::from_secs(5)),
+            "background refresh stole composer input at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+
+        // Reopen the inbox and activate its selected item with Enter. It must
+        // navigate to the proposal's exact file review context.
+        send_ctrl_shift_a(&mut session);
+        assert!(
+            session.wait_for("ATTENTION INBOX", Duration::from_secs(5)),
+            "inbox did not reopen at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        assert!(
+            session.wait_for("Review · inbox-review", Duration::from_secs(5)),
+            "inbox lost the pending proposal at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        session.send(b"\r");
+        assert!(
+            session.wait_for("pair-apply", Duration::from_secs(5)),
+            "inbox item did not open its proposal review context at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        let owning_file_probe = if cols <= 50 {
+            "FILES · a-first.txt"
+        } else {
+            "Context · @a-first.txt"
+        };
+        assert!(
+            session.wait_for(owning_file_probe, Duration::from_secs(5)),
+            "review context did not select the owning file at {cols}x{rows}\n{}",
+            session.output_tail()
+        );
+        session.kill();
+        let _ = std::fs::remove_file(fake_core);
+    }
 }
 #[test]
 fn palette_and_help_survive_real_key_sequences() {

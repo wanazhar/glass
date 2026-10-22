@@ -22,6 +22,37 @@ mod support;
 const MAX_FRAME: usize = 1024 * 1024;
 const MAX_PENDING: usize = 32;
 type Schemas = Vec<(String, String, String)>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolMode {
+    Host,
+    Local,
+    Mixed,
+}
+impl ToolMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Local => "local",
+            Self::Mixed => "mixed",
+        }
+    }
+}
+fn validate_tool_mode(protocol_version: Option<u64>, mode: ToolMode) -> Result<(), String> {
+    if mode == ToolMode::Mixed && protocol_version != Some(2) {
+        Err("toolMode mixed requires initialize protocol v2 with mixedTools".into())
+    } else {
+        Ok(())
+    }
+}
+fn tool_owners(mode: ToolMode, tools: Option<&Schemas>) -> Value {
+    json!({
+        "core": {"nativeTools": mode != ToolMode::Host},
+        "host": {
+            "namespace": if mode == ToolMode::Mixed { Some("glass.") } else { None },
+            "tools": tools.into_iter().flatten().map(|(name, _, _)| name).collect::<Vec<_>>(),
+        }
+    })
+}
 
 fn send(value: Value) -> bool {
     let encoded = value.to_string();
@@ -131,6 +162,29 @@ fn schemas(value: &Value) -> Result<Schemas, String> {
     }
     Ok(out)
 }
+fn mixed_schemas(
+    value: &Value,
+    native: &std::collections::HashSet<String>,
+    extensions: &std::collections::HashSet<String>,
+) -> Result<Schemas, String> {
+    let registered = schemas(value)?;
+    if registered
+        .iter()
+        .any(|(name, _, _)| !name.starts_with("glass."))
+    {
+        return Err("mixed-mode host tools must use the glass. namespace".into());
+    }
+    if registered.iter().any(|(name, _, _)| native.contains(name)) {
+        return Err("mixed-mode host tool collides with a Core tool".into());
+    }
+    if registered
+        .iter()
+        .any(|(name, _, _)| extensions.contains(name))
+    {
+        return Err("mixed-mode host tool collides with a Core extension".into());
+    }
+    Ok(registered)
+}
 struct Wire {
     rx: Receiver<Result<Value, String>>,
     pending: VecDeque<Value>,
@@ -142,6 +196,7 @@ struct Wire {
     cancel_grace_ms: u64,
     durable: Option<Rc<RefCell<crate::durable::Store>>>,
     durable_task: Option<String>,
+    protocol_version: Option<u64>,
 }
 impl Wire {
     fn incoming(&mut self) -> Option<Value> {
@@ -489,6 +544,7 @@ struct Conversation {
     cfg: config::Config,
     state: tools::State,
     tools: Option<Schemas>,
+    tool_mode: ToolMode,
     instructions: String,
     stats_cache: Option<(u64, Value)>,
     durable: Option<durable_host::Context>,
@@ -496,7 +552,7 @@ struct Conversation {
 fn metadata(
     p: &Value,
     cfg: &config::Config,
-) -> Result<(config::Config, Option<Schemas>, String), String> {
+) -> Result<(config::Config, Option<Schemas>, ToolMode, String), String> {
     let mut cfg = cfg.clone();
     if let Some(id) = p.get("connection").and_then(Value::as_str) {
         let store = crate::auth::load()?;
@@ -541,15 +597,39 @@ fn metadata(
             .map_err(|e| e.to_string())?,
         );
     }
-    let host_tools = match p.get("toolMode").and_then(Value::as_str).unwrap_or("host") {
-        "host" => Some(schemas(p.get("tools").unwrap_or(&json!([])))?),
+    let mode = match p.get("toolMode").and_then(Value::as_str).unwrap_or("host") {
+        "host" => ToolMode::Host,
         "local" => {
             if p.get("tools").is_some() {
                 return Err("local mode cannot register host tools".into());
             }
-            None
+            ToolMode::Local
         }
-        _ => return Err("toolMode must be host or local".into()),
+        "mixed" => ToolMode::Mixed,
+        _ => return Err("toolMode must be host, local, or mixed".into()),
+    };
+    let empty_catalog = json!([]);
+    let catalog = p.get("tools").unwrap_or(&empty_catalog);
+    let host_tools = if mode == ToolMode::Local {
+        None
+    } else {
+        let registered = if mode == ToolMode::Mixed {
+            let native = crate::provider::collect_tools(&[])
+                .into_iter()
+                .map(|(name, _, _)| name)
+                .collect::<std::collections::HashSet<_>>();
+            let mut extension_registry = ext::Registry::load(&[], &cfg.workspace, &cfg.model);
+            let extensions = extension_registry
+                .declared_tools()
+                .0
+                .into_iter()
+                .map(|(name, _, _)| name)
+                .collect::<std::collections::HashSet<_>>();
+            mixed_schemas(catalog, &native, &extensions)?
+        } else {
+            schemas(catalog)?
+        };
+        Some(registered)
     };
     for (key, target) in [
         ("provider", &mut cfg.provider),
@@ -601,8 +681,8 @@ fn metadata(
         }
     }
     let instructions=p.get("instructions").map(|v|v.as_str().ok_or("instructions must be a string")).transpose()?.unwrap_or(
-        if host_tools.is_some() {"You are a coding agent. Use only the supplied tools. The host owns permissions and user interactions."}else{&cfg.system_prompt}).to_owned();
-    Ok((cfg, host_tools, instructions))
+        if mode == ToolMode::Host {"You are a coding agent. Use only the supplied tools. The host owns permissions and user interactions."}else{&cfg.system_prompt}).to_owned();
+    Ok((cfg, host_tools, mode, instructions))
 }
 pub fn serve(cfg: config::Config) -> Result<(), String> {
     let (tx, rx) = mpsc::sync_channel(64);
@@ -652,6 +732,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
         cancel_grace_ms: 250,
         durable: None,
         durable_task: None,
+        protocol_version: None,
     }));
     let mut root: Option<PathBuf> = None;
     let mut conversations = BTreeMap::<String, Conversation>::new();
@@ -687,9 +768,32 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 error(&id, -32001, "already initialized");
                 continue;
             }
-            if p["protocolVersion"] != 1 {
-                error(&id, -32602, "protocolVersion must be 1");
+            let requested_protocol = p["protocolVersion"].as_u64().unwrap_or_default();
+            if !matches!(requested_protocol, 1 | 2) {
+                error(&id, -32602, "protocolVersion must be 1 or 2");
                 continue;
+            }
+            if requested_protocol == 2 {
+                let Some(capabilities) = p["requiredCapabilities"].as_array() else {
+                    error(
+                        &id,
+                        -32602,
+                        "protocol v2 requires the mixedTools capability declaration",
+                    );
+                    continue;
+                };
+                if capabilities.iter().any(|value| value != "mixedTools") {
+                    error(&id, -32602, "unsupported required runtime capability");
+                    continue;
+                }
+                if !capabilities.iter().any(|value| value == "mixedTools") {
+                    error(
+                        &id,
+                        -32602,
+                        "protocol v2 requires the mixedTools capability declaration",
+                    );
+                    continue;
+                }
             }
             let dir = p
                 .get("storageDir")
@@ -709,10 +813,12 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 wire.borrow_mut().cancel_grace_ms = ms;
             }
             root = Some(dir.canonicalize().map_err(|e| e.to_string())?);
+            wire.borrow_mut().protocol_version = Some(requested_protocol);
             reply(
                 &id,
-                json!({"protocolVersion":1,"runtime":{"name":"glass-core","version":env!("CARGO_PKG_VERSION")},
+                json!({"protocolVersion":requested_protocol,"runtime":{"name":"glass-core","version":env!("CARGO_PKG_VERSION")},
                 "capabilities":{"durable":true,"hostTools":true,"localTools":true,"steering":true,"followUp":true,"cancel":true,
+                    "mixedTools":requested_protocol >= 2,
                     "resume":true,"fork":true,"rewind":"context_only","compact":true,"sessionConfigure":true,
                     "hostInteractions":"host tools may implement questions and approvals","concurrentTurns":false,
                     "imagePrompt":true,"completion":true,"typedContext":true,"structuredResults":true,"toolProgress":true,"toolCancellationAck":true,"incrementalEntries":true,"modelDiscovery":true,"authenticationReadiness":true,"structuredEntries":true,"sessionNames":true,"statistics":true,"lineage":true,"completionCancellation":true,"safeResumeById":true,"toolReconciliation":true},
@@ -743,51 +849,52 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 if conversations.len() >= 32 {
                     return Err("close an idle session before opening another".into());
                 }
-                let (session, mut manifest, settings, host_tools, instructions) = if method
-                    == "session/resume"
-                {
-                    let sid = string(p, "sessionId")?;
-                    let manifest = support::read_manifest(dir, sid)?;
-                    let expected = p
-                        .get("expectedToolMode")
-                        .or_else(|| p.get("toolMode"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("host");
-                    let actual = manifest
-                        .get("toolMode")
-                        .and_then(Value::as_str)
-                        .unwrap_or("host");
-                    if expected != actual {
-                        return Err("stored tool ownership differs from expectedToolMode".into());
-                    }
-                    for (key, value) in p.as_object().ok_or("params must be an object")? {
-                        if !matches!(key.as_str(), "sessionId" | "expectedToolMode")
-                            && manifest.get(key) != Some(value)
-                        {
-                            return Err(format!("resume configuration mismatch: {key}"));
+                let (session, mut manifest, settings, host_tools, tool_mode, instructions) =
+                    if method == "session/resume" {
+                        let sid = string(p, "sessionId")?;
+                        let manifest = support::read_manifest(dir, sid)?;
+                        let expected = p
+                            .get("expectedToolMode")
+                            .or_else(|| p.get("toolMode"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("host");
+                        let actual = manifest
+                            .get("toolMode")
+                            .and_then(Value::as_str)
+                            .unwrap_or("host");
+                        if expected != actual {
+                            return Err(
+                                "stored tool ownership differs from expectedToolMode".into()
+                            );
                         }
-                    }
-                    let (settings, tools, instructions) = metadata(&manifest, &cfg)?;
-                    (
-                        Session::open(dir, sid).map_err(|e| e.to_string())?,
-                        manifest,
-                        settings,
-                        tools,
-                        instructions,
-                    )
-                } else {
-                    let (settings, tools, instructions) = metadata(p, &cfg)?;
-                    let session = Session::create(dir).map_err(|e| e.to_string())?;
-                    (session, p.clone(), settings, tools, instructions)
-                };
+                        for (key, value) in p.as_object().ok_or("params must be an object")? {
+                            if !matches!(key.as_str(), "sessionId" | "expectedToolMode")
+                                && manifest.get(key) != Some(value)
+                            {
+                                return Err(format!("resume configuration mismatch: {key}"));
+                            }
+                        }
+                        let (settings, tools, mode, instructions) = metadata(&manifest, &cfg)?;
+                        validate_tool_mode(wire.borrow().protocol_version, mode)?;
+                        (
+                            Session::open(dir, sid).map_err(|e| e.to_string())?,
+                            manifest,
+                            settings,
+                            tools,
+                            mode,
+                            instructions,
+                        )
+                    } else {
+                        let (settings, tools, mode, instructions) = metadata(p, &cfg)?;
+                        validate_tool_mode(wire.borrow().protocol_version, mode)?;
+                        let session = Session::create(dir).map_err(|e| e.to_string())?;
+                        (session, p.clone(), settings, tools, mode, instructions)
+                    };
                 let sid = session.id.clone();
                 manifest["sessionId"] = json!(sid);
                 manifest["cwd"] = json!(settings.workspace);
-                manifest["toolMode"] = json!(if host_tools.is_some() {
-                    "host"
-                } else {
-                    "local"
-                });
+                manifest["toolMode"] = json!(tool_mode.as_str());
+                manifest["toolOwners"] = tool_owners(tool_mode, host_tools.as_ref());
                 manifest["provider"] = json!(settings.provider);
                 manifest["baseUrl"] = json!(settings.base_url);
                 manifest["model"] = json!(settings.model);
@@ -811,12 +918,13 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                         cfg: settings,
                         state: tools::State::new(),
                         tools: host_tools,
+                        tool_mode,
                         instructions,
                         stats_cache: None,
                         durable: None,
                     },
                 );
-                Ok(json!({"sessionId":sid}))
+                Ok(json!({"sessionId":sid,"toolOwners":manifest["toolOwners"]}))
             }
             "session/list" | "session/tree" => support::list(dir, p, &conversations),
             "auth/status" | "models/list" => {
@@ -934,7 +1042,8 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                         }
                         let end = offset.saturating_add(limit).min(records.len());
                         Ok(json!({"sessionId":sid,"model":c.cfg.model,
-                            "reasoningBudget":c.cfg.reasoning_budget,"toolMode":if c.tools.is_some(){"host"}else{"local"},
+                            "reasoningBudget":c.cfg.reasoning_budget,"toolMode":c.tool_mode.as_str(),
+                            "toolOwners":tool_owners(c.tool_mode,c.tools.as_ref()),
                             "records":records[offset..end].iter().map(record).collect::<Vec<_>>(),
                             "recordCount":records.len(),"nextCursor":if end<records.len(){Some(end)}else{None}}))
                     }
@@ -986,7 +1095,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                                 manifest[key] = v.clone();
                             }
                         }
-                        let (settings, _, instructions) = metadata(&manifest, &cfg)?;
+                        let (settings, _, _, instructions) = metadata(&manifest, &cfg)?;
                         crate::auth::secure_write(
                             &dir.join(format!("{sid}.host.json")),
                             &serde_json::to_vec(&manifest).map_err(|e| e.to_string())?,
@@ -1154,16 +1263,18 @@ fn run(
         let io = wire.clone();
         let status = statuses.clone();
         let session = sid.clone();
-        agent = agent.with_host_tools(
-            tools.clone(),
-            Box::new(move |call, _pump, sequence| {
-                let result = io.borrow_mut().tool(call, &session, turn, sequence);
-                status
-                    .borrow_mut()
-                    .insert(call.id.clone(), result.outcome.exit_code != Some(0));
-                result
-            }),
-        );
+        let executor: crate::agent::HostExecutor<'_> = Box::new(move |call, _pump, sequence| {
+            let result = io.borrow_mut().tool(call, &session, turn, sequence);
+            status
+                .borrow_mut()
+                .insert(call.id.clone(), result.outcome.exit_code != Some(0));
+            result
+        });
+        agent = if c.tool_mode == ToolMode::Mixed {
+            agent.with_mixed_host_tools(tools.clone(), executor)
+        } else {
+            agent.with_host_tools(tools.clone(), executor)
+        };
     }
     event(&sid, turn, "turn_start", json!({}));
     // A steer interrupts the current request, preserves its transcript, and
@@ -1522,6 +1633,88 @@ mod tests {
         assert!(schemas(&json!([{"name":"bad/name","inputSchema":{"type":"object"}}])).is_err());
         assert!(schemas(&json!([{"name":"x","inputSchema":{"type":"object"}},{"name":"x","inputSchema":{"type":"object"}}])).is_err());
         assert!(schemas(&json!([{"name":"x","inputSchema":{}}])).is_err());
+    }
+
+    #[test]
+    fn mixed_catalog_requires_reserved_namespace_and_rejects_core_collisions() {
+        let none = std::collections::HashSet::new();
+        assert_eq!(
+            mixed_schemas(
+                &json!([{"name":"glass.browser.open","inputSchema":{"type":"object"}}]),
+                &none,
+                &none
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            mixed_schemas(
+                &json!([{"name":"read_file","inputSchema":{"type":"object"}}]),
+                &none,
+                &none
+            )
+            .unwrap_err(),
+            "mixed-mode host tools must use the glass. namespace"
+        );
+        assert_eq!(
+            mixed_schemas(
+                &json!([{"name":"glass.bash","inputSchema":{"type":"object"}}]),
+                &none,
+                &none
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        let native = std::collections::HashSet::from(["glass.bash".to_string()]);
+        assert_eq!(
+            mixed_schemas(
+                &json!([{"name":"glass.bash","inputSchema":{"type":"object"}}]),
+                &native,
+                &none
+            )
+            .unwrap_err(),
+            "mixed-mode host tool collides with a Core tool"
+        );
+        let extensions = std::collections::HashSet::from(["glass.ext.run".to_string()]);
+        assert_eq!(
+            mixed_schemas(
+                &json!([{"name":"glass.ext.run","inputSchema":{"type":"object"}}]),
+                &none,
+                &extensions
+            )
+            .unwrap_err(),
+            "mixed-mode host tool collides with a Core extension"
+        );
+    }
+
+    #[test]
+    fn only_protocol_v2_can_open_mixed_sessions() {
+        assert!(validate_tool_mode(Some(1), ToolMode::Host).is_ok());
+        assert!(validate_tool_mode(Some(1), ToolMode::Local).is_ok());
+        assert!(validate_tool_mode(Some(1), ToolMode::Mixed).is_err());
+        assert!(validate_tool_mode(Some(2), ToolMode::Mixed).is_ok());
+    }
+
+    #[test]
+    fn mixed_session_reports_both_tool_owners() {
+        let tools = vec![(
+            "glass.browser.open".into(),
+            "Open a browser page".into(),
+            "{\"type\":\"object\"}".into(),
+        )];
+        assert_eq!(
+            tool_owners(ToolMode::Mixed, Some(&tools)),
+            json!({
+                "core":{"nativeTools":true},
+                "host":{"namespace":"glass.","tools":["glass.browser.open"]}
+            })
+        );
+        assert_eq!(
+            tool_owners(ToolMode::Local, None)["core"]["nativeTools"],
+            true
+        );
     }
 
     #[test]

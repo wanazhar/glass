@@ -1,23 +1,28 @@
 # Glass Core resident harness
 
 **Status: Current source behavior.** Glass Dev uses the standalone `glass-core`
-program for resident agents by default. This is separate from the
+program for resident agents by default. Core owns provider configuration and
+credentials, model and session state, and its native coding tools; Glass routes
+only its own integration tools. This is separate from the
 `glass-browser-core` Rust crate, which contains the native browser engine.
 Glass starts `glass-core runtime`, sends JSON-RPC 2.0 messages over
-stdin/stdout, and runs every requested tool call inside the Glass workspace.
+stdin/stdout, with Core-native coding tools and Glass-owned integrations
+available in one session.
 
 ```text
 AgentRegistry
   └─ ResidentHarness (engine selection)
        └─ GlassCoreRuntime (Rust worker, bounded JSON-RPC 2.0 frames)
             └─ glass-core runtime (model loop, recovery, compaction)
-                 └─ tool/execute ──→ Glass governed tool router
-                                       └─ workspace · browser · process authority
+                 ├─ Core coding tools ──→ Core execution policy
+                 └─ glass.* calls ──→ Glass integration router
+                                         └─ browser · Git · project authority
 ```
 
-The Pi SDK runtime remains available as a legacy backend. Changing the engine
-does not move workspace ownership: Glass owns the project, tools, authority
-checks, and tool evidence for both engines.
+The Pi SDK runtime remains available only through the explicit legacy setting.
+Changing the engine does not move project ownership: Core owns provider
+configuration, credentials, model/session state, and its native coding tools;
+Glass owns browser, Git, project, workspace, and collaboration integrations.
 
 ## Why the engine changed
 
@@ -32,14 +37,19 @@ The engine owns exactly four things:
 |---|---|
 | Model loop, retries, recovery, compaction | `glass-core` |
 | Session records and resume/fork/rewind | `glass-core` |
-| Tool schemas, execution, approvals, evidence | Glass |
-| Workspace revisions, leases, browser authority | Glass |
+| Provider selection, credentials, model/session state | `glass-core` |
+| Native coding tools and their execution policy | `glass-core` |
+| Browser, Git, project/workspace integrations and their schemas | Glass |
+| Integration approvals, evidence, workspace revisions and leases | Glass |
 
-Glass starts `glass-core runtime` in host-tool mode. In this mode, the engine
-does not add its own filesystem, shell, memory, browser, or extension tools.
-The session receives the tool list that Glass registered. Glass handles each
-tool request, so the engine does not access the workspace through a second
-route.
+Glass negotiates runtime protocol v2 and requires the `mixedTools`
+capability. The session uses `toolMode: "mixed"`: Core keeps its native
+coding tools and Glass registers only its namespaced `glass.*` integrations.
+Core executes its own tools; only Glass integration calls cross `tool/execute`
+and receive Glass-side authorization and evidence. A v1-only or older runtime
+is reported as incompatible; Glass does not silently fall back to a
+host-exclusive catalog. Core's standalone `local` mode and generic `host` mode
+retain their existing behavior.
 
 ## Selecting the engine
 
@@ -68,18 +78,20 @@ commands.
 
 ## Session lifecycle
 
-1. `initialize` — protocol version `1` and an absolute session storage
-   directory. Glass rejects an engine that does not advertise host tool
-   ownership, and an engine older than the supported runtime surface.
-2. `session/new` — the canonical workspace root, `toolMode: "host"`, the Glass
-   tool catalog, and the Glass collaboration brief. With `resume`, Glass lists
-   stored sessions, describes them, and resumes the newest one whose `cwd`
-   matches the workspace root.
+1. `initialize` — protocol version `2`, required capability `mixedTools`, and
+   an absolute session storage directory. Glass rejects an engine that does
+   not advertise the negotiated contract.
+2. `session/new` — the canonical workspace root, `toolMode: "mixed"`, only the
+   Glass integration catalog, and the Glass collaboration brief. With `resume`, Glass lists
+   stored sessions and resumes the newest mixed-mode session whose `cwd`
+   matches the workspace root. Existing host-mode sessions remain available
+   in Core but are not resumed under the changed ownership contract.
 3. `turn/prompt`, `turn/steer`, `turn/followUp`, `turn/cancel` — conversation
    control. Steering interrupts the current request while preserving context;
    follow-ups queue behind the active turn.
-4. `tool/execute` — the engine asks Glass to run one call. Glass executes it
-   against the live workspace revision and answers with bounded result text.
+4. `tool/execute` — Core asks Glass to run one `glass.*` integration call.
+   Glass executes it against the live workspace revision and answers with
+   bounded result text. Core-native coding tools execute inside Core.
 5. `settled` — the turn ended. Glass maps it to `agent_end` and `agent_settled`,
    which returns the resident agent to idle.
 6. `shutdown` — Glass cancels an active turn, asks the engine to close, and
@@ -90,7 +102,7 @@ Sessions are stored under the platform local data directory in
 
 ## Tool execution and approvals
 
-Every host tool call becomes a Glass `ToolCall` and goes through the same
+Every Glass integration call becomes a Glass `ToolCall` and goes through the same
 governed router the TUI uses. A call that mutates the workspace follows the
 session's authority:
 
@@ -117,7 +129,8 @@ error rather than silently ignoring it:
 
 Everything else — prompt, steer, follow-up, abort, models, sessions, entries,
 tree, stats, naming, compact, fork, resume, and isolated completion — maps onto
-the runtime v1 methods directly.
+the runtime methods directly. Core provider credentials and configuration stay
+in Core; Glass forwards no credential material.
 
 ## Verification
 

@@ -1903,17 +1903,16 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         .collect()
 }
 
-/// Complete host tool catalog registered with the resident agent engine.
-///
-/// Glass Core host sessions receive this catalog once, when the session is
-/// created, so the frozen schema set always matches what the governed router
-/// can actually execute. Duplicate names keep their first descriptor.
-pub(crate) fn host_tool_catalog() -> Vec<ToolDescriptor> {
-    let mut catalog = AgentToolGateway::default().descriptors();
-    catalog.extend(service_descriptors());
-    let mut seen = std::collections::HashSet::new();
-    catalog.retain(|descriptor| seen.insert(descriptor.name.clone()));
-    catalog
+/// Glass-owned integrations offered to Core's negotiated mixed-tool runtime.
+/// Core retains its native coding catalog and executes it locally.
+pub(crate) fn integration_tool_catalog() -> Vec<ToolDescriptor> {
+    service_descriptors()
+}
+
+pub(crate) fn is_integration_tool(name: &str) -> bool {
+    integration_tool_catalog()
+        .iter()
+        .any(|descriptor| descriptor.name == name)
 }
 
 pub(crate) fn tool_requires_mutation(name: &str) -> bool {

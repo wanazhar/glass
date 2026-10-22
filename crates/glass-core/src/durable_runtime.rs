@@ -162,7 +162,8 @@ impl Host {
     ) -> Result<Value, String> {
         match method {
             "durable/create" => {
-                let (settings, _, _) = metadata(p, cfg)?;
+                let (settings, _, mode, _) = metadata(p, cfg)?;
+                super::validate_tool_mode(wire.borrow().protocol_version, mode)?;
                 let session =
                     Session::create(&dir.join("durable-projections")).map_err(|e| e.to_string())?;
                 let id = session.id.clone();
@@ -592,7 +593,7 @@ impl Host {
             .get(&task.conversation)
             .cloned()
             .ok_or("unknown conversation")?;
-        let (mut settings, host_tools, instructions) = metadata(&cv.agent, cfg)?;
+        let (mut settings, host_tools, tool_mode, instructions) = metadata(&cv.agent, cfg)?;
         settings.provider_session = Some(cv.provider_identity.clone());
         let mut start = update(task, "running", None);
         let mut admission = Vec::new();
@@ -659,6 +660,7 @@ impl Host {
             cfg: settings,
             state,
             tools: host_tools,
+            tool_mode,
             instructions,
             stats_cache: None,
             durable: Some(context),

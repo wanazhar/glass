@@ -26,8 +26,21 @@ pub(crate) struct ThreadRecord {
     pub role: String,
     pub created_at_ms: u128,
     pub runs: Vec<RunRecord>,
+    #[cfg(unix)]
     #[serde(default)]
     pub send_attempts: Vec<SendAttemptRecord>,
+    // Windows must not decode prompt text into the typed attempt model. Keep
+    // the serialized value opaque so unrelated thread mutations preserve it.
+    #[cfg(windows)]
+    #[serde(skip)]
+    pub send_attempts: Vec<SendAttemptRecord>,
+    #[cfg(windows)]
+    #[serde(
+        default,
+        rename = "sendAttempts",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) send_attempts_opaque: Option<serde_json::Value>,
     #[cfg(unix)]
     #[serde(default)]
     pub composer_draft: Option<ComposerDraftRecord>,
@@ -1065,6 +1078,8 @@ mod tests {
             composer_draft: None,
             follow_up_queue: None,
             send_attempts: Vec::new(),
+            #[cfg(windows)]
+            send_attempts_opaque: None,
             runs: vec![RunRecord {
                 run_id: random_id("run").unwrap(),
                 engine: "glass-core".into(),
@@ -1085,6 +1100,42 @@ mod tests {
         let text = String::from_utf8(bytes).unwrap();
         assert!(!text.contains("agent-"));
         assert!(!text.contains("job"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unrelated_mutation_preserves_send_attempt_payload_without_decoding_it() {
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        let row = record();
+        let thread_id = row.thread_id.clone();
+        let run_id = row.runs[0].run_id.clone();
+        store.create(row).unwrap();
+
+        let path = root.join(".glass/threads/registry.json");
+        let mut raw: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let secret_payload = serde_json::json!([{
+            "attemptId": "attempt-opaque-fixture",
+            "clientMessageId": "message-opaque-fixture",
+            "runId": run_id,
+            "mode": "prompt",
+            "text": "private prompt must stay opaque",
+            "status": "working",
+            "createdAtMs": 1,
+            "engineRequestId": "request-opaque-fixture"
+        }]);
+        raw["threads"][0]["sendAttempts"] = secret_payload.clone();
+        fs::write(&path, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+
+        let reopened = ThreadStore::open(&root).unwrap();
+        assert!(reopened.send_attempts(&thread_id).unwrap().is_empty());
+        reopened
+            .set_session(&thread_id, &run_id, "session-after-mutation")
+            .unwrap();
+
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["threads"][0]["sendAttempts"], secret_payload);
         let _ = fs::remove_dir_all(root);
     }
 

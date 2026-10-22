@@ -1063,6 +1063,8 @@ mod tests {
                 composer_draft: None,
                 follow_up_queue: None,
                 send_attempts: Vec::new(),
+                #[cfg(windows)]
+                send_attempts_opaque: None,
                 runs: vec![crate::thread_store::RunRecord {
                     run_id: crate::thread_store::random_id("run").unwrap(),
                     engine: "glass-core".into(),

@@ -36,8 +36,8 @@ using the keyboard alone.
 - [ ] Escape cancels that confirmation, leaves the attempt uncertain, and sends
       no `turn/prompt`; the unrelated proposal remains available.
 - [ ] Activating the remaining proposal opens its exact file review context.
-- [ ] Ctrl-C opens quit confirmation from the review context; Escape cancels,
-      and a later Ctrl-C plus confirmation exits cleanly.
+- [ ] Ctrl-C opens the review editor's unsaved-exit prompt; Escape keeps the
+      review active, and a later Ctrl-C followed by `Q` exits cleanly.
 - [ ] Fixture and TUI child processes have bounded cleanup on assertion failure.
 - [ ] Focused PTY, scoped strict Clippy, formatting, fixture syntax, docs
       validators, and diff checks pass; evidence identifies the exact binary

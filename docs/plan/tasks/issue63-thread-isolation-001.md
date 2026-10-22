@@ -1,0 +1,66 @@
+---
+id: issue63-thread-isolation-001
+scope: issue-63-live-agent-thread-isolation
+status: in-progress
+depends-on: [core-provider-controls-001]
+---
+
+# Live resident-agent thread isolation
+
+## Objective
+
+Make each live resident agent a distinct TUI conversation context. Switching
+agents must switch transcript and preserve that thread's composer draft/cursor;
+late asynchronous results must remain attached to their originating agent and
+must not steal focus or overwrite another thread's draft.
+
+## Context
+
+- `docs/plan/analysis/issue63-thread-isolation.md`
+- `docs/architecture/development-tui.md`
+- `docs/development-runtime.md`
+- `docs/plan/tasks/core-provider-controls-001.md`
+- `AGENTS.md`
+
+## Scope
+
+- `crates/glass-dev/src/tui/snapshot.rs`
+- `crates/glass-dev/src/tui/state.rs`
+- `crates/glass-dev/src/tui/projection.rs`
+- `crates/glass-dev/src/tui/mod.rs` and `command.rs` only for ownership-safe
+  selected-agent behavior
+- Focused TUI snapshot/state/projection tests
+- Current TUI and runtime docs
+
+Do not persist AgentId-keyed drafts across restart, add a durable thread/run
+registry, change Core session persistence, add an editable follow-up queue or
+attention inbox, or redesign the TUI layout. AgentId is process-local; that
+limitation must remain visible in docs and task evidence.
+
+## Acceptance
+
+- [ ] Snapshot conversation data is grouped by AgentId; each selected live
+      thread displays only its own messages and tool activity.
+- [ ] Switching between live agents saves and restores independent composer
+      text and character cursor; no selected agent retains a separate
+      unthreaded draft.
+- [ ] Every pending chat send records its owning AgentId.
+- [ ] A late successful result for thread A updates only A's pending message
+      and transcript, without selecting A or changing thread B's focus/status
+      or composer draft/cursor.
+- [ ] A late failed result remains recoverable in thread A and cannot replace
+      thread B's draft.
+- [ ] A behavioral regression uses two live-agent identities with distinct
+      transcripts and drafts, selects both, then delivers a late A result while
+      B is selected; it verifies owner, content, cursor, and focus.
+- [ ] Current TUI/runtime docs describe live per-agent isolation and clearly
+      state that AgentId-based draft state is not durable across restart.
+- [ ] Focused `glass-dev` tests, formatting, strict scoped Clippy, docs
+      coverage/depth/release-truth/version checks, and diff review pass using
+      `/home/ubuntu/work/glass/.worktrees/issue63-mixed-tools-001/target`.
+- [ ] Commit locally with a Conventional Commit. Do not push, release, restart
+      services, modify installed binaries, or close issue #63.
+
+## Verification
+
+Pending implementation and review.

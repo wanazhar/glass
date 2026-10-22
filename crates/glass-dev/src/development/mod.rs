@@ -105,7 +105,9 @@ pub use remote_view::{RemoteFrame, RemoteInput, RemoteView};
 /// Revision identifiers and bounded replay.
 pub use replay::{DevelopmentRevision, ReplayWindow, replay};
 /// Search hit types and ranking helpers.
-pub use search::{SearchHit, SearchKind, fuzzy_score, rank};
+pub use search::{
+    FileListingCoverage, ProjectSearchResult, SearchHit, SearchKind, fuzzy_score, rank,
+};
 use std::{
     fmt,
     fs::OpenOptions,

@@ -473,34 +473,53 @@ async fn native_content_process_service_worker_replays_cloned_request_body() {
     )
     .unwrap();
     engine.initialize_async().await.unwrap();
+    // Keep each network scenario in its own bounded content-process turn while
+    // preserving the same live worker, registration, and page cache state.
+    let replay = engine
+        .evaluate_async(
+            "await registrationPromise.then(() => fetch('/echo', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: 'native-replay' }).then(response => response.json()))",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        replay,
+        serde_json::json!({
+            "observed": "native-replay",
+            "upstream": "replayed",
+            "replayUsed": true,
+        })
+    );
     assert_eq!(
         engine
-            .evaluate_async(
-                "await registrationPromise.then(async () => ({ replay: await fetch('/echo', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: 'native-replay' }).then(response => response.json()), streamed: await fetch('/stream-trigger').then(response => response.text()), controlled: await fetch('/controlled-stream', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([112, 97, 103, 101, 45])); controller.enqueue(new Uint8Array([115, 116, 114, 101, 97, 109])); controller.close(); } }) }).then(response => response.text()) }))",
-            )
+            .evaluate_async("await fetch('/stream-trigger').then(response => response.text())")
             .await
             .unwrap(),
-            serde_json::json!({
-                "replay": {
-                    "observed": "native-replay",
-                    "upstream": "replayed",
-                    "replayUsed": true,
-                },
-                "streamed": "native-sw-stream",
-                "controlled": "page-stream",
-            })
+        serde_json::json!("native-sw-stream")
     );
     assert_eq!(
         engine
             .evaluate_async(
-                "await (async () => { document.cookie = 'sw_upload_turn=from-page; Path=/'; const response = await fetch('/unhandled-stream', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([112, 97, 103, 101, 45, 117, 110, 104, 97, 110, 100, 108, 101, 100, 45, 115, 116, 114, 101, 97, 109])); controller.close(); } }) }); const fallback = await response.text(); const cookieCheck = await fetch('/cookie-check').then(response => response.text()); return { fallback, cookieCheck }; })()",
+                "await fetch('/controlled-stream', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([112, 97, 103, 101, 45])); controller.enqueue(new Uint8Array([115, 116, 114, 101, 97, 109])); controller.close(); } }) }).then(response => response.text())",
             )
             .await
             .unwrap(),
-        serde_json::json!({
-            "fallback": "parent-fallback",
-            "cookieCheck": "cookie-confirmed",
-        })
+        serde_json::json!("page-stream")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "document.cookie = 'sw_upload_turn=from-page; Path=/'; await fetch('/unhandled-stream', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([112, 97, 103, 101, 45, 117, 110, 104, 97, 110, 100, 108, 101, 100, 45, 115, 116, 114, 101, 97, 109])); controller.close(); } }) }).then(response => response.text())",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!("parent-fallback")
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("await fetch('/cookie-check').then(response => response.text())")
+            .await
+            .unwrap(),
+        serde_json::json!("cookie-confirmed")
     );
     engine.close_async().await.unwrap();
     server.await.unwrap();

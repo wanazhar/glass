@@ -73,7 +73,7 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
                     description: format!(
                         "Trust-governed compatibility route for legacy development tool {name}"
                     ),
-                    input_schema: augment_schema(json!({"type":"object"}), *mutating),
+                    input_schema: augment_schema(legacy_schema(name), *mutating),
                 }),
         );
         tools
@@ -113,7 +113,7 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
             crate::development::ToolDescriptor {
                 name: name.into(),
                 description: format!("Trust-governed compatibility route {name}"),
-                input_schema: json!({"type":"object"}),
+                input_schema: legacy_schema(name),
                 mutating,
                 available: !mutating || execution_trust.permits_project_execution(),
                 unavailable_reason: (mutating && !execution_trust.permits_project_execution())
@@ -188,16 +188,50 @@ const LEGACY_TOOLS: &[(&str, bool)] = &[
     ("project.diagnostics", true),
     ("project.run", true),
     ("project.process.stop", true),
-    ("project.session.detach", true),
-    ("project.capsule.save", true),
-    ("project.capsule.clear", true),
-    ("project.neovim.probe", true),
-    ("project.experiment.create", true),
-    ("project.attach", true),
-    ("project.link", true),
-    ("agent.prompt", true),
-    ("agent.steer", true),
 ];
+
+fn legacy_schema(name: &str) -> Value {
+    let string = json!({"type":"string", "minLength":1});
+    let mut properties = serde_json::Map::new();
+    properties.insert("root".into(), string.clone());
+    let required = match name {
+        "project.read" | "project.delete" | "project.mkdir" => {
+            properties.insert("path".into(), string.clone());
+            vec!["path"]
+        }
+        "project.edit" => {
+            properties.insert("path".into(), string.clone());
+            properties.insert("content".into(), json!({"type":"string"}));
+            vec!["path", "content"]
+        }
+        "project.rename" => {
+            properties.insert("from".into(), string.clone());
+            properties.insert("to".into(), string.clone());
+            vec!["from", "to"]
+        }
+        "project.diagnostics" => {
+            properties.insert("path".into(), string.clone());
+            vec!["path"]
+        }
+        "project.run" => {
+            properties.insert("name".into(), string.clone());
+            properties.insert("command".into(), string.clone());
+            properties.insert("wait".into(), json!({"type":"boolean"}));
+            vec!["name", "command"]
+        }
+        "project.process.stop" => {
+            properties.insert("name".into(), string);
+            vec!["name"]
+        }
+        _ => Vec::new(),
+    };
+    json!({
+        "type":"object",
+        "properties":properties,
+        "required":required,
+        "additionalProperties":false
+    })
+}
 
 fn translate_legacy_execution(
     name: &str,
@@ -223,10 +257,13 @@ fn translate_legacy_execution(
         "project.rename" => "glass.file.rename",
         "project.delete" => "glass.file.delete",
         "project.diagnostics" => "glass.diagnostics.run",
-        "project.run" if object.remove("wait").and_then(|value| value.as_bool()) == Some(true) => {
-            "glass.command.run"
+        "project.run" => {
+            if object.remove("wait").and_then(|value| value.as_bool()) == Some(true) {
+                "glass.command.run"
+            } else {
+                "glass.process.start"
+            }
         }
-        "project.run" => "glass.process.start",
         "project.process.stop" => "glass.process.stop",
         _ => {
             return Err(format!(
@@ -275,6 +312,49 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_POLICY_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn legacy_mcp_routes_expose_required_arguments_and_only_supported_mappings() {
+        let cases = [
+            ("project.read", vec!["path"]),
+            ("project.edit", vec!["path", "content"]),
+            ("project.mkdir", vec!["path"]),
+            ("project.rename", vec!["from", "to"]),
+            ("project.delete", vec!["path"]),
+            ("project.diagnostics", vec!["path"]),
+            ("project.run", vec!["name", "command"]),
+            ("project.process.stop", vec!["name"]),
+        ];
+        let expected_count = cases.len();
+        for (name, expected) in cases {
+            let schema = legacy_schema(name);
+            assert_eq!(schema["required"], json!(expected), "{name}");
+        }
+        assert_eq!(LEGACY_TOOLS.len(), expected_count);
+        assert!(!LEGACY_TOOLS.iter().any(|(name, _)| {
+            matches!(
+                *name,
+                "project.session.detach" | "project.capsule.save" | "agent.prompt"
+            )
+        }));
+
+        let (wait_tool, wait_args) = translate_legacy_execution(
+            "project.run",
+            json!({"name":"verify","command":"printf ok","wait":true}),
+            &std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(wait_tool, "glass.command.run");
+        assert_eq!(wait_args, json!({"name":"verify","command":"printf ok"}));
+        let (start_tool, start_args) = translate_legacy_execution(
+            "project.run",
+            json!({"name":"dev","command":"npm run dev","wait":false}),
+            &std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(start_tool, "glass.process.start");
+        assert_eq!(start_args, json!({"name":"dev","command":"npm run dev"}));
+    }
 
     #[test]
     fn backend_forwards_complete_browser_policy_to_resident_workspace() {

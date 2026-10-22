@@ -5,7 +5,7 @@
 //! Useful for verifying UI transitions after actions.
 
 use super::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Diff between two compact accessibility observations.
 ///
@@ -64,23 +64,49 @@ pub fn diff_accessibility(
     before: &CompactAccessibilitySnapshot,
     after: &CompactAccessibilitySnapshot,
 ) -> AccessibilityDiff {
-    let before_refs: HashSet<&str> = before
+    let same_document = before.page.target_id == after.page.target_id
+        && before.page.frame_id == after.page.frame_id;
+    let identity = |element: &CompactInteractiveElement| {
+        (same_document && element.backend_dom_node_id > 0).then_some(element.backend_dom_node_id)
+    };
+    let after_by_identity: HashMap<i64, &CompactInteractiveElement> = after
         .interactive
         .iter()
-        .map(|e| e.reference.as_str())
+        .filter_map(|element| identity(element).map(|id| (id, element)))
         .collect();
-    let after_refs: HashSet<&str> = after
+    let after_refs: HashMap<&str, &CompactInteractiveElement> = after
         .interactive
         .iter()
-        .map(|e| e.reference.as_str())
+        .map(|element| (element.reference.as_str(), element))
         .collect();
+    let before_refs: HashMap<&str, &CompactInteractiveElement> = before
+        .interactive
+        .iter()
+        .map(|element| (element.reference.as_str(), element))
+        .collect();
+    let before_identities = before
+        .interactive
+        .iter()
+        .filter_map(&identity)
+        .collect::<std::collections::HashSet<_>>();
+    let after_identities = after_by_identity
+        .keys()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
 
     let mut added = Vec::new();
     let mut removed = Vec::new();
     let mut changed = Vec::new();
 
     for elem in &after.interactive {
-        if !before_refs.contains(elem.reference.as_str()) {
+        let existed = identity(elem).is_some_and(|id| before_identities.contains(&id))
+            || (same_document
+                && before_refs
+                    .get(elem.reference.as_str())
+                    .is_some_and(|candidate| {
+                        candidate.backend_dom_node_id == elem.backend_dom_node_id
+                    }));
+        if !existed {
             added.push(DiffElement {
                 reference: elem.reference.clone(),
                 role: elem.role.clone(),
@@ -89,7 +115,14 @@ pub fn diff_accessibility(
         }
     }
     for elem in &before.interactive {
-        if !after_refs.contains(elem.reference.as_str()) {
+        let remains = identity(elem).is_some_and(|id| after_identities.contains(&id))
+            || (same_document
+                && after_refs
+                    .get(elem.reference.as_str())
+                    .is_some_and(|after_elem| {
+                        after_elem.backend_dom_node_id == elem.backend_dom_node_id
+                    }));
+        if !remains {
             removed.push(DiffElement {
                 reference: elem.reference.clone(),
                 role: elem.role.clone(),
@@ -98,13 +131,18 @@ pub fn diff_accessibility(
         }
     }
 
-    let after_by_ref: HashMap<&str, &CompactInteractiveElement> = after
-        .interactive
-        .iter()
-        .map(|e| (e.reference.as_str(), e))
-        .collect();
     for before_elem in &before.interactive {
-        if let Some(after_elem) = after_by_ref.get(before_elem.reference.as_str()) {
+        let after_elem = identity(before_elem)
+            .and_then(|id| after_by_identity.get(&id).copied())
+            .or_else(|| {
+                same_document
+                    .then(|| after_refs.get(before_elem.reference.as_str()).copied())
+                    .flatten()
+                    .filter(|candidate| {
+                        candidate.backend_dom_node_id == before_elem.backend_dom_node_id
+                    })
+            });
+        if let Some(after_elem) = after_elem {
             let mut props = Vec::new();
             if before_elem.name != after_elem.name {
                 props.push("name".into());
@@ -132,7 +170,7 @@ pub fn diff_accessibility(
             }
             if !props.is_empty() {
                 changed.push(DiffChange {
-                    reference: before_elem.reference.clone(),
+                    reference: after_elem.reference.clone(),
                     role: after_elem.role.clone(),
                     name: after_elem.name.clone(),
                     changed_properties: props,
@@ -255,13 +293,62 @@ mod tests {
 
     #[test]
     fn diff_detects_added_and_removed_elements() {
-        let before = make_snapshot(1, vec![make_element("r1:b1", "button", "Old")]);
-        let after = make_snapshot(2, vec![make_element("r2:b2", "button", "New")]);
+        let mut old = make_element("r1:b1", "button", "Old");
+        old.backend_dom_node_id = 1;
+        let mut new = make_element("r2:b2", "button", "New");
+        new.backend_dom_node_id = 2;
+        let before = make_snapshot(1, vec![old]);
+        let after = make_snapshot(2, vec![new]);
         let diff = diff_accessibility(&before, &after);
         assert_eq!(diff.added.len(), 1);
         assert_eq!(diff.added[0].reference, "r2:b2");
         assert_eq!(diff.removed.len(), 1);
         assert_eq!(diff.removed[0].reference, "r1:b1");
+        assert!(diff.changed.is_empty());
+    }
+
+    #[test]
+    fn diff_matches_backend_identity_across_revisions() {
+        let mut before_element = make_element("r1:b42", "button", "Save");
+        before_element.backend_dom_node_id = 42;
+        let mut after_element = make_element("r2:b42", "button", "Submit");
+        after_element.backend_dom_node_id = 42;
+        let before = make_snapshot(1, vec![before_element]);
+        let after = make_snapshot(2, vec![after_element]);
+
+        let diff = diff_accessibility(&before, &after);
+
+        assert!(diff.added.is_empty());
+        assert!(diff.removed.is_empty());
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].reference, "r2:b42");
+        assert_eq!(diff.changed[0].changed_properties, ["name"]);
+    }
+
+    #[test]
+    fn diff_does_not_match_reused_reference_or_backend_across_documents() {
+        let before = make_snapshot(1, vec![make_element("r1:b42", "button", "Old")]);
+        let mut after = make_snapshot(2, vec![make_element("r1:b42", "button", "New")]);
+        after.page.target_id = "other-target".into();
+
+        let diff = diff_accessibility(&before, &after);
+
+        assert_eq!(diff.added.len(), 1);
+        assert_eq!(diff.removed.len(), 1);
+        assert!(diff.changed.is_empty());
+    }
+
+    #[test]
+    fn diff_does_not_match_same_reference_with_different_backend_identity() {
+        let before = make_snapshot(1, vec![make_element("r1:b42", "button", "Old")]);
+        let mut replacement = make_element("r1:b42", "button", "New");
+        replacement.backend_dom_node_id = 99;
+        let after = make_snapshot(2, vec![replacement]);
+
+        let diff = diff_accessibility(&before, &after);
+
+        assert_eq!(diff.added.len(), 1);
+        assert_eq!(diff.removed.len(), 1);
         assert!(diff.changed.is_empty());
     }
 

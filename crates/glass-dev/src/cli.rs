@@ -6,7 +6,8 @@ use crate::development::{
 };
 use glass_browser::cli::args::{
     AgentCommand, AgentHarness, ExperimentCommand, ExternalAgentSandbox, HarnessCommand,
-    NeovimCommand, ProjectCommand, ProjectGraphCommand, ProjectProcessCommand,
+    NeovimCommand, ProjectCommand, ProjectGitCommand, ProjectGithubCommand, ProjectGraphCommand,
+    ProjectProcessCommand,
 };
 use serde::Serialize;
 use std::io::Read;
@@ -476,6 +477,22 @@ pub(crate) fn dispatch_project(
             workspace.attach_actor(actor.clone())?;
             print_json(&actor)?;
         }
+        ProjectCommand::Git { root, action } => {
+            print_json(&execute_project_git(
+                root,
+                action,
+                allow_mutation,
+                confirmed,
+            )?)?;
+        }
+        ProjectCommand::Github { root, action } => {
+            print_json(&execute_project_github(
+                root,
+                action,
+                allow_mutation,
+                confirmed,
+            )?)?;
+        }
     }
     Ok(())
 }
@@ -502,12 +519,153 @@ fn project_command_requires_mutation(action: &ProjectCommand) -> bool {
             ..
         }
         | ProjectCommand::Experiment { .. } => true,
+        ProjectCommand::Git { action, .. } => !matches!(
+            action,
+            ProjectGitCommand::Status
+                | ProjectGitCommand::Diff { .. }
+                | ProjectGitCommand::Branches
+                | ProjectGitCommand::StashList
+                | ProjectGitCommand::WorktreeList
+        ),
+        ProjectCommand::Github { action, .. } => {
+            matches!(action, ProjectGithubCommand::Ship { .. })
+        }
         ProjectCommand::Process { action, .. } => !matches!(
             action,
             ProjectProcessCommand::List | ProjectProcessCommand::Output { .. }
         ),
         _ => false,
     }
+}
+
+fn execute_project_git(
+    root: &std::path::Path,
+    action: &ProjectGitCommand,
+    allow_mutation: bool,
+    confirmed: bool,
+) -> CliResult<serde_json::Value> {
+    let (name, arguments) = match action {
+        ProjectGitCommand::Status => ("glass.git.status", serde_json::json!({})),
+        ProjectGitCommand::Diff { staged, path } => (
+            "glass.git.diff",
+            serde_json::json!({"staged":staged,"path":path}),
+        ),
+        ProjectGitCommand::Stage { paths } => {
+            ("glass.git.stage", serde_json::json!({"paths":paths}))
+        }
+        ProjectGitCommand::Unstage { paths } => {
+            ("glass.git.unstage", serde_json::json!({"paths":paths}))
+        }
+        ProjectGitCommand::Discard { paths } => {
+            ("glass.git.discard", serde_json::json!({"paths":paths}))
+        }
+        ProjectGitCommand::Fetch { remote } => {
+            ("glass.git.fetch", serde_json::json!({"remote":remote}))
+        }
+        ProjectGitCommand::Pull { remote, branch } => (
+            "glass.git.pull",
+            serde_json::json!({"remote":remote,"branch":branch}),
+        ),
+        ProjectGitCommand::Push { remote, branch } => (
+            "glass.git.push",
+            serde_json::json!({"remote":remote,"branch":branch}),
+        ),
+        ProjectGitCommand::Merge { branch } => {
+            ("glass.git.merge", serde_json::json!({"branch":branch}))
+        }
+        ProjectGitCommand::Rebase { onto } => {
+            ("glass.git.rebase", serde_json::json!({"onto":onto}))
+        }
+        ProjectGitCommand::Commit { message } => {
+            ("glass.git.commit", serde_json::json!({"message":message}))
+        }
+        ProjectGitCommand::Branches => ("glass.git.branches", serde_json::json!({})),
+        ProjectGitCommand::BranchCreate { name, start_point } => (
+            "glass.git.branch.create",
+            serde_json::json!({"name":name,"startPoint":start_point}),
+        ),
+        ProjectGitCommand::BranchSwitch { name, create } => (
+            "glass.git.branch.switch",
+            serde_json::json!({"name":name,"create":create}),
+        ),
+        ProjectGitCommand::StashList => ("glass.git.stash.list", serde_json::json!({})),
+        ProjectGitCommand::StashPush {
+            message,
+            include_untracked,
+        } => (
+            "glass.git.stash.push",
+            serde_json::json!({"message":message,"includeUntracked":include_untracked}),
+        ),
+        ProjectGitCommand::StashPop { reference } => (
+            "glass.git.stash.pop",
+            serde_json::json!({"reference":reference}),
+        ),
+        ProjectGitCommand::WorktreeList => ("glass.git.worktree.list", serde_json::json!({})),
+        ProjectGitCommand::WorktreeCreate {
+            path,
+            branch,
+            create_branch,
+        } => (
+            "glass.git.worktree.create",
+            serde_json::json!({"path":path,"branch":branch,"createBranch":create_branch}),
+        ),
+        ProjectGitCommand::WorktreeRemove { path, force } => (
+            "glass.git.worktree.remove",
+            serde_json::json!({"path":path,"force":force}),
+        ),
+    };
+    execute_project_tool(root, name, arguments, allow_mutation, confirmed)
+}
+
+fn execute_project_github(
+    root: &std::path::Path,
+    action: &ProjectGithubCommand,
+    allow_mutation: bool,
+    confirmed: bool,
+) -> CliResult<serde_json::Value> {
+    let (name, arguments) = match action {
+        ProjectGithubCommand::Review => ("glass.github.review", serde_json::json!({})),
+        ProjectGithubCommand::Ship {
+            title,
+            body,
+            base,
+            draft,
+        } => (
+            "glass.github.ship",
+            serde_json::json!({"title":title,"body":body,"base":base,"draft":draft}),
+        ),
+    };
+    execute_project_tool(root, name, arguments, allow_mutation, confirmed)
+}
+
+fn execute_project_tool(
+    root: &std::path::Path,
+    name: &str,
+    arguments: serde_json::Value,
+    allow_mutation: bool,
+    confirmed: bool,
+) -> CliResult<serde_json::Value> {
+    use crate::development::{Actor, ToolAuthorization, ToolCall};
+    let mut workspace = crate::workspace::DevelopmentWorkspace::open(root)?;
+    let context = crate::tools::DevelopmentToolContext {
+        authorization: ToolAuthorization {
+            actor: Actor::local(),
+            allow_mutation,
+            confirmed,
+            unrestricted: false,
+        },
+        initiator: None,
+        expected_generation: workspace.generation(),
+        expected_project_revision: workspace.project().revision(),
+    };
+    Ok(workspace.execute_tool(
+        &ToolCall {
+            id: format!("cli-{name}"),
+            name: name.into(),
+            arguments,
+        },
+        &context,
+    )?)
 }
 
 fn detected_command(
@@ -607,6 +765,27 @@ mod project_authorization_tests {
                 .expect_err("incomplete project authorization must fail");
             assert!(error.to_string().contains("--allow-mutation and --yes"));
             assert!(!root.join("authorized-dir").exists());
+        }
+        for action in [
+            ProjectCommand::Git {
+                root: root.clone(),
+                action: ProjectGitCommand::Stage {
+                    paths: vec!["src/main.rs".into()],
+                },
+            },
+            ProjectCommand::Github {
+                root: root.clone(),
+                action: ProjectGithubCommand::Ship {
+                    title: None,
+                    body: None,
+                    base: None,
+                    draft: false,
+                },
+            },
+        ] {
+            let error = dispatch_project(&action, true, false)
+                .expect_err("Git and GitHub writes require separate confirmation");
+            assert!(error.to_string().contains("--allow-mutation and --yes"));
         }
         dispatch_project(&action, true, true).unwrap();
         assert!(root.join("authorized-dir").is_dir());

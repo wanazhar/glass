@@ -6,8 +6,9 @@ use crate::development::{RemoteFrame, RemoteInput, RemoteView};
 use glass_browser::browser::policy::NavigationPreflight;
 use glass_browser::browser::policy::{BrowserPolicy, PolicyPreset};
 use glass_browser::browser::session::{
-    CdpBrowserSession, SemanticObservation, SemanticObservationLevel, SessionOptions,
-    VerificationPredicate, WorkflowCheckpoint, WorkflowDefinition, WorkflowRunResult,
+    CdpBrowserSession, InteractionMode, SemanticObservation, SemanticObservationLevel,
+    SessionOptions, VerificationPredicate, WorkflowCheckpoint, WorkflowDefinition,
+    WorkflowRunResult,
 };
 use glass_browser::browser::{
     BrowserRuntimeSession, NativeDialogController, NativeDialogResolution, NativeEngineConfig,
@@ -46,6 +47,12 @@ pub struct BrowserStartConfig {
     pub chrome_path: Option<PathBuf>,
     /// Enable an out-of-band host controller for synchronous native page dialogs.
     pub modal_dialogs: bool,
+    /// Pointer behavior for an attached Chromium session.
+    pub interaction: InteractionMode,
+    /// Enable the bounded Chromium session audit log.
+    pub audit: bool,
+    /// CSS viewport width and height. Applies to both native and Chromium sessions.
+    pub viewport: Option<(u32, u32)>,
 }
 
 impl Default for BrowserStartConfig {
@@ -58,6 +65,9 @@ impl Default for BrowserStartConfig {
             profile: default_profile(),
             chrome_path: None,
             modal_dialogs: false,
+            interaction: InteractionMode::Human,
+            audit: false,
+            viewport: None,
         }
     }
 }
@@ -609,6 +619,13 @@ impl BrowserWorker {
             ));
         }
         let session = if config.attach {
+            if let Some((width, height)) = config.viewport
+                && (!(320..=10_000).contains(&width) || !(240..=10_000).contains(&height))
+            {
+                return Err(DevelopmentError::InvalidInput(
+                    "viewport dimensions must be width 320..10000 and height 240..10000".into(),
+                ));
+            }
             let policy = self.policy.clone();
             let mut builder = SessionOptions::builder()
                 .port(config.port)
@@ -616,6 +633,8 @@ impl BrowserWorker {
                 .incognito(config.incognito)
                 .headed(config.headed)
                 .profile(config.profile.clone())
+                .interaction_mode(config.interaction)
+                .audit(config.audit)
                 .policy(policy);
             if let Some(path) = config.chrome_path.clone() {
                 builder = builder.chrome_path(path);
@@ -624,11 +643,22 @@ impl BrowserWorker {
                 .build()
                 .map_err(|error| DevelopmentError::InvalidInput(error.to_string()))?;
             ResidentBrowserSession::Chromium(Box::new(
-                CdpBrowserSession::start(&options)
-                    .await
-                    .map_err(|error| DevelopmentError::Process(error.to_string()))?,
+                CdpBrowserSession::start_with_policy_and_viewport(
+                    &options,
+                    self.policy.clone(),
+                    config
+                        .viewport
+                        .map(|(width, height)| (i64::from(width), i64::from(height))),
+                )
+                .await
+                .map_err(|error| DevelopmentError::Process(error.to_string()))?,
             ))
         } else {
+            if config.interaction != InteractionMode::Human || config.audit {
+                return Err(DevelopmentError::InvalidInput(
+                    "interaction and audit settings require explicit glass.browser.attach; the native browser runtime does not expose these Chromium session options".into(),
+                ));
+            }
             if config.headed || config.chrome_path.is_some() {
                 return Err(DevelopmentError::InvalidInput(
                     "headed and chromePath require explicit glass.browser.attach; glass.browser.start uses the native engine"
@@ -638,6 +668,13 @@ impl BrowserWorker {
             let mut native = NativeEngineConfig::default();
             if !config.incognito {
                 native = native.with_storage_path(native_profile_storage_path(&config.profile)?);
+            }
+            if let Some((width, height)) = config.viewport {
+                native = native.with_viewport(glass_browser::browser::Viewport {
+                    width,
+                    height,
+                    device_scale_factor_milli: 1000,
+                });
             }
             let runtime = if config.modal_dialogs {
                 let runtime = BrowserRuntimeSession::connect_native_with_modal_dialogs(native)
@@ -1462,6 +1499,50 @@ mod tests {
 
         let stopped = service.stop().unwrap();
         assert_eq!(stopped["connected"], false);
+    }
+
+    #[test]
+    fn resident_native_start_applies_requested_viewport() {
+        let service = BrowserService::new(std::env::temp_dir()).unwrap();
+        service
+            .start(BrowserStartConfig {
+                viewport: Some((1440, 900)),
+                ..BrowserStartConfig::default()
+            })
+            .unwrap();
+        let semantic = service
+            .semantic(SemanticObservationLevel::Structured)
+            .unwrap();
+        assert_eq!(semantic["limits"]["viewport"]["width"], 1440.0);
+        assert_eq!(semantic["limits"]["viewport"]["height"], 900.0);
+    }
+
+    #[test]
+    fn native_start_reports_chromium_only_interaction_and_audit_options() {
+        let service = BrowserService::new(std::env::temp_dir()).unwrap();
+        let error = service
+            .start(BrowserStartConfig {
+                interaction: InteractionMode::Fast,
+                ..BrowserStartConfig::default()
+            })
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("require explicit glass.browser.attach")
+        );
+
+        let error = service
+            .start(BrowserStartConfig {
+                audit: true,
+                ..BrowserStartConfig::default()
+            })
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("require explicit glass.browser.attach")
+        );
     }
 
     #[test]

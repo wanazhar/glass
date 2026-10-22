@@ -645,7 +645,8 @@ pub struct SessionOptions {
 ///
 /// - `Human`: bounded, smooth pointer paths with realistic delays.
 /// - `Fast`: direct pointer teleportation — no intermediate moves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum InteractionMode {
     Human,
     Fast,

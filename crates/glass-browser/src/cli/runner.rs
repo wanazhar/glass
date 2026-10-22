@@ -808,7 +808,7 @@ fn validate_alternative_runtime_command(
                     );
                 }
                 if region.is_some() && semantic_level.is_none() {
-                    return Err("semantic region expansion requires --semantic-level".into());
+                    return Err("semantic region expansion requires --level".into());
                 }
                 Ok(())
             } else if *deep_dom
@@ -2202,6 +2202,23 @@ async fn dispatch_session(
     if cli.browser_endpoint.is_some() {
         return Err("persistent sessions do not accept --browser-endpoint".into());
     }
+    if cli.browser_runtime.is_native()
+        && matches!(
+            action,
+            SessionCommand::Start { .. } | SessionCommand::Serve { .. }
+        )
+    {
+        for (unsupported, flag) in [
+            (cli.interaction != InteractionMode::Human, "--interaction"),
+            (cli.audit, "--audit"),
+            (cli.trace_on_error, "--trace-on-error"),
+            (cli.experimental_extensions, "--experimental-extensions"),
+        ] {
+            if unsupported {
+                return Err(format!("{flag} is only available on Chromium sessions").into());
+            }
+        }
+    }
     match action {
         SessionCommand::Start { name } => {
             if cli.attach {
@@ -2232,6 +2249,7 @@ async fn dispatch_session(
                     headed: cli.headed,
                     chrome_path: cli.chrome_path.clone(),
                     policy_args: policy_forward_args(cli),
+                    runtime_args: persistent_runtime_args(cli),
                     #[cfg(feature = "native-engine")]
                     native_config,
                 },
@@ -2270,6 +2288,9 @@ async fn dispatch_session(
                     headed: cli.headed,
                     chrome_path: cli.chrome_path.clone(),
                     policy: policy.clone(),
+                    interaction_mode: cli.interaction,
+                    audit: cli.audit,
+                    viewport: cli.viewport.as_deref().map(parse_viewport).transpose()?,
                     #[cfg(feature = "native-engine")]
                     native_config,
                 },
@@ -2293,6 +2314,30 @@ fn persistent_session_port(name: &str) -> BrowserResult<u16> {
         .and_then(Value::as_u64)
         .and_then(|port| u16::try_from(port).ok())
         .ok_or_else(|| "persistent session has no valid verified port".into())
+}
+
+fn persistent_runtime_args(cli: &Cli) -> Vec<String> {
+    let mut args = vec![
+        "--interaction".into(),
+        cli.interaction
+            .to_possible_value()
+            .expect("interaction value")
+            .get_name()
+            .into(),
+    ];
+    for (enabled, flag) in [
+        (cli.audit, "--audit"),
+        (cli.trace_on_error, "--trace-on-error"),
+        (cli.experimental_extensions, "--experimental-extensions"),
+    ] {
+        if enabled {
+            args.push(flag.into());
+        }
+    }
+    if let Some(viewport) = &cli.viewport {
+        args.extend(["--viewport".into(), viewport.clone()]);
+    }
+    args
 }
 
 fn policy_forward_args(cli: &Cli) -> Vec<String> {
@@ -4571,6 +4616,63 @@ fn compact_json<T: Serialize + ?Sized>(value: &T) -> BrowserResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_persistent_owner_reports_unsupported_chromium_settings() {
+        for flag in ["--audit", "--trace-on-error", "--experimental-extensions"] {
+            let cli = Cli::try_parse_from([
+                "glass",
+                "--browser-runtime",
+                "native",
+                flag,
+                "session",
+                "start",
+                "review",
+            ])
+            .unwrap();
+            let policy = policy_from_cli(&cli).unwrap();
+            let Some(Commands::Session { action }) = &cli.command else {
+                panic!("session command expected");
+            };
+            let error = dispatch_session(&cli, action, &policy).await.unwrap_err();
+            assert!(error.to_string().contains(flag));
+            assert!(error.to_string().contains("Chromium"));
+        }
+    }
+
+    #[test]
+    fn persistent_owner_runtime_flags_round_trip_without_dropping_configuration() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "glass",
+                    "--interaction",
+                    "fast",
+                    "--audit",
+                    "--trace-on-error",
+                    "--experimental-extensions",
+                    "--viewport",
+                    "1600x900",
+                    "session",
+                    "start",
+                    "review",
+                ])
+                .unwrap();
+                let mut argv = vec!["glass".to_string()];
+                argv.extend(persistent_runtime_args(&cli));
+                argv.extend(["session".into(), "start".into(), "review".into()]);
+                let owner = Cli::try_parse_from(argv).unwrap();
+                assert_eq!(owner.interaction, cli.interaction);
+                assert!(owner.audit);
+                assert!(owner.trace_on_error);
+                assert!(owner.experimental_extensions);
+                assert_eq!(owner.viewport.as_deref(), Some("1600x900"));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[test]
     fn default_dispatch_requires_both_terminal_streams_for_tui() {

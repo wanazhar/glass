@@ -519,20 +519,18 @@ fn push_evidence(evidence: &mut Vec<String>, value: &str) {
 }
 
 fn classify_remote_measurements(measurements: ConnectionMeasurements) -> TransportClass {
-    if measurements.rtt_ms.is_some_and(|value| value >= 150.0)
-        || measurements
-            .estimated_throughput_mbps
-            .is_some_and(|value| value <= 5.0)
-    {
-        TransportClass::RemoteConstrained
-    } else if measurements.rtt_ms.is_some_and(|value| value <= 80.0)
-        && measurements
-            .estimated_throughput_mbps
-            .is_some_and(|value| value >= 10.0)
-    {
-        TransportClass::RemoteFast
-    } else {
-        TransportClass::UnknownRemote
+    match (measurements.rtt_ms, measurements.estimated_throughput_mbps) {
+        (Some(rtt), Some(throughput)) if rtt >= 150.0 || throughput <= 5.0 => {
+            TransportClass::RemoteConstrained
+        }
+        (Some(rtt), Some(throughput)) if rtt <= 80.0 && throughput >= 10.0 => {
+            TransportClass::RemoteFast
+        }
+        (Some(rtt), None) if rtt >= 150.0 => TransportClass::RemoteConstrained,
+        (Some(rtt), None) if rtt <= 80.0 => TransportClass::RemoteFast,
+        (None, Some(throughput)) if throughput <= 5.0 => TransportClass::RemoteConstrained,
+        (None, Some(throughput)) if throughput >= 10.0 => TransportClass::RemoteFast,
+        _ => TransportClass::UnknownRemote,
     }
 }
 
@@ -555,6 +553,45 @@ mod tests {
             ConnectionOverrides::default(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn partial_remote_measurements_classify_by_the_available_signal() {
+        assert_eq!(
+            classify_remote_measurements(ConnectionMeasurements {
+                rtt_ms: Some(50.0),
+                ..Default::default()
+            }),
+            TransportClass::RemoteFast
+        );
+        assert_eq!(
+            classify_remote_measurements(ConnectionMeasurements {
+                estimated_throughput_mbps: Some(20.0),
+                ..Default::default()
+            }),
+            TransportClass::RemoteFast
+        );
+        assert_eq!(
+            classify_remote_measurements(ConnectionMeasurements {
+                rtt_ms: Some(180.0),
+                ..Default::default()
+            }),
+            TransportClass::RemoteConstrained
+        );
+        assert_eq!(
+            classify_remote_measurements(ConnectionMeasurements {
+                estimated_throughput_mbps: Some(3.0),
+                ..Default::default()
+            }),
+            TransportClass::RemoteConstrained
+        );
+        assert_eq!(
+            classify_remote_measurements(ConnectionMeasurements {
+                rtt_ms: Some(100.0),
+                ..Default::default()
+            }),
+            TransportClass::UnknownRemote
+        );
     }
 
     #[test]

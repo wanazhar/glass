@@ -952,8 +952,10 @@ setTimeout(() => {
   globalThis.mediaLoadEventCount = 0;
   let resolveImageFetch;
   let resolveErrorFetch;
+  let resolveMediaFetch;
   globalThis.imageFetchSettled = new Promise(resolve => { resolveImageFetch = resolve; });
   globalThis.errorFetchSettled = new Promise(resolve => { resolveErrorFetch = resolve; });
+  globalThis.mediaFetchSettled = new Promise(resolve => { resolveMediaFetch = resolve; });
 
   const image = document.createElement('img');
   image.width = 2;
@@ -984,10 +986,14 @@ setTimeout(() => {
   document.body.appendChild(blocked);
 
   const audio = document.createElement('audio');
+  // Error and media callbacks are independent after the successful image
+  // callback. Let both parent-brokered Fetches proceed instead of serializing
+  // unrelated work through one content-process turn.
   audio.addEventListener('load', () => {
     mediaLoadEventCount += 1;
-    errorFetchSettled.then(() => fetch('/media-check')).then(response => response.text()).then(value => {
+    imageFetchSettled.then(() => fetch('/media-check')).then(response => response.text()).then(value => {
       globalThis.mediaCallback = value;
+      resolveMediaFetch();
     });
   });
   audio.addEventListener('error', () => {});
@@ -1055,7 +1061,7 @@ setTimeout(() => {
                     .into_bytes()
                 }
                 "/media-check" => {
-                    for cookie in ["event_seed=secret", "event_image=accepted", "event_media=accepted", "event_image_callback=accepted", "event_error_callback=accepted"] {
+                    for cookie in ["event_seed=secret", "event_image=accepted", "event_media=accepted", "event_image_callback=accepted"] {
                         assert!(request.contains(cookie), "missing {cookie} in {request:?}");
                     }
                     let body = "media-ok";
@@ -1113,16 +1119,12 @@ setTimeout(() => {
         .iter()
         .map(|request| request.split_whitespace().nth(1).unwrap_or_default())
         .collect::<Vec<_>>();
+    assert_eq!(&paths[..3], ["/page", "/timer.png", "/timer.webm"]);
+    let mut callback_paths = paths[3..].to_vec();
+    callback_paths.sort_unstable();
     assert_eq!(
-        paths,
-        [
-            "/page",
-            "/timer.png",
-            "/timer.webm",
-            "/image-check",
-            "/error-check",
-            "/media-check",
-        ]
+        callback_paths,
+        ["/error-check", "/image-check", "/media-check"]
     );
     assert!(
         matches!(

@@ -60,6 +60,12 @@ Quality profiles target approximately 3 FPS/data, 6 FPS/balanced, and 12
 FPS/smooth within bounded capture sizes. `contain` is used by native image
 backends; ANSI additionally supports `cover` and `actual`.
 
+Global browser options are retained for a later resident TUI browser start.
+`--viewport` applies to native and attached Chromium sessions. `--interaction`
+and `--audit` apply to attached Chromium sessions; native startup reports an
+explicit error if either Chromium-only option is requested. `--trace-on-error`
+remains scoped to one-shot CLI operations.
+
 `--mcp` is a top-level option (not inherited by subcommands); it starts the
 stdio server and reserves stdout for protocol frames.
 
@@ -283,7 +289,7 @@ confirmation flags, and output schemas.
 |---|---|
 | `certify` | `run`, `plan`, `release`, `replay`, `replay-diff` |
 | `workspace` | `list`, `inspect`, `suspend`, `resume`, `delete` |
-| `project` | `inspect`, `files`, `search`, `read`, `edit`, `mkdir`, `rename`, `delete`, `diagnostics`, `run`, `test`, `lint`, `process`, `diff`, `link`, `graph`, `breakpoint`, `timeline`, `replay`, `neovim`, `experiment`, `attach` |
+| `project` | `inspect`, `files`, `search`, `read`, `edit`, `mkdir`, `rename`, `delete`, `diagnostics`, `run`, `test`, `lint`, `process`, `diff`, `link`, `graph`, `breakpoint`, `timeline`, `replay`, `neovim`, `experiment`, `attach`, `git`, `github` |
 | `agent` | `doctor`, `setup`, `status`, `delegate`, `hello`, `prompt`, `steer`, `follow-up`, `models`, `set-model`, `thinking`, `abort`, `new-session` |
 | `harness` | `list`, `start` |
 | `memory` | `status`, `inspect`, `explain`, `forget`, `export`, `prune`, `reindex` |
@@ -310,6 +316,8 @@ Nested development inventories are exact:
 | `project graph` | `discover`, `entity`, `source` |
 | `project neovim` | `probe`, `start` |
 | `project experiment` | `create` |
+| `project git` | `status`, `diff`, `stage`, `unstage`, `discard`, `fetch`, `pull`, `push`, `merge`, `rebase`, `commit`, `branches`, `branch-create`, `branch-switch`, `stash-list`, `stash-push`, `stash-pop`, `worktree-list`, `worktree-create`, `worktree-remove` |
+| `project github` | `review`, `ship` |
 
 Project mutations remain confined to the canonical root. Certification and
 replay inspect evidence; they do not replay browser input as an unguarded
@@ -325,7 +333,7 @@ The following forms are the public Clap routes. `FILE`, `PATH`, `ID`, and
 |---|---|
 | `certify` | `run --scenario FILE --fixture FILE --url URL [--workflow-root DIR] [--inputs FILE] [-o FILE]`; `plan --scenario FILE --fixture FILE`; `release --version VERSION --scenarios FILE --observations FILE [--replays FILE]`; `replay --scenario FILE --input FILE`; `replay-diff --scenario FILE --before FILE --after FILE` |
 | `workspace` | `list`; `inspect ID`; `suspend ID`; `resume ID`; `delete ID` |
-| `project` | `inspect|files [--root .]`; `search QUERY [--limit 64] [--root .]`; `read PATH [--root .]`; `edit PATH (--content TEXT \| --input FILE) [--root .]`; `mkdir PATH [--root .]`; `rename FROM TO [--root .]`; `delete PATH [--yes] [--root .]`; `diagnostics PATH [--root .]`; `run NAME [--command COMMAND] [--wait] [--root .]`; `test|lint [--root .]`; `process [--root .] SUBCOMMAND`; `diff|timeline [--root .]`; `link ENTITY PATH --start-line N --end-line N [--provenance explicit-marker] [--confidence 1.0] [--detail TEXT] [--root .]`; `graph [--root .] SUBCOMMAND`; `breakpoint KIND ENTITY BEFORE AFTER [--root .]`; `replay [--start 0] [--limit 64] [--root .]`; `neovim [--root .] SUBCOMMAND`; `experiment [--root .] create NAME --port PORT`; `attach ACTOR [--root .]` |
+| `project` | `inspect|files [--root .]`; `search QUERY [--limit 64] [--root .]`; `read PATH [--root .]`; `edit PATH (--content TEXT \| --input FILE) [--root .]`; `mkdir PATH [--root .]`; `rename FROM TO [--root .]`; `delete PATH [--yes] [--root .]`; `diagnostics PATH [--root .]`; `run NAME [--command COMMAND] [--wait] [--root .]`; `test|lint [--root .]`; `process [--root .] SUBCOMMAND`; `diff|timeline [--root .]`; `link ENTITY PATH --start-line N --end-line N [--provenance explicit-marker] [--confidence 1.0] [--detail TEXT] [--root .]`; `graph [--root .] SUBCOMMAND`; `breakpoint KIND ENTITY BEFORE AFTER [--root .]`; `replay [--start 0] [--limit 64] [--root .]`; `neovim [--root .] SUBCOMMAND`; `experiment [--root .] create NAME --port PORT`; `attach ACTOR [--root .]`; `git [--root .] SUBCOMMAND`; `github [--root .] SUBCOMMAND` |
 | `project process` | `list`; `start NAME COMMAND [--wait]`; `stop|restart|remove NAME`; `input NAME INPUT`; `resize NAME COLS ROWS`; `output NAME` |
 | `project graph` | `discover`; `entity ENTITY`; `source PATH [--line N]` |
 | `replay` | `inspect SCENARIO INPUT`; `diff SCENARIO BEFORE AFTER`; `attach SCENARIO INPUT` |
@@ -438,6 +446,12 @@ Omitting the name uses `default`. `start` launches the named owner, `status`
 inspects it without starting Chrome, `open` prints its attach command, and
 `stop` closes the owned browser. `--session NAME` attaches browser operations
 to an already-started named session; it does not create one.
+
+`session start` forwards interaction, audit, viewport, trace, and experimental
+extension flags to its owner. Chromium owners apply the requested viewport at
+startup. Attached Chromium commands run in their own client session, so supply
+interaction, audit, trace, and extension flags on each command that needs them;
+these client settings are not inherited from the owner's process.
 
 Top-level utility routes are `update`, `install-chromium`, `capabilities`,
 `doctor`, `mcp-config`, `delete-profile`, `help`, and `tui`. With no command or
@@ -612,7 +626,23 @@ glass project neovim probe --root .
 glass project experiment create alternative --port 3101 --root .
 glass project diff --root .
 glass project timeline --root .
+glass project git status --root .
+glass project git diff --staged --root .
+glass project github review --root .
 ```
+
+Git and GitHub CLI operations route through the same development tool contracts
+as the MCP surface. Read-only actions need no mutation flags. Git writes and
+`github ship` require both `--allow-mutation` and `--yes` (or `--yolo`), for
+example `glass project --allow-mutation --yes git stage src/main.rs --root .`.
+The Git subcommands cover status/diff, stage/unstage/discard, branch and stash
+operations, push/pull/fetch/merge/rebase/commit, and worktree management.
+`project git diff` returns Git's tracked patch and accepts `--staged` and
+`--path`; the TUI Git pane uses that same operation. `project diff` is the
+broader impact summary: its file entries include index/worktree status and
+`??` for untracked files, alongside runtime, semantic, visual, and workflow
+state. Untracked files have no Git patch yet, so the TUI labels them and opens
+their content from Code.
 
 One-shot CLI PTY operations require `--wait`; use the TUI for persistent
 interactive dev servers, input, resize, restart, and live output. Use

@@ -6,8 +6,8 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
 
-const DOUBLE_CLICK: Duration = Duration::from_millis(400);
-const LONG_PRESS: Duration = Duration::from_millis(400);
+const DOUBLE_CLICK: Duration = Duration::from_millis(300);
+const LONG_PRESS: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HitRegion {
@@ -264,12 +264,11 @@ fn apply_select(state: &mut DevTuiState, hit: &HitRegion) {
             let current = state.browser_workspace.state().selected_entity.unwrap_or(0) as i32;
             let delta = *index as i32 - current;
             if delta != 0 {
-                let _ = state.browser_workspace.reduce(
+                state.queue_browser_intent(
                     glass_browser::browser_workspace::BrowserWorkspaceIntent::MoveSelection {
                         delta,
                     },
                 );
-                state.browser = state.browser_workspace_summary();
             }
         }
         HitRegion::MoreRoute(index) => state.select_more(*index),
@@ -762,6 +761,7 @@ mod tests {
         state.pi_command_mode = false;
         state.code_edit_mode = false;
         state.help_open = true;
+        state.terminal_height = 10;
         pointer.handle(
             &mut state,
             MouseEvent {
@@ -775,6 +775,7 @@ mod tests {
         assert_eq!(state.help_scroll, 3);
         assert_eq!(state.surface_scroll.get(&DevSurface::Git), Some(&5));
 
+        state.terminal_height = 40;
         state.help_open = false;
         state.open_menu();
         assert!(matches!(hit_test(&state, 50, 3), HitRegion::Menu(0)));
@@ -1205,7 +1206,7 @@ mod tests {
             at + Duration::from_millis(10),
         );
         assert_eq!(state.selected_more, 2);
-        assert!(state.status.contains("Route 3/5"));
+        assert!(state.status.contains("Route 3/8"));
 
         pointer.handle(&mut state, mouse, at + Duration::from_millis(100));
         assert!(state.command_mode);
@@ -1222,12 +1223,14 @@ mod tests {
             set_viewport(&mut state, layout, width, height);
             state.surface = DevSurface::More;
 
-            for index in 0..DevTuiState::MORE_ROUTES.len() {
+            for index in 0..DevTuiState::more_route_actions().len() {
                 state.selected_more = index;
                 let screen = screen(&state);
                 let route = super::super::render::more_route_hit_geometry(&state, screen);
                 assert!(route.content.width > 0 && route.content.height > 0);
-                if layout == TuiLayout::Mobile && index == DevTuiState::MORE_ROUTES.len() - 1 {
+                if layout == TuiLayout::Mobile
+                    && index == DevTuiState::more_route_actions().len() - 1
+                {
                     assert!(route.scroll_offset > 0, "short phone route panel scrolls");
                 }
                 let row = route.content.y + (index - route.scroll_offset) as u16;
@@ -1239,7 +1242,7 @@ mod tests {
                 );
             }
 
-            state.selected_more = DevTuiState::MORE_ROUTES.len() - 1;
+            state.selected_more = DevTuiState::more_route_actions().len() - 1;
             let route = super::super::render::more_route_hit_geometry(&state, screen(&state));
             let row = route.content.y;
             for column in [

@@ -40,7 +40,7 @@
   "nested": {
     "certify": ["run", "plan", "release", "replay", "replay-diff"],
     "workspace": ["list", "inspect", "suspend", "resume", "delete"],
-    "project": ["inspect", "files", "search", "read", "edit", "mkdir", "rename", "delete", "diagnostics", "run", "test", "lint", "process", "diff", "link", "graph", "breakpoint", "timeline", "replay", "neovim", "experiment", "attach"],
+    "project": ["inspect", "files", "search", "read", "edit", "mkdir", "rename", "delete", "diagnostics", "run", "test", "lint", "process", "diff", "link", "graph", "breakpoint", "timeline", "replay", "neovim", "experiment", "attach", "git", "github"],
     "project process": ["list", "start", "stop", "restart", "remove", "input", "resize", "output"],
     "project graph": ["discover", "entity", "source"],
     "project neovim": ["probe", "start"],

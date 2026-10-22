@@ -45,41 +45,9 @@ fn documented_shortcut_help() -> &'static str {
     })
 }
 
-/// Product verbs advertised in help and the unfocused dock.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum WorkspaceVerb {
-    Primary,
-    Back,
-    Palette,
-    Actions,
-    FocusDock,
-    OpenFile,
-    Help,
-    NextSurface,
-    Quit,
-}
-
-impl WorkspaceVerb {
-    #[allow(dead_code)]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Primary => "Enter",
-            Self::Back => "Esc",
-            Self::Palette => ":",
-            Self::Actions => "a",
-            Self::FocusDock => "dock",
-            Self::OpenFile => "Ctrl-P",
-            Self::Help => "?",
-            Self::NextSurface => "Tab",
-            Self::Quit => "Ctrl-C",
-        }
-    }
-}
-
 pub fn curriculum_help(surface: DevSurface) -> String {
     let surface_lines = match surface {
-        DevSurface::Trust => "TRUST\n  I inspect · 1 once · T project · O untrusted",
+        DevSurface::Trust => "TRUST\n  I inspect · 1/t once · T project · O untrusted",
         DevSurface::Agent => {
             "AGENT\n  type in the dock to talk · Enter sends\n  / Pi commands · : Glass actions\n  :plan accept after a Plan turn"
         }
@@ -114,9 +82,4 @@ pub fn dock_placeholder(surface: DevSurface, mode: crate::AgentTurnMode) -> Stri
         mode.label().to_ascii_uppercase(),
         surface.label()
     )
-}
-
-#[allow(dead_code)]
-pub fn unfocused_footer_hint() -> &'static str {
-    "Enter · : search · / Pi · a actions · click dock to talk"
 }

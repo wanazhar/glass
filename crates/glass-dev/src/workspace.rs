@@ -864,7 +864,47 @@ impl DevelopmentWorkspace {
             },
         );
         self.kernels = kernels;
-        result
+        let replay_payload = match &result {
+            Ok(execution) => serde_json::json!({
+                "name":execution.name,
+                "kind":execution.kind,
+                "sequence":execution.sequence,
+                "initiatorId":execution.initiator_id,
+                "executorId":execution.executor_id,
+                "sourceRevision":revision,
+                "resultingRevision":self.project.revision(),
+                "durationMs":execution.duration_ms,
+                "toolCalls":execution.tool_calls,
+                "outputBytes":execution.output.len(),
+                "truncated":execution.truncated,
+                "status":"completed"
+            }),
+            Err(error) => serde_json::json!({
+                "name":name,
+                "initiatorId":initiator.id,
+                "sourceRevision":revision,
+                "resultingRevision":self.project.revision(),
+                "status":"failed",
+                "error":error.to_string()
+            }),
+        };
+        let replay_result = self.project.record_as(
+            initiator,
+            crate::development::DevelopmentEventKind::KernelExecuted,
+            replay_payload,
+        );
+        match (result, replay_result) {
+            (Ok(execution), Ok(())) => Ok(execution),
+            (Err(error), Ok(())) => Err(error),
+            (result, Err(record_error)) => Err(KernelError::Execution(match result {
+                Ok(_) => format!(
+                    "kernel executed successfully, but its replay event could not be persisted: {record_error}"
+                ),
+                Err(execution_error) => format!(
+                    "kernel execution failed ({execution_error}) and its replay event could not be persisted: {record_error}"
+                ),
+            })),
+        }
     }
 
     pub(crate) fn language(&mut self) -> &mut LanguageService {
@@ -1218,6 +1258,53 @@ mod tests {
             "glass-dev-workspace-{}-{sequence}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn kernel_execution_is_recorded_in_project_replay_without_source_or_output() {
+        let root = test_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='fixture'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
+        workspace
+            .kernels_mut()
+            .start_governed("sql", crate::kernels::KernelKind::Sql, "test", &[], false)
+            .unwrap();
+        let execution = workspace
+            .execute_kernel(
+                "sql",
+                "select 'private result' as value;",
+                &ToolAuthorization {
+                    actor: Actor::local(),
+                    allow_mutation: false,
+                    confirmed: false,
+                    unrestricted: false,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(execution.sequence, 1);
+        let event = workspace
+            .project()
+            .timeline()
+            .events()
+            .last()
+            .expect("kernel execution is replayable");
+        assert_eq!(
+            event.kind,
+            crate::development::DevelopmentEventKind::KernelExecuted
+        );
+        assert_eq!(event.payload["name"], "sql");
+        assert_eq!(event.payload["sequence"], 1);
+        assert_eq!(event.payload["status"], "completed");
+        let serialized = serde_json::to_string(event).unwrap();
+        assert!(!serialized.contains("private result"));
+        assert!(!serialized.contains("select"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

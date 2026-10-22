@@ -1,6 +1,5 @@
 use super::{
-    DEVELOPMENT_SCHEMA_VERSION, DevelopmentError, DevelopmentGraph, DevelopmentResult,
-    ProcessManager, Timeline,
+    DEVELOPMENT_SCHEMA_VERSION, DevelopmentGraph, DevelopmentResult, ProcessManager, Timeline,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
@@ -30,29 +29,27 @@ pub(crate) fn build_diff(
     graph: &DevelopmentGraph,
     processes: &mut ProcessManager,
 ) -> DevelopmentResult<ProjectDiff> {
-    let output = crate::git::git_command(root)
-        .args([
-            "-c",
-            "alias.status=",
-            "status",
-            "--short",
-            "--untracked-files=all",
-        ])
-        .output()
-        .map_err(DevelopmentError::Io)?;
-    let mut files = Vec::new();
-    if output.status.success() {
-        for line in String::from_utf8_lossy(&output.stdout).lines().take(512) {
-            if line.len() < 4 {
-                continue;
-            }
-            let status = line[..2].trim().to_string();
-            let path = line[3..].trim().to_string();
-            if !path.is_empty() {
-                files.push(FileChange { path, status });
-            }
-        }
-    }
+    let files = crate::git::GitService::open(root)
+        .and_then(|git| git.status())
+        .map(|status| {
+            let mut entries = status.entries;
+            entries.sort_by(|left, right| left.path.cmp(&right.path));
+            entries
+                .into_iter()
+                .take(512)
+                .map(|entry| FileChange {
+                    path: entry.path,
+                    status: if entry.untracked {
+                        "??".into()
+                    } else {
+                        format!("{}{}", entry.index_status, entry.worktree_status)
+                            .trim()
+                            .to_string()
+                    },
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let process_snapshots = processes.list();
     let mut runtime = BTreeMap::new();
     runtime.insert(

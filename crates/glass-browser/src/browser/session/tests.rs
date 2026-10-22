@@ -6,6 +6,15 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
+#[test]
+fn viewport_dimensions_match_session_start_bounds() {
+    assert!(super::validate_viewport_dimensions(320, 240).is_ok());
+    assert!(super::validate_viewport_dimensions(10_000, 10_000).is_ok());
+    assert!(super::validate_viewport_dimensions(319, 240).is_err());
+    assert!(super::validate_viewport_dimensions(320, 239).is_err());
+    assert!(super::validate_viewport_dimensions(10_001, 240).is_err());
+}
+
 fn test_session(cdp: CdpClient) -> CdpBrowserSession {
     cdp.set_active_target_route(
         Some("test-target".to_string()),

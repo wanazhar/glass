@@ -250,7 +250,7 @@ pub fn browser_evidence(value: &Value) -> String {
 
 /// Project browser tool results. Screenshots never inline base64 payloads.
 pub fn browser_result(tool: &str, value: &Value) -> String {
-    if tool.contains("screenshot") {
+    if tool == "glass.browser.screenshot" {
         let bytes = value.get("bytes").and_then(Value::as_u64).unwrap_or(0);
         return format!(
             "✓ screenshot captured · {} KB · raw payload available in Inspect",
@@ -1035,6 +1035,15 @@ mod tests {
         assert!(projected.contains("screenshot captured"));
         assert!(projected.contains("200 KB"));
         assert!(!projected.contains("aGVsbG8"));
+    }
+
+    #[test]
+    fn screenshot_projection_matches_only_the_canonical_tool() {
+        let value = serde_json::json!({"message":"extension screenshot inspection result"});
+        assert_eq!(
+            browser_result("extension.screenshot.inspect", &value),
+            "message: extension screenshot inspection result"
+        );
     }
 
     #[test]

@@ -166,6 +166,9 @@ impl IncrementalSyntax {
             .is_some_and(|cached| cached.language == language && cached.source == source);
         if cached_unchanged {
             self.last_cache_hit = true;
+            self.last_full_parse = false;
+            self.last_edit = None;
+            self.last_changed_ranges = 0;
             self.touch(path);
             return self.trees.get(path).map(|cached| &cached.tree);
         }
@@ -1256,5 +1259,30 @@ struct Point {
         assert!(!syntax.last_cache_hit);
         syntax.sync("hit.rs", "fn a() {}\n");
         assert!(syntax.last_cache_hit, "unchanged source must not reparse");
+    }
+
+    #[test]
+    fn cache_hit_clears_metadata_from_the_previous_edit() {
+        let original = "fn main() {\n    let value = 1;\n}\n";
+        let edited = format!("// edited\n{original}");
+        let mut syntax = IncrementalSyntax::new();
+
+        assert!(syntax.sync("main.rs", original));
+        assert!(syntax.sync("main.rs", &edited));
+        assert!(syntax.last_edit.is_some());
+        assert!(syntax.last_changed_ranges > 0);
+
+        assert!(syntax.sync("main.rs", &edited));
+
+        assert!(syntax.last_cache_hit);
+        assert!(syntax.last_edit.is_none());
+        assert_eq!(syntax.last_changed_ranges, 0);
+        assert!(!syntax.last_full_parse);
+
+        assert!(syntax.sync("other.rs", original));
+        assert!(syntax.last_full_parse);
+        assert!(syntax.sync("other.rs", original));
+        assert!(syntax.last_cache_hit);
+        assert!(!syntax.last_full_parse);
     }
 }

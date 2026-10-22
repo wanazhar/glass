@@ -15,6 +15,7 @@ const PANEL_INSET: Color = Color::Rgb(13, 17, 23);
 const ACTIVE_BACKGROUND: Color = Color::Rgb(31, 50, 72);
 const DIFF_ADD: Color = Color::Rgb(20, 64, 39);
 const DIFF_REMOVE: Color = Color::Rgb(75, 32, 32);
+const MAX_HIGHLIGHT_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileKind {
@@ -131,6 +132,7 @@ pub(crate) fn render_editor(
     }
     let fallback_kind = classify(path);
     if fallback_kind == FileKind::Mermaid
+        && selection.is_none()
         && let Some(source) = editor_source_for_path(path, content)
         && let Some(diagram) = render_mermaid(&source)
     {
@@ -240,9 +242,33 @@ pub(crate) fn render_editor(
 }
 
 pub(crate) struct EditorDecorations<'a> {
-    pub marks: &'a [(u32, char)],
+    pub marks: &'a [(u32, String)],
     pub inlays: &'a [(u32, String)],
     pub extra_selections: &'a [crate::development::TextSelection],
+}
+
+pub(crate) fn editor_gutter_prefix_width(line_count: usize, marks: &[(u32, String)]) -> usize {
+    let mark_width = marks
+        .iter()
+        .map(|(_, glyphs)| glyphs.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    1 + mark_width + line_count.max(1).to_string().len().max(3) + 3
+}
+
+pub(crate) fn coalesce_editor_marks(
+    marks: impl IntoIterator<Item = (u32, super::editor::GutterMark)>,
+) -> Vec<(u32, String)> {
+    let mut by_line = std::collections::BTreeMap::<u32, String>::new();
+    for (line, mark) in marks {
+        let glyphs = by_line.entry(line).or_default();
+        let glyph = mark.glyph();
+        if !glyphs.contains(glyph) {
+            glyphs.push(glyph);
+        }
+    }
+    by_line.into_iter().collect()
 }
 
 pub(crate) fn render_editable_source(
@@ -259,19 +285,31 @@ pub(crate) fn render_editable_source(
     let mut markdown_fence = None;
     let mut markdown_highlighter = None;
     let source_lines = content.split('\n').collect::<Vec<_>>();
-    let gutter_width = source_lines.len().max(1).to_string().len().max(3);
+    let skip_highlighting = content.len() > MAX_HIGHLIGHT_BYTES;
+    let line_number_width = source_lines.len().max(1).to_string().len().max(3);
+    let mark_width = decorations
+        .marks
+        .iter()
+        .map(|(_, glyphs)| glyphs.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(1);
     let mut lines = Vec::with_capacity(source_lines.len());
 
     for (index, source) in source_lines.into_iter().enumerate() {
         let line_number = index as u32 + 1;
         let active = line_number == cursor_line;
-        let source_spans = editor_source_spans(
-            kind,
-            source,
-            &mut markdown_fence,
-            &mut markdown_highlighter,
-            &mut highlighter,
-        );
+        let source_spans = if skip_highlighting {
+            vec![Span::raw(source.to_string())]
+        } else {
+            editor_source_spans(
+                kind,
+                source,
+                &mut markdown_fence,
+                &mut markdown_highlighter,
+                &mut highlighter,
+            )
+        };
         let mut source_spans = apply_selection_background(
             source_spans,
             selection_columns(selection, line_number, source),
@@ -304,15 +342,16 @@ pub(crate) fn render_editable_source(
             .marks
             .iter()
             .find(|(line, _)| *line == line_number)
-            .map(|(_, glyph)| *glyph)
-            .unwrap_or(' ');
+            .map(|(_, glyphs)| glyphs.as_str())
+            .unwrap_or("");
         let mut rendered = vec![Span::styled(
             format!(
-                "{}{}{:>gutter_width$} │ ",
-                if active { "▶" } else { " " },
-                mark,
-                line_number,
-                gutter_width = gutter_width
+                "{arrow}{mark:<mark_width$}{line_number:>line_number_width$} │ ",
+                arrow = if active { "▶" } else { " " },
+                mark = mark,
+                line_number = line_number,
+                mark_width = mark_width,
+                line_number_width = line_number_width
             ),
             gutter_style,
         )];
@@ -851,6 +890,14 @@ fn highlight_or_manual(
 
 pub(crate) fn render_source(path: &str, content: &str) -> Text<'static> {
     let kind = classify(path);
+    if content.len() > MAX_HIGHLIGHT_BYTES {
+        return Text::from(
+            content
+                .lines()
+                .map(|line| Line::from(Span::raw(line.to_string())))
+                .collect::<Vec<_>>(),
+        );
+    }
     if kind == FileKind::Mermaid
         && let Some(diagram) = render_mermaid(content)
     {
@@ -882,11 +929,15 @@ pub(crate) fn render_diff(path: &str, content: &str) -> Text<'static> {
     let mut new_line = 0u32;
     let mut active_path = path.to_string();
     let mut highlighter = SyntaxHighlighter::for_path(path);
+    let mut markdown_fence = None;
+    let mut markdown_highlighter = None;
     let mut lines = Vec::new();
     for line in content.lines() {
         if let Some(header_path) = diff_file_path(line) {
             active_path = header_path;
             highlighter = SyntaxHighlighter::for_path(&active_path);
+            markdown_fence = None;
+            markdown_highlighter = None;
         }
         if line.starts_with("@@") {
             old_line = diff_hunk_start(line, '-').unwrap_or(0);
@@ -955,12 +1006,26 @@ pub(crate) fn render_diff(path: &str, content: &str) -> Text<'static> {
                     .add_modifier(Modifier::BOLD),
             ),
         ];
-        rendered.extend(highlight_or_manual(
-            &mut highlighter,
-            classify(&active_path),
-            body,
-            Some(background),
-        ));
+        let kind = classify(&active_path);
+        if kind == FileKind::Markdown {
+            rendered.extend(
+                render_markdown_line(body, &mut markdown_fence, &mut markdown_highlighter)
+                    .spans
+                    .into_iter()
+                    .map(|span| {
+                        let mut style = span.style;
+                        style.bg = Some(background);
+                        Span::styled(span.content.to_string(), style)
+                    }),
+            );
+        } else {
+            rendered.extend(highlight_or_manual(
+                &mut highlighter,
+                kind,
+                body,
+                Some(background),
+            ));
+        }
         lines.push(Line::from(rendered));
     }
 
@@ -1882,6 +1947,27 @@ mod tests {
     }
 
     #[test]
+    fn mermaid_editor_selection_shows_selectable_source() {
+        let selection = crate::development::TextSelection {
+            anchor: crate::development::TextPosition { line: 1, column: 0 },
+            active: crate::development::TextPosition { line: 1, column: 9 },
+        };
+        let output = render_editor(
+            "docs/flow.mmd",
+            "○ docs/flow.mmd · cursor 1:9 · actor local · 1 lines\n▶  1 │ flowchart LR",
+            Some(&selection),
+        );
+        let rendered = symbols(output.clone());
+        assert!(!rendered.contains("DIAGRAM LR"));
+        assert!(rendered.contains("flowchart LR"));
+        assert!(output.lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.style.bg == Some(ACTIVE_BACKGROUND))
+        }));
+    }
+
+    #[test]
     fn editable_renderer_marks_line_numbers_active_line_and_cursor() {
         let output = render_editable_source(
             "src/main.rs",
@@ -1904,6 +1990,32 @@ mod tests {
             "cursor cell should be visibly highlighted"
         );
         assert_eq!(output.lines[0].spans[0].content, "▶   1 │ ");
+    }
+
+    #[test]
+    fn editable_gutter_keeps_multiple_states_on_one_line_visible() {
+        let marks = coalesce_editor_marks([
+            (1, super::super::editor::GutterMark::Lsp),
+            (1, super::super::editor::GutterMark::Proof),
+        ]);
+        let output = render_editable_source(
+            "src/main.rs",
+            "fn main() {}\nfn next() {}\n",
+            1,
+            4,
+            None,
+            &EditorDecorations {
+                marks: &marks,
+                inlays: &[],
+                extra_selections: &[],
+            },
+        );
+        assert!(output.lines[0].spans[0].content.contains("!✓"));
+        assert_eq!(
+            output.lines[0].spans[0].content.chars().count(),
+            output.lines[1].spans[0].content.chars().count(),
+            "empty and populated mark slots must keep the same cursor prefix width"
+        );
     }
 
     #[test]
@@ -1996,8 +2108,9 @@ mod tests {
 
         let mut wrapped =
             render_editable_source_wrapped("src/main.rs", "abcdef", 1, 4, None, 10, &decorations);
-        let cursor_row = wrapped.cursor.expect("cursor in wrapped source").row;
+        wrapped.cursor.expect("cursor in wrapped source");
         insert_ghost_at_cursor(&mut wrapped, "[ghost]", Style::default());
+        let cursor_row = wrapped.cursor.expect("cursor in wrapped source").row;
         let wrapped_line = wrapped.text.lines[cursor_row]
             .spans
             .iter()
@@ -2062,5 +2175,56 @@ mod tests {
         assert!(output.contains("fn old() {}"));
         assert!(output.contains("fn new() {}"));
         assert!(output.contains("1"));
+    }
+
+    #[test]
+    fn diff_file_headers_ignore_dev_null_but_keep_the_concrete_path() {
+        assert_eq!(diff_file_path("--- /dev/null"), None);
+        assert_eq!(
+            diff_file_path("+++ b/src/new.rs"),
+            Some("src/new.rs".into())
+        );
+        assert_eq!(
+            diff_file_path("--- a/src/removed.rs"),
+            Some("src/removed.rs".into())
+        );
+        assert_eq!(diff_file_path("+++ /dev/null"), None);
+    }
+
+    #[test]
+    fn diff_renderer_keeps_the_concrete_file_kind_across_dev_null_header() {
+        let diff = render_diff(
+            "src/fallback.rs",
+            "--- a/README.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-# Removed heading",
+        );
+        let expected = render_source("README.md", "# Removed heading");
+        let diff_body = diff.lines.last().unwrap();
+        let expected_body = expected.lines.first().unwrap();
+        let rendered_heading = diff_body
+            .spans
+            .iter()
+            .find(|span| span.content == "# Removed heading")
+            .expect("Markdown heading should retain the active file kind");
+        let expected_heading = expected_body
+            .spans
+            .iter()
+            .find(|span| span.content == "# Removed heading")
+            .expect("source renderer should expose the Markdown heading");
+        assert_eq!(rendered_heading.style.fg, expected_heading.style.fg);
+    }
+
+    #[test]
+    fn large_source_disables_syntax_highlighting_without_losing_plain_content() {
+        let source = "fn main() {} ".repeat(MAX_HIGHLIGHT_BYTES / 12 + 1);
+        let rendered = render_source("src/main.rs", &source);
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .all(|line| { line.spans.iter().all(|span| span.style == Style::default()) })
+        );
+        let plain = symbols(rendered);
+        assert!(plain.starts_with("fn main() {}"));
+        assert!(plain.len() >= MAX_HIGHLIGHT_BYTES);
     }
 }

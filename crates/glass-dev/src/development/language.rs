@@ -150,6 +150,11 @@ impl LspClient {
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut empty_published_at = None;
         while Instant::now() < deadline {
+            if empty_published_at
+                .is_some_and(|published: Instant| published.elapsed() >= DIAGNOSTICS_EMPTY_GRACE)
+            {
+                return Ok(Vec::new());
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             let wait = empty_published_at
                 .map(|published: Instant| {
@@ -185,7 +190,7 @@ impl LspClient {
                     )
                 })?;
             if diagnostics.is_empty() {
-                empty_published_at = Some(Instant::now());
+                note_empty_diagnostics(&mut empty_published_at, Instant::now());
                 continue;
             }
             return diagnostics
@@ -632,6 +637,10 @@ impl LspClient {
     }
 }
 
+fn note_empty_diagnostics(first_empty: &mut Option<Instant>, now: Instant) {
+    first_empty.get_or_insert(now);
+}
+
 impl Drop for LspClient {
     fn drop(&mut self) {
         if !self.shutdown {
@@ -785,6 +794,22 @@ fn rust_analyzer_initialization_options() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_empty_diagnostics_do_not_extend_the_grace_deadline() {
+        let first = Instant::now();
+        let mut published_at = None;
+        note_empty_diagnostics(&mut published_at, first);
+        note_empty_diagnostics(
+            &mut published_at,
+            first + DIAGNOSTICS_EMPTY_GRACE - Duration::from_secs(1),
+        );
+        assert_eq!(published_at, Some(first));
+        assert_eq!(
+            published_at.unwrap() + DIAGNOSTICS_EMPTY_GRACE,
+            first + DIAGNOSTICS_EMPTY_GRACE
+        );
+    }
 
     #[test]
     fn raw_language_requests_reject_lifecycle_and_unbounded_inputs() {

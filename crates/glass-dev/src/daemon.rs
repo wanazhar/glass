@@ -88,6 +88,11 @@ impl WorkspaceRecovery {
 }
 
 enum WorkspaceCommand {
+    Summary {
+        workspace_id: String,
+        fallback_summary: Value,
+        response: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
     Inspect {
         response: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
@@ -1011,13 +1016,18 @@ async fn execute_request(
         validate_request(&request, token)?;
         match request.operation.as_str() {
             "ping" => Ok(serde_json::json!({"protocolVersion":PROTOCOL_VERSION})),
-            "workspace.list" => Ok(Value::Array(
-                workspaces
+            "workspace.list" => {
+                let handles = workspaces
                     .borrow()
-                    .values()
-                    .map(|handle| handle.summary.clone())
-                    .collect(),
-            )),
+                    .iter()
+                    .map(|(workspace_id, handle)| (workspace_id.clone(), handle.clone()))
+                    .collect::<Vec<_>>();
+                let mut summaries = Vec::with_capacity(handles.len());
+                for (workspace_id, handle) in handles {
+                    summaries.push(workspace_summary_for_handle(&workspace_id, handle).await?);
+                }
+                Ok(Value::Array(summaries))
+            }
             "workspace.open" => {
                 let workspace_id = required_workspace_id(&request)?;
                 let root = request
@@ -1264,6 +1274,25 @@ fn workspace_handle(
         .ok_or_else(|| "unknown durable workspace".into())
 }
 
+async fn workspace_summary_for_handle(
+    workspace_id: &str,
+    handle: WorkspaceActorHandle,
+) -> Result<Value, String> {
+    let (response, received) = tokio::sync::oneshot::channel();
+    handle
+        .sender
+        .send(WorkspaceCommand::Summary {
+            workspace_id: workspace_id.to_string(),
+            fallback_summary: handle.summary.clone(),
+            response,
+        })
+        .await
+        .map_err(|_| "workspace actor command queue closed")?;
+    received
+        .await
+        .map_err(|_| "workspace actor dropped its summary response")?
+}
+
 async fn workspace_inspect(handle: WorkspaceActorHandle) -> Result<Value, String> {
     let (response, received) = tokio::sync::oneshot::channel();
     handle
@@ -1446,6 +1475,17 @@ async fn run_workspace_actor(
                 }
             }
             command = commands.recv(), if command_channel_open => match command {
+                Some(WorkspaceCommand::Summary { workspace_id, fallback_summary, response }) => {
+                    let result = workspace.as_ref().map_or_else(
+                        || {
+                            let mut summary = fallback_summary;
+                            summary["busy"] = Value::Bool(true);
+                            Ok(summary)
+                        },
+                        |workspace| Ok(workspace_summary(&workspace_id, workspace)),
+                    );
+                    let _ = response.send(result);
+                }
                 Some(WorkspaceCommand::Inspect { response }) => {
                     let result = workspace.as_mut().map_or_else(
                         || Err("workspace is busy with a recoverable operation; inspect the operation ID".into()),
@@ -2319,6 +2359,84 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn workspace_list_refreshes_actor_summary_after_project_mutation() {
+        let base = std::env::temp_dir().join(format!(
+            "glass-daemon-live-summary-{}-{}",
+            std::process::id(),
+            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let root = base.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='summary-fixture'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        let store = WorkspaceTrustStore::at(base.join("trust.json"));
+        store
+            .trust_project(&crate::WorkspaceIdentity::inspect(&root).unwrap())
+            .unwrap();
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let workspace =
+                    DevelopmentWorkspace::open_with_store(&root, store.clone()).unwrap();
+                let cached_summary = workspace_summary("live", &workspace);
+                let recovery = WorkspaceRecovery::from_workspace(&workspace, None);
+                let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
+                let operations = Arc::new(Mutex::new(OperationRegistry::new("live".into())));
+                tokio::task::spawn_local(run_workspace_actor(
+                    "live".into(),
+                    workspace,
+                    receiver,
+                    Arc::clone(&operations),
+                    recovery,
+                ));
+                let handle = WorkspaceActorHandle {
+                    sender,
+                    summary: cached_summary.clone(),
+                    operations,
+                    close_lock: Rc::new(tokio::sync::Mutex::new(())),
+                };
+                assert_eq!(cached_summary["projectRevision"], 0);
+                workspace_tool(
+                    handle.clone(),
+                    ToolCall {
+                        id: "write-summary-fixture".into(),
+                        name: "glass.file.write".into(),
+                        arguments: serde_json::json!({
+                            "path":"src/lib.rs",
+                            "content":"pub fn current() {}\n"
+                        }),
+                    },
+                    test_context(),
+                )
+                .await
+                .unwrap();
+                let refreshed = workspace_summary_for_handle("live", handle.clone())
+                    .await
+                    .unwrap();
+                assert!(refreshed["projectRevision"].as_u64().unwrap() > 0);
+                assert_eq!(
+                    workspace_summary_for_handle("live", handle.clone())
+                        .await
+                        .unwrap(),
+                    refreshed
+                );
+                let (response, received) = tokio::sync::oneshot::channel();
+                handle
+                    .sender
+                    .send(WorkspaceCommand::Shutdown { response })
+                    .await
+                    .unwrap();
+                received.await.unwrap();
+            })
+            .await;
+        let _ = std::fs::remove_dir_all(base);
+    }
+
     fn test_daemon_request(
         id: &str,
         operation: &str,
@@ -2430,7 +2548,19 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn oversized_daemon_response_returns_error_and_keeps_connection_open() {
         let (server_stream, client_stream) = tokio::io::duplex(64 * 1024);
-        let (sender, _receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
+        tokio::spawn(async move {
+            while let Some(command) = receiver.recv().await {
+                if let WorkspaceCommand::Summary {
+                    fallback_summary,
+                    response,
+                    ..
+                } = command
+                {
+                    let _ = response.send(Ok(fallback_summary));
+                }
+            }
+        });
         let operations = Arc::new(Mutex::new(OperationRegistry::new("large".into())));
         let handle = WorkspaceActorHandle {
             sender,

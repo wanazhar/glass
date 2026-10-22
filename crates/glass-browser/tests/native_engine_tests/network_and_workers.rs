@@ -392,7 +392,18 @@ self.addEventListener('fetch', event => {
         ] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
-            assert_eq!(request.split_whitespace().next(), Some("GET"));
+            if expected_path == "/request-referrer" && request.is_empty() {
+                // This handler returns its own Response without awaiting
+                // event.preloadResponse. The engine cancels the speculative
+                // preload if it has not reached the HTTP server yet, so the
+                // accepted connection can close before sending request bytes.
+                continue;
+            }
+            assert_eq!(
+                request.split_whitespace().next(),
+                Some("GET"),
+                "expected a GET for {expected_path}, received: {request:?}"
+            );
             assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
             if let Some(expected_value) = expected_preload_header {
                 assert!(

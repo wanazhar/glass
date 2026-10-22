@@ -134,6 +134,7 @@ pub enum DevelopmentEventKind {
     VerificationCompleted,
     DiagnosticsPublished,
     SemanticBreakpointHit,
+    KernelExecuted,
     TestStarted,
     TestCompleted,
     HmrObserved,
@@ -189,6 +190,10 @@ impl DevelopmentEvent {
     }
 }
 
+fn event_ordinal(event: &DevelopmentEvent) -> Option<u64> {
+    event.id.rsplit_once('-')?.1.parse().ok()
+}
+
 #[derive(Debug)]
 pub struct Timeline {
     path: PathBuf,
@@ -230,9 +235,14 @@ impl Timeline {
                 }
             }
         }
+        let next_ordinal = events
+            .back()
+            .and_then(event_ordinal)
+            .unwrap_or(events.len() as u64)
+            .saturating_add(1);
         Ok(Self {
             path,
-            next_ordinal: events.len() as u64 + 1,
+            next_ordinal,
             events,
         })
     }

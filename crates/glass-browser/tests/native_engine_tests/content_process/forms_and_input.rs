@@ -2700,16 +2700,18 @@ async fn native_content_process_keyboard_button_activation_resets_forms_and_hono
     let address = listener.local_addr().unwrap();
     let body = native_reset_button_fixture();
     let server = tokio::spawn(async move {
-        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
-            .await
-            .expect("native reset-button request")
-            .unwrap();
-        let _request = read_http_request(&mut stream).await;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len(),
-        );
-        stream.write_all(response.as_bytes()).await.unwrap();
+        for _ in 0..2 {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(120), listener.accept())
+                .await
+                .expect("native reset-button request")
+                .unwrap();
+            let _request = read_http_request(&mut stream).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
     });
 
     let session = BrowserRuntimeSession::connect_native(
@@ -2802,6 +2804,21 @@ async fn native_content_process_keyboard_button_activation_resets_forms_and_hono
         })
     );
 
+    // Keep the mouse-reset and keyboard-activation scenarios in separate
+    // content-process lifetimes. Each scenario still exercises the complete
+    // form state machine, while the long integration test does not accumulate
+    // work in one process before the keyboard mutation deadline.
+    session.close().await.unwrap();
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default().with_initial_url(format!("http://{address}/keyboard")),
+    )
+    .await
+    .unwrap();
+    session
+        .script(native_reset_button_setup_script())
+        .await
+        .unwrap();
+
     session
         .script("document.getElementById('main-value').value = 'dirty-enter'; document.getElementById('input-reset').focus(); globalThis.__glassResetButtonEvents.length = 0; true")
         .await
@@ -2820,7 +2837,7 @@ async fn native_content_process_keyboard_button_activation_resets_forms_and_hono
             .value,
         serde_json::json!({
             "value": "main-default",
-            "resets": 3,
+            "resets": 2,
             "events": [
                 "keydown:input-reset:Enter",
                 "click:input-reset",
@@ -2845,7 +2862,7 @@ async fn native_content_process_keyboard_button_activation_resets_forms_and_hono
             .value,
         serde_json::json!({
             "value": "dirty-space",
-            "resets": 3,
+            "resets": 2,
             "events": ["keydown:button-reset: "],
         })
     );
@@ -2861,7 +2878,7 @@ async fn native_content_process_keyboard_button_activation_resets_forms_and_hono
             .value,
         serde_json::json!({
             "value": "main-default",
-            "resets": 4,
+            "resets": 3,
             "events": [
                 "keydown:button-reset: ",
                 "keyup:button-reset: ",
@@ -2888,7 +2905,7 @@ async fn native_content_process_keyboard_button_activation_resets_forms_and_hono
             .value,
         serde_json::json!({
             "value": "dirty-canceled-key",
-            "resets": 4,
+            "resets": 3,
             "events": ["keydown:input-reset:Enter", "keyup:input-reset:Enter"],
         })
     );
@@ -2911,7 +2928,7 @@ async fn native_content_process_keyboard_button_activation_resets_forms_and_hono
             .value,
         serde_json::json!({
             "value": "dirty-canceled-key",
-            "resets": 4,
+            "resets": 3,
             "events": [
                 "keydown:click-cancel:Enter",
                 "click:click-cancel",

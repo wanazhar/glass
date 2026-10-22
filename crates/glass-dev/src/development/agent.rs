@@ -2951,6 +2951,41 @@ mod tests {
     }
 
     #[test]
+    fn file_search_preserves_truncated_tree_metadata() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-issue60-search-truncation-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/ignored"), "ignored").unwrap();
+        for index in 0..=super::super::MAX_FILE_ENTRIES {
+            fs::write(root.join(format!("match-{index:04}.txt")), "").unwrap();
+        }
+        let mut workspace = ProjectWorkspace::open(&root).unwrap();
+        let result = AgentToolGateway::default()
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "search-truncated-tree".into(),
+                    name: "glass.file.search".into(),
+                    arguments: serde_json::json!({"query":"match"}),
+                },
+                &ToolAuthorization::read_only(Actor::external("issue-60-test")),
+            )
+            .unwrap();
+
+        assert_eq!(result["fileListing"]["truncated"], true);
+        assert_eq!(
+            result["fileListing"]["limit"],
+            super::super::MAX_FILE_ENTRIES
+        );
+        assert_eq!(result["fileListing"]["ignoredDirectories"][0], ".git");
+        assert_eq!(result["hits"].as_array().unwrap().len(), 64);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn tool_gateway_bounds_envelopes_and_reuses_its_descriptor_catalog() {
         let root = std::env::temp_dir().join(format!("glass-tool-envelope-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);

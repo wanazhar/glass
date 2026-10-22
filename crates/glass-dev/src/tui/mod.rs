@@ -469,6 +469,7 @@ pub(crate) fn run_with_browser_policy(
     root: impl AsRef<Path>,
     layout: TuiLayout,
     visual_options: TuiVisualOptions,
+    browser_start_defaults: crate::BrowserStartConfig,
     yolo_mode: bool,
     browser_policy: BrowserPolicy,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -477,6 +478,7 @@ pub(crate) fn run_with_browser_policy(
     }
     let mut state =
         DevTuiState::open_for_tui_with_browser_policy(root, layout, yolo_mode, browser_policy)?;
+    state.set_browser_start_defaults(browser_start_defaults);
     let mut visual = VisualRuntime::new(visual_options)?;
     visual.sync_state(&mut state);
     let mut worker = snapshot::SnapshotWorker::spawn(&state);
@@ -1113,22 +1115,16 @@ pub(crate) fn run_with_browser_policy(
                             (KeyCode::Up, _) | (KeyCode::Char('k'), _)
                                 if state.surface == DevSurface::App =>
                             {
-                                let _ = state
-                                    .browser_workspace
-                                    .reduce(BrowserWorkspaceIntent::MoveSelection { delta: -1 });
-                                state.browser = state.browser_workspace_summary();
-                                state.status =
-                                    "Selection moved · Enter activates the selected entity".into();
+                                state.queue_browser_intent(BrowserWorkspaceIntent::MoveSelection {
+                                    delta: -1,
+                                });
                             }
                             (KeyCode::Down, _) | (KeyCode::Char('j'), _)
                                 if state.surface == DevSurface::App =>
                             {
-                                let _ = state
-                                    .browser_workspace
-                                    .reduce(BrowserWorkspaceIntent::MoveSelection { delta: 1 });
-                                state.browser = state.browser_workspace_summary();
-                                state.status =
-                                    "Selection moved · Enter activates the selected entity".into();
+                                state.queue_browser_intent(BrowserWorkspaceIntent::MoveSelection {
+                                    delta: 1,
+                                });
                             }
                             (KeyCode::Up, _) | (KeyCode::Char('k'), _) => state.scroll_surface(-1),
                             (KeyCode::Down, _) | (KeyCode::Char('j'), _) => state.scroll_surface(1),
@@ -1272,6 +1268,9 @@ pub(crate) fn run_with_browser_policy(
                 state.queue_browser_observe(&mut worker);
             }
         }
+        // A failed observation schedules a short retry; revisit the pending
+        // request on later ticks after its cooldown expires.
+        state.queue_browser_observe(&mut worker);
         state.flush_pending_selection_preview(&mut worker);
         if let Ok(Some(result)) = worker.try_visual_result() {
             render_requested = true;

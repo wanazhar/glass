@@ -4643,7 +4643,7 @@ impl NativeEngineBackend {
                     );
                     let nested = match effect {
                         NativeWorkerCoordinatorEffect::PageMessagePort(command) => {
-                            if self.is_shared_worker_page_port(&command)? {
+                            if self.is_shared_worker_page_port(&command).await? {
                                 self.deliver_shared_worker_page_message_port(command)
                                     .await?
                             } else if command.close {
@@ -5142,36 +5142,21 @@ impl NativeEngineBackend {
         self.target_named(&request.target)
     }
 
-    fn frame_owner_context_id(
+    async fn frame_owner_identity(
         &self,
         frame_id: &str,
-    ) -> Result<Option<String>, BrowserBackendError> {
+    ) -> Result<Option<(String, u32)>, BrowserBackendError> {
         let Some(owner) = self.engine_owner_for_frame(frame_id, BackendOperation::Script)? else {
             return Ok(None);
         };
-        Ok(Some(
-            try_lock_native_engine_owner(&owner, BackendOperation::Script, "frame owner")?
-                .config()
-                .context_id
-                .clone(),
-        ))
+        let owner = lock_native_engine_owner(&owner).await;
+        Ok(Some((
+            owner.config().context_id.clone(),
+            owner.document_generation().map_err(native_error)?,
+        )))
     }
 
-    fn frame_owner_document_generation(
-        &self,
-        frame_id: &str,
-    ) -> Result<Option<u32>, BrowserBackendError> {
-        let Some(owner) = self.engine_owner_for_frame(frame_id, BackendOperation::Script)? else {
-            return Ok(None);
-        };
-        let generation =
-            try_lock_native_engine_owner(&owner, BackendOperation::Script, "frame owner")?
-                .document_generation()
-                .map_err(native_error)?;
-        Ok(Some(generation))
-    }
-
-    fn register_page_message_port_routes(
+    async fn register_page_message_port_routes(
         &self,
         source_context_id: &str,
         source_frame_id: &str,
@@ -5183,7 +5168,7 @@ impl NativeEngineBackend {
         validate_native_topology_id(source_context_id)?;
         validate_native_topology_id(source_frame_id)?;
         validate_message_port_transfers(transfers).map_err(native_error)?;
-        let Some(owner_context_id) = self.frame_owner_context_id(source_frame_id)? else {
+        let Some((owner_context_id, _)) = self.frame_owner_identity(source_frame_id).await? else {
             return Ok(());
         };
         if owner_context_id != source_context_id {
@@ -5191,7 +5176,7 @@ impl NativeEngineBackend {
                 reason: "native MessagePort source frame does not belong to its context".into(),
             });
         }
-        self.prune_page_message_port_routes()?;
+        self.prune_page_message_port_routes().await?;
         self.insert_page_message_port_routes(source_context_id, source_frame_id, transfers)
     }
 
@@ -5684,7 +5669,7 @@ impl NativeEngineBackend {
                 first_error.get_or_insert(error);
             }
         }
-        if let Err(error) = self.prune_page_message_port_routes() {
+        if let Err(error) = self.prune_page_message_port_routes().await {
             first_error.get_or_insert(error);
         }
         first_error.map_or(Ok(()), Err)
@@ -5703,7 +5688,7 @@ impl NativeEngineBackend {
         Ok(())
     }
 
-    fn prune_page_message_port_routes(&self) -> Result<(), BrowserBackendError> {
+    async fn prune_page_message_port_routes(&self) -> Result<(), BrowserBackendError> {
         let routes = self
             .page_message_port_routes
             .lock()
@@ -5713,7 +5698,11 @@ impl NativeEngineBackend {
             .collect::<Vec<_>>();
         let mut stale = BTreeSet::new();
         for (key, route) in routes {
-            if self.frame_owner_context_id(&route.frame_id)?.as_deref()
+            if self
+                .frame_owner_identity(&route.frame_id)
+                .await?
+                .as_ref()
+                .map(|identity| identity.0.as_str())
                 != Some(route.context_id.as_str())
             {
                 stale.insert(key);
@@ -5790,7 +5779,8 @@ impl NativeEngineBackend {
                 &message.source_context_id,
                 &message.source_frame_id,
                 &message.transfer_ports,
-            )?;
+            )
+            .await?;
             return Ok(effects);
         }
         let mut targets = self.lock_targets(BackendOperation::Script)?;
@@ -5832,7 +5822,8 @@ impl NativeEngineBackend {
             &message.source_context_id,
             &message.source_frame_id,
             &message.transfer_ports,
-        )?;
+        )
+        .await?;
         Ok(effects)
     }
 
@@ -5930,12 +5921,13 @@ impl NativeEngineBackend {
                 &message.source_context_id,
                 &message.source_frame_id,
                 &message.transfer_ports,
-            )?;
+            )
+            .await?;
         }
         Ok(runtime_effects.browser)
     }
 
-    fn is_shared_worker_page_port(
+    async fn is_shared_worker_page_port(
         &self,
         command: &NativePageMessagePortCommand,
     ) -> Result<bool, BrowserBackendError> {
@@ -5954,10 +5946,13 @@ impl NativeEngineBackend {
         {
             return Ok(false);
         }
-        if self.frame_owner_context_id(&route.frame_id)?.as_deref()
-            != Some(route.context_id.as_str())
-            || self.frame_owner_document_generation(&route.frame_id)?
-                != Some(route.document_generation)
+        if self
+            .frame_owner_identity(&route.frame_id)
+            .await?
+            .as_ref()
+            .is_none_or(|(context_id, generation)| {
+                context_id != &route.context_id || *generation != route.document_generation
+            })
         {
             self.shared_workers
                 .lock()
@@ -6174,11 +6169,13 @@ impl NativeEngineBackend {
         validate_native_topology_id(&route_info.context_id)?;
         validate_native_topology_id(&route_info.frame_id)?;
         if self
-            .frame_owner_context_id(&route_info.frame_id)?
-            .as_deref()
-            != Some(route_info.context_id.as_str())
-            || self.frame_owner_document_generation(&route_info.frame_id)?
-                != Some(route_info.document_generation)
+            .frame_owner_identity(&route_info.frame_id)
+            .await?
+            .as_ref()
+            .is_none_or(|(context_id, generation)| {
+                context_id != &route_info.context_id
+                    || *generation != route_info.document_generation
+            })
         {
             return Ok(NativeQueuedBrowserEffects::default());
         }
@@ -6271,10 +6268,13 @@ impl NativeEngineBackend {
         };
         if route.context_id != command.source_context_id
             || route.frame_id != command.source_frame_id
-            || self.frame_owner_context_id(&route.frame_id)?.as_deref()
-                != Some(route.context_id.as_str())
-            || self.frame_owner_document_generation(&route.frame_id)?
-                != Some(route.document_generation)
+            || self
+                .frame_owner_identity(&route.frame_id)
+                .await?
+                .as_ref()
+                .is_none_or(|(context_id, generation)| {
+                    context_id != &route.context_id || *generation != route.document_generation
+                })
         {
             return Ok(NativeQueuedBrowserEffects::default());
         }
@@ -6283,7 +6283,8 @@ impl NativeEngineBackend {
                 &command.source_context_id,
                 &command.source_frame_id,
                 &command.transfer_ports,
-            )?;
+            )
+            .await?;
         }
         let bridge_key = command.bridge_key.clone();
         let mut coordinator = self.shared_workers.lock().map_err(|_| {
@@ -6585,7 +6586,8 @@ impl NativeEngineBackend {
                 &command.source_context_id,
                 &command.source_frame_id,
                 &command.transfer_ports,
-            )?;
+            )
+            .await?;
         }
         Ok(runtime_effects.browser)
     }
@@ -12023,7 +12025,12 @@ mod tests {
             .lock()
             .expect("active owner slot must be available")
             .clone();
-        let context_id = owner.clone().lock_owned().await.config().context_id.clone();
+        let initial_owner = owner.clone().lock_owned().await;
+        let context_id = initial_owner.config().context_id.clone();
+        let document_generation = initial_owner
+            .document_generation()
+            .expect("fixture owner must expose its document generation");
+        drop(initial_owner);
         let frame_id = backend
             .active_frame_id()
             .expect("fixture main frame must be available");
@@ -12035,7 +12042,7 @@ mod tests {
                 "worker-response".into(),
                 NativePageMessagePortRoute {
                     context_id: context_id.clone(),
-                    frame_id,
+                    frame_id: frame_id.clone(),
                 },
             );
 
@@ -12044,12 +12051,26 @@ mod tests {
             inner: Arc::clone(&backend.inner),
             pump_handle: true,
         };
+        let identity_backend = NativeEngineBackend {
+            inner: Arc::clone(&backend.inner),
+            pump_handle: true,
+        };
+        let identity_frame_id = frame_id.clone();
+        let mut identity_lookup = tokio::spawn(async move {
+            identity_backend
+                .frame_owner_identity(&identity_frame_id)
+                .await
+        });
         let mut lookup = tokio::spawn(async move {
             route_backend
                 .page_message_port_route("worker-response")
                 .await
         });
         tokio::task::yield_now().await;
+        assert!(
+            !identity_lookup.is_finished(),
+            "asynchronous owner identity lookup must wait for a busy frame owner"
+        );
         assert!(
             !lookup.is_finished(),
             "route delivery must await, not fail on, the temporarily busy owner"
@@ -12060,6 +12081,14 @@ mod tests {
         );
 
         drop(owner_guard);
+        let identity =
+            tokio::time::timeout(std::time::Duration::from_secs(1), &mut identity_lookup)
+                .await
+                .expect("owner identity lookup must resume when the owner becomes available")
+                .expect("owner identity lookup task must complete")
+                .expect("owner identity lookup must not return a transient busy error")
+                .expect("live frame must retain an owner");
+        assert_eq!(identity, (context_id.clone(), document_generation));
         let route = tokio::time::timeout(std::time::Duration::from_secs(1), &mut lookup)
             .await
             .expect("route lookup must resume when the owner becomes available")

@@ -69,7 +69,7 @@ impl ResidentDevelopmentSessions {
         let root = super::project::canonical_root(root.as_ref())?;
         self.prune_idle();
         if !self.entries.contains_key(&root) {
-            self.evict_lru_if_full();
+            self.evict_lru_if_full()?;
             self.entries.insert(
                 root.clone(),
                 ResidentEntry {
@@ -128,18 +128,32 @@ impl ResidentDevelopmentSessions {
         });
     }
 
-    fn evict_lru_if_full(&mut self) {
+    fn evict_lru_if_full(&mut self) -> DevelopmentResult<()> {
         if self.entries.len() < self.capacity {
-            return;
+            return Ok(());
         }
-        if let Some(root) = self
+        let root = self
             .entries
-            .iter()
-            .min_by_key(|(_, entry)| entry.last_used)
-            .map(|(root, _)| root.clone())
-        {
-            self.entries.remove(&root);
-        }
+            .iter_mut()
+            .filter_map(|(root, entry)| {
+                let has_running_process = entry
+                    .workspace
+                    .processes()
+                    .list()
+                    .iter()
+                    .any(|process| matches!(process.state, super::ProcessState::Running));
+                (!has_running_process).then_some((entry.last_used, root.clone()))
+            })
+            .min_by_key(|(last_used, _)| *last_used)
+            .map(|(_, root)| root)
+            .ok_or_else(|| {
+                DevelopmentError::Conflict(
+                    "resident workspace capacity is full; all sessions own running processes"
+                        .into(),
+                )
+            })?;
+        self.entries.remove(&root);
+        Ok(())
     }
 }
 
@@ -1030,6 +1044,29 @@ mod tests {
         let _ = fs::remove_dir_all(second);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn resident_registry_does_not_evict_a_workspace_with_a_running_process() {
+        let first = fixture("running-first");
+        let second = fixture("running-second");
+        let mut sessions = ResidentDevelopmentSessions::new(1, Duration::from_secs(60));
+        sessions
+            .with_workspace(&first, |workspace| {
+                workspace.processes().start("worker", "sleep 30")?;
+                Ok(())
+            })
+            .unwrap();
+
+        let result = sessions.with_workspace(&second, |_| Ok(()));
+
+        assert!(result.is_err());
+        assert!(sessions.contains(&first));
+        assert!(!sessions.contains(&second));
+        drop(sessions);
+        let _ = fs::remove_dir_all(first);
+        let _ = fs::remove_dir_all(second);
+    }
+
     #[test]
     fn reconnect_capsule_round_trips_without_payload_fields() {
         let root = fixture("capsule");
@@ -1151,6 +1188,28 @@ mod tests {
         assert!(authorized_response.starts_with("HTTP/1.1 200 OK"));
         assert!(authorized_response.contains("{\"ok\":true}"));
         drop(cockpit);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stopping_local_cockpit_closes_its_listener() {
+        let root = fixture("stops-listener");
+        let workspace = crate::SharedDevelopmentWorkspace::open(&root).unwrap();
+        let mut cockpit = LocalCockpit::start(workspace).unwrap();
+        let address = cockpit.address();
+
+        let mut client = TcpStream::connect(address).unwrap();
+        client
+            .write_all(b"GET /v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let _ = client.shutdown(std::net::Shutdown::Write);
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 401 Unauthorized"));
+        cockpit.shutdown();
+        cockpit.shutdown();
+
+        assert!(TcpStream::connect_timeout(&address, Duration::from_millis(50)).is_err());
         let _ = fs::remove_dir_all(root);
     }
 

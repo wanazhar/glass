@@ -706,13 +706,16 @@ resident session except for explicit recovery. The TUI asks its normal
 confirmation once for the resume action; after recovery, conversation follows
 the existing session interaction flow without per-tool-call confirmation.
 If an earlier send reopens as uncertain, inspect it in the Attention Inbox and
-resume its owning conversation first. `:agent retry` then opens a separate
-duplicate-risk confirmation. Confirming resends the saved text with the same
-client message ID and creates a new attempt ID; cancel leaves the original
-uncertain attempt unchanged. Glass refuses the retry if the attempt changed,
-the conversation is not active, or its current run cannot accept the saved
-steering mode. This persisted retry is available on Unix, where the attempt
-ledger has private file permissions.
+resume its owning conversation first. A correlated Core error is a confirmed
+failed attempt and returns the run to idle; Glass shows a bounded error class,
+code, and retryability flag while omitting the raw message. Both failed and
+uncertain attempts can be selected from Attention Inbox. `:agent retry` opens
+a separate confirmation because Core may have partly processed either
+request. Confirming resends the saved text with the same client message ID and
+creates a new attempt ID; cancel leaves the original attempt unchanged. Glass
+refuses the retry if the attempt changed, the conversation is not active, or
+its current run cannot accept the saved steering mode. Persisted retry is
+available on Unix, where the attempt ledger has private file permissions.
 
 The standard Glass tool behavior is explicit and bounded. `read` accepts
 one-based `offset` and `limit`; `ls` accepts a path prefix and limit; `grep`

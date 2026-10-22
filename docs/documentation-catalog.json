@@ -6417,6 +6417,7 @@
         "docs/plan/tasks/issue63-run-phase-recovery-001.md",
         "docs/plan/tasks/issue63-thread-isolation-001.md",
         "docs/plan/tasks/issue64-attention-keyboard-journey-001.md",
+        "docs/plan/tasks/issue64-failed-core-response-recovery-001.md",
         "docs/plan/tasks/issue64-project-thread-picker-001.md",
         "docs/plan/tasks/issue64-queue-retarget-retry-001.md",
         "docs/plan/tasks/issue64-send-attempt-recovery-001.md",
@@ -19159,6 +19160,49 @@
           "level": "2",
           "title": "Verification",
           "anchor": "verification"
+        },
+        {
+          "level": "2",
+          "title": "Evidence",
+          "anchor": "evidence"
+        }
+      ]
+    },
+    {
+      "path": "docs/plan/tasks/issue64-failed-core-response-recovery-001.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "proposal-design-or-history",
+      "status": "plan-or-evidence-status-is-recorded-in-page",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/plan/README.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "docs/plan/tasks/issue64-failed-core-response-recovery-001.md#failed-core-response-recovery",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Failed Core response recovery",
+          "anchor": "failed-core-response-recovery"
+        },
+        {
+          "level": "2",
+          "title": "Objective",
+          "anchor": "objective"
+        },
+        {
+          "level": "2",
+          "title": "Paths",
+          "anchor": "paths"
+        },
+        {
+          "level": "2",
+          "title": "Acceptance",
+          "anchor": "acceptance"
         },
         {
           "level": "2",

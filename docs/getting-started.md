@@ -180,8 +180,12 @@ Talk from any surface with `Ctrl-L`. Default composer mode is Agent.
 ready, `Enter` sends the draft and leaves the dock open for the next prompt;
 `Esc` closes it. `Ctrl-D` toggles steer mode; default follow-up mode queues the
 next message. Sent prompts stay as `YOU`, and `GLASS AGENT` streams the reply
-and tool activity. A failed send restores the draft for editing and retry;
-background work retains newly typed text. Mutating calls pause for one-use
+and tool activity. A local or pre-dispatch failure restores the draft for
+editing and retry; background work retains newly typed text. When Core returns
+an error for an accepted prompt, Glass marks the attempt failed, returns the
+agent to idle, and lists it in Attention Inbox with a bounded error summary.
+Inspect the conversation and use `:agent retry` to open a confirmation; Glass
+does not replay failed prompts automatically. Mutating calls pause for one-use
 approval (`Enter`/`Y` approve, `Esc`/`N` deny).
 
 Desktop uses `1`–`8` for Agent, Code, App, Terminal, Tasks, Git, Debug, and

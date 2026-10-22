@@ -488,10 +488,25 @@ pub(super) struct SendAttemptRetryTarget {
     pub(super) agent_id: crate::AgentId,
     pub(super) thread_id: String,
     pub(super) attempt_id: String,
+    pub(super) status: crate::thread_store::SendAttemptStatus,
     client_message_id: String,
     mode: crate::thread_store::SendAttemptMode,
     text: String,
     pub(super) preview: String,
+}
+
+#[cfg(unix)]
+fn retryable_send_attempt_status(attempt: &crate::thread_store::SendAttemptRecord) -> bool {
+    use crate::thread_store::SendAttemptStatus::{Failed, Uncertain};
+    attempt.status == Uncertain || (attempt.status == Failed && attempt.engine_request_id.is_some())
+}
+
+#[cfg(unix)]
+fn send_attempt_attention_label(status: crate::thread_store::SendAttemptStatus) -> &'static str {
+    match status {
+        crate::thread_store::SendAttemptStatus::Failed => "Core turn failed",
+        _ => "Message delivery uncertain",
+    }
 }
 
 #[cfg(unix)]
@@ -4414,12 +4429,11 @@ impl DevTuiState {
 
     pub fn request_uncertain_send_retry(&mut self) {
         let Some(target) = self.send_attempt_retry_candidate.clone() else {
-            self.status =
-                "Select an uncertain delivery from Attention Inbox before retrying".into();
+            self.status = "Select a failed or uncertain message from Attention Inbox first".into();
             return;
         };
         if self.selected_agent.as_ref() != Some(&target.agent_id) {
-            self.status = "Open the conversation that owns this uncertain delivery first".into();
+            self.status = "Open the conversation that owns this message first".into();
             return;
         }
         if !self.refresh_follow_up_queue_run(&target.agent_id) {
@@ -4434,7 +4448,8 @@ impl DevTuiState {
             .and_then(|snapshot| {
                 snapshot.send_attempts.iter().find(|attempt| {
                     attempt.attempt_id == target.attempt_id
-                        && attempt.status == crate::thread_store::SendAttemptStatus::Uncertain
+                        && retryable_send_attempt_status(attempt)
+                        && attempt.status == target.status
                         && attempt.client_message_id == target.client_message_id
                         && attempt.mode == target.mode
                         && attempt.text == target.text
@@ -4442,7 +4457,7 @@ impl DevTuiState {
             });
         if attempt.is_none() {
             self.send_attempt_retry_candidate = None;
-            self.status = "This delivery is no longer uncertain · inbox refreshed".into();
+            self.status = "This message is no longer retryable · inbox refreshed".into();
             self.refresh_attention_items();
             return;
         }
@@ -4474,8 +4489,7 @@ impl DevTuiState {
             return;
         }
         self.send_attempt_retry_confirmation = Some(target);
-        self.status =
-            "Retry may duplicate a message already accepted by Core · confirm explicitly".into();
+        self.status = "Retry may repeat work Core already performed · confirm explicitly".into();
     }
 
     pub fn cancel_uncertain_send_retry(&mut self) {
@@ -4486,12 +4500,29 @@ impl DevTuiState {
         let Some(target) = self.send_attempt_retry_confirmation.take() else {
             return;
         };
-        if self.selected_agent.as_ref() != Some(&target.agent_id)
-            || !self.refresh_follow_up_queue_run(&target.agent_id)
-        {
-            self.status = "Conversation changed · inspect the uncertain delivery again".into();
+        if self.selected_agent.as_ref() != Some(&target.agent_id) {
+            self.status = "Conversation changed · inspect the message before retrying".into();
             return;
         }
+        let current = self.workspace.try_lock().and_then(|mut workspace| {
+            workspace
+                .agents()
+                .follow_up_queue_target(&target.agent_id)
+                .map(|(_, thread_id, run_id)| (thread_id, run_id))
+        });
+        let Ok((thread_id, run_id)) = current else {
+            self.status = "Could not verify the current conversation · retry was not sent".into();
+            return;
+        };
+        let Some(snapshot) = self.follow_up_queue_snapshots.get_mut(&target.agent_id) else {
+            self.status = "Conversation review is stale · reopen Attention before retrying".into();
+            return;
+        };
+        if snapshot.thread_id != thread_id {
+            self.status = "Conversation changed · reopen Attention before retrying".into();
+            return;
+        }
+        snapshot.current_run_id = run_id;
         let retry = self
             .follow_up_queue_snapshots
             .get(&target.agent_id)
@@ -4499,7 +4530,8 @@ impl DevTuiState {
             .and_then(|snapshot| {
                 let attempt = snapshot.send_attempts.iter().find(|attempt| {
                     attempt.attempt_id == target.attempt_id
-                        && attempt.status == crate::thread_store::SendAttemptStatus::Uncertain
+                        && retryable_send_attempt_status(attempt)
+                        && attempt.status == target.status
                         && attempt.client_message_id == target.client_message_id
                         && attempt.mode == target.mode
                         && attempt.text == target.text
@@ -4549,15 +4581,16 @@ impl DevTuiState {
             "clientMessageId": attempt.client_message_id.clone(),
             "expectedRunId": current_run_id,
             "context": {
-                "source": "uncertain-send-retry",
+            "source": "send-attempt-retry",
                 "previousAttemptId": attempt.attempt_id.clone(),
+            "previousStatus": format!("{:?}", attempt.status).to_ascii_lowercase(),
             },
         });
         let (call, context) = match self.tool_request("glass.agent.send", arguments, true) {
             Ok(request) => request,
             Err(error) => {
                 self.status =
-                    format!("Retry not sent · uncertain attempt kept for review · {error}");
+                    format!("Retry not sent · previous attempt kept for review · {error}");
                 return;
             }
         };
@@ -4578,7 +4611,7 @@ impl DevTuiState {
             }
             Err(error) => {
                 self.status =
-                    format!("Retry not sent · uncertain attempt kept for review · {error}");
+                    format!("Retry not sent · previous attempt kept for review · {error}");
             }
         }
     }
@@ -4722,18 +4755,19 @@ impl DevTuiState {
                     .and_then(|snapshot| {
                         snapshot.send_attempts.iter().find(|attempt| {
                             attempt.attempt_id == attempt_id
-                                && attempt.status
-                                    == crate::thread_store::SendAttemptStatus::Uncertain
+                                && retryable_send_attempt_status(attempt)
                         })
                     });
                 let Some(attempt) = attempt else {
                     self.attention_status_stale();
                     return;
                 };
+                let attempt_status = attempt.status;
                 let retry_target = SendAttemptRetryTarget {
                     agent_id: owner.clone(),
                     thread_id: thread_id.clone(),
                     attempt_id: attempt.attempt_id.clone(),
+                    status: attempt.status,
                     client_message_id: attempt.client_message_id.clone(),
                     mode: attempt.mode,
                     text: attempt.text.clone(),
@@ -4756,7 +4790,8 @@ impl DevTuiState {
                 self.surface = DevSurface::Agent;
                 self.attention_inbox_open = false;
                 self.status = format!(
-                    "Message delivery is uncertain · inspect it, then :agent retry requests confirmation · {detail}"
+                    "{} · inspect it, then :agent retry requests confirmation · {detail}",
+                    send_attempt_attention_label(attempt_status)
                 );
             }
         }
@@ -4822,7 +4857,7 @@ impl DevTuiState {
                 });
             }
             for attempt in &snapshot.send_attempts {
-                if attempt.status != crate::thread_store::SendAttemptStatus::Uncertain {
+                if !retryable_send_attempt_status(attempt) {
                     continue;
                 }
                 let key = AttentionItemKey::SendAttempt {
@@ -4832,7 +4867,7 @@ impl DevTuiState {
                 let preview = attempt.text.lines().next().unwrap_or_default();
                 items.entry(key.clone()).or_insert_with(|| AttentionItem {
                     key,
-                    title: "Message delivery uncertain".into(),
+                    title: send_attempt_attention_label(attempt.status).into(),
                     detail: format!(
                         "{} · {}",
                         agent_id.as_str(),
@@ -14575,16 +14610,38 @@ mod tests {
             FollowUpQueueSnapshot {
                 thread_id: "thread-0001".into(),
                 current_run_id: "run-0001".into(),
-                send_attempts: vec![crate::thread_store::SendAttemptRecord {
-                    attempt_id: "attempt-1".into(),
-                    client_message_id: "message-1".into(),
-                    target_run_id: "run-old".into(),
-                    mode: crate::thread_store::SendAttemptMode::Prompt,
-                    text: "Inspect the failed run and summarize the blocker".into(),
-                    status: crate::thread_store::SendAttemptStatus::Uncertain,
-                    engine_request_id: None,
-                    created_at_ms: 1,
-                }],
+                send_attempts: vec![
+                    crate::thread_store::SendAttemptRecord {
+                        attempt_id: "attempt-1".into(),
+                        client_message_id: "message-1".into(),
+                        target_run_id: "run-old".into(),
+                        mode: crate::thread_store::SendAttemptMode::Prompt,
+                        text: "Inspect the failed run and summarize the blocker".into(),
+                        status: crate::thread_store::SendAttemptStatus::Uncertain,
+                        engine_request_id: None,
+                        created_at_ms: 1,
+                    },
+                    crate::thread_store::SendAttemptRecord {
+                        attempt_id: "attempt-2".into(),
+                        client_message_id: "message-2".into(),
+                        target_run_id: "run-old".into(),
+                        mode: crate::thread_store::SendAttemptMode::Prompt,
+                        text: "Try the same task again".into(),
+                        status: crate::thread_store::SendAttemptStatus::Failed,
+                        engine_request_id: Some("request-2".into()),
+                        created_at_ms: 2,
+                    },
+                    crate::thread_store::SendAttemptRecord {
+                        attempt_id: "attempt-3".into(),
+                        client_message_id: "message-3".into(),
+                        target_run_id: "run-old".into(),
+                        mode: crate::thread_store::SendAttemptMode::Prompt,
+                        text: "Local dispatch failed before Core accepted it".into(),
+                        status: crate::thread_store::SendAttemptStatus::Failed,
+                        engine_request_id: None,
+                        created_at_ms: 3,
+                    },
+                ],
                 entries: vec![crate::thread_store::FollowUpQueueRecord {
                     entry_id: "entry-1".into(),
                     target_run_id: "run-old".into(),
@@ -14595,7 +14652,7 @@ mod tests {
             },
         );
         state.refresh_attention_items();
-        assert_eq!(state.attention_items.len(), 6);
+        assert_eq!(state.attention_items.len(), 7);
         assert!(state.attention_items.iter().any(|item| {
             item.key
                 == (AttentionItemKey::SendAttempt {
@@ -14603,6 +14660,14 @@ mod tests {
                     attempt_id: "attempt-1".into(),
                 })
                 && item.title == "Message delivery uncertain"
+        }));
+        assert!(state.attention_items.iter().any(|item| {
+            item.key
+                == (AttentionItemKey::SendAttempt {
+                    thread_id: "thread-0001".into(),
+                    attempt_id: "attempt-2".into(),
+                })
+                && item.title == "Core turn failed"
         }));
         assert!(
             state
@@ -14630,7 +14695,7 @@ mod tests {
             .entries[0]
             .state = crate::thread_store::FollowUpQueueState::Accepted;
         state.refresh_attention_items();
-        assert_eq!(state.attention_items.len(), 5);
+        assert_eq!(state.attention_items.len(), 6);
         assert!(
             !state
                 .attention_items

@@ -100,11 +100,14 @@ Ask, Plan, and Agent; `Ctrl-Shift-T` opens the project conversation picker.
 Ask and Plan are fail-closed for mutations. `Enter` sends and keeps the dock
 open; `Esc` closes it. `Ctrl-D` toggles steer mode; follow-up mode queues a
 message. Sent prompts remain as `YOU`, and `GLASS AGENT` streams replies and
-tool activity. A failed send restores the draft for edit-and-retry; busy
-background work retains new text. If Core rejects a `turn/prompt` or
-`turn/followUp` request, Glass returns its agent phase to idle and keeps the
-failed attempt available for retry. This settles the Glass send state; it does
-not recover from a provider-side failure. Mutations pause on a Glass approval card
+tool activity. A local or pre-dispatch send failure restores the draft for
+edit-and-retry; busy background work retains new text. If Core returns an error
+for a correlated `turn/prompt` or `turn/followUp`, Glass marks the attempt
+failed and returns its agent phase to idle. The failure is summarized with a
+safe error class and code, then listed in Attention Inbox. Inspect the owning
+conversation and use `:agent retry` to request an explicit confirmation; Glass
+never replays the attempt automatically, and Core may have partly processed it.
+Mutations pause on a Glass approval card
 (`Enter`/`Y` approve once, `Esc`/`N` deny). Type in the dock to talk, `:` to
 search commands, and `a` to open this surface's actions. `:process start dev`
 starts the detected suite, Tasks owns the workspace-local Agent checklist

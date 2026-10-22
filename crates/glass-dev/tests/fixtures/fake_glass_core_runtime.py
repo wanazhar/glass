@@ -373,6 +373,19 @@ def main() -> None:
                 },
             )
         elif method in ("turn/prompt", "turn/followUp"):
+            if mode == "prompt-error":
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": identifier,
+                        "error": {
+                            "code": -32000,
+                            "message": "fixture provider detail that must not be shown",
+                            "data": {"kind": "provider", "retryable": False},
+                        },
+                    }
+                )
+                continue
             run_turn(identifier, params)
         elif method == "turn/steer":
             reply(identifier, {"accepted": True})

@@ -136,6 +136,18 @@ been accepted. Confirming reuses the saved client message ID, creates a fresh
 attempt ID, and targets the current run; a changed, inactive, or mismatched
 thread is refused. Cancel leaves the uncertain attempt unchanged.
 
+A correlated Core error response for `turn/prompt` or `turn/followUp` is a
+confirmed `failed` attempt, distinct from an uncertain delivery. Glass returns
+that run to idle and renders only Core's bounded error class, code, and
+retryability flag; it omits the raw error message. On Unix, a failed attempt
+with an engine request ID appears in Attention Inbox as `Core turn failed`.
+Open its conversation, inspect any partial work, and run `:agent retry` for a
+separate confirmation. This resends the saved text with the same client message
+ID and a new attempt ID. It never retries automatically because Core may have
+partly processed the request. A local or pre-dispatch send failure instead
+restores the composer draft; it does not create the confirmed Core-response
+attention item.
+
 Every governed tool carries expected workspace generation and project revision. A stale call fails with `Conflict`; reread state and issue a new call. Mutations also require a trusted workspace, actor attribution, and the applicable mutation authority or confirmation.
 
 ## Project files and tree

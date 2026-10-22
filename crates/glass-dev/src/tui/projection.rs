@@ -733,6 +733,41 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     {
                         items.push(ConversationEntry::system(text, Some("models/list".into())));
                     }
+                } else if event.payload.get("ok").and_then(Value::as_bool) == Some(false)
+                    && matches!(
+                        event.payload.get("operation").and_then(Value::as_str),
+                        Some("prompt" | "followUp")
+                    )
+                {
+                    let error = &event.payload["error"];
+                    let kind = error
+                        .pointer("/data/kind")
+                        .and_then(Value::as_str)
+                        .filter(|kind| !kind.is_empty())
+                        .unwrap_or("request");
+                    let code = error
+                        .get("code")
+                        .and_then(Value::as_i64)
+                        .map(|code| format!(" · {code}"))
+                        .unwrap_or_default();
+                    let retryable = error
+                        .pointer("/data/retryable")
+                        .and_then(Value::as_bool)
+                        .map(|retryable| {
+                            if retryable {
+                                " · retryable"
+                            } else {
+                                " · not marked retryable"
+                            }
+                        })
+                        .unwrap_or_default();
+                    items.push(ConversationEntry::error(
+                        format!(
+                            "Core {} failed: {kind}{code}{retryable}",
+                            event.payload["operation"].as_str().unwrap_or("turn")
+                        ),
+                        None,
+                    ));
                 } else if let Some(text) = event_text(event) {
                     push_assistant_final(&mut items, text, entry_id);
                 }
@@ -1036,6 +1071,28 @@ mod tests {
         );
         assert!(rendered.contains("anthropic/claude-opus-4 · Claude Opus 4"));
         assert!(rendered.contains("anthropic/claude-sonnet-4"));
+    }
+
+    #[test]
+    fn failed_core_turn_shows_safe_error_class_without_provider_message() {
+        let event = crate::AgentEvent {
+            sequence: 1,
+            agent_id: crate::AgentId::parse("agent-0002").unwrap(),
+            timestamp_ms: 0,
+            kind: "response".into(),
+            payload: serde_json::json!({
+                "operation": "prompt",
+                "ok": false,
+                "error": {
+                    "code": -32000,
+                    "message": "raw provider response must stay hidden",
+                    "data": {"kind": "provider", "retryable": false}
+                }
+            }),
+        };
+        let rendered = conversation(&[event]);
+        assert!(rendered.contains("Core prompt failed: provider · -32000 · not marked retryable"));
+        assert!(!rendered.contains("raw provider response"));
     }
 
     #[test]

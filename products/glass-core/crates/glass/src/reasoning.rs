@@ -62,14 +62,13 @@ fn associations(source: &[Record]) -> std::collections::HashMap<usize, usize> {
         match record {
             Record::User(_) => active = None,
             Record::Assistant(text) => {
-                if let Some((marker, p, _)) = &active {
-                    if *marker + 1 == index
-                        && p.assistant_hash.as_deref()
-                            == Some(crate::workspace::hash(text.as_bytes()).as_str())
-                    {
-                        associations.insert(index, *marker);
-                        continue;
-                    }
+                if let Some((marker, p, _)) = &active
+                    && *marker + 1 == index
+                    && p.assistant_hash.as_deref()
+                        == Some(crate::workspace::hash(text.as_bytes()).as_str())
+                {
+                    associations.insert(index, *marker);
+                    continue;
                 }
                 active = None;
             }

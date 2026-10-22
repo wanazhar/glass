@@ -67,8 +67,8 @@ Use `gc help all` for command discovery and `/keys` for terminal controls.
 
 ## Automations and optional clients
 
-`/loop 30m check progress` binds a schedule to the current host, project and
-model. A mismatch parks it. `/loop bind N` deliberately rebinds a schedule;
+`/loop 30m check progress` binds a schedule to the host where it was created,
+the project, and the model. A mismatch parks it. `/loop bind N` deliberately rebinds a schedule;
 legacy unbound schedules also require this action. `/loop missed N once|skip`
 chooses catch-up policy. `/loop history` records bounded dispatch history;
 completion belongs to the conversation. Acceptance is durable before the

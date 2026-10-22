@@ -56,6 +56,15 @@ looks for `glass-core` on `PATH`, then `gc`, and reads its version. Run
 protocol version, provider readiness, session directory, and repair steps.
 These commands do not print credentials.
 
+The standalone source product is maintained in this repository at
+[`products/glass-core`](../products/glass-core/README.md). To install its
+current checkout for Glass, run
+`products/glass-core/scripts/install.sh` from the monorepo root. The installer
+provides `glass-core` and its `gc` alias; the engine remains separately
+versioned and keeps its own Cargo workspace and licenses. See the
+[standalone product guide](glass-core-product.md) for scoped build and package
+commands.
+
 ## Session lifecycle
 
 1. `initialize` — protocol version `1` and an absolute session storage

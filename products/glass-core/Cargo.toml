@@ -7,10 +7,11 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/wanazhar/glass"
 
 [workspace.dependencies]
-glass-mod-api = { path = "crates/glass-mod-api" }
-glass-tui = { path = "crates/glass-tui" }
+glass-mod-api = { path = "crates/glass-mod-api", version = "0.1.0" }
+glass-tui = { path = "crates/glass-tui", version = "0.1.0" }
 
 [profile.release]
 opt-level = "s"

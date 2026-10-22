@@ -90,3 +90,10 @@ contracts plus known-stale-text rejection. The current maintainer handbook at
 `docs/maintainers/README.md` defines the document classes, source-of-truth
 rules, and review questions that keep future Markdown additions inside this
 audit contract.
+
+## Addendum: Glass Core monorepo migration
+
+The 2026-10-22 migration added the current [standalone Glass Core guide](../../glass-core-product.md)
+and the [migration evidence record](../../migration/glass-core-monorepo.md).
+The product guide owns nested workspace build/install guidance. The migration
+record owns source-ref, history, security, license, and verification evidence.

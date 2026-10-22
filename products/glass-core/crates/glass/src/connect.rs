@@ -1013,15 +1013,15 @@ fn activity_location(id: &str, requested: usize) -> Result<Value, String> {
         let n=reader.by_ref().take(8*1024*1024+1).read_until(b'\n',&mut line).map_err(|e|e.to_string())?;
         if n==0 {break;}
         if n>8*1024*1024 {return Err("Activity record exceeds 8 MiB".into());}
-        if let Ok(value)=serde_json::from_slice::<Value>(&line) {
-            if let Some(record)=crate::session::Record::from_json(&value) {
-                if matches!(record,crate::session::Record::User(_)) {turn+=1;}
-                if offset==requested {return Ok(json!({"recordOffset":offset,"record":ordinal,"turn":turn,"revision":match &record {
-                    crate::session::Record::User(t)|crate::session::Record::Assistant(t)=>Some(crate::workspace::hash(t.as_bytes())),
-                    crate::session::Record::ToolResult{body:t,..}|crate::session::Record::Bash{output:t,..}=>Some(crate::workspace::hash(t.as_bytes())),
-                    _=>None}}));}
-                ordinal+=1;
-            }
+        if let Ok(value)=serde_json::from_slice::<Value>(&line)
+            && let Some(record)=crate::session::Record::from_json(&value)
+        {
+            if matches!(record,crate::session::Record::User(_)) {turn+=1;}
+            if offset==requested {return Ok(json!({"recordOffset":offset,"record":ordinal,"turn":turn,"revision":match &record {
+                crate::session::Record::User(t)|crate::session::Record::Assistant(t)=>Some(crate::workspace::hash(t.as_bytes())),
+                crate::session::Record::ToolResult{body:t,..}|crate::session::Record::Bash{output:t,..}=>Some(crate::workspace::hash(t.as_bytes())),
+                _=>None}}));}
+            ordinal+=1;
         }
         offset+=n;
         if offset>requested {break;}

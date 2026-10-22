@@ -372,8 +372,8 @@ also keeps diagram source on failure and provides an expanded viewer.
 ### Projects and machine-wide conversations
 
 The sidebar defaults to **All projects** from the current user's GC data
-storage on this machine. The directory where `gc connect` starts is the default
-for creating a thread, not a filter on existing conversations. Conversations
+storage. The directory where `gc connect` starts is the default for creating
+a thread, not a filter on existing conversations. Conversations
 from another OS account or another GC data directory are not merged.
 
 Project groups show the full workspace path and thread count. Expand a group

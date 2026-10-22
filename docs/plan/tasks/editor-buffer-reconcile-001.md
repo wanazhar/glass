@@ -1,7 +1,7 @@
 ---
 id: editor-buffer-reconcile-001
 scope: issue-63-external-core-edits
-status: in-progress
+status: complete
 depends-on: [issue63-mixed-tools-001]
 ---
 
@@ -38,22 +38,31 @@ write boundary and do not use the unrelated project revision as a guard.
 
 ## Acceptance
 
-- [ ] Clean open buffers adopt external file changes on reconciliation.
-- [ ] Dirty buffers preserve local text and expose changed/deleted disk state.
-- [ ] Compare, reload, and keep-local are distinct explicit resolutions.
-- [ ] A stale or concurrent target-file change rejects save; unrelated
+- [x] Clean open buffers adopt external file changes on reconciliation.
+- [x] Dirty buffers preserve local text and expose changed/deleted disk state.
+- [x] Compare, reload, and keep-local are distinct explicit resolutions.
+- [x] A stale or concurrent target-file change rejects save; unrelated
   project revision changes do not reject save.
-- [ ] Deletion/source-rename conflict is represented and safely resolvable.
-- [ ] External writes are never attributed to the local human or an agent
+- [x] Deletion/source-rename conflict is represented and safely resolvable.
+- [x] External writes are never attributed to the local human or an agent
   without actor evidence.
-- [ ] The TUI detects changes through bounded polling only while buffers are
+- [x] The TUI detects changes through bounded polling only while buffers are
   open and presents compact resolution actions.
-- [ ] Deterministic tests cover clean refresh, dirty preservation/conflict,
+- [x] Deterministic tests cover clean refresh, dirty preservation/conflict,
   compare/reload/keep-local, guarded save, unrelated-file changes, and deletion.
-- [ ] Focused `glass-dev` tests, strict scoped Clippy, formatting, and relevant
+- [x] Focused `glass-dev` tests, strict scoped Clippy, formatting, and relevant
   documentation validators pass.
-- [ ] Commit locally with a Conventional Commit message; do not push, release,
+- [x] Commit locally with a Conventional Commit message; do not push, release,
   alter active worktrees, restart services, or touch installed binaries.
+
+## Verification
+
+- `cargo test -p glass-dev --lib development::project::tests --locked` — 22 passed.
+- Focused TUI reconciliation and bounded-diff tests — passed.
+- `cargo clippy -p glass-dev --all-targets --locked -- -D warnings` — passed.
+- `cargo fmt --all -- --check` and `git diff --check` — passed.
+- Documentation depth, coverage, release-truth, and version-sync validators — passed.
+- Implementation commit: `faf65716 feat: reconcile external editor buffer changes`.
 
 ## Design constraints
 

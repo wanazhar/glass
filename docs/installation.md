@@ -65,7 +65,7 @@ owns only `glass-browser` and exports the `glass_browser` Rust library. Cargo
 does not allow both packages to install that same executable into one root.
 Choose one package, or remove the existing owner before you switch. `glass-dev`
 depends on the exact matching `glass-browser` version. Neither package installs
-the separate `glass-core` agent engine, Pi, or Node.
+the separate `glass-core` resident engine or Node.
 
 Glass Core runs resident agents in `glass-dev`. Install the `glass-core`
 program separately or set `GLASS_CORE_BINARY` to its path. Run

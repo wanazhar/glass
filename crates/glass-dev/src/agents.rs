@@ -1,11 +1,10 @@
 //! Glass-owned scheduling for independent resident agent sessions.
 //!
-//! The engine is selected by `GLASS_AGENT_HARNESS`; Glass Core is the default
-//! and the Pi SDK runtime is the legacy backend. Glass owns tool execution,
-//! approvals, and evidence for both.
+//! Resident conversations run on Glass Core. Glass owns scheduling, workspace
+//! integrations, and durable evidence for those sessions.
 
 use crate::development::{DevelopmentError, DevelopmentResult};
-use crate::pi_runtime::PiSessionRequest;
+use crate::resident_harness::ResidentSessionRequest;
 use crate::resident_harness::{AgentToolExecutor, ResidentHarness, ResidentHarnessOptions};
 use crate::thread_store::{
     RunClassification, RunRecord, SendAttemptMode, SendAttemptRecord, SendAttemptStatus,
@@ -147,9 +146,6 @@ pub struct AgentSpec {
     pub worktree: Option<PathBuf>,
     /// Optional architect session to fork as a subagent.
     pub fork_from: Option<PathBuf>,
-    /// Whether governed tool restrictions are disabled.
-    #[serde(default)]
-    pub unrestricted: bool,
     /// Optional worker runtime limit in seconds.
     pub max_runtime_seconds: Option<u64>,
     /// Optional retained-event limit for this agent.
@@ -167,7 +163,6 @@ impl AgentSpec {
             thinking: None,
             worktree: None,
             fork_from: None,
-            unrestricted: false,
             max_runtime_seconds: Some(3_600),
             max_events: Some(10_000),
         }
@@ -197,8 +192,6 @@ pub struct AgentSnapshot {
     /// Persisted engine session file, when the runtime has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_file: Option<String>,
-    /// Whether unrestricted tools were enabled.
-    pub unrestricted: bool,
     /// Creation timestamp in Unix milliseconds.
     pub created_at_ms: u128,
     /// Start timestamp in Unix milliseconds.
@@ -237,7 +230,7 @@ pub struct AgentEvent {
 enum WorkerCommand {
     Request {
         attempt_id: Option<String>,
-        request: PiSessionRequest,
+        request: ResidentSessionRequest,
         started: Option<SyncSender<Result<String, String>>>,
     },
     ApproveTool {
@@ -290,8 +283,7 @@ struct WorkerRuntime {
 /// Each running agent owns a distinct engine process and persistent session.
 /// The registry only starts dependency-ready work, bounds all queues and
 /// retained evidence, and never silently promotes a failed dependency to
-/// success. `GLASS_AGENT_HARNESS` selects the engine; Glass Core is the
-/// default.
+/// success. Glass Core is the sole resident engine.
 pub(crate) struct AgentRegistry {
     root: PathBuf,
     sessions_dir: PathBuf,
@@ -306,7 +298,6 @@ pub(crate) struct AgentRegistry {
     additional_system_prompt: Option<String>,
     default_model: Option<String>,
     default_thinking: Option<String>,
-    default_unrestricted: bool,
     thread_store: ThreadStore,
     #[cfg(test)]
     core_binary: Option<PathBuf>,
@@ -319,7 +310,7 @@ impl AgentRegistry {
     pub(crate) fn new(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
         let root = std::fs::canonicalize(root)?;
         let thread_store = ThreadStore::open(&root)?;
-        let sessions_dir = root.join(".glass").join("pi-sessions");
+        let sessions_dir = root.join(".glass").join("agent-sessions");
         let (events_tx, events_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         let mut registry = Self {
             root: root.clone(),
@@ -335,7 +326,6 @@ impl AgentRegistry {
             additional_system_prompt: None,
             default_model: None,
             default_thinking: None,
-            default_unrestricted: false,
             thread_store,
             #[cfg(test)]
             core_binary: None,
@@ -404,7 +394,6 @@ impl AgentRegistry {
                         thinking: None,
                         worktree: root.clone(),
                         session_file: None,
-                        unrestricted: false,
                         created_at_ms: thread.created_at_ms,
                         started_at_ms: None,
                         updated_at_ms: now,
@@ -472,7 +461,7 @@ impl AgentRegistry {
         Ok(())
     }
 
-    /// Active user-global and trusted-project instructions supplied to the engine.
+    /// Active user-global and project instructions supplied to the engine.
     #[cfg(test)]
     pub fn additional_system_prompt(&self) -> Option<&str> {
         self.additional_system_prompt.as_deref()
@@ -497,21 +486,9 @@ impl AgentRegistry {
         self.default_thinking = thinking;
         Ok(())
     }
-    /// Make newly created resident agents unrestricted for this process.
-    pub(crate) fn set_default_unrestricted(&mut self, unrestricted: bool) {
-        self.default_unrestricted = unrestricted;
-    }
-
-    pub fn default_unrestricted(&self) -> bool {
-        self.default_unrestricted
-    }
-
     /// Validate and enqueue an agent; dependencies must be known and successful.
     pub(crate) fn create(&mut self, mut spec: AgentSpec) -> DevelopmentResult<AgentId> {
         self.refresh()?;
-        if self.default_unrestricted {
-            spec.unrestricted = true;
-        }
         if spec.model.is_none() {
             spec.model.clone_from(&self.default_model);
         }
@@ -532,7 +509,7 @@ impl AgentRegistry {
         let now = now_ms();
         let thread_id = crate::thread_store::random_id("thread")?;
         let run_id = crate::thread_store::random_id("run")?;
-        let harness = crate::resident_harness::ResidentHarnessKind::from_env();
+        let harness = crate::resident_harness::ResidentHarnessKind::default_kind();
         self.thread_store.create(ThreadRecord {
             thread_id: thread_id.clone(),
             title: spec.role.clone(),
@@ -573,7 +550,6 @@ impl AgentRegistry {
                     thinking: spec.thinking.clone(),
                     worktree,
                     session_file: None,
-                    unrestricted: spec.unrestricted,
                     created_at_ms: now,
                     started_at_ms: None,
                     updated_at_ms: now,
@@ -710,13 +686,6 @@ impl AgentRegistry {
                     .into(),
             ));
         }
-        if crate::resident_harness::ResidentHarnessKind::from_env()
-            != crate::resident_harness::ResidentHarnessKind::GlassCore
-        {
-            return Err(DevelopmentError::Conflict(
-                "durable thread recovery requires GLASS_AGENT_HARNESS=glass-core".into(),
-            ));
-        }
         let thread = self
             .thread_store
             .list()?
@@ -790,7 +759,7 @@ impl AgentRegistry {
         let text = text.into();
         validate_text("agent prompt", &text, MAX_PROMPT_BYTES)?;
         validate_context_attachment(context.as_ref())?;
-        self.send(id, PiSessionRequest::Prompt { text, context }, None)
+        self.send(id, ResidentSessionRequest::Prompt { text, context }, None)
     }
 
     pub(crate) fn steer_with_context(
@@ -802,7 +771,7 @@ impl AgentRegistry {
         let text = text.into();
         validate_text("agent steering", &text, MAX_PROMPT_BYTES)?;
         validate_context_attachment(context.as_ref())?;
-        self.send(id, PiSessionRequest::Steer { text, context }, None)
+        self.send(id, ResidentSessionRequest::Steer { text, context }, None)
     }
 
     pub(crate) fn follow_up_with_context(
@@ -814,7 +783,7 @@ impl AgentRegistry {
         let text = text.into();
         validate_text("agent follow-up", &text, MAX_PROMPT_BYTES)?;
         validate_context_attachment(context.as_ref())?;
-        self.send(id, PiSessionRequest::FollowUp { text, context }, None)
+        self.send(id, ResidentSessionRequest::FollowUp { text, context }, None)
     }
 
     pub(crate) fn send_with_context_and_client_message_id(
@@ -840,9 +809,9 @@ impl AgentRegistry {
         validate_text("agent message", &text, MAX_PROMPT_BYTES)?;
         validate_context_attachment(context.as_ref())?;
         let request = match mode {
-            "steer" => PiSessionRequest::Steer { text, context },
-            "follow-up" => PiSessionRequest::FollowUp { text, context },
-            _ => PiSessionRequest::Prompt { text, context },
+            "steer" => ResidentSessionRequest::Steer { text, context },
+            "follow-up" => ResidentSessionRequest::FollowUp { text, context },
+            _ => ResidentSessionRequest::Prompt { text, context },
         };
         self.send(id, request, client_message_id)
     }
@@ -883,7 +852,7 @@ impl AgentRegistry {
     pub(crate) fn request(
         &mut self,
         id: &AgentId,
-        request: PiSessionRequest,
+        request: ResidentSessionRequest,
     ) -> DevelopmentResult<()> {
         self.send(id, request, None)
     }
@@ -891,13 +860,14 @@ impl AgentRegistry {
     pub(crate) fn request_with_id(
         &mut self,
         id: &AgentId,
-        request: PiSessionRequest,
+        request: ResidentSessionRequest,
     ) -> DevelopmentResult<String> {
         self.refresh()?;
         let (started_tx, started_rx) = mpsc::sync_channel(1);
         {
             let record = self.record_mut(id)?;
             if record.snapshot.status.terminal()
+                || record.recovering
                 || matches!(
                     record.snapshot.status,
                     AgentStatus::Queued | AgentStatus::Starting | AgentStatus::RecoveryPending
@@ -1049,7 +1019,7 @@ impl AgentRegistry {
                 let (started_tx, started_rx) = mpsc::sync_channel(1);
                 let request = WorkerCommand::Request {
                     attempt_id: None,
-                    request: PiSessionRequest::Abort,
+                    request: ResidentSessionRequest::Abort,
                     started: Some(started_tx),
                 };
                 let sent = self.send_worker_command_bounded(
@@ -1225,7 +1195,7 @@ impl AgentRegistry {
         // exits. Join it here instead of making the user retry a second time.
         self.join_worker(id, previous_status)?;
         let new_run_id = crate::thread_store::random_id("run")?;
-        let engine = crate::resident_harness::ResidentHarnessKind::from_env();
+        let engine = crate::resident_harness::ResidentHarnessKind::default_kind();
         let thread_id = self.record_mut(id)?.thread_id.clone();
         self.thread_store.append_run(
             &thread_id,
@@ -1255,19 +1225,19 @@ impl AgentRegistry {
     fn send(
         &mut self,
         id: &AgentId,
-        request: PiSessionRequest,
+        request: ResidentSessionRequest,
         client_message_id: Option<&str>,
     ) -> DevelopmentResult<()> {
         self.refresh()?;
         let attempt_mode_and_text = if cfg!(unix) {
             match &request {
-                PiSessionRequest::Prompt { text, .. } => {
+                ResidentSessionRequest::Prompt { text, .. } => {
                     Some((SendAttemptMode::Prompt, text.clone()))
                 }
-                PiSessionRequest::FollowUp { text, .. } => {
+                ResidentSessionRequest::FollowUp { text, .. } => {
                     Some((SendAttemptMode::FollowUp, text.clone()))
                 }
-                PiSessionRequest::Steer { text, .. } => {
+                ResidentSessionRequest::Steer { text, .. } => {
                     Some((SendAttemptMode::Steer, text.clone()))
                 }
                 _ => None,
@@ -1277,9 +1247,9 @@ impl AgentRegistry {
         };
         let message_id = if matches!(
             &request,
-            PiSessionRequest::Prompt { .. }
-                | PiSessionRequest::FollowUp { .. }
-                | PiSessionRequest::Steer { .. }
+            ResidentSessionRequest::Prompt { .. }
+                | ResidentSessionRequest::FollowUp { .. }
+                | ResidentSessionRequest::Steer { .. }
         ) {
             Some(match client_message_id {
                 Some(message_id) => message_id.to_string(),
@@ -1289,13 +1259,13 @@ impl AgentRegistry {
             None
         };
         let mut user_event = match &request {
-            PiSessionRequest::Prompt { text, context } => Some(
+            ResidentSessionRequest::Prompt { text, context } => Some(
                 serde_json::json!({"text": text, "mode": "prompt", "contextAttached": context.is_some()}),
             ),
-            PiSessionRequest::Steer { text, context } => Some(
+            ResidentSessionRequest::Steer { text, context } => Some(
                 serde_json::json!({"text": text, "mode": "steer", "contextAttached": context.is_some()}),
             ),
-            PiSessionRequest::FollowUp { text, context } => Some(
+            ResidentSessionRequest::FollowUp { text, context } => Some(
                 serde_json::json!({"text": text, "mode": "follow-up", "contextAttached": context.is_some()}),
             ),
             _ => None,
@@ -1311,6 +1281,7 @@ impl AgentRegistry {
         let (thread_id, run_id, sender) = {
             let record = self.record_mut(id)?;
             if record.snapshot.status.terminal()
+                || record.recovering
                 || matches!(
                     record.snapshot.status,
                     AgentStatus::Queued | AgentStatus::RecoveryPending
@@ -1546,7 +1517,7 @@ impl AgentRegistry {
                 if let Some(sender) = record.command.take() {
                     let _ = sender.try_send(WorkerCommand::Request {
                         attempt_id: None,
-                        request: PiSessionRequest::Abort,
+                        request: ResidentSessionRequest::Abort,
                         started: None,
                     });
                     let _ = sender.try_send(WorkerCommand::Shutdown);
@@ -2093,7 +2064,7 @@ impl Drop for AgentRegistry {
                 ) {
                     let _ = sender.try_send(WorkerCommand::Request {
                         attempt_id: None,
-                        request: PiSessionRequest::Abort,
+                        request: ResidentSessionRequest::Abort,
                         started: None,
                     });
                 }
@@ -2144,7 +2115,6 @@ fn run_worker(
     dropped_events: Arc<AtomicU64>,
 ) {
     let options = ResidentHarnessOptions {
-        unrestricted: spec.unrestricted,
         session_dir: runtime.sessions_dir,
         name: Some(format!("{}: {}", spec.role, id.as_str())),
         model: spec.model,
@@ -2159,7 +2129,7 @@ fn run_worker(
         fork_from: runtime.fork_from,
     };
     let mut harness = match ResidentHarness::spawn(
-        crate::resident_harness::ResidentHarnessKind::from_env(),
+        crate::resident_harness::ResidentHarnessKind::default_kind(),
         &runtime.worktree,
         options,
     ) {
@@ -2200,9 +2170,9 @@ fn run_worker(
                 }) => {
                     let waits_for_agent = matches!(
                         request,
-                        PiSessionRequest::Prompt { .. }
-                            | PiSessionRequest::FollowUp { .. }
-                            | PiSessionRequest::Complete { .. }
+                        ResidentSessionRequest::Prompt { .. }
+                            | ResidentSessionRequest::FollowUp { .. }
+                            | ResidentSessionRequest::Complete { .. }
                     );
                     match harness.start_request(request) {
                         Ok(request_id) => {
@@ -2798,7 +2768,7 @@ mod tests {
             Some(session_id.as_str())
         );
         assert_ne!(after_failure.runs.last().unwrap().run_id, original_run);
-        let request_log = root.join(".glass/pi-sessions/fixture-requests.jsonl");
+        let request_log = root.join(".glass/agent-sessions/fixture-requests.jsonl");
         let first_log = std::fs::read_to_string(&request_log).unwrap();
         assert_eq!(first_log.matches("turn/prompt").count(), 1);
         assert_eq!(first_log.matches("session/new").count(), 1);
@@ -2912,7 +2882,6 @@ mod tests {
                     thinking: None,
                     worktree: registry.root.clone(),
                     session_file: None,
-                    unrestricted: false,
                     created_at_ms: now,
                     started_at_ms: Some(now),
                     updated_at_ms: now,
@@ -2936,7 +2905,7 @@ mod tests {
     }
 
     #[test]
-    fn request_with_id_returns_the_workers_pi_request_identifier() {
+    fn request_with_id_returns_the_workers_core_request_identifier() {
         let root = test_root();
         let mut registry = AgentRegistry::new(&root).unwrap();
         let id = AgentId::parse("agent-request-id-test").unwrap();
@@ -2945,7 +2914,7 @@ mod tests {
             while let Ok(command) = commands.recv() {
                 match command {
                     WorkerCommand::Request {
-                        request: PiSessionRequest::Complete { .. },
+                        request: ResidentSessionRequest::Complete { .. },
                         started: Some(started),
                         ..
                     } => {
@@ -2961,7 +2930,7 @@ mod tests {
         let request_id = registry
             .request_with_id(
                 &id,
-                PiSessionRequest::Complete {
+                ResidentSessionRequest::Complete {
                     prefix: "fn main() {".into(),
                     suffix: "}".into(),
                 },
@@ -3156,7 +3125,7 @@ mod tests {
         let err = reopened
             .request(
                 &pending,
-                PiSessionRequest::Prompt {
+                ResidentSessionRequest::Prompt {
                     text: "must not replay".into(),
                     context: None,
                 },
@@ -3172,7 +3141,7 @@ mod tests {
         let err = reopened
             .request(
                 &never_started,
-                PiSessionRequest::Prompt {
+                ResidentSessionRequest::Prompt {
                     text: "do not replay queued task".into(),
                     context: None,
                 },
@@ -3267,7 +3236,7 @@ mod tests {
                 if matches!(
                     command,
                     WorkerCommand::Request {
-                        request: PiSessionRequest::Prompt { .. },
+                        request: ResidentSessionRequest::Prompt { .. },
                         ..
                     }
                 ) {
@@ -4012,8 +3981,7 @@ mod tests {
 
     #[test]
     fn independent_resident_sessions_schedule_dependencies_and_stream_state() {
-        // The engine is selected by GLASS_AGENT_HARNESS, so gate on the
-        // selected harness's readiness instead of on one executable name.
+        // The Core readiness probe keeps this adapter coverage offline.
         if !crate::resident_harness::resident_readiness()
             .map(|readiness| readiness.ready)
             .unwrap_or(false)
@@ -4030,8 +3998,12 @@ mod tests {
             .unwrap();
         wait_for_status(&mut registry, &first, AgentStatus::Idle);
         wait_for_status(&mut registry, &peer, AgentStatus::Idle);
-        registry.request(&first, PiSessionRequest::State).unwrap();
-        registry.request(&peer, PiSessionRequest::State).unwrap();
+        registry
+            .request(&first, ResidentSessionRequest::State)
+            .unwrap();
+        registry
+            .request(&peer, ResidentSessionRequest::State)
+            .unwrap();
         for _ in 0..200 {
             let snapshot = registry.snapshot(&first).unwrap();
             if snapshot

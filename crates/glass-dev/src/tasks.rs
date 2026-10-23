@@ -181,8 +181,6 @@ pub struct TaskSpec {
     pub model: Option<String>,
     pub thinking: Option<String>,
     #[serde(default)]
-    pub unrestricted: bool,
-    #[serde(default)]
     pub budget: TaskBudget,
     #[serde(default)]
     pub verification: VerificationRequirement,
@@ -207,7 +205,7 @@ fn crew_prompt(role: &str, goal: &str) -> String {
             "You are the architect for: {goal}\nWrite a bounded plan, file-level proposals, and UI verify predicates. Do not implement production code."
         ),
         "implementer" => format!(
-            "You are the implementer for: {goal}\nFollow the architect plan. Default file writes are editor proposals; do not write through unless unrestricted mode is on. Keep the change minimal."
+            "You are the implementer for: {goal}\nFollow the architect plan and implement the approved work in your isolated worktree. Keep the change minimal."
         ),
         "tester" => format!(
             "You are the tester for: {goal}\nRun the detected project suite. Do not edit production code. Record failing tests as evidence."
@@ -229,7 +227,7 @@ fn implementer_prompt(goal: &str, index: usize, total: usize, worktree: &Path) -
         "tests, types, and remaining files from the architect plan"
     };
     format!(
-        "You are implementer {index} of {total} for: {goal}\nYou work only in this isolated worktree: {}\nYou continue from a forked resident-agent session of the architect when one exists. Do not edit other implementers' trees. Own {slice}. Follow the architect plan. Default file writes are editor proposals; do not write through unless unrestricted mode is on. Keep the change minimal.",
+        "You are implementer {index} of {total} for: {goal}\nYou work only in this isolated worktree: {}\nYou continue from a forked resident-agent session of the architect when one exists. Do not edit other implementers' trees. Own {slice}. Follow the architect plan and implement the approved work. Keep the change minimal.",
         worktree.display()
     )
 }
@@ -276,7 +274,6 @@ impl TaskSpec {
             worktree: None,
             model: None,
             thinking: None,
-            unrestricted: false,
             budget: TaskBudget::default(),
             verification: VerificationRequirement::default(),
             retry: RetryPolicy::default(),
@@ -297,7 +294,6 @@ pub struct TaskSnapshot {
     pub worktree: PathBuf,
     pub model: Option<String>,
     pub thinking: Option<String>,
-    pub unrestricted: bool,
     pub budget: TaskBudget,
     pub verification: VerificationRequirement,
     pub retry: RetryPolicy,
@@ -596,7 +592,6 @@ impl TaskScheduler {
             worktree: spec.worktree.clone().unwrap_or_else(|| self.root.clone()),
             model: spec.model.clone(),
             thinking: spec.thinking.clone(),
-            unrestricted: spec.unrestricted,
             budget: spec.budget.clone(),
             verification: spec.verification.clone(),
             retry: spec.retry.clone(),
@@ -643,7 +638,6 @@ impl TaskScheduler {
         goal: &str,
         shared: Option<PathBuf>,
         implementer_trees: Vec<PathBuf>,
-        unrestricted: bool,
     ) -> DevelopmentResult<Vec<TaskId>> {
         validate_text("crew goal", goal)?;
         let trees = if implementer_trees.is_empty() {
@@ -676,7 +670,6 @@ impl TaskScheduler {
                 implementer_prompt(goal, index + 1, total, &tree),
             );
             implementer.worktree = Some(tree.clone());
-            implementer.unrestricted = unrestricted;
             implementer.verification = VerificationRequirement::Inferred;
             implementer.dependencies = vec![architect.clone()];
             let implementer = self.create(agents, implementer)?;
@@ -1034,7 +1027,6 @@ impl TaskScheduler {
             spec.thinking.clone_from(&snapshot.thinking);
             spec.worktree = Some(snapshot.worktree.clone());
             spec.fork_from = architect_session_file(self, agents, &snapshot);
-            spec.unrestricted = snapshot.unrestricted;
             spec.max_runtime_seconds = Some(snapshot.budget.max_runtime_seconds);
             spec.max_events = Some(snapshot.budget.max_events);
             let agent = agents.create_agent(spec)?;
@@ -1077,7 +1069,7 @@ impl TaskScheduler {
                 let evidence = TaskEvidence {
                     kind: "agent.settled".into(),
                     actor: event.agent_id.as_str().into(),
-                    source: "pi-agent-session".into(),
+                    source: "resident-agent-session".into(),
                     passed: Some(true),
                     observed_at_ms: event.timestamp_ms,
                     details: bounded_event_details(&event.payload),
@@ -1100,7 +1092,7 @@ impl TaskScheduler {
                     TaskEvidence {
                         kind: format!("agent.{kind}"),
                         actor: event.agent_id.as_str().into(),
-                        source: "pi-agent-session".into(),
+                        source: "resident-agent-session".into(),
                         passed: None,
                         observed_at_ms: event.timestamp_ms,
                         details: bounded_event_details(&event.payload),
@@ -1465,7 +1457,6 @@ impl TaskScheduler {
             worktree: Some(snapshot.worktree.clone()),
             model: snapshot.model.clone(),
             thinking: snapshot.thinking.clone(),
-            unrestricted: snapshot.unrestricted,
             budget: snapshot.budget.clone(),
             verification: snapshot.verification.clone(),
             retry: snapshot.retry.clone(),
@@ -2313,7 +2304,6 @@ mod tests {
                 thinking: spec.thinking,
                 worktree: spec.worktree.unwrap(),
                 session_file: None,
-                unrestricted: spec.unrestricted,
                 created_at_ms: now_ms(),
                 started_at_ms: Some(now_ms()),
                 updated_at_ms: now_ms(),
@@ -3178,7 +3168,6 @@ mod tests {
                 "add settings toggle",
                 Some(root.clone()),
                 vec![tree_a.clone(), tree_b.clone()],
-                false,
             )
             .unwrap();
         assert_eq!(ids.len(), 7);
@@ -3217,7 +3206,6 @@ mod tests {
         assert!(snapshots[1].prompt.contains("isolated worktree"));
         assert!(snapshots[1].prompt.contains("1 of 2"));
         assert!(snapshots[2].prompt.contains("2 of 2"));
-        assert!(!snapshots[5].unrestricted);
         assert!(snapshots[0].prompt.contains("Do not implement"));
         assert!(snapshots[5].prompt.contains("cannot write"));
         assert!(matches!(

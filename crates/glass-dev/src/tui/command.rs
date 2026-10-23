@@ -114,129 +114,6 @@ fn is_complete_tui_command(input: &str) -> bool {
     input == "git diff"
 }
 
-const AGENT_ACTIONS: &[SurfaceAction] = &[
-    SurfaceAction {
-        label: "Compose message",
-        command: "i",
-        key: ":",
-        description: "ask the resident Glass Agent",
-    },
-    SurfaceAction {
-        label: "Setup Pi runtime",
-        command: "agent setup",
-        key: ":",
-        description: "install or repair the pinned SDK",
-    },
-    SurfaceAction {
-        label: "Update Pi runtime",
-        command: "agent update",
-        key: ":",
-        description: "refresh the pinned managed SDK",
-    },
-    SurfaceAction {
-        label: "Authenticate",
-        command: "agent setup login",
-        key: ":",
-        description: "open Pi's provider login",
-    },
-    SurfaceAction {
-        label: "Readiness doctor",
-        command: "agent doctor",
-        key: ":",
-        description: "check Node, SDK, and auth",
-    },
-    SurfaceAction {
-        label: "New conversation",
-        command: "agent new",
-        key: ":",
-        description: "start a separate resident session",
-    },
-    SurfaceAction {
-        label: "Resume selected thread",
-        command: "agent resume",
-        key: ":",
-        description: "reattach the exact stored Core session without replay",
-    },
-    SurfaceAction {
-        label: "List Pi sessions",
-        command: "agent sessions",
-        key: ":",
-        description: "pick a persisted conversation",
-    },
-    SurfaceAction {
-        label: "Inspect Pi session tree",
-        command: "agent tree",
-        key: ":",
-        description: "inspect branchable conversation entries",
-    },
-    SurfaceAction {
-        label: "Compact conversation",
-        command: "agent compact",
-        key: ":",
-        description: "summarize the selected Pi session in place",
-    },
-    SurfaceAction {
-        label: "Rewind Pi session",
-        command: "agent rewind ENTRY_ID",
-        key: ":",
-        description: "branch the selected agent from an earlier entry",
-    },
-    SurfaceAction {
-        label: "Task loop",
-        command: "task list",
-        key: ":",
-        description: "inspect autonomous tasks and verification state",
-    },
-    SurfaceAction {
-        label: "Create task",
-        command: "task create TITLE PROMPT",
-        key: ":",
-        description: "queue a verified development task",
-    },
-    SurfaceAction {
-        label: "Resume task",
-        command: "task resume TASK_ID",
-        key: ":",
-        description: "resume a paused or blocked task",
-    },
-    SurfaceAction {
-        label: "GitHub status",
-        command: "github status",
-        key: ":",
-        description: "check the GitHub origin and gh authentication",
-    },
-    SurfaceAction {
-        label: "Review workspace changes",
-        command: "review",
-        key: ":",
-        description: "open the shippable review object",
-    },
-    SurfaceAction {
-        label: "List external harnesses",
-        command: "harness list",
-        key: ":",
-        description: "see coding harnesses available on PATH",
-    },
-    SurfaceAction {
-        label: "Launch external harness",
-        command: "harness start NAME",
-        key: ":",
-        description: "hand this terminal to an installed coding harness",
-    },
-    SurfaceAction {
-        label: "Plan mode",
-        command: "plan mode",
-        key: ":",
-        description: "inspect-only plan, then accept to implement",
-    },
-    SurfaceAction {
-        label: "Delegate to external harness",
-        command: "harness delegate NAME PROMPT",
-        key: ":",
-        description: "request a bounded read-only second opinion with Glass approval",
-    },
-];
-
 const CORE_AGENT_ACTIONS: &[SurfaceAction] = &[
     SurfaceAction {
         label: "Compose message",
@@ -681,35 +558,8 @@ const MORE_ACTIONS: &[SurfaceAction] = &[
     },
 ];
 
-const TRUST_ACTIONS: &[SurfaceAction] = &[
-    SurfaceAction {
-        label: "Inspect configuration",
-        command: "I",
-        key: "I",
-        description: "review executable project settings",
-    },
-    SurfaceAction {
-        label: "Open without project trust",
-        command: "O",
-        key: "O",
-        description: "keep project-authored Glass configuration inactive",
-    },
-    SurfaceAction {
-        label: "Trust once",
-        command: "1",
-        key: "1",
-        description: "allow this process only",
-    },
-    SurfaceAction {
-        label: "Trust project",
-        command: "T",
-        key: "T",
-        description: "remember project authority",
-    },
-];
-
 pub fn surface_actions(surface: DevSurface) -> &'static [SurfaceAction] {
-    surface_actions_for(surface, crate::ResidentHarnessKind::from_env())
+    surface_actions_for(surface, crate::ResidentHarnessKind::default_kind())
 }
 
 pub fn surface_actions_for(
@@ -717,9 +567,10 @@ pub fn surface_actions_for(
     harness: crate::ResidentHarnessKind,
 ) -> &'static [SurfaceAction] {
     match surface {
-        DevSurface::Trust => TRUST_ACTIONS,
-        DevSurface::Agent if harness == crate::ResidentHarnessKind::GlassCore => CORE_AGENT_ACTIONS,
-        DevSurface::Agent => AGENT_ACTIONS,
+        DevSurface::Agent => {
+            debug_assert_eq!(harness, crate::ResidentHarnessKind::GlassCore);
+            CORE_AGENT_ACTIONS
+        }
         DevSurface::Code => CODE_ACTIONS,
         DevSurface::App => APP_ACTIONS,
         DevSurface::Terminal => TERMINAL_ACTIONS,
@@ -743,7 +594,7 @@ const RUN_ROOTS: &[&str] = &["browser", "workflow", "process"];
 const VERIFY_ROOTS: &[&str] = &["task", "test", "debug", "review"];
 const WORKSPACE_ROOTS: &[&str] = &["cockpit", "workspace", "daemon", "kernel", "experiment"];
 const INSPECT_ROOTS: &[&str] = &["replay", "memory", "surface", "tool"];
-const CORE_ROOTS: &[&str] = &["trust", "view", "help", "quit"];
+const CORE_ROOTS: &[&str] = &["view", "help", "quit"];
 
 pub static COMMAND_GROUPS: &[CommandGroup] = &[
     CommandGroup {
@@ -779,7 +630,7 @@ pub static COMMAND_GROUPS: &[CommandGroup] = &[
     CommandGroup {
         label: "Core",
         roots: CORE_ROOTS,
-        example: "workspace trust status",
+        example: "help",
     },
 ];
 
@@ -808,7 +659,6 @@ pub static ROOT_COMMANDS: &[&str] = &[
     "task",
     "test",
     "tool",
-    "trust",
     "view",
     "workflow",
     "workspace",
@@ -821,7 +671,6 @@ pub fn command_group_for(surface: DevSurface) -> &'static CommandGroup {
         DevSurface::App | DevSurface::Terminal => 2,
         DevSurface::Tasks | DevSurface::Debug => 3,
         DevSurface::More => 4,
-        DevSurface::Trust => 6,
     };
     COMMAND_GROUPS
         .get(index)
@@ -831,7 +680,6 @@ pub fn command_group_for(surface: DevSurface) -> &'static CommandGroup {
 const GLOBAL_PALETTE_ROOTS: &[&str] = &["help", "quit", "view"];
 const CROSS_SURFACE_PALETTE_ROOTS: &[&str] = &["agent", "review"];
 
-const TRUST_PALETTE_ROOTS: &[&str] = &["trust"];
 const AGENT_PALETTE_ROOTS: &[&str] = &["agent", "harness", "task", "github", "review"];
 const CODE_PALETTE_ROOTS: &[&str] = &["project", "editor", "lsp"];
 const APP_PALETTE_ROOTS: &[&str] = &["browser", "workflow"];
@@ -854,7 +702,6 @@ const MORE_PALETTE_ROOTS: &[&str] = &[
 
 fn surface_palette_roots(surface: DevSurface) -> &'static [&'static str] {
     match surface {
-        DevSurface::Trust => TRUST_PALETTE_ROOTS,
         DevSurface::Agent => AGENT_PALETTE_ROOTS,
         DevSurface::Code => CODE_PALETTE_ROOTS,
         DevSurface::App => APP_PALETTE_ROOTS,
@@ -880,13 +727,7 @@ pub fn palette_order(surface: DevSurface) -> Vec<&'static str> {
     for root in surface_palette_roots(surface)
         .iter()
         .copied()
-        .chain(
-            (surface != DevSurface::Trust)
-                .then_some(CROSS_SURFACE_PALETTE_ROOTS)
-                .into_iter()
-                .flatten()
-                .copied(),
-        )
+        .chain(CROSS_SURFACE_PALETTE_ROOTS.iter().copied())
         .chain(GLOBAL_PALETTE_ROOTS.iter().copied())
     {
         if !ordered.contains(&root) {
@@ -897,7 +738,6 @@ pub fn palette_order(surface: DevSurface) -> Vec<&'static str> {
 }
 pub fn palette_example(surface: DevSurface) -> &'static str {
     match surface {
-        DevSurface::Trust => "trust status",
         DevSurface::Agent => "agent prompt TEXT",
         DevSurface::Code => "editor proposals",
         DevSurface::App => "browser observe",
@@ -990,7 +830,6 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
             state.show_surface(surface);
             Ok(format!("Opened {}", state.surface.label()))
         }
-        "trust" => execute_trust(state, parts.collect()),
         "workspace" | "daemon" => execute_workspace(state, command, parts.collect()),
         "project" => execute_project(state, parts.collect()),
         "agent" => execute_agent(state, parts.collect()),
@@ -1083,7 +922,6 @@ fn execute_github(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
             Ok(compact_result("glass.github.review", &result))
         }
         "ship" | "create" => {
-            require_trusted(state)?;
             let mut title_parts = parts.get(1..).unwrap_or_default().to_vec();
             let draft = title_parts.last().copied() == Some("--draft");
             if draft {
@@ -1114,24 +952,16 @@ fn execute_review(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
             Ok("Review object ready · accept the pack · reject ID · ship TITLE · ask".into())
         }
         "ask" => {
-            require_trusted(state)?;
             state.surface = DevSurface::Agent;
             state.prepare_review_prompt();
             Ok("Review prompt prepared in the Agent composer".into())
         }
-        "accept" => {
-            require_trusted(state)?;
-            match parts.get(1).copied() {
-                Some(id) => state.accept_review_proposal(Some(id)),
-                None => state.accept_review_pack(),
-            }
-        }
-        "reject" => {
-            require_trusted(state)?;
-            state.reject_review_proposal(parts.get(1).copied())
-        }
+        "accept" => match parts.get(1).copied() {
+            Some(id) => state.accept_review_proposal(Some(id)),
+            None => state.accept_review_pack(),
+        },
+        "reject" => state.reject_review_proposal(parts.get(1).copied()),
         "ship" => {
-            require_trusted(state)?;
             let mut title_parts = parts.get(1..).unwrap_or_default().to_vec();
             let draft = title_parts.last().copied() == Some("--draft");
             if draft {
@@ -1185,7 +1015,6 @@ fn execute_harness(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, 
             ))
         }
         "start" | "open" => {
-            require_trusted(state)?;
             if state.background_action_running() {
                 return Err(
                     "finish the current Glass action before launching an external harness".into(),
@@ -1214,7 +1043,6 @@ fn execute_harness(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, 
 }
 
 fn execute_harness_delegate(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
-    require_trusted(state)?;
     let name = parts
         .get(1)
         .ok_or("harness delegate requires NAME PROMPT")?;
@@ -1333,14 +1161,6 @@ fn execute_workspace(
         };
         return execute_named_tool(state, tool, json!({}), mutating, DevSurface::More);
     }
-    if matches!(action, "trust" | "trust-status" | "trust-inspect") {
-        let trust_action = match action {
-            "trust-status" => "status",
-            "trust-inspect" => "inspect",
-            _ => parts.get(1).copied().unwrap_or("inspect"),
-        };
-        return execute_trust(state, vec![trust_action]);
-    }
     if action == "tools" {
         let tools = state
             .ws()?
@@ -1400,7 +1220,7 @@ fn execute_workspace(
         }
         _ => {
             return Err(
-                "workspace actions: status, inspect, tools, list, suspend ID, resume ID, delete ID, trust"
+                "workspace actions: status, inspect, tools, list, suspend ID, resume ID, delete ID"
                     .into(),
             );
         }
@@ -1596,7 +1416,6 @@ fn execute_project_graph(state: &mut DevTuiState, parts: Vec<&str>) -> Result<St
     }
 }
 fn execute_project_breakpoint(state: &mut DevTuiState, parts: &[&str]) -> Result<String, String> {
-    require_trusted(state)?;
     let kind = parts
         .first()
         .ok_or("project breakpoint requires KIND ENTITY BEFORE.json AFTER.json")?;
@@ -1841,50 +1660,8 @@ fn surface_for_tool(tool: &str) -> DevSurface {
     }
 }
 
-fn execute_trust(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
-    match parts.first().copied().unwrap_or("inspect") {
-        "status" => Ok(format!("Workspace trust: {}", state.ws()?.trust().label())),
-        "inspect" => {
-            state.surface = DevSurface::Trust;
-            Ok(format!(
-                "Inspecting {} configuration items",
-                state.ws()?.trust_inspection().len()
-            ))
-        }
-        action @ ("untrusted" | "once" | "project") => {
-            let decision = match action {
-                "untrusted" => crate::LocalTrustDecision::OpenUntrusted,
-                "once" => crate::LocalTrustDecision::TrustOnce,
-                _ => crate::LocalTrustDecision::TrustProject,
-            };
-            let trust = state
-                .ws()?
-                .apply_local_trust_decision(decision)
-                .map_err(|error| error.to_string())?;
-            state.snapshot_trust_label = trust.label().into();
-            state.surface = DevSurface::Agent;
-            Ok(format!("Workspace trust is now {}", trust.label()))
-        }
-        _ => Err("trust actions: status, inspect, untrusted, once, project".into()),
-    }
-}
-
 fn execute_plan(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
-    require_trusted(state)?;
     match parts.first().copied().unwrap_or("show") {
-        "ask" => {
-            state.set_composer_run_mode(crate::AgentTurnMode::Ask);
-            Ok("Ask mode · read-only".into())
-        }
-        "plan" | "mode" => {
-            state.set_composer_run_mode(crate::AgentTurnMode::Plan);
-            state.focus_composer_dock();
-            Ok("Plan mode · describe a goal, then Enter".into())
-        }
-        "agent" => {
-            state.set_composer_run_mode(crate::AgentTurnMode::Agent);
-            Ok("Agent mode · proposals unless unrestricted".into())
-        }
         "show" | "status" => Ok(match &state.pending_plan {
             Some(plan) => format!(
                 "PLAN {}\n{}\n{}\n{}",
@@ -1893,7 +1670,7 @@ fn execute_plan(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
                 if plan.accepted { "accepted" } else { "draft" },
                 plan.body
             ),
-            None => "No plan yet · :plan mode then send a goal".into(),
+            None => "No plan yet".into(),
         }),
         "accept" => {
             // Worker is not in this command path; stash an implement prompt.
@@ -1904,9 +1681,8 @@ fn execute_plan(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
                 accepted: true,
                 ..plan.clone()
             });
-            state.set_composer_run_mode(crate::AgentTurnMode::Agent);
             state.composer_input = format!(
-                "Implement this accepted plan. Stay in proposals unless I say otherwise.\n\nGoal: {}\n\n{}",
+                "Implement this accepted plan.\n\nGoal: {}\n\n{}",
                 plan.goal, plan.body
             );
             state.composer_cursor = state.composer_input.len();
@@ -1917,12 +1693,12 @@ fn execute_plan(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
             state.reject_pending_plan();
             Ok(state.status.clone())
         }
-        _ => Err("plan actions: show, accept, reject, ask, plan, agent".into()),
+        _ => Err("plan actions: show, accept, reject".into()),
     }
 }
 
 fn execute_agent(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
-    execute_agent_for_harness(state, parts, crate::ResidentHarnessKind::from_env())
+    execute_agent_for_harness(state, parts, crate::ResidentHarnessKind::default_kind())
 }
 
 fn execute_agent_for_harness(
@@ -1934,20 +1710,14 @@ fn execute_agent_for_harness(
         state.surface = DevSurface::Agent;
         return Ok("Opened Glass Agent".into());
     };
-    if !matches!(action, "doctor" | "status" | "setup" | "update") {
-        require_trusted(state)?;
-    }
     match action {
         "doctor" | "status" => {
             let ready = state.refresh_agent_readiness()?;
             state.surface = DevSurface::Agent;
             Ok(if ready {
                 "Glass Agent is ready · press Enter or type to start a conversation".into()
-            } else if harness == crate::ResidentHarnessKind::GlassCore {
-                "Glass Core needs setup · use :agent setup login for provider authentication, then Enter to chat".into()
             } else {
-                "Glass Agent needs setup · use :agent setup or :agent setup login, then Enter to chat"
-                    .into()
+                "Glass Core needs setup · use :agent setup login for provider authentication, then Enter to chat".into()
             })
         }
         "setup" | "update" => {
@@ -1955,36 +1725,18 @@ fn execute_agent_for_harness(
             let login = options
                 .iter()
                 .any(|value| matches!(*value, "login" | "--login"));
-            let update = action == "update"
-                || options
-                    .iter()
-                    .any(|value| matches!(*value, "update" | "--update"));
             if options.iter().any(|value| {
-                !matches!(*value, "login" | "--login" | "update" | "--update")
+                !matches!(*value, "login" | "--login")
             }) {
-                return Err(
-                    "agent setup options: [login|--login] [update|--update]".into(),
-                );
-            }
-            if login && update {
-                return Err("agent setup cannot combine login and update".into());
+                return Err("agent setup options: [login|--login]".into());
             }
             state.surface = DevSurface::Agent;
             if login {
-                state.request_agent_login_for_harness(harness, None)?;
+                state.request_agent_login()?;
                 return Ok(state.status.clone());
             }
-            if harness == crate::ResidentHarnessKind::GlassCore {
-                state.request_agent_setup_mode(crate::ResidentHarnessKind::GlassCore, update);
-                return Ok(state.status.clone());
-            }
-            let result = run_tool(
-                state,
-                "glass.agent.setup",
-                json!({"login": false, "update": update}),
-                true,
-            )?;
-            Ok(compact_result("glass.agent.setup", &result))
+            state.request_agent_setup();
+            Ok(state.status.clone())
         }
         "spawn" => {
             let role = parts.get(1).ok_or("agent spawn requires ROLE TASK")?;
@@ -2013,9 +1765,7 @@ fn execute_agent_for_harness(
             Ok(compact_result("glass.agent.resume", &result))
         }
         "retry" => {
-            if harness != crate::ResidentHarnessKind::GlassCore {
-                return Err("failed or uncertain delivery retry is available for Glass Core threads".into());
-            }
+            debug_assert_eq!(harness, crate::ResidentHarnessKind::GlassCore);
             if parts.len() != 1 {
                 return Err("agent retry takes no arguments · select a failed or uncertain message first".into());
             }
@@ -2271,7 +2021,6 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
             DevSurface::Tasks,
         ),
         "crew" => {
-            require_trusted(state)?;
             let goal = parts.get(1..).unwrap_or_default().join(" ");
             if goal.is_empty() {
                 return Err("task crew requires GOAL".into());
@@ -2285,7 +2034,6 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
             )
         }
         "create" | "create-after" => {
-            require_trusted(state)?;
             let offset = usize::from(action == "create-after");
             let title = parts
                 .get(1 + offset)
@@ -2312,7 +2060,6 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
             )
         }
         "pause" | "resume" | "cancel" | "retry" | "override" => {
-            require_trusted(state)?;
             let task_id = parts.get(1).ok_or("task action requires TASK_ID")?;
             let tool = match action {
                 "pause" => "glass.task.pause",
@@ -2330,7 +2077,6 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
             )
         }
         "reassign" => {
-            require_trusted(state)?;
             execute_named_tool(
                 state,
                 "glass.task.reassign",
@@ -2345,7 +2091,6 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
             )
         }
         "evidence" | "verify" => {
-            require_trusted(state)?;
             let encoded = parts.get(4..).unwrap_or_default().join(" ");
             let details = if encoded.is_empty() {
                 Value::Null
@@ -2548,7 +2293,6 @@ fn execute_editor(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, S
     }
     let path = parts.get(1).ok_or("editor action requires PATH")?;
     if matches!(action, "undo" | "redo") {
-        require_trusted(state)?;
         let result = if action == "undo" {
             state.ws_mut()?.project_mut().undo_buffer(path)
         } else {
@@ -2990,7 +2734,6 @@ fn execute_debug(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, St
 }
 
 fn execute_kernel(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
-    require_trusted(state)?;
     let action = parts
         .first()
         .copied()
@@ -3131,7 +2874,6 @@ fn execute_test(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
 
 fn execute_experiment(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, String> {
     let action = parts.first().copied().unwrap_or("list");
-    require_trusted(state)?;
     let mut workspace = state.ws_mut()?;
     let experiments = workspace.experiments().map_err(|error| error.to_string())?;
     let message = match action {
@@ -3223,7 +2965,6 @@ fn run_tool(
             actor: Actor::local(),
             allow_mutation: mutating,
             confirmed: mutating,
-            unrestricted: state.yolo_mode,
         },
         initiator: None,
         expected_generation,
@@ -3234,14 +2975,7 @@ fn run_tool(
         name: name.into(),
         arguments,
     };
-    if mutating && state.yolo_mode {
-        if state.background_action_running() {
-            return Err("another tool action is already awaiting or running".into());
-        }
-        state.queue_tool_request(call, context)?;
-        return Ok(json!({"queued": true, "tool": name, "yolo": true}));
-    }
-    if mutating && !state.yolo_mode {
+    if mutating {
         if state.background_action_running() {
             return Err("another tool action is already awaiting or running".into());
         }
@@ -3286,17 +3020,6 @@ fn compact_result(tool: &str, value: &Value) -> String {
     )
 }
 
-fn require_trusted(state: &DevTuiState) -> Result<(), String> {
-    if !state.trust_allows_execution() {
-        Err(
-            "repository-controlled execution is blocked; inspect and trust the workspace first"
-                .into(),
-        )
-    } else {
-        Ok(())
-    }
-}
-
 fn parse_u64(value: Option<&&str>, label: &str) -> Result<u64, String> {
     value
         .ok_or_else(|| format!("missing {label}"))?
@@ -3309,7 +3032,6 @@ fn parse_surface(name: &str) -> Option<DevSurface> {
         .into_iter()
         .find(|surface| surface.label().eq_ignore_ascii_case(name))
         .or(match name {
-            "trust" => Some(DevSurface::Trust),
             "home" => Some(DevSurface::Agent),
             "agent" => Some(DevSurface::Agent),
             "code" | "editor" | "lsp" => Some(DevSurface::Code),
@@ -3342,13 +3064,7 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir_all(&root).expect("create test root");
-        let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open state");
-        state
-            .ws_mut()
-            .expect("workspace lock")
-            .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
-            .expect("trust project");
-        state.snapshot_trust_label = "trusted-project".into();
+        let state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open state");
         (state, root)
     }
 
@@ -3357,45 +3073,6 @@ mod tests {
         for surface in DevSurface::ALL {
             assert_eq!(parse_surface(surface.label()), Some(surface));
         }
-    }
-
-    #[test]
-    fn default_core_agent_catalog_does_not_offer_pi_install_actions() {
-        let actions = surface_actions_for(DevSurface::Agent, crate::ResidentHarnessKind::GlassCore);
-        assert!(
-            actions
-                .iter()
-                .any(|action| action.label == "Glass Core setup guidance")
-        );
-        assert!(
-            actions
-                .iter()
-                .any(|action| action.label == "Glass Core provider login")
-        );
-        assert!(
-            actions
-                .iter()
-                .any(|action| action.label == "List Core models")
-        );
-        assert!(
-            actions
-                .iter()
-                .any(|action| action.label == "Select Core model")
-        );
-        assert!(actions.iter().all(|action| !action.label.contains("Pi")));
-
-        let legacy = surface_actions_for(DevSurface::Agent, crate::ResidentHarnessKind::Pi);
-        assert!(
-            legacy
-                .iter()
-                .any(|action| action.label == "Setup Pi runtime")
-        );
-        assert!(
-            legacy
-                .iter()
-                .any(|action| action.label == "Update Pi runtime")
-        );
-        assert!(legacy.iter().any(|action| action.label == "Authenticate"));
     }
 
     #[test]
@@ -3408,7 +3085,7 @@ mod tests {
     }
 
     #[test]
-    fn core_setup_commands_report_external_engine_setup_without_queuing_pi_install() {
+    fn core_setup_commands_report_engine_readiness_without_queuing_installation() {
         let (mut state, root) = test_state("core-setup-guidance");
         let output = execute_agent_for_harness(
             &mut state,
@@ -3416,7 +3093,9 @@ mod tests {
             crate::ResidentHarnessKind::GlassCore,
         )
         .expect("Core setup guidance");
-        assert!(output.contains("Glass Core is the resident engine"));
+        assert!(
+            output.contains("Glass Core needs setup") || output.contains("Glass Core is ready")
+        );
         assert!(state.pending_confirmation.is_none());
         assert!(state.queued_tool_request.is_none());
 
@@ -3426,7 +3105,9 @@ mod tests {
             crate::ResidentHarnessKind::GlassCore,
         )
         .expect("Core update guidance");
-        assert!(output.contains("Glass Core is the resident engine"));
+        assert!(
+            output.contains("Glass Core needs setup") || output.contains("Glass Core is ready")
+        );
         assert!(state.pending_confirmation.is_none());
 
         let output = execute_agent_for_harness(
@@ -3435,7 +3116,7 @@ mod tests {
             crate::ResidentHarnessKind::GlassCore,
         )
         .expect("Core provider login guidance");
-        assert!(output.contains("Glass Core login will open in this terminal"));
+        assert!(output.contains("Core login will open in this terminal"));
         assert!(state.agent_login_requested);
         assert!(state.pending_confirmation.is_none());
         let _ = fs::remove_dir_all(root);
@@ -3663,19 +3344,18 @@ mod tests {
     }
 
     #[test]
-    fn yolo_prefixed_mutations_skip_the_confirmation_sheet() {
-        let (mut state, root) = test_state("yolo-prefix");
-        state.yolo_mode = true;
+    fn mutating_integration_routes_require_confirmation() {
+        let (mut state, root) = test_state("mutation-confirmation");
 
-        let output = execute(&mut state, "git stage .").expect("queue yolo stage");
+        let output = execute(&mut state, "git stage .").expect("prepare stage confirmation");
 
-        assert!(output.contains("queued"));
-        assert!(state.pending_confirmation.is_none());
+        assert!(output.contains("one-use confirmation required"));
+        assert!(state.pending_confirmation.is_some());
         assert_eq!(
             state
-                .queued_tool_request
+                .pending_confirmation
                 .as_ref()
-                .map(|(call, _)| call.name.as_str()),
+                .map(|pending| pending.call.name.as_str()),
             Some("glass.git.stage")
         );
         let _ = fs::remove_dir_all(root);
@@ -3742,13 +3422,6 @@ mod tests {
         for root in ["git", "github", "browser", "process", "debug"] {
             assert!(!code.contains(&root), "Code palette leaked {root}");
         }
-
-        let trust = palette_order(DevSurface::Trust);
-        for root in ["trust", "help", "quit", "view"] {
-            assert!(trust.contains(&root), "Trust palette missing {root}");
-        }
-        assert!(!trust.contains(&"agent"));
-        assert!(!trust.contains(&"review"));
     }
 
     #[test]
@@ -3776,20 +3449,6 @@ mod tests {
             pending.context.expected_generation,
             state.ws().expect("workspace lock").generation()
         );
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn agent_update_routes_forced_pinned_sdk_refresh() {
-        let (mut state, root) = test_state("agent-update");
-        let output =
-            execute_agent_for_harness(&mut state, vec!["update"], crate::ResidentHarnessKind::Pi)
-                .expect("queue Pi update");
-        assert!(output.contains("confirmation"));
-        let pending = state.pending_confirmation.take().expect("confirmation");
-        assert_eq!(pending.call.name, "glass.agent.setup");
-        assert_eq!(pending.call.arguments["login"], false);
-        assert_eq!(pending.call.arguments["update"], true);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3922,12 +3581,6 @@ mod tests {
             .status()
             .expect("git init");
         assert!(git_status.success(), "git init should succeed");
-        state
-            .ws_mut()
-            .expect("workspace lock")
-            .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
-            .expect("trust project");
-        state.snapshot_trust_label = "trusted-project".into();
         state.surface = DevSurface::More;
 
         let output = execute(&mut state, "experiment").expect("list experiments");

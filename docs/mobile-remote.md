@@ -80,10 +80,10 @@ silently discarded.
 Mouse input is optional. The TUI can select navigation entries and semantic
 browser entities when the terminal forwards mouse events. A mobile SSH client
 that does not forward mouse events still has complete printable-key access.
-On first run, if Trust is required, choose the footer action before repository
-execution. On Agent, type or press `Enter`; when the resident engine is not
-ready, Glass reports the exact repair step for Glass Core. Provider setup stays
-in Core, and readiness checks do not print credentials.
+On first run Glass opens directly into the workspace. On Agent, type or press
+`Enter`; when the resident engine is not ready, Glass reports the exact repair
+step for Glass Core. Provider setup stays in Core, and readiness checks do not
+print credentials.
 Composer `Enter` sends and stays open; `Esc` closes. A local or pre-dispatch
 failure keeps the draft for retry, and background work does not silently
 discard typed text. If Core returns an error after accepting a prompt, Glass
@@ -112,15 +112,9 @@ cookies, temporary ports, or browser target IDs.
 
 ## Recover the browser without leaving the TUI
 
-An untrusted repository starts on the Trust surface. The phone footer shows the
-actual trust actions:
-
-```text
-I inspect · O open untrusted · 1 trust once · T trust project
-```
-
-Trust decisions update the authority label immediately. Repository-controlled
-execution remains blocked until the local user makes a decision.
+Glass opens directly into the project workspace. Glass Core owns resident
+coding tools and their permission decisions; Glass retains its workspace and
+browser integration controls and their normal confirmations.
 
 A browser startup collision or disconnect keeps the project workspace alive and
 opens a recovery sheet on the App surface. With a compatible endpoint, choices
@@ -229,4 +223,4 @@ expose Chrome CDP.
 - [Harness architecture](harness-architecture.md)
 - [Browser connection and Remote View](architecture/browser-connection.md)
 - [CLI reference](cli.md)
-- [Workspace trust](workspace-trust.md)
+- [Customization governance](customization-governance.md)

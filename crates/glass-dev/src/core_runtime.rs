@@ -4,8 +4,7 @@
 //! JSON-RPC runtime (`glass-core runtime`). Core owns provider and session
 //! state plus its native coding tools; Glass routes only Glass integrations.
 //!
-//! Glass Core is the default resident harness. The Pi SDK runtime remains
-//! available as an explicit legacy backend; see [`crate::resident_harness`].
+//! Glass Core is the resident agent engine; see [`crate::resident_harness`].
 
 use crate::agents::ResidentAgentBroker;
 use crate::development::{DevelopmentError, DevelopmentResult, ToolCall};
@@ -162,8 +161,6 @@ pub struct CoreReadiness {
 /// Options for one resident Glass Core session.
 #[derive(Clone, Default)]
 pub struct CoreRuntimeOptions {
-    /// Execute mutations without pausing for an approval frame.
-    pub unrestricted: bool,
     /// Directory holding Glass Core session records.
     pub session_dir: PathBuf,
     /// Display name stored with the session.
@@ -196,7 +193,6 @@ impl std::fmt::Debug for CoreRuntimeOptions {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CoreRuntimeOptions")
-            .field("unrestricted", &self.unrestricted)
             .field("session_dir", &self.session_dir)
             .field("name", &self.name)
             .field("model", &self.model)
@@ -231,7 +227,6 @@ pub(crate) struct GlassCoreRuntime {
     session_id: String,
     broker: Option<ResidentAgentBroker>,
     local_tool_executor: Option<crate::resident_harness::AgentToolExecutor>,
-    unrestricted: bool,
     next_id: u64,
     host_events: VecDeque<Value>,
     startup_events: Vec<Value>,
@@ -292,7 +287,6 @@ impl GlassCoreRuntime {
             session_id: String::new(),
             broker: options.broker.clone(),
             local_tool_executor: options.local_tool_executor.clone(),
-            unrestricted: options.unrestricted,
             next_id: 1,
             host_events: VecDeque::new(),
             startup_events: Vec::new(),
@@ -627,7 +621,7 @@ impl GlassCoreRuntime {
     /// Queue one operation for the engine and return the request id.
     pub(crate) fn start_request(
         &mut self,
-        request: crate::pi_runtime::PiSessionRequest,
+        request: crate::resident_harness::ResidentSessionRequest,
     ) -> DevelopmentResult<String> {
         let id = self.next_request_id();
         match request_parts(&self.session_id, &request) {
@@ -789,7 +783,7 @@ impl GlassCoreRuntime {
             self.host_events.push_back(tool_evidence(&call, &result));
             return Ok(());
         }
-        if !self.unrestricted && crate::tools::tool_requires_mutation(&call.name) {
+        if crate::tools::tool_requires_mutation(&call.name) {
             if self.pending_tool_approval.is_some() {
                 return Err(DevelopmentError::Conflict(
                     "Glass Core requested a second tool while approval was pending".into(),
@@ -807,7 +801,7 @@ impl GlassCoreRuntime {
             }));
             return Ok(());
         }
-        let result = self.execute_tool_call(&call, self.unrestricted, self.unrestricted);
+        let result = self.execute_tool_call(&call, false, false);
         self.respond_tool_result(&frame_key, &result)?;
         self.host_events.push_back(tool_evidence(&call, &result));
         Ok(())
@@ -1006,9 +1000,9 @@ impl Drop for GlassCoreRuntime {
 /// Map one Glass session request onto the Glass Core runtime surface.
 fn request_parts(
     session: &str,
-    request: &crate::pi_runtime::PiSessionRequest,
+    request: &crate::resident_harness::ResidentSessionRequest,
 ) -> Result<(&'static str, Value), String> {
-    use crate::pi_runtime::PiSessionRequest as Request;
+    use crate::resident_harness::ResidentSessionRequest as Request;
     let turn = |text: &String, context: &Option<Value>| {
         let mut params = json!({"sessionId": session, "text": text});
         if let Some(context) = context {
@@ -1087,22 +1081,11 @@ fn request_parts(
         Request::SetSessionName { name } => {
             ("session/name", json!({"sessionId": session, "name": name}))
         }
-        Request::SlashCommands => {
-            return Err(
-                "Glass Core runtime sessions expose no slash-command surface; use Glass actions"
-                    .into(),
-            );
-        }
-        Request::SlashCommand { name, .. } => {
-            return Err(format!(
-                "Glass Core runtime sessions do not execute slash command /{name}"
-            ));
-        }
     })
 }
 
-fn request_operation(request: &crate::pi_runtime::PiSessionRequest) -> &'static str {
-    use crate::pi_runtime::PiSessionRequest as Request;
+fn request_operation(request: &crate::resident_harness::ResidentSessionRequest) -> &'static str {
+    use crate::resident_harness::ResidentSessionRequest as Request;
     match request {
         Request::Hello => "hello",
         Request::Prompt { .. } => "prompt",
@@ -1126,8 +1109,6 @@ fn request_operation(request: &crate::pi_runtime::PiSessionRequest) -> &'static 
         Request::Messages => "messages",
         Request::SessionStats => "stats",
         Request::SetSessionName { .. } => "setName",
-        Request::SlashCommands => "slashCommands",
-        Request::SlashCommand { .. } => "slashCommand",
     }
 }
 
@@ -1797,7 +1778,7 @@ fn probe_runtime(binary: Option<&Path>, storage_dir: &Path) -> DevelopmentResult
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pi_runtime::PiSessionRequest;
+    use crate::resident_harness::ResidentSessionRequest;
     use std::sync::Arc;
 
     #[test]
@@ -1885,19 +1866,17 @@ mod tests {
 
     fn harness(
         root: &Path,
-        unrestricted: bool,
         executor: Option<crate::resident_harness::AgentToolExecutor>,
     ) -> GlassCoreRuntime {
-        harness_mode(root, unrestricted, executor, "mixed")
+        harness_mode(root, executor, "mixed")
     }
 
     fn harness_mode(
         root: &Path,
-        unrestricted: bool,
         executor: Option<crate::resident_harness::AgentToolExecutor>,
         mode: &str,
     ) -> GlassCoreRuntime {
-        spawn_mode(root, unrestricted, executor, mode).unwrap()
+        spawn_mode(root, executor, mode).unwrap()
     }
 
     #[test]
@@ -1912,8 +1891,10 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let mut runtime = harness(&root, true, None);
-        runtime.start_request(PiSessionRequest::Models).unwrap();
+        let mut runtime = harness(&root, None);
+        runtime
+            .start_request(ResidentSessionRequest::Models)
+            .unwrap();
         let response = runtime
             .recv_event_timeout(Duration::from_secs(2))
             .unwrap()
@@ -1927,7 +1908,6 @@ mod tests {
 
     fn spawn_mode(
         root: &Path,
-        unrestricted: bool,
         executor: Option<crate::resident_harness::AgentToolExecutor>,
         mode: &str,
     ) -> DevelopmentResult<GlassCoreRuntime> {
@@ -1935,7 +1915,6 @@ mod tests {
         GlassCoreRuntime::spawn(
             root,
             CoreRuntimeOptions {
-                unrestricted,
                 session_dir: root.join("sessions"),
                 name: Some("fixture".into()),
                 local_tool_executor: executor,
@@ -1977,14 +1956,14 @@ mod tests {
 
     #[test]
     fn turn_requests_map_onto_the_runtime_surface() {
-        let (method, params) = request_parts("s-1", &PiSessionRequest::Models).unwrap();
+        let (method, params) = request_parts("s-1", &ResidentSessionRequest::Models).unwrap();
         assert_eq!(method, "models/list");
         assert_eq!(params["sessionId"], "s-1");
         assert_eq!(params["cursor"], 0);
 
         let (method, params) = request_parts(
             "s-1",
-            &PiSessionRequest::Prompt {
+            &ResidentSessionRequest::Prompt {
                 text: "hello".into(),
                 context: None,
             },
@@ -2002,7 +1981,7 @@ mod tests {
         });
         let (method, params) = request_parts(
             "s-1",
-            &PiSessionRequest::Prompt {
+            &ResidentSessionRequest::Prompt {
                 text: "inspect this buffer".into(),
                 context: Some(context.clone()),
             },
@@ -2016,7 +1995,7 @@ mod tests {
 
         let (method, params) = request_parts(
             "s-1",
-            &PiSessionRequest::SetModel {
+            &ResidentSessionRequest::SetModel {
                 provider: "anthropic".into(),
                 model_id: "claude".into(),
             },
@@ -2030,7 +2009,7 @@ mod tests {
     #[test]
     fn model_affordances_are_scoped_to_the_selected_core_session() {
         let (method, params) =
-            request_parts("selected-session", &PiSessionRequest::Models).unwrap();
+            request_parts("selected-session", &ResidentSessionRequest::Models).unwrap();
         assert_eq!(method, "models/list");
         assert_eq!(
             params,
@@ -2039,7 +2018,7 @@ mod tests {
 
         let (method, params) = request_parts(
             "selected-session",
-            &PiSessionRequest::SetModel {
+            &ResidentSessionRequest::SetModel {
                 provider: "anthropic".into(),
                 model_id: "claude-opus".into(),
             },
@@ -2057,7 +2036,7 @@ mod tests {
     fn unsupported_operations_explain_the_gap() {
         let error = request_parts(
             "s-1",
-            &PiSessionRequest::SetThinking {
+            &ResidentSessionRequest::SetThinking {
                 level: "high".into(),
             },
         )
@@ -2065,7 +2044,7 @@ mod tests {
         assert!(error.contains("reasoning budget"));
         let error = request_parts(
             "s-1",
-            &PiSessionRequest::Rewind {
+            &ResidentSessionRequest::Rewind {
                 entry_id: "entry-9".into(),
             },
         )
@@ -2172,7 +2151,7 @@ mod tests {
             std::thread::current().id()
         ));
         fs::create_dir_all(&root).unwrap();
-        let error = spawn_mode(&root, true, None, "legacy-v1").unwrap_err();
+        let error = spawn_mode(&root, None, "legacy-v1").unwrap_err();
         assert!(
             error.to_string().contains("protocolVersion must be 1"),
             "{error}"
@@ -2191,7 +2170,7 @@ mod tests {
             std::thread::current().id()
         ));
         fs::create_dir_all(&root).unwrap();
-        let error = spawn_mode(&root, true, None, "missing-mixed").unwrap_err();
+        let error = spawn_mode(&root, None, "missing-mixed").unwrap_err();
         assert!(
             error
                 .to_string()
@@ -2212,7 +2191,7 @@ mod tests {
             std::thread::current().id()
         ));
         fs::create_dir_all(&root).unwrap();
-        let runtime = harness_mode(&root, true, None, "older-version-v2");
+        let runtime = harness_mode(&root, None, "older-version-v2");
         assert_eq!(runtime.session_id(), "fixture-session");
         let harness = crate::resident_harness::ResidentHarness::GlassCore(runtime);
         assert_eq!(harness.core_session_id(), Some("fixture-session"));
@@ -2237,11 +2216,11 @@ mod tests {
                 assert_eq!(call.name, "glass.workspace.list");
                 Ok(json!({"text": "fixture contents"}))
             });
-        let mut runtime = harness(&root, true, Some(executor));
+        let mut runtime = harness(&root, Some(executor));
         assert_eq!(runtime.session_id(), "fixture-session");
 
         runtime
-            .start_request(PiSessionRequest::Prompt {
+            .start_request(ResidentSessionRequest::Prompt {
                 text: "read the readme".into(),
                 context: None,
             })
@@ -2279,9 +2258,9 @@ mod tests {
                 assert!(allow_mutation && confirmed);
                 Ok(json!({"tool": call.name, "written": true}))
             });
-        let mut runtime = harness(&root, false, Some(executor));
+        let mut runtime = harness(&root, Some(executor));
         runtime
-            .start_request(PiSessionRequest::Prompt {
+            .start_request(ResidentSessionRequest::Prompt {
                 text: "write the file".into(),
                 context: None,
             })
@@ -2429,7 +2408,7 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let mut runtime = harness(&root, false, None);
+        let mut runtime = harness(&root, None);
         let error = runtime
             .resolve_tool_approval("host:fixture:1:call-1", true)
             .unwrap_err();

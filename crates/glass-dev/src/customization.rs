@@ -1,6 +1,5 @@
 //! Governed project configuration, skills, hooks, commands, and custom tools.
 
-use crate::WorkspaceTrust;
 use crate::development::{DevelopmentError, DevelopmentResult, ToolAuthorization, ToolDescriptor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -165,9 +164,7 @@ pub struct Skill {
 pub enum CustomizationAuthority {
     GlassBuiltIn,
     UserGlobal,
-    TrustedOnce,
-    TrustedProject,
-    UntrustedProject,
+    Project,
     ExternalClient,
 }
 
@@ -189,7 +186,6 @@ pub struct CustomizationInspectionItem {
     pub risk: CustomizationRisk,
     pub command: Option<String>,
     pub declared_mutating: Option<bool>,
-    pub trust_required: bool,
     pub governance: Option<CustomizationGovernance>,
 }
 
@@ -272,12 +268,8 @@ impl Customization {
         self.skills.values()
     }
 
-    pub fn agent_instructions(&self, trust: WorkspaceTrust) -> Option<String> {
-        let active = self
-            .skills
-            .values()
-            .filter(|skill| !skill.project_scoped || trust.permits_project_execution())
-            .collect::<Vec<_>>();
+    pub fn agent_instructions(&self) -> Option<String> {
+        let active = self.skills.values().collect::<Vec<_>>();
         if active.is_empty() {
             return None;
         }
@@ -285,7 +277,7 @@ impl Customization {
             String::from("\n\nGlass customization instructions with explicit authority:\n");
         for skill in active {
             let authority = if skill.project_scoped {
-                "trusted-project"
+                "project"
             } else {
                 "user-global"
             };
@@ -300,12 +292,8 @@ impl Customization {
         Some(output)
     }
 
-    pub fn inspect(&self, trust: WorkspaceTrust) -> Vec<CustomizationInspectionItem> {
-        let project_authority = match trust {
-            WorkspaceTrust::Untrusted => CustomizationAuthority::UntrustedProject,
-            WorkspaceTrust::TrustedOnce => CustomizationAuthority::TrustedOnce,
-            WorkspaceTrust::TrustedProject => CustomizationAuthority::TrustedProject,
-        };
+    pub fn inspect(&self) -> Vec<CustomizationInspectionItem> {
+        let project_authority = CustomizationAuthority::Project;
         let source = self
             .config_path
             .clone()
@@ -338,7 +326,6 @@ impl Customization {
                 risk: CustomizationRisk::AgentContext,
                 command: None,
                 declared_mutating: None,
-                trust_required: false,
                 governance: None,
             },
             CustomizationInspectionItem {
@@ -349,7 +336,6 @@ impl Customization {
                 risk: CustomizationRisk::Static,
                 command: None,
                 declared_mutating: None,
-                trust_required: false,
                 governance: None,
             },
         ];
@@ -362,7 +348,6 @@ impl Customization {
                 risk: CustomizationRisk::Static,
                 command: Some(name.clone()),
                 declared_mutating: None,
-                trust_required: false,
                 governance: None,
             });
         }
@@ -375,7 +360,6 @@ impl Customization {
                 risk: CustomizationRisk::Static,
                 command: Some(url.clone()),
                 declared_mutating: None,
-                trust_required: false,
                 governance: None,
             });
         }
@@ -392,7 +376,6 @@ impl Customization {
                 risk: CustomizationRisk::AgentContext,
                 command: None,
                 declared_mutating: None,
-                trust_required: skill.project_scoped,
                 governance: None,
             });
         }
@@ -527,10 +510,9 @@ impl Customization {
         self.config.commands.get(name).map(String::as_str)
     }
 
-    pub fn descriptors(&self, trust: WorkspaceTrust) -> Vec<ToolDescriptor> {
-        let available = trust.permits_project_execution();
-        let unavailable_reason = (!available)
-            .then(|| "repository shell commands require explicit workspace trust".to_string());
+    pub fn descriptors(&self) -> Vec<ToolDescriptor> {
+        let available = true;
+        let unavailable_reason = None;
         self.config
             .tools
             .iter()
@@ -560,12 +542,10 @@ impl Customization {
         &self,
         name: &str,
         arguments: &Value,
-        trust: WorkspaceTrust,
         actor: &str,
         authorization: &ToolAuthorization,
     ) -> DevelopmentResult<Value> {
         require_mutation_authorization(authorization)?;
-        require_project_trust(trust)?;
         let tool = self
             .custom_tool(name)
             .ok_or_else(|| DevelopmentError::NotFound(format!("custom tool {name}")))?;
@@ -593,12 +573,10 @@ impl Customization {
     pub fn execute_command(
         &self,
         name: &str,
-        trust: WorkspaceTrust,
         actor: &str,
         authorization: &ToolAuthorization,
     ) -> DevelopmentResult<Value> {
         require_mutation_authorization(authorization)?;
-        require_project_trust(trust)?;
         let command = self
             .command(name)
             .ok_or_else(|| DevelopmentError::NotFound(format!("project command {name}")))?;
@@ -626,10 +604,8 @@ impl Customization {
         &self,
         event: &str,
         evidence: &Value,
-        trust: WorkspaceTrust,
         actor: &str,
     ) -> DevelopmentResult<Vec<Value>> {
-        require_project_trust(trust)?;
         validate_hook_event(event)?;
         let mut results = Vec::new();
         for (index, hook) in self
@@ -690,7 +666,7 @@ impl Customization {
                 key.to_string(),
                 CustomizationExecutionEvidence {
                     actor: actor.to_string(),
-                    authority: CustomizationAuthority::TrustedProject,
+                    authority: CustomizationAuthority::Project,
                     started_at_ms,
                     duration_ms: duration.as_millis() as u64,
                     success,
@@ -720,16 +696,6 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn require_project_trust(trust: WorkspaceTrust) -> DevelopmentResult<()> {
-    if trust.permits_project_execution() {
-        Ok(())
-    } else {
-        Err(DevelopmentError::Conflict(
-            "repository-controlled execution is blocked until the workspace is trusted".into(),
-        ))
-    }
-}
-
 fn executable_item(
     kind: &str,
     name: &str,
@@ -747,7 +713,6 @@ fn executable_item(
         risk: CustomizationRisk::Executable,
         command: Some(command.into()),
         declared_mutating,
-        trust_required: true,
         governance: Some(governance),
     }
 }
@@ -1084,11 +1049,10 @@ input_schema = {{ type = "object", required = ["text"] }}
             actor: crate::development::Actor::external("customization-test"),
             allow_mutation: true,
             confirmed: true,
-            unrestricted: false,
         };
         assert!(
             customization
-                .agent_instructions(WorkspaceTrust::TrustedOnce)
+                .agent_instructions()
                 .unwrap()
                 .contains("Always run tests")
         );
@@ -1097,7 +1061,6 @@ input_schema = {{ type = "object", required = ["text"] }}
                 .execute_tool(
                     "glass.custom.echo",
                     &serde_json::json!({"text":"ok"}),
-                    WorkspaceTrust::TrustedOnce,
                     "external:customization-test",
                     &authorization,
                 )
@@ -1106,33 +1069,20 @@ input_schema = {{ type = "object", required = ["text"] }}
         );
         assert_eq!(
             customization
-                .run_hooks(
-                    "tool.before",
-                    &Value::Null,
-                    WorkspaceTrust::TrustedOnce,
-                    "external:customization-test"
-                )
+                .run_hooks("tool.before", &Value::Null, "external:customization-test")
                 .unwrap()
                 .len(),
             1
         );
         assert!(
             customization
-                .execute_command(
-                    "hello",
-                    WorkspaceTrust::TrustedOnce,
-                    "external:customization-test",
-                    &authorization,
-                )
+                .execute_command("hello", "external:customization-test", &authorization,)
                 .unwrap()["stdout"]
                 .as_str()
                 .unwrap()
                 .contains("command-ok")
         );
         let mut workspace = crate::DevelopmentWorkspace::open(&root).unwrap();
-        workspace
-            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
-            .unwrap();
         assert!(workspace.tests().suites().any(|suite| {
             suite.id == "smoke"
                 && suite.framework == crate::testing::TestFramework::Custom
@@ -1154,7 +1104,6 @@ input_schema = {{ type = "object", required = ["text"] }}
                 actor: crate::development::Actor::external("customization-test"),
                 allow_mutation: true,
                 confirmed: true,
-                unrestricted: false,
             },
             initiator: None,
             expected_generation: workspace.generation(),
@@ -1171,7 +1120,7 @@ input_schema = {{ type = "object", required = ["text"] }}
             )
             .unwrap();
         assert_eq!(result["text"], "resident");
-        let inspection = workspace.trust_inspection();
+        let inspection = workspace.customization().inspect();
         let tool = inspection
             .iter()
             .find(|item| item.kind == "customTool" && item.name == "echo")
@@ -1233,15 +1182,9 @@ input_schema = {{ type = "object", required = ["text"] }}
                 actor: crate::development::Actor::external("customization-auth-test"),
                 allow_mutation,
                 confirmed,
-                unrestricted: false,
             };
             let command_error = customization
-                .execute_command(
-                    "unsafe",
-                    WorkspaceTrust::TrustedOnce,
-                    "external:customization-auth-test",
-                    &authorization,
-                )
+                .execute_command("unsafe", "external:customization-auth-test", &authorization)
                 .unwrap_err();
             assert!(
                 command_error
@@ -1252,7 +1195,6 @@ input_schema = {{ type = "object", required = ["text"] }}
                 .execute_tool(
                     "glass.custom.unsafe",
                     &serde_json::json!({}),
-                    WorkspaceTrust::TrustedOnce,
                     "external:customization-auth-test",
                     &authorization,
                 )
@@ -1271,6 +1213,6 @@ input_schema = {{ type = "object", required = ["text"] }}
 
     #[test]
     fn customization_rejects_removed_agent_harness_setting() {
-        assert!(toml::from_str::<GlassConfig>("[agent]\nharness = 'pi'\n").is_err());
+        assert!(toml::from_str::<GlassConfig>("[agent]\nharness = 'legacy'\n").is_err());
     }
 }

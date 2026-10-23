@@ -12,11 +12,11 @@ cancellation, concurrency, policy, errors, and session security.
 Tool calls use MCP JSON-RPC framing. Camel-case input fields map to canonical
 Glass request payloads; MCP-only fields such as `responseMode` and
 `includeTrace` do not become part of browser or task contracts. Development
-tool schemas mark mutations with the root-level `x-glass-mutating` extension;
-`_glass` remains an ordinary optional input property carrying actor and
-authorization metadata. Untrusted workspaces omit trust-blocked tools from
-`tools/list`, and calls use the same effective-trust gate as the resident
-router.
+tool schemas mark workspace mutations with the root-level `x-glass-mutating`
+extension; `_glass` remains an ordinary optional input property carrying actor
+and authorization metadata. Glass owns workspace integration behavior and
+per-call confirmation where applicable. Glass Core owns native coding tools
+and their permission decisions.
 
 ## Resident development tool inventory
 
@@ -26,7 +26,7 @@ actor attribution, bounded-result rules, and revision/confirmation policy.
 
 | Family | Exact tools | Scope |
 |---|---|---|
-| `glass.agent` | `glass.agent.abort`, `glass.agent.approve`, `glass.agent.clone-session`, `glass.agent.compact`, `glass.agent.delegate`, `glass.agent.entries`, `glass.agent.follow-up`, `glass.agent.fork`, `glass.agent.hello`, `glass.agent.list`, `glass.agent.messages`, `glass.agent.model`, `glass.agent.models`, `glass.agent.name`, `glass.agent.new-session`, `glass.agent.prompt`, `glass.agent.resume`, `glass.agent.rewind`, `glass.agent.send`, `glass.agent.sessions`, `glass.agent.setup`, `glass.agent.slash`, `glass.agent.spawn`, `glass.agent.stats`, `glass.agent.steer`, `glass.agent.switch-session`, `glass.agent.thinking`, `glass.agent.tree` | Resident agent sessions use Glass Core. Runtime operations unsupported by Core return explicit errors; the family also provides background message delivery, lifecycle, model state, approvals, and evidence. Use `tools/list` to inspect available operations. |
+| `glass.agent` | `glass.agent.abort`, `glass.agent.approve`, `glass.agent.clone-session`, `glass.agent.compact`, `glass.agent.delegate`, `glass.agent.entries`, `glass.agent.follow-up`, `glass.agent.fork`, `glass.agent.hello`, `glass.agent.list`, `glass.agent.messages`, `glass.agent.model`, `glass.agent.models`, `glass.agent.name`, `glass.agent.new-session`, `glass.agent.prompt`, `glass.agent.resume`, `glass.agent.rewind`, `glass.agent.send`, `glass.agent.sessions`, `glass.agent.spawn`, `glass.agent.stats`, `glass.agent.steer`, `glass.agent.switch-session`, `glass.agent.thinking`, `glass.agent.tree` | Resident agent sessions use Glass Core, which owns native coding tools and their permission decisions. Glass owns workspace collaboration and integrations. Use `tools/list` to inspect available operations. |
 | `glass.browser` | `glass.browser.act`, `glass.browser.attach`, `glass.browser.diff`, `glass.browser.navigate`, `glass.browser.observe`, `glass.browser.reconnect`, `glass.browser.remote-view.open`, `glass.browser.remote-view.revoke`, `glass.browser.remote-view.status`, `glass.browser.screenshot`, `glass.browser.semantic`, `glass.browser.snapshot`, `glass.browser.start`, `glass.browser.state`, `glass.browser.stop`, `glass.browser.target.select`, `glass.browser.targets`, `glass.browser.verify`, `glass.browser.web_ir` | Resident native-browser lifecycle, revision-safe actions, observations, bounded live Web IR evidence, targets, explicit loopback Remote View, and evidence. `glass.browser.attach` explicitly selects the Chromium/CDP migration backend; ordinary `glass.browser.start` uses native. |
 | `glass.capabilities` | `glass.capabilities.inspect` | Effective resident-tool availability and unavailable reasons. |
 | `glass.command` | `glass.command.run` | Bounded foreground command execution attributed to the requesting workspace actor. |
@@ -38,7 +38,7 @@ actor attribution, bounded-result rules, and revision/confirmation policy.
 | `glass.experiment` | `glass.experiment.collect`, `glass.experiment.compare`, `glass.experiment.create`, `glass.experiment.list`, `glass.experiment.remove`, `glass.experiment.select` | Isolated worktrees, automatic measured evidence, deterministic comparison, selection, and cleanup. |
 | `glass.file` | `glass.file.delete`, `glass.file.edit`, `glass.file.find`, `glass.file.grep`, `glass.file.list`, `glass.file.mkdir`, `glass.file.patch`, `glass.file.read`, `glass.file.rename`, `glass.file.search`, `glass.file.write` | Workspace-confined reads, discovery, search, patches, and mutations. |
 | `glass.git` | `glass.git.blame`, `glass.git.branch.create`, `glass.git.branch.switch`, `glass.git.branches`, `glass.git.commit`, `glass.git.conflicts`, `glass.git.diff`, `glass.git.discard`, `glass.git.fetch`, `glass.git.merge`, `glass.git.pull`, `glass.git.push`, `glass.git.rebase`, `glass.git.stage`, `glass.git.stash.list`, `glass.git.stash.pop`, `glass.git.stash.push`, `glass.git.status`, `glass.git.unstage`, `glass.git.worktree.create`, `glass.git.worktree.list`, `glass.git.worktree.remove` | Native repository inspection, branches, staging, commits, fetch/pull/merge/rebase, confirmed discard/push, stashes, conflicts, and worktrees. Push checks the default branch of its resolved push destination and rejects unsupported or ambiguous push remotes. |
-| `glass.github` | `glass.github.review`, `glass.github.ship` | `review` reads the current branch pull request and checks through the authenticated `gh` CLI under resident workspace actor attribution; no confirmation is required. `ship` creates a pull request from a named feature branch through authenticated `gh`; trusted-workspace mutation authority and explicit per-call confirmation are required. |
+| `glass.github` | `glass.github.review`, `glass.github.ship` | `review` reads the current branch pull request and checks through the authenticated `gh` CLI under resident workspace actor attribution; no confirmation is required. `ship` creates a pull request from a named feature branch through authenticated `gh`; workspace attribution and explicit per-call confirmation apply. |
 | `glass.graph` | `glass.graph.explain`, `glass.graph.link`, `glass.graph.path`, `glass.graph.query`, `glass.graph.source` | Revisioned causal graph observations, typed evidence links, paths, source links, and explanations. |
 | `glass.lsp` | `glass.lsp.code_actions`, `glass.lsp.completion`, `glass.lsp.declaration`, `glass.lsp.definition`, `glass.lsp.diagnostics`, `glass.lsp.document_symbols`, `glass.lsp.events`, `glass.lsp.formatting`, `glass.lsp.hover`, `glass.lsp.implementation`, `glass.lsp.inlay_hints`, `glass.lsp.list`, `glass.lsp.range_formatting`, `glass.lsp.raw`, `glass.lsp.references`, `glass.lsp.rename`, `glass.lsp.semantic_tokens`, `glass.lsp.signature_help`, `glass.lsp.start`, `glass.lsp.stop`, `glass.lsp.workspace_symbols` | Shared LSP lifecycle and the complete typed language-operation surface. |
 | `glass.memory` | `glass.memory.explain`, `glass.memory.forget`, `glass.memory.retrieve` | Scoped retrieval, explanations, and confirmed forgetting. |
@@ -53,7 +53,7 @@ actor attribution, bounded-result rules, and revision/confirmation policy.
 | `glass.test` | `glass.test.cancel`, `glass.test.discover`, `glass.test.results`, `glass.test.run`, `glass.test.run-affected`, `glass.test.watch` | Test discovery, execution, affected selection, watching, cancellation, and results. |
 | `glass.web_ir` | `glass.web_ir.continuity`, `glass.web_ir.diff`, `glass.web_ir.inspect` | Validated Web IR inspection, diffs, and entity continuity. |
 | `glass.workflow` | `glass.workflow.cancel`, `glass.workflow.list`, `glass.workflow.pause`, `glass.workflow.record`, `glass.workflow.resume`, `glass.workflow.run`, `glass.workflow.verify` | Durable workflow lifecycle, verification, and recording. |
-| `glass.workspace` | `glass.workspace.delete`, `glass.workspace.inspect`, `glass.workspace.list`, `glass.workspace.resume`, `glass.workspace.suspend`, `glass.workspace.trust.inspect`, `glass.workspace.trust.status` | Workspace lifecycle, identity-bound trust status, and exact executable configuration inspection. |
+| `glass.workspace` | `glass.workspace.delete`, `glass.workspace.inspect`, `glass.workspace.list`, `glass.workspace.resume`, `glass.workspace.suspend` | Workspace lifecycle, root, and project configuration metadata. |
 
 The checked-in development conformance fixture pins the full 346-tool
 inventory, including `glass.agent.delegate`, `glass.todo.*`, and Git

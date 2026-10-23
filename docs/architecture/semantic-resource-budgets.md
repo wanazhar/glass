@@ -21,7 +21,7 @@ checks.
    changing execution ownership.
 4. Tool-call IDs and names are non-empty and bounded before audit or dispatch.
    Argument JSON remains capped at 256 KiB and result JSON at 64 KiB.
-5. Private Pi request files are checked through the opened file handle and
+5. Private resident tool request files are checked through the opened file handle and
    read through a hard byte limit. Metadata checks must not be followed by an
    unbounded read.
 6. Project, editor, graph-discovery, and language-server source reads share a

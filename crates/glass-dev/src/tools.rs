@@ -8,10 +8,10 @@ use crate::development::{
     ToolDescriptor,
 };
 use crate::kernels::KernelKind;
-use crate::pi_runtime::PiSessionRequest;
+use crate::resident_harness::ResidentSessionRequest;
 use crate::tasks::{TaskId, TaskSpec};
 use crate::workspace::DevelopmentWorkspace;
-use crate::{DevelopmentNode, DevelopmentNodeKind, ObservableEventInput, WorkspaceTrust};
+use crate::{DevelopmentNode, DevelopmentNodeKind, ObservableEventInput};
 use glass_browser::browser::session::{
     SemanticObservationLevel, VerificationPredicate, WorkflowRecordingSession,
     record_semantic_events,
@@ -57,12 +57,9 @@ impl Default for DevelopmentToolRouter {
 }
 
 impl DevelopmentToolRouter {
-    pub(crate) fn with_customization(
-        customization: &crate::Customization,
-        trust: WorkspaceTrust,
-    ) -> Self {
+    pub(crate) fn with_customization(customization: &crate::Customization) -> Self {
         let mut router = Self::default();
-        let custom = customization.descriptors(trust);
+        let custom = customization.descriptors();
         router
             .descriptors
             .retain(|descriptor| !custom.iter().any(|item| item.name == descriptor.name));
@@ -72,36 +69,6 @@ impl DevelopmentToolRouter {
 
     pub(crate) fn descriptors(&self) -> Vec<ToolDescriptor> {
         self.descriptors.clone()
-    }
-
-    /// Apply the same trust gate used by execution before exposing descriptors.
-    pub(crate) fn descriptors_for(
-        &self,
-        trust: WorkspaceTrust,
-        unrestricted: bool,
-    ) -> Vec<ToolDescriptor> {
-        let effective_trust = if unrestricted && trust == WorkspaceTrust::Untrusted {
-            WorkspaceTrust::TrustedOnce
-        } else {
-            trust
-        };
-        self.descriptors
-            .iter()
-            .cloned()
-            .map(|mut descriptor| {
-                if descriptor.available
-                    && !effective_trust.permits_project_execution()
-                    && !untrusted_tool_allowed(&descriptor.name)
-                {
-                    descriptor.available = false;
-                    descriptor.unavailable_reason = Some(format!(
-                        "tool {} is blocked until the workspace is trusted",
-                        descriptor.name
-                    ));
-                }
-                descriptor
-            })
-            .collect()
     }
 
     pub(crate) fn execute(
@@ -134,14 +101,12 @@ impl DevelopmentToolRouter {
                 workspace.project().revision()
             )));
         }
-        let descriptor = (if core_integration {
-            self.descriptors.clone()
-        } else {
-            self.descriptors_for(workspace.trust(), workspace.unrestricted_execution())
-        })
-        .into_iter()
-        .find(|descriptor| descriptor.name == call.name)
-        .ok_or_else(|| DevelopmentError::NotFound(format!("tool {}", call.name)))?;
+        let descriptor = self
+            .descriptors
+            .clone()
+            .into_iter()
+            .find(|descriptor| descriptor.name == call.name)
+            .ok_or_else(|| DevelopmentError::NotFound(format!("tool {}", call.name)))?;
         if !descriptor.available {
             return Err(DevelopmentError::Conflict(
                 descriptor
@@ -196,15 +161,11 @@ impl DevelopmentToolRouter {
             evidence: serde_json::json!({"name":call.name,"mutating":descriptor.mutating,"initiator":initiator_id,"executor":actor_id}),
             rationale: None,
         })?;
-        let execution_trust = workspace.execution_trust();
-        if execution_trust.permits_project_execution() {
-            workspace.customization().run_hooks(
-                "tool.before",
-                &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id}),
-                execution_trust,
-                &actor_id,
-            )?;
-        }
+        workspace.customization().run_hooks(
+            "tool.before",
+            &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id}),
+            &actor_id,
+        )?;
         let result = if service_descriptors()
             .iter()
             .any(|descriptor| descriptor.name == call.name)
@@ -214,31 +175,24 @@ impl DevelopmentToolRouter {
             workspace.customization().execute_tool(
                 &call.name,
                 &call.arguments,
-                execution_trust,
                 &actor_id,
                 &context.authorization,
             )
         } else if let Some(name) = call.name.strip_prefix("glass.command.") {
-            workspace.customization().execute_command(
-                name,
-                execution_trust,
-                &actor_id,
-                &context.authorization,
-            )
+            workspace
+                .customization()
+                .execute_command(name, &actor_id, &context.authorization)
         } else {
             self.core
                 .execute(workspace.project_mut(), call, &context.authorization)
         };
         match result {
             Ok(result) => {
-                if execution_trust.permits_project_execution() {
-                    workspace.customization().run_hooks(
-                        "tool.after",
-                        &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id,"ok":true}),
-                        execution_trust,
-                        &actor_id,
-                    )?;
-                }
+                workspace.customization().run_hooks(
+                    "tool.after",
+                    &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id,"ok":true}),
+                    &actor_id,
+                )?;
                 let result_bytes = serde_json::to_vec(&result)?.len();
                 if result_bytes > RESULT_LIMIT {
                     return Err(DevelopmentError::InvalidInput(format!(
@@ -266,14 +220,11 @@ impl DevelopmentToolRouter {
                 Ok(result)
             }
             Err(error) => {
-                if execution_trust.permits_project_execution() {
-                    workspace.customization().run_hooks(
+                workspace.customization().run_hooks(
                         "tool.after",
                         &serde_json::json!({"id":call.id,"name":call.name,"actor":&actor_id,"ok":false,"error":error.to_string()}),
-                        execution_trust,
                         &actor_id,
                     )?;
-                }
                 let resulting_revision = workspace.project().revision();
                 workspace.intelligence_mut().record(ObservableEventInput {
                     actor: &actor_id,
@@ -399,7 +350,7 @@ impl DevelopmentToolRouter {
                         .map_err(DevelopmentError::InvalidInput)?;
                         Ok(serde_json::json!({"text": text, "backend": "stub"}))
                     }
-                    crate::fim::FimBackend::Pi => {
+                    crate::fim::FimBackend::Resident => {
                         let prefix = string("prefix")?.to_string();
                         let suffix = optional_string(call, "suffix")
                             .unwrap_or("")
@@ -416,11 +367,11 @@ impl DevelopmentToolRouter {
                             })?;
                         workspace.agents().request(
                             &id,
-                            crate::pi_runtime::PiSessionRequest::Complete { prefix, suffix },
+                            crate::resident_harness::ResidentSessionRequest::Complete { prefix, suffix },
                         )?;
                         Ok(serde_json::json!({
                             "queued": true,
-                            "backend": "pi",
+                            "backend": "resident",
                             "agentId": id.as_str(),
                         }))
                     }
@@ -1203,12 +1154,6 @@ impl DevelopmentToolRouter {
                 map_service(workspace.agents().resume(&id))?;
                 Ok(serde_json::json!({"resuming":true,"agentId":id.as_str()}))
             }
-            "glass.agent.setup" => map_service(crate::pi_runtime::setup_pi_runtime(
-                None,
-                None,
-                boolean(call, "update", false),
-                boolean(call, "login", false),
-            )),
             "glass.agent.spawn" => {
                 let spec: AgentSpec =
                     serde_json::from_value(call.arguments.get("spec").cloned().ok_or_else(
@@ -1382,7 +1327,7 @@ impl DevelopmentToolRouter {
                 let id = agent_id(workspace, string("agentId")?)?;
                 map_service(workspace.agents().request(
                     &id,
-                    PiSessionRequest::Compact {
+                    ResidentSessionRequest::Compact {
                         instructions: optional_string(call, "instructions").map(str::to_string),
                     },
                 ))?;
@@ -1392,7 +1337,7 @@ impl DevelopmentToolRouter {
                 let id = agent_id(workspace, string("agentId")?)?;
                 map_service(workspace.agents().request(
                     &id,
-                    PiSessionRequest::SetModel {
+                    ResidentSessionRequest::SetModel {
                         provider: string("provider")?.into(),
                         model_id: string("modelId")?.into(),
                     },
@@ -1403,65 +1348,55 @@ impl DevelopmentToolRouter {
                 let id = agent_id(workspace, string("agentId")?)?;
                 map_service(workspace.agents().request(
                     &id,
-                    PiSessionRequest::SetThinking {
+                    ResidentSessionRequest::SetThinking {
                         level: string("level")?.into(),
                     },
                 ))?;
                 Ok(serde_json::json!({"queued":true}))
             }
             "glass.agent.new-session" => {
-                agent_request(workspace, call, PiSessionRequest::NewSession)
+                agent_request(workspace, call, ResidentSessionRequest::NewSession)
             }
             "glass.agent.clone-session" => {
-                agent_request(workspace, call, PiSessionRequest::CloneSession)
+                agent_request(workspace, call, ResidentSessionRequest::CloneSession)
             }
             "glass.agent.rewind" => agent_request(
                 workspace,
                 call,
-                PiSessionRequest::Rewind {
+                ResidentSessionRequest::Rewind {
                     entry_id: string("entryId")?.into(),
                 },
             ),
             "glass.agent.fork" => agent_request(
                 workspace,
                 call,
-                PiSessionRequest::Fork {
+                ResidentSessionRequest::Fork {
                     entry_id: string("entryId")?.into(),
                 },
             ),
             "glass.agent.switch-session" => agent_request(
                 workspace,
                 call,
-                PiSessionRequest::SwitchSession {
+                ResidentSessionRequest::SwitchSession {
                     path: string("path")?.into(),
                 },
             ),
-            "glass.agent.sessions" => agent_request(workspace, call, PiSessionRequest::ListSessions),
-            "glass.agent.tree" => agent_request(workspace, call, PiSessionRequest::Tree),
-            "glass.agent.messages" => agent_request(workspace, call, PiSessionRequest::Messages),
+            "glass.agent.sessions" => agent_request(workspace, call, ResidentSessionRequest::ListSessions),
+            "glass.agent.tree" => agent_request(workspace, call, ResidentSessionRequest::Tree),
+            "glass.agent.messages" => agent_request(workspace, call, ResidentSessionRequest::Messages),
             "glass.agent.entries" => agent_request(
                 workspace,
                 call,
-                PiSessionRequest::Entries {
+                ResidentSessionRequest::Entries {
                     since: optional_string(call, "since").map(str::to_string),
                 },
             ),
-            "glass.agent.stats" => agent_request(workspace, call, PiSessionRequest::SessionStats),
+            "glass.agent.stats" => agent_request(workspace, call, ResidentSessionRequest::SessionStats),
             "glass.agent.name" => agent_request(
                 workspace,
                 call,
-                PiSessionRequest::SetSessionName {
+                ResidentSessionRequest::SetSessionName {
                     name: string("name")?.into(),
-                },
-            ),
-            "glass.agent.slash" => agent_slash_request(
-                workspace,
-                call,
-                PiSessionRequest::SlashCommand {
-                    name: required_string(call, "name")?.into(),
-                    args: optional_string(call, "args")
-                        .unwrap_or_default()
-                        .into(),
                 },
             ),
             "glass.todo.list" => Ok(serde_json::to_value(workspace.todos())?),
@@ -1701,9 +1636,9 @@ impl DevelopmentToolRouter {
                         )
                     })?;
                 let request = if call.name.ends_with("hello") {
-                    PiSessionRequest::Hello
+                    ResidentSessionRequest::Hello
                 } else {
-                    PiSessionRequest::Models
+                    ResidentSessionRequest::Models
                 };
                 map_service(workspace.agents().request(&id, request))?;
                 Ok(serde_json::json!({"queued":true,"agentId":id.as_str()}))
@@ -1713,17 +1648,6 @@ impl DevelopmentToolRouter {
                 workspace.project_mut().attach_actor(actor.clone())?;
                 Ok(serde_json::to_value(actor)?)
             }
-            "glass.workspace.trust.status" => Ok(serde_json::json!({
-                "trust":workspace.trust(),
-                "identity":workspace.trust_identity(),
-                "store":workspace.trust_store_path(),
-                "localDecisionRequired":true
-            })),
-            "glass.workspace.trust.inspect" => Ok(serde_json::json!({
-                "trust":workspace.trust(),
-                "items":workspace.trust_inspection(),
-                "localDecisionRequired":true
-            })),
             _ => Err(DevelopmentError::NotFound(format!("tool {}", call.name))),
         }
     }
@@ -1757,8 +1681,6 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.daemon.logs",
         "glass.agent.hello",
         "glass.agent.models",
-        "glass.workspace.trust.status",
-        "glass.workspace.trust.inspect",
         "glass.lsp.list",
         "glass.lsp.events",
         "glass.lsp.hover",
@@ -1879,7 +1801,6 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.debug.terminate",
         "glass.debug.stop",
         "glass.agent.spawn",
-        "glass.agent.setup",
         "glass.agent.resume",
         "glass.agent.delegate",
         "glass.agent.prompt",
@@ -1892,7 +1813,6 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.model",
         "glass.agent.thinking",
         "glass.agent.new-session",
-        "glass.agent.slash",
         "glass.agent.clone-session",
         "glass.agent.rewind",
         "glass.agent.fork",
@@ -1960,8 +1880,6 @@ pub(crate) fn integration_tool_catalog() -> Vec<ToolDescriptor> {
         "glass.project.attach",
         "glass.workspace.list",
         "glass.workspace.inspect",
-        "glass.workspace.trust.status",
-        "glass.workspace.trust.inspect",
         "glass.editor.open",
         "glass.editor.selection",
         "glass.editor.diff",
@@ -2015,87 +1933,6 @@ pub(crate) fn tool_requires_mutation(name: &str) -> bool {
             .collect()
     });
     MUTATING.iter().any(|candidate| candidate == name)
-}
-
-fn untrusted_tool_allowed(name: &str) -> bool {
-    matches!(
-        name,
-        "glass.file.read"
-            | "glass.file.list"
-            | "glass.file.search"
-            | "glass.file.grep"
-            | "glass.file.find"
-            | "glass.github.review"
-            | "glass.git.status"
-            | "glass.git.diff"
-            | "glass.git.branches"
-            | "glass.git.blame"
-            | "glass.git.conflicts"
-            | "glass.git.stash.list"
-            | "glass.git.worktree.list"
-            | "glass.browser.start"
-            | "glass.browser.attach"
-            | "glass.browser.reconnect"
-            | "glass.browser.stop"
-            | "glass.browser.state"
-            | "glass.browser.observe"
-            | "glass.browser.verify"
-            | "glass.browser.snapshot"
-            | "glass.browser.semantic"
-            | "glass.browser.web_ir"
-            | "glass.browser.diff"
-            | "glass.browser.targets"
-            | "glass.browser.target.select"
-            | "glass.browser.navigate"
-            | "glass.browser.act"
-            | "glass.browser.screenshot"
-            | "glass.browser.remote-view.open"
-            | "glass.browser.remote-view.status"
-            | "glass.browser.remote-view.revoke"
-            | "glass.agent.setup"
-            | "glass.agent.list"
-            | "glass.agent.sessions"
-            | "glass.agent.tree"
-            | "glass.agent.messages"
-            | "glass.agent.entries"
-            | "glass.agent.stats"
-            | "glass.graph.source"
-            | "glass.agent.hello"
-            | "glass.agent.models"
-            | "glass.editor.open"
-            | "glass.editor.selection"
-            | "glass.editor.diff"
-            | "glass.editor.buffers"
-            | "glass.editor.comments"
-            | "glass.editor.proposals"
-            | "glass.editor.fim"
-            | "glass.editor.checkpoints"
-            | "glass.daemon.logs"
-            | "glass.neovim.probe"
-            | "glass.memory.retrieve"
-            | "glass.memory.explain"
-            | "glass.semantic.inspect"
-            | "glass.semantic.diff"
-            | "glass.semantic.links"
-            | "glass.graph.query"
-            | "glass.graph.path"
-            | "glass.graph.explain"
-            | "glass.replay.list"
-            | "glass.replay.inspect"
-            | "glass.replay.diff"
-            | "glass.process.logs"
-            | "glass.process.list"
-            | "glass.process.health"
-            | "glass.process.ports"
-            | "glass.workspace.trust.status"
-            | "glass.workspace.trust.inspect"
-            | "glass.runtime.inspect"
-            | "glass.todo.list"
-            | "glass.task.list"
-            | "glass.task.wake"
-            | "glass.task.get"
-            | "glass.task.inspect"
-    )
 }
 
 fn confined_worktree_path(workspace_root: &Path, path: &Path) -> DevelopmentResult<PathBuf> {
@@ -2365,20 +2202,6 @@ fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
                     "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600}
                 },
                 "required": ["harness", "prompt"],
-                "additionalProperties": false
-            }),
-        )
-    } else if name == "glass.agent.slash" {
-        (
-            "Run a native Pi slash command in the resident AgentSession".to_string(),
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "agentId": {"type": "string", "minLength": 1, "maxLength": 64},
-                    "name": {"type": "string", "minLength": 1, "maxLength": 128},
-                    "args": {"type": "string", "maxLength": 65536}
-                },
-                "required": ["name"],
                 "additionalProperties": false
             }),
         )
@@ -2665,42 +2488,11 @@ fn active_agent_id(workspace: &mut DevelopmentWorkspace) -> Option<crate::agents
 fn agent_request(
     workspace: &mut DevelopmentWorkspace,
     call: &ToolCall,
-    request: PiSessionRequest,
+    request: ResidentSessionRequest,
 ) -> DevelopmentResult<Value> {
     let id = agent_id(workspace, required_string(call, "agentId")?)?;
     map_service(workspace.agents().request(&id, request))?;
     Ok(serde_json::json!({"queued":true}))
-}
-
-fn agent_slash_request(
-    workspace: &mut DevelopmentWorkspace,
-    call: &ToolCall,
-    request: PiSessionRequest,
-) -> DevelopmentResult<Value> {
-    let selected = optional_string(call, "agentId")
-        .map(|value| agent_id(workspace, value))
-        .transpose()?;
-    let selected = match selected {
-        Some(agent) => match workspace.agents().snapshot(&agent)?.status {
-            crate::agents::AgentStatus::Failed | crate::agents::AgentStatus::Cancelled => {
-                workspace.agents().restart(&agent)?;
-                Some(agent)
-            }
-            crate::agents::AgentStatus::Completed | crate::agents::AgentStatus::Queued => None,
-            _ => Some(agent),
-        },
-        None => None,
-    };
-    let agent = selected.or_else(|| active_agent_id(workspace));
-    let agent = match agent {
-        Some(agent) => agent,
-        None => workspace.agents().create(AgentSpec::new(
-            "assistant",
-            "interactive Glass Agent session",
-        ))?,
-    };
-    map_service(workspace.agents().request(&agent, request))?;
-    Ok(serde_json::json!({"queued":true,"agentId":agent}))
 }
 
 fn task_action(
@@ -3088,11 +2880,7 @@ mod tests {
             "[package]\nname='x'\nversion='0.1.0'\n",
         )
         .unwrap();
-        let mut workspace = DevelopmentWorkspace::open(root).unwrap();
-        workspace
-            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
-            .unwrap();
-        workspace
+        DevelopmentWorkspace::open(root).unwrap()
     }
 
     fn context(workspace: &DevelopmentWorkspace, mutate: bool) -> DevelopmentToolContext {
@@ -3101,7 +2889,6 @@ mod tests {
                 actor: Actor::embedded(),
                 allow_mutation: mutate,
                 confirmed: mutate,
-                unrestricted: mutate,
             },
             initiator: None,
             expected_generation: workspace.generation(),
@@ -3252,10 +3039,10 @@ mod tests {
     }
 
     #[test]
-    fn core_integration_bypasses_workspace_trust_and_duplicate_confirmation_only() {
+    fn core_integration_uses_workspace_authority_without_duplicate_confirmation() {
         let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "glass-core-integration-untrusted-{}-{sequence}",
+            "glass-core-integration-{}-{sequence}",
             std::process::id()
         ));
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -3265,8 +3052,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
-        let mut untrusted_workspace = DevelopmentWorkspace::open(&root).unwrap();
-        assert_eq!(untrusted_workspace.trust(), WorkspaceTrust::Untrusted);
+        let mut project_workspace = DevelopmentWorkspace::open(&root).unwrap();
         let router = DevelopmentToolRouter::default();
         let call = ToolCall {
             id: "core-review-comment".into(),
@@ -3278,26 +3064,26 @@ mod tests {
                 "text":"Review this line"
             }),
         };
-        let mut core = context(&untrusted_workspace, false);
+        let mut core = context(&project_workspace, false);
         core.authorization.actor = Actor::external("glass-core");
         assert_eq!(core.authorization.actor.id, "external:glass-core");
         let mut stale = core.clone();
         stale.expected_project_revision = stale.expected_project_revision.saturating_add(1);
         assert!(
             router
-                .execute(&mut untrusted_workspace, &call, &stale)
+                .execute(&mut project_workspace, &call, &stale)
                 .is_err()
         );
         let result = router
-            .execute(&mut untrusted_workspace, &call, &core)
+            .execute(&mut project_workspace, &call, &core)
             .expect("Core review integration should run under Core authority");
         assert!(result["id"].is_string());
 
-        let mut external = context(&untrusted_workspace, false);
+        let mut external = context(&project_workspace, false);
         external.authorization.actor = Actor::external("mcp-client");
         assert!(
             router
-                .execute(&mut untrusted_workspace, &call, &external)
+                .execute(&mut project_workspace, &call, &external)
                 .is_err()
         );
         std::fs::remove_dir_all(root).unwrap();
@@ -3345,62 +3131,12 @@ mod tests {
     }
 
     #[test]
-    fn agent_slash_requires_mutation_authority_and_workspace_trust() {
-        let mut trusted = workspace();
-        let router = DevelopmentToolRouter::default();
-        let descriptor = router
-            .descriptors_for(trusted.trust(), trusted.unrestricted_execution())
-            .into_iter()
-            .find(|descriptor| descriptor.name == "glass.agent.slash")
-            .expect("Pi slash descriptor");
-        assert!(descriptor.available);
-        assert!(descriptor.mutating);
-        assert!(tool_requires_mutation("glass.agent.slash"));
-
-        let call = ToolCall {
-            id: "unauthorized-pi-slash".into(),
-            name: "glass.agent.slash".into(),
-            arguments: json!({"name":"new","args":""}),
-        };
-        let read_only = context(&trusted, false);
-        assert!(router.execute(&mut trusted, &call, &read_only).is_err());
-
-        let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "glass-agent-slash-untrusted-{}-{sequence}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(
-            root.join("Cargo.toml"),
-            "[package]\nname='untrusted-slash'\nversion='0.1.0'\n",
-        )
-        .unwrap();
-        let mut untrusted = DevelopmentWorkspace::open(&root).unwrap();
-        assert_eq!(untrusted.trust(), WorkspaceTrust::Untrusted);
-        let descriptor = router
-            .descriptors_for(untrusted.trust(), untrusted.unrestricted_execution())
-            .into_iter()
-            .find(|descriptor| descriptor.name == "glass.agent.slash")
-            .expect("Pi slash descriptor");
-        assert!(!descriptor.available);
-        let apparently_authorized = context(&untrusted, true);
-        assert!(
-            router
-                .execute(&mut untrusted, &call, &apparently_authorized)
-                .is_err()
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn every_public_service_mutation_route_requires_both_authorization_factors() {
         let mut workspace = workspace();
         let router = DevelopmentToolRouter::default();
         let mutating_routes = [
             "glass.agent.spawn",
             "glass.agent.delegate",
-            "glass.agent.slash",
             "glass.browser.navigate",
             "glass.browser.remote-view.open",
             "glass.workflow.run",
@@ -3417,7 +3153,7 @@ mod tests {
 
         for name in mutating_routes {
             let descriptor = router
-                .descriptors_for(workspace.trust(), workspace.unrestricted_execution())
+                .descriptors()
                 .into_iter()
                 .find(|descriptor| descriptor.name == name)
                 .unwrap_or_else(|| panic!("missing {name} descriptor"));
@@ -3432,18 +3168,12 @@ mod tests {
                 name: name.into(),
                 arguments: json!({}),
             };
-            for (allow_mutation, confirmed, unrestricted) in [
-                (false, false, false),
-                (false, true, false),
-                (true, false, false),
-                (false, false, true),
-            ] {
+            for (allow_mutation, confirmed) in [(false, false), (false, true), (true, false)] {
                 let unauthorized = DevelopmentToolContext {
                     authorization: ToolAuthorization {
                         actor: Actor::embedded(),
                         allow_mutation,
                         confirmed,
-                        unrestricted,
                     },
                     initiator: None,
                     expected_generation: workspace.generation(),
@@ -3862,7 +3592,6 @@ mod tests {
             "glass.agent.entries",
             "glass.agent.stats",
             "glass.agent.name",
-            "glass.agent.slash",
             "glass.todo.list",
             "glass.todo.write",
             "glass.todo.complete",
@@ -4218,94 +3947,6 @@ mod tests {
             json!(["read-only", "workspace-write"])
         );
         assert!(tool_requires_mutation("glass.agent.delegate"));
-        assert!(tool_requires_mutation("glass.agent.slash"));
-    }
-
-    const AGENT_HIDDEN_TOOLS: &[&str] = &[
-        "glass.workspace.list",
-        "glass.workspace.inspect",
-        "glass.workspace.suspend",
-        "glass.workspace.resume",
-        "glass.workspace.delete",
-        "glass.daemon.start",
-        "glass.daemon.stop",
-        "glass.daemon.status",
-        "glass.daemon.doctor",
-        "glass.daemon.logs",
-        "glass.workspace.trust.status",
-        "glass.workspace.trust.inspect",
-        "glass.project.attach",
-        "glass.agent.setup",
-        // This endpoint belongs to the human TUI command surface rather than
-        // the resident model's named tool catalog.
-        "glass.agent.slash",
-    ];
-
-    #[test]
-    fn pi_named_catalog_covers_agent_visible_glass_tools() {
-        let tools = include_str!("../assets/pi-glass-tools.ts");
-        let prompt = include_str!("../assets/pi-glass-system.md");
-        let runtime = include_str!("../assets/pi-runtime.mjs");
-        for required in [
-            "glass.browser.verify",
-            "glass.editor.fim",
-            "glass.editor.proposal.accept_pack",
-            "glass.task.crew",
-            "glass.github.ship",
-            "glass.file.search",
-            "glass.lsp.inlay_hints",
-        ] {
-            assert!(
-                tools.contains(&format!("\"{required}\"")),
-                "Pi named catalog missing {required}"
-            );
-            assert!(
-                prompt.contains(required),
-                "system prompt missing {required}"
-            );
-        }
-        assert!(runtime.contains("glass.browser.verify"));
-        assert!(runtime.contains("glass.task.crew"));
-        let registered = registered_glass_names(tools);
-        for descriptor in service_descriptors() {
-            if AGENT_HIDDEN_TOOLS.contains(&descriptor.name.as_str()) {
-                continue;
-            }
-            assert!(
-                registered.contains(&descriptor.name),
-                "Pi named catalog missing agent-visible {}",
-                descriptor.name
-            );
-        }
-    }
-
-    fn registered_glass_names(source: &str) -> std::collections::BTreeSet<String> {
-        let mut names = std::collections::BTreeSet::new();
-        let mut rest = source;
-        while let Some(start) = rest.find("register(") {
-            rest = &rest[start + 9..];
-            let Some(first) = quoted_string(rest) else {
-                continue;
-            };
-            let after_first = rest
-                .find(&format!("\"{first}\""))
-                .map(|index| index + first.len() + 2)
-                .unwrap_or(0);
-            let Some(glass) = quoted_string(&rest[after_first..]) else {
-                continue;
-            };
-            if glass.starts_with("glass.") {
-                names.insert(glass);
-            }
-        }
-        names
-    }
-
-    fn quoted_string(source: &str) -> Option<String> {
-        let start = source.find('"')?;
-        let rest = &source[start + 1..];
-        let end = rest.find('"')?;
-        Some(rest[..end].to_string())
     }
 
     #[test]

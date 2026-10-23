@@ -13,14 +13,13 @@ use crate::git::{GitError, GitService};
 use crate::intelligence::{DevelopmentIntelligence, DevelopmentNode, DevelopmentNodeKind};
 use crate::kernels::{KernelError, KernelExecution, KernelManager, KernelToolCall};
 use crate::lsp::LanguageService;
-use crate::pi_runtime::PiToolExecutor;
+use crate::resident_harness::AgentToolExecutor;
 use crate::tasks::{
     CrewWake, CrewWakeLiveEvidence, CrewWakeMember, TaskId, TaskScheduler, TaskSnapshot, TaskSpec,
     TaskState, VerificationRequirement, persist_crew_wake,
 };
 use crate::testing::{TestFramework, TestService, TestSuite};
 use crate::tools::{DevelopmentToolContext, DevelopmentToolRouter};
-use crate::trust::{LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust, WorkspaceTrustStore};
 use glass_browser::browser::policy::{BrowserPolicy, PolicyPreset};
 use glass_browser::browser::session::{KnowledgeStore, default_knowledge_store_path_for_workspace};
 use std::collections::BTreeMap;
@@ -48,60 +47,8 @@ pub struct DevelopmentWorkspace {
     tests: TestService,
     tasks: TaskScheduler,
     tools: DevelopmentToolRouter,
-    trust: WorkspaceTrust,
-    unrestricted_execution: bool,
-    trust_identity: WorkspaceIdentity,
-    trust_store: WorkspaceTrustStore,
-    trusted_configuration_active: bool,
+    project_configuration_active: bool,
     generation: u64,
-    agent_turn_mode: AgentTurnMode,
-}
-
-/// Per-turn composer personality for the shared chat dock.
-///
-/// Ask inspects only. Plan writes a bounded numbered plan and does not mutate.
-/// Agent is the default and is the only mode that may edit, run, or act.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentTurnMode {
-    Ask,
-    Plan,
-    #[default]
-    Agent,
-}
-
-impl AgentTurnMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Ask => "Ask",
-            Self::Plan => "Plan",
-            Self::Agent => "Agent",
-        }
-    }
-
-    pub fn allows_mutation(self) -> bool {
-        matches!(self, Self::Agent)
-    }
-
-    pub fn next(self) -> Self {
-        match self {
-            Self::Ask => Self::Plan,
-            Self::Plan => Self::Agent,
-            Self::Agent => Self::Ask,
-        }
-    }
-
-    pub fn instruction(self) -> &'static str {
-        match self {
-            Self::Ask => {
-                "[Glass Ask mode: read-only. Inspect evidence only. Do not edit files, run mutating commands, or act in the browser.]"
-            }
-            Self::Plan => {
-                "[Glass Plan mode: inspect only. Write a bounded numbered plan with files, risks, and verify predicates. Do not edit, click, or deploy until the human accepts.]"
-            }
-            Self::Agent => "",
-        }
-    }
 }
 
 impl DevelopmentWorkspace {
@@ -115,28 +62,9 @@ impl DevelopmentWorkspace {
         root: impl AsRef<Path>,
         policy_preset: PolicyPreset,
     ) -> DevelopmentResult<Self> {
-        let store = WorkspaceTrustStore::platform_default()?;
-        Self::open_with_store_and_policy(root, store, policy_preset)
-    }
-
-    /// Open using an explicit Glass-owned store, primarily for isolated hosts
-    /// and deterministic security tests.
-    pub fn open_with_store(
-        root: impl AsRef<Path>,
-        trust_store: WorkspaceTrustStore,
-    ) -> DevelopmentResult<Self> {
-        Self::open_with_store_and_policy(root, trust_store, PolicyPreset::Development)
-    }
-
-    /// Open using an explicit trust store and browser authorization preset.
-    pub fn open_with_store_and_policy(
-        root: impl AsRef<Path>,
-        trust_store: WorkspaceTrustStore,
-        policy_preset: PolicyPreset,
-    ) -> DevelopmentResult<Self> {
         let browser_policy = BrowserPolicy::from_preset(policy_preset, root.as_ref())
             .map_err(|error| crate::development::DevelopmentError::Process(error.to_string()))?;
-        Self::open_with_store_and_browser_policy(root, trust_store, browser_policy)
+        Self::open_with_browser_policy(root, browser_policy)
     }
 
     /// Open a project using the complete browser authorization policy,
@@ -145,18 +73,6 @@ impl DevelopmentWorkspace {
         root: impl AsRef<Path>,
         browser_policy: BrowserPolicy,
     ) -> DevelopmentResult<Self> {
-        let store = WorkspaceTrustStore::platform_default()?;
-        Self::open_with_store_and_browser_policy(root, store, browser_policy)
-    }
-
-    /// Open with explicit workspace trust and the complete browser policy.
-    pub fn open_with_store_and_browser_policy(
-        root: impl AsRef<Path>,
-        trust_store: WorkspaceTrustStore,
-        browser_policy: BrowserPolicy,
-    ) -> DevelopmentResult<Self> {
-        let trust_identity = WorkspaceIdentity::inspect(root.as_ref())?;
-        let trust = trust_store.status(&trust_identity)?;
         let project = ProjectWorkspace::open(root)?;
         let root = project.root().to_path_buf();
         if browser_policy.workspace_root() != root {
@@ -191,7 +107,7 @@ impl DevelopmentWorkspace {
         let kernels = KernelManager::new(&root)
             .map_err(|error| crate::development::DevelopmentError::Process(error.to_string()))?;
         let mut agents = AgentRegistry::new(&root)?;
-        agents.set_additional_system_prompt(customization.agent_instructions(trust))?;
+        agents.set_additional_system_prompt(customization.agent_instructions())?;
         let browser = BrowserService::new_with_browser_policy(&root, browser_policy)?;
         let language = LanguageService::new(&root)?;
         let knowledge = KnowledgeStore::open(default_knowledge_store_path_for_workspace(
@@ -200,7 +116,7 @@ impl DevelopmentWorkspace {
             Some(1),
         ))
         .map_err(|error| crate::development::DevelopmentError::Process(error.to_string()))?;
-        let tools = DevelopmentToolRouter::with_customization(&customization, trust);
+        let tools = DevelopmentToolRouter::with_customization(&customization);
         let tasks = TaskScheduler::new(&root)?;
         let mut workspace = Self {
             root: root.clone(),
@@ -229,17 +145,10 @@ impl DevelopmentWorkspace {
             tests,
             tasks,
             tools,
-            trust,
-            unrestricted_execution: false,
-            trust_identity,
-            trust_store,
-            trusted_configuration_active: false,
+            project_configuration_active: false,
             generation: 1,
-            agent_turn_mode: AgentTurnMode::Agent,
         };
-        if trust.permits_project_execution() {
-            workspace.activate_trusted_configuration()?;
-        }
+        workspace.activate_project_configuration()?;
         Ok(workspace)
     }
 
@@ -309,21 +218,11 @@ impl DevelopmentWorkspace {
     }
 
     pub(crate) fn create_task(&mut self, spec: TaskSpec) -> DevelopmentResult<TaskId> {
-        if !self.project_execution_permitted() {
-            return Err(crate::development::DevelopmentError::Conflict(
-                "task execution is blocked until the workspace is trusted".into(),
-            ));
-        }
         self.tasks.create(&mut self.agents, spec)
     }
 
     /// Queue the overnight factory crew in a confined worktree when Git is available.
     pub(crate) fn create_crew(&mut self, goal: &str) -> DevelopmentResult<CrewWake> {
-        if !self.project_execution_permitted() {
-            return Err(crate::development::DevelopmentError::Conflict(
-                "task execution is blocked until the workspace is trusted".into(),
-            ));
-        }
         let checkpoint_name = {
             let mut name = format!("before-crew:{goal}");
             name.truncate(256);
@@ -342,14 +241,9 @@ impl DevelopmentWorkspace {
                     .flatten()
             })
             .collect::<Vec<_>>();
-        let unrestricted = self.agents.default_unrestricted();
-        let ids = self.tasks.create_crew(
-            &mut self.agents,
-            goal,
-            worktree.clone(),
-            implementer_trees,
-            unrestricted,
-        )?;
+        let ids =
+            self.tasks
+                .create_crew(&mut self.agents, goal, worktree.clone(), implementer_trees)?;
         let tasks = ids
             .into_iter()
             .map(|id| {
@@ -511,11 +405,6 @@ impl DevelopmentWorkspace {
         passed: bool,
         details: serde_json::Value,
     ) -> DevelopmentResult<()> {
-        if !self.project_execution_permitted() {
-            return Err(crate::development::DevelopmentError::Conflict(
-                "task verification evidence is blocked until the workspace is trusted".into(),
-            ));
-        }
         self.tasks
             .submit_evidence(id, kind, actor, "external-submission", passed, details)
     }
@@ -606,7 +495,6 @@ impl DevelopmentWorkspace {
                 let result = self.customization.execute_tool(
                     name,
                     &serde_json::Value::Null,
-                    self.execution_trust(),
                     "glassd:task-verifier",
                     &ToolAuthorization::read_only(Actor::external("glassd:task-verifier")),
                 );
@@ -638,85 +526,6 @@ impl DevelopmentWorkspace {
         &self.customization
     }
 
-    pub fn trust(&self) -> WorkspaceTrust {
-        self.trust
-    }
-
-    /// Enable process-local YOLO execution without changing the persisted
-    /// workspace trust decision. This explicitly opts the development suite
-    /// into repository-controlled configuration for the current process.
-    pub(crate) fn enable_unrestricted_execution(&mut self) -> DevelopmentResult<()> {
-        if self.unrestricted_execution {
-            return Ok(());
-        }
-        self.unrestricted_execution = true;
-        let execution_trust = self.execution_trust();
-        self.tools =
-            DevelopmentToolRouter::with_customization(&self.customization, execution_trust);
-        self.agents
-            .set_additional_system_prompt(self.customization.agent_instructions(execution_trust))?;
-        self.activate_trusted_configuration()
-    }
-
-    pub(crate) fn unrestricted_execution(&self) -> bool {
-        self.unrestricted_execution
-    }
-
-    pub(crate) fn execution_trust(&self) -> WorkspaceTrust {
-        if self.unrestricted_execution && self.trust == WorkspaceTrust::Untrusted {
-            WorkspaceTrust::TrustedOnce
-        } else {
-            self.trust
-        }
-    }
-
-    fn project_execution_permitted(&self) -> bool {
-        self.execution_trust().permits_project_execution()
-    }
-
-    pub fn trust_identity(&self) -> &WorkspaceIdentity {
-        &self.trust_identity
-    }
-
-    pub fn trust_store_path(&self) -> &Path {
-        self.trust_store.path()
-    }
-
-    pub fn trust_inspection(&self) -> Vec<crate::customization::CustomizationInspectionItem> {
-        self.customization.inspect(self.execution_trust())
-    }
-
-    /// Apply an explicit decision from a local human surface. Remote tool,
-    /// MCP, daemon-agent, Pi, and kernel APIs deliberately cannot call this.
-    pub(crate) fn apply_local_trust_decision(
-        &mut self,
-        decision: LocalTrustDecision,
-    ) -> DevelopmentResult<WorkspaceTrust> {
-        let trust = match decision {
-            LocalTrustDecision::OpenUntrusted => WorkspaceTrust::Untrusted,
-            LocalTrustDecision::TrustOnce => WorkspaceTrust::TrustedOnce,
-            LocalTrustDecision::TrustProject => {
-                self.trust_store.trust_project(&self.trust_identity)?;
-                WorkspaceTrust::TrustedProject
-            }
-        };
-        if trust == WorkspaceTrust::Untrusted && self.trusted_configuration_active {
-            return Err(crate::development::DevelopmentError::Conflict(
-                "an active trusted workspace must be closed before reopening untrusted".into(),
-            ));
-        }
-        self.trust = trust;
-        let execution_trust = self.execution_trust();
-        self.tools =
-            DevelopmentToolRouter::with_customization(&self.customization, execution_trust);
-        self.agents
-            .set_additional_system_prompt(self.customization.agent_instructions(execution_trust))?;
-        if execution_trust.permits_project_execution() {
-            self.activate_trusted_configuration()?;
-        }
-        Ok(self.trust)
-    }
-
     /// Start and initialize one named resident DAP session.
     pub(crate) fn start_debugger(
         &mut self,
@@ -742,11 +551,6 @@ impl DevelopmentWorkspace {
     }
 
     pub(crate) fn experiments(&mut self) -> DevelopmentResult<&mut ExperimentManager> {
-        if !self.project_execution_permitted() {
-            return Err(crate::development::DevelopmentError::Conflict(
-                "experiments are blocked until the workspace is trusted".into(),
-            ));
-        }
         if self.experiments.is_none() {
             let repository_name = self
                 .root
@@ -759,9 +563,7 @@ impl DevelopmentWorkspace {
                 .unwrap_or(&self.root)
                 .join(format!(".glass-{repository_name}-experiments"));
             self.experiments = Some(Box::new(ExperimentManager::new_governed(
-                &self.root,
-                worktrees,
-                self.execution_trust(),
+                &self.root, worktrees,
             )?));
         }
         Ok(self.experiments.as_deref_mut().expect("initialized above"))
@@ -853,7 +655,6 @@ impl DevelopmentWorkspace {
                         actor: executor.clone(),
                         allow_mutation: authorization.allow_mutation && policy.mutation_authority,
                         confirmed: authorization.confirmed && policy.mutation_authority,
-                        unrestricted: policy.mutation_authority && authorization.permits_mutation(),
                     },
                     initiator: Some(initiator.clone()),
                     expected_generation: generation,
@@ -920,8 +721,7 @@ impl DevelopmentWorkspace {
     }
 
     pub fn tool_descriptors(&self) -> Vec<crate::development::ToolDescriptor> {
-        self.tools
-            .descriptors_for(self.trust, self.unrestricted_execution)
+        self.tools.descriptors()
     }
 
     pub fn execute_tool(
@@ -929,41 +729,8 @@ impl DevelopmentWorkspace {
         call: &crate::development::ToolCall,
         context: &DevelopmentToolContext,
     ) -> DevelopmentResult<serde_json::Value> {
-        let mutating = crate::tools::tool_requires_mutation(&call.name)
-            || self
-                .tools
-                .descriptors()
-                .iter()
-                .any(|descriptor| descriptor.name == call.name && descriptor.mutating);
-        if !self.agent_turn_mode.allows_mutation()
-            && matches!(
-                context.authorization.actor.kind,
-                crate::development::ActorKind::EmbeddedAgent
-            )
-            && mutating
-        {
-            return Err(crate::development::DevelopmentError::Conflict(format!(
-                "{} mode blocks {} until you switch to Agent",
-                self.agent_turn_mode.label(),
-                call.name
-            )));
-        }
-        let mut effective_context = context.clone();
-        if self.unrestricted_execution {
-            effective_context.authorization.allow_mutation = true;
-            effective_context.authorization.confirmed = true;
-            effective_context.authorization.unrestricted = true;
-        }
         let router = self.tools.clone();
-        router.execute(self, call, &effective_context)
-    }
-
-    pub fn agent_turn_mode(&self) -> AgentTurnMode {
-        self.agent_turn_mode
-    }
-
-    pub(crate) fn set_agent_turn_mode(&mut self, mode: AgentTurnMode) {
-        self.agent_turn_mode = mode;
+        router.execute(self, call, context)
     }
 
     /// Return task-loop state while allowing the scheduler to refresh its
@@ -982,8 +749,8 @@ impl DevelopmentWorkspace {
         Ok(self.generation)
     }
 
-    fn activate_trusted_configuration(&mut self) -> DevelopmentResult<()> {
-        if self.trusted_configuration_active {
+    fn activate_project_configuration(&mut self) -> DevelopmentResult<()> {
+        if self.project_configuration_active {
             return Ok(());
         }
         for (name, configured) in &self.customization.config().tests {
@@ -1015,10 +782,9 @@ impl DevelopmentWorkspace {
         self.customization.run_hooks(
             "workspace.opened",
             &serde_json::json!({"root":self.root,"generation":self.generation}),
-            self.execution_trust(),
             "glassd",
         )?;
-        self.trusted_configuration_active = true;
+        self.project_configuration_active = true;
         Ok(())
     }
 }
@@ -1116,32 +882,20 @@ impl SharedDevelopmentWorkspace {
         root: impl AsRef<Path>,
         policy_preset: PolicyPreset,
     ) -> DevelopmentResult<Self> {
-        Self::open_with_policy_and_unrestricted(root, policy_preset, false)
-    }
-
-    pub(crate) fn open_with_policy_and_unrestricted(
-        root: impl AsRef<Path>,
-        policy_preset: PolicyPreset,
-        unrestricted: bool,
-    ) -> DevelopmentResult<Self> {
         let browser_policy = BrowserPolicy::from_preset(policy_preset, root.as_ref())
             .map_err(|error| crate::development::DevelopmentError::Process(error.to_string()))?;
-        Self::open_with_browser_policy_and_unrestricted(root, browser_policy, unrestricted)
+        Self::open_with_browser_policy(root, browser_policy)
     }
 
-    pub(crate) fn open_with_browser_policy_and_unrestricted(
+    pub(crate) fn open_with_browser_policy(
         root: impl AsRef<Path>,
         browser_policy: BrowserPolicy,
-        unrestricted: bool,
     ) -> DevelopmentResult<Self> {
-        let mut development_workspace =
+        let development_workspace =
             DevelopmentWorkspace::open_with_browser_policy(root, browser_policy)?;
-        if unrestricted {
-            development_workspace.enable_unrestricted_execution()?;
-        }
         let inner = Arc::new(Mutex::new(development_workspace));
         let weak = Arc::downgrade(&inner);
-        let executor: PiToolExecutor = Arc::new(move |call, allow_mutation, confirmed| {
+        let executor: AgentToolExecutor = Arc::new(move |call, allow_mutation, confirmed| {
             let inner = weak.upgrade().ok_or_else(|| {
                 crate::development::DevelopmentError::Process(
                     "shared development workspace has closed".into(),
@@ -1152,13 +906,11 @@ impl SharedDevelopmentWorkspace {
                     "development workspace lock was poisoned".into(),
                 )
             })?;
-            let unrestricted = workspace.agents().default_unrestricted();
             let context = DevelopmentToolContext {
                 authorization: ToolAuthorization {
                     actor: Actor::external("glass-core"),
                     allow_mutation,
                     confirmed,
-                    unrestricted,
                 },
                 initiator: None,
                 expected_generation: workspace.generation(),
@@ -1205,16 +957,6 @@ impl SharedDevelopmentWorkspace {
 
     /// Snapshot helpers used by long-lived UIs: safe, bounded reads that
     /// degrade instead of poisoning the render loop.
-    pub fn trust_status(&self) -> WorkspaceTrust {
-        self.lock()
-            .map(|w| w.trust())
-            .unwrap_or(WorkspaceTrust::Untrusted)
-    }
-    pub fn trust_inspection_list(&self) -> Vec<crate::customization::CustomizationInspectionItem> {
-        self.lock()
-            .map(|w| w.trust_inspection())
-            .unwrap_or_default()
-    }
     pub fn customization_snapshot_counts(&self) -> (usize, usize) {
         self.lock()
             .map(|w| {
@@ -1282,7 +1024,6 @@ mod tests {
                     actor: Actor::local(),
                     allow_mutation: false,
                     confirmed: false,
-                    unrestricted: false,
                 },
                 None,
             )
@@ -1348,10 +1089,8 @@ mod tests {
             )
             .unwrap();
 
-        let workspace = SharedDevelopmentWorkspace::open_with_browser_policy_and_unrestricted(
-            &root, policy, false,
-        )
-        .unwrap();
+        let workspace =
+            SharedDevelopmentWorkspace::open_with_browser_policy(&root, policy).unwrap();
         let state = workspace.lock().unwrap();
         let browser = state.browser();
         assert_eq!(
@@ -1405,9 +1144,6 @@ mod tests {
         let root = test_root();
         std::fs::create_dir_all(&root).unwrap();
         let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
-        workspace
-            .apply_local_trust_decision(LocalTrustDecision::TrustOnce)
-            .unwrap();
         let call = ToolCall {
             id: "mutation-pair".into(),
             name: "glass.file.mkdir".into(),
@@ -1420,7 +1156,6 @@ mod tests {
                     actor: Actor::external("pair-test"),
                     allow_mutation,
                     confirmed,
-                    unrestricted: false,
                 },
                 initiator: None,
                 expected_generation: workspace.generation(),
@@ -1442,7 +1177,6 @@ mod tests {
                 actor: Actor::external("pair-test"),
                 allow_mutation: true,
                 confirmed: true,
-                unrestricted: false,
             },
             initiator: None,
             expected_generation: workspace.generation(),
@@ -1454,9 +1188,8 @@ mod tests {
     }
 
     #[test]
-    fn untrusted_open_never_executes_or_privileges_project_configuration() {
+    fn first_open_activates_project_configuration() {
         let root = test_root();
-        let store = WorkspaceTrustStore::at(root.with_extension("trust.json"));
         std::fs::create_dir_all(root.join(".glass/skills")).unwrap();
         std::fs::write(
             root.join("Cargo.toml"),
@@ -1495,23 +1228,25 @@ command = '''{command}'''
         )
         .unwrap();
 
-        let mut workspace = DevelopmentWorkspace::open_with_store(&root, store).unwrap();
-        assert_eq!(workspace.trust(), WorkspaceTrust::Untrusted);
-        assert!(!marker.exists(), "workspace.opened ran before trust");
+        let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
         assert!(
-            !workspace
+            marker.exists(),
+            "workspace.opened runs on the direct-open path"
+        );
+        assert!(
+            workspace
                 .agents()
                 .additional_system_prompt()
                 .unwrap_or_default()
                 .contains("PROJECT-PRIVILEGED-MARKER")
         );
-        assert!(workspace.trust_inspection().iter().any(|item| {
+        assert!(workspace.customization().inspect().iter().any(|item| {
             item.kind == "customTool"
                 && item.command.as_deref() == Some(command.as_str())
-                && item.trust_required
+                && item.authority == crate::customization::CustomizationAuthority::Project
         }));
         assert!(
-            !workspace
+            workspace
                 .tests()
                 .suites()
                 .any(|suite| suite.id == "configured")
@@ -1521,51 +1256,33 @@ command = '''{command}'''
                 actor: Actor::external("security-test"),
                 allow_mutation: true,
                 confirmed: true,
-                unrestricted: false,
             },
             initiator: None,
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
         };
-        for (name, arguments) in [
-            ("glass.custom.readonly_lie", serde_json::json!({})),
-            (
-                "glass.lsp.start",
-                serde_json::json!({"server":"hostile","command":command}),
-            ),
-            (
-                "glass.debug.start",
-                serde_json::json!({"session":"hostile","command":command}),
-            ),
-            (
-                "glass.test.run",
-                serde_json::json!({"runId":"hostile","suiteId":"configured"}),
-            ),
-        ] {
-            let error = workspace
-                .execute_tool(
-                    &ToolCall {
-                        id: format!("blocked-{name}"),
-                        name: name.into(),
-                        arguments,
-                    },
-                    &context,
-                )
-                .unwrap_err();
-            assert!(error.to_string().contains("trust"), "{name}: {error}");
-        }
-        assert!(!marker.exists(), "an untrusted command executed");
+        workspace
+            .execute_tool(
+                &ToolCall {
+                    id: "first-open-custom-tool".into(),
+                    name: "glass.custom.readonly_lie".into(),
+                    arguments: serde_json::json!({}),
+                },
+                &context,
+            )
+            .expect("project tool can run after direct workspace open");
+        assert!(marker.exists(), "workspace commands run after direct open");
 
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn trust_inspection_reports_effective_trust_without_persisting_yolo() {
+    fn workspace_inspection_reports_project_configuration() {
         let root = test_root();
         std::fs::create_dir_all(root.join(".glass/skills")).unwrap();
         std::fs::write(
             root.join(".glass/skills/project.md"),
-            "Repository instructions are active only under effective trust.",
+            "Repository instructions are active on open.",
         )
         .unwrap();
         std::fs::write(
@@ -1577,27 +1294,12 @@ command='true'
         )
         .unwrap();
 
-        let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
-        assert_eq!(workspace.trust(), WorkspaceTrust::Untrusted);
-        let untrusted = workspace.trust_inspection();
-        assert!(untrusted.iter().any(|item| {
+        let workspace = DevelopmentWorkspace::open(&root).unwrap();
+        let inspection = workspace.customization().inspect();
+        assert!(inspection.iter().any(|item| {
             item.kind == "skill"
                 && item.name == "project"
-                && item.authority == crate::customization::CustomizationAuthority::UntrustedProject
-        }));
-        assert!(
-            workspace
-                .tool_descriptors()
-                .iter()
-                .any(|descriptor| descriptor.name == "glass.custom.check" && !descriptor.available)
-        );
-
-        workspace.enable_unrestricted_execution().unwrap();
-        assert_eq!(workspace.trust(), WorkspaceTrust::Untrusted);
-        assert!(workspace.trust_inspection().iter().any(|item| {
-            item.kind == "skill"
-                && item.name == "project"
-                && item.authority == crate::customization::CustomizationAuthority::TrustedOnce
+                && item.authority == crate::customization::CustomizationAuthority::Project
         }));
         assert!(
             workspace
@@ -1610,70 +1312,11 @@ command='true'
     }
 
     #[test]
-    fn trust_once_activates_without_persisting_and_project_trust_persists() {
-        let root = test_root();
-        let store_path = root.with_extension("trust.json");
-        std::fs::create_dir_all(root.join(".glass/skills")).unwrap();
-        std::fs::write(
-            root.join("Cargo.toml"),
-            "[package]\nname='trust-fixture'\nversion='0.1.0'\n",
-        )
-        .unwrap();
-        std::fs::write(root.join(".glass/skills/project.md"), "TRUSTED-MARKER").unwrap();
-        let marker = root.join("opened.txt");
-        let command = if cfg!(windows) {
-            format!("echo opened>{}", marker.display())
-        } else {
-            format!("printf opened > '{}'", marker.display())
-        };
-        std::fs::write(
-            root.join("glass.toml"),
-            format!("[hooks]\n\"workspace.opened\" = [{{ command = '''{command}''' }}]\n"),
-        )
-        .unwrap();
-        let store = WorkspaceTrustStore::at(&store_path);
-        let mut once = DevelopmentWorkspace::open_with_store(&root, store.clone()).unwrap();
-        once.apply_local_trust_decision(LocalTrustDecision::TrustOnce)
-            .unwrap();
-        assert!(marker.exists());
-        assert!(
-            once.agents()
-                .additional_system_prompt()
-                .unwrap()
-                .contains("TRUSTED-MARKER")
-        );
-        drop(once);
-        std::fs::remove_file(&marker).unwrap();
-        let reopened = DevelopmentWorkspace::open_with_store(&root, store.clone()).unwrap();
-        assert_eq!(reopened.trust(), WorkspaceTrust::Untrusted);
-        assert!(!marker.exists(), "TrustedOnce survived a later open");
-        drop(reopened);
-
-        let mut persistent = DevelopmentWorkspace::open_with_store(&root, store.clone()).unwrap();
-        persistent
-            .apply_local_trust_decision(LocalTrustDecision::TrustProject)
-            .unwrap();
-        drop(persistent);
-        std::fs::remove_file(&marker).unwrap();
-        let recovered = DevelopmentWorkspace::open_with_store(&root, store).unwrap();
-        assert_eq!(recovered.trust(), WorkspaceTrust::TrustedProject);
-        assert!(marker.exists(), "TrustedProject was not recovered");
-        assert!(!root.join(".glass-trust").exists());
-
-        drop(recovered);
-        std::fs::remove_dir_all(root).unwrap();
-        std::fs::remove_file(store_path).unwrap();
-    }
-
-    #[test]
-    fn repository_configuration_cannot_declare_itself_trusted() {
+    fn unknown_workspace_configuration_is_rejected() {
         let root = test_root();
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("glass.toml"), "[workspace]\ntrusted = true\n").unwrap();
-        let result = DevelopmentWorkspace::open_with_store(
-            &root,
-            WorkspaceTrustStore::at(root.with_extension("trust.json")),
-        );
+        let result = DevelopmentWorkspace::open(&root);
         assert!(result.is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1725,9 +1368,6 @@ command='true'
         .unwrap();
         let canonical_root = root.canonicalize().unwrap();
         let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
-        workspace
-            .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
-            .unwrap();
         let wake = workspace.create_crew("add settings toggle").unwrap();
         let implementers = wake
             .tasks
@@ -1757,57 +1397,6 @@ command='true'
             testers[1].worktree.as_deref()
         );
         drop(workspace);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn ask_mode_blocks_embedded_mutations() {
-        let root = test_root();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(
-            root.join("Cargo.toml"),
-            "[package]\nname='ask-mode'\nversion='0.1.0'\n",
-        )
-        .unwrap();
-        std::fs::write(root.join("src/lib.rs"), "pub fn ok() {}\n").unwrap();
-        let mut workspace = DevelopmentWorkspace::open(&root).unwrap();
-        workspace
-            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
-            .unwrap();
-        workspace.set_agent_turn_mode(AgentTurnMode::Ask);
-        let context = DevelopmentToolContext {
-            authorization: ToolAuthorization {
-                actor: Actor::embedded(),
-                allow_mutation: true,
-                confirmed: true,
-                unrestricted: false,
-            },
-            initiator: None,
-            expected_generation: workspace.generation(),
-            expected_project_revision: workspace.project().revision(),
-        };
-        let error = workspace
-            .execute_tool(
-                &ToolCall {
-                    id: "ask-write".into(),
-                    name: "glass.file.write".into(),
-                    arguments: serde_json::json!({"path":"src/lib.rs","content":"nope\n"}),
-                },
-                &context,
-            )
-            .unwrap_err();
-        assert!(error.to_string().contains("Ask mode blocks"));
-        workspace.set_agent_turn_mode(AgentTurnMode::Agent);
-        workspace
-            .execute_tool(
-                &ToolCall {
-                    id: "agent-write".into(),
-                    name: "glass.file.write".into(),
-                    arguments: serde_json::json!({"path":"src/lib.rs","content":"pub fn ok() {}\n"}),
-                },
-                &context,
-            )
-            .unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

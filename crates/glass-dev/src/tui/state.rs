@@ -151,7 +151,7 @@ enum PendingFim {
         revision: u64,
         rx: std::sync::mpsc::Receiver<Result<String, String>>,
     },
-    Pi {
+    Resident {
         path: String,
         offset: usize,
         revision: u64,
@@ -164,24 +164,24 @@ enum PendingFim {
 impl PendingFim {
     fn path(&self) -> &str {
         match self {
-            Self::Thread { path, .. } | Self::Pi { path, .. } => path,
+            Self::Thread { path, .. } | Self::Resident { path, .. } => path,
         }
     }
 
     fn offset(&self) -> usize {
         match self {
-            Self::Thread { offset, .. } | Self::Pi { offset, .. } => *offset,
+            Self::Thread { offset, .. } | Self::Resident { offset, .. } => *offset,
         }
     }
 
     fn revision(&self) -> u64 {
         match self {
-            Self::Thread { revision, .. } | Self::Pi { revision, .. } => *revision,
+            Self::Thread { revision, .. } | Self::Resident { revision, .. } => *revision,
         }
     }
 }
 
-fn matching_pi_fim_response(
+fn matching_resident_fim_response(
     events: &[crate::AgentEvent],
     agent_id: &crate::AgentId,
     request_id: &str,
@@ -1328,7 +1328,6 @@ impl BrowserRecoveryOffer {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DevSurface {
-    Trust,
     Agent,
     Code,
     App,
@@ -1366,7 +1365,6 @@ impl DevSurface {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Trust => "Trust",
             Self::Agent => "Agent",
             Self::Code => "Code",
             Self::App => "App",
@@ -1411,33 +1409,8 @@ impl ProductMode {
     }
 }
 
-enum PiSlashRoute {
-    ComposerMode(crate::AgentTurnMode),
-    Tasks,
-    WorkspaceTool(&'static str),
-    Thinking,
-    NativePi,
-    Extension,
-}
-
-const PI_COMMAND_INPUT_LIMIT: usize = 4 * 1024;
-const PI_COMMAND_INPUT_LIMIT_STATUS: &str = "Pi command input limit reached (4 KiB)";
 const PALETTE_INPUT_LIMIT: usize = 8 * 1024;
 const COMPOSER_INPUT_LIMIT: usize = 16 * 1024;
-
-fn resolve_pi_slash_route(command: &str) -> PiSlashRoute {
-    match command {
-        "ask" => PiSlashRoute::ComposerMode(crate::AgentTurnMode::Ask),
-        "plan" => PiSlashRoute::ComposerMode(crate::AgentTurnMode::Plan),
-        "agent" => PiSlashRoute::ComposerMode(crate::AgentTurnMode::Agent),
-        "todo" => PiSlashRoute::Tasks,
-        "stats" => PiSlashRoute::WorkspaceTool("glass.agent.stats"),
-        "sessions" => PiSlashRoute::WorkspaceTool("glass.agent.sessions"),
-        "think" => PiSlashRoute::Thinking,
-        _ if super::pi_commands::is_builtin(command) => PiSlashRoute::NativePi,
-        _ => PiSlashRoute::Extension,
-    }
-}
 
 pub struct DevTuiState {
     pub workspace: SharedDevelopmentWorkspace,
@@ -1447,8 +1420,6 @@ pub struct DevTuiState {
     pub(crate) browser_start_defaults: BrowserStartConfig,
     pub surface: DevSurface,
     pub layout: TuiLayout,
-    /// Process-scoped unrestricted development mode from `glass --yolo`.
-    pub yolo_mode: bool,
     pub quit_confirmation: bool,
     pub quit: bool,
     pub command_mode: bool,
@@ -1460,23 +1431,11 @@ pub struct DevTuiState {
     pub palette_scroll: u16,
     /// Index in the filtered, arrow-selectable palette action list.
     pub palette_selection: usize,
-    pub pi_command_mode: bool,
-    pub pi_command_input: String,
-    pub pi_command_cursor: usize,
-    pub pi_command_selection: usize,
-    pub pi_command_scroll: u16,
-    /// Whether closing the Pi slash modal should return focus to the composer.
-    pub pi_command_return_to_composer: bool,
-    /// Composer-origin slash input, retained until dispatch succeeds or is denied.
-    pub(crate) pi_command_composer_origin: Option<(String, usize)>,
-    pub pi_command_pending: Option<String>,
-    pub pi_command_pending_args: String,
     pub menu_open: bool,
     pub menu_selection: usize,
     pub help_open: bool,
     pub help_scroll: u16,
     pub composer_mode: bool,
-    pub composer_run_mode: crate::AgentTurnMode,
     pub pending_plan: Option<WorkspacePlan>,
     pub composer_input: String,
     pub composer_cursor: usize,
@@ -1511,7 +1470,6 @@ pub struct DevTuiState {
     pub git_behind: u64,
     pub git_conflicts: Vec<String>,
     pub github_review_requested: bool,
-    pub pending_trust: Option<crate::LocalTrustDecision>,
     pub pending_open_file: Option<String>,
     pub pending_chat_messages: Vec<PendingChatMessage>,
     pub agent_send_job: Option<u64>,
@@ -1593,8 +1551,6 @@ pub struct DevTuiState {
     pub terminal_height: u16,
     pub status: String,
     pub snapshot_root: String,
-    pub snapshot_trust_label: String,
-    pub snapshot_trust_inspection: Vec<crate::customization::CustomizationInspectionItem>,
     pub snapshot_project_revision: u64,
     pub snapshot_generation: u64,
     pub snapshot_skills_count: usize,
@@ -1632,8 +1588,6 @@ pub struct DevTuiState {
     /// Set by an in-TUI login action; the event loop temporarily hands the
     /// terminal to the selected runtime's interactive login flow.
     pub agent_login_requested: bool,
-    /// Optional provider preselected by a native legacy Pi `/login PROVIDER` request.
-    pub agent_login_provider: Option<String>,
     /// Set by a palette action; the event loop hands the terminal to the
     /// selected external harness and resumes Glass after it exits.
     pub harness_launch_requested: Option<String>,
@@ -1775,7 +1729,7 @@ impl DevTuiState {
         layout: TuiLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let browser_policy = BrowserPolicy::development(root.as_ref())?;
-        Self::open_internal(root, layout, true, false, browser_policy)
+        Self::open_internal(root, layout, true, browser_policy)
     }
 
     /// Construct the interactive TUI without doing a full synchronous
@@ -1787,44 +1741,27 @@ impl DevTuiState {
         layout: TuiLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let browser_policy = BrowserPolicy::development(root.as_ref())?;
-        Self::open_internal(root, layout, false, false, browser_policy)
+        Self::open_internal(root, layout, false, browser_policy)
     }
 
     /// Construct the TUI with the complete browser authorization policy.
     pub(crate) fn open_for_tui_with_browser_policy(
         root: impl AsRef<Path>,
         layout: TuiLayout,
-        yolo_mode: bool,
         browser_policy: BrowserPolicy,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::open_internal(root, layout, false, yolo_mode, browser_policy)
+        Self::open_internal(root, layout, false, browser_policy)
     }
 
     fn open_internal(
         root: impl AsRef<Path>,
         layout: TuiLayout,
         initial_refresh: bool,
-        yolo_mode: bool,
         browser_policy: BrowserPolicy,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let workspace = SharedDevelopmentWorkspace::open_with_browser_policy_and_unrestricted(
-            root,
-            browser_policy,
-            yolo_mode,
-        )?;
-        // Glass Dev's resident-agent surface is human-controlled. Agents load
-        // the workspace's configured resources and run unrestricted by
-        // default; workspace trust remains a separate project state used by
-        // Glass's workspace policy. The legacy `yolo_mode` flag still
-        // controls its existing Glass policy marker and authority paths.
-        {
-            let mut workspace = workspace.lock()?;
-            workspace.agents().set_default_unrestricted(true);
-        }
+        let workspace = SharedDevelopmentWorkspace::open_with_browser_policy(root, browser_policy)?;
         let locked = workspace.lock()?;
         let browser_service = locked.browser().clone();
-        let trust = locked.trust();
-        let trust_inspection = locked.trust_inspection();
         let snapshot_root = locked.root().display().to_string();
         let snapshot_project_revision = locked.project().revision();
         let snapshot_generation = locked.generation();
@@ -1850,7 +1787,6 @@ impl DevTuiState {
             },
             surface: DevSurface::Agent,
             layout,
-            yolo_mode,
             quit: false,
             quit_confirmation: false,
             command_mode: false,
@@ -1861,21 +1797,11 @@ impl DevTuiState {
             palette_error: None,
             palette_scroll: 0,
             palette_selection: 0,
-            pi_command_mode: false,
-            pi_command_input: String::new(),
-            pi_command_cursor: 0,
-            pi_command_selection: 0,
-            pi_command_scroll: 0,
-            pi_command_return_to_composer: false,
-            pi_command_composer_origin: None,
-            pi_command_pending: None,
-            pi_command_pending_args: String::new(),
             menu_open: false,
             menu_selection: 0,
             help_open: false,
             help_scroll: 0,
             composer_mode: false,
-            composer_run_mode: crate::AgentTurnMode::Agent,
             pending_plan: None,
             composer_input: String::new(),
             composer_cursor: 0,
@@ -1908,7 +1834,6 @@ impl DevTuiState {
             git_behind: 0,
             git_conflicts: Vec::new(),
             github_review_requested: false,
-            pending_trust: None,
             pending_open_file: None,
             pending_chat_messages: Vec::new(),
             agent_send_job: None,
@@ -1980,8 +1905,6 @@ impl DevTuiState {
             terminal_width: 80,
             terminal_height: 24,
             snapshot_root,
-            snapshot_trust_label: trust.label().into(),
-            snapshot_trust_inspection: trust_inspection,
             snapshot_project_revision,
             snapshot_generation,
             snapshot_skills_count,
@@ -2009,7 +1932,6 @@ impl DevTuiState {
             agent_readiness,
             harnesses: crate::harness::summary(),
             agent_login_requested: false,
-            agent_login_provider: None,
             harness_launch_requested: None,
             agent_conversation:
                 "No conversation yet. Press Enter or start typing to compose a message.".into(),
@@ -2286,7 +2208,7 @@ impl DevTuiState {
 
     /// Guided launchers for the current surface. `:actions` opens the command center.
     pub fn surface_actions(&self) -> &'static [command::SurfaceAction] {
-        command::surface_actions_for(self.surface, crate::ResidentHarnessKind::from_env())
+        command::surface_actions_for(self.surface, crate::ResidentHarnessKind::default_kind())
     }
 
     /// Explain why a guided launcher cannot run with the currently visible
@@ -2515,7 +2437,6 @@ impl DevTuiState {
     }
 
     pub fn start_workflow_recording(&mut self, name: &str) -> Result<String, String> {
-        self.require_workflow_trust()?;
         if let Some(recording) = &self.workflow_recording {
             return Err(format!(
                 "already recording {} · :workflow record stop first",
@@ -2546,7 +2467,6 @@ impl DevTuiState {
     }
 
     pub fn capture_workflow_click(&mut self) -> Result<bool, String> {
-        self.require_workflow_trust()?;
         if self.workflow_recording.is_none() {
             return Ok(false);
         }
@@ -2570,7 +2490,6 @@ impl DevTuiState {
     }
 
     pub fn record_workflow_type(&mut self, input_name: &str) -> Result<String, String> {
-        self.require_workflow_trust()?;
         let selected = self
             .browser_workspace
             .state()
@@ -2594,7 +2513,6 @@ impl DevTuiState {
     }
 
     pub fn record_workflow_verify(&mut self) -> Result<String, String> {
-        self.require_workflow_trust()?;
         let value = self
             .pending_verify
             .clone()
@@ -2616,7 +2534,6 @@ impl DevTuiState {
     }
 
     pub fn stop_workflow_recording(&mut self) -> Result<String, String> {
-        self.require_workflow_trust()?;
         let recording = self
             .workflow_recording
             .take()
@@ -2645,15 +2562,6 @@ impl DevTuiState {
             path.display()
         );
         Ok(self.status.clone())
-    }
-
-    fn require_workflow_trust(&mut self) -> Result<(), String> {
-        if self.trust_allows_execution() {
-            return Ok(());
-        }
-        let error = "trust the workspace before changing workflow drafts".to_string();
-        self.status = error.clone();
-        Err(error)
     }
 
     fn refresh_workflow_recording_status(&mut self) {
@@ -2733,10 +2641,6 @@ impl DevTuiState {
     }
 
     pub fn open_palette(&mut self) {
-        if !self.may_leave_trust_surface() {
-            self.status = "Choose O, 1, or T on the Trust surface before opening commands".into();
-            return;
-        }
         self.close_file_picker();
         self.command_mode = true;
         self.command_input.clear();
@@ -2760,374 +2664,6 @@ impl DevTuiState {
         self.palette_scroll = 0;
         self.palette_selection = 0;
         self.status = "Command palette closed · press : for guided launchers".into();
-    }
-
-    /// Open Pi's native slash-command surface. Glass `:` commands remain in
-    /// the separate global palette so the two command namespaces cannot be
-    /// confused while working on the Agent surface.
-    pub(crate) fn open_pi_command_palette(&mut self) {
-        self.close_file_picker();
-        self.command_mode = false;
-        self.pi_command_return_to_composer = self.composer_mode;
-        self.composer_mode = false;
-        self.pi_command_mode = true;
-        self.pi_command_input.clear();
-        self.pi_command_cursor = 0;
-        self.pi_command_selection = 0;
-        self.pi_command_scroll = 0;
-        self.status =
-            "Agent commands · type to filter · ↑↓ select · Tab complete · Enter run".into();
-    }
-
-    pub(crate) fn close_pi_command_palette(&mut self) {
-        let return_to_composer = self.pi_command_return_to_composer;
-        self.pi_command_return_to_composer = false;
-        self.pi_command_mode = false;
-        self.composer_mode = return_to_composer;
-        self.pi_command_input.clear();
-        self.pi_command_cursor = 0;
-        self.pi_command_selection = 0;
-        self.pi_command_scroll = 0;
-        self.status = if return_to_composer {
-            "Agent commands closed · composer draft restored".into()
-        } else {
-            "Agent command surface closed · press / on Agent".into()
-        };
-    }
-
-    fn restore_pi_composer_origin(&mut self) -> bool {
-        let Some((draft, cursor)) = self.pi_command_composer_origin.take() else {
-            return false;
-        };
-        let status = self.status.clone();
-        if self.pi_command_mode {
-            self.close_pi_command_palette();
-        }
-        self.composer_mode = true;
-        self.composer_input = draft;
-        self.composer_cursor = cursor;
-        if matches!(self.surface, DevSurface::Trust | DevSurface::Tasks) {
-            self.composer_mode = false;
-        }
-        self.status = status;
-        true
-    }
-
-    pub(crate) fn pi_command_indices(&self) -> Vec<usize> {
-        let query = self
-            .pi_command_input
-            .trim()
-            .strip_prefix('/')
-            .unwrap_or(self.pi_command_input.trim())
-            .split_whitespace()
-            .next()
-            .unwrap_or("");
-        super::pi_commands::BUILTIN_PI_COMMANDS
-            .iter()
-            .enumerate()
-            .filter_map(|(index, command)| {
-                let haystack = format!(
-                    "{} {} {}",
-                    command.name,
-                    command.description,
-                    command.argument_hint.unwrap_or("")
-                );
-                fuzzy_contains(&haystack, query).then_some(index)
-            })
-            .collect()
-    }
-
-    pub(crate) fn selected_pi_command(&self) -> Option<super::pi_commands::PiCommand> {
-        let indices = self.pi_command_indices();
-        indices
-            .get(self.pi_command_selection)
-            .and_then(|index| super::pi_commands::BUILTIN_PI_COMMANDS.get(*index))
-            .copied()
-    }
-
-    pub(crate) fn move_pi_command_selection(&mut self, delta: i32) {
-        let count = self.pi_command_indices().len();
-        if count == 0 {
-            self.pi_command_selection = 0;
-            return;
-        }
-        self.pi_command_selection = (self.pi_command_selection as i32 + delta)
-            .clamp(0, count.saturating_sub(1) as i32) as usize;
-        self.pi_command_scroll = self.pi_command_selection as u16;
-        if let Some(command) = self.selected_pi_command() {
-            self.status = format!("/{name} · Enter runs · Tab fills", name = command.name);
-        }
-    }
-
-    pub(crate) fn insert_pi_command_char(&mut self, character: char) {
-        if character.is_control() {
-            return;
-        }
-        if self.pi_command_input.len() + character.len_utf8() > PI_COMMAND_INPUT_LIMIT {
-            self.status = PI_COMMAND_INPUT_LIMIT_STATUS.into();
-            return;
-        }
-        self.pi_command_input
-            .insert(self.pi_command_cursor, character);
-        self.pi_command_cursor += character.len_utf8();
-        self.pi_command_selection = 0;
-        self.pi_command_scroll = 0;
-    }
-
-    pub(crate) fn insert_pi_command_text(&mut self, text: &str) {
-        let mut accepted = String::new();
-        let mut overflowed = false;
-        for character in text.chars() {
-            if character.is_control() && character != '\n' {
-                continue;
-            }
-            if self.pi_command_input.len() + accepted.len() + character.len_utf8()
-                > PI_COMMAND_INPUT_LIMIT
-            {
-                overflowed = true;
-                break;
-            }
-            accepted.push(character);
-        }
-        self.pi_command_input
-            .insert_str(self.pi_command_cursor, &accepted);
-        self.pi_command_cursor += accepted.len();
-        self.pi_command_selection = 0;
-        self.pi_command_scroll = 0;
-        if overflowed {
-            self.status = PI_COMMAND_INPUT_LIMIT_STATUS.into();
-        }
-    }
-
-    pub(crate) fn pi_command_backspace(&mut self) {
-        if self.pi_command_cursor == 0 {
-            return;
-        }
-        let previous = self.pi_command_input[..self.pi_command_cursor]
-            .char_indices()
-            .next_back()
-            .map(|(index, _)| index)
-            .unwrap_or(0);
-        self.pi_command_input
-            .drain(previous..self.pi_command_cursor);
-        self.pi_command_cursor = previous;
-        self.pi_command_selection = 0;
-        self.pi_command_scroll = 0;
-    }
-
-    pub(crate) fn move_pi_command_cursor(&mut self, right: bool) {
-        if right {
-            self.pi_command_cursor = self.pi_command_input[self.pi_command_cursor..]
-                .char_indices()
-                .nth(1)
-                .map(|(offset, _)| self.pi_command_cursor + offset)
-                .unwrap_or(self.pi_command_input.len());
-        } else if self.pi_command_cursor > 0 {
-            self.pi_command_cursor = self.pi_command_input[..self.pi_command_cursor]
-                .char_indices()
-                .next_back()
-                .map(|(index, _)| index)
-                .unwrap_or(0);
-        }
-    }
-
-    pub(crate) fn complete_pi_command(&mut self) {
-        let Some(command) = self.selected_pi_command() else {
-            self.status = "No Pi command matches · Ctrl-U clears".into();
-            return;
-        };
-        let current = self.pi_command_input.trim();
-        let args = current
-            .strip_prefix('/')
-            .unwrap_or(current)
-            .split_once(char::is_whitespace)
-            .map(|(_, args)| args.trim_start())
-            .unwrap_or("");
-        self.pi_command_input = if args.is_empty() {
-            format!("{} ", command.name)
-        } else {
-            format!("{} {args}", command.name)
-        };
-        self.pi_command_cursor = self.pi_command_input.len();
-        self.pi_command_selection = 0;
-        self.status = format!(
-            "/{name} ready · type arguments, then Enter",
-            name = command.name
-        );
-    }
-
-    pub(crate) fn submit_pi_command(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
-        let typed = self.pi_command_input.trim().to_string();
-        let typed = typed.strip_prefix('/').unwrap_or(&typed).trim();
-        let command = typed
-            .split_whitespace()
-            .next()
-            .or_else(|| self.selected_pi_command().map(|command| command.name));
-        let Some(command) = command else {
-            self.status = "No Pi command selected · Esc closes".into();
-            return;
-        };
-        let args = typed.strip_prefix(command).unwrap_or("").trim().to_string();
-
-        match resolve_pi_slash_route(command) {
-            PiSlashRoute::ComposerMode(mode) => {
-                self.close_pi_command_palette();
-                self.composer_mode = true;
-                self.set_composer_run_mode(mode);
-                if args.is_empty() {
-                    self.status = format!("{} mode · composer draft restored", mode.label());
-                    self.restore_pi_composer_origin();
-                    return;
-                }
-                if let Some((draft, cursor)) = self.pi_command_composer_origin.clone() {
-                    self.composer_input = draft;
-                    self.composer_cursor = cursor;
-                    if self.submit_composer_prompt(&args, true, worker) {
-                        self.pi_command_composer_origin = None;
-                    } else {
-                        self.restore_pi_composer_origin();
-                    }
-                } else {
-                    self.submit_composer_prompt(&args, false, worker);
-                }
-                return;
-            }
-            PiSlashRoute::Tasks => {
-                self.close_pi_command_palette();
-                self.surface = DevSurface::Tasks;
-                self.status = "Tasks selected · composer draft preserved".into();
-                self.restore_pi_composer_origin();
-                self.composer_mode = false;
-                return;
-            }
-            PiSlashRoute::WorkspaceTool(tool) => {
-                self.submit_pi_workspace_tool(tool, worker);
-                return;
-            }
-            PiSlashRoute::Thinking => {
-                self.submit_pi_thinking_tool(&args, worker);
-                return;
-            }
-            PiSlashRoute::NativePi | PiSlashRoute::Extension => {}
-        }
-
-        if self.background_action_running() {
-            if self.restore_pi_composer_origin() {
-                self.status =
-                    "Pi command restored to composer · another background action is running".into();
-            } else {
-                self.status =
-                    "Pi command kept in the modal · another background action is running".into();
-            }
-            return;
-        }
-
-        let mut arguments = serde_json::json!({
-            "name": command,
-            "args": args,
-        });
-        if let Some(agent) = self.selected_agent.as_ref() {
-            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
-        }
-        let (call, context) = match self.tool_request("glass.agent.slash", arguments, true) {
-            Ok(request) => request,
-            Err(error) => {
-                self.status = format!("Pi /{command} unavailable: {error}");
-                self.restore_pi_composer_origin();
-                return;
-            }
-        };
-        self.pi_command_pending = Some(command.to_string());
-        self.pi_command_pending_args = args;
-        self.close_pi_command_palette();
-        match self.queue_or_confirm(call, context, format!("Run Pi /{command}")) {
-            Ok(true) => {
-                self.pi_command_composer_origin = None;
-                self.status = format!("Pi /{command} queued");
-            }
-            Ok(false) => {
-                self.status =
-                    format!("Pi /{command} awaits confirmation · Enter approves · Esc cancels");
-            }
-            Err(error) => {
-                self.pi_command_pending = None;
-                self.pi_command_pending_args.clear();
-                self.status = format!("Pi /{command} failed to start: {error}");
-                self.restore_pi_composer_origin();
-            }
-        }
-    }
-
-    fn submit_pi_workspace_tool(
-        &mut self,
-        tool: &str,
-        worker: &mut super::snapshot::SnapshotWorker,
-    ) {
-        let command = self.pi_command_input.trim().to_string();
-        let mut arguments = serde_json::json!({});
-        if let Some(agent) = self.selected_agent.as_ref() {
-            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
-        }
-        let (call, context) = match self.tool_request(tool, arguments, false) {
-            Ok(request) => request,
-            Err(error) => {
-                self.status = format!("{tool} unavailable: {error}");
-                self.restore_pi_composer_origin();
-                return;
-            }
-        };
-        self.close_pi_command_palette();
-        match worker.submit_tool(call, context) {
-            Ok(id) => {
-                self.pi_command_composer_origin = None;
-                self.running_tool_job = Some(id);
-                self.remember_composer_history(&command);
-                self.status = format!("{tool} · queued from composer");
-            }
-            Err(error) => {
-                self.status = format!("{tool} failed: {error}");
-                self.restore_pi_composer_origin();
-            }
-        }
-    }
-
-    fn submit_pi_thinking_tool(
-        &mut self,
-        args: &str,
-        worker: &mut super::snapshot::SnapshotWorker,
-    ) {
-        let Some(level) = args.split_whitespace().next() else {
-            self.status = "/think requires LEVEL".into();
-            self.restore_pi_composer_origin();
-            return;
-        };
-        let mut arguments = serde_json::json!({"level": level});
-        if let Some(agent) = self.selected_agent.as_ref() {
-            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
-        }
-        let (call, context) = match self.tool_request("glass.agent.thinking", arguments, true) {
-            Ok(request) => request,
-            Err(error) => {
-                self.status = format!("glass.agent.thinking unavailable: {error}");
-                self.restore_pi_composer_origin();
-                return;
-            }
-        };
-        let command = self.pi_command_input.trim().to_string();
-        self.agent_thinking = level.into();
-        self.close_pi_command_palette();
-        match worker.submit_tool(call, context) {
-            Ok(id) => {
-                self.pi_command_composer_origin = None;
-                self.running_tool_job = Some(id);
-                self.remember_composer_history(&command);
-                self.status = "glass.agent.thinking · queued from composer".into();
-            }
-            Err(error) => {
-                self.status = format!("glass.agent.thinking failed: {error}");
-                self.restore_pi_composer_origin();
-            }
-        }
     }
 
     pub fn palette_action_indices(&self) -> Vec<usize> {
@@ -3460,10 +2996,6 @@ impl DevTuiState {
     }
 
     pub fn open_palette_with(&mut self, prefix: &str) {
-        if !self.may_leave_trust_surface() {
-            self.status = "Choose O, 1, or T on the Trust surface before opening commands".into();
-            return;
-        }
         self.open_palette();
         self.command_input = prefix.into();
         self.command_cursor = self.command_input.len();
@@ -3765,119 +3297,6 @@ impl DevTuiState {
         }
     }
 
-    pub fn agent_browser_context(&self) -> serde_json::Value {
-        let semantic_summary = self.browser_workspace_summary();
-        let state = self.browser_workspace.state();
-        let selected_entity = state.selected().map(|entity| {
-            serde_json::json!({
-                "reference": entity.reference,
-                "role": entity.role,
-                "name": entity.name,
-                "actionable": entity.actionable,
-                "revision": entity.revision,
-            })
-        });
-        let selected_target = state
-            .targets
-            .iter()
-            .find(|target| target.selected)
-            .map(|target| {
-                serde_json::json!({
-                    "id": target.id,
-                    "title": target.title,
-                    "url": safe_browser_url(&target.url),
-                })
-            });
-        serde_json::json!({
-            "schemaVersion": "glass.agent-context.v1",
-            "browser": {
-                "attached": state.connection == glass_browser::browser_workspace::BrowserConnectionPhase::Connected,
-                "connection": serde_json::to_value(state.connection).unwrap_or(serde_json::Value::Null),
-                "targetId": selected_target.as_ref().and_then(|target| target.get("id")).cloned(),
-                "origin": page_origin(&state.url),
-                "url": safe_browser_url(&state.url),
-                "title": state.title,
-                "browserRevision": state.browser_revision,
-                "semanticSummary": semantic_summary,
-                "selectedEntity": selected_entity,
-                "workflowState": state.workflow,
-                "inputOwner": serde_json::to_value(state.input_owner).unwrap_or(serde_json::Value::Null),
-                "freshness": if state.semantic_invalidated { "stale" } else { "current" },
-                "target": selected_target,
-                "bootstrap": if state.connection == glass_browser::browser_workspace::BrowserConnectionPhase::Connected {
-                    "attached; observe before acting"
-                } else {
-                    "detached; call glass.browser.start, then navigate and observe the requested URL"
-                },
-            },
-            "authority": {
-                "source": "Glass browser workspace",
-                "mutationLeaseRequired": selected_entity.as_ref().is_some_and(|entity| {
-                    entity.get("actionable").and_then(serde_json::Value::as_bool).unwrap_or(false)
-                }),
-            },
-            "project": {
-                "root": self.snapshot_root,
-            },
-        })
-    }
-    /// Snapshot the focused editor buffer for the shared workspace chat.
-    ///
-    /// Chat must see the same unsaved text the human sees, not only the
-    /// on-disk file. Keep the attachment bounded; the agent can request the
-    /// remainder through its file tools.
-    pub fn agent_editor_context(&self) -> serde_json::Value {
-        let buffer = self.focused_buffer();
-        let focused = buffer.as_ref().map(|buffer| {
-            let (content, truncated) = bounded_editor_content(&buffer.content);
-            serde_json::json!({
-                "path": buffer.path,
-                "cursor": {
-                    "line": buffer.cursor_line,
-                    "column": buffer.cursor_column,
-                },
-                "selection": buffer.selection,
-                "dirty": buffer.dirty,
-                "actor": buffer.actor,
-                "content": content,
-                "contentTruncated": truncated,
-            })
-        });
-        let project_revision = self
-            .workspace
-            .try_lock()
-            .ok()
-            .map(|workspace| workspace.project().revision());
-        let comments = self
-            .editor_comments
-            .iter()
-            .filter(|comment| {
-                self.focused_editor_path.is_empty() || comment.path == self.focused_editor_path
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let proposals = self
-            .editor_proposals
-            .iter()
-            .filter(|proposal| {
-                self.focused_editor_path.is_empty() || proposal.path == self.focused_editor_path
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        serde_json::json!({
-            "focusedPath": self.focused_editor_path,
-            "cursor": {
-                "line": self.focused_editor_line,
-                "column": self.focused_editor_column,
-            },
-            "dirty": self.focused_editor_dirty,
-            "projectRevision": project_revision,
-            "focusedBuffer": focused,
-            "comments": comments,
-            "proposals": proposals,
-        })
-    }
-
     pub fn browser_chat_header(&self) -> String {
         let browser = self.browser_workspace.state();
         let page = if browser.url.is_empty() {
@@ -4023,11 +3442,6 @@ impl DevTuiState {
 
     pub fn composer_context_chips(&self) -> String {
         let mut chips = Vec::new();
-        if !self.focused_editor_path.is_empty() {
-            chips.push(format!("@{}", self.focused_editor_path));
-        } else if let Some(path) = self.files.get(self.selected_file) {
-            chips.push(format!("@{path}"));
-        }
         if self.focused_editor_selection.is_some() {
             chips.push("selection".into());
         }
@@ -4130,7 +3544,7 @@ impl DevTuiState {
             return;
         };
         let Some(entry_id) = entry.entry_id.clone() else {
-            self.status = "Selected bubble has no Pi entry · send a turn first".into();
+            self.status = "Selected bubble has no conversation entry · send a turn first".into();
             return;
         };
         let mut arguments = serde_json::json!({"entryId": entry_id});
@@ -4180,18 +3594,8 @@ impl DevTuiState {
         self.session_picker_items = parse_session_picker_items(value);
         self.session_picker_selection = 0;
         self.session_picker_open = !self.session_picker_items.is_empty();
-        let collection =
-            if crate::ResidentHarnessKind::from_env() == crate::ResidentHarnessKind::GlassCore {
-                "conversation(s)"
-            } else {
-                "Pi session(s)"
-            };
-        let none =
-            if crate::ResidentHarnessKind::from_env() == crate::ResidentHarnessKind::GlassCore {
-                "No persisted conversations"
-            } else {
-                "No persisted Pi sessions"
-            };
+        let collection = "conversation(s)";
+        let none = "No persisted conversations";
         self.status = if self.session_picker_open {
             format!(
                 "{} {collection} · Enter switch · Esc close",
@@ -4255,28 +3659,9 @@ impl DevTuiState {
             message.state == ChatMessageState::Failed || !observed.contains(&message.message_id)
         });
     }
-    /// Start the shortest in-TUI path to a usable agent conversation.
+    /// Open the composer immediately; Core readiness may lag the prompt queue.
     pub fn start_agent_interaction(&mut self) {
-        match crate::resident_harness::resident_readiness() {
-            Ok(readiness) if readiness.ready => self.open_composer(),
-            Ok(readiness) => {
-                self.status = format!(
-                    "{} · {}",
-                    readiness.detail,
-                    readiness
-                        .remediation
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| "use :agent setup".into())
-                );
-                if readiness.selected == crate::ResidentHarnessKind::Pi {
-                    self.request_agent_setup();
-                }
-            }
-            Err(error) => {
-                self.status = format!("Agent readiness unavailable · use :agent setup: {error}");
-            }
-        }
+        self.open_composer();
     }
 
     /// Select a resident agent without forcing the user through the command
@@ -5989,61 +5374,14 @@ impl DevTuiState {
         self.close_file_picker();
         self.composer_mode = true;
         self.status = format!(
-            "{} on {} · Esc back · Enter sends · Tab mention · Shift-Enter newline",
-            self.composer_run_mode.label(),
+            "Message on {} · Esc back · Enter sends · Tab mention · Shift-Enter newline",
             self.surface.label(),
         );
     }
 
-    pub(crate) fn trust_allows_execution(&self) -> bool {
-        if self.yolo_mode {
-            return true;
-        }
-        match self.workspace.try_lock() {
-            Ok(workspace) => workspace.trust().permits_project_execution(),
-            Err(error) if error.to_string().contains("workspace busy") => {
-                matches!(
-                    self.snapshot_trust_label.as_str(),
-                    "trusted once" | "trusted project" | "trusted-once" | "trusted-project"
-                )
-            }
-            Err(_) => false,
-        }
-    }
-
-    pub(crate) fn may_leave_trust_surface(&self) -> bool {
-        true
-    }
-
     /// Focus the shared chat dock without changing the active surface.
     pub fn focus_composer_dock(&mut self) {
-        if !self.agent_readiness.starts_with("✓ Ready") {
-            self.start_agent_interaction();
-            return;
-        }
         self.open_composer();
-    }
-
-    pub fn cycle_composer_run_mode(&mut self) {
-        self.composer_run_mode = self.composer_run_mode.next();
-        let _ = self.ws_mut().map(|mut workspace| {
-            workspace.set_agent_turn_mode(self.composer_run_mode);
-        });
-        self.status = format!(
-            "{} mode · Ask is read-only · Plan writes a reviewable plan · Agent proposes",
-            self.composer_run_mode.label()
-        );
-        if self.composer_mode {
-            self.open_composer();
-        }
-    }
-
-    pub fn set_composer_run_mode(&mut self, mode: crate::AgentTurnMode) {
-        self.composer_run_mode = mode;
-        let _ = self.ws_mut().map(|mut workspace| {
-            workspace.set_agent_turn_mode(mode);
-        });
-        self.status = format!("{} mode", mode.label());
     }
 
     pub fn toggle_selected_git_stage(&mut self) {
@@ -6153,7 +5491,7 @@ impl DevTuiState {
 
     pub fn accept_pending_plan(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let Some(mut plan) = self.pending_plan.clone() else {
-            self.status = "No plan to accept · switch to Plan and send a goal".into();
+            self.status = "No plan to accept · create a plan first".into();
             return;
         };
         if plan.body.is_empty()
@@ -6175,7 +5513,6 @@ impl DevTuiState {
             self.session_todos = list;
         }
         self.pending_plan = Some(plan.clone());
-        self.set_composer_run_mode(crate::AgentTurnMode::Agent);
         self.composer_input = format!(
             "Implement this accepted plan. Stay in proposals unless I say otherwise.\n\nGoal: {}\n\n{}",
             plan.goal, plan.body
@@ -6183,7 +5520,7 @@ impl DevTuiState {
         self.composer_cursor = self.composer_input.len();
         self.open_composer();
         self.submit_composer(worker);
-        self.status = format!("Plan {} accepted · Agent implementing", plan.id);
+        self.status = format!("Plan {} accepted · implementation requested", plan.id);
     }
 
     pub fn reject_pending_plan(&mut self) {
@@ -6193,7 +5530,6 @@ impl DevTuiState {
         } else {
             self.status = "No plan to reject".into();
         }
-        self.set_composer_run_mode(crate::AgentTurnMode::Plan);
     }
 
     fn persist_plan(&self, plan: &WorkspacePlan) {
@@ -6212,7 +5548,7 @@ impl DevTuiState {
     /// the focused buffer attached as unsaved, bounded context.
     pub fn prepare_editor_agent_prompt(&mut self) {
         let Some(buffer) = self.focused_buffer() else {
-            self.status = "No open buffer · open a file before asking Pi".into();
+            self.status = "No open buffer · open a file before asking Glass Core".into();
             return;
         };
         let line = buffer
@@ -6423,122 +5759,32 @@ impl DevTuiState {
         };
     }
 
-    /// Queue the managed Pi SDK install behind the same one-use confirmation
-    /// sheet used by every other mutating TUI action.
-    ///
-    /// Glass Core is an executable rather than a managed Node runtime, so this
-    /// reports the selected engine's repair step instead of installing one.
+    /// Refresh the readiness of the sole resident engine.
     pub fn request_agent_setup(&mut self) {
-        self.request_agent_setup_mode(crate::ResidentHarnessKind::from_env(), false);
-    }
-
-    /// Queue a forced reinstall of the pinned managed Pi SDK.
-    pub fn request_agent_update(&mut self) {
-        self.request_agent_setup_mode(crate::ResidentHarnessKind::from_env(), true);
-    }
-
-    /// Engine-explicit setup action.
-    ///
-    /// Taking the engine as an argument keeps both branches deterministic and
-    /// testable without mutating process environment.
-    pub(crate) fn request_agent_setup_mode(
-        &mut self,
-        kind: crate::ResidentHarnessKind,
-        update: bool,
-    ) {
-        if self.background_action_running() {
-            self.status = "Another background action is still running".into();
-            return;
-        }
-        if kind == crate::ResidentHarnessKind::GlassCore {
-            // Glass Core is installed as an executable, not as a managed
-            // Node runtime, so repair is reported instead of installed.
-            let next = crate::resident_harness::resident_readiness()
-                .map(|readiness| {
-                    readiness
-                        .remediation
-                        .first()
-                        .cloned()
-                        .unwrap_or(readiness.detail)
-                })
-                .unwrap_or_else(|error| error.to_string());
-            self.surface = DevSurface::Agent;
-            self.status = format!(
-                "Glass Core is the resident engine · {next} · set GLASS_AGENT_HARNESS=pi for the legacy Pi setup"
-            );
-            return;
-        }
-        let (call, context) = match self.tool_request(
-            "glass.agent.setup",
-            serde_json::json!({"login": false, "update": update}),
-            true,
-        ) {
-            Ok(request) => request,
-            Err(error) => {
-                self.status = if update {
-                    format!("Pi update unavailable: {error}")
-                } else {
-                    format!("Pi setup unavailable: {error}")
-                };
-                return;
-            }
-        };
-        let summary = if update {
-            "Refresh the pinned managed Pi SDK"
-        } else {
-            "Install or repair the pinned managed Pi SDK"
-        };
-        let queued = match self.queue_or_confirm(call, context, summary.into()) {
-            Ok(queued) => queued,
-            Err(error) => {
-                self.status = format!("Could not queue Pi setup: {error}");
-                return;
-            }
-        };
         self.surface = DevSurface::Agent;
-        if !queued {
-            self.status = if update {
-                "Pi update ready · Enter approves once · Esc cancels".into()
-            } else {
-                "Pi setup ready · Enter approves once · Esc cancels".into()
-            };
+        match self.refresh_agent_readiness() {
+            Ok(true) => self.status = "Glass Core is ready · start a conversation".into(),
+            Ok(false) => {
+                let detail = self.agent_readiness.clone();
+                self.status = format!("Glass Core needs setup · {detail}");
+            }
+            Err(error) => self.status = format!("Glass Core readiness check failed: {error}"),
         }
     }
 
-    /// Request an interactive Pi login; the outer TUI loop performs the
-    /// terminal handoff because the login program must own stdin.
+    pub fn request_agent_update(&mut self) {
+        self.request_agent_setup();
+    }
+
     pub fn request_agent_login(&mut self) -> Result<(), String> {
-        self.request_agent_login_for_provider(None)
-    }
-
-    pub fn request_agent_login_for_provider(
-        &mut self,
-        provider: Option<String>,
-    ) -> Result<(), String> {
-        self.request_agent_login_for_harness(crate::ResidentHarnessKind::from_env(), provider)
-    }
-
-    pub(crate) fn request_agent_login_for_harness(
-        &mut self,
-        harness: crate::ResidentHarnessKind,
-        provider: Option<String>,
-    ) -> Result<(), String> {
         if self.background_action_running() {
             let error = "Finish the current background action before signing in".to_string();
             self.status = error.clone();
             return Err(error);
         }
-        if harness == crate::ResidentHarnessKind::GlassCore {
-            self.agent_login_provider = None;
-            self.agent_login_requested = true;
-            self.surface = DevSurface::Agent;
-            self.status = "Glass Core login will open in this terminal · use Core's `/login`, then exit to return".into();
-            return Ok(());
-        }
-        self.agent_login_provider = provider;
         self.agent_login_requested = true;
         self.surface = DevSurface::Agent;
-        self.status = "Pi login will open in this terminal · exit Pi to return".into();
+        self.status = "Core login will open in this terminal · complete the provider sign-in, then exit to return".into();
         Ok(())
     }
 
@@ -6686,11 +5932,6 @@ impl DevTuiState {
     }
 
     pub fn open_file_picker(&mut self) {
-        if !self.may_leave_trust_surface() {
-            self.close_file_picker();
-            self.status = "Choose O, 1, or T on the Trust surface before opening files".into();
-            return;
-        }
         self.command_mode = false;
         self.file_picker_open = true;
         self.file_picker_query.clear();
@@ -6763,11 +6004,6 @@ impl DevTuiState {
     }
 
     pub fn submit_file_picker(&mut self) {
-        if !self.may_leave_trust_surface() {
-            self.close_file_picker();
-            self.status = "Choose O, 1, or T on the Trust surface before opening files".into();
-            return;
-        }
         let matches = self.file_picker_matches();
         let Some(&index) = matches.get(self.file_picker_selection) else {
             self.status = "No matching file".into();
@@ -6840,10 +6076,6 @@ impl DevTuiState {
     }
 
     pub fn submit_composer(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
-        if self.composer_input.trim_start().starts_with('/') {
-            self.submit_composer_slash(worker);
-            return;
-        }
         let prompt = self.composer_input.clone();
         self.submit_composer_prompt(&prompt, true, worker);
     }
@@ -6858,7 +6090,7 @@ impl DevTuiState {
             prompt,
             consume_draft,
             worker,
-            crate::ResidentHarnessKind::from_env(),
+            crate::ResidentHarnessKind::default_kind(),
         )
     }
 
@@ -6867,24 +6099,15 @@ impl DevTuiState {
         prompt: &str,
         consume_draft: bool,
         worker: &mut super::snapshot::SnapshotWorker,
-        harness: crate::ResidentHarnessKind,
+        _harness: crate::ResidentHarnessKind,
     ) -> bool {
         if self.composer_send_blocked() {
             self.status = "Background operation running · message kept in composer".into();
             return false;
         }
-        if !self.agent_readiness.starts_with("✓ Ready") {
-            self.status = match harness {
-                crate::ResidentHarnessKind::GlassCore => {
-                    "Glass Core needs setup · configure its executable and provider before chatting"
-                        .into()
-                }
-                crate::ResidentHarnessKind::Pi => {
-                    "Pi is not ready · use :agent setup or :agent setup login".into()
-                }
-            };
-            return false;
-        }
+        // Agent sends are accepted while Core is starting; the resident worker
+        // queues the first prompt until the session is ready. Readiness text is
+        // a snapshot and can lag behind the command channel during startup.
         if prompt.trim().is_empty() {
             self.status = "Message is empty · type a prompt, then press Enter".into();
             return false;
@@ -6901,9 +6124,6 @@ impl DevTuiState {
             self.composer_cursor = 0;
         }
         self.remember_composer_history(&text);
-        if self.composer_run_mode == crate::AgentTurnMode::Plan {
-            self.capture_plan_from_goal(&text);
-        }
         let prove = compile_prove_it(&text);
         let steer = self.composer_steer;
         let queued_follow_up = self.pending_chat_messages.iter().any(|message| {
@@ -6911,9 +6131,6 @@ impl DevTuiState {
         });
         self.composer_steer = false;
         self.composer_mode = true;
-        let _ = self.ws_mut().map(|mut workspace| {
-            workspace.set_agent_turn_mode(self.composer_run_mode);
-        });
         // A normal message is just the text the user typed. Attach browser
         // state only for an explicit prove-it request; never serialize the
         // selected editor buffer, path, or unrelated project metadata into a
@@ -6988,12 +6205,10 @@ impl DevTuiState {
                 });
                 self.status = if steer {
                     "Sent · steering Glass Agent…".into()
-                } else if self.composer_run_mode == crate::AgentTurnMode::Plan {
-                    "Plan turn · inspect only · :plan accept when ready".into()
                 } else if queued_follow_up {
                     "Queued follow-up · Glass Agent will continue".into()
                 } else {
-                    format!("Sent · {} is thinking…", self.composer_run_mode.label())
+                    "Sent · Glass Core is thinking…".into()
                 };
                 worker.request_conversation();
                 true
@@ -7010,10 +6225,56 @@ impl DevTuiState {
     }
 
     fn agent_prompt_context(&mut self) -> serde_json::Value {
-        let mut context = self.agent_browser_context();
-        context
-            .as_object_mut()
-            .map(|object| object.remove("project"));
+        let state = self.browser_workspace.state();
+        let selected_entity = state.selected().map(|entity| {
+            serde_json::json!({
+                "reference": entity.reference,
+                "role": entity.role,
+                "name": entity.name,
+                "actionable": entity.actionable,
+                "revision": entity.revision,
+            })
+        });
+        let selected_target = state
+            .targets
+            .iter()
+            .find(|target| target.selected)
+            .map(|target| {
+                serde_json::json!({
+                    "id": target.id,
+                    "title": target.title,
+                    "url": safe_browser_url(&target.url),
+                })
+            });
+        let context = serde_json::json!({
+            "schemaVersion": "glass.agent-context.v1",
+            "browser": {
+                "attached": state.connection == glass_browser::browser_workspace::BrowserConnectionPhase::Connected,
+                "connection": serde_json::to_value(state.connection).unwrap_or(serde_json::Value::Null),
+                "targetId": selected_target.as_ref().and_then(|target| target.get("id")).cloned(),
+                "origin": page_origin(&state.url),
+                "url": safe_browser_url(&state.url),
+                "title": state.title,
+                "browserRevision": state.browser_revision,
+                "semanticSummary": self.browser_workspace_summary(),
+                "selectedEntity": selected_entity,
+                "workflowState": state.workflow,
+                "inputOwner": serde_json::to_value(state.input_owner).unwrap_or(serde_json::Value::Null),
+                "freshness": if state.semantic_invalidated { "stale" } else { "current" },
+                "target": selected_target,
+                "bootstrap": if state.connection == glass_browser::browser_workspace::BrowserConnectionPhase::Connected {
+                    "attached; observe before acting"
+                } else {
+                    "detached; call glass.browser.start, then navigate and observe the requested URL"
+                },
+            },
+            "authority": {
+                "source": "Glass browser workspace",
+                "mutationLeaseRequired": selected_entity.as_ref().is_some_and(|entity| {
+                    entity.get("actionable").and_then(serde_json::Value::as_bool).unwrap_or(false)
+                }),
+            }
+        });
         if context["browser"]["selectedEntity"].is_object() {
             self.browser_workspace.state_mut().input_owner =
                 glass_browser::browser_workspace::BrowserInputOwner::Agent;
@@ -7021,50 +6282,20 @@ impl DevTuiState {
         context
     }
 
-    fn submit_composer_slash(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
-        let composer_origin = (self.composer_input.clone(), self.composer_cursor);
-        let raw = self.composer_input.trim().to_string();
-        if raw.trim_start_matches('/').trim().is_empty() {
-            self.status = "Empty slash command".into();
-            return;
-        }
-        self.pi_command_composer_origin = Some(composer_origin);
-        self.composer_input.clear();
-        self.composer_cursor = 0;
-        self.open_pi_command_palette();
-        self.pi_command_input = raw;
-        self.pi_command_cursor = self.pi_command_input.len();
-        self.submit_pi_command(worker);
-    }
-
     pub fn approve_confirmation_async(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let Some(pending) = self.pending_confirmation.take() else {
             return;
         };
-        let is_pi_command = pending.call.name == "glass.agent.slash";
         match worker.submit_tool(pending.call, pending.context) {
             Ok(id) => {
-                if is_pi_command {
-                    self.pi_command_composer_origin = None;
-                }
                 self.running_tool_job = Some(id);
                 self.status = format!(
                     "Running {} · Esc keeps the workspace responsive",
                     pending.summary
                 );
-                if is_pi_command {
-                    worker.request_conversation();
-                }
             }
             Err(error) => {
-                if is_pi_command {
-                    self.pi_command_pending = None;
-                    self.pi_command_pending_args.clear();
-                }
                 self.status = format!("Could not queue mutation: {error}");
-                if is_pi_command {
-                    self.restore_pi_composer_origin();
-                }
             }
         }
     }
@@ -7202,18 +6433,12 @@ impl DevTuiState {
         context: crate::tools::DevelopmentToolContext,
         summary: String,
     ) -> Result<bool, String> {
-        if self.yolo_mode {
-            self.queue_tool_request(call, context)?;
-            self.status = format!("YOLO · {summary} queued");
-            Ok(true)
-        } else {
-            self.pending_confirmation = Some(PendingConfirmation {
-                call,
-                context,
-                summary,
-            });
-            Ok(false)
-        }
+        self.pending_confirmation = Some(PendingConfirmation {
+            call,
+            context,
+            summary,
+        });
+        Ok(false)
     }
 
     pub fn submit_pending_verify(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
@@ -7245,27 +6470,13 @@ impl DevTuiState {
         let Some((call, context)) = self.queued_tool_request.take() else {
             return;
         };
-        let is_pi_command = call.name == "glass.agent.slash";
         match worker.submit_tool(call, context) {
             Ok(id) => {
-                if is_pi_command {
-                    self.pi_command_composer_origin = None;
-                }
                 self.running_tool_job = Some(id);
                 self.status.push_str(" · running in background");
-                if is_pi_command {
-                    worker.request_conversation();
-                }
             }
             Err(error) => {
-                if is_pi_command {
-                    self.pi_command_pending = None;
-                    self.pi_command_pending_args.clear();
-                }
                 self.status = format!("Could not queue tool: {error}");
-                if is_pi_command {
-                    self.restore_pi_composer_origin();
-                }
             }
         }
     }
@@ -7448,29 +6659,6 @@ impl DevTuiState {
         }
         match result.result {
             Ok(value) => {
-                if result.tool == "glass.agent.slash" {
-                    let pending_command = self.pi_command_pending.take();
-                    let pending_args = std::mem::take(&mut self.pi_command_pending_args);
-                    if value.get("queued").and_then(serde_json::Value::as_bool) == Some(true) {
-                        let command = pending_command.unwrap_or_else(|| "command".into());
-                        self.status = format!(
-                            "Pi /{command} queued · resident session will report the result"
-                        );
-                        if command == "login" {
-                            let provider = pending_args
-                                .split_whitespace()
-                                .next()
-                                .filter(|value| !value.is_empty())
-                                .map(str::to_string);
-                            let _ = self.request_agent_login_for_provider(provider);
-                        } else if command == "quit" {
-                            self.request_quit();
-                        }
-                    } else {
-                        self.apply_pi_command_result(&value);
-                    }
-                    return;
-                }
                 if result.tool == "glass.agent.sessions" {
                     self.open_session_picker(&value);
                     return;
@@ -7597,20 +6785,6 @@ impl DevTuiState {
                         .as_deref()
                         .map(|path| format!("Git diff · {path} · PgUp/PgDn scroll · Esc closes"))
                         .unwrap_or_else(|| "Git diff · PgUp/PgDn scroll · Esc closes".into());
-                } else if result.tool == "glass.agent.setup" {
-                    match self.refresh_agent_readiness() {
-                        Ok(true) => {
-                            self.open_composer();
-                            self.status =
-                                "Pi runtime ready · type a prompt, then press Enter".into();
-                        }
-                        Ok(false) => {
-                            self.status =
-                                "Pi runtime installed · use :agent setup login, then Enter to chat"
-                                    .into();
-                        }
-                        Err(error) => self.status = format!("Pi readiness check failed: {error}"),
-                    }
                 } else if result.tool == "glass.agent.send" {
                     if let Some(agent_id) = value
                         .get("agentId")
@@ -7706,7 +6880,6 @@ impl DevTuiState {
                 if !matches!(
                     result.tool.as_str(),
                     "glass.agent.send"
-                        | "glass.agent.setup"
                         | "glass.agent.delegate"
                         | "glass.git.diff"
                         | "glass.github.review"
@@ -7724,10 +6897,6 @@ impl DevTuiState {
                 }
             }
             Err(error) => {
-                if result.tool == "glass.agent.slash" {
-                    self.pi_command_pending = None;
-                    self.pi_command_pending_args.clear();
-                }
                 if result.tool == "glass.browser.verify" {
                     self.last_proof_ok = Some(false);
                     self.last_verify = Some(evidence_card("live page", 0, None, &error, false));
@@ -7768,66 +6937,10 @@ impl DevTuiState {
         }
     }
 
-    fn apply_pi_command_result(&mut self, value: &serde_json::Value) {
-        let command = value
-            .get("command")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("command");
-        let kind = value
-            .get("kind")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        if kind == "sessions" {
-            // `/resume` without a path is Pi's interactive session chooser.
-            // Reuse the existing Glass picker so the command is actionable
-            // instead of leaving a JSON list stranded on More.
-            self.open_session_picker(value);
-            return;
-        }
-        if kind == "login" {
-            let _ = self.request_agent_login();
-            return;
-        }
-        if kind == "quit" {
-            self.request_quit();
-            return;
-        }
-        if let Some(model) = value.get("model").filter(|model| model.is_object()) {
-            let provider = model
-                .get("provider")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            let id = model
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            if !provider.is_empty() && !id.is_empty() {
-                self.agent_model = format!("{provider}/{id}");
-            }
-        }
-        if let Some(thinking) = value.get("thinking").and_then(serde_json::Value::as_str) {
-            self.agent_thinking = thinking.to_string();
-        }
-        if let Some(name) = value.get("sessionName").and_then(serde_json::Value::as_str) {
-            self.agent_session_name = name.to_string();
-        }
-        let rendered = serde_json::to_string_pretty(value)
-            .unwrap_or_else(|_| format!("Pi /{command} completed"));
-        self.more_result = format!("Pi /{command}\n\n{rendered}");
-        self.surface = DevSurface::More;
-        self.status = format!("Pi /{command} completed · result shown on More");
-    }
-
     pub fn deny_confirmation(&mut self) {
         self.pending_browser_navigation = None;
         self.pending_page_entity = None;
         if let Some(pending) = self.pending_confirmation.take() {
-            let is_pi_command = pending.call.name == "glass.agent.slash";
-            if is_pi_command {
-                self.pi_command_pending = None;
-                self.pi_command_pending_args.clear();
-                self.restore_pi_composer_origin();
-            }
             self.status = format!("Denied · {}", pending.summary);
         }
     }
@@ -7869,41 +6982,17 @@ impl DevTuiState {
             self.open_palette();
             return;
         }
-        if character == '/' && self.surface == DevSurface::Agent {
-            self.open_pi_command_palette();
-            return;
-        }
         if character == 'a' && self.surface != DevSurface::Agent {
             self.open_menu();
             return;
         }
-        if self.surface == DevSurface::Trust {
-            let decision = match character {
-                'i' | 'I' => {
-                    self.status = "Inspecting exact repository configuration".into();
-                    return;
-                }
-                'o' | 'O' => Some(crate::LocalTrustDecision::OpenUntrusted),
-                '1' | 't' => Some(crate::LocalTrustDecision::TrustOnce),
-                'T' => Some(crate::LocalTrustDecision::TrustProject),
-                _ => None,
-            };
-            if let Some(decision) = decision {
-                self.queue_trust(decision);
-                return;
-            }
-        }
         // Agent text wins over navigation. The event loop reserves only
         // explicit modal controls and the `:` command prefix.
         if self.surface == DevSurface::Agent && !character.is_ascii_digit() {
-            if self.agent_readiness.starts_with("✓ Ready") {
-                self.open_composer();
-            } else {
-                self.start_agent_interaction();
-            }
-            if self.composer_mode {
-                self.insert_composer_text(&character.to_string());
-            }
+            // Always open the composer and retain the first typed character;
+            // Core readiness can lag its prompt queue during startup.
+            self.open_composer();
+            self.insert_composer_text(&character.to_string());
             return;
         }
 
@@ -8022,45 +7111,6 @@ impl DevTuiState {
         }
     }
 
-    pub fn queue_trust(&mut self, decision: crate::LocalTrustDecision) {
-        if self.apply_trust(decision) {
-            return;
-        }
-        self.pending_trust = Some(decision);
-        self.status = "Trust queued · applying when the workspace is free".into();
-    }
-
-    fn apply_trust(&mut self, decision: crate::LocalTrustDecision) -> bool {
-        match self
-            .workspace
-            .try_lock()
-            .and_then(|mut workspace| workspace.apply_local_trust_decision(decision))
-        {
-            Ok(trust) => {
-                if self.surface == DevSurface::Trust {
-                    self.surface = DevSurface::Agent;
-                }
-                self.snapshot_trust_label = trust.label().into();
-                self.status = format!("Workspace opened with {} authority", trust.label());
-                true
-            }
-            Err(error) if error.to_string().contains("workspace busy") => false,
-            Err(error) => {
-                self.status = format!("Trust decision failed: {error}");
-                true
-            }
-        }
-    }
-
-    pub fn flush_pending_trust(&mut self) {
-        let Some(decision) = self.pending_trust else {
-            return;
-        };
-        if self.apply_trust(decision) {
-            self.pending_trust = None;
-        }
-    }
-
     fn queue_selected_file_preview(&mut self) {
         if self.files.is_empty() {
             self.pending_open_file = Some(String::new());
@@ -8167,7 +7217,7 @@ impl DevTuiState {
             DevSurface::Tasks => &self.tasks,
             DevSurface::Git => &self.git,
             DevSurface::Debug => &self.debugger,
-            DevSurface::More | DevSurface::Trust => &self.workspace_status,
+            DevSurface::More => &self.workspace_status,
             DevSurface::Agent => unreachable!("agent content handled above"),
         };
         content.lines().count().max(1)
@@ -8373,9 +7423,6 @@ impl DevTuiState {
     }
 
     pub fn attach_selected_process_url(&mut self) -> Result<String, String> {
-        if !self.trust_allows_execution() {
-            return Err("trust the workspace before attaching the detected app".into());
-        }
         let url = self
             .selected_process_entry()
             .and_then(|entry| entry.url.clone())
@@ -10934,9 +9981,6 @@ impl DevTuiState {
     }
 
     pub fn attach_detected_app(&mut self) -> Result<String, String> {
-        if !self.trust_allows_execution() {
-            return Err("trust the workspace before attaching the detected app".into());
-        }
         let url = self
             .resolved_app_url()
             .ok_or_else(|| "No App URL · start the detected suite".to_string())?;
@@ -11239,8 +10283,8 @@ impl DevTuiState {
             self.status = "Stale suggestion discarded · request again at the current cursor".into();
             return false;
         }
-        let pi = match &self.pending_fim {
-            Some(PendingFim::Pi {
+        let resident = match &self.pending_fim {
+            Some(PendingFim::Resident {
                 agent_id,
                 since,
                 path,
@@ -11257,11 +10301,11 @@ impl DevTuiState {
             )),
             _ => None,
         };
-        if let Some((agent_id, since, request_id, path, offset, revision)) = pi {
+        if let Some((agent_id, since, request_id, path, offset, revision)) = resident {
             let response = self
                 .locked(|workspace| {
                     let events = workspace.agents().history(since).ok()?;
-                    matching_pi_fim_response(&events, &agent_id, &request_id)
+                    matching_resident_fim_response(&events, &agent_id, &request_id)
                 })
                 .flatten();
             return match response {
@@ -11337,7 +10381,7 @@ impl DevTuiState {
                     rx,
                 });
             }
-            crate::fim::FimBackend::Pi => {
+            crate::fim::FimBackend::Resident => {
                 let selected = self.selected_agent.clone();
                 let queued = self
                     .locked(|workspace| {
@@ -11366,14 +10410,17 @@ impl DevTuiState {
                             .agents()
                             .request_with_id(
                                 &id,
-                                crate::pi_runtime::PiSessionRequest::Complete { prefix, suffix },
+                                crate::resident_harness::ResidentSessionRequest::Complete {
+                                    prefix,
+                                    suffix,
+                                },
                             )
                             .ok()?;
                         Some((id, since, request_id))
                     })
                     .flatten();
                 if let Some((agent_id, since, request_id)) = queued {
-                    self.pending_fim = Some(PendingFim::Pi {
+                    self.pending_fim = Some(PendingFim::Resident {
                         path: path.to_string(),
                         offset,
                         revision,
@@ -11894,8 +10941,6 @@ impl DevTuiState {
         self.workspace_status = snapshot.workspace_status.clone();
         self.browser = snapshot.browser.clone();
         self.snapshot_root = snapshot.root.clone();
-        self.snapshot_trust_label = snapshot.trust_label.clone();
-        self.snapshot_trust_inspection = snapshot.trust_inspection.clone();
         self.snapshot_project_revision = snapshot.project_revision;
         self.snapshot_generation = snapshot.generation;
         self.snapshot_skills_count = snapshot.skills_count;
@@ -12465,8 +11510,6 @@ impl DevTuiState {
         let kernel_count = workspace.kernels().snapshots().count();
         let debugger_count = workspace.debugger_names().count();
         let detection = workspace.project().detection().clone();
-        let trust = workspace.trust();
-        let trust_ready = trust.permits_project_execution() || self.yolo_mode;
         let dev_hint = detection
             .dev_command
             .as_deref()
@@ -12482,14 +11525,14 @@ impl DevTuiState {
         } else {
             format!("✓ {} project", detection.languages.join("/"))
         };
-        let workspace_line = format!("✓ workspace {}", trust.label());
+        let workspace_line = "✓ workspace ready";
         let agent_hint = if self.agent_readiness.starts_with("✓ Ready") {
             ":agent ready · type a message or press Enter to chat"
         } else {
-            "○ Pi onboarding · use :agent setup or :agent setup login"
+            "○ Glass Core setup · use :agent setup or :agent setup login"
         };
         self.workspace_status = format!(
-            "WELCOME · {}\n{}\n\n{}\n{}\n\nNEXT ACTIONS\n◆ :actions guided launchers · per-surface flows\n◆ type a message or press Enter to talk to Glass Agent\n◆ :process start dev · start the detected dev suite\n◆ Enter · open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
+            "WELCOME · {}\n{}\n\n{}\n{}\n\nNEXT ACTIONS\n◆ :actions guided launchers · per-surface flows\n◆ type a message or press Enter to talk to Glass Core\n◆ :process start dev · start the detected dev suite\n◆ Enter · open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
             detection.git_branch.as_deref().unwrap_or("no branch"),
             project_line,
             agent_hint,
@@ -12499,15 +11542,12 @@ impl DevTuiState {
             root,
             generation,
             project_revision,
-            trust_ready,
             agent_count,
             task_count,
             kernel_count,
             debugger_count,
         );
-        if (workspace.trust().permits_project_execution() || self.yolo_mode)
-            && let Ok(experiments) = workspace.experiments()
-        {
+        if let Ok(experiments) = workspace.experiments() {
             let snapshots = experiments.snapshots();
             self.experiments = format_experiment_snapshots(&snapshots);
             self.experiment_comparison = Some(experiments.compare());
@@ -13480,7 +12520,6 @@ impl DevTuiState {
                     actor: crate::development::Actor::local(),
                     allow_mutation: mutating,
                     confirmed: mutating,
-                    unrestricted: self.yolo_mode,
                 },
                 initiator: None,
                 expected_generation,
@@ -13830,7 +12869,7 @@ fn parse_editor_diagnostics(
 fn more_route_status(command: &str, message: &str) -> String {
     match command {
         "doctor" if message.contains("is ready") => {
-            "Doctor · Agent is ready · PI panel updated · 1 opens chat".into()
+            "Doctor · Agent is ready · Core panel updated · 1 opens chat".into()
         }
         "doctor" => format!("Doctor · {message}"),
         "harness list" => {
@@ -14115,79 +13154,36 @@ fn stats_summary(value: &serde_json::Value) -> String {
     }
 }
 
-fn format_pi_readiness(readiness: &crate::PiReadiness) -> String {
-    let provider = readiness.provider.as_deref().unwrap_or("not selected");
-    let session = readiness.session.as_deref().unwrap_or("new session");
-    let remediation = readiness
-        .remediation
-        .first()
-        .map(|item| format!(" · next: {item}"))
-        .unwrap_or_default();
+/// Status line for the sole resident Glass Core engine.
+fn format_resident_readiness(readiness: &crate::ResidentReadiness) -> String {
+    let core = &readiness.glass_core;
+    let engine = core
+        .binary
+        .version
+        .as_deref()
+        .map(|version| format!("glass-core {version}"))
+        .unwrap_or_else(|| "engine missing".into());
     let state_line = format!(
-        "{} · Node {} · SDK {} · auth {}",
+        "{} · {} · runtime {} · provider {}",
         if readiness.ready {
             "✓ Ready"
         } else {
             "○ Needs setup"
         },
-        component_label(&readiness.node),
-        readiness.sdk.version.as_deref().unwrap_or("missing"),
-        component_label(&readiness.authentication),
+        engine,
+        core_component_label(&core.protocol),
+        core_component_label(&core.authentication),
     );
     if readiness.ready {
-        format!("{state_line}\nprovider {provider} · {session}")
+        let provider = core.provider.as_deref().unwrap_or("not selected");
+        format!("{state_line}\nprovider {provider} · Glass Core tools and permissions")
     } else {
-        format!(
-            "{state_line}\nprovider {provider} · {session}{remediation}\n\nUse `:agent setup` to repair the pinned runtime · `:agent update` to refresh it · `:agent setup login` to open Pi `/login`"
-        )
-    }
-}
-
-/// Status line for the engine that actually runs resident agents.
-fn format_resident_readiness(readiness: &crate::ResidentReadiness) -> String {
-    let selected = readiness.selected;
-    match selected {
-        crate::ResidentHarnessKind::GlassCore => {
-            let core = &readiness.glass_core;
-            let engine = core
-                .binary
-                .version
-                .as_deref()
-                .map(|version| format!("glass-core {version}"))
-                .unwrap_or_else(|| "engine missing".into());
-            let state_line = format!(
-                "{} · {} · runtime {} · provider {}",
-                if readiness.ready {
-                    "✓ Ready"
-                } else {
-                    "○ Needs setup"
-                },
-                engine,
-                core_component_label(&core.protocol),
-                core_component_label(&core.authentication),
-            );
-            if readiness.ready {
-                let provider = core.provider.as_deref().unwrap_or("not selected");
-                format!("{state_line}\nprovider {provider} · Glass-owned tools and approvals")
-            } else {
-                let remediation = readiness
-                    .remediation
-                    .first()
-                    .map(|item| format!(" · next: {item}"))
-                    .unwrap_or_default();
-                format!(
-                    "{state_line}{remediation}\n\nInstall `glass-core` or set `GLASS_CORE_BINARY`; set `GLASS_AGENT_HARNESS=pi` to use the legacy Pi runtime"
-                )
-            }
-        }
-        crate::ResidentHarnessKind::Pi => match readiness.pi.as_ref() {
-            Some(pi) => format!(
-                "{} · legacy backend\n{}",
-                selected.label(),
-                format_pi_readiness(pi)
-            ),
-            None => format!("{} · Pi readiness unavailable", selected.label()),
-        },
+        let remediation = readiness
+            .remediation
+            .first()
+            .map(|item| format!(" · next: {item}"))
+            .unwrap_or_default();
+        format!("{state_line}{remediation}\n\nInstall `glass-core` or set `GLASS_CORE_BINARY`.")
     }
 }
 
@@ -14198,16 +13194,6 @@ fn core_component_label(component: &crate::CoreReadinessComponent) -> String {
         crate::CoreReadinessState::Incompatible => "! incompatible".into(),
         crate::CoreReadinessState::Unauthenticated => "! no provider".into(),
         crate::CoreReadinessState::Unknown => "? unknown".into(),
-    }
-}
-
-fn component_label(component: &crate::pi_runtime::PiReadinessComponent) -> String {
-    match component.state {
-        crate::pi_runtime::PiReadinessState::Ready => "✓".into(),
-        crate::pi_runtime::PiReadinessState::Missing => "× missing".into(),
-        crate::pi_runtime::PiReadinessState::Incompatible => "! incompatible".into(),
-        crate::pi_runtime::PiReadinessState::Expired => "! expired".into(),
-        crate::pi_runtime::PiReadinessState::Unknown => "? unknown".into(),
     }
 }
 
@@ -14248,18 +13234,6 @@ fn page_origin(url: &str) -> Option<String> {
         .unwrap_or(url.len());
     Some(url[..authority_end].to_string())
 }
-fn bounded_editor_content(content: &str) -> (String, bool) {
-    const MAX_CONTEXT_BYTES: usize = 64 * 1024;
-    if content.len() <= MAX_CONTEXT_BYTES {
-        return (content.to_string(), false);
-    }
-    let mut end = MAX_CONTEXT_BYTES;
-    while end > 0 && !content.is_char_boundary(end) {
-        end -= 1;
-    }
-    (content[..end].to_string(), true)
-}
-
 pub(crate) fn pending_agent_approvals(
     agents: Option<&Vec<crate::AgentSnapshot>>,
 ) -> Vec<PendingAgentApproval> {
@@ -14766,15 +13740,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    fn trust_workspace_once(state: &mut DevTuiState) {
-        state
-            .ws_mut()
-            .expect("lock temporary workspace")
-            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
-            .expect("trust temporary workspace for test");
-        state.snapshot_trust_label = "trusted once".into();
-    }
-
     #[test]
     fn pasted_palette_and_composer_text_report_byte_limit_truncation() {
         let (mut state, root) = routed_state("paste-limits");
@@ -14900,29 +13865,6 @@ mod tests {
         );
         assert!(many_changes.contains("+inserted"));
         assert!(many_changes.contains("diff truncated"));
-    }
-
-    #[test]
-    fn trust_surface_accepts_lowercase_once_and_uppercase_project_aliases() {
-        let (mut state, root) = routed_state("trust-key-case");
-        state.surface = DevSurface::Trust;
-        let workspace = state.workspace.clone();
-        let guard = workspace.try_lock().expect("lock test workspace");
-        state.handle_printable('t');
-        drop(guard);
-        assert_eq!(
-            state.pending_trust,
-            Some(crate::LocalTrustDecision::TrustOnce)
-        );
-        state.pending_trust = None;
-        let guard = workspace.try_lock().expect("lock test workspace");
-        state.handle_printable('T');
-        drop(guard);
-        assert_eq!(
-            state.pending_trust,
-            Some(crate::LocalTrustDecision::TrustProject)
-        );
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -15056,9 +13998,8 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
+        let state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         (state, root)
     }
 
@@ -16030,7 +14971,7 @@ mod tests {
             .unwrap();
 
         let state =
-            DevTuiState::open_for_tui_with_browser_policy(&root, TuiLayout::Desktop, false, policy)
+            DevTuiState::open_for_tui_with_browser_policy(&root, TuiLayout::Desktop, policy)
                 .expect("open TUI state with complete browser policy");
         let workspace = state.ws().expect("lock development workspace");
         let browser = workspace.browser();
@@ -16105,142 +15046,12 @@ mod tests {
     }
 
     #[test]
-    fn trusted_workspace_remains_trusted_while_background_job_holds_lock() {
-        let root =
-            std::env::temp_dir().join(format!("glass-trust-contention-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
-        let trust = state
-            .ws_mut()
-            .expect("workspace lock")
-            .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
-            .expect("trust project");
-        state.snapshot_trust_label = trust.label().into();
-
-        {
-            let _background_job = state.workspace.lock().expect("hold workspace lock");
-            assert!(
-                state.trust_allows_execution(),
-                "temporary lock contention must not erase an explicit local trust decision"
-            );
-        }
-
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn pi_slash_command_waits_for_mutation_confirmation() {
-        let root =
-            std::env::temp_dir().join(format!("glass-tui-pi-slash-confirm-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-        state.composer_input = "keep this multiline\ndraft".into();
-        state.composer_cursor = 7;
-        state.open_pi_command_palette();
-        state.pi_command_input = "/new".into();
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-
-        state.submit_pi_command(&mut worker);
-
-        let pending = state
-            .pending_confirmation
-            .as_ref()
-            .expect("slash command should require confirmation");
-        assert_eq!(pending.call.name, "glass.agent.slash");
-        assert_eq!(pending.call.arguments["name"], "new");
-        assert!(pending.context.authorization.permits_mutation());
-        assert_eq!(state.pi_command_pending.as_deref(), Some("new"));
-        assert!(state.queued_tool_request.is_none());
-        assert!(!state.pi_command_mode);
-        assert!(state.composer_mode);
-        assert_eq!(state.composer_input, "keep this multiline\ndraft");
-        assert_eq!(state.composer_cursor, 7);
-
-        state.deny_confirmation();
-        assert!(state.pending_confirmation.is_none());
-        assert!(state.pi_command_pending.is_none());
-        assert!(state.pi_command_pending_args.is_empty());
-        assert!(state.composer_mode);
-        assert_eq!(state.composer_input, "keep this multiline\ndraft");
-        assert_eq!(state.composer_cursor, 7);
-
-        drop(worker);
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn composer_native_slash_denial_restores_exact_command_and_cursor() {
-        let root =
-            std::env::temp_dir().join(format!("glass-tui-composer-pi-deny-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-        let original = "/new keep this draft";
-        let cursor = original.find("this").expect("cursor anchor");
-        state.composer_input = original.into();
-        state.composer_cursor = cursor;
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-
-        state.submit_composer(&mut worker);
-
-        assert!(state.pending_confirmation.is_some());
-        assert!(state.composer_input.is_empty());
-        assert_eq!(state.composer_cursor, 0);
-        state.deny_confirmation();
-
-        assert!(state.pending_confirmation.is_none());
-        assert!(state.composer_mode);
-        assert_eq!(state.composer_input, original);
-        assert_eq!(state.composer_cursor, cursor);
-        assert!(state.pi_command_composer_origin.is_none());
-
-        drop(worker);
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn composer_prompt_failure_keeps_exact_input_for_retry() {
-        let (mut state, root) = routed_state("composer-slash-retry");
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-        state.agent_readiness = "Glass Core is not ready".into();
-        let original = "retry this prompt";
-        let cursor = original.find("this").expect("cursor anchor");
-        state.composer_input = original.into();
-        state.composer_cursor = cursor;
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-
-        state.submit_composer_prompt_for_harness(
-            original,
-            true,
-            &mut worker,
-            crate::ResidentHarnessKind::GlassCore,
-        );
-
-        assert!(state.pending_confirmation.is_none());
-        assert!(state.composer_mode);
-        assert_eq!(state.composer_input, original);
-        assert_eq!(state.composer_cursor, cursor);
-        assert!(state.status.contains("Glass Core needs setup"));
-        assert!(state.pi_command_composer_origin.is_none());
-
-        drop(worker);
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn composer_native_slash_blocked_by_background_restores_exact_input() {
+    fn composer_message_blocked_by_background_restores_exact_input() {
         let (mut state, root) = routed_state("composer-slash-background");
         state.surface = DevSurface::Agent;
         state.open_composer();
         state.running_tool_job = Some(42);
-        let original = "/new retry when idle";
+        let original = "Please retry when idle";
         let cursor = original.find("when").expect("cursor anchor");
         state.composer_input = original.into();
         state.composer_cursor = cursor;
@@ -16252,393 +15063,10 @@ mod tests {
         assert!(state.composer_mode);
         assert_eq!(state.composer_input, original);
         assert_eq!(state.composer_cursor, cursor);
-        assert!(state.status.contains("restored to composer"));
+        assert!(state.status.contains("kept in composer"));
 
         drop(worker);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn composer_ask_does_not_redirect_to_trust_surface() {
-        let root = std::env::temp_dir().join(format!(
-            "glass-tui-composer-ask-trust-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-        let original = "/ask keep this until trusted";
-        let cursor = original.find("until").expect("cursor anchor");
-        state.composer_input = original.into();
-        state.composer_cursor = cursor;
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-
-        state.submit_composer(&mut worker);
-
-        assert_eq!(state.surface, DevSurface::Agent);
-        assert!(state.composer_mode);
-        assert_eq!(state.composer_input, original);
-        assert_eq!(state.composer_cursor, cursor);
-        assert!(state.pi_command_composer_origin.is_none());
-
-        drop(worker);
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn pi_modal_open_and_escape_restore_plain_and_multiline_composer_drafts() {
-        let (mut state, root) = routed_state("pi-draft-return");
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-
-        for (draft, cursor) in [
-            ("plain draft to keep", 8),
-            ("review these changes\nand preserve this line", 25),
-        ] {
-            state.composer_input = draft.into();
-            state.composer_cursor = cursor;
-            state.open_pi_command_palette();
-            assert!(state.pi_command_mode);
-            assert!(!state.composer_mode);
-            assert_eq!(state.composer_input, draft);
-            assert_eq!(state.composer_cursor, cursor);
-
-            state.close_pi_command_palette();
-            assert!(!state.pi_command_mode);
-            assert!(state.composer_mode);
-            assert_eq!(state.composer_input, draft);
-            assert_eq!(state.composer_cursor, cursor);
-            assert!(state.status.starts_with("Agent commands closed"));
-        }
-
-        drop(state);
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn typed_and_pasted_ask_commands_submit_the_same_prompt_and_keep_the_draft() {
-        fn ready_composer(label: &str) -> (DevTuiState, std::path::PathBuf) {
-            let (mut state, root) = routed_state(label);
-            state.surface = DevSurface::Agent;
-            state.agent_readiness = format!(
-                "✓ Ready · Node ✓ · SDK {} · auth ✓",
-                crate::pi_runtime::PINNED_PI_SDK_VERSION
-            );
-            state.open_composer();
-            state.composer_input = "review this first\nkeep the second line".into();
-            state.composer_cursor = 11;
-            (state, root)
-        }
-
-        let draft = "review this first\nkeep the second line";
-        let mut typed = ready_composer("pi-ask-typed");
-        let mut typed_worker = super::super::snapshot::SnapshotWorker::spawn(&typed.0);
-        typed.0.open_pi_command_palette();
-        for character in "/ask what is this".chars() {
-            typed.0.insert_pi_command_char(character);
-        }
-        typed.0.submit_pi_command(&mut typed_worker);
-        let typed_message = typed
-            .0
-            .pending_chat_messages
-            .last()
-            .expect("typed /ask queues a prompt");
-        assert_eq!(typed.0.composer_run_mode, crate::AgentTurnMode::Ask);
-        assert_eq!(typed_message.text, "what is this");
-        assert_eq!(typed.0.composer_input, draft);
-        assert_eq!(typed.0.composer_cursor, 11);
-        assert!(typed.0.composer_mode);
-        drop(typed_worker);
-        drop(typed.0);
-        std::fs::remove_dir_all(typed.1).expect("remove typed workspace");
-
-        let mut pasted = ready_composer("pi-ask-pasted");
-        let mut pasted_worker = super::super::snapshot::SnapshotWorker::spawn(&pasted.0);
-        super::super::route_paste(&mut pasted.0, "/ask what is this");
-        assert!(pasted.0.pi_command_mode);
-        assert_eq!(pasted.0.pi_command_input, "/ask what is this");
-        assert_eq!(pasted.0.composer_input, draft);
-        pasted.0.submit_pi_command(&mut pasted_worker);
-        let pasted_message = pasted
-            .0
-            .pending_chat_messages
-            .last()
-            .expect("pasted /ask queues a prompt");
-        assert_eq!(pasted.0.composer_run_mode, crate::AgentTurnMode::Ask);
-        assert_eq!(pasted_message.text, "what is this");
-        assert_eq!(pasted.0.composer_input, draft);
-        assert_eq!(pasted.0.composer_cursor, 11);
-        assert!(pasted.0.composer_mode);
-        drop(pasted_worker);
-        drop(pasted.0);
-        std::fs::remove_dir_all(pasted.1).expect("remove pasted workspace");
-    }
-
-    #[test]
-    fn ask_without_arguments_returns_to_composer_and_native_command_close_restores_focus() {
-        let (mut state, root) = routed_state("pi-ask-mode-only");
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-        state.composer_input = "keep my draft".into();
-        state.composer_cursor = 5;
-        state.open_pi_command_palette();
-        state.pi_command_input = "/ask".into();
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-        state.submit_pi_command(&mut worker);
-        assert_eq!(state.composer_run_mode, crate::AgentTurnMode::Ask);
-        assert!(state.composer_mode);
-        assert!(!state.pi_command_mode);
-        assert_eq!(state.composer_input, "keep my draft");
-        assert_eq!(state.composer_cursor, 5);
-        drop(worker);
-        drop(state);
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn composer_ask_without_arguments_restores_exact_command_and_cursor() {
-        let (mut state, root) = routed_state("composer-ask-mode-only");
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-        let original = "/ask";
-        let cursor = 2;
-        state.composer_input = original.into();
-        state.composer_cursor = cursor;
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-
-        state.submit_composer(&mut worker);
-
-        assert_eq!(state.surface, DevSurface::Agent);
-        assert_eq!(state.composer_run_mode, crate::AgentTurnMode::Ask);
-        assert!(state.composer_mode);
-        assert!(!state.pi_command_mode);
-        assert_eq!(state.composer_input, original);
-        assert_eq!(state.composer_cursor, cursor);
-        assert!(state.pi_command_composer_origin.is_none());
-
-        drop(worker);
-        drop(state);
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn composer_todo_route_restores_exact_command_and_cursor_on_tasks() {
-        let (mut state, root) = routed_state("composer-todo-route");
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-        let original = "/todo";
-        let cursor = 3;
-        state.composer_input = original.into();
-        state.composer_cursor = cursor;
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-
-        state.submit_composer(&mut worker);
-
-        assert_eq!(state.surface, DevSurface::Tasks);
-        assert!(!state.composer_mode);
-        assert!(!state.pi_command_mode);
-        assert_ne!(
-            super::super::overlay::active_overlay(&state),
-            Some(super::super::overlay::ActiveOverlay::Composer)
-        );
-        assert_eq!(state.composer_input, original);
-        assert_eq!(state.composer_cursor, cursor);
-        assert!(state.pi_command_composer_origin.is_none());
-
-        drop(worker);
-        drop(state);
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn slash_paste_preserves_multiline_arguments_and_ordinary_paste_stays_in_composer() {
-        let (mut state, root) = routed_state("pi-slash-multiline-paste");
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-        state.composer_input = "existing draft".into();
-        state.composer_cursor = 4;
-        super::super::route_paste(&mut state, " ordinary paste");
-        assert_eq!(state.composer_input, "exis ordinary pasteting draft");
-        state.composer_input = "existing draft".into();
-        state.composer_cursor = 4;
-        super::super::route_paste(&mut state, "/ask first line\nsecond line");
-        assert!(state.pi_command_mode);
-        assert_eq!(state.pi_command_input, "/ask first line\nsecond line");
-        assert_eq!(state.composer_input, "existing draft");
-        assert_eq!(state.composer_cursor, 4);
-
-        state.agent_readiness = format!(
-            "✓ Ready · Node ✓ · SDK {} · auth ✓",
-            crate::pi_runtime::PINNED_PI_SDK_VERSION
-        );
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-        state.submit_pi_command(&mut worker);
-        assert_eq!(
-            state
-                .pending_chat_messages
-                .last()
-                .expect("multiline prompt queued")
-                .text,
-            "first line\nsecond line"
-        );
-        assert_eq!(state.composer_input, "existing draft");
-        assert_eq!(state.composer_cursor, 4);
-
-        drop(worker);
-        drop(state);
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn paste_into_open_pi_modal_keeps_multiline_arguments_within_the_input_bound() {
-        let (mut state, root) = routed_state("pi-modal-multiline-paste");
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-        state.composer_input = "preserved draft".into();
-        state.composer_cursor = 6;
-        state.open_pi_command_palette();
-        for character in "/ask ".chars() {
-            state.insert_pi_command_char(character);
-        }
-        super::super::route_paste(&mut state, "first line\nsecond line");
-        assert_eq!(state.pi_command_input, "/ask first line\nsecond line");
-        assert_eq!(state.composer_input, "preserved draft");
-        assert_eq!(state.composer_cursor, 6);
-
-        state.agent_readiness = format!(
-            "✓ Ready · Node ✓ · SDK {} · auth ✓",
-            crate::pi_runtime::PINNED_PI_SDK_VERSION
-        );
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-        state.submit_pi_command(&mut worker);
-        assert_eq!(
-            state
-                .pending_chat_messages
-                .last()
-                .expect("multiline modal prompt queued")
-                .text,
-            "first line\nsecond line"
-        );
-        assert_eq!(state.composer_input, "preserved draft");
-        assert_eq!(state.composer_cursor, 6);
-
-        drop(worker);
-        drop(state);
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn typed_and_pasted_pi_input_report_the_four_kibibyte_limit() {
-        let (mut state, root) = routed_state("pi-input-limit");
-        state.pi_command_mode = true;
-        state.pi_command_input = "x".repeat(4 * 1024 - 1);
-        state.pi_command_cursor = state.pi_command_input.len();
-
-        state.insert_pi_command_text("ab");
-        assert_eq!(state.pi_command_input.len(), 4 * 1024);
-        assert!(state.status.contains("4 KiB"));
-
-        let bounded = state.pi_command_input.clone();
-        state.insert_pi_command_char('c');
-        assert_eq!(state.pi_command_input, bounded);
-        assert!(state.status.contains("4 KiB"));
-
-        drop(state);
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn pasted_stats_and_sessions_keep_their_existing_workspace_tool_routes() {
-        for (label, command, tool) in [
-            ("pi-stats-route", "/stats", "glass.agent.stats"),
-            ("pi-sessions-route", "/sessions", "glass.agent.sessions"),
-        ] {
-            let (mut state, root) = routed_state(label);
-            state.surface = DevSurface::Agent;
-            state.open_composer();
-            state.composer_input = "retain this draft".into();
-            state.composer_cursor = 7;
-            super::super::route_paste(&mut state, command);
-            let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-            state.submit_pi_command(&mut worker);
-
-            assert!(state.running_tool_job.is_some(), "{tool} is queued");
-            assert_eq!(state.status, format!("{tool} · queued from composer"));
-            assert!(state.composer_mode);
-            assert_eq!(state.composer_input, "retain this draft");
-            assert_eq!(state.composer_cursor, 7);
-
-            drop(worker);
-            drop(state);
-            std::fs::remove_dir_all(root).expect("remove temporary workspace");
-        }
-    }
-
-    #[test]
-    fn pasted_todo_opens_tasks_without_changing_composer_draft_or_cursor() {
-        let (mut state, root) = routed_state("pi-todo-route");
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-        state.composer_input = "first line\nsecond line".into();
-        state.composer_cursor = 13;
-        super::super::route_paste(&mut state, "/todo");
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-        state.submit_pi_command(&mut worker);
-
-        assert_eq!(state.surface, DevSurface::Tasks);
-        assert!(!state.composer_mode);
-        assert!(!state.pi_command_mode);
-        assert_ne!(
-            super::super::overlay::active_overlay(&state),
-            Some(super::super::overlay::ActiveOverlay::Composer)
-        );
-        assert_eq!(state.composer_input, "first line\nsecond line");
-        assert_eq!(state.composer_cursor, 13);
-        assert_eq!(state.status, "Tasks selected · composer draft preserved");
-
-        drop(worker);
-        drop(state);
-        std::fs::remove_dir_all(root).expect("remove todo workspace");
-    }
-
-    #[test]
-    fn pasted_think_uses_glass_level_tool_and_thinking_uses_native_pi_dispatch() {
-        let (mut state, root) = routed_state("pi-think-route");
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-        state.composer_input = "keep draft".into();
-        state.composer_cursor = 4;
-        super::super::route_paste(&mut state, "/think high");
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-        state.submit_pi_command(&mut worker);
-        assert_eq!(state.agent_thinking, "high");
-        assert!(state.running_tool_job.is_some());
-        assert_eq!(state.status, "glass.agent.thinking · queued from composer");
-        assert!(state.composer_mode);
-        assert_eq!(state.composer_input, "keep draft");
-        assert_eq!(state.composer_cursor, 4);
-        drop(worker);
-        drop(state);
-        std::fs::remove_dir_all(root).expect("remove thinking workspace");
-
-        let (mut state, root) = routed_state("pi-thinking-native-route");
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-        super::super::route_paste(&mut state, "/thinking medium");
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-        state.submit_pi_command(&mut worker);
-        let pending = state
-            .pending_confirmation
-            .as_ref()
-            .expect("native Pi /thinking uses slash dispatcher");
-        assert_eq!(pending.call.name, "glass.agent.slash");
-        assert_eq!(pending.call.arguments["name"], "thinking");
-
-        drop(worker);
-        drop(state);
-        std::fs::remove_dir_all(root).expect("remove native thinking workspace");
     }
 
     #[test]
@@ -16746,41 +15174,11 @@ mod tests {
 
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
-    #[test]
-    fn trust_action_menu_dispatches_keyboard_hints() {
-        let root = std::env::temp_dir().join(format!("glass-trust-menu-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        state.surface = DevSurface::Trust;
-
-        state.open_menu();
-        state.menu_selection = 0;
-        state.run_menu_action();
-        assert!(!state.menu_open);
-        assert!(
-            state
-                .status
-                .contains("Inspecting exact repository configuration")
-        );
-
-        state.open_menu();
-        state.menu_selection = 1;
-        state.run_menu_action();
-        assert_eq!(state.surface, DevSurface::Agent);
-        assert!(
-            state
-                .status
-                .contains("Workspace opened with untrusted authority")
-        );
-
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
 
     #[test]
-    fn untrusted_project_does_not_block_core_navigation_or_editor_access() {
+    fn project_navigation_and_editor_access_are_available_on_first_open() {
         let root = std::env::temp_dir().join(format!(
-            "glass-trust-routing-{}-{}",
+            "glass-workspace-routing-{}-{}",
             std::process::id(),
             NEXT_BROWSER_TOOL.fetch_add(1, Ordering::Relaxed)
         ));
@@ -16794,13 +15192,8 @@ mod tests {
             .expect("write file for editor access");
 
         for layout in [TuiLayout::Desktop, TuiLayout::Mobile] {
-            let mut state = DevTuiState::open(&root, layout).expect("open untrusted TUI workspace");
+            let mut state = DevTuiState::open(&root, layout).expect("open TUI workspace");
             assert_eq!(state.surface, DevSurface::Agent);
-            assert_eq!(
-                state.ws().expect("lock").trust(),
-                crate::WorkspaceTrust::Untrusted
-            );
-
             state.show_surface(DevSurface::App);
             assert_eq!(state.surface, DevSurface::App);
             command::execute(&mut state, "view agent").expect("navigate by command");
@@ -16820,9 +15213,8 @@ mod tests {
     }
 
     #[test]
-    fn untrusted_project_editor_is_writable_and_preserves_dirty_buffers() {
-        let root =
-            std::env::temp_dir().join(format!("glass-untrusted-read-only-{}", std::process::id()));
+    fn editor_writes_and_preserves_dirty_buffers_on_first_open() {
+        let root = std::env::temp_dir().join(format!("glass-editor-review-{}", std::process::id()));
         std::fs::create_dir_all(root.join("src")).expect("create temporary workspace");
         std::fs::write(
             root.join("glass.toml"),
@@ -16832,11 +15224,9 @@ mod tests {
         let original = "fn main() {}\n";
         std::fs::write(root.join("src/README.md"), original).expect("write test file");
 
-        let mut state =
-            DevTuiState::open(&root, TuiLayout::Desktop).expect("open untrusted TUI workspace");
+        let mut state = DevTuiState::open(&root, TuiLayout::Desktop).expect("open TUI workspace");
         state.files = vec!["src/README.md".into()];
         assert_eq!(state.surface, DevSurface::Agent);
-        assert!(!state.trust_allows_execution());
 
         state.handle_printable('2');
         assert_eq!(state.surface, DevSurface::Code);
@@ -16898,7 +15288,7 @@ mod tests {
                 "src/README.md",
                 unsaved.into(),
                 "proposal must not apply\n".into(),
-                "test untrusted proposal guard".into(),
+                "test editor proposal review".into(),
                 crate::development::Actor::local(),
             )
             .expect("seed pending proposal");
@@ -16914,7 +15304,7 @@ mod tests {
                 .content,
             "proposal must not apply\n"
         );
-        let edited = "edited while project remains untrusted\n";
+        let edited = "edited in the project workspace\n";
         state
             .ws_mut()
             .expect("lock temporary workspace")
@@ -16979,7 +15369,6 @@ mod tests {
         use super::super::overlay::{ActiveOverlay, active_overlay};
 
         for (label, surface, overlay) in [
-            ("trust", DevSurface::Trust, "trust"),
             ("code", DevSurface::Code, "code"),
             ("help", DevSurface::More, "help"),
             ("quit", DevSurface::Git, "quit"),
@@ -17019,7 +15408,7 @@ mod tests {
                 "quit" => state.quit_confirmation = false,
                 _ => {}
             }
-            if overlay != "regular" && overlay != "trust" {
+            if overlay != "regular" {
                 assert_eq!(active_overlay(&state), Some(ActiveOverlay::BrowserRecovery));
             }
             state.dismiss_browser_recovery();
@@ -17037,7 +15426,7 @@ mod tests {
         use super::super::overlay::{ActiveOverlay, active_overlay};
 
         let (mut state, root) = routed_state("browser-failure-preserves-ui");
-        state.surface = DevSurface::Trust;
+        state.surface = DevSurface::Git;
         state.browser_target_picker = true;
         state.browser_target_picker_requested = true;
         state.browser_target_query = "docs".into();
@@ -17049,7 +15438,7 @@ mod tests {
             result: Err("DevTools connection refused".into()),
         });
 
-        assert_eq!(state.surface, DevSurface::Trust);
+        assert_eq!(state.surface, DevSurface::Git);
         assert!(state.browser_target_picker);
         assert!(state.browser_target_picker_requested);
         assert_eq!(state.browser_target_query, "docs");
@@ -17068,9 +15457,9 @@ mod tests {
         state.close_browser_target_picker();
         assert_eq!(active_overlay(&state), Some(ActiveOverlay::BrowserRecovery));
         state.dismiss_browser_recovery();
-        assert_eq!(state.surface, DevSurface::Trust);
+        assert_eq!(state.surface, DevSurface::Git);
         assert!(state.browser_recovery.is_none());
-        assert!(state.status.contains("Trust remains active"));
+        assert!(state.status.contains("Git remains active"));
         drop(state);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
@@ -17207,79 +15596,6 @@ mod tests {
         assert_eq!(state.browser_target_selection, 1);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
-    #[test]
-    fn agent_typing_opens_composer_before_surface_aliases() {
-        let root = std::env::temp_dir().join(format!("glass-agent-compose-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        state.surface = DevSurface::Agent;
-        trust_workspace_once(&mut state);
-        state.agent_readiness = format!(
-            "✓ Ready · Node ✓ · SDK {} · auth ✓",
-            crate::pi_runtime::PINNED_PI_SDK_VERSION
-        );
-
-        state.handle_printable('c');
-
-        assert_eq!(state.surface, DevSurface::Agent);
-        assert!(state.composer_mode);
-        assert_eq!(state.composer_input, "c");
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn leading_agent_message_characters_are_not_commands() {
-        for character in ['a', 'q', 's', 'u', 'l', 'i', 'n'] {
-            let root = std::env::temp_dir().join(format!(
-                "glass-agent-leading-{character}-{}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&root).expect("create temporary workspace");
-            let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop)
-                .expect("open temporary workspace");
-            state.surface = DevSurface::Agent;
-            trust_workspace_once(&mut state);
-            state.agent_readiness = format!(
-                "✓ Ready · Node ✓ · SDK {} · auth ✓",
-                crate::pi_runtime::PINNED_PI_SDK_VERSION
-            );
-
-            state.handle_printable(character);
-
-            assert!(
-                state.composer_mode,
-                "character {character:?} did not open composer"
-            );
-            assert_eq!(state.composer_input, character.to_string());
-            std::fs::remove_dir_all(root).expect("remove temporary workspace");
-        }
-    }
-    #[test]
-    fn action_shortcut_opens_menu_without_stealing_ready_agent_text() {
-        let root =
-            std::env::temp_dir().join(format!("glass-action-shortcut-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-
-        state.surface = DevSurface::Terminal;
-        state.handle_printable('a');
-        assert!(state.menu_open);
-        state.close_menu();
-
-        state.surface = DevSurface::Agent;
-        trust_workspace_once(&mut state);
-        state.agent_readiness = format!(
-            "✓ Ready · Node ✓ · SDK {} · auth ✓",
-            crate::pi_runtime::PINNED_PI_SDK_VERSION
-        );
-        state.handle_printable('a');
-        assert!(state.composer_mode);
-        assert_eq!(state.composer_input, "a");
-
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
 
     #[test]
     fn typed_open_in_palette_runs_instead_of_fuzzy_action() {
@@ -17287,7 +15603,6 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create temporary workspace");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         state.files = vec!["src/lib.rs".into(), "Cargo.toml".into()];
         state.open_palette();
         state.command_input = "open".into();
@@ -17468,7 +15783,6 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         state.files = vec![
             "src/lib.rs".into(),
             "src/main.rs".into(),
@@ -17700,7 +16014,6 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create temporary workspace");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         state.focused_editor_path = "app/settings/page.tsx".into();
         state.focused_editor_line = 1;
         state.process_urls = vec!["http://localhost:3000/".into()];
@@ -17724,7 +16037,6 @@ mod tests {
         .expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
-        trust_workspace_once(&mut state);
         {
             let mut workspace = state.ws_mut().expect("workspace lock");
             workspace
@@ -17842,7 +16154,6 @@ mod tests {
         .expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         state.files = vec!["src/button.tsx".into()];
         state.browser_workspace.replace_entities(
             1,
@@ -17908,7 +16219,7 @@ mod tests {
     }
 
     #[test]
-    fn pi_fim_response_requires_the_exact_request_identifier() {
+    fn resident_fim_response_requires_the_exact_request_identifier() {
         let agent_id = crate::AgentId::parse("agent-fim-test").unwrap();
         let response = |sequence, request_id: &str, text: &str| crate::AgentEvent {
             sequence,
@@ -17926,14 +16237,16 @@ mod tests {
         let old_request = response(1, "glass-old", "completion for cursor A");
         let current_request = response(2, "glass-current", "completion for cursor B");
         assert_eq!(
-            matching_pi_fim_response(
+            matching_resident_fim_response(
                 &[old_request.clone(), current_request],
                 &agent_id,
                 "glass-current"
             ),
             Some(Ok(Some("completion for cursor B".into())))
         );
-        assert!(matching_pi_fim_response(&[old_request], &agent_id, "glass-current").is_none());
+        assert!(
+            matching_resident_fim_response(&[old_request], &agent_id, "glass-current").is_none()
+        );
     }
 
     #[test]
@@ -17944,7 +16257,6 @@ mod tests {
         std::fs::write(root.join("src/other.rs"), "fn other() {}\n").expect("write other source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
-        trust_workspace_once(&mut state);
         {
             let mut workspace = state.ws_mut().expect("workspace lock");
             workspace
@@ -18032,7 +16344,6 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), source).expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("workspace lock")
@@ -18118,7 +16429,6 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("workspace lock")
@@ -18154,7 +16464,6 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), "fn foo() { foo(); foo }\n").expect("write");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("lock")
@@ -18208,7 +16517,6 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create temporary workspace");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         state.browser_workspace.replace_entities(
             7,
             vec![BrowserWorkspaceEntity {
@@ -18251,7 +16559,6 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create temporary workspace");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         state
             .start_workflow_recording("locators")
             .expect("start recording");
@@ -18265,55 +16572,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_editor_context_attaches_unsaved_buffer_and_inline_prompt() {
-        let root =
-            std::env::temp_dir().join(format!("glass-editor-agent-context-{}", std::process::id()));
-        std::fs::create_dir_all(root.join("src")).expect("create source directory");
-        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write source");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
-        state
-            .ws_mut()
-            .expect("workspace lock")
-            .project_mut()
-            .open_buffer("src/main.rs", crate::development::Actor::local())
-            .expect("open editor buffer");
-        state
-            .ws_mut()
-            .expect("workspace lock")
-            .project_mut()
-            .edit_buffer(
-                "src/main.rs",
-                "fn main() {\n    println!(\"unsaved\");\n}\n".into(),
-                crate::development::Actor::local(),
-            )
-            .expect("edit buffer");
-        state.refresh_editor_projection();
-
-        let context = state.agent_editor_context();
-        assert_eq!(context["focusedPath"], "src/main.rs");
-        assert_eq!(
-            context["focusedBuffer"]["content"],
-            "fn main() {\n    println!(\"unsaved\");\n}\n"
-        );
-        assert_eq!(context["focusedBuffer"]["dirty"], true);
-
-        state.enter_code_edit();
-        state.edit_code_key(
-            crossterm::event::KeyCode::Char('a'),
-            crossterm::event::KeyModifiers::ALT,
-        );
-        assert_eq!(state.surface, DevSurface::Code);
-        assert!(state.composer_mode);
-        assert!(!state.code_edit_mode);
-        assert!(state.composer_input.contains("src/main.rs:1:1"));
-        assert!(state.composer_input.contains("Do not edit files"));
-
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
     fn agent_prompt_context_does_not_attach_unselected_hidden_or_editor_files() {
         let root =
             std::env::temp_dir().join(format!("glass-agent-prompt-context-{}", std::process::id()));
@@ -18323,7 +16581,6 @@ mod tests {
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
         state.surface = DevSurface::Git;
-        state.composer_run_mode = crate::AgentTurnMode::Plan;
         state.focused_editor_path = ".harmless-context-fixture".into();
 
         let context = state.agent_prompt_context();
@@ -18343,17 +16600,12 @@ mod tests {
     }
 
     #[test]
-    fn untrusted_workflow_recording_cannot_start_capture_or_write_draft() {
+    fn workflow_recording_is_available_on_first_open() {
         let root =
-            std::env::temp_dir().join(format!("glass-workflow-untrusted-{}", std::process::id()));
+            std::env::temp_dir().join(format!("glass-workflow-first-open-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create temporary workspace");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
-
-        assert!(command::execute(&mut state, "workflow record start untrusted").is_err());
-        assert!(state.workflow_recording.is_none());
-
-        trust_workspace_once(&mut state);
         state.browser_workspace.replace_entities(
             1,
             vec![BrowserWorkspaceEntity {
@@ -18367,56 +16619,10 @@ mod tests {
         state.browser_workspace.state_mut().selected_entity = Some(0);
         state
             .start_workflow_recording("retained")
-            .expect("start recording with trust");
+            .expect("start recording");
         assert!(state.capture_workflow_click().expect("capture click"));
-
-        // A trusted workspace cannot be downgraded while its trusted project
-        // configuration is active. Model closing and reopening the same
-        // project without granting trust, while preserving the in-memory TUI
-        // recording that must not be written under the new trust state.
-        let reopened =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("reopen untrusted");
-        assert!(!reopened.trust_allows_execution());
-        state.workspace = reopened.workspace;
-        assert!(state.capture_workflow_click().is_err());
-        assert!(state.stop_workflow_recording().is_err());
-        assert!(state.workflow_recording.is_some());
-        assert!(!root.join(".glass/workflows/retained.draft.json").exists());
-
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn untrusted_app_attach_does_not_persist_editor_checkpoint() {
-        let root =
-            std::env::temp_dir().join(format!("glass-untrusted-app-attach-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
-        state.process_urls = vec!["http://localhost:3000/".into()];
-
-        command::execute(&mut state, "trust untrusted").expect("open untrusted");
-        command::execute(&mut state, "view terminal").expect("open Terminal for review");
-        let checkpoint_path = state
-            .ws()
-            .expect("lock workspace")
-            .project()
-            .timeline()
-            .path()
-            .with_file_name("editor-checkpoints.json");
-
-        assert!(command::execute(&mut state, "app attach").is_err());
-        assert!(state.attach_selected_process_url().is_err());
-        assert!(
-            state
-                .ws()
-                .expect("lock workspace")
-                .project()
-                .editor_checkpoints()
-                .is_empty()
-        );
-        assert!(!checkpoint_path.exists());
-
+        assert!(state.stop_workflow_recording().is_ok());
+        assert!(root.join(".glass/workflows/retained.draft.json").exists());
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 
@@ -18429,7 +16635,6 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), content).expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Mobile).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("workspace lock")
@@ -18508,7 +16713,6 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), "alpha\nbeta\n").expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("workspace lock")
@@ -18550,7 +16754,6 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("workspace lock")
@@ -18577,7 +16780,6 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), "main\n").expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("workspace lock")
@@ -18620,7 +16822,6 @@ mod tests {
         std::fs::write(root.join("src/main.rs"), original).expect("write source");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
         state
             .ws_mut()
             .expect("workspace lock")
@@ -18994,45 +17195,6 @@ mod tests {
     }
 
     #[test]
-    fn default_core_palette_shows_engine_specific_setup_guidance() {
-        let root =
-            std::env::temp_dir().join(format!("glass-palette-actions-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        state.surface = DevSurface::Agent;
-        state.open_palette();
-        state.insert_palette_text("agent setup");
-        assert_eq!(
-            state.selected_palette_action().map(|action| action.label),
-            Some("Glass Core setup guidance")
-        );
-        state.move_palette_selection(1);
-        assert_eq!(
-            state.selected_palette_action().map(|action| action.label),
-            Some("Glass Core provider login")
-        );
-
-        assert!(
-            command::surface_actions_for(DevSurface::Agent, crate::ResidentHarnessKind::GlassCore,)
-                .iter()
-                .all(|action| !action.label.contains("Pi")),
-            "the default Core action catalog must not advertise legacy Pi-only actions"
-        );
-
-        let action =
-            command::surface_actions_for(DevSurface::Agent, crate::ResidentHarnessKind::Pi)
-                .iter()
-                .find(|action| action.label == "Rewind Pi session")
-                .copied()
-                .expect("legacy Pi rewind action");
-        assert_eq!(action.label, "Rewind Pi session");
-        assert_eq!(action.command, "agent rewind ENTRY_ID");
-
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
     fn arrow_surface_cycle_matches_layout_order() {
         let root =
             std::env::temp_dir().join(format!("glass-surface-arrows-{}", std::process::id()));
@@ -19120,38 +17282,6 @@ mod tests {
     }
 
     #[test]
-    fn composer_queues_follow_up_while_a_send_is_in_flight() {
-        let root = std::env::temp_dir().join(format!("glass-follow-up-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        state.surface = DevSurface::Agent;
-        trust_workspace_once(&mut state);
-        state.agent_readiness = format!(
-            "✓ Ready · Node ✓ · SDK {} · auth ✓",
-            crate::pi_runtime::PINNED_PI_SDK_VERSION
-        );
-        state.agent_send_job = Some(9);
-        state.open_composer();
-        state.composer_input = "keep going".into();
-        state.composer_cursor = state.composer_input.len();
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-        state.submit_composer(&mut worker);
-        assert_ne!(
-            state.status,
-            "Background operation running · message kept in composer"
-        );
-        assert!(
-            state.status.contains("Queued follow-up")
-                || state.status.contains("thinking")
-                || state.status.contains("retry")
-                || state.status.contains("Sent")
-        );
-        drop(worker);
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
     fn agent_thinking_does_not_block_independent_browser_observation() {
         let (mut state, root) = routed_state("observe-during-agent-send");
         state.agent_send_job = Some(42);
@@ -19170,7 +17300,7 @@ mod tests {
         let (mut state, root) = routed_state("core-login-background-action");
         state.agent_send_job = Some(42);
         let error = state
-            .request_agent_login_for_harness(crate::ResidentHarnessKind::GlassCore, None)
+            .request_agent_login()
             .expect_err("Core handoff cannot suspend a running background action");
         assert!(error.contains("Finish the current background action"));
         assert!(!state.agent_login_requested);
@@ -19227,85 +17357,19 @@ mod tests {
     }
 
     #[test]
-    fn composer_slash_compact_routes_to_native_pi_command() {
-        let root = std::env::temp_dir().join(format!("glass-slash-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        state.surface = DevSurface::Agent;
-        trust_workspace_once(&mut state);
-        state.agent_readiness = format!(
-            "✓ Ready · Node ✓ · SDK {} · auth ✓",
-            crate::pi_runtime::PINNED_PI_SDK_VERSION
-        );
-        state.open_composer();
-        state.composer_input = "/compact keep the review".into();
-        state.composer_cursor = state.composer_input.len();
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-        state.submit_composer(&mut worker);
-        assert!(
-            state.status.contains("Pi /compact")
-                || state.status.contains("unavailable")
-                || state.status.contains("failed")
-        );
-        drop(worker);
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn pi_command_modal_filters_and_completes_native_commands() {
+    fn core_coding_tools_are_exposed_without_a_glass_permission_mode() {
         let root =
-            std::env::temp_dir().join(format!("glass-pi-command-modal-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        state.surface = DevSurface::Agent;
-        state.open_pi_command_palette();
-        state.insert_pi_command_char('m');
-        state.insert_pi_command_char('o');
-        state.insert_pi_command_char('d');
-        state.insert_pi_command_char('e');
-        assert_eq!(
-            state.selected_pi_command().map(|command| command.name),
-            Some("model")
-        );
-        state.complete_pi_command();
-        assert_eq!(state.pi_command_input, "model ");
-        state.close_pi_command_palette();
-        assert!(!state.pi_command_mode);
-
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn native_resume_result_opens_the_session_picker() {
-        let root = std::env::temp_dir().join(format!("glass-pi-resume-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        state.apply_pi_command_result(&serde_json::json!({
-            "command": "resume",
-            "kind": "sessions",
-            "sessions": [{"path": "session.jsonl", "name": "review"}],
-        }));
-        assert!(state.session_picker_open);
-        assert_eq!(state.session_picker_items[0].label, "review");
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn tui_resident_pi_defaults_to_unrestricted_without_yolo() {
-        let root = std::env::temp_dir().join(format!("glass-pi-policy-{}", std::process::id()));
+            std::env::temp_dir().join(format!("glass-core-permissions-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create temporary workspace");
         let state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        assert!(!state.yolo_mode);
         assert!(
             state
                 .ws()
                 .expect("workspace lock")
-                .agents()
-                .default_unrestricted()
+                .tool_descriptors()
+                .iter()
+                .any(|descriptor| descriptor.name == "glass.file.write" && descriptor.available)
         );
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
@@ -19334,94 +17398,6 @@ mod tests {
                 || state.status.contains("branch")
         );
         drop(worker);
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn agent_chrome_and_session_picker_and_context_chips() {
-        let root = std::env::temp_dir().join(format!("glass-chrome-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        state.agent_model = "xai/grok".into();
-        state.agent_thinking = "medium".into();
-        state.agent_session_name = "review".into();
-        state.agent_token_summary = "12 in · 40 out".into();
-        state.focused_editor_path = "src/lib.rs".into();
-        state.composer_steer = true;
-        let chrome = state.agent_chrome_line();
-        assert!(chrome.contains("xai/grok"));
-        assert!(chrome.contains("think medium"));
-        assert!(chrome.contains("review"));
-        assert!(chrome.contains("12 in"));
-        assert!(state.composer_context_chips().contains("@src/lib.rs"));
-        assert!(state.composer_context_chips().contains("steer"));
-        state.open_session_picker(&serde_json::json!([
-            {"path": "/tmp/alpha.jsonl", "name": "alpha"},
-            {"path": "/tmp/beta.jsonl"}
-        ]));
-        assert!(state.session_picker_open);
-        assert!(
-            if crate::ResidentHarnessKind::from_env() == crate::ResidentHarnessKind::GlassCore {
-                state.status.contains("conversation(s)")
-            } else {
-                state.status.contains("Pi session(s)")
-            }
-        );
-        assert_eq!(state.session_picker_items[0].label, "alpha");
-        assert_eq!(state.session_picker_items[1].label, "beta.jsonl");
-        state.edit_last_user_message();
-        state.conversation_items = vec![super::super::projection::ConversationEntry {
-            kind: super::super::projection::ConversationKind::User,
-            text: "previous prompt\n· sending…".into(),
-            streaming: false,
-            entry_id: Some("entry-1".into()),
-            client_message_id: None,
-            tool_name: None,
-            tool_card: None,
-        }];
-        state.edit_last_user_message();
-        assert!(state.composer_mode);
-        assert_eq!(state.composer_input, "previous prompt");
-        std::fs::remove_dir_all(root).expect("remove temporary workspace");
-    }
-
-    #[test]
-    fn chat_dock_stays_on_code_and_app() {
-        let root = std::env::temp_dir().join(format!("glass-dock-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary workspace");
-        let mut state =
-            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        trust_workspace_once(&mut state);
-        state.agent_readiness = format!(
-            "✓ Ready · Node ✓ · SDK {} · auth ✓",
-            crate::pi_runtime::PINNED_PI_SDK_VERSION
-        );
-        state.surface = DevSurface::Code;
-        std::fs::create_dir_all(root.join("src")).expect("src");
-        std::fs::write(root.join("src/lib.rs"), "fn main() {}\n").expect("write");
-        state
-            .ws_mut()
-            .expect("lock")
-            .project_mut()
-            .open_buffer("src/lib.rs", crate::development::Actor::local())
-            .expect("open buffer");
-        state.refresh_editor_projection();
-        state.prepare_editor_agent_prompt();
-        assert_eq!(state.surface, DevSurface::Code);
-        assert!(state.composer_mode);
-        state.close_composer();
-        state.surface = DevSurface::App;
-        state.focus_composer_dock();
-        assert_eq!(state.surface, DevSurface::App);
-        assert!(state.composer_mode);
-        state.cycle_composer_run_mode();
-        assert_eq!(state.composer_run_mode, crate::AgentTurnMode::Ask);
-        state.cycle_composer_run_mode();
-        assert_eq!(state.composer_run_mode, crate::AgentTurnMode::Plan);
-        state.capture_plan_from_goal("ship the checkout");
-        state.pending_plan.as_mut().unwrap().body = "1. open App\n2. click Sign in".into();
-        assert!(!state.pending_plan.as_ref().unwrap().accepted);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 
@@ -19474,12 +17450,6 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create temporary workspace");
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
-        state
-            .ws_mut()
-            .expect("workspace lock")
-            .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
-            .expect("trust project");
-        state.snapshot_trust_label = "trusted-project".into();
 
         state.show_surface(DevSurface::More);
         state.selected_more = DevTuiState::more_route_actions()
@@ -19490,7 +17460,7 @@ mod tests {
         assert_eq!(state.surface, DevSurface::More);
         assert!(
             state.status.to_ascii_lowercase().contains("doctor")
-                || state.status.contains("PI panel"),
+                || state.status.contains("Core panel"),
             "doctor should stay on More: {}",
             state.status
         );

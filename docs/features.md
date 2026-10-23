@@ -665,21 +665,16 @@ Debug, and More. Phone exposes Agent, Code, App, Tasks, and More. Auto layout
 uses phone below 72 columns or 22 rows, compact below 118 columns or 32 rows,
 and desktop otherwise; `--tui-layout` can force a mode.
 
-First-run Agent onboarding is in the TUI. Trust-required projects first show
-`I` inspect, `O` open untrusted, `1` trust once, and `T` trust project. `T` may
-queue while a snapshot refresh holds the workspace lock. Agent typing or
-`Enter` opens the composer when the resident engine is ready; otherwise Glass
-reports the exact repair step for Glass Core (install `glass-core`, set
-`GLASS_CORE_BINARY`, or connect a provider). Provider setup stays in Core. `Ctrl-L` opens the shared composer dock on
-every surface. Default mode is Agent; `Ctrl-Shift-A` cycles Ask, Plan, and
-Agent. Composer `Enter` sends and stays open; `Esc` closes. Local or
+The TUI opens directly into the workspace. Glass Core owns provider setup,
+resident coding tools, and their permission decisions. Glass owns workspace
+operations and integrations. `Ctrl-L` opens the shared composer dock on every
+surface. Composer `Enter` sends and stays open; `Esc` closes. Local or
 pre-dispatch failures keep the draft for retry. A Core error for an accepted
 prompt marks its attempt failed and the agent idle, shows a bounded error
 summary, and adds the attempt to Attention Inbox. Inspect it and use
-`:agent retry` to request confirmation; Glass never replays it automatically.
-Mutations outside the session's authority use one-use approval cards.
+`:agent retry` to retry explicitly; Glass does not replay it automatically.
 
-The Code file preview is read-only and wraps long lines on narrow terminals.
+The Code file preview shows the selected file and wraps long lines on narrow terminals.
 Switching to Code queues the selected-file preview if the workspace is busy.
 `Enter` or `i` enters full-screen editing. `Alt-W` toggles soft wrap off by
 default; wrapped source uses whitespace-aware reflow and continuation gutters,

@@ -1,12 +1,12 @@
 //! Glass Dev-owned project CLI dispatch.
 
 use crate::development::{
-    Actor, ExperimentManager, HarnessRequest, LinkProvenance, LocalHarness,
-    ProcessSnapshot, ProjectWorkspace, SemanticBreakpoint, SemanticSnapshot,
+    Actor, ExperimentManager, HarnessRequest, LinkProvenance, LocalHarness, ProcessSnapshot,
+    ProjectWorkspace, SemanticBreakpoint, SemanticSnapshot,
 };
 use glass_browser::cli::args::{
-    AgentCommand, ExperimentCommand, ExternalAgentSandbox, HarnessCommand,
-    NeovimCommand, ProjectCommand, ProjectGitCommand, ProjectGithubCommand, ProjectGraphCommand,
+    AgentCommand, ExperimentCommand, ExternalAgentSandbox, HarnessCommand, NeovimCommand,
+    ProjectCommand, ProjectGitCommand, ProjectGithubCommand, ProjectGraphCommand,
     ProjectProcessCommand,
 };
 use serde::Serialize;
@@ -15,7 +15,7 @@ use std::time::Duration;
 
 type CliResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-pub(crate) fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliResult<()> {
+pub(crate) fn dispatch_agent(action: &AgentCommand) -> CliResult<()> {
     match action {
         AgentCommand::Doctor | AgentCommand::Status => {
             return print_json(&crate::resident_harness::resident_readiness()?);
@@ -35,12 +35,10 @@ pub(crate) fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliRe
         let sandbox = match sandbox {
             ExternalAgentSandbox::ReadOnly => crate::external_agents::ExternalSandbox::ReadOnly,
             ExternalAgentSandbox::WorkspaceWrite => {
-                if !(*allow_mutation || unrestricted) {
-                    return Err(
-                        "workspace-write delegation requires --allow-mutation (or --yolo)".into(),
-                    );
+                if !*allow_mutation {
+                    return Err("workspace-write delegation requires --allow-mutation".into());
                 }
-                if !(*yes || unrestricted) {
+                if !*yes {
                     return Err(
                         "workspace-write delegation requires --yes for the exact request".into(),
                     );
@@ -62,8 +60,8 @@ pub(crate) fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliRe
                 prompt,
                 sandbox,
                 timeout: Duration::from_secs(*timeout_secs),
-                allow_mutation: *allow_mutation || unrestricted,
-                confirmed: *yes || unrestricted,
+                allow_mutation: *allow_mutation,
+                confirmed: *yes,
             })?;
         print_json(&result)?;
         if !result.success {
@@ -84,14 +82,10 @@ pub(crate) fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliRe
             return Err("agent tool calls use the resident broker path".into());
         }
         AgentCommand::Hello { root } => (root, HarnessRequest::Hello),
-        AgentCommand::Prompt {
-            root,
-            text,
-        } => (root, HarnessRequest::Prompt { text: text.clone() }),
-        AgentCommand::Steer {
-            root,
-            text,
-        } => (root, HarnessRequest::Steer { text: text.clone() }),
+        AgentCommand::Prompt { root, text } => {
+            (root, HarnessRequest::Prompt { text: text.clone() })
+        }
+        AgentCommand::Steer { root, text } => (root, HarnessRequest::Steer { text: text.clone() }),
         AgentCommand::Doctor | AgentCommand::Status => {
             unreachable!("readiness commands return before harness dispatch")
         }
@@ -163,7 +157,7 @@ pub(crate) fn dispatch_project(
             confirmed,
         )
     {
-        return Err("project operation requires --allow-mutation and --yes (or --yolo)".into());
+        return Err("project operation requires --allow-mutation and --yes".into());
     }
     match action {
         ProjectCommand::Inspect { root } => {
@@ -598,7 +592,6 @@ fn execute_project_tool(
             actor: Actor::local(),
             allow_mutation,
             confirmed,
-            unrestricted: false,
         },
         initiator: None,
         expected_generation: workspace.generation(),

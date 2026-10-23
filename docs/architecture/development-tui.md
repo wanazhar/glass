@@ -108,7 +108,7 @@ only changes the projection; it does not create a second owner.
 ```text
 Desktop (body: navigation | surface | context)
 ┌──────────────────────────────────────────────────────────────┐
-│ header: GLASS DEV · surface · root · trust/mode        2 rows│
+│ header: GLASS DEV · surface · root                      2 rows│
 ├───────────────┬───────────────────────────┬──────────────────┤
 │ SURFACES 24   │ active surface (55%)      │ context ≥30      │
 ├───────────────┴───────────────────────────┴──────────────────┤
@@ -158,15 +158,14 @@ a second keybinding or state owner.
 
 | Surface | Authoritative projection | Guided empty/loading behavior |
 |---|---|---|
-| Trust | trust label and exact inspection items | starts here when project trust is required; `I` inspect, `O` open untrusted, `1` trust once, `T` trust project |
-| Agent | selected-engine readiness, shared transcript viewport, typed event/tool cards, approval | shows `START HERE` when the selected engine is ready; otherwise `:actions` offers the available setup and repair steps |
+| Agent | Glass Core readiness, shared transcript viewport, typed event/tool cards, approval | shows `START HERE` when Core is ready; otherwise `:actions` offers setup and repair guidance |
 | Code | bounded files, focused buffer, cursor/dirty state, review comments/proposals/checkpoints, LSP | no files/file open messages direct to selection and Enter; no diagnostics is a valid state |
 | App | embedded `BrowserWorkspaceController`: connection, target, semantic entities, workflow, visual path | detached/no page/loading/failed/recovery/semantic-only states stay visible |
 | Terminal | managed process rows with health, PID, command and detected URL | `s` starts the detected suite; `a` opens actions; no process is an empty state |
-| Tasks | workspace-local Agent checklist plus overnight DAG rows | empty todos direct to Plan accept or `glass.todo.write`; empty DAG directs to `a` or `:task create TITLE PROMPT` |
+| Tasks | workspace-local Agent checklist plus overnight DAG rows | empty todos direct to `glass.todo.write`; empty DAG directs to `a` or `:task create TITLE PROMPT` |
 | Git | branch/change rows, selected file and inline diff | opening Git loads the selected diff; loading is visible and off-thread |
 | Debug | debugger sessions and test evidence | no sessions is one start panel (`:debug start NAME COMMAND`) |
-| More | agent-engine readiness, kernels, experiments/replay, harnesses and routes | `j/k` or click selects a route; Enter/double-click runs it; results stay on More |
+| More | Core readiness, kernels, experiments/replay, harnesses and routes | `j/k` or click selects a route; Enter/double-click runs it; results stay on More |
 
 ## Navigation and modal routing
 
@@ -174,8 +173,8 @@ One active-overlay resolver owns keyboard, mouse, and terminal-overlay
 precedence. From highest priority to lowest it selects quit confirmation,
 editor exit prompt, native browser JavaScript dialog, help, command-center menu,
 browser target picker, file picker, session picker, agent approval, mutation
-confirmation, full-screen editor, slash-command modal, composer dock, Glass
-command palette, and browser recovery. Recovery is the lowest-priority overlay
+confirmation, full-screen editor, composer dock, Glass command palette, and
+browser recovery. Recovery is the lowest-priority overlay
 so it cannot replace an already active modal or editor. If no modal is active,
 ordinary surface input owns the event, including Git workbench keys. Ctrl-C
 remains a global quit request after the unsaved-editor prompt and before
@@ -217,12 +216,11 @@ mouse, paste, or surface input while a higher-priority overlay is active.
 | Up/Down, `j`/`k` | focused list movement; otherwise the current surface scrolls |
 | PageUp/PageDown, Home/End | surface scroll/page or bounds |
 | `a` outside Agent | open the current surface command center; `:` opens the filtered palette |
-| `/` on Agent | open the Glass slash-command modal; `:` opens Glass workspace actions |
+| `:` | open Glass workspace actions |
 | `Ctrl-L` | open the shared composer dock on the current surface |
 | `Ctrl-P` | open the file picker; in the composer or palette, it keeps its local history behavior |
 | `Ctrl-K` / `Ctrl-Shift-P` | open the command palette from the normal surface view |
 | `Ctrl-G` | jump to App while keeping the composer dock open |
-| `Ctrl-Shift-A` | cycle Ask, Plan, and Agent; default Agent; Ask/Plan fail closed for mutations |
 | `Ctrl-Shift-T` on Agent | open the project conversation picker; Enter selects a thread without dispatching a prompt, Esc returns to the current conversation |
 | `?` | help; `j`/`k`, PageUp/PageDown and Home/End scroll; `?`/Esc closes |
 | `Enter` on Agent | start/continue the agent interaction; with text focus, submit composer |
@@ -321,56 +319,32 @@ in the card without releasing a different dialog. When the page or session
 closes the dialog externally, the overlay disappears on the next poll. A
 resize or focus-loss event does not silently dismiss the page dialog.
 
-### Slash-command modal
+### Glass action palette
 
-The Agent surface keeps Glass slash aliases such as `/ask`, `/plan`, `/agent`,
-`/todo`, `/stats`, `/sessions`, and `/think`. `:` opens the full Glass workspace
-action palette. Glass Core owns provider login, model configuration, and coding
-sessions; the modal does not expose a second agent runtime or extension command
-surface.
-
-When the Agent composer is focused, typing `/` opens the modal regardless of
-whether the draft is empty. The modal keeps the composer text and cursor; Esc
-returns focus to the composer with both unchanged. Opening the modal from the
-Agent surface without composer focus returns to that surface without opening
-the composer.
-
-A paste into the focused composer that starts with `/` is extracted as the
-complete modal command input, including any newline arguments; the current
-composer draft remains unchanged. Ordinary pasted text still inserts into the
-composer. Typed and pasted modal input is capped at 4 KiB; the UI reports when
-additional input exceeds that limit.
+The `:` palette routes workspace actions to Glass integrations. Core login,
+model configuration, native coding tools, and their permission decisions stay
+with Glass Core. The shared composer sends conversation prompts to the active
+Core session; typing `/` does not open a Pi or second-agent command menu.
 
 ## First launch and agent composer
 
-On construction Glass reads workspace trust and resident engine readiness
-without blocking on the full projection. A trust-required project starts on
-Trust. Otherwise Agent is selected: a ready engine shows `Ready · describe a
-coding task`, while an unconfigured engine shows setup guidance. The resident
-engine defaults to Glass Core. Its `:actions` include `agent doctor`, setup and
-provider-login guidance, conversation management, and task routes. Setup and
-login guidance point to Glass Core configuration. See the [Glass Core resident
-harness guide](../glass-core-harness.md) for provider setup and readiness.
+On construction Glass opens directly into the workspace and begins loading
+resident engine readiness and workspace projections. Glass Core is the sole
+resident engine and owns provider configuration, native coding tools, and their
+permissions. Glass owns workspace editing, Git, browser and other integrations.
+See the [Glass Core resident harness guide](../glass-core-harness.md) for
+provider setup and readiness.
 
 The shared composer dock is a local draft with a character cursor. `Ctrl-L`
 opens it on any surface. `i`, Enter on the Agent surface, or typing a
-non-digit Agent character also opens it. Default mode is Agent. `Ctrl-Shift-A`
-cycles Ask, Plan, and Agent. `Ctrl-Shift-T` opens the project conversation
-picker; selecting a row switches to that thread without sending a prompt, and
-Esc leaves the selected conversation unchanged. A thread assigned to a project
+non-digit Agent character also opens it. `Ctrl-Shift-T` opens the project
+conversation picker; selecting a row switches to that thread without sending a
+prompt, and Esc leaves the selected conversation unchanged. A thread assigned
+to a project
 task displays its agent role, task title, and task ID so concurrent tasks with
 the same role remain distinguishable; manually spawned or currently unassigned
-agents keep their role label. Glass `/ask`, `/plan`, and `/agent` aliases use
-the same slash resolver whether typed in the modal or pasted into the
-composer: their arguments are the prompt sent in the selected mode, and any
-pre-existing composer draft remains intact. An alias without a prompt changes
-the mode and returns to the composer. `/todo` opens the Tasks surface while
-retaining the composer text and cursor; composer focus becomes inactive so
-Tasks owns keyboard input. `/stats` and `/sessions` keep their Glass
-workspace-tool routes, and `/think LEVEL` keeps its Glass thinking-level tool
-route. Ask inspects only. Plan writes a bounded numbered plan. Only Agent may
-mutate. `Enter` submits immediately and keeps the composer open; submitted
-text is rendered optimistically, while the worker/event stream appends
+agents keep their role label. `Enter` submits immediately and keeps the
+composer open; submitted text is rendered optimistically, while the worker/event stream appends
 assistant deltas and tool activity. Glass maps its selected thread's typed
 entries and stable tool-call metadata into the shared `glass-tui::Transcript`.
 That controller owns cached wrapping, follow-tail and scroll anchoring, and
@@ -470,11 +444,10 @@ Workspace-local todos
 (`glass.todo.*`) persist at `.glass/todos/session.json` and form the Agent
 checklist shown on Agent and Tasks; they are not the overnight task DAG.
 
-The resident agent session is unrestricted by default because Glass Dev is a
-human-controlled development suite. `--yolo` is the process-wide switch for
-direct Glass/browser policy paths and Glass Dev project execution; it bypasses
-the workspace-trust execution gate for that process without persisting a trust
-record and is shown in the header. It does not create a second workspace.
+The resident agent's native coding tools and permission decisions belong to
+Glass Core. Glass does not add Ask/Plan coding modes or a second coding
+permission layer. Glass-owned workspace, Git, and browser integrations retain
+their own path, revision, and mutation-confirmation checks.
 
 ## Code projection and editor
 

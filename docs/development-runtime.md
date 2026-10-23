@@ -26,18 +26,11 @@ project. Use `glass update --dry-run` to inspect an update before applying it.
 See [Installation and operations](installation.md#update-a-cargo-installation)
 for package ownership and recovery details.
 
-A project with a new or changed filesystem identity opens as `Untrusted`.
-Inspection, static reads, search, Git metadata, and manual browser actions are
-available. Project hooks, configured tools and tests, language-server
-overrides, kernels, experiments, and task execution need a local trust
-decision. The Glass Core agent uses the same workspace tool router. Glass does not trust
-a project because its configuration requests trust.
-
-`--yolo` is a process-local Glass Dev option. It enables repository
-configuration and bypasses the workspace-trust execution gate for that
-process. It does not save a trust decision. Root confinement, revisions,
-leases, protocol limits, timeouts, and result bounds still apply. See
-[Workspace trust](workspace-trust.md).
+Glass opens directly into the workspace. Glass Core owns provider connections
+and native coding-tool permissions. Glass owns
+browser, Git, and workspace integrations, including their revision checks and
+mutation confirmations. Root confinement, leases, protocol limits, timeouts,
+and result bounds still apply.
 
 The one-shot CLI opens and closes a workspace for one request. A resident TUI owns one workspace until exit. A stdio MCP server keeps a bounded registry for its process. The daemon shares workspaces between authenticated local clients. Registries hold at most eight projects and evict an idle project after 30 minutes. Closing a workspace terminates owned services and processes; it never deletes project files.
 
@@ -47,14 +40,14 @@ The one-shot CLI opens and closes a workspace for one request. A resident TUI ow
 canonical project root
         │
         ▼
-DevelopmentWorkspace (generation + trust)
+DevelopmentWorkspace (generation + project services)
  ├─ ProjectWorkspace (tree, buffers, editor revisions, timeline, graph)
  ├─ ProcessManager (owned PTY trees)
  ├─ LanguageService / TestService / Debugger sessions
  ├─ AgentRegistry ── one worker per resident agent
  │                   └─ Glass Core runtime
  ├─ TaskScheduler ── task records above AgentRegistry
- ├─ DevelopmentToolRouter (revision, trust, actor, confirmation)
+ ├─ DevelopmentToolRouter (revision, actor, integration confirmation)
  └─ BrowserService (optional attached browser context)
         │
         └─ TUI SnapshotWorker (display projections only; never state owner)
@@ -74,15 +67,13 @@ URL hints as discovery metadata. Those values are informational: Glass does not
 launch detected language servers or infer extra development URLs unless the
 project configuration explicitly requests them.
 
-The Glass TUI's default agent controls use Core-owned provider and model
-configuration. `:agent setup login` hands the terminal to the resolved
-`glass-core` interactive UI in the current project; Core's `/login` owns
-authentication, and Glass refreshes readiness after return without restarting
-resident sessions. To start an agent with configuration changed during that
-handoff, use `:agent spawn ROLE TASK`, which creates a separate resident
-runtime. `:agent new` creates a conversation in the existing runtime and does
-not reload its configuration. `:agent models [AGENT_ID]` and
-`:agent model [AGENT_ID] PROVIDER MODEL` use the selected session, or the
+The Glass TUI's resident agent uses Glass Core's provider, model, native coding
+tools, and permission configuration. `:agent setup login` hands the terminal
+to Core's interactive provider login; Glass does not duplicate Core's coding
+permissions. `:agent spawn ROLE TASK` creates a separate resident runtime.
+`:agent new` creates a conversation in the existing runtime and does not reload
+its configuration. `:agent models [AGENT_ID]` and `:agent model [AGENT_ID]
+PROVIDER MODEL` use the selected session, or the
 workspace's first active session when none is selected, through negotiated
 model APIs. Model catalog responses are shown in the Agent conversation. Provider setup and model configuration remain in Glass Core; see the
 [resident harness guide](glass-core-harness.md).
@@ -145,7 +136,7 @@ partly processed the request. A local or pre-dispatch send failure instead
 restores the composer draft; it does not create the confirmed Core-response
 attention item.
 
-Every governed tool carries expected workspace generation and project revision. A stale call fails with `Conflict`; reread state and issue a new call. Mutations also require a trusted workspace, actor attribution, and the applicable mutation authority or confirmation.
+Every governed tool carries expected workspace generation and project revision. A stale call fails with `Conflict`; reread state and issue a new call. Glass integration mutations retain actor attribution and the applicable per-call confirmation.
 
 ## Project files and tree
 
@@ -243,7 +234,13 @@ Glass has four distinct agent paths:
 | One-shot delegation | Temporary Codex, Claude, or OpenCode child. Read-only is default; output and errors are bounded; no resident identity or session is created. | `glass agent delegate HARNESS PROMPT --root .` |
 
 
-The trusted resident tool gateway provides read, list, search, edit, write, process, test, LSP, Git, browser, workflow, debugger, and task capabilities according to availability. The resident engine receives this catalog once, when its session opens, and Glass executes every call; a mutation is checked again at execution time, where stale revisions, leases, path confinement, and confirmation still apply. See [MCP integration](mcp.md) for transport semantics.
+The resident workspace tool gateway provides read, list, search, edit, write,
+process, test, LSP, Git, browser, workflow, debugger, and task capabilities
+according to availability. The resident engine receives this catalog once,
+when its session opens, and Glass executes every call; a mutation is checked
+again at execution time, where stale revisions, leases, path confinement, and
+integration confirmation still apply. See [MCP integration](mcp.md) for
+transport semantics.
 
 ## Failure and recovery matrix
 
@@ -279,6 +276,6 @@ Run the targeted tests from the repository when validating a change. Do not trea
 - [Coding harness architecture](harness-architecture.md)
 - [Development TUI architecture](architecture/development-tui.md)
 - [Local daemon](daemon.md)
-- [Workspace trust](workspace-trust.md)
+- [Customization governance](customization-governance.md)
 - [CLI reference](cli.md)
 - [Security](../SECURITY.md)

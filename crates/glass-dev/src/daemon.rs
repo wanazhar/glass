@@ -1,9 +1,7 @@
 //! Local authenticated daemon that owns complete development workspaces.
 
 use crate::development::{Actor, ToolAuthorization, ToolCall};
-use crate::{
-    DevelopmentToolContext, DevelopmentWorkspace, ResidentAgentBroker, WorkspaceTrustStore,
-};
+use crate::{DevelopmentToolContext, DevelopmentWorkspace, ResidentAgentBroker};
 use glass_browser::cli::args::DaemonCommand;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -50,8 +48,6 @@ struct WorkspaceActorHandle {
 #[derive(Clone)]
 struct WorkspaceRecovery {
     root: PathBuf,
-    trust_store: WorkspaceTrustStore,
-    unrestricted: bool,
     resident_broker: Option<ResidentAgentBroker>,
 }
 
@@ -62,21 +58,13 @@ impl WorkspaceRecovery {
     ) -> Self {
         Self {
             root: workspace.root().to_path_buf(),
-            trust_store: WorkspaceTrustStore::at(workspace.trust_store_path().to_path_buf()),
-            unrestricted: workspace.unrestricted_execution(),
             resident_broker,
         }
     }
 
     fn reopen(&self) -> Result<DevelopmentWorkspace, String> {
         let mut workspace =
-            DevelopmentWorkspace::open_with_store(&self.root, self.trust_store.clone())
-                .map_err(|error| error.to_string())?;
-        if self.unrestricted {
-            workspace
-                .enable_unrestricted_execution()
-                .map_err(|error| error.to_string())?;
-        }
+            DevelopmentWorkspace::open(&self.root).map_err(|error| error.to_string())?;
         if let Some(broker) = &self.resident_broker {
             workspace
                 .agents()
@@ -456,18 +444,12 @@ pub struct DevelopmentDaemonResponse {
     pub error: Option<String>,
 }
 
-pub(crate) async fn dispatch(
-    action: &DaemonCommand,
-    unrestricted: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn dispatch(action: &DaemonCommand) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         DaemonCommand::Start { socket, status } => {
             println!(
                 "{}",
-                serde_json::to_string_pretty(
-                    &start_with_unrestricted(socket.as_deref(), status.as_deref(), unrestricted,)
-                        .await?,
-                )?
+                serde_json::to_string_pretty(&start(socket.as_deref(), status.as_deref()).await?,)?
             );
         }
         DaemonCommand::Status { socket, status } | DaemonCommand::Doctor { socket, status } => {
@@ -491,9 +473,7 @@ pub(crate) async fn dispatch(
         DaemonCommand::AcknowledgeRecovery { .. } => {
             println!("{{\"status\":\"no-recovery-required\"}}");
         }
-        DaemonCommand::Serve { socket, status } => {
-            serve_with_unrestricted(socket, status, unrestricted).await?
-        }
+        DaemonCommand::Serve { socket, status } => serve(socket, status).await?,
     }
     Ok(())
 }
@@ -526,13 +506,12 @@ pub async fn start(
     socket: Option<&Path>,
     status_path: Option<&Path>,
 ) -> Result<DevelopmentDaemonStatus, Box<dyn std::error::Error>> {
-    start_with_unrestricted(socket, status_path, false).await
+    start_impl(socket, status_path).await
 }
 
-async fn start_with_unrestricted(
+async fn start_impl(
     socket: Option<&Path>,
     status_path: Option<&Path>,
-    unrestricted: bool,
 ) -> Result<DevelopmentDaemonStatus, Box<dyn std::error::Error>> {
     #[cfg(not(any(unix, windows)))]
     {
@@ -564,9 +543,6 @@ async fn start_with_unrestricted(
             .open(&log)?;
         let stderr = stdout.try_clone()?;
         let mut command = std::process::Command::new(std::env::current_exe()?);
-        if unrestricted {
-            command.arg("--yolo");
-        }
         let mut child = command
             .args(["daemon", "serve"])
             .arg("--socket")
@@ -603,9 +579,6 @@ async fn start_with_unrestricted(
             .open(&log)?;
         let stderr = stdout.try_clone()?;
         let mut command = std::process::Command::new(std::env::current_exe()?);
-        if unrestricted {
-            command.arg("--yolo");
-        }
         let mut child = command
             .args(["daemon", "serve"])
             .arg("--socket")
@@ -738,29 +711,10 @@ pub fn stop(
 }
 
 pub async fn serve(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    serve_with_unrestricted(socket, status_path, false).await
+    serve_impl(socket, status_path).await
 }
 
-async fn serve_with_unrestricted(
-    socket: &Path,
-    status_path: &Path,
-    unrestricted: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    serve_with_store(
-        socket,
-        status_path,
-        WorkspaceTrustStore::platform_default()?,
-        unrestricted,
-    )
-    .await
-}
-
-async fn serve_with_store(
-    socket: &Path,
-    status_path: &Path,
-    trust_store: WorkspaceTrustStore,
-    unrestricted: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn serve_impl(socket: &Path, status_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = (socket, status_path);
@@ -814,17 +768,9 @@ async fn serve_with_store(
                     let token = token.clone();
                     let status_path = status_path.to_path_buf();
                     let socket = socket.to_path_buf();
-                    let trust_store = trust_store.clone();
                     tokio::task::spawn_local(async move {
-                        if let Err(error) = handle_client(
-                            stream,
-                            &token,
-                            &socket,
-                            &workspaces,
-                            &trust_store,
-                            unrestricted,
-                        )
-                        .await
+                        if let Err(error) =
+                            handle_client(stream, &token, &socket, &workspaces).await
                         {
                             tracing::warn!(%error, "development daemon client failed");
                         }
@@ -889,17 +835,9 @@ async fn serve_with_store(
                     let token = token.clone();
                     let status_path = status_path.to_path_buf();
                     let socket = socket.to_path_buf();
-                    let trust_store = trust_store.clone();
                     tokio::task::spawn_local(async move {
-                        if let Err(error) = handle_stream(
-                            server,
-                            &token,
-                            &socket,
-                            &workspaces,
-                            &trust_store,
-                            unrestricted,
-                        )
-                        .await
+                        if let Err(error) =
+                            handle_stream(server, &token, &socket, &workspaces).await
                         {
                             tracing::warn!(%error, "development daemon named-pipe client failed");
                         }
@@ -923,10 +861,8 @@ async fn handle_client(
     token: &str,
     socket: &Path,
     workspaces: &WorkspaceRegistry,
-    trust_store: &WorkspaceTrustStore,
-    unrestricted: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    handle_stream(stream, token, socket, workspaces, trust_store, unrestricted).await
+    handle_stream(stream, token, socket, workspaces).await
 }
 
 async fn handle_stream<S>(
@@ -934,8 +870,6 @@ async fn handle_stream<S>(
     token: &str,
     socket: &Path,
     workspaces: &WorkspaceRegistry,
-    trust_store: &WorkspaceTrustStore,
-    unrestricted: bool,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -952,17 +886,7 @@ where
             }
         } else {
             match serde_json::from_str::<DevelopmentDaemonRequest>(&line) {
-                Ok(request) => {
-                    execute_request(
-                        request,
-                        token,
-                        socket,
-                        workspaces,
-                        trust_store,
-                        unrestricted,
-                    )
-                    .await
-                }
+                Ok(request) => execute_request(request, token, socket, workspaces).await,
                 Err(error) => DevelopmentDaemonResponse {
                     id: "invalid".into(),
                     ok: false,
@@ -1008,8 +932,6 @@ async fn execute_request(
     token: &str,
     socket: &Path,
     workspaces: &WorkspaceRegistry,
-    trust_store: &WorkspaceTrustStore,
-    unrestricted: bool,
 ) -> DevelopmentDaemonResponse {
     let id = request.id.clone();
     let result = async {
@@ -1040,14 +962,8 @@ async fn execute_request(
                 if workspaces.borrow().len() >= MAX_WORKSPACES {
                     return Err("daemon workspace quota reached".into());
                 }
-                let mut workspace =
-                    DevelopmentWorkspace::open_with_store(root, trust_store.clone())
-                        .map_err(|error| error.to_string())?;
-                if unrestricted {
-                    workspace
-                        .enable_unrestricted_execution()
-                        .map_err(|error| error.to_string())?;
-                }
+                let mut workspace = DevelopmentWorkspace::open(root)
+                    .map_err(|error| error.to_string())?;
                 let resident_broker = ResidentAgentBroker {
                     socket: socket.to_path_buf(),
                     token: token.to_string(),
@@ -1810,12 +1726,12 @@ pub async fn forward_resident_tool_file(
 ) -> Result<Value, Box<dyn std::error::Error>> {
     let socket = PathBuf::from(
         std::env::var_os("GLASS_DEV_DAEMON_SOCKET")
-            .ok_or("resident Pi broker socket is missing")?,
+            .ok_or("resident workspace broker socket is missing")?,
     );
     let token = std::env::var("GLASS_DEV_DAEMON_TOKEN")
-        .map_err(|_| "resident Pi broker token is missing")?;
+        .map_err(|_| "resident workspace broker token is missing")?;
     let workspace_id = std::env::var("GLASS_DEV_DAEMON_WORKSPACE")
-        .map_err(|_| "resident Pi broker workspace is missing")?;
+        .map_err(|_| "resident workspace broker identity is missing")?;
     forward_resident_tool_file_with_context(
         &socket,
         &token,
@@ -1910,7 +1826,7 @@ async fn forward_resident_tool_call(
         .pointer("/workspace/root")
         .and_then(Value::as_str);
     if observed_root != expected_root.to_str() {
-        return Err("resident Pi broker root does not match the durable workspace".into());
+        return Err("resident workspace broker root does not match the durable workspace".into());
     }
     let generation = inspect
         .result
@@ -1935,7 +1851,7 @@ async fn forward_resident_tool_call(
             expected_project_revision: Some(revision),
             allow_mutation,
             confirmed,
-            actor: Some("pi".into()),
+            actor: Some("glass-core".into()),
             since: None,
             limit: None,
             operation_id: None,
@@ -1988,7 +1904,7 @@ async fn forward_resident_tool_call(
                 expected_project_revision: None,
                 allow_mutation: false,
                 confirmed: false,
-                actor: Some("pi".into()),
+                actor: Some("glass-core".into()),
                 since: None,
                 limit: None,
                 operation_id: Some(operation_id.clone()),
@@ -2013,9 +1929,9 @@ pub(crate) fn read_private_tool_call(path: &Path) -> Result<ToolCall, Box<dyn st
         || !canonical
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("glass-pi-call-") && name.ends_with(".json"))
+            .is_some_and(|name| name.starts_with("glass-core-call-") && name.ends_with(".json"))
     {
-        return Err("Pi broker requests must use a private Glass temporary file".into());
+        return Err("resident tool requests must use a private Glass Core temporary file".into());
     }
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -2027,7 +1943,7 @@ pub(crate) fn read_private_tool_call(path: &Path) -> Result<ToolCall, Box<dyn st
     let file = options.open(&canonical)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() > MAX_CALL_BYTES {
-        return Err("invalid Pi broker request file".into());
+        return Err("invalid resident tool request file".into());
     }
     #[cfg(unix)]
     {
@@ -2035,14 +1951,14 @@ pub(crate) fn read_private_tool_call(path: &Path) -> Result<ToolCall, Box<dyn st
         if metadata.uid() != unsafe { libc::geteuid() }
             || metadata.permissions().mode() & 0o077 != 0
         {
-            return Err("Pi broker request must be owned by this user with mode 0600".into());
+            return Err("resident tool request must be owned by this user with mode 0600".into());
         }
     }
     let mut encoded = Vec::with_capacity(metadata.len() as usize);
     file.take(MAX_CALL_BYTES + 1).read_to_end(&mut encoded)?;
     std::fs::remove_file(&canonical)?;
     if encoded.len() as u64 > MAX_CALL_BYTES {
-        return Err("Pi broker request exceeds the size limit".into());
+        return Err("resident tool request exceeds the size limit".into());
     }
     Ok(serde_json::from_slice(&encoded)?)
 }
@@ -2051,7 +1967,6 @@ fn workspace_summary(id: &str, workspace: &DevelopmentWorkspace) -> Value {
     serde_json::json!({
         "id":id,
         "root":workspace.root(),
-        "trust":workspace.trust(),
         "generation":workspace.generation(),
         "projectRevision":workspace.project().revision()
     })
@@ -2103,7 +2018,6 @@ fn request_tool_context(
             actor,
             allow_mutation: request.allow_mutation,
             confirmed: request.confirmed,
-            unrestricted: false,
         },
         initiator: None,
         expected_generation: request
@@ -2351,7 +2265,6 @@ mod tests {
                 actor: Actor::external("daemon-concurrency-test"),
                 allow_mutation: true,
                 confirmed: true,
-                unrestricted: false,
             },
             initiator: None,
             expected_generation: 1,
@@ -2373,16 +2286,11 @@ mod tests {
             "[package]\nname='summary-fixture'\nversion='0.1.0'\n",
         )
         .unwrap();
-        let store = WorkspaceTrustStore::at(base.join("trust.json"));
-        store
-            .trust_project(&crate::WorkspaceIdentity::inspect(&root).unwrap())
-            .unwrap();
 
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let workspace =
-                    DevelopmentWorkspace::open_with_store(&root, store.clone()).unwrap();
+                let workspace = DevelopmentWorkspace::open(&root).unwrap();
                 let cached_summary = workspace_summary("live", &workspace);
                 let recovery = WorkspaceRecovery::from_workspace(&workspace, None);
                 let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
@@ -2569,14 +2477,11 @@ mod tests {
             close_lock: Rc::new(tokio::sync::Mutex::new(())),
         };
         let workspaces = Rc::new(RefCell::new(BTreeMap::from([("large".into(), handle)])));
-        let trust_store = WorkspaceTrustStore::at(PathBuf::from("unused-trust-store"));
         let server = handle_stream(
             server_stream,
             "test-token",
             Path::new("unused-socket"),
             &workspaces,
-            &trust_store,
-            false,
         );
         let client = async move {
             let (read, mut write) = tokio::io::split(client_stream);
@@ -2618,22 +2523,17 @@ mod tests {
             close_lock: Rc::new(tokio::sync::Mutex::new(())),
         };
         let workspaces = Rc::new(RefCell::new(BTreeMap::from([("closing".into(), handle)])));
-        let trust_store = WorkspaceTrustStore::at(PathBuf::from("unused-trust-store"));
         let close_a = execute_request(
             test_daemon_request("close-a", "workspace.close", Some("closing")),
             "test-token",
             Path::new("unused-socket"),
             &workspaces,
-            &trust_store,
-            false,
         );
         let close_b = execute_request(
             test_daemon_request("close-b", "workspace.close", Some("closing")),
             "test-token",
             Path::new("unused-socket"),
             &workspaces,
-            &trust_store,
-            false,
         );
         let actor = async {
             let Some(WorkspaceCommand::Shutdown { response }) = receiver.recv().await else {
@@ -2664,14 +2564,11 @@ mod tests {
             close_lock: Rc::new(tokio::sync::Mutex::new(())),
         };
         let workspaces = Rc::new(RefCell::new(BTreeMap::from([("closing".into(), handle)])));
-        let trust_store = WorkspaceTrustStore::at(PathBuf::from("unused-trust-store"));
         let close = execute_request(
             test_daemon_request("close-fail", "workspace.close", Some("closing")),
             "test-token",
             Path::new("unused-socket"),
             &workspaces,
-            &trust_store,
-            false,
         );
         let actor = async {
             let Some(WorkspaceCommand::Shutdown { response }) = receiver.recv().await else {
@@ -2721,8 +2618,6 @@ mod tests {
             "test-token",
             Path::new("unused-socket"),
             &workspaces,
-            &WorkspaceTrustStore::at(PathBuf::from("unused-trust-store")),
-            false,
         )
         .await
     }
@@ -3020,15 +2915,10 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let store = WorkspaceTrustStore::at(root.join("trust.json"));
-        store
-            .trust_project(&crate::WorkspaceIdentity::inspect(&root).unwrap())
-            .unwrap();
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let workspace =
-                    DevelopmentWorkspace::open_with_store(&root, store.clone()).unwrap();
+                let workspace = DevelopmentWorkspace::open(&root).unwrap();
                 let recovery = WorkspaceRecovery::from_workspace(&workspace, None);
                 let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
                 let operations = Arc::new(Mutex::new(OperationRegistry::new("panic".into())));
@@ -3144,18 +3034,11 @@ while True:
 "#,
         )
         .unwrap();
-        let store = WorkspaceTrustStore::at(base.join("trust.json"));
-        for root in [&first_root, &second_root] {
-            store
-                .trust_project(&crate::WorkspaceIdentity::inspect(root).unwrap())
-                .unwrap();
-        }
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
                 let actor = |id: &str, root: &Path| {
-                    let workspace =
-                        DevelopmentWorkspace::open_with_store(root, store.clone()).unwrap();
+                    let workspace = DevelopmentWorkspace::open(root).unwrap();
                     let summary = workspace_summary(id, &workspace);
                     let recovery = WorkspaceRecovery::from_workspace(&workspace, None);
                     let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
@@ -3313,15 +3196,10 @@ while True:
             std::process::id()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let store = WorkspaceTrustStore::at(root.join("trust.json"));
-        store
-            .trust_project(&crate::WorkspaceIdentity::inspect(&root).unwrap())
-            .unwrap();
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let workspace =
-                    DevelopmentWorkspace::open_with_store(&root, store.clone()).unwrap();
+                let workspace = DevelopmentWorkspace::open(&root).unwrap();
                 let summary = workspace_summary("operations", &workspace);
                 let recovery = WorkspaceRecovery::from_workspace(&workspace, None);
                 let (sender, receiver) = tokio::sync::mpsc::channel(WORKSPACE_COMMAND_CAPACITY);
@@ -3632,10 +3510,6 @@ while True:
             "[package]\nname='x'\nversion='0.1.0'\n",
         )
         .unwrap();
-        let trust_store = WorkspaceTrustStore::at(base.join("trust.json"));
-        trust_store
-            .trust_project(&crate::WorkspaceIdentity::inspect(&project).unwrap())
-            .unwrap();
         let socket = base.join("glassd.sock");
         let status = base.join("glassd.json");
         let local = tokio::task::LocalSet::new();
@@ -3643,11 +3517,8 @@ while True:
             .run_until(async {
                 let server_socket = socket.clone();
                 let server_status = status.clone();
-                let server_trust_store = trust_store.clone();
                 let server = tokio::task::spawn_local(async move {
-                    serve_with_store(&server_socket, &server_status, server_trust_store, false)
-                        .await
-                        .unwrap()
+                    serve_impl(&server_socket, &server_status).await.unwrap()
                 });
                 for _ in 0..100 {
                     if status.exists() && socket.exists() {
@@ -3697,34 +3568,6 @@ while True:
                 process_start.allow_mutation = true;
                 process_start.confirmed = true;
                 assert!(submit_and_wait(&socket, &process_start).await.ok);
-                let pi_available = std::process::Command::new("pi")
-                    .arg("--version")
-                    .output()
-                    .is_ok();
-                if pi_available {
-                    let mut agent_start = base_request("agent-start", "operation.submit");
-                    agent_start.call = Some(ToolCall {
-                        id: "agent-start".into(),
-                        name: "glass.agent.spawn".into(),
-                        arguments: serde_json::json!({"spec":{
-                            "role":"durability-probe",
-                            "task":"Remain idle while the client reconnects",
-                            "dependencies":[],
-                            "model":null,
-                            "thinking":null,
-                            "worktree":null,
-                            "unrestricted":false,
-                            "maxRuntimeSeconds":60,
-                            "maxEvents":100
-                        }}),
-                    });
-                    agent_start.expected_generation = Some(1);
-                    agent_start.expected_project_revision = Some(1);
-                    agent_start.allow_mutation = true;
-                    agent_start.confirmed = true;
-                    let agent_response = submit_and_wait(&socket, &agent_start).await;
-                    assert!(agent_response.ok, "{:?}", agent_response.error);
-                }
                 let browser_e2e = std::env::var("GLASS_E2E").as_deref() == Ok("1")
                     && std::env::var_os("GLASS_CHROME_PATH").is_some();
                 if browser_e2e {
@@ -3748,7 +3591,7 @@ while True:
                     let response = submit_and_wait(&socket, &browser_start).await;
                     assert!(response.ok, "{:?}", response.error);
                 }
-                // The Pi-style broker opens a new process/socket and still
+                // The resident tool broker opens a new socket and still
                 // executes against the same daemon-owned kernel.
                 let call = ToolCall {
                     id: "kernel-execute".into(),
@@ -3756,7 +3599,7 @@ while True:
                     arguments: serde_json::json!({"name":"durable","code":"SELECT 42 AS answer"}),
                 };
                 let call_path = std::env::temp_dir().join(format!(
-                    "glass-pi-call-{}-{sequence}.json",
+                    "glass-core-call-{}-{sequence}.json",
                     std::process::id()
                 ));
                 write_private(&call_path, &serde_json::to_vec(&call).unwrap()).unwrap();
@@ -3766,8 +3609,8 @@ while True:
                 .await
                 .unwrap();
                 assert_eq!(result["value"][0]["answer"], 42);
-                // A fresh socket observes the process and optional Pi worker
-                // created by earlier, disconnected clients.
+                // A fresh socket observes the process created by an earlier,
+                // disconnected client.
                 let inspect = request(
                     &socket,
                     &base_request("inspect-reconnected", "workspace.inspect"),
@@ -3789,9 +3632,6 @@ while True:
                         .iter()
                         .any(|kernel| kernel["name"] == "durable")
                 );
-                if pi_available {
-                    assert!(!inspect.result["agents"].as_array().unwrap().is_empty());
-                }
                 assert_eq!(inspect.result["browser"]["connected"], browser_e2e);
                 let mut process_stop = base_request("process-stop", "operation.submit");
                 process_stop.call = Some(ToolCall {
@@ -3825,10 +3665,10 @@ while True:
 
     #[tokio::test(flavor = "current_thread")]
     #[cfg(unix)]
-    async fn daemon_reconnect_preserves_untrusted_state_and_cannot_elevate_it() {
+    async fn daemon_reconnect_preserves_workspace_and_runs_project_tools() {
         let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
         let base = std::env::temp_dir().join(format!(
-            "glassd-trust-test-{}-{sequence}",
+            "glassd-workspace-test-{}-{sequence}",
             std::process::id()
         ));
         let project = base.join("project");
@@ -3845,11 +3685,8 @@ while True:
             .run_until(async {
                 let server_socket = socket.clone();
                 let server_status = status.clone();
-                let store = WorkspaceTrustStore::at(base.join("trust.json"));
                 let server = tokio::task::spawn_local(async move {
-                    serve_with_store(&server_socket, &server_status, store, false)
-                        .await
-                        .unwrap()
+                    serve_impl(&server_socket, &server_status).await.unwrap()
                 });
                 for _ in 0..100 {
                     if status.exists() && socket.exists() {
@@ -3862,7 +3699,7 @@ while True:
                     id: id.into(),
                     token: token.clone(),
                     operation: operation.into(),
-                    workspace_id: Some("untrusted".into()),
+                    workspace_id: Some("project".into()),
                     root: None,
                     call: None,
                     expected_generation: None,
@@ -3878,15 +3715,18 @@ while True:
                 open.root = Some(project.clone());
                 let opened = request(&socket, &open).await.unwrap();
                 assert!(opened.ok);
-                assert_eq!(opened.result["trust"], "untrusted");
+                assert_eq!(opened.result["id"], "project");
 
                 // Each request creates a fresh client connection. Reconnecting
-                // observes the same state but has no trust-mutation operation.
+                // retains the same project workspace.
                 let inspected = request(&socket, &base_request("inspect", "workspace.inspect"))
                     .await
                     .unwrap();
                 assert!(inspected.ok);
-                assert_eq!(inspected.result["workspace"]["trust"], "untrusted");
+                assert_eq!(
+                    inspected.result["workspace"]["root"],
+                    project.display().to_string()
+                );
 
                 let mut tool = base_request("tool", "operation.submit");
                 tool.call = Some(ToolCall {
@@ -3898,9 +3738,8 @@ while True:
                 tool.expected_project_revision = Some(0);
                 tool.allow_mutation = true;
                 tool.confirmed = true;
-                let denied = submit_and_wait(&socket, &tool).await;
-                assert!(!denied.ok);
-                assert!(denied.error.unwrap().contains("trust"));
+                let result = submit_and_wait(&socket, &tool).await;
+                assert!(result.ok, "confirmed project tool execution failed");
                 server.abort();
             })
             .await;

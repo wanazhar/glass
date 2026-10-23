@@ -56,8 +56,8 @@ glass-dev = "0.3"
 ```
 
 Use `glass_dev::…` for project, editor, process, LSP, resident-agent, harness,
-collaboration, workspace-local Agent todos, Ask/Plan/Agent turn mode, and TUI
-APIs. Glass Core is the sole resident engine.
+collaboration, workspace-local Agent todos, and TUI APIs. Glass Core is the
+sole resident engine and owns native coding tools and their permissions.
 `glass-dev` depends on `glass-browser`; the browser crate does not depend on
 `glass-dev`, so browser-only embeddings do not acquire the development runtime.
 
@@ -899,6 +899,12 @@ The internal `AgentToolGateway` validates its descriptor catalog, call
 envelope, JSON schema, authorization, and confirmation. Audit events store
 argument byte count/digest and result metadata, not argument values.
 
+## Public module map
+
+Module paths are package-qualified because both packages expose a `browser`
+and a `tui` module. This is a navigation map; generated rustdoc and source
+exports are authoritative for individual items.
+
 ### `glass-browser` (`glass_browser`)
 
 | Module | Contract |
@@ -956,9 +962,9 @@ Neovim, Git, and collaboration belong to `glass-dev`.
 | `todos` | Workspace-local Agent checklist persisted at `.glass/todos/session.json` (`glass.todo.*`); not the overnight DAG |
 | `fim` | Local stub and resident-agent providers for editor completion ghosts |
 | `tools` | Governed development-tool routing |
-| `trust` | Workspace trust decisions and persistence |
+| `trust` | Legacy identity-bound workspace records retained for migration history |
 | `tui` | Resident development terminal application and surface routing |
-| `workspace` | Workspace ownership, shared handles, and per-turn Ask/Plan/Agent mode |
+| `workspace` | Workspace ownership, shared handles, project files, actors, and revisions |
 
 ## Errors and privacy
 

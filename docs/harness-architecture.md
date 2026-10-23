@@ -57,7 +57,7 @@ spawn → initial Refresh → seeded snapshot
        ├─ PTY/processes         └─ update conversation tail
        ├─ LSP/tests/Git/browser
        ├─ workflow/kernel/debug
-       └─ trust/graph/revision
+       └─ graph/revision
                    │
                    ▼
         replace mailbox, clear dirty flag
@@ -65,7 +65,7 @@ spawn → initial Refresh → seeded snapshot
 
 Before the first snapshot, the worker waits for a request. After seeding, it waits up to 250 ms and performs a full refresh on timeout. `request_refresh` coalesces duplicate full-refresh requests with an atomic flag. `request_conversation` coalesces duplicate cheap passes. Conversation events are fetched after a monotonic cursor and rendered from the bounded agent event history instead of rebuilding a session transcript on every terminal frame.
 
-A full refresh projects files (at most 512 displayed file paths), harness availability, typed agent states, agent/task text and evidence, process health, LSP, tests, kernels, debugger, replay, workflows, browser state, Git/GitHub, trust, root, generation, project revision, skills count, tool count, and elapsed duration. Browser supervision marks a previously connected endpoint as `Crashed` when it stops responding; it does not silently restart it.
+A full refresh projects files (at most 512 displayed file paths), harness availability, typed agent states, agent/task text and evidence, process health, LSP, tests, kernels, debugger, replay, workflows, browser state, Git/GitHub, root, generation, project revision, skills count, tool count, and elapsed duration. Browser supervision marks a previously connected endpoint as `Crashed` when it stops responding; it does not silently restart it.
 
 ## Queues, backpressure, and jobs
 
@@ -104,7 +104,16 @@ Editor comments, proposals, checkpoints, and explicit collaboration claims are w
 
 ## Resident agents and tool approval
 
-The TUI submits agent commands to the workspace actor. The resident agent worker multiplexes engine commands and events; a request acknowledgement is not a settled turn. The UI follows `agent_settled` and typed agent status before showing completion. Mutating tools cross `DevelopmentToolRouter`, which checks workspace trust, actor, generation, project revision, path, confirmation, and browser leases. One resident mutation approval is pending at a time. A stale or duplicate approval fails closed. A one-shot non-interactive adapter denies UI requests rather than waiting for an unavailable human.
+The TUI submits agent commands to the workspace actor. The resident agent
+worker multiplexes engine commands and events; a request acknowledgement is
+not a settled turn. The UI follows `agent_settled` and typed agent status
+before showing completion. Glass Core owns native coding tools and their
+permission decisions. Glass integration calls cross `DevelopmentToolRouter`,
+which checks actor, generation, project revision, path, any required
+integration confirmation, and browser leases. One resident integration
+confirmation is pending at a time. A stale or duplicate confirmation fails
+closed. A one-shot non-interactive adapter denies UI requests rather than
+waiting for an unavailable human.
 
 A tool failure is rendered as an error/evidence result and does not update the project revision as if the tool succeeded. Browser tools disappear while detached or recovering. The worker keeps receiving input while a tool or agent turn is running; cancellation and workspace shutdown are explicit paths.
 
@@ -114,7 +123,7 @@ Project process startup is owned by `ProcessManager`. `glass project run NAME --
 
 ## External harness discovery, handoff, and delegation
 
-`glass harness list` performs PATH-only discovery. It does not probe versions, use the network, or start a child. The fixed catalog contains `amp`, `aider`, `claude`, `codex`, `gemini`, `goose`, `kiro`, `opencode`, `pi`, `qwen`, `cursor`, and `windsurf`. `glass harness start NAME --root .` resolves a case-insensitive ID, label, or binary and starts that executable in the project directory. It waits for the child to exit, reports exit status, and returns to Glass. A missing executable, unknown name, failed start, or non-zero exit is explicit.
+`glass harness list` performs PATH-only discovery. It does not probe versions, use the network, or start a child. The fixed catalog contains `amp`, `aider`, `claude`, `codex`, `gemini`, `goose`, `kiro`, `opencode`, `qwen`, `cursor`, and `windsurf`. `glass harness start NAME --root .` resolves a case-insensitive ID, label, or binary and starts that executable in the project directory. It waits for the child to exit, reports exit status, and returns to Glass. A missing executable, unknown name, failed start, or non-zero exit is explicit.
 
 Bounded `harness delegate` is a separate capability: only `codex`, `claude`,
 and `opencode` have the invocation adapter needed for that contract. The
@@ -130,7 +139,15 @@ glass agent delegate claude - --root . --sandbox read-only < prompt.txt
 glass agent delegate opencode "apply the repair" --root . --sandbox workspace-write --allow-mutation --yes --timeout-secs 900
 ```
 
-Only `codex`, `claude`, and `opencode` are accepted for delegation. The default sandbox is `read-only`. `workspace-write` requires both mutation authority and `--yes` for the exact request, unless `--yolo` is active. Prompt size is capped at 64 KiB, timeout is 1 second to 1 hour (default 600 seconds), stdout is capped at 256 KiB, and stderr at 64 KiB. Codex, Claude, and OpenCode receive harness-specific JSON invocation arguments; prompt and project root remain separate arguments. Glass captures bounded output and returns success, status, timeout, and truncation flags. It never registers the child as a resident agent.
+Only `codex`, `claude`, and `opencode` are accepted for delegation. The default
+sandbox is `read-only`. `workspace-write` requires mutation authority and
+explicit `--yes` confirmation for the exact request. Prompt size is capped at
+64 KiB, timeout is 1 second to 1 hour (default 600 seconds), stdout is capped
+at 256 KiB, and stderr at 64 KiB. Codex, Claude, and OpenCode receive
+harness-specific JSON invocation arguments; prompt and project root remain
+separate arguments. Glass captures bounded output and returns success, status,
+timeout, and truncation flags. It never registers the child as a resident
+agent.
 
 ## Shutdown and recovery
 
@@ -168,4 +185,4 @@ These tests prove worker and projection contracts. They do not prove that an ins
 - [Terminal UI architecture](architecture/tui.md)
 - [Local daemon](daemon.md)
 - [MCP integration](mcp.md)
-- [Workspace trust](workspace-trust.md)
+- [Customization governance](customization-governance.md)

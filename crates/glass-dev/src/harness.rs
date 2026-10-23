@@ -1,7 +1,7 @@
 //! Discovery and safe handoff metadata for installed coding harnesses.
 //!
 //! Glass owns the workspace, tool router, and resident agent session. Glass
-//! Core is the default resident engine; Pi remains an optional legacy backend.
+//! Glass Core is the sole resident engine.
 //! Other coding harnesses remain their own interactive programs, so the TUI only
 //! discovers fixed executable names and hands the terminal to a selected
 //! program. It never interpolates user-provided commands or emulates another
@@ -92,12 +92,6 @@ pub const SPECS: &[HarnessSpec] = &[
         label: "OpenCode",
         binary: "opencode",
         description: "local TUI/server sessions and GitHub workflows",
-    },
-    HarnessSpec {
-        id: "pi",
-        label: "Pi",
-        binary: "pi",
-        description: "interactive sessions, extensions, and provider login",
     },
     HarnessSpec {
         id: "qwen",
@@ -241,7 +235,7 @@ mod tests {
     #[test]
     fn catalog_covers_requested_harness_families() {
         for name in [
-            "amp", "aider", "claude", "codex", "gemini", "goose", "kiro", "opencode", "pi", "qwen",
+            "amp", "aider", "claude", "codex", "gemini", "goose", "kiro", "opencode", "qwen",
             "cursor", "windsurf",
         ] {
             assert!(SPECS.iter().any(|spec| spec.id == name), "missing {name}");
@@ -278,19 +272,19 @@ mod tests {
             .as_nanos();
         let root = std::env::temp_dir().join(format!("glass-harness-{suffix}"));
         fs::create_dir_all(&root).expect("create fixture");
-        let pi = root.join("pi");
-        fs::write(&pi, "#!/bin/sh\n").expect("write fixture");
+        let qwen = root.join("qwen");
+        fs::write(&qwen, "#!/bin/sh\n").expect("write fixture");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&pi, fs::Permissions::from_mode(0o755))
+            fs::set_permissions(&qwen, fs::Permissions::from_mode(0o755))
                 .expect("make fixture executable");
         }
         let statuses = discover_from_path(Some(root.as_os_str()));
         assert!(
             statuses
                 .iter()
-                .find(|status| status.spec.id == "pi")
+                .find(|status| status.spec.id == "qwen")
                 .and_then(|status| status.path.as_ref())
                 .is_some()
         );

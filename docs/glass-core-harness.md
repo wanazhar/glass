@@ -137,14 +137,12 @@ Sessions are stored under the platform local data directory in
 
 ## Tool execution and approvals
 
-Every Glass integration call becomes a Glass `ToolCall` and goes through the same
-governed router the TUI uses. A call that mutates the workspace follows the
-session's authority:
-
-- An unrestricted human-controlled session runs the call and records evidence.
-- Otherwise Glass parks the call, emits a `glass_tool_approval_request`
-  conversation event, and answers the engine only after the human approves or
-  denies that exact serialized call. Approving once authorizes one call.
+Every Glass integration call becomes a Glass `ToolCall` and goes through the
+same workspace router the TUI uses. Glass-owned browser, Git, and workspace
+mutations retain actor, revision, path, lease, and operation-specific
+confirmation checks. Glass Core runs its native coding tools under Core's own
+permission policy; these operations do not enter a second Glass coding
+approval flow.
 
 Results are bounded to 512 KiB, and denial returns `isError: true` with the
 reason, so the model can recover instead of stalling. Glass records a

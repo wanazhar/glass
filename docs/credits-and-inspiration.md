@@ -9,9 +9,7 @@ and required license notices are tracked separately in package manifests and
 ## Product references
 
 - [Pi](https://github.com/earendil-works/pi) informed research into durable
-  coding-agent sessions, provider setup, and extension workflows. Glass Dev
-  previously included a Pi SDK runtime, which has been removed; the historical
-  record is in the [retired runtime note](pi-sdk-runtime.md). See also the
+  coding-agent sessions, provider setup, and extension workflows. See also the
   dated [Pi durability survey](../products/glass-core/research/pi-durability-2026-10.md).
 - [OpenAI Codex](https://github.com/openai/codex) is a reference in Glass Core
   research on interaction, prompting, task orchestration, and sandbox design.

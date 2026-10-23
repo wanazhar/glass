@@ -17,29 +17,56 @@ pub type AgentToolExecutor =
 #[derive(Debug, Clone)]
 pub enum ResidentSessionRequest {
     Hello,
-    Prompt { text: String, context: Option<Value> },
-    Steer { text: String, context: Option<Value> },
-    FollowUp { text: String, context: Option<Value> },
-    Complete { prefix: String, suffix: String },
+    Prompt {
+        text: String,
+        context: Option<Value>,
+    },
+    Steer {
+        text: String,
+        context: Option<Value>,
+    },
+    FollowUp {
+        text: String,
+        context: Option<Value>,
+    },
+    Complete {
+        prefix: String,
+        suffix: String,
+    },
     Abort,
     State,
     Models,
-    SetModel { provider: String, model_id: String },
-    SetThinking { level: String },
+    SetModel {
+        provider: String,
+        model_id: String,
+    },
+    SetThinking {
+        level: String,
+    },
     NewSession,
-    Compact { instructions: Option<String> },
+    Compact {
+        instructions: Option<String>,
+    },
     CloneSession,
-    Rewind { entry_id: String },
-    Fork { entry_id: String },
-    SwitchSession { path: String },
+    Rewind {
+        entry_id: String,
+    },
+    Fork {
+        entry_id: String,
+    },
+    SwitchSession {
+        path: String,
+    },
     ListSessions,
-    Entries { since: Option<String> },
+    Entries {
+        since: Option<String>,
+    },
     Tree,
     Messages,
     SessionStats,
-    SetSessionName { name: String },
-    SlashCommands,
-    SlashCommand { name: String, args: String },
+    SetSessionName {
+        name: String,
+    },
 }
 
 /// Resident agent engine.
@@ -94,8 +121,6 @@ impl ResidentHarnessKind {
 /// Options for one resident agent session, independent of the engine.
 #[derive(Clone, Default)]
 pub struct ResidentHarnessOptions {
-    /// Execute mutations without pausing for an approval frame.
-    pub unrestricted: bool,
     /// Directory holding session records.
     pub session_dir: std::path::PathBuf,
     /// Display name stored with the session.
@@ -126,7 +151,6 @@ impl std::fmt::Debug for ResidentHarnessOptions {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ResidentHarnessOptions")
-            .field("unrestricted", &self.unrestricted)
             .field("session_dir", &self.session_dir)
             .field("name", &self.name)
             .field("model", &self.model)
@@ -149,7 +173,6 @@ impl std::fmt::Debug for ResidentHarnessOptions {
 impl ResidentHarnessOptions {
     fn into_core(self) -> crate::core_runtime::CoreRuntimeOptions {
         crate::core_runtime::CoreRuntimeOptions {
-            unrestricted: self.unrestricted,
             session_dir: self.session_dir,
             name: self.name,
             model: self.model,
@@ -280,12 +303,13 @@ pub fn resident_readiness() -> DevelopmentResult<ResidentReadiness> {
             glass_core.binary.detail
         )
     };
+    let remediation = glass_core.remediation.clone();
     Ok(ResidentReadiness {
         selected,
         ready,
         detail,
         glass_core,
-        remediation: glass_core.remediation.clone(),
+        remediation,
     })
 }
 
@@ -322,14 +346,12 @@ mod tests {
             ResidentHarnessKind::parse("gc"),
             Some(ResidentHarnessKind::GlassCore)
         );
-        assert_eq!(ResidentHarnessKind::parse("pi"), None);
         assert_eq!(ResidentHarnessKind::parse("unknown"), None);
     }
 
     #[test]
     fn options_survive_conversion_to_core() {
         let options = ResidentHarnessOptions {
-            unrestricted: true,
             name: Some("reviewer".into()),
             model: Some("model-a".into()),
             ..ResidentHarnessOptions::default()
@@ -337,6 +359,5 @@ mod tests {
         let core = options.clone().into_core();
         assert_eq!(core.name.as_deref(), Some("reviewer"));
         assert_eq!(core.model.as_deref(), Some("model-a"));
-        assert!(core.unrestricted);
     }
 }

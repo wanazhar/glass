@@ -80,14 +80,11 @@ def commands(binary: pathlib.Path, path: tuple[str, ...] = ()) -> list[str]:
     return [command for command in COMMAND_RE.findall(match.group("body")) if command != "help"]
 
 
-def mcp_schema_metrics(
-    binary: pathlib.Path, *, trusted: bool = False
-) -> tuple[list[str], int]:
-    # The development fixture and schema budget describe the full trusted
-    # catalog. Select trust for this probe process without changing the
-    # checkout's persisted trust settings.
+def mcp_schema_metrics(binary: pathlib.Path) -> tuple[list[str], int]:
+    # Workspace tools are available on direct open; operation-specific
+    # confirmations remain part of their schemas and execution routes.
     process = subprocess.Popen(
-        [str(binary), *(["--yolo"] if trusted else []), "--mcp"],
+        [str(binary), "--mcp"],
         cwd=ROOT,
         text=True,
         stdin=subprocess.PIPE,
@@ -225,7 +222,7 @@ def main() -> None:
     )
     if args.glass.is_file():
         try:
-            tool_names, schema_bytes = mcp_schema_metrics(args.glass, trusted=True)
+            tool_names, schema_bytes = mcp_schema_metrics(args.glass)
         except (OSError, ValueError, json.JSONDecodeError) as error:
             failures.append(str(error))
         else:

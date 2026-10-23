@@ -8,14 +8,14 @@ schemas supported by an installed server.
 
 ## Current 0.3.14 development-source measurement
 
-The full trusted development catalog, queried with process-local `--yolo`,
+The full Glass Dev catalog, queried through ordinary MCP initialization,
 reports:
 
 | Metric | Measured value |
 |---|---:|
-| Negotiated tools | 342 |
-| Serialized `tools` array | 181,561 UTF-8 bytes |
-| Four-bytes-per-token estimate | 45,391 tokens (rounded up) |
+| Negotiated tools | 338 |
+| Serialized `tools` array | 179,049 UTF-8 bytes |
+| Four-bytes-per-token estimate | 44,773 tokens (rounded up) |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,
@@ -34,19 +34,19 @@ Build the exact executable, then run the browser-free probe:
 
 ```console
 cargo build --package glass-dev --all-features --locked
-cat > /tmp/glass-mcp-yolo <<'EOF'
+cat > /tmp/glass-mcp-full <<'EOF'
 #!/bin/sh
-exec target/debug/glass --yolo "$@"
+exec target/debug/glass "$@"
 EOF
-chmod +x /tmp/glass-mcp-yolo
-GLASS_BINARY_PATH=/tmp/glass-mcp-yolo node benchmarks/schema-scoreboard.mjs
+chmod +x /tmp/glass-mcp-full
+GLASS_BINARY_PATH=/tmp/glass-mcp-full node benchmarks/schema-scoreboard.mjs
 ```
 
-The wrapper selects the full trusted tool inventory even when the checkout is
-untrusted. The probe starts `glass --yolo --mcp`, completes initialization and
-the initialized notification, requests `tools/list`, serializes only the
-returned `tools` array, counts UTF-8 bytes, and divides by four for a
-conservative model-agnostic estimate. It does not start Chrome.
+The probe starts `glass --mcp`, completes initialization and the initialized
+notification, requests `tools/list`, serializes only the returned `tools`
+array, counts UTF-8 bytes, and divides by four for a conservative
+model-agnostic estimate. It does not start Chrome or change coding
+permissions.
 
 Record the commit, binary profile, tool count, bytes, and methodology together.
 Do not compare a full JSON-RPC response with a bare array, or a pre-negotiation
@@ -68,7 +68,7 @@ current 181,561-byte development inventory covers explicit trust, autonomous
 task, measured experiment, debugger inspection, governed-kernel operations,
 the governed Agent composer/runtime setup routes, workspace-local Agent todos, and Git
 fetch/pull/merge/rebase.
-`glass` exposes the same typed resident services used by Pi, the TUI, CLI, and
+`glass` exposes the same typed resident services used by Glass Core, the TUI, CLI, and
 daemon, while `glass-browser` remains the compact browser-only product. A future
 capability-scoped discovery protocol can reduce per-client context without
 hiding tools from clients that require the complete workspace.

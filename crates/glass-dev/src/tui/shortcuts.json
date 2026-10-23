@@ -10,16 +10,8 @@
       "text": "Ctrl-P  file · Ctrl-K / Ctrl-Shift-P palette"
     },
     {
-      "keys": ["Ctrl-Shift-A"],
-      "text": "Ctrl-Shift-A  Ask/Plan/Agent · /ask /plan /agent /todo"
-    },
-    {
       "keys": ["Ctrl-Shift-T"],
       "text": "Ctrl-Shift-T  open project conversations on Agent"
-    },
-    {
-      "keys": ["/", ":"],
-      "text": "/  Pi native commands on Agent · :  Glass workspace commands"
     },
     {
       "keys": ["Ctrl-G", "Tab", "Alt-Left", "Alt-Right"],

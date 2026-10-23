@@ -4,11 +4,7 @@ use super::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{
-    io::Write,
-    path::Path,
-    time::Duration,
-};
+use std::{io::Write, time::Duration};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -193,9 +189,6 @@ pub struct ToolAuthorization {
     pub actor: Actor,
     pub allow_mutation: bool,
     pub confirmed: bool,
-    /// When true, agent file tools write through to disk. The default agent
-    /// write path is a pending editor proposal.
-    pub unrestricted: bool,
 }
 
 impl ToolAuthorization {
@@ -214,12 +207,14 @@ impl ToolAuthorization {
             actor,
             allow_mutation: false,
             confirmed: false,
-            unrestricted: false,
         }
     }
 
     pub fn agent_writes_to_disk(&self) -> bool {
-        self.unrestricted
+        // The resident engine has already applied its native coding
+        // permission before sending this authorized tool call. Do not add a
+        // second Glass-only confirmation gate for file writes.
+        self.permits_mutation()
             || matches!(
                 self.actor.kind,
                 ActorKind::Human | ActorKind::System | ActorKind::Observer
@@ -562,7 +557,7 @@ impl ToolRegistry {
             ),
             descriptor(
                 "glass.command.run",
-                "Run one bounded command to completion as the Pi actor",
+                "Run one bounded command to completion as the resident agent",
                 schema(
                     serde_json::json!({"name":{"type":"string"},"command":{"type":"string"},"timeoutSeconds":{"type":"integer"}}),
                     &["name", "command"],
@@ -1531,11 +1526,11 @@ impl LocalHarness {
                 state: self.state.clone(),
             }]),
             HarnessRequest::Models => Ok(vec![HarnessEvent::Text {
-                text: "The local harness has no model provider; configure the Pi adapter.".into(),
+                text: "The local harness has no model provider; configure Glass Core.".into(),
             }]),
             HarnessRequest::SetModel { .. } | HarnessRequest::SetThinking { .. } => {
                 Ok(vec![HarnessEvent::Error {
-                    message: "model controls require the Pi harness adapter".into(),
+                    message: "model controls require the resident Glass Core engine".into(),
                 }])
             }
             HarnessRequest::NewSession => {
@@ -1552,7 +1547,7 @@ impl LocalHarness {
             | HarnessRequest::Messages
             | HarnessRequest::SessionStats
             | HarnessRequest::SetSessionName { .. } => Ok(vec![HarnessEvent::Error {
-                message: "persistent session controls require the Pi runtime".into(),
+                message: "persistent session controls require the Glass Core runtime".into(),
             }]),
         }
     }
@@ -1669,7 +1664,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-
     #[test]
     fn local_harness_proves_prompt_tool_result_and_steer_events() {
         let root = std::env::temp_dir().join(format!("glass-agent-{}", std::process::id()));
@@ -1720,9 +1714,6 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-
-
-
     #[test]
     fn tool_registry_executes_attributed_file_patch_and_fails_closed_for_unattached_browser() {
         let root = std::env::temp_dir().join(format!("glass-tools-{}", std::process::id()));
@@ -1743,7 +1734,6 @@ mod tests {
                     actor: Actor::embedded(),
                     allow_mutation: true,
                     confirmed: true,
-                    unrestricted: true,
                 },
             )
             .unwrap();
@@ -1822,7 +1812,7 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_agent_file_write_creates_a_proposal_unless_unrestricted() {
+    fn confirmed_agent_file_write_uses_engine_authorization_without_second_gate() {
         let root =
             std::env::temp_dir().join(format!("glass-proposal-write-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -1834,7 +1824,6 @@ mod tests {
             actor: Actor::embedded(),
             allow_mutation: true,
             confirmed: true,
-            unrestricted: false,
         };
         let result = gateway
             .execute(
@@ -1850,24 +1839,11 @@ mod tests {
                 &confirmed,
             )
             .unwrap();
-        assert_eq!(result["proposed"], true);
-        assert_eq!(result["written"], false);
-        assert_eq!(result["pairApply"], false);
+        assert_eq!(result["written"], true);
         assert_eq!(
             fs::read_to_string(root.join("note.txt")).unwrap(),
-            "before\n"
+            "after\n"
         );
-        let proposal = workspace
-            .editor_proposals()
-            .into_iter()
-            .find(|item| item.path == "note.txt")
-            .expect("proposal");
-        assert_eq!(proposal.original, "before\n");
-        assert_eq!(proposal.proposed, "after\n");
-        workspace
-            .accept_editor_proposal(&proposal.id, Actor::local())
-            .unwrap();
-        assert_eq!(workspace.buffer("note.txt").unwrap().content, "after\n");
         let pair = gateway
             .execute(
                 &mut workspace,
@@ -1882,7 +1858,11 @@ mod tests {
                 &confirmed,
             )
             .unwrap();
-        assert_eq!(pair["pairApply"], true);
+        assert_eq!(pair["written"], true);
+        assert_eq!(
+            fs::read_to_string(root.join("note.txt")).unwrap(),
+            "streamed\n"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1894,10 +1874,9 @@ mod tests {
         let mut workspace = ProjectWorkspace::open(&root).unwrap();
         let gateway = AgentToolGateway::default();
         let authority = ToolAuthorization {
-            actor: Actor::external("pi"),
+            actor: Actor::external("glass-core"),
             allow_mutation: true,
             confirmed: true,
-            unrestricted: true,
         };
         gateway
             .execute(
@@ -1943,7 +1922,7 @@ mod tests {
                     name: "glass.file.read".into(),
                     arguments: serde_json::json!({"path":"src/example.rs","offset":2,"limit":1}),
                 },
-                &ToolAuthorization::read_only(Actor::external("pi")),
+                &ToolAuthorization::read_only(Actor::external("glass-core")),
             )
             .unwrap();
         assert_eq!(read["content"], "fn second() {}\n");
@@ -1963,7 +1942,7 @@ mod tests {
                         id: "command-1".into(),
                         name: "glass.command.run".into(),
                         arguments: serde_json::json!({
-                            "name":"pi-command-test", "command":command, "timeoutSeconds":5
+                            "name":"resident-command-test", "command":command, "timeoutSeconds":5
                         }),
                     },
                     &authority,
@@ -1998,7 +1977,7 @@ mod tests {
         fs::write(root.join("README.md"), "Needle outside\n").unwrap();
         let mut workspace = ProjectWorkspace::open(&root).unwrap();
         let gateway = AgentToolGateway::default();
-        let authority = ToolAuthorization::read_only(Actor::external("pi"));
+        let authority = ToolAuthorization::read_only(Actor::external("glass-core"));
 
         let listed = gateway
             .execute(
@@ -2164,7 +2143,7 @@ mod tests {
                     name: "glass.capabilities.inspect".into(),
                     arguments: serde_json::json!({}),
                 },
-                &ToolAuthorization::read_only(Actor::external("pi")),
+                &ToolAuthorization::read_only(Actor::external("glass-core")),
             )
             .unwrap();
         let processes = result

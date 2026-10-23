@@ -790,12 +790,11 @@ fn cockpit_state(
     workspace: &crate::SharedDevelopmentWorkspace,
     github_probe: &mut crate::github::GitHubProbeCache,
 ) -> DevelopmentResult<serde_json::Value> {
-    let (root, generation, revision, trust, agents, tasks, git, proposals) = {
+    let (root, generation, revision, agents, tasks, git, proposals) = {
         let mut locked = workspace.lock()?;
         let root = locked.root().display().to_string();
         let generation = locked.generation();
         let revision = locked.project().revision();
-        let trust = locked.trust().label().to_string();
         let agents = locked.agents().list().map_err(|error| error.to_string());
         let tasks = locked.task_snapshots().map_err(|error| error.to_string());
         let git = locked
@@ -815,9 +814,7 @@ fn cockpit_state(
                 })
             })
             .collect::<Vec<_>>();
-        (
-            root, generation, revision, trust, agents, tasks, git, proposals,
-        )
+        (root, generation, revision, agents, tasks, git, proposals)
     };
     let github = github_probe.probe(Path::new(&root));
     let agents = match agents {
@@ -838,7 +835,6 @@ fn cockpit_state(
         "root": root,
         "generation": generation,
         "projectRevision": revision,
-        "trust": trust,
         "agents": agents,
         "tasks": tasks,
         "git": git,
@@ -877,7 +873,6 @@ fn cockpit_command(
             actor: Actor::external("cockpit"),
             allow_mutation: request.allow_mutation && request.confirmed,
             confirmed: request.confirmed,
-            unrestricted: false,
         },
         initiator: None,
         expected_generation,
@@ -940,7 +935,7 @@ button{{cursor:pointer}} code{{color:#9ad1ff}}
 #proposals div{{display:flex;gap:.6rem;align-items:center;margin:.35rem 0;flex-wrap:wrap}}
 </style>
 <h1>Glass private cockpit</h1>
-<p>Loopback-only workspace state. Mutations remain governed by Glass trust and revision checks.</p>
+<p>Loopback-only workspace state. Mutations are checked against current workspace revisions.</p>
 <p>
 <button id="refresh">Refresh</button>
 <button id="review">Review GitHub PR</button>
@@ -1220,9 +1215,6 @@ mod tests {
         let workspace = crate::SharedDevelopmentWorkspace::open(&root).unwrap();
         {
             let mut locked = workspace.lock().unwrap();
-            locked
-                .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
-                .unwrap();
             locked
                 .project_mut()
                 .open_buffer("src.rs", Actor::local())

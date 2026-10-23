@@ -2640,6 +2640,26 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .collect::<Vec<_>>();
+    let prompt_elapsed_ms = trace_records
+        .iter()
+        .find(|record| record["direction"] == "request" && record["method"] == "turn/prompt")
+        .and_then(|record| record["elapsed_ms"].as_u64());
+    let first_text_elapsed_ms = trace_records
+        .iter()
+        .filter(|record| record["direction"] == "response" && record["event_type"] == "text")
+        .filter_map(|record| record["elapsed_ms"].as_u64())
+        .min();
+    let settled_elapsed_ms = trace_records
+        .iter()
+        .filter(|record| record["direction"] == "response" && record["event_type"] == "settled")
+        .filter_map(|record| record["elapsed_ms"].as_u64())
+        .max();
+    let request_to_first_text_ms = prompt_elapsed_ms
+        .zip(first_text_elapsed_ms)
+        .map(|(start, first)| first.saturating_sub(start));
+    let request_to_settled_ms = prompt_elapsed_ms
+        .zip(settled_elapsed_ms)
+        .map(|(start, settled)| settled.saturating_sub(start));
     let request_id_digest = std::fs::read(&registry_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -2709,7 +2729,7 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         })
         .collect::<Vec<_>>();
     let trace_summary = format!(
-        "prompt_request_count={}, attempt_matches_prompt={}, correlated_response={}, safe_error_frames={:?}, ordered_frames={:?}",
+        "prompt_request_count={}, request_to_first_text_ms={request_to_first_text_ms:?}, request_to_settled_ms={request_to_settled_ms:?}, attempt_matches_prompt={}, correlated_response={}, safe_error_frames={:?}, ordered_frames={:?}",
         prompt_request_digests.len(),
         attempt_matches_prompt,
         matching_response,
@@ -2734,11 +2754,20 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         "Core did not settle the turn before its matching response: {trace_summary}"
     );
     assert_eq!(std::fs::read(&file_path).unwrap(), expected);
+    let transcript = session.visible_output();
+    assert!(
+        transcript.contains("GLASS AGENT"),
+        "live Core turn did not render its assistant role in the shared transcript"
+    );
+    assert!(
+        !transcript.contains("Agent playbook: inspect, write session todos"),
+        "internal Glass playbook appeared in the live transcript"
+    );
 
     session.kill();
     core_guard.terminate();
     println!(
-        "live provider composer smoke passed: provider={provider}; model={model}; Core={core_version}; file content verified"
+        "live provider composer smoke passed: provider={provider}; model={model}; Core={core_version}; request_to_first_text_ms={request_to_first_text_ms:?}; request_to_settled_ms={request_to_settled_ms:?}; file content and shared transcript roles verified"
     );
 }
 

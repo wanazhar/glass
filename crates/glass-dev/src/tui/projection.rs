@@ -436,6 +436,8 @@ pub struct ConversationEntry {
     pub entry_id: Option<String>,
     pub client_message_id: Option<String>,
     pub tool_name: Option<String>,
+    /// Shared Core tool details, including the stable runtime call ID.
+    pub tool_card: Option<glass_tui::ToolCard>,
 }
 
 impl ConversationEntry {
@@ -451,6 +453,7 @@ impl ConversationEntry {
             entry_id,
             client_message_id,
             tool_name: None,
+            tool_card: None,
         }
     }
 
@@ -466,6 +469,7 @@ impl ConversationEntry {
             entry_id,
             client_message_id: None,
             tool_name: None,
+            tool_card: None,
         }
     }
 
@@ -477,6 +481,7 @@ impl ConversationEntry {
             entry_id: None,
             client_message_id: None,
             tool_name,
+            tool_card: None,
         }
     }
 
@@ -488,6 +493,7 @@ impl ConversationEntry {
             entry_id: None,
             client_message_id: None,
             tool_name,
+            tool_card: None,
         }
     }
 
@@ -499,6 +505,7 @@ impl ConversationEntry {
             entry_id: None,
             client_message_id: None,
             tool_name,
+            tool_card: None,
         }
     }
 
@@ -627,6 +634,7 @@ impl SharedConversationProjection {
             } else {
                 ConversationEntry::system(body, Some(name))
             };
+            entry.tool_card = Some(card.clone());
             entry.entry_id = entry_id;
             entry.client_message_id = client_message_id;
             entry

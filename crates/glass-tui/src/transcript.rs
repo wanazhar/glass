@@ -29,6 +29,14 @@ pub struct Transcript {
     match_index: Option<usize>,
 }
 
+/// One visible wrapped line and the transcript entry it belongs to.
+/// Inline hosts use the index to retain their own selection/actions while the
+/// shared controller supplies bounded viewport lines.
+pub struct VisibleLine {
+    pub entry_index: usize,
+    pub line: ratatui::text::Line<'static>,
+}
+
 #[derive(Clone)]
 struct Anchor {
     text: String,
@@ -99,6 +107,41 @@ impl Transcript {
 
     pub fn is_empty(&self) -> bool {
         self.layout.is_empty()
+    }
+
+    /// Number of wrapped rows in the current transcript layout.
+    pub fn total_lines(&self) -> usize {
+        self.layout.total_lines()
+    }
+
+    /// Construct only the visible lines for an inline host.
+    ///
+    /// The result has at most `area.height` items and retains each source
+    /// entry index for host selection and actions.
+    pub fn visible_lines(&mut self, area: Rect) -> Vec<VisibleLine> {
+        if self.layout.width() != area.width {
+            self.set_width(area.width.max(1));
+        }
+        if self.follow {
+            self.follow_tail(area.height);
+        }
+        self.clamp(area.height);
+        self.layout
+            .visible_lines(self.scroll, area)
+            .into_iter()
+            .map(|(entry_index, line)| VisibleLine { entry_index, line })
+            .collect()
+    }
+
+    /// Move the reader to the first wrapped line of an entry.
+    pub fn focus_entry(&mut self, entry: usize, height: u16) -> bool {
+        let Some(line) = self.layout.line_for_entry(entry) else {
+            return false;
+        };
+        self.scroll = line;
+        self.follow = false;
+        self.clamp(height);
+        true
     }
 
     /// Replace the fullscreen help footer with a compact pinned-reader hint.

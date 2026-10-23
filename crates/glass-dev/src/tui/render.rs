@@ -27,11 +27,6 @@ const SUCCESS: Color = Color::Rgb(126, 231, 135);
 const WARNING: Color = Color::Rgb(210, 153, 34);
 const ERROR: Color = Color::Rgb(255, 123, 114);
 const PURPLE: Color = Color::Rgb(210, 168, 255);
-const USER_BUBBLE_BG: Color = Color::Rgb(20, 48, 78);
-const AGENT_BUBBLE_BG: Color = Color::Rgb(18, 60, 34);
-const SYSTEM_BUBBLE_BG: Color = Color::Rgb(45, 49, 57);
-const ALERT_BUBBLE_BG: Color = Color::Rgb(80, 54, 14);
-const ERROR_BUBBLE_BG: Color = Color::Rgb(80, 28, 27);
 fn panel_text(content: &str) -> Text<'static> {
     Text::from(
         content
@@ -2457,172 +2452,12 @@ fn compact_agent_header(state: &DevTuiState, width: u16) -> String {
         compact_line(&second, width)
     )
 }
-#[derive(Clone, Copy)]
-enum ConversationBubbleKind {
-    User,
-    Agent,
-    System,
-    Alert,
-    Error,
-}
-
-fn conversation_bubble_style(kind: ConversationBubbleKind) -> (Color, Color, Color) {
-    match kind {
-        ConversationBubbleKind::User => (ACCENT_BRIGHT, USER_BUBBLE_BG, TEXT),
-        ConversationBubbleKind::Agent => (SUCCESS, AGENT_BUBBLE_BG, TEXT),
-        ConversationBubbleKind::System => (MUTED, SYSTEM_BUBBLE_BG, TEXT),
-        ConversationBubbleKind::Alert => (WARNING, ALERT_BUBBLE_BG, TEXT),
-        ConversationBubbleKind::Error => (ERROR, ERROR_BUBBLE_BG, ERROR),
-    }
-}
-
-fn wrap_bubble_line(line: &str, width: usize) -> Vec<String> {
-    if line.is_empty() {
-        return vec![String::new()];
-    }
-    line.chars()
-        .collect::<Vec<_>>()
-        .chunks(width.max(1))
-        .map(|chunk| chunk.iter().collect())
-        .collect()
-}
-
-fn conversation_entry_lines(
-    entries: &[super::projection::ConversationEntry],
-    selected: usize,
-    expanded: bool,
+fn agent_conversation_text(
+    state: &DevTuiState,
+    landing: &str,
     width: u16,
-    shared_layout: &mut super::core_conversation::InlineLayout,
-) -> Vec<Line<'static>> {
-    let available = usize::from(width).max(24);
-    let mut lines = Vec::new();
-    let mut rendered_count = 0;
-    for (index, entry) in entries.iter().enumerate() {
-        if entry.kind == super::projection::ConversationKind::Assistant
-            && entry.streaming
-            && entry.text.is_empty()
-        {
-            continue;
-        }
-        if rendered_count > 0 {
-            lines.push(Line::from(""));
-        }
-        rendered_count += 1;
-        let shared_entry = super::core_conversation::transcript_entry(entry, index);
-        let collapsed_tool = !expanded && entry.tool_name.is_some();
-        let kind = if collapsed_tool {
-            match entry.kind {
-                super::projection::ConversationKind::Alert => ConversationBubbleKind::Alert,
-                super::projection::ConversationKind::Error => ConversationBubbleKind::Error,
-                _ => ConversationBubbleKind::System,
-            }
-        } else {
-            match entry.kind {
-                super::projection::ConversationKind::User => ConversationBubbleKind::User,
-                super::projection::ConversationKind::Assistant => ConversationBubbleKind::Agent,
-                super::projection::ConversationKind::System => ConversationBubbleKind::System,
-                super::projection::ConversationKind::Alert => ConversationBubbleKind::Alert,
-                super::projection::ConversationKind::Error => ConversationBubbleKind::Error,
-            }
-        };
-        let label = match kind {
-            ConversationBubbleKind::User => "YOU",
-            ConversationBubbleKind::Agent => "GLASS AGENT",
-            ConversationBubbleKind::System => "SYSTEM",
-            ConversationBubbleKind::Alert => "ALERT",
-            ConversationBubbleKind::Error => "ERROR",
-        };
-        let label = if index == selected {
-            format!("▸ {label}")
-        } else {
-            label.to_string()
-        };
-        let (border, background, text_color) = conversation_bubble_style(kind);
-        let body_style = Style::default().fg(text_color).bg(background);
-        let bubble_width = if matches!(kind, ConversationBubbleKind::User) {
-            available.saturating_sub(8).max(18).min(available)
-        } else {
-            available
-        };
-        let inner_width = bubble_width.saturating_sub(4).max(8);
-        let body_lines = if collapsed_tool {
-            wrap_bubble_line(&entry.card_line(), inner_width)
-                .into_iter()
-                .map(Line::from)
-                .collect::<Vec<_>>()
-        } else if shared_entry.role == glass_tui::Role::Assistant {
-            let mut rendered = shared_layout.assistant_lines(index, inner_width);
-            if rendered.len() > 24 {
-                rendered.truncate(24);
-                rendered.push(Line::from("…"));
-            }
-            if entry.streaming {
-                rendered.push(Line::from("… streaming"));
-            }
-            rendered
-        } else {
-            let mut rendered = entry
-                .text
-                .lines()
-                .take(24)
-                .map(str::to_string)
-                .collect::<Vec<_>>();
-            if entry.text.lines().count() > 24 {
-                rendered.push("…".into());
-            }
-            if entry.streaming {
-                rendered.push("… streaming".into());
-            }
-            rendered
-                .iter()
-                .flat_map(|line| wrap_bubble_line(line, inner_width))
-                .map(Line::from)
-                .collect()
-        };
-        let indent = if matches!(kind, ConversationBubbleKind::User) {
-            available.saturating_sub(bubble_width)
-        } else {
-            0
-        };
-        let label_width = label.chars().count();
-        let rule = "─".repeat(inner_width.saturating_sub(label_width + 1));
-        let prefix = " ".repeat(indent);
-        let top = format!("{prefix}╭─ {label} {rule}╮");
-        lines.push(Line::from(Span::styled(
-            top,
-            Style::default()
-                .fg(border)
-                .bg(background)
-                .add_modifier(Modifier::BOLD),
-        )));
-        for line in if body_lines.is_empty() {
-            vec![Line::from("")]
-        } else {
-            body_lines
-        } {
-            let used_width = line.width().min(inner_width);
-            let padding = inner_width.saturating_sub(used_width);
-            let mut spans = Vec::with_capacity(line.spans.len() + 3);
-            spans.push(Span::styled(format!("{prefix}│ "), body_style));
-            spans.extend(line.spans.into_iter().map(|span| {
-                Span::styled(
-                    span.content.into_owned(),
-                    body_style.patch(span.style).bg(background),
-                )
-            }));
-            spans.push(Span::styled(" ".repeat(padding), body_style));
-            spans.push(Span::styled(" │", body_style));
-            lines.push(Line::from(spans));
-        }
-        lines.push(Line::from(Span::styled(
-            format!("{prefix}╰{}╯", "─".repeat(inner_width + 2)),
-            Style::default().fg(border).bg(background),
-        )));
-    }
-    lines
-}
-
-fn agent_conversation_text(state: &DevTuiState, landing: &str, width: u16) -> Text<'static> {
+    height: u16,
+) -> Text<'static> {
     if state.reasoning_view_open {
         let reasoning = state
             .selected_agent
@@ -2648,11 +2483,11 @@ fn agent_conversation_text(state: &DevTuiState, landing: &str, width: u16) -> Te
         return Text::from(lines);
     }
 
-    let entries = state.conversation_entries_view();
-    let mut shared_layout = state.core_conversation_layout.borrow_mut();
-    shared_layout.set_entries_if_changed(
+    let entries = state.conversation_entries_cow();
+    let mut transcript = state.core_transcript.borrow_mut();
+    transcript.set_entries_if_changed(
         &entries,
-        super::core_conversation::InlineLayoutKey {
+        super::core_conversation::InlineTranscriptKey {
             event_cursor: state.conversation_cursor,
             selected_agent: state
                 .selected_agent
@@ -2671,41 +2506,35 @@ fn agent_conversation_text(state: &DevTuiState, landing: &str, width: u16) -> Te
                     )
                 })
                 .collect(),
+            expanded_tools: state.transcript_expanded,
         },
+        state.transcript_expanded,
     );
-    let mut lines = if entries.is_empty() {
-        panel_text(landing).lines
-    } else {
-        conversation_entry_lines(
-            &entries,
-            state.transcript_selection,
-            state.transcript_expanded,
-            width,
-            &mut shared_layout,
-        )
-    };
-    if !state.composer_mode {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Ctrl-T reasoning · Enter chat · j/k bubbles · f fork · r rewind · e last",
-            Style::default().fg(MUTED),
-        )));
+    if entries.is_empty() {
+        let mut lines = panel_text(landing).lines;
+        lines.truncate(usize::from(height.max(1)));
+        return Text::from(lines);
+    }
+    let footer = if !state.composer_mode {
+        "Ctrl-T reasoning · Enter chat · j/k select · f fork · r rewind · e last · o tools"
+            .to_string()
     } else {
         let chips = state.composer_context_chips();
-        if !chips.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                format!("Context · {chips}"),
-                Style::default().fg(MUTED),
-            )));
-        }
         if state.composer_steer {
-            lines.push(Line::from(Span::styled(
-                "Steer · Ctrl-D follow-up · Ctrl-X abort",
-                Style::default().fg(WARNING),
-            )));
+            format!("{chips} · Ctrl-D follow-up · Ctrl-X abort")
+        } else if chips.is_empty() {
+            "Ctrl-T reasoning · Ctrl-D follow-up · Ctrl-X abort".into()
+        } else {
+            chips
         }
-    }
+    };
+    let message_height = height.saturating_sub(1).max(1);
+    let mut lines = transcript.visible_lines(
+        usize::from(width),
+        usize::from(message_height),
+        state.transcript_selection,
+    );
+    lines.push(Line::from(Span::styled(footer, Style::default().fg(MUTED))));
     Text::from(lines)
 }
 
@@ -2723,7 +2552,7 @@ fn agent_landing(state: &DevTuiState) -> String {
     "SETUP\nPress :actions.\nChoose Setup Pi runtime · Enter to install.\nChoose Authenticate if installed.\nThen Enter or type to chat.".into()
 }
 
-pub(super) fn agent_conversation_scroll_end(state: &DevTuiState) -> usize {
+fn agent_conversation_panel_rect(state: &DevTuiState) -> Rect {
     let screen = Rect::new(0, 0, state.terminal_width, state.terminal_height);
     let area = surface_area(state, screen);
     let compact = matches!(
@@ -2738,23 +2567,55 @@ pub(super) fn agent_conversation_scroll_end(state: &DevTuiState) -> usize {
             [Constraint::Length(4), Constraint::Min(6)]
         })
         .split(area);
-    let conversation_area = if compact || area.width < 84 {
+    if compact || area.width < 84 {
         rows[1]
     } else {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(68), Constraint::Min(24)])
             .split(rows[1])[0]
-    };
-    let content_width = conversation_area.width.saturating_sub(4).max(1);
-    let landing = agent_landing(state);
-    let text = agent_conversation_text(state, &landing, content_width);
-    let wrapped_lines = text
-        .lines
-        .iter()
-        .map(|line| line.width().max(1).div_ceil(usize::from(content_width)))
-        .sum::<usize>();
-    wrapped_lines.saturating_sub(usize::from(conversation_area.height.saturating_sub(2)))
+    }
+}
+
+pub(super) fn agent_conversation_viewport_size(state: &DevTuiState) -> (u16, u16) {
+    let area = agent_conversation_panel_rect(state);
+    (
+        area.width.saturating_sub(2).max(1),
+        area.height.saturating_sub(3).max(1),
+    )
+}
+
+pub(super) fn agent_conversation_scroll_end(state: &DevTuiState) -> usize {
+    let (width, height) = agent_conversation_viewport_size(state);
+    let entries = state.conversation_entries_cow();
+    let mut transcript = state.core_transcript.borrow_mut();
+    transcript.set_entries_if_changed(
+        &entries,
+        super::core_conversation::InlineTranscriptKey {
+            event_cursor: state.conversation_cursor,
+            selected_agent: state
+                .selected_agent
+                .as_ref()
+                .map(|agent_id| agent_id.as_str().to_owned()),
+            entry_count: entries.len(),
+            pending_signature: state
+                .pending_chat_messages
+                .iter()
+                .filter(|message| message.agent_id == state.selected_agent)
+                .map(|message| {
+                    (
+                        message.message_id.clone(),
+                        message.state,
+                        message.error.clone(),
+                    )
+                })
+                .collect(),
+            expanded_tools: state.transcript_expanded,
+        },
+        state.transcript_expanded,
+    );
+    transcript.set_width(width);
+    transcript.total_lines().saturating_sub(usize::from(height))
 }
 
 fn render_agent_conversation_panel(
@@ -2766,14 +2627,16 @@ fn render_agent_conversation_panel(
     if area.width < 2 || area.height < 2 {
         return;
     }
+    let inner_height = area.height.saturating_sub(2);
+    let message_height = inner_height.saturating_sub(1).max(1);
     frame.render_widget(
         Paragraph::new(agent_conversation_text(
             state,
             landing,
-            area.width.saturating_sub(4),
+            area.width.saturating_sub(2),
+            message_height,
         ))
         .style(Style::default().fg(TEXT).bg(PANEL_BACKGROUND))
-        .scroll((state.current_scroll(), 0))
         .block(surface_block(" CONVERSATION ", ACCENT_BRIGHT))
         .wrap(Wrap { trim: false }),
         area,
@@ -5741,41 +5604,54 @@ mod tests {
     fn agent_transcript_uses_distinct_role_bubbles() {
         let mut state = state(TuiLayout::Desktop);
         state.surface = DevSurface::Agent;
-        state.agent_conversation = [
-            "YOU\nInspect the failing test.",
-            "GLASS AGENT\nI found the failing assertion.",
-            "SYSTEM\nworkspace revision 4",
-            "ALERT\napproval required",
-            "ERROR\ncommand failed",
+        use super::super::projection::{ConversationEntry, ConversationKind};
+        state.conversation_items = [
+            (ConversationKind::User, "Inspect the failing test."),
+            (
+                ConversationKind::Assistant,
+                "I found the failing assertion.",
+            ),
+            (ConversationKind::System, "workspace revision 4"),
+            (ConversationKind::Alert, "approval required"),
+            (ConversationKind::Error, "command failed"),
         ]
-        .join("\n\n");
+        .into_iter()
+        .map(|(kind, text)| ConversationEntry {
+            kind,
+            text: text.into(),
+            streaming: false,
+            entry_id: None,
+            client_message_id: None,
+            tool_name: None,
+            tool_card: None,
+        })
+        .collect();
 
         let output = rendered(&state, 140, 40);
         for marker in ["YOU", "GLASS AGENT", "SYSTEM", "ALERT", "ERROR"] {
             assert!(output.contains(marker), "missing role marker {marker}");
         }
-        assert!(output.contains("╭"));
         assert!(output.contains("CONVERSATION"));
     }
 
     #[test]
-    fn assistant_bubble_preserves_shared_markdown_styles() {
-        let entries = [super::super::projection::ConversationEntry {
+    fn inline_transcript_preserves_shared_markdown_styles_and_viewport_bound() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Agent;
+        state.conversation_items = vec![super::super::projection::ConversationEntry {
             kind: super::super::projection::ConversationKind::Assistant,
             text: "A **bold** response.".into(),
             streaming: false,
             entry_id: Some("entry-1".into()),
             client_message_id: None,
             tool_name: None,
+            tool_card: None,
         }];
-        let mut layout = super::super::core_conversation::InlineLayout::default();
-        layout.set_entries(&entries);
-
-        let lines = conversation_entry_lines(&entries, 0, false, 80, &mut layout);
+        let text = agent_conversation_text(&state, "", 32, 4);
+        assert!(text.lines.len() <= 4);
+        let lines = text.lines;
         assert!(lines.iter().flat_map(|line| &line.spans).any(|span| {
-            span.content.contains("bold")
-                && span.style.add_modifier.contains(Modifier::BOLD)
-                && span.style.bg == Some(AGENT_BUBBLE_BG)
+            span.content.contains("bold") && span.style.add_modifier.contains(Modifier::BOLD)
         }));
     }
 
@@ -6959,7 +6835,7 @@ mod tests {
             },
         );
 
-        let normal = agent_conversation_text(&state, "", 80)
+        let normal = agent_conversation_text(&state, "", 80, 20)
             .lines
             .iter()
             .map(ToString::to_string)
@@ -6969,7 +6845,7 @@ mod tests {
         assert!(!normal.contains("provider reasoning detail"));
 
         state.toggle_reasoning_view();
-        let reasoning = agent_conversation_text(&state, "", 80)
+        let reasoning = agent_conversation_text(&state, "", 80, 20)
             .lines
             .iter()
             .map(ToString::to_string)
@@ -7083,6 +6959,7 @@ mod tests {
                 entry_id: Some("entry-hello-1".into()),
                 client_message_id: Some("chat-hello-1".into()),
                 tool_name: None,
+                tool_card: None,
             }],
             agent_conversations: std::collections::BTreeMap::from([(
                 agent_id,
@@ -7095,6 +6972,7 @@ mod tests {
                         entry_id: Some("entry-hello-1".into()),
                         client_message_id: Some("chat-hello-1".into()),
                         tool_name: None,
+                        tool_card: None,
                     }],
                     reasoning: "provider-only thought".into(),
                 },

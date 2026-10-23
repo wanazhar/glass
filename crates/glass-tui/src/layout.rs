@@ -299,6 +299,19 @@ impl Layout {
     /// Returns at most `area.height` items, which is the entire point: frame
     /// cost tracks the viewport, not the history.
     pub fn visible(&mut self, scroll: usize, area: Rect) -> Vec<ListItem<'static>> {
+        self.visible_lines(scroll, area)
+            .into_iter()
+            .map(|(_, line)| ListItem::new(Text::from(line)))
+            .collect()
+    }
+
+    /// The visible wrapped lines paired with their source entry indices.
+    ///
+    /// Inline hosts use the entry index for selection and actions while
+    /// retaining the same bounded cached viewport as the fullscreen reader.
+    /// The result contains no more than `area.height` lines and preserves the
+    /// cached Markdown and tool-card spans for each line.
+    pub fn visible_lines(&mut self, scroll: usize, area: Rect) -> Vec<(usize, Line<'static>)> {
         if self.dirty || self.last_width != Some(area.width) {
             self.last_width = Some(area.width);
             self.rebuild_index();
@@ -327,7 +340,7 @@ impl Layout {
             let take = (end - line_no).min(visible_in_entry - skip);
 
             for line in laid.lines.iter().skip(skip).take(take) {
-                out.push(ListItem::new(Text::from(line.clone())));
+                out.push((idx, line.clone()));
             }
             line_no += take.max(1);
         }
@@ -698,6 +711,16 @@ mod tests {
             items.len()
         );
         assert!(!items.is_empty());
+    }
+
+    #[test]
+    fn inline_visible_lines_include_source_and_stay_within_height() {
+        let mut l = Layout::new(entries(5000));
+        let area = rect(7);
+        let lines = l.visible_lines(100, area);
+        assert!(!lines.is_empty());
+        assert!(lines.len() <= usize::from(area.height));
+        assert!(lines.iter().all(|(entry, _)| *entry < 5000));
     }
 
     #[test]

@@ -1199,20 +1199,12 @@ impl DevelopmentToolRouter {
                     .map(|value| agent_id(workspace, value))
                     .transpose()?;
                 let agent = selected.or_else(|| {
-                    workspace
-                        .agents()
-                        .list()
-                        .ok()?
-                        .into_iter()
-                        .find(|item| {
-                            !matches!(
-                                item.status,
-                                crate::AgentStatus::Completed
-                                    | crate::AgentStatus::Failed
-                                    | crate::AgentStatus::Cancelled
-                            )
-                        })
-                        .map(|item| item.id)
+                    let snapshots = workspace.agents().list().ok()?;
+                    default_agent_id(
+                        snapshots
+                            .into_iter()
+                            .map(|snapshot| (snapshot.id, snapshot.status)),
+                    )
                 });
                 let agent = match agent {
                     Some(agent) => agent,
@@ -2467,21 +2459,32 @@ fn agent_id(
         .map(|snapshot| snapshot.id)
         .ok_or_else(|| DevelopmentError::NotFound(format!("agent {value}")))
 }
+fn is_eligible_default_agent(status: crate::agents::AgentStatus) -> bool {
+    matches!(
+        status,
+        crate::agents::AgentStatus::Starting
+            | crate::agents::AgentStatus::Idle
+            | crate::agents::AgentStatus::Working
+            | crate::agents::AgentStatus::Waiting
+    )
+}
+
+fn default_agent_id(
+    candidates: impl IntoIterator<Item = (crate::agents::AgentId, crate::agents::AgentStatus)>,
+) -> Option<crate::agents::AgentId> {
+    candidates
+        .into_iter()
+        .find(|(_, status)| is_eligible_default_agent(*status))
+        .map(|(id, _)| id)
+}
+
 fn active_agent_id(workspace: &mut DevelopmentWorkspace) -> Option<crate::agents::AgentId> {
     workspace
         .agents()
         .list()
         .ok()?
         .into_iter()
-        .find(|snapshot| {
-            !matches!(
-                snapshot.status,
-                crate::agents::AgentStatus::Completed
-                    | crate::agents::AgentStatus::Failed
-                    | crate::agents::AgentStatus::Cancelled
-                    | crate::agents::AgentStatus::Queued
-            )
-        })
+        .find(|snapshot| is_eligible_default_agent(snapshot.status))
         .map(|snapshot| snapshot.id)
 }
 
@@ -2894,6 +2897,38 @@ mod tests {
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
         }
+    }
+
+    #[test]
+    fn default_agent_selection_skips_recovered_and_unavailable_threads() {
+        assert!(is_eligible_default_agent(crate::AgentStatus::Starting));
+        assert!(is_eligible_default_agent(crate::AgentStatus::Idle));
+        assert!(is_eligible_default_agent(crate::AgentStatus::Working));
+        assert!(is_eligible_default_agent(crate::AgentStatus::Waiting));
+        assert!(!is_eligible_default_agent(
+            crate::AgentStatus::RecoveryPending
+        ));
+        assert!(!is_eligible_default_agent(crate::AgentStatus::Unavailable));
+        assert!(!is_eligible_default_agent(crate::AgentStatus::Queued));
+        assert!(!is_eligible_default_agent(crate::AgentStatus::Completed));
+        assert!(!is_eligible_default_agent(crate::AgentStatus::Failed));
+        assert!(!is_eligible_default_agent(crate::AgentStatus::Cancelled));
+    }
+
+    #[test]
+    fn recovery_pending_is_not_an_implicit_send_target_but_explicit_target_is_preserved() {
+        let recovered = crate::AgentId::parse("agent-recovered").unwrap();
+        let candidates = vec![(recovered.clone(), crate::AgentStatus::RecoveryPending)];
+
+        // With only a recovered thread, a fresh send has no implicit target; the
+        // route creates a new eligible agent rather than resuming this session.
+        assert_eq!(default_agent_id(candidates.clone()), None);
+
+        // An explicit selection remains explicit and is rejected by AgentRegistry
+        // until the user deliberately recovers it. Never silently redirect or replay.
+        let explicit = Some(recovered.clone());
+        let target = explicit.or_else(|| default_agent_id(candidates));
+        assert_eq!(target, Some(recovered));
     }
 
     #[test]

@@ -249,6 +249,16 @@ pub enum ChatMessageState {
     Failed,
 }
 
+fn is_default_composer_agent(status: crate::AgentStatus) -> bool {
+    matches!(
+        status,
+        crate::AgentStatus::Starting
+            | crate::AgentStatus::Idle
+            | crate::AgentStatus::Working
+            | crate::AgentStatus::Waiting
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorkspacePlan {
     pub id: String,
@@ -1472,6 +1482,7 @@ pub struct DevTuiState {
     pub github_review_requested: bool,
     pub pending_open_file: Option<String>,
     pub pending_chat_messages: Vec<PendingChatMessage>,
+    composer_retry_message_id: Option<String>,
     pub agent_send_job: Option<u64>,
     pub selected_agent: Option<crate::AgentId>,
     pub thread_picker_open: bool,
@@ -1774,7 +1785,7 @@ impl DevTuiState {
         let initial_status = if !initial_refresh {
             "Loading workspace snapshot · first refresh pending · ? help".to_string()
         } else if agent_readiness.starts_with("✓ Ready") {
-            "Ready · Enter chat · Ctrl-P files · : commands · ? help".to_string()
+            "Core available · Enter chat · Ctrl-P files · : commands · ? help".to_string()
         } else {
             "Agent setup required · press :actions or Enter to continue".to_string()
         };
@@ -1836,6 +1847,7 @@ impl DevTuiState {
             github_review_requested: false,
             pending_open_file: None,
             pending_chat_messages: Vec::new(),
+            composer_retry_message_id: None,
             agent_send_job: None,
             selected_agent: None,
             thread_picker_open: false,
@@ -3418,14 +3430,28 @@ impl DevTuiState {
             .cloned()
             .collect::<Vec<_>>();
         for message in visible_pending {
-            let suffix = match message.state {
-                ChatMessageState::Sending => "· sending…",
-                ChatMessageState::Sent => "· sent · Glass Agent is thinking…",
-                ChatMessageState::Failed => "× send failed · press Enter to retry",
+            let error_suffix = match message.state {
+                ChatMessageState::Sending => "· sending…".to_string(),
+                ChatMessageState::Sent => "· sent · Glass Agent is thinking…".to_string(),
+                ChatMessageState::Failed => format!(
+                    "× send failed: {}\nEnter retries this message · edit to send a new one",
+                    message.error.as_deref().unwrap_or("unknown send error")
+                ),
             };
+            if let Some(entry) = entries.iter_mut().find(|entry| {
+                entry.client_message_id.as_deref() == Some(message.message_id.as_str())
+            }) {
+                if message.state == ChatMessageState::Failed
+                    && !entry.text.contains("× send failed:")
+                {
+                    entry.text.push('\n');
+                    entry.text.push_str(&error_suffix);
+                }
+                continue;
+            }
             entries.push(super::projection::ConversationEntry {
                 kind: super::projection::ConversationKind::User,
-                text: format!("{}\n{suffix}", message.text),
+                text: format!("{}\n{error_suffix}", message.text),
                 streaming: false,
                 entry_id: None,
                 client_message_id: Some(message.message_id.clone()),
@@ -5047,10 +5073,23 @@ impl DevTuiState {
         true
     }
 
+    /// Current selected Core worker state, read without blocking TUI rendering.
+    pub fn selected_agent_status(&self) -> Option<crate::AgentStatus> {
+        let agent_id = self.selected_agent.as_ref()?;
+        self.workspace
+            .try_lock()
+            .ok()?
+            .agents()
+            .snapshot(agent_id)
+            .ok()
+            .map(|snapshot| snapshot.status)
+    }
+
     fn select_agent(&mut self, selected: Option<crate::AgentId>) -> bool {
         if self.selected_agent == selected {
             return true;
         }
+        self.composer_retry_message_id = None;
         let current = self.selected_agent.clone();
         #[cfg(unix)]
         {
@@ -6044,6 +6083,9 @@ impl DevTuiState {
         self.composer_input
             .insert_str(self.composer_cursor, &accepted);
         self.composer_cursor += accepted.len();
+        if !accepted.is_empty() {
+            self.composer_retry_message_id = None;
+        }
         if truncated {
             self.status = "Composer input limit reached (16 KiB)".into();
         }
@@ -6052,6 +6094,9 @@ impl DevTuiState {
     pub fn complete_composer_mention(&mut self) {
         match complete_mention(&self.composer_input, self.composer_cursor, &self.files) {
             Some((text, cursor)) => {
+                if text != self.composer_input {
+                    self.composer_retry_message_id = None;
+                }
                 self.composer_input = text;
                 self.composer_cursor = cursor;
                 self.status = "Mention completed · Tab cycles @file".into();
@@ -6073,11 +6118,36 @@ impl DevTuiState {
             .unwrap_or(0);
         self.composer_input.drain(previous..self.composer_cursor);
         self.composer_cursor = previous;
+        self.composer_retry_message_id = None;
+    }
+
+    /// Apply a composer edit and clear the restored-message retry identity.
+    /// Editing turns the draft into a new logical message even if the user
+    /// later types the same text again.
+    pub fn set_composer_edit(&mut self, text: String, cursor: usize) {
+        if text != self.composer_input {
+            self.composer_retry_message_id = None;
+        }
+        self.composer_input = text;
+        self.composer_cursor = cursor;
     }
 
     pub fn submit_composer(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let prompt = self.composer_input.clone();
         self.submit_composer_prompt(&prompt, true, worker);
+    }
+
+    fn matching_composer_retry_message_id(&self, text: &str) -> Option<String> {
+        let message_id = self.composer_retry_message_id.as_ref()?;
+        self.pending_chat_messages
+            .iter()
+            .find(|message| {
+                message.message_id == *message_id
+                    && message.agent_id == self.selected_agent
+                    && message.state == ChatMessageState::Failed
+                    && message.text == text
+            })
+            .map(|message| message.message_id.clone())
     }
 
     fn submit_composer_prompt(
@@ -6103,6 +6173,13 @@ impl DevTuiState {
     ) -> bool {
         if self.composer_send_blocked() {
             self.status = "Background operation running · message kept in composer".into();
+            return false;
+        }
+        if matches!(
+            self.selected_agent_status(),
+            Some(crate::AgentStatus::RecoveryPending | crate::AgentStatus::Unavailable)
+        ) {
+            self.status = "This thread needs recovery · message kept in composer · resume it or choose another thread".into();
             return false;
         }
         // Agent sends are accepted while Core is starting; the resident worker
@@ -6140,11 +6217,18 @@ impl DevTuiState {
         } else {
             serde_json::Value::Null
         };
-        let message_id = format!(
-            "chat-{}-{}",
-            std::process::id(),
-            NEXT_CHAT_MESSAGE.fetch_add(1, Ordering::Relaxed)
-        );
+        let owner = self.selected_agent.clone();
+        let retry_message_id = self.matching_composer_retry_message_id(&display_text);
+        if self.composer_retry_message_id.is_some() && retry_message_id.is_none() {
+            self.composer_retry_message_id = None;
+        }
+        let message_id = retry_message_id.clone().unwrap_or_else(|| {
+            format!(
+                "chat-{}-{}",
+                std::process::id(),
+                NEXT_CHAT_MESSAGE.fetch_add(1, Ordering::Relaxed)
+            )
+        });
         let mut arguments = serde_json::json!({
             "text": text,
             "mode": if steer { "steer" } else { "follow-up" },
@@ -6180,7 +6264,6 @@ impl DevTuiState {
         if let Some(agent) = self.selected_agent.as_ref() {
             arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
         }
-        let owner = self.selected_agent.clone();
         let (call, context) = match self.tool_request("glass.agent.send", arguments, true) {
             Ok(request) => request,
             Err(error) => {
@@ -6195,14 +6278,29 @@ impl DevTuiState {
         match worker.submit_tool(call, context) {
             Ok(id) => {
                 self.agent_send_job = Some(id);
-                self.pending_chat_messages.push(PendingChatMessage {
-                    agent_id: owner,
-                    message_id,
-                    text: display_text,
-                    state: ChatMessageState::Sending,
-                    job_id: Some(id),
-                    error: None,
-                });
+                if let Some(retry_message_id) = retry_message_id.as_deref() {
+                    if let Some(message) = self
+                        .pending_chat_messages
+                        .iter_mut()
+                        .find(|message| message.message_id == retry_message_id)
+                    {
+                        message.agent_id = owner;
+                        message.text = display_text;
+                        message.state = ChatMessageState::Sending;
+                        message.job_id = Some(id);
+                        message.error = None;
+                    }
+                } else {
+                    self.pending_chat_messages.push(PendingChatMessage {
+                        agent_id: owner,
+                        message_id,
+                        text: display_text,
+                        state: ChatMessageState::Sending,
+                        job_id: Some(id),
+                        error: None,
+                    });
+                }
+                self.composer_retry_message_id = None;
                 self.status = if steer {
                     "Sent · steering Glass Agent…".into()
                 } else if queued_follow_up {
@@ -6600,17 +6698,27 @@ impl DevTuiState {
                             message.state = ChatMessageState::Failed;
                             message.job_id = None;
                             message.error = Some(error.clone());
-                            (message.agent_id.clone(), message.text.clone())
+                            (
+                                message.agent_id.clone(),
+                                message.text.clone(),
+                                message.message_id.clone(),
+                            )
                         });
-                    if let Some((owner, text)) = failed {
+                    if let Some((owner, text, message_id)) = failed {
                         if owner == self.selected_agent {
                             if self.composer_input.is_empty() {
                                 self.composer_input = text.clone();
                                 self.composer_cursor = self.composer_input.len();
+                                self.composer_retry_message_id = Some(message_id);
+                            } else if self.composer_input == text {
+                                self.composer_retry_message_id = Some(message_id);
+                            } else {
+                                self.composer_retry_message_id = None;
                             }
                             self.composer_mode = true;
                             self.status =
-                                format!("Could not send message · edit and retry: {error}");
+                                "Message failed · full error shown in conversation · edit or retry"
+                                    .into();
                         } else {
                             let draft = self.thread_drafts.entry(owner).or_default();
                             if draft.text.is_empty() {
@@ -10757,7 +10865,10 @@ impl DevTuiState {
         self.reconcile_selected_editor_proposal();
         self.agent_conversations = snapshot.agent_conversations.clone();
         if self.selected_agent.is_none()
-            && let Some(chrome) = snapshot.agent_chrome.first()
+            && let Some(chrome) = snapshot
+                .agent_chrome
+                .iter()
+                .find(|chrome| is_default_composer_agent(chrome.status))
         {
             self.select_agent(Some(chrome.id.clone()));
         }
@@ -17039,6 +17150,113 @@ mod tests {
         assert_eq!(state.composer_input, "recover this A message");
         assert_eq!(state.composer_cursor, "recover this A message".len());
         assert!(state.conversation_view().contains("send failed"));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn failed_send_error_is_visible_on_its_existing_transcript_row() {
+        let (mut state, root) = routed_state("failed-send-visible-error");
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let message_id = "chat-failed-visible";
+        let error =
+            "development conflict: selected thread is recovery pending and has no command channel";
+        state.selected_agent = Some(agent_id);
+        state.conversation_items = vec![super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::User,
+            text: "hello".into(),
+            streaming: false,
+            entry_id: Some("entry-user".into()),
+            client_message_id: Some(message_id.into()),
+            tool_name: None,
+            tool_card: None,
+        }];
+        state.pending_chat_messages.push(PendingChatMessage {
+            agent_id: state.selected_agent.clone(),
+            message_id: message_id.into(),
+            text: "hello".into(),
+            state: ChatMessageState::Failed,
+            job_id: None,
+            error: Some(error.into()),
+        });
+
+        let entries = state.conversation_entries_view();
+        assert_eq!(
+            entries.len(),
+            1,
+            "the same client message must not duplicate"
+        );
+        assert!(entries[0].text.contains(error));
+        assert!(entries[0].text.contains("Enter retries this message"));
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn default_composer_target_skips_threads_that_need_recovery() {
+        assert!(is_default_composer_agent(crate::AgentStatus::Starting));
+        assert!(is_default_composer_agent(crate::AgentStatus::Idle));
+        assert!(is_default_composer_agent(crate::AgentStatus::Working));
+        assert!(is_default_composer_agent(crate::AgentStatus::Waiting));
+        assert!(!is_default_composer_agent(
+            crate::AgentStatus::RecoveryPending
+        ));
+        assert!(!is_default_composer_agent(crate::AgentStatus::Unavailable));
+        assert!(!is_default_composer_agent(crate::AgentStatus::Completed));
+    }
+
+    #[test]
+    fn snapshot_does_not_implicitly_select_a_recovery_pending_thread() {
+        let (mut state, root) = routed_state("snapshot-does-not-select-recovered-thread");
+        let recovered_id = crate::AgentId::parse("agent-0001").unwrap();
+        let mut snapshot = super::super::snapshot::DisplaySnapshot::default();
+        snapshot
+            .agent_states
+            .push((recovered_id.clone(), crate::AgentStatus::RecoveryPending));
+        snapshot
+            .agent_chrome
+            .push(super::super::snapshot::AgentChrome {
+                id: recovered_id,
+                status: crate::AgentStatus::RecoveryPending,
+                model: None,
+                thinking: None,
+                session_file: None,
+            });
+
+        state.apply_snapshot(&snapshot);
+
+        assert_eq!(state.selected_agent, None);
+        assert_eq!(state.selected_agent_status(), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restored_failed_draft_reuses_its_identity_until_edited() {
+        let (mut state, root) = routed_state("failed-send-retry-identity");
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let message_id = "chat-failed-retry";
+        state.selected_agent = Some(agent_id.clone());
+        state.pending_chat_messages.push(PendingChatMessage {
+            agent_id: Some(agent_id),
+            message_id: message_id.into(),
+            text: "hello".into(),
+            state: ChatMessageState::Failed,
+            job_id: None,
+            error: Some("development conflict".into()),
+        });
+        state.composer_retry_message_id = Some(message_id.into());
+        state.composer_input = "hello".into();
+        state.composer_cursor = state.composer_input.len();
+
+        assert_eq!(
+            state.matching_composer_retry_message_id("hello").as_deref(),
+            Some(message_id)
+        );
+        state.set_composer_edit("hello again".into(), 11);
+        assert!(state.composer_retry_message_id.is_none());
+        assert!(
+            state
+                .matching_composer_retry_message_id("hello again")
+                .is_none()
+        );
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 

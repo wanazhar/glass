@@ -1280,6 +1280,62 @@ fn first_message_queues_while_core_is_starting() {
 }
 
 #[test]
+fn unavailable_core_send_shows_full_error_and_keeps_retry_draft() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let missing_core = root.join("Glass Core is not ready");
+    let mut session =
+        Session::start_with_core_binary(&binary(), &root, 100, 28, Some(&missing_core));
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    assert!(session.wait_for("CODING AGENT", Duration::from_secs(5)));
+    session.send(b"\r");
+    assert!(
+        session.wait_for("Message on Agent", Duration::from_secs(5)),
+        "composer did not open when Core needs setup\n{}",
+        session.output_tail()
+    );
+
+    let prompt = "hello";
+    session.send_slowly(prompt.as_bytes(), Duration::from_millis(30));
+    assert!(session.wait_for_composer_text(prompt, Duration::from_secs(5)));
+    session.send(b"\r");
+    assert!(
+        session.wait_for("Glass Core is not ready", Duration::from_secs(8)),
+        "the full Core dispatch error was hidden behind the footer\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for("development conflict:", Duration::from_secs(3)),
+        "failed send detail was not added to the conversation row\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.visible_output().contains("hello"),
+        "failed prompt was not restored into the composer"
+    );
+
+    // The restored draft is an explicit retry of the same logical message.
+    // Dispatching again must keep the pending entry singular; the state-level
+    // retry test also verifies the client message ID remains unchanged.
+    session.clear_output();
+    session.send(b"\r");
+    assert!(
+        session.wait_for("Glass Core is not ready", Duration::from_secs(8)),
+        "retry lost the actionable Core error\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for("development conflict:", Duration::from_secs(3)),
+        "retry did not update the existing failed conversation row\n{}",
+        session.output_tail()
+    );
+    session.kill();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;

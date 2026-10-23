@@ -134,7 +134,7 @@ a second keybinding or state owner.
 | Surface | Authoritative projection | Guided empty/loading behavior |
 |---|---|---|
 | Trust | trust label and exact inspection items | starts here when project trust is required; `I` inspect, `O` open untrusted, `1` trust once, `T` trust project |
-| Agent | selected-engine readiness, conversation bubbles, event/tool cards, approval | shows `START HERE` when the selected engine is ready; otherwise `:actions` offers the available setup and repair steps |
+| Agent | selected-engine readiness, shared transcript viewport, typed event/tool cards, approval | shows `START HERE` when the selected engine is ready; otherwise `:actions` offers the available setup and repair steps |
 | Code | bounded files, focused buffer, cursor/dirty state, review comments/proposals/checkpoints, LSP | no files/file open messages direct to selection and Enter; no diagnostics is a valid state |
 | App | embedded `BrowserWorkspaceController`: connection, target, semantic entities, workflow, visual path | detached/no page/loading/failed/recovery/semantic-only states stay visible |
 | Terminal | managed process rows with health, PID, command and detected URL | `s` starts the detected suite; `a` opens actions; no process is an empty state |
@@ -367,27 +367,26 @@ workspace-tool routes, and `/think LEVEL` keeps its Glass thinking-level tool
 route. Ask inspects only. Plan writes a bounded numbered plan. Only Agent may
 mutate. `Enter` submits immediately and keeps the composer open; submitted
 text is rendered optimistically, while the worker/event stream appends
-assistant deltas and tool activity. Conversation rows use the shared
-`glass-tui` presentation cache and Markdown renderer for assistant content,
-while Glass supplies the selected-thread identity, typed user/system/tool
-bubbles, collapsed tool cards, selection, and inline composer dock. The shared
-layout is retained across frames and refreshed when the event projection
-changes. The agent event cursor, selected agent, and pending-message state gate
-assistant Markdown layout rebuilds, so long transcripts do not need their
-assistant content reconverted and rewrapped on every redraw. Glass still builds
-and paints its full bubble list per frame; this cache does not add Core's
-virtualized scrolling/search controller to the Glass surface. Core Live and the
-Glass event adapter both feed the shared typed
-conversation reducer for turn boundaries, assistant streaming, reasoning,
-tool lifecycle, and exact call-ID association. The reducer keeps host identity
-and policy metadata outside its shared entries. Glass also uses the shared
-composer editor while retaining its draft persistence and host-specific key
-routing. It sends human text unchanged and carries run mode plus structured
-surface, project, browser, editor, and selected-tool state as request context;
-it does not inject generic playbook prose into each turn. Its resident harness
-remains the single owner of the Core runtime; this UI adapter does not start
-another terminal or provider process. `glass-tui` owns presentation and
-conversation primitives, while Glass keeps project navigation, session
+assistant deltas and tool activity. Glass maps its selected thread's typed
+entries and stable tool-call metadata into the shared `glass-tui::Transcript`.
+That controller owns cached wrapping, follow-tail and scroll anchoring, and
+builds only the requested viewport lines; shared Markdown spans and tool-card
+rendering remain intact. The event cursor, selected agent, and pending-message
+signature gate replacement of the shared transcript, and the no-pending path
+borrows cached entries instead of cloning the history each frame. Glass keeps
+the project/session shell, thread and draft identity, selection, approval and
+host-action metadata, and inline composer dock. Core Live and the Glass event
+adapter both feed the shared typed conversation reducer for turn boundaries,
+assistant streaming, reasoning, tool lifecycle, and exact call-ID association.
+The reducer keeps host identity and policy metadata outside its shared
+entries. Glass also uses the shared composer editor while retaining its draft
+persistence and host-specific key routing. It sends human text unchanged and
+carries run mode plus structured surface, project, browser, editor, and
+selected-tool state as request context; it does not inject generic playbook
+prose into each turn. Its resident harness remains the single owner of the
+Core runtime; this UI adapter does not start another terminal or provider
+process. `glass-tui` owns the conversation reducer, cached layout, and
+transcript viewport behavior, while Glass keeps project navigation, session
 identity, and the governed event protocol.
 `Ctrl-D` toggles steer mode for an active
 turn; `Ctrl-X` aborts the selected agent. `Ctrl-A/E/U/W` move to start/end,

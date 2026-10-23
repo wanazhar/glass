@@ -24,6 +24,7 @@ use glass_browser::cli::args::TuiLayout;
 use glass_browser::terminal_graphics::AnsiCanvas;
 use glass_browser::tui::live_view::AnsiPane;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1497,7 +1498,7 @@ pub struct DevTuiState {
     pub session_picker_items: Vec<SessionPickerItem>,
     pub session_picker_selection: usize,
     pub conversation_items: Vec<super::projection::ConversationEntry>,
-    pub(super) core_conversation_layout: RefCell<super::core_conversation::InlineLayout>,
+    pub(super) core_transcript: RefCell<super::core_conversation::InlineTranscript>,
     pub agent_conversations:
         std::collections::BTreeMap<crate::AgentId, super::snapshot::AgentConversation>,
     pub agent_model: String,
@@ -1900,9 +1901,7 @@ impl DevTuiState {
             transcript_selection: 0,
             transcript_expanded: false,
             reasoning_view_open: false,
-            core_conversation_layout: RefCell::new(
-                super::core_conversation::InlineLayout::default(),
-            ),
+            core_transcript: RefCell::new(super::core_conversation::InlineTranscript::default()),
             session_picker_open: false,
             session_picker_items: Vec::new(),
             session_picker_selection: 0,
@@ -3966,23 +3965,49 @@ impl DevTuiState {
         conversation
     }
 
-    pub fn conversation_entries_view(&self) -> Vec<super::projection::ConversationEntry> {
-        let mut entries = self.conversation_items.clone();
+    pub fn conversation_entries_cow(&self) -> Cow<'_, [super::projection::ConversationEntry]> {
+        let has_selected_pending = self
+            .pending_chat_messages
+            .iter()
+            .any(|message| message.agent_id == self.selected_agent);
+
+        let cached = if !self.conversation_items.is_empty() {
+            Some(self.conversation_items.as_slice())
+        } else {
+            self.selected_agent
+                .as_ref()
+                .and_then(|agent| self.agent_conversations.get(agent))
+                .map(|conversation| conversation.items.as_slice())
+                .filter(|entries| !entries.is_empty())
+        };
+        if !has_selected_pending {
+            if let Some(entries) = cached {
+                return Cow::Borrowed(entries);
+            }
+            if self.agent_conversation.starts_with("No conversation yet.") {
+                return Cow::Borrowed(&[]);
+            }
+            return Cow::Owned(parse_conversation_view(&self.agent_conversation));
+        }
+        let mut entries = cached.map_or_else(Vec::new, |entries| entries.to_vec());
         if entries.is_empty() && !self.agent_conversation.starts_with("No conversation yet.") {
             entries = parse_conversation_view(&self.agent_conversation);
         }
-        for message in &self.pending_chat_messages {
-            if message.agent_id != self.selected_agent {
-                continue;
-            }
-            if message.state != ChatMessageState::Failed
-                && entries.iter().any(|entry| {
-                    entry.kind == super::projection::ConversationKind::User
-                        && entry.client_message_id.as_deref() == Some(message.message_id.as_str())
-                })
-            {
-                continue;
-            }
+        let observed = entries
+            .iter()
+            .filter_map(|entry| entry.client_message_id.as_deref())
+            .map(str::to_owned)
+            .collect::<std::collections::HashSet<_>>();
+        let visible_pending = self
+            .pending_chat_messages
+            .iter()
+            .filter(|message| message.agent_id == self.selected_agent)
+            .filter(|message| {
+                message.state == ChatMessageState::Failed || !observed.contains(&message.message_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for message in visible_pending {
             let suffix = match message.state {
                 ChatMessageState::Sending => "· sending…",
                 ChatMessageState::Sent => "· sent · Glass Agent is thinking…",
@@ -3995,9 +4020,14 @@ impl DevTuiState {
                 entry_id: None,
                 client_message_id: Some(message.message_id.clone()),
                 tool_name: None,
+                tool_card: None,
             });
         }
-        entries
+        Cow::Owned(entries)
+    }
+
+    pub fn conversation_entries_view(&self) -> Vec<super::projection::ConversationEntry> {
+        self.conversation_entries_cow().into_owned()
     }
 
     pub fn composer_context_chips(&self) -> String {
@@ -4056,6 +4086,12 @@ impl DevTuiState {
         let next = self.transcript_selection as i32 + delta;
         self.transcript_selection = next.clamp(0, len as i32 - 1) as usize;
         self.transcript_expanded = false;
+        if self.surface == DevSurface::Agent {
+            let (_, height) = super::render::agent_conversation_viewport_size(self);
+            self.core_transcript
+                .borrow_mut()
+                .focus_entry(self.transcript_selection, height);
+        }
         self.status = format!(
             "Bubble {}/{} · f fork · r rewind · e edit last · o expand",
             self.transcript_selection + 1,
@@ -8148,27 +8184,42 @@ impl DevTuiState {
     }
 
     pub fn scroll_surface(&mut self, delta: i32) {
+        if self.surface == DevSurface::Agent {
+            let (_, height) = super::render::agent_conversation_viewport_size(self);
+            self.core_transcript
+                .borrow_mut()
+                .step(delta as isize, height);
+            return;
+        }
         let scroll = self.surface_scroll.entry(self.surface).or_default();
         *scroll = (*scroll as i64 + i64::from(delta)).max(0) as usize;
     }
 
     pub fn scroll_home(&mut self) {
+        if self.surface == DevSurface::Agent {
+            self.core_transcript.borrow_mut().top();
+            return;
+        }
         self.surface_scroll.insert(self.surface, 0);
     }
 
     pub fn scroll_end(&mut self) {
-        let end = if self.surface == DevSurface::Agent {
-            super::render::agent_conversation_scroll_end(self)
+        if self.surface == DevSurface::Agent {
+            let _ = super::render::agent_conversation_scroll_end(self);
+            let (_, height) = super::render::agent_conversation_viewport_size(self);
+            self.core_transcript.borrow_mut().follow_tail(height);
         } else {
-            self.surface_content_height().saturating_sub(1)
-        };
-        self.surface_scroll.insert(self.surface, end);
+            self.surface_scroll.insert(
+                self.surface,
+                self.surface_content_height().saturating_sub(1),
+            );
+        }
     }
 
     /// Bounded logical height of the current surface's content, used for End.
     fn surface_content_height(&self) -> usize {
         if self.surface == DevSurface::Agent {
-            return self.conversation_view().lines().count().max(1);
+            return self.core_transcript.borrow().total_lines().max(1);
         }
         let content = match self.surface {
             DevSurface::Code => &self.editor,
@@ -8184,6 +8235,13 @@ impl DevTuiState {
     }
 
     pub fn current_scroll(&self) -> u16 {
+        if self.surface == DevSurface::Agent {
+            return self
+                .core_transcript
+                .borrow()
+                .scroll()
+                .min(u16::MAX as usize) as u16;
+        }
         self.surface_scroll
             .get(&self.surface)
             .copied()
@@ -13994,6 +14052,7 @@ fn conversation_entry_from_lines(
         entry_id: None,
         client_message_id: None,
         tool_name: None,
+        tool_card: None,
     }
 }
 
@@ -18798,6 +18857,7 @@ mod tests {
             entry_id: Some(format!("entry-{id}")),
             client_message_id: Some(format!("chat-{id}")),
             tool_name: None,
+            tool_card: None,
         };
         state.agent_conversations.insert(
             agent_a.clone(),
@@ -18976,11 +19036,35 @@ mod tests {
             entry_id: Some("entry-inspect-1".into()),
             client_message_id: Some("chat-inspect-1".into()),
             tool_name: None,
+            tool_card: None,
         }];
 
         let view = state.conversation_view();
         assert_eq!(view.matches("YOU\ninspect the failing test").count(), 1);
         assert!(!view.contains("Glass Agent is thinking"));
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn conversation_entries_borrow_cached_history_without_pending_messages() {
+        let root = std::env::temp_dir().join(format!("glass-chat-cow-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.conversation_items = vec![super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::Assistant,
+            text: "cached answer".into(),
+            streaming: false,
+            entry_id: Some("entry-cow-1".into()),
+            client_message_id: None,
+            tool_name: None,
+            tool_card: None,
+        }];
+
+        let view = state.conversation_entries_cow();
+        assert!(matches!(view, Cow::Borrowed(_)));
+        assert_eq!(view[0].text, "cached answer");
 
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
@@ -19008,6 +19092,7 @@ mod tests {
             entry_id: Some(format!("entry-{message_id}")),
             client_message_id: Some(message_id.into()),
             tool_name: None,
+            tool_card: None,
         };
         state.conversation_items = vec![user_entry("chat-1")];
 
@@ -19376,6 +19461,7 @@ mod tests {
             entry_id: Some("entry-7".into()),
             client_message_id: None,
             tool_name: None,
+            tool_card: None,
         }];
         state.transcript_selection = 0;
         let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
@@ -19430,6 +19516,7 @@ mod tests {
             entry_id: Some("entry-1".into()),
             client_message_id: None,
             tool_name: None,
+            tool_card: None,
         }];
         state.edit_last_user_message();
         assert!(state.composer_mode);

@@ -34,6 +34,14 @@ const MAX_PROMPT_BYTES: usize = 64 * 1024;
 const CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_millis(200);
 #[cfg(not(test))]
 const CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1_500);
+#[cfg(not(test))]
+const WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const CANCEL_COMMAND_START_TIMEOUT: Duration = Duration::from_millis(100);
+#[cfg(not(test))]
+const CANCEL_COMMAND_START_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Connection metadata for an optional resident-agent broker.
 #[derive(Debug, Clone)]
@@ -594,6 +602,18 @@ impl AgentRegistry {
 
     /// Drain worker events, update snapshots, and start newly ready agents.
     pub(crate) fn refresh(&mut self) -> DevelopmentResult<()> {
+        self.drain_worker_events()?;
+        for record in self.records.values_mut() {
+            record.snapshot.dropped_event_count = record.dropped_events.load(Ordering::Relaxed);
+        }
+        self.reap_finished_workers()?;
+        self.enforce_budgets()?;
+        self.fail_blocked_dependents()?;
+        self.start_ready_agents()?;
+        Ok(())
+    }
+
+    fn drain_worker_events(&mut self) -> DevelopmentResult<()> {
         loop {
             match self.events_rx.try_recv() {
                 Ok(event) => self.apply_worker_event(event)?,
@@ -605,13 +625,6 @@ impl AgentRegistry {
                 }
             }
         }
-        for record in self.records.values_mut() {
-            record.snapshot.dropped_event_count = record.dropped_events.load(Ordering::Relaxed);
-        }
-        self.reap_finished_workers()?;
-        self.enforce_budgets()?;
-        self.fail_blocked_dependents()?;
-        self.start_ready_agents()?;
         Ok(())
     }
 
@@ -690,6 +703,12 @@ impl AgentRegistry {
                 "agent {} can only resume while recovery is pending",
                 id.as_str()
             )));
+        }
+        if !self.worker_finished(id) {
+            return Err(DevelopmentError::Conflict(
+                "the prior Core worker is still shutting down; wait for it to exit before recovery"
+                    .into(),
+            ));
         }
         if crate::resident_harness::ResidentHarnessKind::from_env()
             != crate::resident_harness::ResidentHarnessKind::GlassCore
@@ -932,10 +951,41 @@ impl AgentRegistry {
                 id.as_str()
             )));
         }
-        if let Some(sender) = self.record_mut(id)?.command.take() {
-            let _ = sender.try_send(WorkerCommand::Shutdown);
+        let sender = self.record_mut(id)?.command.clone();
+        if let Some(sender) = sender.as_ref() {
+            let _ = self.send_worker_command_bounded(
+                id,
+                sender,
+                WorkerCommand::Shutdown,
+                WORKER_SHUTDOWN_TIMEOUT,
+            )?;
         }
-        self.join_worker(id, AgentStatus::Completed)?;
+        self.record_mut(id)?.command = None;
+        drop(sender);
+        if self.wait_for_worker_shutdown(id, WORKER_SHUTDOWN_TIMEOUT)? {
+            self.join_worker(id, AgentStatus::Completed)?;
+        } else {
+            self.mark_inflight_attempts_uncertain(id)?;
+            let (thread_id, run_id) = {
+                let record = self.record_mut(id)?;
+                record.recovering = true;
+                record.snapshot.status = AgentStatus::RecoveryPending;
+                record.snapshot.updated_at_ms = now_ms();
+                record.snapshot.last_error = Some(
+                    "The worker did not stop before completion could be confirmed; the run is uncertain and must be recovered after the worker exits.".into(),
+                );
+                (record.thread_id.clone(), record.run_id.clone())
+            };
+            self.thread_store.classify_run(
+                &thread_id,
+                &run_id,
+                RunClassification::RecoveryPending,
+            )?;
+            return Err(DevelopmentError::Process(format!(
+                "agent {} worker did not stop; completion is unconfirmed",
+                id.as_str()
+            )));
+        }
         self.record_event(id, "completed", Value::Null);
         self.start_ready_agents()?;
         Ok(())
@@ -995,27 +1045,42 @@ impl AgentRegistry {
 
         let mut cancel_confirmed = false;
         if active_turn {
-            if let Some(sender) = &sender {
+            if let Some(sender) = sender.as_ref() {
                 let (started_tx, started_rx) = mpsc::sync_channel(1);
                 let request = WorkerCommand::Request {
                     attempt_id: None,
                     request: PiSessionRequest::Abort,
                     started: Some(started_tx),
                 };
-                let sent = match sender.send(request) {
-                    Ok(()) => true,
-                    Err(error) => {
-                        if cancel_error.is_none() {
-                            cancel_error = Some(DevelopmentError::Process(format!(
-                                "agent {} worker stopped before receiving cancellation: {error}",
-                                id.as_str()
-                            )));
+                let sent = self.send_worker_command_bounded(
+                    id,
+                    sender,
+                    request,
+                    CANCEL_COMMAND_START_TIMEOUT,
+                )?;
+                let start_deadline = Instant::now() + CANCEL_COMMAND_START_TIMEOUT;
+                let mut started = false;
+                while sent && Instant::now() < start_deadline {
+                    match started_rx.try_recv() {
+                        Ok(Ok(_)) => {
+                            started = true;
+                            break;
                         }
-                        false
+                        Ok(Err(error)) => {
+                            if cancel_error.is_none() {
+                                cancel_error = Some(DevelopmentError::Process(error));
+                            }
+                            break;
+                        }
+                        Err(TryRecvError::Disconnected) => break,
+                        Err(TryRecvError::Empty) => {}
                     }
-                };
-                let started =
-                    sent && matches!(started_rx.recv_timeout(Duration::from_secs(2)), Ok(Ok(_)));
+                    self.drain_worker_events()?;
+                    if self.worker_finished(id) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
                 if started {
                     let first_sequence = self.next_event;
                     let deadline = std::time::Instant::now() + CANCEL_SETTLE_TIMEOUT;
@@ -1067,25 +1132,61 @@ impl AgentRegistry {
                 }
             }
         }
-        if let Some(sender) = sender
-            && let Err(error) = sender.send(WorkerCommand::Shutdown)
-            && cancel_error.is_none()
+        if let Some(sender) = sender.as_ref()
+            && !self.worker_finished(id)
         {
-            cancel_error = Some(DevelopmentError::Process(format!(
-                "agent {} worker stopped before shutdown: {error}",
-                id.as_str()
-            )));
+            // The event queue can be full while the worker is trying to
+            // publish the result of cancellation. Keep draining it while
+            // making room for shutdown so reliable event delivery cannot
+            // deadlock the join below.
+            let _ = self.send_worker_command_bounded(
+                id,
+                sender,
+                WorkerCommand::Shutdown,
+                WORKER_SHUTDOWN_TIMEOUT,
+            )?;
         }
         self.record_mut(id)?.command = None;
-        self.join_worker(id, AgentStatus::Cancelled)?;
+        drop(sender);
+        if self.wait_for_worker_shutdown(id, WORKER_SHUTDOWN_TIMEOUT)? {
+            self.join_worker(id, AgentStatus::Cancelled)?;
+        } else {
+            self.mark_inflight_attempts_uncertain(id)?;
+            let (thread_id, run_id) = {
+                let record = self.record_mut(id)?;
+                record.recovering = true;
+                record.snapshot.status = AgentStatus::RecoveryPending;
+                record.snapshot.updated_at_ms = now_ms();
+                record.snapshot.last_error = Some(
+                    "The Core worker did not stop after cancellation; the run is uncertain and must be recovered after the worker exits.".into(),
+                );
+                (record.thread_id.clone(), record.run_id.clone())
+            };
+            self.thread_store.classify_run(
+                &thread_id,
+                &run_id,
+                RunClassification::RecoveryPending,
+            )?;
+            if cancel_error.is_none() {
+                cancel_error = Some(DevelopmentError::Process(format!(
+                    "agent {} worker did not stop after cancellation; recovery is pending",
+                    id.as_str()
+                )));
+            }
+        }
         if !cancel_confirmed && active_turn {
-            self.record_mut(id)?.snapshot.last_error = Some(
-                "Core did not confirm cancellation settlement before the timeout; inspect the run before retrying.".into(),
-            );
+            let record = self.record_mut(id)?;
+            if record.snapshot.status != AgentStatus::RecoveryPending {
+                record.snapshot.last_error = Some(
+                    "Core did not confirm cancellation settlement before the timeout; inspect the run before retrying.".into(),
+                );
+            }
         }
         self.record_event(
             id,
-            if cancel_confirmed || !active_turn {
+            if self.records[id].snapshot.status == AgentStatus::RecoveryPending {
+                "cancelUnconfirmed"
+            } else if cancel_confirmed || !active_turn {
                 "cancelled"
             } else {
                 "cancelUnconfirmed"
@@ -1667,6 +1768,54 @@ impl AgentRegistry {
         Ok(())
     }
 
+    fn worker_finished(&self, id: &AgentId) -> bool {
+        self.records
+            .get(id)
+            .and_then(|record| record.worker.as_ref())
+            .is_none_or(thread::JoinHandle::is_finished)
+    }
+
+    fn send_worker_command_bounded(
+        &mut self,
+        id: &AgentId,
+        sender: &SyncSender<WorkerCommand>,
+        command: WorkerCommand,
+        timeout: Duration,
+    ) -> DevelopmentResult<bool> {
+        let deadline = Instant::now() + timeout;
+        let mut command = command;
+        loop {
+            command = match sender.try_send(command) {
+                Ok(()) => return Ok(true),
+                Err(TrySendError::Disconnected(_)) => return Ok(false),
+                Err(TrySendError::Full(command)) => command,
+            };
+            self.drain_worker_events()?;
+            if self.worker_finished(id) || Instant::now() >= deadline {
+                return Ok(false);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_worker_shutdown(
+        &mut self,
+        id: &AgentId,
+        timeout: Duration,
+    ) -> DevelopmentResult<bool> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            self.drain_worker_events()?;
+            if self.worker_finished(id) {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn reap_finished_workers(&mut self) -> DevelopmentResult<()> {
         let finished = self
             .records
@@ -1909,17 +2058,78 @@ impl AgentRegistry {
 impl Drop for AgentRegistry {
     fn drop(&mut self) {
         let mut workers = Vec::new();
+        let active = self
+            .records
+            .iter()
+            .filter(|(_, record)| {
+                record.worker.is_some()
+                    && matches!(
+                        record.snapshot.status,
+                        AgentStatus::Working | AgentStatus::Waiting
+                    )
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in active {
+            if let Err(error) = self.mark_inflight_attempts_uncertain(&id) {
+                tracing::warn!(agent_id = %id.as_str(), %error, "could not mark in-flight attempts uncertain during registry shutdown");
+            }
+            if let Some(record) = self.records.get_mut(&id) {
+                record.recovering = true;
+                if let Err(error) = self.thread_store.classify_run(
+                    &record.thread_id,
+                    &record.run_id,
+                    RunClassification::RecoveryPending,
+                ) {
+                    tracing::warn!(agent_id = %id.as_str(), %error, "could not persist recovery-pending state during registry shutdown");
+                }
+            }
+        }
         for (id, record) in &mut self.records {
             if let Some(sender) = record.command.take() {
+                if matches!(
+                    record.snapshot.status,
+                    AgentStatus::Working | AgentStatus::Waiting
+                ) {
+                    let _ = sender.try_send(WorkerCommand::Request {
+                        attempt_id: None,
+                        request: PiSessionRequest::Abort,
+                        started: None,
+                    });
+                }
                 let _ = sender.try_send(WorkerCommand::Shutdown);
             }
             if let Some(worker) = record.worker.take() {
                 workers.push((id.clone(), worker));
             }
         }
+        let shutdown_deadline = Instant::now() + WORKER_SHUTDOWN_TIMEOUT;
+        while workers.iter().any(|(_, worker)| !worker.is_finished())
+            && Instant::now() < shutdown_deadline
+        {
+            if let Err(error) = self.drain_worker_events() {
+                tracing::warn!(%error, "could not drain worker events during registry shutdown");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        if let Err(error) = self.drain_worker_events() {
+            tracing::warn!(%error, "could not drain final worker events during registry shutdown");
+        }
         for (id, worker) in workers {
-            if worker.join().is_err() {
-                tracing::error!(agent_id = %id.as_str(), "agent worker panicked during registry drop");
+            if worker.is_finished() {
+                if worker.join().is_err() {
+                    tracing::error!(agent_id = %id.as_str(), "agent worker panicked during registry drop");
+                }
+            } else {
+                // Dropping a JoinHandle detaches the worker. The durable run and
+                // attempts were already marked RecoveryPending/Uncertain above;
+                // once this registry drops its receivers, blocked event sends
+                // wake with a disconnected-channel error instead of holding
+                // process shutdown open indefinitely.
+                tracing::warn!(
+                    agent_id = %id.as_str(),
+                    "agent worker did not stop before registry shutdown deadline; detached with recovery-pending state"
+                );
             }
         }
     }
@@ -2764,6 +2974,80 @@ mod tests {
     }
 
     #[test]
+    fn cancel_drains_reliable_terminal_events_before_joining_worker() {
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let (events_tx, events_rx) = mpsc::sync_channel(1);
+        registry.events_tx = events_tx.clone();
+        registry.events_rx = events_rx;
+        let id = AgentId::parse("agent-cancel-event-backpressure").unwrap();
+        let (commands_tx, commands_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let worker_id = id.clone();
+        let worker = thread::spawn(move || {
+            while let Ok(command) = commands_rx.recv() {
+                match command {
+                    WorkerCommand::Request { started, .. } => {
+                        if let Some(started) = started {
+                            let _ = started.send(Ok("cancel-request".into()));
+                        }
+                        events_tx
+                            .send(WorkerEvent::RequestStarted(
+                                worker_id.clone(),
+                                "cancel-request".into(),
+                                true,
+                                None,
+                            ))
+                            .unwrap();
+                        events_tx
+                            .send(WorkerEvent::Engine(
+                                worker_id.clone(),
+                                serde_json::json!({
+                                    "type":"agent_settled",
+                                    "detail":{"reason":"cancelled"}
+                                }),
+                            ))
+                            .unwrap();
+                    }
+                    WorkerCommand::Shutdown => {
+                        events_tx
+                            .send(WorkerEvent::Engine(
+                                worker_id.clone(),
+                                serde_json::json!({"type":"message_update","text":"final"}),
+                            ))
+                            .unwrap();
+                        events_tx
+                            .send(WorkerEvent::Stopped(worker_id.clone()))
+                            .unwrap();
+                        return;
+                    }
+                    WorkerCommand::ApproveTool { .. } => {}
+                }
+            }
+        });
+        insert_test_worker(&mut registry, id.clone(), commands_tx, worker);
+
+        registry.cancel(&id).unwrap();
+
+        let record = registry.records.get(&id).unwrap();
+        assert_eq!(record.snapshot.status, AgentStatus::Cancelled);
+        assert!(record.worker.is_none());
+        assert!(registry.history(0).unwrap().iter().any(|event| {
+            event.agent_id == id
+                && event.kind == "agent_settled"
+                && event.payload["detail"]["reason"] == "cancelled"
+        }));
+        assert!(
+            registry
+                .history(0)
+                .unwrap()
+                .iter()
+                .any(|event| event.agent_id == id && event.kind == "stopped")
+        );
+        drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn reopened_thread_rows_are_truthful_and_never_accept_prompts() {
         let root = test_root();
         let registry = AgentRegistry::new(&root).unwrap();
@@ -3331,6 +3615,199 @@ mod tests {
         registry.cancel(&id).unwrap();
         drop(commands);
         drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_command_queue_cancel_is_bounded_and_keeps_run_recovery_pending() {
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let id = AgentId::parse("agent-full-cancel-queue").unwrap();
+        let (command, commands) = mpsc::sync_channel(COMMAND_CAPACITY);
+        for index in 0..COMMAND_CAPACITY {
+            command
+                .try_send(WorkerCommand::ApproveTool {
+                    frame_id: format!("queued-frame-{index}"),
+                    approved: false,
+                })
+                .unwrap();
+        }
+        let (release_worker, wait_for_release) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let _ = wait_for_release.recv();
+        });
+        insert_test_worker(&mut registry, id.clone(), command, worker);
+
+        let started = Instant::now();
+        let error = registry.cancel(&id).unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(error.to_string().contains("recovery is pending"));
+        assert_eq!(
+            registry.records[&id].snapshot.status,
+            AgentStatus::RecoveryPending
+        );
+        let thread_id = registry.records[&id].thread_id.clone();
+        let thread = registry
+            .thread_store
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|thread| thread.thread_id == thread_id)
+            .unwrap();
+        assert_eq!(
+            thread.runs.last().unwrap().classification,
+            RunClassification::RecoveryPending
+        );
+
+        release_worker.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !registry.records[&id]
+            .worker
+            .as_ref()
+            .is_some_and(thread::JoinHandle::is_finished)
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+        registry.refresh().unwrap();
+        assert_eq!(
+            registry.records[&id].snapshot.status,
+            AgentStatus::RecoveryPending
+        );
+        assert!(registry.records[&id].worker.is_none());
+        drop(commands);
+        drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_command_queue_completion_is_bounded_and_keeps_run_recovery_pending() {
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let id = AgentId::parse("agent-full-complete-queue").unwrap();
+        let (command, commands) = mpsc::sync_channel(COMMAND_CAPACITY);
+        for index in 0..COMMAND_CAPACITY {
+            command
+                .try_send(WorkerCommand::ApproveTool {
+                    frame_id: format!("queued-frame-{index}"),
+                    approved: false,
+                })
+                .unwrap();
+        }
+        let (release_worker, wait_for_release) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let _ = wait_for_release.recv();
+        });
+        insert_test_worker(&mut registry, id.clone(), command, worker);
+
+        let started = Instant::now();
+        let error = registry.complete(&id).unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(4));
+        assert!(error.to_string().contains("completion is unconfirmed"));
+        assert_eq!(
+            registry.records[&id].snapshot.status,
+            AgentStatus::RecoveryPending
+        );
+
+        release_worker.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !registry.records[&id]
+            .worker
+            .as_ref()
+            .is_some_and(thread::JoinHandle::is_finished)
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+        registry.refresh().unwrap();
+        assert_eq!(
+            registry.records[&id].snapshot.status,
+            AgentStatus::RecoveryPending
+        );
+        assert!(registry.records[&id].worker.is_none());
+        drop(commands);
+        drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn registry_drop_drains_reliable_events_before_joining_worker() {
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let (events_tx, events_rx) = mpsc::sync_channel(1);
+        registry.events_tx = events_tx.clone();
+        registry.events_rx = events_rx;
+        let id = AgentId::parse("agent-drop-event-backpressure").unwrap();
+        let (commands_tx, commands_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let exited = Arc::new(AtomicU64::new(0));
+        let worker_exited = Arc::clone(&exited);
+        let worker_id = id.clone();
+        let worker = thread::spawn(move || {
+            while let Ok(command) = commands_rx.recv() {
+                if matches!(command, WorkerCommand::Shutdown) {
+                    events_tx
+                        .send(WorkerEvent::Engine(
+                            worker_id.clone(),
+                            serde_json::json!({"type":"message_update","text":"final"}),
+                        ))
+                        .unwrap();
+                    events_tx
+                        .send(WorkerEvent::Stopped(worker_id.clone()))
+                        .unwrap();
+                    worker_exited.fetch_add(1, Ordering::SeqCst);
+                    return;
+                }
+            }
+        });
+        insert_test_worker(&mut registry, id, commands_tx, worker);
+
+        drop(registry);
+
+        assert_eq!(exited.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registry_drop_detaches_worker_after_shutdown_deadline_with_recovery_state() {
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let id = AgentId::parse("agent-drop-stuck-worker").unwrap();
+        let (commands_tx, _commands_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let (release_worker, wait_for_release) = mpsc::channel();
+        let (worker_finished_tx, worker_finished_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let _ = wait_for_release.recv();
+            let _ = worker_finished_tx.send(());
+        });
+        let thread_id = {
+            insert_test_worker(&mut registry, id.clone(), commands_tx, worker);
+            registry.records[&id].thread_id.clone()
+        };
+
+        let started = Instant::now();
+        drop(registry);
+        assert!(started.elapsed() < Duration::from_secs(3));
+
+        let recovered = ThreadStore::open(&root).unwrap();
+        let run = recovered
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|thread| thread.thread_id == thread_id)
+            .unwrap()
+            .runs
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(run.classification, RunClassification::RecoveryPending);
+
+        release_worker.send(()).unwrap();
+        worker_finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("detached worker should finish after the fixture releases it");
         std::fs::remove_dir_all(root).unwrap();
     }
 

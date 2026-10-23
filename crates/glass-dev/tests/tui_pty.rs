@@ -1551,13 +1551,13 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
     );
     session.send(b"\r");
     assert!(
-        session.wait_for("response received", Duration::from_secs(20)),
-        "offline Core did not return to its ready state after the prompt\n{}",
+        session.wait_for("handled offline prompt round trip", Duration::from_secs(5)),
+        "coalesced streamed response never reached the transcript\n{}",
         session.output_tail()
     );
     assert!(
-        session.wait_for("handled offline prompt round trip", Duration::from_secs(5)),
-        "coalesced streamed response never reached the transcript\n{}",
+        session.wait_for("Glass Agent idle", Duration::from_secs(20)),
+        "offline Core did not report its idle lifecycle after settling\n{}",
         session.output_tail()
     );
     session.settle(Duration::from_millis(300));
@@ -3167,6 +3167,58 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
 }
 
 #[test]
+fn gc_commands_are_discoverable_and_forwarded_from_the_launcher_terminal() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
+    session.wait_for_agent_surface();
+
+    // Commands are scoped to a Core session. Start that session with an
+    // offline greeting before discovering or forwarding its command surface.
+    session.send(b"\r");
+    assert!(session.wait_for("Message on Agent", Duration::from_secs(5)));
+    session.send_slowly(b"start the command smoke", Duration::from_millis(25));
+    session.send(b"\r");
+    assert!(
+        session.wait_for("handled start the command smoke", Duration::from_secs(8)),
+        "offline Core greeting did not initialize the selected session\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b"); // close the composer before entering Glass's command palette
+
+    session.send(b":agent commands\r");
+    assert!(
+        session.wait_for("/status", Duration::from_secs(8)),
+        "Glass did not display the command catalogue returned by Core\n{}",
+        session.output_tail()
+    );
+    assert!(session.visible_output().contains("/model"));
+    // The human-readable event can arrive just before the workspace tool
+    // worker releases its short-lived lock.
+    session.settle(Duration::from_millis(500));
+
+    session.send(b":agent command status\r");
+    assert!(
+        session.wait_for("fixture-model", Duration::from_secs(8)),
+        "Glass did not forward /status to the Core runtime\n{}",
+        session.output_tail()
+    );
+    session.send(b":agent command model\r");
+    assert!(
+        session.wait_for("command-ui", Duration::from_secs(8)),
+        "interactive Core command did not explain the native UI handoff\n{}",
+        session.output_tail()
+    );
+
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn live_core_greeting_settles_without_glass_approval_notice() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1")
         || std::env::var("GLASS_LIVE_GREETING").ok().as_deref() != Some("1")
@@ -3318,14 +3370,12 @@ fn live_core_greeting_settles_without_glass_approval_notice() {
         "real Core greeting did not reach an idle run and settled send; safe registry summary: {registry_summary}; Core phase trace: {core_runtime_phases}"
     );
 
-    session.clear_output();
-    assert!(
-        session.wait_for("ready · response received", Duration::from_secs(5)),
-        "settled selected session did not report its response\n{}",
-        session.visible_output()
-    );
     session.settle(Duration::from_millis(300));
     let final_frame = session.visible_output();
+    assert!(
+        final_frame.contains("idle"),
+        "settled selected session did not report its idle lifecycle\n{final_frame}"
+    );
     assert!(
         !final_frame
             .to_ascii_lowercase()
@@ -4932,6 +4982,15 @@ fn failed_core_response_is_visible_and_can_be_retried_explicitly() {
         "correlated Core error was not projected into the active conversation\n{}",
         session.output_tail()
     );
+    let failed_turn_frame = session.visible_output();
+    assert!(
+        failed_turn_frame.contains("Glass Agent idle"),
+        "failed Core turn did not report its idle lifecycle\n{failed_turn_frame}"
+    );
+    assert!(
+        !failed_turn_frame.contains("response received"),
+        "idle after a failed Core prompt was incorrectly presented as a successful response"
+    );
     assert!(!session.visible_output().contains("fixture provider detail"));
 
     let registry_path = fixture_state.join("threads/registry.json");
@@ -4962,6 +5021,38 @@ fn failed_core_response_is_visible_and_can_be_retried_explicitly() {
     let requests = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
         .expect("fake Core request log is present");
     assert_eq!(requests.matches("\"method\":\"turn/prompt\"").count(), 1);
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn resident_core_stderr_does_not_corrupt_the_tui_screen() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let data_home = root.join(".glass/xdg-data");
+    let fake_core = fake_core_binary_with_mode("stderr-probe");
+    let mut session = Session::start_with_data_home_options(
+        &binary(),
+        &root,
+        100,
+        30,
+        Some(&fake_core),
+        Some(&data_home),
+    );
+    assert!(
+        session.wait_for("GLASS", Duration::from_secs(8)),
+        "TUI did not start\n{}",
+        session.output_tail()
+    );
+    session.settle(Duration::from_millis(300));
+    let frame = session.visible_output();
+    assert!(
+        !frame.contains("GLASS_CORE_STDERR_PROBE"),
+        "resident Core stderr was written over the alternate screen\n{frame}"
+    );
     session.kill();
     let _ = std::fs::remove_file(fake_core);
     let _ = std::fs::remove_dir_all(root);

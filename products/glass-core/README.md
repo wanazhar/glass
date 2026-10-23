@@ -110,14 +110,16 @@ needed. See [Remote workspace](docs/connect.md) for setup and access controls.
 
 ## Extend the workflow
 
-The core exposes `read`, `edit`, `write`, `view_image`, `bash`, and `state`.
+The core exposes `read`, `edit`, `write`, `view_image`, `bash`, `state`,
+`web_search`, and `web_fetch`.
 Interactive models also receive `ask_user_question`, with choices, multiple
 selections, and a custom answer field. Text-only models omit `view_image`.
 Agents can inspect screenshots and project images without reading binary files as text.
 Native checklists keep phased progress and blockers visible, survive resume and
 compaction, and open in `/todo` without an extension.
 Additional workflows are discovered on demand. Optional subprocess extensions add
-web search, MCP tools, browser checks, language services, and other integrations.
+MCP tools, browser checks, language services, and other integrations. Web search
+and direct readable page fetching are native; see [Web search and fetch](docs/web-tools.md).
 Skills and compiled mods provide instructions and hooks.
 
 Neuralnets lets agents save and recall attributed project knowledge directly.

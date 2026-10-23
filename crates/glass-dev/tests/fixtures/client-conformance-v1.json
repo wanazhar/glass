@@ -44,6 +44,8 @@
     "getText",
     "glass.agent.abort",
     "glass.agent.clone-session",
+    "glass.agent.command",
+    "glass.agent.commands",
     "glass.agent.compact",
     "glass.agent.delegate",
     "glass.agent.entries",

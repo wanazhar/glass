@@ -1932,7 +1932,10 @@ impl<'a> Agent<'a> {
             );
         } else if crate::files::is_tool(&call.name) {
             self.run_file_pumped(call, pump);
-        } else if call.name == "bash" || self.extensions.has_tool(&call.name) {
+        } else if call.name == "bash"
+            || crate::web_tools::is_tool(&call.name)
+            || self.extensions.has_tool(&call.name)
+        {
             self.run_tool_pumped(call, pump);
         } else {
             self.run_tool(call);
@@ -2051,9 +2054,10 @@ impl<'a> Agent<'a> {
     /// keeps the UI live and lets a steer be observed, though it does not
     /// preempt the command itself: `bash` has its own timeout for that.
     fn run_tool_pumped(&mut self, call: &ToolCall, pump: &mut impl FnMut(&mut Option<String>)) {
-        // `bash` and `state` are the only built-ins that can block, and only
-        // `bash` is worth a worker thread. Everything else is microseconds.
-        if call.name != "bash" && !self.extensions.has_tool(&call.name) {
+        if call.name != "bash"
+            && !crate::web_tools::is_tool(&call.name)
+            && !self.extensions.has_tool(&call.name)
+        {
             self.run_tool(call);
             return;
         }
@@ -2109,6 +2113,10 @@ impl<'a> Agent<'a> {
 
         if self.extensions.has_tool(&call.name) {
             self.run_ext_observably(call, pump);
+            return;
+        }
+        if crate::web_tools::is_tool(&call.name) {
+            self.run_web_observably(call, pump);
             return;
         }
         // Read-before-write is checked here rather than in `run_tool`, because a
@@ -2175,6 +2183,35 @@ impl<'a> Agent<'a> {
                 }
                 return;
             }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Keep the terminal responsive while a read-only web request is in flight.
+    /// A steer does not cancel or repeat the request; its bounded result is
+    /// recorded once when the HTTP/MCP operation settles.
+    fn run_web_observably(&mut self, call: &ToolCall, pump: &mut impl FnMut(&mut Option<String>)) {
+        let inner = call.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::web_tools::execute(&inner));
+        });
+        loop {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.finish_tool(call, result);
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.finish_tool(
+                        call,
+                        tools::Outcome::err("web request worker ended without a result"),
+                    );
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            pump(&mut self.steer);
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
@@ -2533,6 +2570,7 @@ impl<'a> Agent<'a> {
         let known = crate::files::is_tool(&call.name)
             || call.name == "bash"
             || call.name == "state"
+            || crate::web_tools::is_tool(&call.name)
             || (self.checkpoint_tools
                 && matches!(call.name.as_str(), "checkpoint" | "rewind" | "wait"))
             || self.extensions.has_tool(&call.name)
@@ -2611,6 +2649,8 @@ impl<'a> Agent<'a> {
             // Verification happens in apply_bash_result, which every bash
             // result passes through.
             outcome = r;
+        } else if crate::web_tools::is_tool(&call.name) {
+            outcome = crate::web_tools::execute(call);
         } else if self.checkpoint_tools
             && matches!(call.name.as_str(), "checkpoint" | "rewind" | "wait")
         {

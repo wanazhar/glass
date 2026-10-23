@@ -121,7 +121,7 @@ python3 scripts/smoke-navigation.py
 python3 scripts/smoke-trust.py
 python3 scripts/smoke-sandbox.py
 python3 scripts/smoke-init.py
-python3 scripts/smoke-web.py
+cargo test -p glass-core web_tools::tests --locked
 python3 scripts/smoke-mcp.py
 python3 scripts/smoke-acp.py
 python3 scripts/smoke-runtime.py

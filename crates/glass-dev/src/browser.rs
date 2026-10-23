@@ -128,26 +128,26 @@ enum BrowserCommand {
     SelectTarget(String),
     Navigate {
         url: String,
-        expected_revision: u64,
+        expected_revision: Option<u64>,
         timeout: Duration,
     },
-    Back(u64),
-    Forward(u64),
-    Reload(u64),
-    StopLoading(u64),
+    Back(Option<u64>),
+    Forward(Option<u64>),
+    Reload(Option<u64>),
+    StopLoading(Option<u64>),
     Click {
         target: String,
-        expected_revision: u64,
+        expected_revision: Option<u64>,
     },
     Type {
         text: String,
         target: Option<String>,
-        expected_revision: u64,
+        expected_revision: Option<u64>,
     },
     Scroll {
         dx: f64,
         dy: f64,
-        expected_revision: u64,
+        expected_revision: Option<u64>,
     },
     Screenshot,
     RunWorkflow {
@@ -350,7 +350,7 @@ impl BrowserService {
     pub(crate) fn navigate(
         &self,
         url: String,
-        expected_revision: u64,
+        expected_revision: Option<u64>,
         timeout: Duration,
     ) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Navigate {
@@ -412,23 +412,27 @@ impl BrowserService {
             })
     }
     /// Go back if the supplied observation revision is current.
-    pub(crate) fn back(&self, expected_revision: u64) -> DevelopmentResult<Value> {
+    pub(crate) fn back(&self, expected_revision: Option<u64>) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Back(expected_revision))
     }
     /// Go forward if the supplied observation revision is current.
-    pub(crate) fn forward(&self, expected_revision: u64) -> DevelopmentResult<Value> {
+    pub(crate) fn forward(&self, expected_revision: Option<u64>) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Forward(expected_revision))
     }
     /// Reload if the supplied observation revision is current.
-    pub(crate) fn reload(&self, expected_revision: u64) -> DevelopmentResult<Value> {
+    pub(crate) fn reload(&self, expected_revision: Option<u64>) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Reload(expected_revision))
     }
     /// Stop loading if the supplied observation revision is current.
-    pub(crate) fn stop_loading(&self, expected_revision: u64) -> DevelopmentResult<Value> {
+    pub(crate) fn stop_loading(&self, expected_revision: Option<u64>) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::StopLoading(expected_revision))
     }
     /// Click a target if the supplied observation revision is current.
-    pub(crate) fn click(&self, target: String, expected_revision: u64) -> DevelopmentResult<Value> {
+    pub(crate) fn click(
+        &self,
+        target: String,
+        expected_revision: Option<u64>,
+    ) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Click {
             target,
             expected_revision,
@@ -439,7 +443,7 @@ impl BrowserService {
         &self,
         text: String,
         target: Option<String>,
-        expected_revision: u64,
+        expected_revision: Option<u64>,
     ) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Type {
             text,
@@ -452,7 +456,7 @@ impl BrowserService {
         &self,
         dx: f64,
         dy: f64,
-        expected_revision: u64,
+        expected_revision: Option<u64>,
     ) -> DevelopmentResult<Value> {
         self.call(BrowserCommand::Scroll {
             dx,
@@ -591,6 +595,15 @@ impl BrowserWorker {
         })
     }
 
+    fn expected_revision(&self, supplied: Option<u64>) -> DevelopmentResult<u64> {
+        supplied.or(self.revision).ok_or_else(|| {
+            DevelopmentError::Conflict(
+                "browser has no current observation revision; call glass.browser.observe first"
+                    .into(),
+            )
+        })
+    }
+
     async fn shutdown(&mut self) {
         match self.native_dialog_controller.lock() {
             Ok(mut controller) => *controller = None,
@@ -611,6 +624,24 @@ impl BrowserWorker {
 
     async fn start_session(&mut self, config: BrowserStartConfig) -> DevelopmentResult<Value> {
         if self.session.is_some() {
+            let connected_backend = self
+                .session
+                .as_ref()
+                .map(ResidentBrowserSession::backend_id)
+                .unwrap_or("unknown");
+            let requested_backend = if config.attach {
+                "chromium"
+            } else {
+                match config.backend {
+                    BrowserStartBackend::Native => "native",
+                    BrowserStartBackend::Chromium => "chromium",
+                }
+            };
+            if connected_backend != requested_backend {
+                return Err(DevelopmentError::Conflict(format!(
+                    "browser is connected to {connected_backend}; no backend change was made. To use {requested_backend}, call glass.browser.stop, then glass.browser.start with backend={requested_backend}"
+                )));
+            }
             return Err(DevelopmentError::Conflict(
                 "browser workspace already has a connected session".into(),
             ));
@@ -709,7 +740,21 @@ impl BrowserWorker {
             };
             ResidentBrowserSession::Native(Box::new(runtime))
         };
-        self.revision = Some(1);
+        self.revision = Some(match &session {
+            ResidentBrowserSession::Native(session) => {
+                let observation = session.native_observe().await.map_err(browser_error)?;
+                self.native_previous_observation = Some(observation.clone());
+                observation.revision
+            }
+            ResidentBrowserSession::Chromium(session) => {
+                session
+                    .observe_fresh()
+                    .await
+                    .map_err(browser_error)?
+                    .consistency
+                    .end_revision
+            }
+        });
         self.session = Some(session);
         self.last_config = Some(config);
         serde_json::to_value(self.state()).map_err(Into::into)
@@ -867,6 +912,7 @@ impl BrowserWorker {
                 expected_revision,
                 timeout,
             } => {
+                let expected_revision = self.expected_revision(expected_revision)?;
                 if matches!(self.session()?, ResidentBrowserSession::Native(_)) {
                     self.policy
                         .require_url(&url)
@@ -905,6 +951,7 @@ impl BrowserWorker {
                 }
             }
             BrowserCommand::Back(expected_revision) => {
+                let expected_revision = self.expected_revision(expected_revision)?;
                 match self.session()? {
                     ResidentBrowserSession::Native(session) => {
                         let outcome = session
@@ -928,6 +975,7 @@ impl BrowserWorker {
                 }
             }
             BrowserCommand::Forward(expected_revision) => {
+                let expected_revision = self.expected_revision(expected_revision)?;
                 match self.session()? {
                     ResidentBrowserSession::Native(session) => {
                         let outcome = session
@@ -951,6 +999,7 @@ impl BrowserWorker {
                 }
             }
             BrowserCommand::Reload(expected_revision) => {
+                let expected_revision = self.expected_revision(expected_revision)?;
                 match self.session()? {
                     ResidentBrowserSession::Native(session) => {
                         let outcome = session
@@ -971,6 +1020,7 @@ impl BrowserWorker {
                 }
             }
             BrowserCommand::StopLoading(expected_revision) => {
+                let expected_revision = self.expected_revision(expected_revision)?;
                 match self.session()? {
                     ResidentBrowserSession::Native(session) => {
                         let outcome = session
@@ -994,6 +1044,7 @@ impl BrowserWorker {
                 target,
                 expected_revision,
             } => {
+                let expected_revision = self.expected_revision(expected_revision)?;
                 match self.session()? {
                     ResidentBrowserSession::Native(session) => {
                         let result = session
@@ -1028,6 +1079,7 @@ impl BrowserWorker {
                 target,
                 expected_revision,
             } => {
+                let expected_revision = self.expected_revision(expected_revision)?;
                 match self.session()? {
                     ResidentBrowserSession::Native(session) => {
                         let native_target = target.clone().unwrap_or_else(|| "focused".into());
@@ -1068,6 +1120,7 @@ impl BrowserWorker {
                 dy,
                 expected_revision,
             } => {
+                let expected_revision = self.expected_revision(expected_revision)?;
                 match self.session()? {
                     ResidentBrowserSession::Native(session) => {
                         let delta_x = bounded_native_scroll_delta(dx, "dx")?;
@@ -1532,6 +1585,24 @@ mod tests {
     }
 
     #[test]
+    fn explicit_chromium_switch_explains_stop_and_start_without_replacing_native() {
+        let service = BrowserService::new(std::env::temp_dir()).unwrap();
+        service.start(BrowserStartConfig::default()).unwrap();
+        let error = service
+            .start(BrowserStartConfig {
+                backend: BrowserStartBackend::Chromium,
+                ..BrowserStartConfig::default()
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("connected to native"));
+        assert!(error.contains("call glass.browser.stop"));
+        assert!(error.contains("glass.browser.start with backend=chromium"));
+        assert_eq!(service.state().unwrap()["browserBackend"], "native");
+        assert!(service.state().unwrap()["connected"].as_bool().unwrap());
+    }
+
+    #[test]
     fn explicit_chromium_backend_never_falls_back_to_native() {
         let service = BrowserService::new(std::env::temp_dir()).unwrap();
         let missing_chromium = std::env::temp_dir().join(format!(
@@ -1552,6 +1623,70 @@ mod tests {
         assert!(!error.to_string().is_empty());
         assert_eq!(service.state().unwrap()["connected"], false);
         assert_eq!(service.state().unwrap()["browserBackend"], Value::Null);
+    }
+
+    #[test]
+    fn explicit_chromium_backend_navigates_local_fixture_after_native_stop() {
+        if std::env::var("GLASS_E2E").as_deref() != Ok("1") {
+            return;
+        }
+        let chrome_path =
+            std::env::var("GLASS_CHROME_PATH").expect("GLASS_E2E=1 requires GLASS_CHROME_PATH");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let running = Arc::new(AtomicBool::new(true));
+        let server_running = Arc::clone(&running);
+        let server = std::thread::spawn(move || {
+            let html = br#"<!doctype html><title>Explicit Chromium fixture</title><body>Fallback route fixture</body>"#;
+            while server_running.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = [0; 4096];
+                        let _ = stream.read(&mut request);
+                        let header = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            html.len()
+                        );
+                        let _ = stream.write_all(header.as_bytes());
+                        let _ = stream.write_all(html);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        let port_probe = TcpListener::bind("127.0.0.1:0").unwrap();
+        let browser_port = port_probe.local_addr().unwrap().port();
+        drop(port_probe);
+        let service = BrowserService::new(std::env::temp_dir()).unwrap();
+        service.start(BrowserStartConfig::default()).unwrap();
+        service.stop().unwrap();
+        let started = service
+            .start(BrowserStartConfig {
+                backend: BrowserStartBackend::Chromium,
+                port: browser_port,
+                chrome_path: Some(chrome_path.into()),
+                ..BrowserStartConfig::default()
+            })
+            .unwrap();
+        assert_eq!(started["browserBackend"], "chromium");
+        let navigation = service
+            .navigate(
+                format!("http://{address}/fixture"),
+                None,
+                Duration::from_secs(30),
+            )
+            .unwrap();
+        assert_eq!(navigation["backend"], "chromium");
+        let observation = service.observe().unwrap();
+        assert_eq!(observation["backend"], "chromium");
+        assert_eq!(observation["page"]["title"], "Explicit Chromium fixture");
+        service.stop().unwrap();
+        running.store(false, Ordering::Relaxed);
+        server.join().unwrap();
     }
 
     #[test]
@@ -1654,6 +1789,8 @@ mod tests {
                 br#"<!doctype html><title>Baseline service</title><body>Initial</body><script>
                 document.body.textContent = 'baseline mutation';
             </script>"#;
+            let action_html: &[u8] =
+                br#"<!doctype html><title>Action service</title><button id="run" onclick="document.querySelector('p').textContent='Action completed'">Run</button><p></p>"#;
             let dialog_html: &[u8] =
                 br#"<!doctype html><title>Dialog service</title><body></body><script>
                 const accepted = confirm('Continue?');
@@ -1675,6 +1812,7 @@ mod tests {
                             .and_then(|line| line.split_whitespace().nth(1));
                         let html = match path {
                             Some("/baseline") => baseline_html,
+                            Some("/action") => action_html,
                             Some("/alert") => alert_html,
                             _ => dialog_html,
                         };
@@ -1719,14 +1857,44 @@ mod tests {
         let baseline_result = service
             .navigate(
                 format!("http://{address}/baseline"),
-                revision,
+                None,
                 Duration::from_secs(30),
             )
             .unwrap();
         assert_eq!(baseline_result["backend"], "native");
+        assert!(
+            service
+                .navigate(
+                    format!("http://{address}/must-not-navigate"),
+                    Some(revision),
+                    Duration::from_secs(30),
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("revision")
+        );
         let baseline_observation = service.observe().unwrap();
         assert_eq!(baseline_observation["text"], "baseline mutation");
         assert_eq!(baseline_observation["backend"], "native");
+        service
+            .navigate(
+                format!("http://{address}/action"),
+                None,
+                Duration::from_secs(30),
+            )
+            .unwrap();
+        let action_observation = service.observe().unwrap();
+        assert_eq!(action_observation["backend"], "native");
+        let action_revision = action_observation["revision"].as_u64().unwrap();
+        service
+            .click("text=Run".into(), Some(action_revision))
+            .unwrap();
+        assert!(
+            service.observe().unwrap()["text"]
+                .as_str()
+                .unwrap()
+                .contains("Action completed")
+        );
         let revision = service.state().unwrap()["browserRevision"]
             .as_u64()
             .unwrap();
@@ -1734,7 +1902,7 @@ mod tests {
         let navigation = std::thread::spawn(move || {
             navigation_service.navigate(
                 format!("http://{address}/dialogs"),
-                revision,
+                Some(revision),
                 Duration::from_secs(30),
             )
         });
@@ -1812,7 +1980,7 @@ mod tests {
         let alert_navigation = std::thread::spawn(move || {
             alert_service.navigate(
                 format!("http://{address}/alert"),
-                revision,
+                Some(revision),
                 Duration::from_secs(30),
             )
         });
@@ -1906,7 +2074,7 @@ mod tests {
         service
             .navigate(
                 format!("http://{address}/fixture.html"),
-                initial_revision,
+                Some(initial_revision),
                 Duration::from_secs(30),
             )
             .unwrap();
@@ -1914,7 +2082,7 @@ mod tests {
             service
                 .navigate(
                     format!("http://{address}/stale"),
-                    initial_revision,
+                    Some(initial_revision),
                     Duration::from_secs(30),
                 )
                 .unwrap_err()
@@ -1946,10 +2114,10 @@ mod tests {
             .or_else(|| observed["consistency"]["endRevision"].as_u64())
             .unwrap();
         let typed = service
-            .type_text("Ada".into(), Some("Name".into()), revision)
+            .type_text("Ada".into(), Some("Name".into()), Some(revision))
             .unwrap();
         let revision = typed["currentRevision"].as_u64().unwrap();
-        service.click("Save".into(), revision).unwrap();
+        service.click("Save".into(), Some(revision)).unwrap();
         assert!(
             service.observe().unwrap()["text"]
                 .as_str()
@@ -1971,7 +2139,7 @@ mod tests {
             .as_u64()
             .or_else(|| observed["consistency"]["endRevision"].as_u64())
             .unwrap();
-        assert_eq!(service.reload(revision).unwrap()["action"], "reload");
+        assert_eq!(service.reload(Some(revision)).unwrap()["action"], "reload");
         service.stop().unwrap();
         #[cfg(unix)]
         assert!(unsafe { libc::kill(browser_pid as i32, 0) } == -1);

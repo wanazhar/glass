@@ -71,14 +71,6 @@ pub const BUNDLES: &[Bundle] = &[
         access: "Requests background provider cache refreshes. Uses model quota even while idle.",
     },
     Bundle {
-        name: "web",
-        description: "Read pages and search the web",
-        interpreter: "python3",
-        file: "web.py",
-        source: include_str!("../../../products/glass-core/extensions/web/web.py"),
-        access: "Makes outbound HTTP requests to URLs and search backends; reads ~/.config/glass-core/web.json.",
-    },
-    Bundle {
         name: "mcp-bridge",
         description: "Call MCP servers' tools",
         interpreter: "python3",

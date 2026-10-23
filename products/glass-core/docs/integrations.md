@@ -4,22 +4,11 @@
 
 ## Web access
 
-Enable bundled `web` through `/extensions`, or configure its source command:
-
-```toml
-extensions = ["python3 /path/to/glass-core/extensions/web/web.py"]
-```
-
-`web_fetch` returns one URL as readable text — HTML stripped to prose with
-links kept inline, scripts and styles dropped, the body capped at 512 KiB and
-the text at 20,000 characters (tunable per call). It is a text browser; raw
-bytes, headers, and POSTs remain `curl`'s job. `web_search` defaults to
-DuckDuckGo's HTML endpoint with no key required; point it at a SearXNG
-instance in `~/.config/glass-core/web.json` when you have one. Keys belong in
-that file: the host strips `*API_KEY*`/`*TOKEN*` variables from extension
-processes, so do not rely on credential inheritance. A blocked or
-redesigned backend degrades into an explicit message, never a silent empty
-result.
+`web_search` and `web_fetch` are native Core tools. They require no subprocess
+or extension setup. Search uses Exa's hosted MCP endpoint; fetch makes a direct
+bounded HTTP request and extracts readable text. Configuration, bounds, local
+development endpoints, citations, and offline fixtures are documented in
+[Web search and fetch](web-tools.md).
 
 ## MCP tools, out of process
 
@@ -145,6 +134,4 @@ tool and a `/lsp` status command exist for the warm-up case; a server that
 cannot start is reported once and then ignored, because a missing language
 server must never break the edit loop.
 
-Web source references, cached continuation, network policy and configuration are
-documented in the [Web extension](../extensions/web/README.md). Screenshots can be
-read through native [Image viewing](tools.md#image-sharing-and-viewing).
+Screenshots can be read through native [Image viewing](tools.md#image-sharing-and-viewing).

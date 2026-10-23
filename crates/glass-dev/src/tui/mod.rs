@@ -1258,6 +1258,11 @@ pub(crate) fn run_with_browser_policy(
             run_core_login(&mut state, &mut guard);
             worker.request_refresh();
         }
+        if state.agent_command_ui_requested {
+            state.agent_command_ui_requested = false;
+            run_core_command_ui(&mut state, &mut guard);
+            worker.request_refresh();
+        }
         if let Some(name) = state.harness_launch_requested.take() {
             run_external_harness(&mut state, &mut guard, &name);
             worker.request_refresh();
@@ -1659,6 +1664,50 @@ fn run_core_login(state: &mut DevTuiState, guard: &mut TerminalGuard) {
             state.status =
                 format!("Glass Core login failed: {error}; Glass resume failed: {resume_error}");
             state.quit = true;
+        }
+    }
+}
+
+fn run_core_command_ui(state: &mut DevTuiState, guard: &mut TerminalGuard) {
+    let root = match state.ws().map(|workspace| workspace.root().to_path_buf()) {
+        Ok(root) => root,
+        Err(error) => {
+            state.status = format!("Glass Core command UI unavailable · {error}");
+            return;
+        }
+    };
+    let binary = match crate::core_runtime::resolve_core_binary(None).and_then(|binary| {
+        std::fs::canonicalize(&binary).map_err(|error| {
+            crate::development::DevelopmentError::NotFound(format!(
+                "could not resolve Glass Core executable {}: {error}",
+                binary.display()
+            ))
+        })
+    }) {
+        Ok(binary) => binary,
+        Err(error) => {
+            state.status = format!("Glass Core command UI unavailable · {error}");
+            return;
+        }
+    };
+    if let Err(error) = guard.suspend() {
+        state.status = format!("Could not hand the terminal to Glass Core: {error}");
+        return;
+    }
+    let result = crate::core_runtime::launch_interactive(&binary, &root);
+    let resume = guard.resume();
+    match (result, resume) {
+        (Ok(status), Ok(())) => {
+            state.status = format!(
+                "Glass Core command UI exited ({}) · Glass resumed",
+                status
+                    .code()
+                    .map_or_else(|| "signal".into(), |code| format!("status {code}"))
+            )
+        }
+        (Err(error), Ok(())) => state.status = format!("Glass Core command UI failed · {error}"),
+        (_, Err(error)) => {
+            state.status = format!("Glass could not resume after the GC command UI · {error}")
         }
     }
 }

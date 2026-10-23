@@ -12,6 +12,10 @@ and discovers deeper workflows on demand. See the [checklist reference](referenc
 for batched operations, stable IDs, blockers and durable receipts. `/todo` opens
 the shared task modal; no extension is required.
 
+`web_search` uses Exa's hosted MCP search, and `web_fetch` reads an HTTP(S) page
+as bounded text. Both are native Core tools; their configuration, source
+handling and limits are in [Web search and fetch](web-tools.md).
+
 The CLI and tool interfaces share implementation, confinement and file semantics.
 Schemas stay compact; performance checks cover startup, input, redraw and history.
 Interactive agents also receive `ask_user_question` for decisions that require

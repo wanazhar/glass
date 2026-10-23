@@ -254,7 +254,11 @@ impl GlassCoreRuntime {
             .current_dir(&root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            // The resident Core runtime shares Glass's terminal while the
+            // TUI owns the alternate screen. Keep child diagnostics off the
+            // terminal; protocol errors are surfaced through the runtime
+            // channel and the selected conversation instead.
+            .stderr(Stdio::null());
         let mut child = command.spawn().map_err(|error| {
             DevelopmentError::Process(format!(
                 "failed to start the Glass Core runtime at {}: {error}",
@@ -968,6 +972,11 @@ fn request_parts(
         Request::Abort => ("turn/cancel", json!({"sessionId": session})),
         Request::State => ("session/describe", json!({"sessionId": session})),
         Request::Models => ("models/list", json!({"sessionId": session, "cursor": 0})),
+        Request::CoreCommands => ("commands/list", json!({"sessionId": session})),
+        Request::CoreCommand { name, arguments } => (
+            "commands/execute",
+            json!({"sessionId":session,"name":name,"arguments":arguments}),
+        ),
         Request::SetModel { provider, model_id } => {
             let mut params = json!({"sessionId": session, "model": model_id});
             if !provider.is_empty() {
@@ -1033,6 +1042,8 @@ fn request_operation(request: &crate::resident_harness::ResidentSessionRequest) 
         Request::Abort => "abort",
         Request::State => "state",
         Request::Models => "models",
+        Request::CoreCommands => "coreCommands",
+        Request::CoreCommand { .. } => "coreCommand",
         Request::SetModel { .. } => "setModel",
         Request::SetThinking { .. } => "setThinking",
         Request::NewSession => "newSession",
@@ -1825,6 +1836,67 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn gc_command_discovery_and_dispatch_round_trip_over_runtime_protocol() {
+        if python3().is_none() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "glass-core-commands-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut runtime = harness(&root, None);
+        runtime
+            .start_request(ResidentSessionRequest::CoreCommands)
+            .unwrap();
+        let catalogue = runtime
+            .recv_event_timeout(Duration::from_secs(2))
+            .unwrap()
+            .expect("catalogue response");
+        assert_eq!(catalogue["operation"], "coreCommands");
+        assert_eq!(catalogue["result"]["source"], "glass-core");
+        assert_eq!(
+            catalogue["result"]["commands"][1]["runtimeMode"],
+            "interactive"
+        );
+
+        runtime
+            .start_request(ResidentSessionRequest::CoreCommand {
+                name: "status".into(),
+                arguments: None,
+            })
+            .unwrap();
+        let status = runtime
+            .recv_event_timeout(Duration::from_secs(2))
+            .unwrap()
+            .expect("status response");
+        assert_eq!(status["operation"], "coreCommand");
+        assert_eq!(status["result"]["name"], "status");
+        assert!(
+            status["result"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("fixture-model")
+        );
+
+        runtime
+            .start_request(ResidentSessionRequest::CoreCommand {
+                name: "model".into(),
+                arguments: None,
+            })
+            .unwrap();
+        let handoff = runtime
+            .recv_event_timeout(Duration::from_secs(2))
+            .unwrap()
+            .expect("interactive handoff response");
+        assert_eq!(handoff["result"]["requiresInteractive"], true);
+        drop(runtime);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn spawn_mode(
         root: &Path,
         executor: Option<crate::resident_harness::AgentToolExecutor>,
@@ -1923,6 +1995,38 @@ mod tests {
         assert_eq!(method, "session/configure");
         assert_eq!(params["model"], "claude");
         assert_eq!(params["provider"], "anthropic");
+    }
+
+    #[test]
+    fn gc_command_requests_use_the_core_owned_command_protocol() {
+        let (method, params) =
+            request_parts("selected-session", &ResidentSessionRequest::CoreCommands).unwrap();
+        assert_eq!(method, "commands/list");
+        assert_eq!(params, json!({"sessionId":"selected-session"}));
+
+        let (method, params) = request_parts(
+            "selected-session",
+            &ResidentSessionRequest::CoreCommand {
+                name: "status".into(),
+                arguments: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(method, "commands/execute");
+        assert_eq!(params["sessionId"], "selected-session");
+        assert_eq!(params["name"], "status");
+        assert!(params["arguments"].is_null());
+        assert_eq!(
+            request_operation(&ResidentSessionRequest::CoreCommands),
+            "coreCommands"
+        );
+        assert_eq!(
+            request_operation(&ResidentSessionRequest::CoreCommand {
+                name: "status".into(),
+                arguments: None
+            }),
+            "coreCommand"
+        );
     }
 
     #[test]

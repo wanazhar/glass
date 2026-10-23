@@ -5,6 +5,7 @@
 //! pretty-printed JSON.
 
 use serde_json::Value;
+use std::collections::BTreeSet;
 
 /// Project the resident browser workflow state.
 pub fn workflow(value: Option<&Value>) -> String {
@@ -627,6 +628,7 @@ impl SharedConversationProjection {
 pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEntry> {
     let mut items = Vec::new();
     let mut shared = SharedConversationProjection::default();
+    let mut host_tool_calls = BTreeSet::new();
     let mut turn = 0_usize;
     for event in events {
         let entry_id = event_entry_id(event);
@@ -700,10 +702,18 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
             }
             "glass_browser_evidence" => {
                 shared.finish_streaming(&mut items);
-                items.push(ConversationEntry::system(
-                    browser_evidence(&event.payload),
-                    Some("glass.browser".into()),
-                ));
+                let evidence = browser_evidence(&event.payload);
+                let tool = Some("glass.browser".into());
+                if event
+                    .payload
+                    .get("ok")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    items.push(ConversationEntry::system(evidence, tool));
+                } else {
+                    items.push(ConversationEntry::error(evidence, tool));
+                }
             }
             "glass_tool_evidence" => {
                 shared.finish_streaming(&mut items);
@@ -766,6 +776,15 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     .and_then(Value::as_str)
                     .map(str::to_string)
                     .unwrap_or_else(|| format!("legacy-{}", event.sequence));
+                // Core owns the lifecycle of every call, but the resident
+                // runtime also returns an attributed Glass integration
+                // evidence event with the authoritative host result. Avoid
+                // showing a second, potentially contradictory Core row for
+                // the same host call.
+                if name.starts_with("glass.") {
+                    host_tool_calls.insert(call_id);
+                    continue;
+                }
                 shared.apply(
                     glass_tui::ConversationEvent::ToolStart {
                         call_id,
@@ -788,6 +807,9 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     .or_else(|| event.payload.pointer("/text/callId"))
                     .and_then(Value::as_str)
                 {
+                    if host_tool_calls.contains(call_id) {
+                        continue;
+                    }
                     let text = event_text(event).unwrap_or_default();
                     shared.apply(
                         glass_tui::ConversationEvent::ToolProgress {
@@ -806,6 +828,9 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     .and_then(Value::as_str)
                     .map(str::to_string)
                     .unwrap_or_else(|| format!("legacy-{}", event.sequence));
+                if host_tool_calls.remove(&call_id) {
+                    continue;
+                }
                 let output = event_text(event).unwrap_or_default();
                 // Core reports completion of its provider-side tool call, while
                 // Glass separately reports the governed host execution as
@@ -907,6 +932,46 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                         shared.finish_streaming(&mut items);
                         items.push(ConversationEntry::system(text, Some("models/list".into())));
                     }
+                } else if matches!(
+                    event.payload.get("operation").and_then(Value::as_str),
+                    Some("coreCommands" | "coreCommand")
+                ) {
+                    shared.finish_streaming(&mut items);
+                    let operation = event.payload["operation"].as_str().unwrap_or("coreCommand");
+                    if event.payload.get("ok").and_then(Value::as_bool) == Some(false) {
+                        let error = event
+                            .payload
+                            .pointer("/error/message")
+                            .and_then(Value::as_str)
+                            .or_else(|| event.payload.get("error").and_then(Value::as_str))
+                            .unwrap_or("Core command request failed");
+                        items.push(ConversationEntry::error(
+                            format!("Glass Core command · {error}"),
+                            Some(operation.into()),
+                        ));
+                    } else if let Some(result) = event.payload.get("result") {
+                        let text = if operation == "coreCommands" {
+                            core_command_catalog_text(result)
+                        } else {
+                            result
+                                .get("message")
+                                .and_then(Value::as_str)
+                                .or_else(|| result.get("text").and_then(Value::as_str))
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| result.to_string())
+                        };
+                        let text = if result.get("requiresInteractive").and_then(Value::as_bool)
+                            == Some(true)
+                        {
+                            format!(
+                                "{}\nOpen Glass Core with :agent command-ui, then press : to open its native command menu.",
+                                text
+                            )
+                        } else {
+                            text
+                        };
+                        items.push(ConversationEntry::system(text, Some(operation.into())));
+                    }
                 } else if event.payload.get("ok").and_then(Value::as_bool) == Some(false)
                     && matches!(
                         event.payload.get("operation").and_then(Value::as_str),
@@ -970,6 +1035,26 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
         }
     }
     items
+}
+
+fn core_command_catalog_text(result: &Value) -> String {
+    let mut lines = vec!["Glass Core built-in commands (catalogue from GC)".to_string()];
+    if let Some(commands) = result.get("commands").and_then(Value::as_array) {
+        for command in commands {
+            let name = command.get("name").and_then(Value::as_str).unwrap_or("?");
+            let mode = command
+                .get("runtimeMode")
+                .and_then(Value::as_str)
+                .unwrap_or("interactive");
+            let description = command
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            lines.push(format!("/{name} · {description} · {mode}"));
+        }
+    }
+    lines.push("Resident commands run through Glass; for other commands use :agent command-ui, then press : in GC.".into());
+    lines.join("\n")
 }
 
 /// Accumulated provider reasoning for the explicit reasoning-only view.
@@ -1183,6 +1268,36 @@ mod tests {
         );
         assert!(rendered.contains("anthropic/claude-opus-4 · Claude Opus 4"));
         assert!(rendered.contains("anthropic/claude-sonnet-4"));
+    }
+
+    #[test]
+    fn core_command_catalogue_and_native_handoff_are_rendered_from_core_response() {
+        let event = crate::AgentEvent {
+            sequence: 1,
+            agent_id: crate::AgentId::parse("agent-0002").unwrap(),
+            timestamp_ms: 0,
+            kind: "response".into(),
+            payload: serde_json::json!({"operation":"coreCommands","ok":true,"result":{"source":"glass-core","commands":[{"name":"status","description":"View session status","runtimeMode":"runtime"},{"name":"model","description":"Select model","runtimeMode":"interactive"}]}}),
+        };
+        let rendered = conversation(&[event]);
+        assert!(
+            rendered.contains("/status · View session status · runtime"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("/model · Select model · interactive"),
+            "{rendered}"
+        );
+
+        let event = crate::AgentEvent {
+            sequence: 2,
+            agent_id: crate::AgentId::parse("agent-0002").unwrap(),
+            timestamp_ms: 0,
+            kind: "response".into(),
+            payload: serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"model","requiresInteractive":true,"message":"/model is available in Glass Core's native command menu."}}),
+        };
+        let rendered = conversation(&[event]);
+        assert!(rendered.contains(":agent command-ui"), "{rendered}");
     }
 
     #[test]
@@ -1554,7 +1669,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_progress_survives_glass_end_event_without_final_output() {
+    fn host_tool_evidence_is_authoritative_over_core_completion_events() {
         let agent_id = crate::AgentId::parse("agent-0001").unwrap();
         let event = |sequence: u64, kind: &str, payload: serde_json::Value| crate::AgentEvent {
             sequence,
@@ -1569,8 +1684,8 @@ mod tests {
                 "tool_execution_start",
                 serde_json::json!({
                     "callId": "call-1",
-                    "toolName": "glass.file.read",
-                    "command": "src/main.rs"
+                    "toolName": "glass.browser.navigate",
+                    "command": "https://example.test"
                 }),
             ),
             event(
@@ -1579,7 +1694,7 @@ mod tests {
                 serde_json::json!({
                     "text": {
                         "callId": "call-1",
-                        "text": "streamed output"
+                        "text": "browser navigation result"
                     }
                 }),
             ),
@@ -1588,14 +1703,26 @@ mod tests {
                 "tool_execution_end",
                 serde_json::json!({
                     "callId": "call-1",
-                    "isError": false
+                    "isError": false,
+                    "text": "completed"
+                }),
+            ),
+            event(
+                4,
+                "glass_browser_evidence",
+                serde_json::json!({
+                    "toolName": "glass.browser.navigate",
+                    "ok": false,
+                    "error": "page revision is stale"
                 }),
             ),
         ]);
 
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].text.contains("streamed output"));
-        assert!(entries[0].text.contains("done"));
+        assert_eq!(entries[0].kind, ConversationKind::Error);
+        assert!(entries[0].text.contains("page revision is stale"));
+        assert!(!entries[0].text.contains("completed"));
+        assert!(!entries[0].text.contains("browser navigation result"));
     }
 
     #[test]

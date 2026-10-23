@@ -262,6 +262,8 @@ def main() -> None:
     # argument when no fixture mode was explicitly supplied.
     mode = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] != "runtime" else "mixed"
     MODE = mode
+    if mode == "stderr-probe":
+        print("GLASS_CORE_STDERR_PROBE", file=sys.stderr, flush=True)
     if os.path.exists(os.path.join(os.getcwd(), ".glass", "e2e-core-unique-session-ids")):
         SESSION_ID = f"fixture-session-{os.getpid()}"
     runtime_version = "0.1.0" if mode == "older-version-v2" else "0.3.14"
@@ -420,6 +422,26 @@ def main() -> None:
                     "nextCursor": None,
                 },
             )
+        elif method == "commands/list":
+            assert params.get("sessionId") == SESSION_ID
+            reply(identifier, {
+                "source": "glass-core",
+                "scope": "built-in actions",
+                "completeBuiltinCatalogue": True,
+                "commands": [
+                    {"name": "status", "description": "View session status", "runtimeMode": "runtime"},
+                    {"name": "model", "description": "Select model", "runtimeMode": "interactive"},
+                ],
+            })
+        elif method == "commands/execute":
+            assert params.get("sessionId") == SESSION_ID
+            name = params.get("name")
+            if name == "status":
+                reply(identifier, {"name": "status", "text": "Glass Core · fixture · fixture-model · session fixture-session"})
+            elif name == "model":
+                reply(identifier, {"name": "model", "requiresInteractive": True, "message": "/model needs the native GC UI"})
+            else:
+                send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "unknown Glass Core command"}})
         elif method in ("turn/prompt", "turn/followUp"):
             if mode == "prompt-error":
                 send(

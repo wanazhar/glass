@@ -1105,7 +1105,7 @@ mod tests {
             .unwrap();
         let denied = browser.navigate(
             "https://denied.example.test/path".into(),
-            1,
+            Some(1),
             std::time::Duration::from_secs(2),
         );
         assert!(

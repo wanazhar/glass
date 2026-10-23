@@ -437,9 +437,15 @@ thread without changing the selected thread's focus or draft. AgentId remains
 process-local. Aborting a running Core turn sends `turn/cancel` and keeps the
 runtime alive until Core emits a cancelled settlement and the original prompt's
 correlated response. That response settles the send attempt before Glass stops
-the worker. If the runtime cannot confirm cancellation within ten seconds,
-Glass stops it and records unresolved attempts as uncertain; it does not claim
-those attempts settled or replay them. On Unix Glass saves each selected
+the worker. Cancellation and explicit completion use bounded command delivery
+and shutdown waits while continuing to drain reliable worker events; this keeps
+a full event queue from blocking the worker before its terminal event. If the
+runtime cannot confirm cancellation within ten seconds, or a worker does not
+stop within the shutdown grace period, Glass records unresolved attempts as
+uncertain and the run as recovery-pending; it does not claim those attempts
+settled or replay them. Registry shutdown drains events until its bounded
+deadline, then detaches any worker that remains blocked after persisting the
+recovery state. On Unix Glass saves each selected
 thread's bounded composer text
 and UTF-8 byte cursor with its durable ThreadId in the private
 `.glass/threads/registry.json` ledger, restoring them after restart even when

@@ -233,10 +233,6 @@ enum WorkerCommand {
         request: ResidentSessionRequest,
         started: Option<SyncSender<Result<String, String>>>,
     },
-    ApproveTool {
-        frame_id: String,
-        approved: bool,
-    },
     Shutdown,
 }
 
@@ -814,39 +810,6 @@ impl AgentRegistry {
             _ => ResidentSessionRequest::Prompt { text, context },
         };
         self.send(id, request, client_message_id)
-    }
-
-    pub(crate) fn approve_tool(
-        &mut self,
-        id: &AgentId,
-        frame_id: impl Into<String>,
-        approved: bool,
-    ) -> DevelopmentResult<()> {
-        self.refresh()?;
-        let frame_id = frame_id.into();
-        validate_text("resident approval frame", &frame_id, 256)?;
-        let record = self.record_mut(id)?;
-        if record.snapshot.status.terminal() {
-            return Err(DevelopmentError::Conflict(format!(
-                "agent {} is already terminal",
-                id.as_str()
-            )));
-        }
-        let sender = record.command.as_ref().ok_or_else(|| {
-            DevelopmentError::Conflict(format!("agent {} is still starting", id.as_str()))
-        })?;
-        sender
-            .try_send(WorkerCommand::ApproveTool { frame_id, approved })
-            .map_err(|error| match error {
-                TrySendError::Full(_) => DevelopmentError::Conflict(format!(
-                    "agent {} command queue is full",
-                    id.as_str()
-                )),
-                TrySendError::Disconnected(_) => DevelopmentError::Process(format!(
-                    "agent {} command channel closed",
-                    id.as_str()
-                )),
-            })
     }
 
     pub(crate) fn request(
@@ -2211,23 +2174,6 @@ fn run_worker(
                         }
                     }
                 }
-                Ok(WorkerCommand::ApproveTool { frame_id, approved }) => {
-                    if let Err(error) = harness.resolve_tool_approval(&frame_id, approved) {
-                        send_critical_worker_event(
-                            &events,
-                            WorkerEvent::Engine(
-                                id.clone(),
-                                serde_json::json!({
-                                    "type":"glass_tool_approval_resolved",
-                                    "frameId":frame_id,
-                                    "approved":approved,
-                                    "ok":false,
-                                    "error":error.to_string(),
-                                }),
-                            ),
-                        );
-                    }
-                }
                 Ok(WorkerCommand::Shutdown) | Err(TryRecvError::Disconnected) => {
                     send_critical_worker_event(&events, WorkerEvent::Stopped(id));
                     return;
@@ -2989,7 +2935,6 @@ mod tests {
                             .unwrap();
                         return;
                     }
-                    WorkerCommand::ApproveTool { .. } => {}
                 }
             }
         });
@@ -3580,13 +3525,8 @@ mod tests {
         let mut registry = AgentRegistry::new(&root).unwrap();
         let id = AgentId::parse("agent-full-send-queue").unwrap();
         let (command, commands) = mpsc::sync_channel(COMMAND_CAPACITY);
-        for index in 0..COMMAND_CAPACITY {
-            command
-                .try_send(WorkerCommand::ApproveTool {
-                    frame_id: format!("queued-frame-{index}"),
-                    approved: false,
-                })
-                .unwrap();
+        for _ in 0..COMMAND_CAPACITY {
+            command.try_send(WorkerCommand::Shutdown).unwrap();
         }
         let (release_worker, wait_for_release) = mpsc::channel();
         let worker = thread::spawn(move || {
@@ -3614,8 +3554,7 @@ mod tests {
         assert_eq!(attempts[0].status, SendAttemptStatus::Failed);
         assert!(matches!(
             commands.try_recv().unwrap(),
-            WorkerCommand::ApproveTool { frame_id, approved: false }
-                if frame_id == "queued-frame-0"
+            WorkerCommand::Shutdown
         ));
 
         release_worker.send(()).unwrap();
@@ -3632,13 +3571,8 @@ mod tests {
         let mut registry = AgentRegistry::new(&root).unwrap();
         let id = AgentId::parse("agent-full-cancel-queue").unwrap();
         let (command, commands) = mpsc::sync_channel(COMMAND_CAPACITY);
-        for index in 0..COMMAND_CAPACITY {
-            command
-                .try_send(WorkerCommand::ApproveTool {
-                    frame_id: format!("queued-frame-{index}"),
-                    approved: false,
-                })
-                .unwrap();
+        for _ in 0..COMMAND_CAPACITY {
+            command.try_send(WorkerCommand::Shutdown).unwrap();
         }
         let (release_worker, wait_for_release) = mpsc::channel();
         let worker = thread::spawn(move || {
@@ -3695,13 +3629,8 @@ mod tests {
         let mut registry = AgentRegistry::new(&root).unwrap();
         let id = AgentId::parse("agent-full-complete-queue").unwrap();
         let (command, commands) = mpsc::sync_channel(COMMAND_CAPACITY);
-        for index in 0..COMMAND_CAPACITY {
-            command
-                .try_send(WorkerCommand::ApproveTool {
-                    frame_id: format!("queued-frame-{index}"),
-                    approved: false,
-                })
-                .unwrap();
+        for _ in 0..COMMAND_CAPACITY {
+            command.try_send(WorkerCommand::Shutdown).unwrap();
         }
         let (release_worker, wait_for_release) = mpsc::channel();
         let worker = thread::spawn(move || {

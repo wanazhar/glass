@@ -704,7 +704,7 @@ fn render_attention_inbox(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
     let mut lines = Vec::new();
     if state.attention_items.is_empty() {
         lines.push(palette_fixed_line(
-            "No approvals, proposals, or unresolved follow-ups need review.",
+            "No proposals or unresolved follow-ups need review.",
             inner.width,
             Style::default().fg(MUTED),
         ));
@@ -2180,9 +2180,6 @@ fn activity_summary(state: &DevTuiState) -> String {
     if state.pending_confirmation.is_some() {
         activities.push("CONFIRMATION waiting");
     }
-    if state.pending_agent_approval.is_some() {
-        activities.push("AGENT approval");
-    }
     if activities.is_empty() {
         "idle".into()
     } else {
@@ -2191,9 +2188,7 @@ fn activity_summary(state: &DevTuiState) -> String {
 }
 
 fn agent_progress(state: &DevTuiState) -> String {
-    let phase = if state.pending_agent_approval.is_some() {
-        "approval required"
-    } else if state.agent_send_job.is_some() {
+    let phase = if state.agent_send_job.is_some() {
         "sending prompt"
     } else if state.running_tool_job.is_some() {
         "Glass tool running"
@@ -4506,32 +4501,6 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         return;
     }
     if let Some(pending) = state
-        .pending_agent_approval
-        .as_ref()
-        .filter(|_| active == Some(ActiveOverlay::AgentApproval))
-    {
-        frame.render_widget(
-            Paragraph::new(panel_text(&format!(
-                "APPROVE TOOL\n{}\n{}\n{}\nEnter/Y approve · Esc/N deny",
-                pending.agent_id, pending.tool_name, pending.arguments
-            )))
-            .style(Style::default().fg(TEXT))
-            .block(
-                Block::default()
-                    .title(" APPROVAL ")
-                    .title_style(Style::default().fg(WARNING).add_modifier(Modifier::BOLD))
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Plain)
-                    .border_style(Style::default().fg(WARNING))
-                    .bg(PANEL_BACKGROUND)
-                    .padding(Padding::horizontal(1)),
-            )
-            .wrap(Wrap { trim: false }),
-            area,
-        );
-        return;
-    }
-    if let Some(pending) = state
         .pending_confirmation
         .as_ref()
         .filter(|_| active == Some(ActiveOverlay::MutationConfirmation))
@@ -5367,6 +5336,34 @@ mod tests {
         let diff_output = rendered(&state, 140, 40);
         assert!(diff_output.contains("DIFF"));
         assert!(diff_output.contains("+added"));
+    }
+
+    #[test]
+    fn selected_agent_header_uses_cached_lifecycle_during_workspace_contention() {
+        let mut state = state(TuiLayout::Desktop);
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        state.selected_agent = Some(agent_id.clone());
+        let mut snapshot = super::super::snapshot::DisplaySnapshot {
+            agents: "agent snapshot".into(),
+            ..Default::default()
+        };
+        snapshot
+            .agent_states
+            .push((agent_id.clone(), crate::AgentStatus::Idle));
+        snapshot
+            .agent_chrome
+            .push(super::super::snapshot::AgentChrome {
+                id: agent_id,
+                status: crate::AgentStatus::Idle,
+                model: None,
+                thinking: None,
+                session_file: None,
+            });
+        state.apply_snapshot(&snapshot);
+
+        let _workspace_guard = state.workspace.lock().unwrap();
+        assert_eq!(agent_progress(&state), "agent ready for a prompt");
+        assert!(compact_agent_header(&state, 80).starts_with("Agent idle"));
     }
 
     #[test]

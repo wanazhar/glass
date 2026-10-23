@@ -43,7 +43,6 @@
     "getDOM",
     "getText",
     "glass.agent.abort",
-    "glass.agent.approve",
     "glass.agent.clone-session",
     "glass.agent.compact",
     "glass.agent.delegate",

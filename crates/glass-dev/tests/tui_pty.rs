@@ -32,6 +32,8 @@ arguments = sys.argv[1:]
 if arguments == ["--version"]:
     os.execv(binary, [binary, *arguments])
 
+if DIAGNOSTIC_PATH:
+    os.environ["GLASS_RUNTIME_DIAGNOSTIC_TRACE"] = DIAGNOSTIC_PATH
 child = subprocess.Popen(
     [binary, *arguments], stdin=subprocess.PIPE, stdout=subprocess.PIPE
 )
@@ -104,12 +106,16 @@ fn write_live_core_trace_wrapper(
     binary: &std::path::Path,
     trace_path: &std::path::Path,
     pid_path: &std::path::Path,
+    diagnostic_path: Option<&std::path::Path>,
 ) {
     let body = format!(
-        "#!/usr/bin/env python3\nBINARY = {}\nTRACE_PATH = {}\nPID_PATH = {}\n{}\n",
+        "#!/usr/bin/env python3\nBINARY = {}\nTRACE_PATH = {}\nPID_PATH = {}\nDIAGNOSTIC_PATH = {}\n{}\n",
         serde_json::to_string(&binary.to_string_lossy()).unwrap(),
         serde_json::to_string(&trace_path.to_string_lossy()).unwrap(),
         serde_json::to_string(&pid_path.to_string_lossy()).unwrap(),
+        diagnostic_path
+            .map(|path| serde_json::to_string(&path.to_string_lossy()).unwrap())
+            .unwrap_or_else(|| "None".into()),
         LIVE_CORE_TRACE_WRAPPER_SOURCE
     );
     std::fs::write(wrapper, body).unwrap();
@@ -139,6 +145,77 @@ fn preserve_live_core_trace(trace_path: &std::path::Path) {
     file_permissions.set_mode(0o600);
     std::fs::set_permissions(&evidence_path, file_permissions)
         .expect("restrict sanitized live Core trace");
+}
+
+fn runtime_phase_summary(root: &std::path::Path) -> serde_json::Value {
+    let mut summaries = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root.join(".glass")) else {
+        return serde_json::json!({"unavailable": true});
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("runtime-trace.") && name.ends_with(".jsonl"))
+        {
+            continue;
+        }
+        let Ok(contents) = std::fs::read(&path) else {
+            continue;
+        };
+        let records = contents
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+            .map(|record| {
+                serde_json::json!({
+                    "component": record.get("component"),
+                    "phase": record.get("phase"),
+                    "class": record.get("class"),
+                    "elapsedUs": record.get("elapsed_us"),
+                })
+            })
+            .collect::<Vec<_>>();
+        summaries.push(serde_json::json!({
+            "file": path.file_name().and_then(|name| name.to_str()),
+            "records": records,
+        }));
+    }
+    serde_json::json!(summaries)
+}
+
+fn preserve_runtime_phase_traces(root: &std::path::Path) {
+    let Some(evidence_dir) = std::env::var_os("GLASS_LIVE_TRACE_EVIDENCE_DIR") else {
+        return;
+    };
+    let evidence_dir = std::path::PathBuf::from(evidence_dir);
+    let Ok(entries) = std::fs::read_dir(root.join(".glass")) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("runtime-trace.") && name.ends_with(".jsonl"))
+        {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let destination = evidence_dir.join(format!(
+            "live-provider-runtime-{}-{name}",
+            std::process::id()
+        ));
+        if std::fs::copy(&path, &destination).is_ok()
+            && let Ok(metadata) = std::fs::metadata(&destination)
+        {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o600);
+            let _ = std::fs::set_permissions(destination, permissions);
+        }
+    }
 }
 
 #[test]
@@ -171,7 +248,7 @@ sys.stdout.write(json.dumps({
     let mut permissions = std::fs::metadata(&fake_core).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_core, permissions).unwrap();
-    write_live_core_trace_wrapper(&wrapper, &fake_core, &trace_path, &pid_path);
+    write_live_core_trace_wrapper(&wrapper, &fake_core, &trace_path, &pid_path, None);
 
     let request_id = "private-request-identity";
     let request = serde_json::json!({
@@ -1086,7 +1163,7 @@ fn agent_enter_and_typing_open_composer_with_offline_core_fixture() {
         "Agent surface never rendered after trust"
     );
     assert!(
-        session.wait_for("✓ Ready", Duration::from_secs(5)),
+        session.wait_for("Core available", Duration::from_secs(5)),
         "offline Glass Core fixture never became ready\n{}",
         session.output_tail()
     );
@@ -1163,7 +1240,7 @@ fn fresh_start_first_composer_send_works_without_implicit_file_context() {
         session.output_tail()
     );
     assert!(
-        session.wait_for("✓ Ready", Duration::from_secs(5)),
+        session.wait_for("Core available", Duration::from_secs(5)),
         "Core readiness was not rendered after returning to Agent\n{}",
         session.output_tail()
     );
@@ -1348,7 +1425,7 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 80, 24, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
     session.send(b":agent spawn assistant offline task\r");
     assert!(
@@ -1376,10 +1453,7 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
     );
     session.send(b"\r");
     assert!(
-        session.wait_for(
-            "Glass Agent ready · response received",
-            Duration::from_secs(12)
-        ),
+        session.wait_for("response received", Duration::from_secs(20)),
         "offline Core did not return to its ready state after the prompt\n{}",
         session.output_tail()
     );
@@ -1418,14 +1492,12 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
         prompt_request["params"]["text"], "offline prompt round trip",
         "playbook context must not be injected into the human message body"
     );
-    let context = &prompt_request["params"]["context"][0]["value"];
-    assert_eq!(context["surface"], "agent");
-    assert_eq!(context["runMode"], "agent");
-    assert!(context.get("playbook").is_none());
-    assert!(context.get("playbookText").is_none());
-    let serialized_context = serde_json::to_string(context).expect("serialize Glass context");
-    assert!(!serialized_context.contains("playbook"));
-    assert!(!serialized_context.contains("Agent playbook:"));
+    assert!(
+        prompt_request["params"].get("context").is_none_or(
+            |context| context.is_null() || context.as_array().is_some_and(Vec::is_empty)
+        ),
+        "Glass must relay the human message without injecting workspace or agent-mode context"
+    );
     let registry_path = fixture_state.join("threads/registry.json");
     let deadline = Instant::now() + Duration::from_secs(8);
     let registry = loop {
@@ -1480,7 +1552,7 @@ fn three_fake_core_tasks_complete_without_stealing_selected_thread() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
     for (role, task, expected_id) in [
         ("alpha", "alpha task", "agent-0001"),
@@ -1864,7 +1936,7 @@ fn task_scheduler_threads_keep_task_identity_drafts_and_background_focus() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 120, 50, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
     for (title, tag) in [
         ("Alpha task", "alpha-job"),
@@ -2195,7 +2267,7 @@ fn follow_up_queue_edits_persist_without_automatic_dispatch() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
     session.send(b":agent spawn queue-owner queue persistence\r");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
@@ -2336,7 +2408,7 @@ fn task_thread_queue_restart_requires_explicit_core_recovery() {
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
     let task_spec = serde_json::json!({
         "title": "Recovery task",
@@ -2438,7 +2510,7 @@ fn task_thread_queue_restart_requires_explicit_core_recovery() {
         Some(&data_home),
     );
     assert!(reopened.wait_for("GLASS", Duration::from_secs(8)));
-    assert!(reopened.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(reopened.wait_for("Core available", Duration::from_secs(8)));
     let recovered_scheduler: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&scheduler_path).unwrap()).unwrap();
     let recovered_task = &recovered_scheduler["tasks"][0]["snapshot"];
@@ -2654,7 +2726,7 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     let pid_path = fixture_state.join("live-provider-core-pid");
     let trace_path = fixture_state.join("live-provider-core-trace.jsonl");
     let wrapper = fixture_state.join("glass-core-live-wrapper");
-    write_live_core_trace_wrapper(&wrapper, &core_binary, &trace_path, &pid_path);
+    write_live_core_trace_wrapper(&wrapper, &core_binary, &trace_path, &pid_path, None);
     let core_guard = LiveCoreProcessGuard {
         pid_path,
         binary: core_binary.clone(),
@@ -2717,7 +2789,7 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
     session.send(b":agent spawn assistant live provider smoke\r");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(8)),
@@ -2997,6 +3069,180 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
 }
 
 #[test]
+fn live_core_greeting_settles_without_glass_approval_notice() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1")
+        || std::env::var("GLASS_LIVE_GREETING").ok().as_deref() != Some("1")
+    {
+        return;
+    }
+    let root = workspace_root();
+    let _cleanup = TemporaryProjectGuard(root.clone());
+    let core_binary = std::env::var_os("GLASS_LIVE_CORE_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/glass-core")
+        });
+    assert!(core_binary.is_file(), "Glass Core binary is missing");
+
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    let wrapper = root.join("core-wrapper");
+    let trace_path = fixture_state.join("core-trace.jsonl");
+    let pid_path = fixture_state.join("core.pid");
+    let diagnostic_path = fixture_state.join("runtime-trace");
+    write_live_core_trace_wrapper(
+        &wrapper,
+        &core_binary,
+        &trace_path,
+        &pid_path,
+        Some(&diagnostic_path),
+    );
+    let core_guard = LiveCoreProcessGuard {
+        pid_path,
+        binary: core_binary,
+    };
+    let mut session = Session::start_with_core_binary(&binary(), &root, 118, 32, Some(&wrapper));
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    assert!(
+        session.wait_for("Core available", Duration::from_secs(15)),
+        "real launcher did not report Core availability\n{}",
+        session.visible_output()
+    );
+
+    session.send(b"\r");
+    assert!(session.wait_for("Message on Agent", Duration::from_secs(5)));
+    session.send_slowly(b"hello", Duration::from_millis(30));
+    assert!(session.wait_for_composer_text("hello", Duration::from_secs(5)));
+    session.send(b"\r");
+
+    let registry_path = root.join(".glass/threads/registry.json");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let settled = loop {
+        session.settle(Duration::from_millis(100));
+        let settled = std::fs::read(&registry_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|registry| {
+                registry
+                    .get("threads")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|threads| {
+                        threads.iter().any(|thread| {
+                            let Some(runs) =
+                                thread.get("runs").and_then(serde_json::Value::as_array)
+                            else {
+                                return false;
+                            };
+                            let Some(latest_run) = runs.last() else {
+                                return false;
+                            };
+                            let Some(run_id) =
+                                latest_run.get("runId").and_then(serde_json::Value::as_str)
+                            else {
+                                return false;
+                            };
+                            latest_run
+                                .get("classification")
+                                .and_then(serde_json::Value::as_str)
+                                == Some("idle")
+                                && thread
+                                    .get("sendAttempts")
+                                    .and_then(serde_json::Value::as_array)
+                                    .is_some_and(|attempts| {
+                                        attempts.iter().any(|attempt| {
+                                            attempt
+                                                .get("targetRunId")
+                                                .and_then(serde_json::Value::as_str)
+                                                == Some(run_id)
+                                                && attempt
+                                                    .get("status")
+                                                    .and_then(serde_json::Value::as_str)
+                                                    == Some("settled")
+                                        })
+                                    })
+                        })
+                    })
+            })
+            .unwrap_or(false);
+        if settled {
+            break true;
+        }
+        if session.child.try_wait().ok().flatten().is_some() || Instant::now() >= deadline {
+            break false;
+        }
+    };
+    preserve_live_core_trace(&trace_path);
+    let registry_summary = std::fs::read(&registry_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .map(|registry| {
+            let threads = registry
+                .get("threads")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|thread| {
+                    let runs = thread
+                        .get("runs")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .map(|run| {
+                            serde_json::json!({
+                                "classification": run.get("classification"),
+                                "engine": run.get("engine"),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let attempts = thread
+                        .get("sendAttempts")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .map(|attempt| {
+                            serde_json::json!({
+                                "mode": attempt.get("mode"),
+                                "status": attempt.get("status"),
+                                "targetRunId": attempt.get("targetRunId"),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    serde_json::json!({"runs": runs, "sendAttempts": attempts})
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({"threads": threads})
+        })
+        .unwrap_or_else(|| serde_json::json!({"unavailable": true}));
+    let core_runtime_phases = runtime_phase_summary(&root);
+    preserve_runtime_phase_traces(&root);
+    assert!(
+        settled,
+        "real Core greeting did not reach an idle run and settled send; safe registry summary: {registry_summary}; Core phase trace: {core_runtime_phases}"
+    );
+
+    session.clear_output();
+    assert!(
+        session.wait_for("ready · response received", Duration::from_secs(5)),
+        "settled selected session did not report its response\n{}",
+        session.visible_output()
+    );
+    session.settle(Duration::from_millis(300));
+    let final_frame = session.visible_output();
+    assert!(
+        !final_frame
+            .to_ascii_lowercase()
+            .contains("waiting for approval"),
+        "Glass displayed an approval notice after a Core greeting settled"
+    );
+    assert!(
+        !final_frame.contains("AGENT approval"),
+        "Glass retained a second agent approval indicator"
+    );
+    session.kill();
+    core_guard.terminate();
+}
+
+#[test]
 fn active_run_queue_steer_reaches_its_run_and_settles_truthfully() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;
@@ -3012,7 +3258,7 @@ fn active_run_queue_steer_reaches_its_run_and_settles_truthfully() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
     session.send(b":agent spawn queue-owner active-run-queue-target\r");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
@@ -3274,7 +3520,7 @@ fn ctrl_x_waits_for_core_cancel_settlement_and_keeps_exact_attempt_terminal() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
     session.send(b":agent spawn cancel-owner cancel-gated-target\r");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
@@ -3364,7 +3610,7 @@ fn follow_up_queue_old_run_retarget_and_review_retry_are_explicit() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
     session.send(b":agent spawn queue-owner retarget-and-review\r");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
@@ -3709,7 +3955,7 @@ fn attention_inbox_keyboard_journey_keeps_composer_and_opens_proposal_context() 
             session.wait_for_agent_surface();
         }
         assert!(
-            session.wait_for("✓ Ready", Duration::from_secs(8)),
+            session.wait_for("Core available", Duration::from_secs(8)),
             "offline Core did not become ready at {cols}x{rows}\n{}",
             session.output_tail()
         );
@@ -3803,7 +4049,7 @@ fn attention_review_keyboard_journey_preserves_uncertain_send_and_exits_cleanly(
         } else {
             session.wait_for_agent_surface();
         }
-        assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+        assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
         send_ctrl_shift_a(&mut session);
         assert!(
@@ -3902,7 +4148,7 @@ fn project_thread_picker_is_discoverable_at_desktop_and_compact_sizes() {
         } else {
             session.wait_for_agent_surface();
         }
-        assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+        assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
         send_ctrl_shift_t(&mut session);
         assert!(
@@ -3961,7 +4207,7 @@ fn live_core_response_crash_reopens_as_uncertain_without_replay() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 80, 24, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
     session.send(b":agent spawn crash-owner recovery check\r");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
@@ -4015,7 +4261,7 @@ fn live_core_response_crash_reopens_as_uncertain_without_replay() {
     let mut reopened = Session::start_with_core_binary(&binary(), &root, 80, 24, Some(&fake_core));
     assert!(reopened.wait_for("GLASS", Duration::from_secs(8)));
     reopened.wait_for_agent_surface();
-    assert!(reopened.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(reopened.wait_for("Core available", Duration::from_secs(8)));
     send_ctrl_shift_a(&mut reopened);
     assert!(reopened.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
     assert!(
@@ -4089,7 +4335,7 @@ fn uncertain_send_opens_attention_without_replaying_after_restart() {
         } else {
             session.wait_for_agent_surface();
         }
-        assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+        assert!(session.wait_for("Core available", Duration::from_secs(8)));
         send_ctrl_shift_a(&mut session);
         assert!(
             session.wait_for("ATTENTION INBOX", Duration::from_secs(5)),
@@ -4175,7 +4421,7 @@ fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
     send_ctrl_shift_a(&mut session);
     assert!(session.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
     assert!(session.wait_for(prompt, Duration::from_secs(8)));
@@ -4314,7 +4560,7 @@ fn failed_core_turn_is_reviewable_and_retry_requires_confirmation() {
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
     send_ctrl_shift_a(&mut session);
     assert!(session.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
     assert!(session.wait_for("Core turn failed", Duration::from_secs(5)));
@@ -4430,7 +4676,7 @@ fn failed_core_response_is_visible_and_can_be_retried_explicitly() {
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
-    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
     session.send(b":agent spawn assistant report a safe test failure\r");
     assert!(session.wait_for("Spawned agent-0001", Duration::from_secs(8)));
     send_ctrl_shift_t(&mut session);
@@ -4516,7 +4762,7 @@ fn palette_and_help_survive_real_key_sequences() {
     session.clear_output();
     session.send(b"\r");
     assert!(
-        session.wait_for_raw("Glass Core is the resident engine", Duration::from_secs(5)),
+        session.wait_for_raw("Glass Core is ready", Duration::from_secs(5)),
         "arrow selection did not route to the Glass Core setup guidance\n{}",
         session.output_tail()
     );

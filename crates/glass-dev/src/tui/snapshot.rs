@@ -84,7 +84,6 @@ pub struct DisplaySnapshot {
     /// replace optimistic "thinking" copy when a turn actually settles.
     pub agent_states: Vec<(crate::AgentId, crate::AgentStatus)>,
     pub thread_picker_items: Vec<super::state::ThreadPickerItem>,
-    pub pending_agent_approvals: Vec<super::state::PendingAgentApproval>,
     pub editor_proposals: Vec<crate::development::EditorProposal>,
     pub harnesses: String,
     pub agent_conversation: String,
@@ -573,8 +572,6 @@ fn compute_snapshot(
         .as_ref()
         .map(Vec::as_slice)
         .unwrap_or_default();
-    snapshot.pending_agent_approvals =
-        super::state::pending_agent_approvals(agent_snapshots.as_ref().ok());
     snapshot.editor_proposals = locked.project().editor_proposals();
     snapshot.agent_states = agent_snapshots
         .as_ref()

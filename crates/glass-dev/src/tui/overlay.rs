@@ -15,7 +15,6 @@ pub(super) enum ActiveOverlay {
     FilePicker = 6,
     SessionPicker = 7,
     FollowUpQueue = 8,
-    AgentApproval = 9,
     MutationConfirmation = 10,
     FullscreenEditor = 11,
     Composer = 12,
@@ -62,8 +61,6 @@ pub(super) fn active_overlay(state: &DevTuiState) -> Option<ActiveOverlay> {
         Some(ActiveOverlay::ThreadPicker)
     } else if state.follow_up_queue_open {
         Some(ActiveOverlay::FollowUpQueue)
-    } else if state.pending_agent_approval.is_some() {
-        Some(ActiveOverlay::AgentApproval)
     } else if state.pending_confirmation.is_some() {
         Some(ActiveOverlay::MutationConfirmation)
     } else if state.code_edit_mode && !state.composer_mode {
@@ -156,14 +153,6 @@ mod tests {
             Some(ActiveOverlay::MutationConfirmation)
         );
         state.pending_confirmation = None;
-        state.pending_agent_approval = Some(super::super::state::PendingAgentApproval {
-            agent_id: "agent-1".into(),
-            frame_id: "frame-1".into(),
-            tool_name: "glass.git.stage".into(),
-            arguments: serde_json::json!({}),
-        });
-        assert_eq!(active_overlay(&state), Some(ActiveOverlay::AgentApproval));
-        state.pending_agent_approval = None;
         state.session_picker_open = true;
         assert_eq!(active_overlay(&state), Some(ActiveOverlay::SessionPicker));
         state.session_picker_open = false;

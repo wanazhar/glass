@@ -2961,11 +2961,11 @@ fn run_tool(
     let expected_project_revision = workspace.project().revision();
     drop(workspace);
     let context = DevelopmentToolContext {
-        authorization: ToolAuthorization {
-            actor: Actor::local(),
-            allow_mutation: mutating,
-            confirmed: mutating,
-        },
+        authorization: ToolAuthorization::from_user_confirmation(
+            Actor::local(),
+            mutating,
+            mutating,
+        ),
         initiator: None,
         expected_generation,
         expected_project_revision,

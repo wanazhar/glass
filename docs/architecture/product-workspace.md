@@ -7,7 +7,8 @@ Status: Current 0.3.14 source behavior
 Glass Dev is the development product; `glass-browser` is an independently
 installable browser product. Glass Dev's `DevelopmentWorkspace` is the sole
 authority for project identity, files, editor buffers, processes, Git,
-LSP/DAP, tasks, event history, agent sessions, and the resident browser service.
+LSP/DAP, tasks, event history, project-thread routing metadata, and the resident
+browser service. Glass Core owns resident agent sessions and their execution.
 `DevTuiState` caches projections for rendering but does not become a second
 owner.
 
@@ -19,8 +20,8 @@ DevelopmentWorkspace (resident authority)
 │  ├─ CollaborationBus (claims + bounded subscribers)
 │  ├─ Git, source/runtime graph, timeline, LSP
 │  └─ ProcessManager / PTYs
-├─ agent workers
-│  └─ Glass Core resident runtime and native coding tools
+├─ project thread/session routing and send identity
+│  └─ Glass Core runtime owns agent execution and permissions
 ├─ BrowserService → one BrowserWorker → optional browser runtime session
 ├─ task/workflow, kernel, debugger, experiment, replay state
 └─ policy, customization, GitHub configuration
@@ -73,9 +74,13 @@ Confirmation and recovery overlays own focus until accepted, denied, or dismisse
 ## Startup and resident lifecycle
 
 Opening a project detects metadata without executing a detected command and
-enters the workspace directly. Glass Core owns native coding tools and their
-permissions. Glass owns workspace, Git, browser, and other integrations, which
-retain their revision, path, lease, and operation-specific confirmation checks.
+enters the workspace directly. Glass Core owns agentic work, turn lifecycle,
+provider/session behavior, tool choices, and permissions. Glass is the
+workspace and host: it routes human input and executes Core-authorized
+workspace, Git, browser, and other integration calls after checking revisions,
+paths, resource identity, leases, and conflicts. Glass does not add a second
+approval prompt to a Core tool call. Human-initiated operations retain their
+explicit confirmation behavior.
 
 Glass renders an initial cockpit before the full refresh. `SnapshotWorker` then
 refreshes resident projections, agent conversation, browser screenshots, and
@@ -167,11 +172,12 @@ default interface.
 workspace opens ──> Core readiness and project views load
                                │
               ┌────────────────┴─────────────────┐
-              │ Core owns coding permissions    │
+              │ Core owns agent work +         │
+              │ permissions                    │
               │ Glass owns integrations        │
               └────────────────┬─────────────────┘
                                v
-                  actor + revision + confirmation
+                  Core-authorized call + workspace checks
 ```
 
 A browser selected entity may make the browser owner `Agent`; `H`/`browser

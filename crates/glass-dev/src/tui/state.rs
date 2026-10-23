@@ -206,20 +206,8 @@ fn matching_resident_fim_response(
     })
 }
 
-#[derive(Debug, Clone)]
-pub struct PendingAgentApproval {
-    pub agent_id: String,
-    pub frame_id: String,
-    pub tool_name: String,
-    pub arguments: serde_json::Value,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum AttentionItemKey {
-    Approval {
-        agent_id: String,
-        frame_id: String,
-    },
     EditorProposal {
         proposal_id: String,
         path: String,
@@ -257,6 +245,13 @@ fn is_default_composer_agent(status: crate::AgentStatus) -> bool {
             | crate::AgentStatus::Working
             | crate::AgentStatus::Waiting
     )
+}
+
+fn is_agent_lifecycle_notice(status: &str) -> bool {
+    status.contains("Glass Agent is thinking")
+        || status.contains("Glass Core is thinking")
+        || status == "Glass Agent waiting for approval"
+        || status == "Glass Agent waiting"
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1485,6 +1480,7 @@ pub struct DevTuiState {
     composer_retry_message_id: Option<String>,
     pub agent_send_job: Option<u64>,
     pub selected_agent: Option<crate::AgentId>,
+    agent_status_by_id: std::collections::BTreeMap<crate::AgentId, crate::AgentStatus>,
     pub thread_picker_open: bool,
     pub thread_picker_items: Vec<ThreadPickerItem>,
     pub thread_picker_selection: usize,
@@ -1546,8 +1542,6 @@ pub struct DevTuiState {
     pub browser_dialog: Option<BrowserDialogPrompt>,
     pub pending_page_entity: Option<String>,
     pub process_urls: Vec<String>,
-    pub pending_agent_approval: Option<PendingAgentApproval>,
-    pending_agent_approvals: Vec<PendingAgentApproval>,
     selected_editor_proposal_id: Option<String>,
     pub editor_exit_prompt: Option<EditorExitPrompt>,
     pub queued_tool_request: Option<(
@@ -1850,6 +1844,7 @@ impl DevTuiState {
             composer_retry_message_id: None,
             agent_send_job: None,
             selected_agent: None,
+            agent_status_by_id: std::collections::BTreeMap::new(),
             thread_picker_open: false,
             thread_picker_items: Vec::new(),
             thread_picker_selection: 0,
@@ -1902,8 +1897,6 @@ impl DevTuiState {
             pending_composer_draft_loads: std::collections::BTreeMap::new(),
             pending_confirmation: None,
             editor_exit_prompt: None,
-            pending_agent_approval: None,
-            pending_agent_approvals: Vec::new(),
             selected_editor_proposal_id: None,
             pending_browser_navigation: None,
             browser_dialog: None,
@@ -3048,7 +3041,6 @@ impl DevTuiState {
 
     pub fn background_action_running(&self) -> bool {
         self.pending_confirmation.is_some()
-            || self.pending_agent_approval.is_some()
             || self.running_tool_job.is_some()
             || self.queued_tool_request.is_some()
             || self.agent_send_job.is_some()
@@ -3056,7 +3048,6 @@ impl DevTuiState {
 
     fn blocking_background_tool_running(&self) -> bool {
         self.pending_confirmation.is_some()
-            || self.pending_agent_approval.is_some()
             || self.running_tool_job.is_some()
             || self.queued_tool_request.is_some()
     }
@@ -3670,7 +3661,6 @@ impl DevTuiState {
 
     fn composer_send_blocked(&self) -> bool {
         self.pending_confirmation.is_some()
-            || self.pending_agent_approval.is_some()
             || self.queued_tool_request.is_some()
             || self.running_tool_job.is_some()
     }
@@ -4081,27 +4071,6 @@ impl DevTuiState {
             return;
         };
         match item.key {
-            AttentionItemKey::Approval { agent_id, frame_id } => {
-                let approval = self
-                    .pending_agent_approvals
-                    .iter()
-                    .find(|approval| approval.agent_id == agent_id && approval.frame_id == frame_id)
-                    .cloned();
-                let Some(approval) = approval else {
-                    self.attention_status_stale();
-                    return;
-                };
-                let Some(agent_id) = crate::AgentId::parse(&approval.agent_id).ok() else {
-                    self.attention_status_stale();
-                    return;
-                };
-                if !self.select_agent(Some(agent_id)) {
-                    return;
-                }
-                self.pending_agent_approval = Some(approval);
-                self.attention_inbox_open = false;
-                self.status = "Approval request selected · inspect details before deciding".into();
-            }
             AttentionItemKey::EditorProposal { proposal_id, path } => {
                 let pending = self.editor_proposals.iter().any(|proposal| {
                     proposal.id == proposal_id
@@ -4271,18 +4240,6 @@ impl DevTuiState {
             .get(self.attention_selection)
             .map(|item| item.key.clone());
         let mut items = std::collections::BTreeMap::<AttentionItemKey, AttentionItem>::new();
-        for approval in &self.pending_agent_approvals {
-            let key = AttentionItemKey::Approval {
-                agent_id: approval.agent_id.clone(),
-                frame_id: approval.frame_id.clone(),
-            };
-            items.entry(key.clone()).or_insert_with(|| AttentionItem {
-                key,
-                title: format!("Approval · {}", approval.tool_name),
-                detail: format!("{} · frame {}", approval.agent_id, approval.frame_id),
-                owner_agent_id: crate::AgentId::parse(&approval.agent_id).ok(),
-            });
-        }
         for proposal in &self.editor_proposals {
             if proposal.state != crate::development::EditorProposalState::Pending {
                 continue;
@@ -5073,16 +5030,10 @@ impl DevTuiState {
         true
     }
 
-    /// Current selected Core worker state, read without blocking TUI rendering.
+    /// Last complete snapshot of the selected Core worker state.
     pub fn selected_agent_status(&self) -> Option<crate::AgentStatus> {
         let agent_id = self.selected_agent.as_ref()?;
-        self.workspace
-            .try_lock()
-            .ok()?
-            .agents()
-            .snapshot(agent_id)
-            .ok()
-            .map(|snapshot| snapshot.status)
+        self.agent_status_by_id.get(agent_id).copied()
     }
 
     fn select_agent(&mut self, selected: Option<crate::AgentId>) -> bool {
@@ -6394,43 +6345,6 @@ impl DevTuiState {
             }
             Err(error) => {
                 self.status = format!("Could not queue mutation: {error}");
-            }
-        }
-    }
-
-    pub fn resolve_agent_approval(
-        &mut self,
-        approved: bool,
-        worker: &mut super::snapshot::SnapshotWorker,
-    ) {
-        let Some(pending) = self.pending_agent_approval.take() else {
-            return;
-        };
-        let arguments = serde_json::json!({
-            "agentId": pending.agent_id,
-            "frameId": pending.frame_id,
-            "approved": approved,
-        });
-        let (call, context) = match self.tool_request("glass.agent.approve", arguments, true) {
-            Ok(request) => request,
-            Err(error) => {
-                self.pending_agent_approval = Some(pending);
-                self.status = format!("Agent approval unavailable: {error}");
-                return;
-            }
-        };
-        match worker.submit_tool(call, context) {
-            Ok(id) => {
-                self.running_tool_job = Some(id);
-                self.status = if approved {
-                    format!("Approved {} · Glass Agent continues…", pending.tool_name)
-                } else {
-                    format!("Denied {} · Glass Agent continues…", pending.tool_name)
-                };
-            }
-            Err(error) => {
-                self.pending_agent_approval = Some(pending);
-                self.status = format!("Could not queue agent approval: {error}");
             }
         }
     }
@@ -10794,17 +10708,14 @@ impl DevTuiState {
     pub fn apply_snapshot(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
         self.remember_row_selection_identity();
         let was_waiting_for_snapshot = !self.snapshot_ready;
+        let had_agent_lifecycle_notice = is_agent_lifecycle_notice(&self.status);
         let mut browser_recovery_status = None;
         self.snapshot_ready = true;
         self.conversation_cursor = snapshot.conversation_cursor;
         self.refresh_latency_ms = snapshot.duration.as_millis() as u64;
-        let selected_agent_status = self.selected_agent.as_ref().and_then(|selected| {
-            snapshot
-                .agent_states
-                .iter()
-                .find(|(id, _)| id == selected)
-                .map(|(_, status)| *status)
-        });
+        if !snapshot.agents.starts_with("Agent registry failed:") {
+            self.agent_status_by_id = snapshot.agent_states.iter().cloned().collect();
+        }
         if let super::snapshot::BrowserHealth::Crashed {
             last_process_id,
             last_revision,
@@ -10852,15 +10763,6 @@ impl DevTuiState {
                     .min(self.thread_picker_items.len().saturating_sub(1))
             });
         self.agents = snapshot.agents.clone();
-        let active_approval = self.pending_agent_approval.clone();
-        self.pending_agent_approvals = snapshot.pending_agent_approvals.clone();
-        self.pending_agent_approval = active_approval
-            .filter(|current| {
-                self.pending_agent_approvals.iter().any(|approval| {
-                    approval.agent_id == current.agent_id && approval.frame_id == current.frame_id
-                })
-            })
-            .or_else(|| self.pending_agent_approvals.first().cloned());
         self.editor_proposals = snapshot.editor_proposals.clone();
         self.reconcile_selected_editor_proposal();
         self.agent_conversations = snapshot.agent_conversations.clone();
@@ -10912,9 +10814,13 @@ impl DevTuiState {
             self.transcript_selection = self.transcript_selection.min(entry_count - 1);
         }
         self.reconcile_pending_chat();
+        let selected_agent_status = self.selected_agent_status();
         if self.agent_send_job.is_none()
-            && self.pending_chat_messages.is_empty()
-            && self.status.contains("Glass Agent is thinking")
+            && !self
+                .pending_chat_messages
+                .iter()
+                .any(|message| message.state == ChatMessageState::Sending)
+            && is_agent_lifecycle_notice(&self.status)
         {
             match selected_agent_status {
                 Some(crate::AgentStatus::Idle) => {
@@ -10927,7 +10833,7 @@ impl DevTuiState {
                     self.status = "Glass Agent stopped · press Enter to retry".into();
                 }
                 Some(crate::AgentStatus::Waiting) => {
-                    self.status = "Glass Agent waiting for approval".into();
+                    self.status = "Glass Agent waiting".into();
                 }
                 _ => {}
             }
@@ -11066,8 +10972,34 @@ impl DevTuiState {
         if !self.code_edit_mode && self.pending_open_file.is_some() && !self.files.is_empty() {
             self.flush_pending_open_file();
         }
-        if was_waiting_for_snapshot && self.browser_recovery.is_none() {
+        if was_waiting_for_snapshot
+            && self.browser_recovery.is_none()
+            && !had_agent_lifecycle_notice
+        {
             self.status = "Workspace ready · Enter chat · Ctrl-P files · : actions".into();
+        }
+        if had_agent_lifecycle_notice
+            && self.agent_send_job.is_none()
+            && !self
+                .pending_chat_messages
+                .iter()
+                .any(|message| message.state == ChatMessageState::Sending)
+        {
+            match self.selected_agent_status() {
+                Some(crate::AgentStatus::Idle) => {
+                    self.status = "Glass Agent ready · response received".into();
+                }
+                Some(crate::AgentStatus::Failed) => {
+                    self.status = "Glass Agent failed · press Enter to retry".into();
+                }
+                Some(crate::AgentStatus::Cancelled) => {
+                    self.status = "Glass Agent stopped · press Enter to retry".into();
+                }
+                Some(crate::AgentStatus::Waiting) => {
+                    self.status = "Glass Agent waiting".into();
+                }
+                _ => {}
+            }
         }
         if let Some(status) = browser_recovery_status {
             self.status = status;
@@ -11120,8 +11052,12 @@ impl DevTuiState {
         }
         let task_snapshots = workspace.tasks().unwrap_or_default();
         let agent_snapshots = workspace.agents().list();
-        self.pending_agent_approvals = pending_agent_approvals(agent_snapshots.as_ref().ok());
-        self.pending_agent_approval = self.pending_agent_approvals.first().cloned();
+        if let Ok(agents) = &agent_snapshots {
+            self.agent_status_by_id = agents
+                .iter()
+                .map(|agent| (agent.id.clone(), agent.status))
+                .collect();
+        }
         if let Ok(agents) = &agent_snapshots {
             self.thread_picker_items = project_thread_picker_items(agents, &task_snapshots);
         }
@@ -12627,11 +12563,11 @@ impl DevTuiState {
                 arguments,
             },
             crate::tools::DevelopmentToolContext {
-                authorization: crate::development::ToolAuthorization {
-                    actor: crate::development::Actor::local(),
-                    allow_mutation: mutating,
-                    confirmed: mutating,
-                },
+                authorization: crate::development::ToolAuthorization::from_user_confirmation(
+                    crate::development::Actor::local(),
+                    mutating,
+                    mutating,
+                ),
                 initiator: None,
                 expected_generation,
                 expected_project_revision,
@@ -13345,48 +13281,6 @@ fn page_origin(url: &str) -> Option<String> {
         .unwrap_or(url.len());
     Some(url[..authority_end].to_string())
 }
-pub(crate) fn pending_agent_approvals(
-    agents: Option<&Vec<crate::AgentSnapshot>>,
-) -> Vec<PendingAgentApproval> {
-    let Some(agents) = agents else {
-        return Vec::new();
-    };
-    let mut pending = std::collections::BTreeMap::new();
-    for agent in agents {
-        for event in &agent.evidence {
-            match event.get("type").and_then(serde_json::Value::as_str) {
-                Some("glass_tool_approval_request") => {
-                    let Some(frame_id) = event.get("frameId").and_then(serde_json::Value::as_str)
-                    else {
-                        continue;
-                    };
-                    pending.insert(
-                        (agent.id.as_str().to_string(), frame_id.to_string()),
-                        PendingAgentApproval {
-                            agent_id: agent.id.as_str().to_string(),
-                            frame_id: frame_id.to_string(),
-                            tool_name: event
-                                .get("toolName")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("unknown tool")
-                                .to_string(),
-                            arguments: event.get("arguments").cloned().unwrap_or_default(),
-                        },
-                    );
-                }
-                Some("glass_tool_approval_resolved") => {
-                    let frame_id = event.get("frameId").and_then(serde_json::Value::as_str);
-                    if let Some(frame_id) = frame_id {
-                        pending.remove(&(agent.id.as_str().to_string(), frame_id.to_string()));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    pending.into_values().collect()
-}
-
 fn action_command_prefix(command: &str) -> String {
     command
         .split_whitespace()
@@ -13651,20 +13545,6 @@ mod tests {
     fn attention_inbox_is_stable_deduplicated_and_selection_preserving() {
         let (mut state, root) = routed_state("attention-order");
         let agent_id = crate::AgentId::parse("agent-0001").unwrap();
-        state.pending_agent_approvals = vec![
-            PendingAgentApproval {
-                agent_id: agent_id.as_str().into(),
-                frame_id: "frame-2".into(),
-                tool_name: "write_file".into(),
-                arguments: serde_json::json!({}),
-            },
-            PendingAgentApproval {
-                agent_id: agent_id.as_str().into(),
-                frame_id: "frame-1".into(),
-                tool_name: "read_file".into(),
-                arguments: serde_json::json!({}),
-            },
-        ];
         let proposal = crate::development::EditorProposal {
             id: "proposal-1".into(),
             path: "README.md".into(),
@@ -13729,7 +13609,7 @@ mod tests {
             },
         );
         state.refresh_attention_items();
-        assert_eq!(state.attention_items.len(), 7);
+        assert_eq!(state.attention_items.len(), 5);
         assert!(state.attention_items.iter().any(|item| {
             item.key
                 == (AttentionItemKey::SendAttempt {
@@ -13754,7 +13634,6 @@ mod tests {
         );
         let selected = state.attention_items[1].key.clone();
         state.attention_selection = 1;
-        state.pending_agent_approvals.reverse();
         state.refresh_attention_items();
         assert_eq!(
             state.attention_items[state.attention_selection].key,
@@ -13772,7 +13651,7 @@ mod tests {
             .entries[0]
             .state = crate::thread_store::FollowUpQueueState::Accepted;
         state.refresh_attention_items();
-        assert_eq!(state.attention_items.len(), 6);
+        assert_eq!(state.attention_items.len(), 4);
         assert!(
             !state
                 .attention_items
@@ -17225,6 +17104,60 @@ mod tests {
 
         assert_eq!(state.selected_agent, None);
         assert_eq!(state.selected_agent_status(), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_status_uses_snapshot_cache_and_clears_stale_waiting_notice() {
+        let (mut state, root) = routed_state("agent-lifecycle-status-cache");
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        state.selected_agent = Some(agent_id.clone());
+
+        let mut snapshot = super::super::snapshot::DisplaySnapshot {
+            agents: "agent snapshot".into(),
+            ..Default::default()
+        };
+        snapshot
+            .agent_states
+            .push((agent_id.clone(), crate::AgentStatus::Idle));
+        snapshot
+            .agent_chrome
+            .push(super::super::snapshot::AgentChrome {
+                id: agent_id.clone(),
+                status: crate::AgentStatus::Idle,
+                model: None,
+                thinking: None,
+                session_file: None,
+            });
+        state.status = "Sent · Glass Core is thinking…".into();
+        state.apply_snapshot(&snapshot);
+        assert_eq!(state.status, "Glass Agent ready · response received");
+
+        // Rendering must keep using the last published status during workspace
+        // lock contention instead of alternating to global Core availability.
+        let _workspace_guard = state.workspace.lock().unwrap();
+        assert_eq!(
+            state.selected_agent_status(),
+            Some(crate::AgentStatus::Idle)
+        );
+        drop(_workspace_guard);
+
+        snapshot.agent_states[0].1 = crate::AgentStatus::Waiting;
+        snapshot.agent_chrome[0].status = crate::AgentStatus::Waiting;
+        state.status = "Sent to agent · Glass Agent is thinking…".into();
+        state.apply_snapshot(&snapshot);
+        assert_eq!(state.status, "Glass Agent waiting");
+        assert!(!state.status.contains("approval"));
+
+        snapshot.agent_states[0].1 = crate::AgentStatus::Idle;
+        snapshot.agent_chrome[0].status = crate::AgentStatus::Idle;
+        state.status = "Glass Agent waiting for approval".into();
+        state.apply_snapshot(&snapshot);
+        assert_eq!(state.status, "Glass Agent ready · response received");
+
+        state.status = "GitHub review refreshed".into();
+        state.apply_snapshot(&snapshot);
+        assert_eq!(state.status, "GitHub review refreshed");
         std::fs::remove_dir_all(root).unwrap();
     }
 

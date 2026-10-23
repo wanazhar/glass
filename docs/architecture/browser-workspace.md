@@ -106,11 +106,14 @@ observe fresh ──> revision R + entities stamped R
        └─ resize/visual geometry ──> visual geometry revision (separate token)
 ```
 
-The App submits browser operations through governed `glass.browser.*` tools;
-mutating operations require mutation authority and one-use confirmation. The
-standalone TUI executes its session directly and has no development workspace
-or Remote View. Human takeover pauses agent browser mutation; `reconcile_takeover`
-returns ownership to Glass only after the checkpoint is reconciled.
+The App submits browser operations through governed `glass.browser.*` tools.
+Core-authorized resident calls do not receive a second Glass approval prompt;
+the workspace still checks the current browser lease, target identity, and
+revision. Human-initiated direct mutations retain their explicit confirmation
+semantics. The standalone TUI executes its session directly and has no
+development workspace or Remote View. Human takeover pauses agent browser
+mutation; `reconcile_takeover` returns ownership to Glass only after the
+checkpoint is reconciled.
 
 ## Target selection and recovery
 

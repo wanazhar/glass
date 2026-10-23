@@ -4,6 +4,7 @@
 //! starts one bounded child process, captures bounded output, and never registers
 //! the child as a resident Glass Agent. The default sandbox is read-only.
 
+use crate::development::ToolAuthorization;
 use crate::harness;
 use serde::Serialize;
 use std::ffi::OsString;
@@ -83,8 +84,7 @@ pub struct ExternalAgentRequest {
     pub prompt: String,
     pub sandbox: ExternalSandbox,
     pub timeout: Duration,
-    pub allow_mutation: bool,
-    pub confirmed: bool,
+    pub authorization: ToolAuthorization,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -393,15 +393,9 @@ fn validate_request(request: &ExternalAgentRequest) -> Result<(), String> {
         return Err("temporary-agent timeout must be between 1 second and 1 hour".into());
     }
     if request.sandbox == ExternalSandbox::WorkspaceWrite
-        && !crate::development::ToolAuthorization::factors_permit_mutation(
-            request.allow_mutation,
-            request.confirmed,
-        )
+        && !request.authorization.permits_mutation()
     {
-        return Err(
-            "workspace-write delegation requires explicit mutation authority and confirmation"
-                .into(),
-        );
+        return Err("workspace-write delegation requires mutation authority".into());
     }
     Ok(())
 }
@@ -551,6 +545,7 @@ fn append_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::development::Actor;
 
     #[test]
     fn parses_only_supported_temporary_harnesses() {
@@ -704,8 +699,7 @@ mod tests {
             prompt: "inspect the project".into(),
             sandbox: ExternalSandbox::ReadOnly,
             timeout: Duration::from_millis(999),
-            allow_mutation: false,
-            confirmed: false,
+            authorization: ToolAuthorization::read_only(Actor::local()),
         };
         assert!(
             validate_request(&request)
@@ -723,12 +717,15 @@ mod tests {
                 prompt: "edit the failing test".into(),
                 sandbox: ExternalSandbox::WorkspaceWrite,
                 timeout: Duration::from_secs(30),
-                allow_mutation,
-                confirmed,
+                authorization: ToolAuthorization::from_user_confirmation(
+                    Actor::local(),
+                    allow_mutation,
+                    confirmed,
+                ),
             };
             let error = validate_request(&request)
                 .expect_err("incomplete workspace-write authorization must fail");
-            assert!(error.contains("explicit mutation authority and confirmation"));
+            assert!(error.contains("mutation authority"));
         }
 
         let authorized = ExternalAgentRequest {
@@ -737,8 +734,7 @@ mod tests {
             prompt: "edit the failing test".into(),
             sandbox: ExternalSandbox::WorkspaceWrite,
             timeout: Duration::from_secs(30),
-            allow_mutation: true,
-            confirmed: true,
+            authorization: ToolAuthorization::from_user_confirmation(Actor::local(), true, true),
         };
         assert!(validate_request(&authorized).is_ok());
     }
@@ -752,11 +748,14 @@ mod tests {
                 prompt: "edit the failing test".into(),
                 sandbox: ExternalSandbox::WorkspaceWrite,
                 timeout: Duration::from_secs(30),
-                allow_mutation,
-                confirmed,
+                authorization: ToolAuthorization::from_user_confirmation(
+                    Actor::local(),
+                    allow_mutation,
+                    confirmed,
+                ),
             })
             .expect_err("direct library delegation must reject incomplete authorization");
-            assert!(error.contains("explicit mutation authority and confirmation"));
+            assert!(error.contains("mutation authority"));
         }
         let error = delegate(ExternalAgentRequest {
             harness: "unsupported".into(),
@@ -764,8 +763,7 @@ mod tests {
             prompt: "edit the failing test".into(),
             sandbox: ExternalSandbox::WorkspaceWrite,
             timeout: Duration::from_secs(30),
-            allow_mutation: true,
-            confirmed: true,
+            authorization: ToolAuthorization::from_user_confirmation(Actor::local(), true, true),
         })
         .expect_err("unknown harness should be rejected after authorization");
         assert!(error.contains("unsupported temporary agent"));

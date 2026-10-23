@@ -651,11 +651,8 @@ impl DevelopmentWorkspace {
                     arguments: kernel_call.arguments.clone(),
                 };
                 let context = DevelopmentToolContext {
-                    authorization: ToolAuthorization {
-                        actor: executor.clone(),
-                        allow_mutation: authorization.allow_mutation && policy.mutation_authority,
-                        confirmed: authorization.confirmed && policy.mutation_authority,
-                    },
+                    authorization: authorization
+                        .for_actor(executor.clone(), policy.mutation_authority),
                     initiator: Some(initiator.clone()),
                     expected_generation: generation,
                     expected_project_revision: self.project.revision(),
@@ -895,7 +892,7 @@ impl SharedDevelopmentWorkspace {
             DevelopmentWorkspace::open_with_browser_policy(root, browser_policy)?;
         let inner = Arc::new(Mutex::new(development_workspace));
         let weak = Arc::downgrade(&inner);
-        let executor: AgentToolExecutor = Arc::new(move |call, allow_mutation, confirmed| {
+        let executor: AgentToolExecutor = Arc::new(move |call, authorization| {
             let inner = weak.upgrade().ok_or_else(|| {
                 crate::development::DevelopmentError::Process(
                     "shared development workspace has closed".into(),
@@ -907,11 +904,7 @@ impl SharedDevelopmentWorkspace {
                 )
             })?;
             let context = DevelopmentToolContext {
-                authorization: ToolAuthorization {
-                    actor: Actor::external("glass-core"),
-                    allow_mutation,
-                    confirmed,
-                },
+                authorization,
                 initiator: None,
                 expected_generation: workspace.generation(),
                 expected_project_revision: workspace.project().revision(),
@@ -1020,11 +1013,7 @@ mod tests {
             .execute_kernel(
                 "sql",
                 "select 'private result' as value;",
-                &ToolAuthorization {
-                    actor: Actor::local(),
-                    allow_mutation: false,
-                    confirmed: false,
-                },
+                &ToolAuthorization::read_only(Actor::local()),
                 None,
             )
             .unwrap();
@@ -1152,11 +1141,11 @@ mod tests {
 
         for (allow_mutation, confirmed) in [(false, false), (false, true), (true, false)] {
             let context = DevelopmentToolContext {
-                authorization: ToolAuthorization {
-                    actor: Actor::external("pair-test"),
+                authorization: ToolAuthorization::from_user_confirmation(
+                    Actor::external("pair-test"),
                     allow_mutation,
                     confirmed,
-                },
+                ),
                 initiator: None,
                 expected_generation: workspace.generation(),
                 expected_project_revision: workspace.project().revision(),
@@ -1164,20 +1153,16 @@ mod tests {
             let error = workspace
                 .execute_tool(&call, &context)
                 .expect_err("a missing authorization factor must block mutation");
-            assert!(
-                error
-                    .to_string()
-                    .contains("mutation authority and confirmation")
-            );
+            assert!(error.to_string().contains("mutation authority"));
             assert!(!root.join("written-dir").exists());
         }
 
         let authorized = DevelopmentToolContext {
-            authorization: ToolAuthorization {
-                actor: Actor::external("pair-test"),
-                allow_mutation: true,
-                confirmed: true,
-            },
+            authorization: ToolAuthorization::from_user_confirmation(
+                Actor::external("pair-test"),
+                true,
+                true,
+            ),
             initiator: None,
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
@@ -1252,11 +1237,11 @@ command = '''{command}'''
                 .any(|suite| suite.id == "configured")
         );
         let context = DevelopmentToolContext {
-            authorization: ToolAuthorization {
-                actor: Actor::external("security-test"),
-                allow_mutation: true,
-                confirmed: true,
-            },
+            authorization: ToolAuthorization::from_user_confirmation(
+                Actor::external("security-test"),
+                true,
+                true,
+            ),
             initiator: None,
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),

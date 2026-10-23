@@ -7,7 +7,7 @@
 //! Glass Core is the resident agent engine; see [`crate::resident_harness`].
 
 use crate::agents::ResidentAgentBroker;
-use crate::development::{DevelopmentError, DevelopmentResult, ToolCall};
+use crate::development::{DevelopmentError, DevelopmentResult, ToolAuthorization, ToolCall};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -212,11 +212,6 @@ impl std::fmt::Debug for CoreRuntimeOptions {
     }
 }
 
-struct PendingCoreToolApproval {
-    frame_id: String,
-    call: ToolCall,
-}
-
 /// One resident Glass Core engine process.
 pub(crate) struct GlassCoreRuntime {
     child: Child,
@@ -231,7 +226,6 @@ pub(crate) struct GlassCoreRuntime {
     host_events: VecDeque<Value>,
     startup_events: Vec<Value>,
     pending_operations: HashMap<String, String>,
-    pending_tool_approval: Option<PendingCoreToolApproval>,
     active_turn: Option<Value>,
 }
 
@@ -291,7 +285,6 @@ impl GlassCoreRuntime {
             host_events: VecDeque::new(),
             startup_events: Vec::new(),
             pending_operations: HashMap::new(),
-            pending_tool_approval: None,
             active_turn: None,
         };
         runtime.initialize()?;
@@ -670,45 +663,6 @@ impl GlassCoreRuntime {
         }
     }
 
-    /// Answer one parked host tool approval.
-    pub(crate) fn resolve_tool_approval(
-        &mut self,
-        frame_id: &str,
-        approved: bool,
-    ) -> DevelopmentResult<()> {
-        let pending = self.pending_tool_approval.as_ref().ok_or_else(|| {
-            DevelopmentError::Conflict("no Glass Core tool call is awaiting approval".into())
-        })?;
-        if pending.frame_id != frame_id {
-            return Err(DevelopmentError::Conflict(format!(
-                "Glass Core approval frame {frame_id} is not the pending frame"
-            )));
-        }
-        let pending = self.pending_tool_approval.take().ok_or_else(|| {
-            DevelopmentError::Conflict("Glass Core approval request vanished".into())
-        })?;
-        let result = if approved {
-            self.execute_tool_call(&pending.call, true, true)
-        } else {
-            Err(DevelopmentError::Conflict(
-                "Glass denied this Glass Core tool call".into(),
-            ))
-        };
-        self.respond_tool_result(&pending.frame_id, &result)?;
-        self.host_events.push_back(json!({
-            "type": "glass_tool_approval_resolved",
-            "frameId": pending.frame_id,
-            "toolName": pending.call.name,
-            "approved": approved,
-            "ok": result.is_ok(),
-        }));
-        if approved {
-            self.host_events
-                .push_back(tool_evidence(&pending.call, &result));
-        }
-        Ok(())
-    }
-
     fn handle_frame(&mut self, value: Value) -> DevelopmentResult<()> {
         match value.get("method").and_then(Value::as_str) {
             Some("tool/execute") => self.handle_tool_request(&value),
@@ -783,25 +737,11 @@ impl GlassCoreRuntime {
             self.host_events.push_back(tool_evidence(&call, &result));
             return Ok(());
         }
-        if crate::tools::tool_requires_mutation(&call.name) {
-            if self.pending_tool_approval.is_some() {
-                return Err(DevelopmentError::Conflict(
-                    "Glass Core requested a second tool while approval was pending".into(),
-                ));
-            }
-            self.pending_tool_approval = Some(PendingCoreToolApproval {
-                frame_id: frame_key.clone(),
-                call: call.clone(),
-            });
-            self.host_events.push_back(json!({
-                "type": "glass_tool_approval_request",
-                "frameId": frame_key,
-                "toolName": call.name,
-                "arguments": redact_tool_arguments(&call.arguments),
-            }));
-            return Ok(());
-        }
-        let result = self.execute_tool_call(&call, false, false);
+        // Core's native permission decision authorizes every `tool/execute`
+        // frame. Glass supplies the integration result without adding a
+        // second confirmation prompt.
+        let authorization = ToolAuthorization::glass_core();
+        let result = self.execute_tool_call(&call, authorization);
         self.respond_tool_result(&frame_key, &result)?;
         self.host_events.push_back(tool_evidence(&call, &result));
         Ok(())
@@ -810,11 +750,10 @@ impl GlassCoreRuntime {
     fn execute_tool_call(
         &self,
         call: &ToolCall,
-        allow_mutation: bool,
-        confirmed: bool,
+        authorization: ToolAuthorization,
     ) -> DevelopmentResult<Value> {
         if let Some(executor) = &self.local_tool_executor {
-            return executor(call, allow_mutation, confirmed);
+            return executor(call, authorization);
         }
         match &self.broker {
             Some(broker) => {
@@ -827,8 +766,7 @@ impl GlassCoreRuntime {
                         broker,
                         call,
                         &self.root,
-                        allow_mutation,
-                        confirmed,
+                        &authorization,
                     ))
                     .map_err(|error| DevelopmentError::Process(error.to_string()))
             }
@@ -1244,25 +1182,6 @@ fn tool_evidence(call: &ToolCall, result: &DevelopmentResult<Value>) -> Value {
         "ok": result.is_ok(),
         "error": result.as_ref().err().map(|error| redact_text(&error.to_string())),
     })
-}
-
-fn redact_tool_arguments(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(key, value)| {
-                    let value = if sensitive_name(key) {
-                        Value::String("[redacted]".into())
-                    } else {
-                        redact_tool_arguments(value)
-                    };
-                    (key.clone(), value)
-                })
-                .collect(),
-        ),
-        Value::Array(items) => Value::Array(items.iter().map(redact_tool_arguments).collect()),
-        other => other.clone(),
-    }
 }
 
 /// True when a field name, flag, or environment variable carries a credential.
@@ -2212,7 +2131,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let executor: crate::resident_harness::AgentToolExecutor =
-            Arc::new(|call: &ToolCall, _allow_mutation: bool, _confirmed: bool| {
+            Arc::new(|call: &ToolCall, _authorization: ToolAuthorization| {
                 assert_eq!(call.name, "glass.workspace.list");
                 Ok(json!({"text": "fixture contents"}))
             });
@@ -2242,7 +2161,7 @@ mod tests {
     }
 
     #[test]
-    fn mutations_park_on_an_approval_frame_until_answered() {
+    fn core_authorized_mutating_integration_executes_without_glass_approval() {
         if python3().is_none() {
             return;
         }
@@ -2254,8 +2173,9 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let executor: crate::resident_harness::AgentToolExecutor =
-            Arc::new(|call: &ToolCall, allow_mutation: bool, confirmed: bool| {
-                assert!(allow_mutation && confirmed);
+            Arc::new(|call: &ToolCall, authorization: ToolAuthorization| {
+                assert!(authorization.is_glass_core());
+                assert_eq!(authorization.actor.id, "external:glass-core");
                 Ok(json!({"tool": call.name, "written": true}))
             });
         let mut runtime = harness(&root, Some(executor));
@@ -2266,23 +2186,19 @@ mod tests {
             })
             .unwrap();
         let events = drain(&mut runtime, Duration::from_secs(5));
-        let approval = events
+        assert!(
+            events
+                .iter()
+                .all(|event| event.get("type").and_then(Value::as_str)
+                    != Some("glass_tool_approval_request")),
+            "Glass must not request a second approval"
+        );
+        let evidence = events
             .iter()
-            .find(|event| {
-                event.get("type").and_then(Value::as_str) == Some("glass_tool_approval_request")
-            })
-            .expect("mutation parks on an approval frame");
-        let frame = approval["frameId"].as_str().unwrap().to_string();
-        assert_eq!(approval["toolName"], json!("glass.git.commit"));
-        assert!(approval["arguments"].is_object());
-        runtime.resolve_tool_approval(&frame, true).unwrap();
-        let events = drain(&mut runtime, Duration::from_secs(5));
-        let kinds = events
-            .iter()
-            .filter_map(|event| event.get("type").and_then(Value::as_str))
-            .collect::<Vec<_>>();
-        assert!(kinds.contains(&"glass_tool_approval_resolved"), "{kinds:?}");
-        assert!(kinds.contains(&"glass_tool_evidence"), "{kinds:?}");
+            .find(|event| event.get("type").and_then(Value::as_str) == Some("glass_tool_evidence"))
+            .expect("Core-authorized mutation is executed and recorded");
+        assert_eq!(evidence["toolName"], json!("glass.git.commit"));
+        assert_eq!(evidence["ok"], json!(true));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -2394,26 +2310,6 @@ mod tests {
             }
             let _ = fs::remove_dir_all(&root);
         }
-    }
-
-    #[test]
-    fn unknown_approval_frames_are_rejected() {
-        if python3().is_none() {
-            return;
-        }
-        let root = std::env::temp_dir().join(format!(
-            "glass-core-frame-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let mut runtime = harness(&root, None);
-        let error = runtime
-            .resolve_tool_approval("host:fixture:1:call-1", true)
-            .unwrap_err();
-        assert!(error.to_string().contains("no Glass Core tool call"));
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

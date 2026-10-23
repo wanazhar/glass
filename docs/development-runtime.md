@@ -26,11 +26,15 @@ project. Use `glass update --dry-run` to inspect an update before applying it.
 See [Installation and operations](installation.md#update-a-cargo-installation)
 for package ownership and recovery details.
 
-Glass opens directly into the workspace. Glass Core owns provider connections
-and native coding-tool permissions. Glass owns
-browser, Git, and workspace integrations, including their revision checks and
-mutation confirmations. Root confinement, leases, protocol limits, timeouts,
-and result bounds still apply.
+Glass opens directly into the workspace. Glass Core owns agentic work,
+provider/session behavior, native coding tools, and permission decisions.
+Glass is the workspace and host for Core: it routes input, presents Core's
+execution events, and exposes browser, Git, and project integrations. Core-
+authorized integration requests execute with actor, path, resource identity,
+revision, lease, and conflict validation; Glass does not prompt a second time
+for approval. Human-initiated operations retain their explicit confirmation
+semantics. Root confinement, protocol limits, timeouts, and result bounds still
+apply.
 
 The one-shot CLI opens and closes a workspace for one request. A resident TUI owns one workspace until exit. A stdio MCP server keeps a bounded registry for its process. The daemon shares workspaces between authenticated local clients. Registries hold at most eight projects and evict an idle project after 30 minutes. Closing a workspace terminates owned services and processes; it never deletes project files.
 
@@ -44,10 +48,10 @@ DevelopmentWorkspace (generation + project services)
  ├─ ProjectWorkspace (tree, buffers, editor revisions, timeline, graph)
  ├─ ProcessManager (owned PTY trees)
  ├─ LanguageService / TestService / Debugger sessions
- ├─ AgentRegistry ── one worker per resident agent
- │                   └─ Glass Core runtime
+ ├─ AgentRegistry ── project thread/session routing and durable send identity
+ │                   └─ Glass Core runtime (agentic execution authority)
  ├─ TaskScheduler ── task records above AgentRegistry
- ├─ DevelopmentToolRouter (revision, actor, integration confirmation)
+ ├─ DevelopmentToolRouter (Core-authorized host calls + revision/actor checks)
  └─ BrowserService (optional attached browser context)
         │
         └─ TUI SnapshotWorker (display projections only; never state owner)
@@ -56,8 +60,10 @@ DevelopmentWorkspace (generation + project services)
 `DevelopmentWorkspace` owns the workspace generation and resident-service
 registries. `ProjectWorkspace` owns files, in-memory buffers, editor revisions,
 actor attribution, comments, proposals, checkpoints, event history, and graph
-data. `AgentRegistry` owns resident agent workers and the selected engine
-runtime. Glass Core is the sole resident engine. The task scheduler keeps task records in memory while the
+data. Glass Core owns agentic work, turn lifecycle, provider/session behavior,
+tool decisions, and permissions. `AgentRegistry` is a host adapter: it routes
+project threads and send identities to Core and mirrors the returned lifecycle
+events. Glass Core is the sole resident engine. The task scheduler keeps task records in memory while the
 daemon workspace actor is alive. Agent session files, timeline events, and
 editor checkpoints have separate storage. A worker, TUI snapshot, or external
 harness does not own the project.
@@ -136,7 +142,7 @@ partly processed the request. A local or pre-dispatch send failure instead
 restores the composer draft; it does not create the confirmed Core-response
 attention item.
 
-Every governed tool carries expected workspace generation and project revision. A stale call fails with `Conflict`; reread state and issue a new call. Glass integration mutations retain actor attribution and the applicable per-call confirmation.
+Every governed tool carries expected workspace generation and project revision. A stale call fails with `Conflict`; reread state and issue a new call. A Core `tool/execute` request is already authorized by Core and Glass executes it without another approval prompt. Glass retains actor attribution, path/resource identity, revision, lease, and conflict checks. Human-initiated operations retain their existing explicit confirmations.
 
 ## Project files and tree
 
@@ -229,18 +235,18 @@ Glass has four distinct agent paths:
 | Path | Ownership and behavior | Entry point |
 |---|---|---|
 | Deterministic local harness | Synchronous, browser-independent `glass.harness.v1` reducer. It resolves bounded references and scripted prompts such as `read PATH`, `files`, `process list`, and `diff`; it has no model provider or persistent session. | `glass agent hello/prompt --root .` |
-| Resident agent (default) | `AgentRegistry` worker with a persistent Glass Core session, Glass-owned tools, and optional browser context. | TUI Agent surface; `glass.agent.*`; see [Glass Core resident harness](glass-core-harness.md) |
+| Resident agent (default) | Glass Core session; Glass routes project threads and exposes host integrations. | TUI Agent surface; `glass.agent.*`; see [Glass Core resident harness](glass-core-harness.md) |
 | External harness handoff | Fixed executable names discovered on `PATH`; Glass hands the terminal to the selected interactive program and resumes after exit. It does not emulate or register that program. | `glass harness list`; `glass harness start NAME --root .` |
 | One-shot delegation | Temporary Codex, Claude, or OpenCode child. Read-only is default; output and errors are bounded; no resident identity or session is created. | `glass agent delegate HARNESS PROMPT --root .` |
 
 
 The resident workspace tool gateway provides read, list, search, edit, write,
 process, test, LSP, Git, browser, workflow, debugger, and task capabilities
-according to availability. The resident engine receives this catalog once,
-when its session opens, and Glass executes every call; a mutation is checked
-again at execution time, where stale revisions, leases, path confinement, and
-integration confirmation still apply. See [MCP integration](mcp.md) for
-transport semantics.
+according to availability. Core owns the agent's choice and permission to call
+them. Glass executes each Core `tool/execute` request and checks current
+revisions, leases, resource identity, and path confinement; it does not add a
+second approval decision. See [MCP integration](mcp.md) for transport
+semantics.
 
 ## Failure and recovery matrix
 

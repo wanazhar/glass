@@ -158,7 +158,7 @@ a second keybinding or state owner.
 
 | Surface | Authoritative projection | Guided empty/loading behavior |
 |---|---|---|
-| Agent | Glass Core readiness, shared transcript viewport, typed event/tool cards, approval | shows `START HERE` when Core is ready; otherwise `:actions` offers setup and repair guidance |
+| Agent | Selected Glass Core session state and events, shared transcript viewport, typed event/tool cards | shows `START HERE` when Core is ready; otherwise `:actions` offers setup and repair guidance |
 | Code | bounded files, focused buffer, cursor/dirty state, review comments/proposals/checkpoints, LSP | no files/file open messages direct to selection and Enter; no diagnostics is a valid state |
 | App | embedded `BrowserWorkspaceController`: connection, target, semantic entities, workflow, visual path | detached/no page/loading/failed/recovery/semantic-only states stay visible |
 | Terminal | managed process rows with health, PID, command and detected URL | `s` starts the detected suite; `a` opens actions; no process is an empty state |
@@ -172,8 +172,8 @@ a second keybinding or state owner.
 One active-overlay resolver owns keyboard, mouse, and terminal-overlay
 precedence. From highest priority to lowest it selects quit confirmation,
 editor exit prompt, native browser JavaScript dialog, help, command-center menu,
-browser target picker, file picker, session picker, agent approval, mutation
-confirmation, full-screen editor, composer dock, Glass command palette, and
+browser target picker, file picker, session picker, mutation confirmation,
+full-screen editor, composer dock, Glass command palette, and
 browser recovery. Recovery is the lowest-priority overlay
 so it cannot replace an already active modal or editor. If no modal is active,
 ordinary surface input owns the event, including Git workbench keys. Ctrl-C
@@ -237,7 +237,7 @@ mouse, paste, or surface input while a higher-priority overlay is active.
 | Space on Git | stage or unstage the selected file |
 | `c` on Git | open `git commit` in the palette |
 | `s` on Terminal | queue the project-detected development suite |
-| `Y`/Enter or `N`/Esc | approve/deny the one frozen mutation confirmation or agent approval |
+| `Y`/Enter or `N`/Esc | accept or dismiss a pending human-initiated mutation confirmation |
 | `Ctrl-C` | open Glass quit confirmation, including from the editor; confirmed quit restores terminal |
 | `Esc` | close current modal, palette, diff, recovery, or return INSERT→NORMAL then leave a clean editor |
 | mouse left-click | select a navigation tab or the dock; double-click opens; right-click/long-press opens actions; wheel scrolls |
@@ -329,9 +329,10 @@ Core session; typing `/` does not open a Pi or second-agent command menu.
 ## First launch and agent composer
 
 On construction Glass opens directly into the workspace and begins loading
-resident engine readiness and workspace projections. Glass Core is the sole
-resident engine and owns provider configuration, native coding tools, and their
-permissions. Glass owns workspace editing, Git, browser and other integrations.
+Core connectivity and workspace projections. Glass Core is the sole resident
+engine and owns agent work, provider/session/context behavior, turn lifecycle,
+native coding tools, and permissions. Glass routes human input, projects Core
+events, and supplies host integrations.
 See the [Glass Core resident harness guide](../glass-core-harness.md) for
 provider setup and readiness.
 
@@ -352,17 +353,17 @@ builds only the requested viewport lines; shared Markdown spans and tool-card
 rendering remain intact. The event cursor, selected agent, and pending-message
 signature gate replacement of the shared transcript, and the no-pending path
 borrows cached entries instead of cloning the history each frame. Glass keeps
-the project/session shell, thread and draft identity, selection, approval and
-host-action metadata, and inline composer dock. Core Live and the Glass event
+project-thread and draft identity, selection, and host-action metadata. There
+is no Glass-owned agent approval state or prompt. Core Live and the Glass event
 adapter both feed the shared typed conversation reducer for turn boundaries,
 assistant streaming, reasoning, tool lifecycle, and exact call-ID association.
 The reducer keeps host identity and policy metadata outside its shared
 entries. Glass also uses the shared composer editor while retaining its draft
 persistence and host-specific key routing. It sends human text unchanged and
-carries run mode plus structured surface, project, browser, editor, and
-selected-tool state as request context; it does not inject generic playbook
-prose into each turn. Its resident harness remains the single owner of the
-Core runtime; this UI adapter does not start another terminal or provider
+does not attach active-file or generic workspace context implicitly. Explicit
+verification requests may carry the bounded browser evidence they require. The
+resident harness is the host adapter for the Core runtime; this UI adapter does
+not start another terminal or provider
 process. `glass-tui` owns the conversation reducer, cached layout, and
 transcript viewport behavior, while Glass keeps project navigation, session
 identity, and the governed event protocol.
@@ -444,10 +445,14 @@ Workspace-local todos
 (`glass.todo.*`) persist at `.glass/todos/session.json` and form the Agent
 checklist shown on Agent and Tasks; they are not the overnight task DAG.
 
-The resident agent's native coding tools and permission decisions belong to
-Glass Core. Glass does not add Ask/Plan coding modes or a second coding
-permission layer. Glass-owned workspace, Git, and browser integrations retain
-their own path, revision, and mutation-confirmation checks.
+The resident agent's work, turn lifecycle, native coding tools, and permission
+decisions belong to Glass Core. Glass routes human input and mirrors Core's
+selected-session events; it does not infer agent approval from a waiting state
+or add an agent approval prompt. Core-authorized `glass.*` requests execute in
+the workspace router with actor, path, resource identity, revision, lease, and
+conflict validation. Glass does not ask for a second per-call confirmation.
+Human-initiated workspace operations keep their existing explicit
+confirmation behavior.
 
 ## Code projection and editor
 
@@ -613,7 +618,7 @@ previous data when safe and show recovery text; constrained terminals retain
 header/footer and truncate panel content. App additionally distinguishes
 Detached, Starting, Connected, Recovering, and Failed browser connection phases,
 plus semantic-only and live presentation. Agent distinguishes setup, drafting,
-sending, tool-running, approval, failed-send and settled conversation states.
+sending, tool-running, waiting, failed-send and settled conversation states.
 Git diff loading is visibly `Loading Git diff…`; browser observation and live
 screenshots are similarly marked pending.
 

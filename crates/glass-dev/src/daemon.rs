@@ -133,6 +133,8 @@ pub struct DevelopmentDaemonRequest {
     pub allow_mutation: bool,
     #[serde(default)]
     pub confirmed: bool,
+    #[serde(default)]
+    core_runtime_authorized: bool,
     pub actor: Option<String>,
     #[serde(default)]
     pub since: Option<u64>,
@@ -1738,8 +1740,7 @@ pub async fn forward_resident_tool_file(
         &workspace_id,
         path,
         root,
-        allow_mutation,
-        confirmed,
+        ResidentToolAuthorization::user(allow_mutation, confirmed),
     )
     .await
 }
@@ -1750,37 +1751,28 @@ async fn forward_resident_tool_file_with_context(
     workspace_id: &str,
     path: &Path,
     root: &Path,
-    allow_mutation: bool,
-    confirmed: bool,
+    authorization: ResidentToolAuthorization,
 ) -> Result<Value, Box<dyn std::error::Error>> {
     let call = read_private_tool_call(path)?;
-    forward_resident_tool_call(
-        socket,
-        token,
-        workspace_id,
-        &call,
-        root,
-        allow_mutation,
-        confirmed,
-    )
-    .await
+    forward_resident_tool_call(socket, token, workspace_id, &call, root, authorization).await
 }
 
 pub(crate) async fn forward_resident_tool_call_with_context(
     broker: &ResidentAgentBroker,
     call: &ToolCall,
     root: &Path,
-    allow_mutation: bool,
-    confirmed: bool,
+    authorization: &ToolAuthorization,
 ) -> Result<Value, Box<dyn std::error::Error>> {
+    if !authorization.is_glass_core() || authorization.actor.id != "external:glass-core" {
+        return Err("resident tool forwarding requires Core runtime authority".into());
+    }
     forward_resident_tool_call(
         &broker.socket,
         &broker.token,
         &broker.workspace_id,
         call,
         root,
-        allow_mutation,
-        confirmed,
+        ResidentToolAuthorization::glass_core(),
     )
     .await
 }
@@ -1791,8 +1783,7 @@ async fn forward_resident_tool_call(
     workspace_id: &str,
     call: &ToolCall,
     root: &Path,
-    allow_mutation: bool,
-    confirmed: bool,
+    authorization: ResidentToolAuthorization,
 ) -> Result<Value, Box<dyn std::error::Error>> {
     let inspect = request(
         socket,
@@ -1807,6 +1798,7 @@ async fn forward_resident_tool_call(
             expected_project_revision: None,
             allow_mutation: false,
             confirmed: false,
+            core_runtime_authorized: false,
             actor: Some("glass-core".into()),
             since: None,
             limit: None,
@@ -1849,8 +1841,9 @@ async fn forward_resident_tool_call(
             call: Some(call.clone()),
             expected_generation: Some(generation),
             expected_project_revision: Some(revision),
-            allow_mutation,
-            confirmed,
+            allow_mutation: authorization.allow_mutation,
+            confirmed: authorization.confirmed,
+            core_runtime_authorized: authorization.core_runtime_authorized,
             actor: Some("glass-core".into()),
             since: None,
             limit: None,
@@ -1904,6 +1897,7 @@ async fn forward_resident_tool_call(
                 expected_project_revision: None,
                 allow_mutation: false,
                 confirmed: false,
+                core_runtime_authorized: false,
                 actor: Some("glass-core".into()),
                 since: None,
                 limit: None,
@@ -1916,6 +1910,31 @@ async fn forward_resident_tool_call(
                 .error
                 .unwrap_or_else(|| "resident operation inspection failed".into())
                 .into());
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResidentToolAuthorization {
+    allow_mutation: bool,
+    confirmed: bool,
+    core_runtime_authorized: bool,
+}
+
+impl ResidentToolAuthorization {
+    fn user(allow_mutation: bool, confirmed: bool) -> Self {
+        Self {
+            allow_mutation,
+            confirmed,
+            core_runtime_authorized: false,
+        }
+    }
+
+    fn glass_core() -> Self {
+        Self {
+            allow_mutation: false,
+            confirmed: false,
+            core_runtime_authorized: true,
         }
     }
 }
@@ -2013,12 +2032,16 @@ fn request_tool_context(
         .as_deref()
         .map(Actor::external)
         .unwrap_or_else(Actor::local);
+    let authorization = if request.core_runtime_authorized {
+        if actor.id != "external:glass-core" {
+            return Err("Core runtime authority requires the Glass Core actor".into());
+        }
+        ToolAuthorization::glass_core()
+    } else {
+        ToolAuthorization::from_user_confirmation(actor, request.allow_mutation, request.confirmed)
+    };
     Ok(DevelopmentToolContext {
-        authorization: ToolAuthorization {
-            actor,
-            allow_mutation: request.allow_mutation,
-            confirmed: request.confirmed,
-        },
+        authorization,
         initiator: None,
         expected_generation: request
             .expected_generation
@@ -2261,11 +2284,11 @@ mod tests {
 
     fn test_context() -> DevelopmentToolContext {
         DevelopmentToolContext {
-            authorization: ToolAuthorization {
-                actor: Actor::external("daemon-concurrency-test"),
-                allow_mutation: true,
-                confirmed: true,
-            },
+            authorization: ToolAuthorization::from_user_confirmation(
+                Actor::external("daemon-concurrency-test"),
+                true,
+                true,
+            ),
             initiator: None,
             expected_generation: 1,
             expected_project_revision: 0,
@@ -2361,6 +2384,7 @@ mod tests {
             expected_project_revision: None,
             allow_mutation: false,
             confirmed: false,
+            core_runtime_authorized: false,
             actor: None,
             since: None,
             limit: None,
@@ -2610,6 +2634,7 @@ mod tests {
                 expected_project_revision: None,
                 allow_mutation: false,
                 confirmed: false,
+                core_runtime_authorized: false,
                 actor: None,
                 since: None,
                 limit: None,
@@ -3538,6 +3563,7 @@ while True:
                     expected_project_revision: None,
                     allow_mutation: false,
                     confirmed: false,
+                    core_runtime_authorized: false,
                     actor: Some("test-client".into()),
                     since: None,
                     limit: None,
@@ -3604,7 +3630,12 @@ while True:
                 ));
                 write_private(&call_path, &serde_json::to_vec(&call).unwrap()).unwrap();
                 let result = forward_resident_tool_file_with_context(
-                    &socket, &token, "fixture", &call_path, &project, true, true,
+                    &socket,
+                    &token,
+                    "fixture",
+                    &call_path,
+                    &project,
+                    ResidentToolAuthorization::user(true, true),
                 )
                 .await
                 .unwrap();
@@ -3706,6 +3737,7 @@ while True:
                     expected_project_revision: None,
                     allow_mutation: false,
                     confirmed: false,
+                    core_runtime_authorized: false,
                     actor: Some("external-agent".into()),
                     since: None,
                     limit: None,

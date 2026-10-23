@@ -44,10 +44,10 @@ impl LocalHttpFixture {
                         let request = String::from_utf8_lossy(&request[..request_len]);
                         let request_path = request.lines().next().unwrap_or_default();
                         let response_body: Vec<u8> = if request_path.contains("/oversized") {
-                            let oversized_css = (0..513)
+                            let oversized_css = (0..4097)
                                 .map(|index| format!(".rule-{index} {{ color: red; }}"))
                                 .collect::<String>();
-                            format!("<!doctype html><title>Oversized Fixture</title><style>{oversized_css}</style><main>oversized-css-513</main>").into_bytes()
+                            format!("<!doctype html><title>Oversized Fixture</title><style>{oversized_css}</style><main>oversized-css-4097</main>").into_bytes()
                         } else if request_path.contains("/clicked") {
                             b"<!doctype html><title>Clicked Fixture</title><main>native-clicked-91af</main>".to_vec()
                         } else {
@@ -764,7 +764,7 @@ fn fake_core_binary_with_mode(mode: &str) -> std::path::PathBuf {
     std::fs::write(
         &path,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'glass-core 0.1.0\\n'; exit 0; fi\nexec python3 '{}' '{}' \"$@\"\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'glass-core 0.1.0\\n'; exit 0; fi\nif [ $# -eq 0 ]; then printf 'FAKE GLASS CORE NATIVE UI\\n'; exit 0; fi\nexec python3 '{}' '{}' \"$@\"\n",
             fixture.display(), mode
         ),
     )
@@ -889,12 +889,74 @@ fn send_ctrl_shift_t(session: &mut Session) {
     session.send(b"\x1b[84;6u");
 }
 
-fn paste_command(session: &mut Session, command: &str) {
-    session.send(b":");
-    session.settle(Duration::from_millis(100));
-    session.send(b"\x1b[200~");
-    session.send(command.as_bytes());
-    session.send(b"\x1b[201~");
+fn send_ctrl_c(session: &mut Session) {
+    // A raw ETX byte raises SIGINT on many PTY configurations before crossterm
+    // can see a key event. CSI-u preserves the intended Ctrl+C key event.
+    session.send(b"\x1b[99;5u");
+}
+
+fn send_alt_digit(session: &mut Session, digit: u8) {
+    assert!((b'1'..=b'5').contains(&digit));
+    session.send(format!("\x1b[{};3u", digit).as_bytes());
+}
+
+fn start_core_conversation(session: &mut Session, role: &str, task: &str) {
+    session.send(b"/");
+    assert!(
+        session.wait_for("CORE COMMANDS", Duration::from_secs(5)),
+        "Core slash menu did not open\n{}",
+        session.output_tail()
+    );
+    session.send(b"glass agent spawn");
+    assert!(
+        session.wait_for("Start Core conversation", Duration::from_secs(5)),
+        "Core conversation action did not appear after filtering\n{}",
+        session.output_tail()
+    );
+    session.send(b"\t");
+    let completed = "/glass agent spawn ROLE TASK";
+    assert!(
+        session.wait_for(completed, Duration::from_secs(5)),
+        "slash completion did not provide the Core conversation arguments\n{}",
+        session.output_tail()
+    );
+    session.send(&[0x7f; 9]);
+    session.send_slowly(
+        format!("{role} {task}").as_bytes(),
+        Duration::from_millis(20),
+    );
+    session.send(b"\r");
+}
+
+fn complete_glass_action(
+    session: &mut Session,
+    query: &str,
+    label: &str,
+    completion: &str,
+    args: &str,
+) {
+    session.send(b"/");
+    assert!(session.wait_for("CORE COMMANDS", Duration::from_secs(5)));
+    session.send(query.as_bytes());
+    assert!(
+        session.wait_for(label, Duration::from_secs(5)),
+        "Glass action {label:?} was not discoverable for query {query:?}\n{}",
+        session.output_tail()
+    );
+    session.send(b"\t");
+    let expected = format!("/glass {completion}");
+    assert!(
+        session.wait_for(&expected, Duration::from_secs(5)),
+        "Glass action completion did not produce {expected:?}\n{}",
+        session.output_tail()
+    );
+    let placeholder = completion
+        .split_whitespace()
+        .skip(2)
+        .collect::<Vec<_>>()
+        .join(" ");
+    session.send(&vec![0x7f; placeholder.len()]);
+    session.send_slowly(args.as_bytes(), Duration::from_millis(20));
     session.send(b"\r");
 }
 
@@ -1098,7 +1160,7 @@ fn ctrl_c_requires_confirmation_from_every_input_mode() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "navigation frame never rendered"
     );
-    session.send(b"\x03");
+    send_ctrl_c(&mut session);
     assert!(
         session.wait_for("QUIT?", Duration::from_secs(5)),
         "Ctrl+C must open quit confirmation from navigation mode"
@@ -1116,7 +1178,7 @@ fn ctrl_c_requires_confirmation_from_every_input_mode() {
         session.output_tail()
     );
     session.clear_output();
-    session.send(b"\x03");
+    send_ctrl_c(&mut session);
     assert!(
         session.wait_for_raw("QUIT?", Duration::from_secs(3)),
         "Ctrl+C must reopen quit confirmation"
@@ -1141,12 +1203,11 @@ fn ctrl_c_requires_confirmation_from_every_input_mode() {
         session.wait_for_raw("CONVERSATION", Duration::from_secs(5)),
         "agent surface never rendered after trust"
     );
-    session.send(b"i");
     assert!(
         session.wait_for("▌", Duration::from_secs(5)),
-        "composer never opened"
+        "Agent composer was not ready immediately"
     );
-    session.send(b"\x03");
+    send_ctrl_c(&mut session);
     assert!(
         session.wait_for("QUIT?", Duration::from_secs(5)),
         "Ctrl+C must open quit confirmation from composer mode"
@@ -1176,7 +1237,7 @@ fn action_menu_opens_and_renders_entries() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.send(b"4");
+    send_alt_digit(&mut session, b'4');
     assert!(
         session.wait_for("TERMINAL", Duration::from_secs(5)),
         "terminal surface never rendered"
@@ -1207,7 +1268,7 @@ fn app_target_picker_failure_keeps_tui_recoverable() {
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust"
     );
-    session.send(b"3");
+    send_alt_digit(&mut session, b'3');
     assert!(
         session.wait_for("VISUAL PLANE", Duration::from_secs(5)),
         "App surface never rendered"
@@ -1227,7 +1288,7 @@ fn app_target_picker_failure_keeps_tui_recoverable() {
 }
 
 #[test]
-fn agent_enter_and_typing_open_composer_with_offline_core_fixture() {
+fn agent_composer_is_ready_and_first_typing_is_literal_with_offline_core_fixture() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;
     }
@@ -1251,17 +1312,173 @@ fn agent_enter_and_typing_open_composer_with_offline_core_fixture() {
 
     session.send(b"c");
     assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "typing on Agent must open the composer instead of switching surfaces\n{}",
+        session.wait_for_composer_text("c", Duration::from_secs(5)),
+        "first typing on Agent must enter the always-ready composer\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x15");
+    assert!(session.wait_for("▌", Duration::from_secs(3)));
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+}
+
+#[test]
+fn workspace_navigation_keeps_agent_focus_and_opens_gc_slash_commands() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
+    std::fs::write(
+        root.join(".github/workflows/ci.yml"),
+        "name: harmless navigation fixture\n",
+    )
+    .unwrap();
+    for (path, contents) in [
+        ("a-preview.txt", "ALPHA_PREVIEW_1\n"),
+        ("b-preview.txt", "BETA_PREVIEW_2\n"),
+        ("c-preview.txt", "GAMMA_PREVIEW_3\n"),
+    ] {
+        std::fs::write(root.join(path), contents).unwrap();
+    }
+    let data_home = root.join("data-home");
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_data_home_options(
+        &binary(),
+        &root,
+        136,
+        40,
+        Some(&fake_core),
+        Some(&data_home),
+    );
+    assert!(
+        session.wait_for("CODING AGENT", Duration::from_secs(8)),
+        "Agent workspace did not render\n{}",
+        session.output_tail()
+    );
+
+    // `/` is the first action at launch: GC's catalogue must be discoverable
+    // without switching surfaces, opening a colon palette, or sending a turn.
+    session.send(b"/");
+    assert!(
+        session.wait_for("status", Duration::from_secs(8)),
+        "fresh-launch slash menu did not discover Core commands\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for("model", Duration::from_secs(2)),
+        "Core catalogue omitted its interactive model command\n{}",
+        session.output_tail()
+    );
+    session.send(b"status\r");
+    assert!(
+        session.wait_for("fixture-session", Duration::from_secs(8)),
+        "runtime-safe /status did not reach GC\n{}",
+        session.output_tail()
+    );
+    session.send(b"/model\r");
+    assert!(
+        session.wait_for("Glass Core command UI exited", Duration::from_secs(8)),
+        "interactive /model did not hand off to Core's native UI\n{}",
+        session.output_tail()
+    );
+
+    // Code navigation must update the focused preview as the selection moves.
+    // Returning to Agent must not expose the old buffer as composer context.
+    session.send(b"\x1b[50;3u"); // Alt-2: Code without stealing composer focus.
+    assert!(
+        session.wait_for("FILES", Duration::from_secs(5)),
+        "Code surface did not open\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x10");
+    assert!(
+        session.wait_for("OPEN FILE", Duration::from_secs(5)),
+        "file picker did not open from Code\n{}",
+        session.output_tail()
+    );
+    session.send(b"a-preview.txt\r");
+    assert!(
+        session.wait_for("ALPHA_PREVIEW_1", Duration::from_secs(5)),
+        "first preview fixture was not opened from Code\n{}",
         session.output_tail()
     );
     session.send(b"\x1b");
-    session.settle(Duration::from_millis(300));
-
-    session.send(b"\r");
+    session.clear_output();
+    session.send(b"\x1b[B");
+    assert!(
+        session.wait_for("BETA_PREVIEW_2", Duration::from_secs(5)),
+        "Down did not refresh the selected source preview\n{}",
+        session.visible_output()
+    );
+    assert!(
+        !session.visible_output().contains("ALPHA_PREVIEW_1"),
+        "preview stayed stuck on the first file after selection moved\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x10");
+    assert!(session.wait_for("OPEN FILE", Duration::from_secs(5)));
+    session.send(b".github/workflows/ci.yml\r");
+    assert!(session.wait_for("ci.yml", Duration::from_secs(5)));
+    session.send(b"\x1b");
+    session.clear_output();
+    session.send(b"\x1b[49;3u"); // Alt-1: return to Agent.
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Enter on Agent must open the composer\n{}",
+        "return to Agent failed\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for("▌", Duration::from_secs(5)),
+        "Agent composer was not immediately available\n{}",
+        session.output_tail()
+    );
+    session.clear_output();
+    session.send(b"x");
+    assert!(
+        session.wait_for_composer_text("x", Duration::from_secs(3)),
+        "first printable key after returning to Agent did not enter its ready composer"
+    );
+    assert!(
+        !session.visible_output().contains("ci.yml"),
+        "stale Code buffer leaked into the Agent composer\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x15");
+
+    // Resize to a compact terminal without changing the selected surface or
+    // focus, then visit App and return through Esc without revealing Code.
+    session.set_window(80, 24);
+    session.settle(Duration::from_millis(500));
+    assert!(
+        !session.visible_output().contains("ci.yml"),
+        "terminal resize revealed the old source pane\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b[51;3u"); // Alt-3: App while the Agent composer is open.
+    assert!(
+        session.wait_for("VISUAL PLANE", Duration::from_secs(5)),
+        "App surface was not reachable after closing the composer\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b[49;3u");
+    assert!(
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
+        "Agent surface was not reachable after App\n{}",
+        session.output_tail()
+    );
+    session.clear_output();
+    session.send(b"1");
+    assert!(
+        session.wait_for_composer_text("1", Duration::from_secs(5)),
+        "typing `1` on Agent changed surfaces instead of entering the composer\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x15"); // Ctrl-U clears the harmless draft fixture.
+    assert!(session.wait_for("▌", Duration::from_secs(5)));
+    assert!(
+        !session.visible_output().contains("ci.yml"),
+        "source buffer appeared after returning to Agent from App\n{}",
         session.output_tail()
     );
     session.kill();
@@ -1290,7 +1507,7 @@ fn fresh_start_first_composer_send_works_without_implicit_file_context() {
     // Make a project file the active editor buffer before the first message.
     // The filename and contents are deliberately harmless; this exercises the
     // implicit-context regression without touching host credential files.
-    session.send(b"2");
+    send_alt_digit(&mut session, b'2');
     assert!(
         session.wait_for("fixture.txt", Duration::from_secs(5)),
         "Code surface did not render\n{}",
@@ -1314,16 +1531,15 @@ fn fresh_start_first_composer_send_works_without_implicit_file_context() {
     );
 
     session.clear_output();
-    session.send(b"1");
+    send_alt_digit(&mut session, b'1');
     assert!(
         session.wait_for("Core available", Duration::from_secs(5)),
         "Agent surface did not render on return\n{}",
         session.output_tail()
     );
-    session.send(b"\r");
     assert!(
-        session.wait_for("Message on Agent", Duration::from_secs(5)),
-        "composer did not open for the first fresh-workspace message\n{}",
+        session.wait_for("▌", Duration::from_secs(5)),
+        "composer was not ready for the first fresh-workspace message\n{}",
         session.output_tail()
     );
     session.send_slowly(b"fresh startup first send", Duration::from_millis(35));
@@ -1373,8 +1589,6 @@ fn agent_scrollback_controls_render_in_compact_and_desktop_pty() {
         assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
         for index in 0..10 {
-            session.send(b"\r");
-            assert!(session.wait_for("Message on Agent", Duration::from_secs(4)));
             let prompt = format!("scroll fixture {index}");
             session.send(prompt.as_bytes());
             session.send(b"\r");
@@ -1423,10 +1637,9 @@ fn first_message_queues_while_core_is_starting() {
         "fresh Agent did not render its initial screen\n{}",
         session.output_tail()
     );
-    session.send(b"\r");
     assert!(
-        session.wait_for("Message on Agent", Duration::from_secs(3)),
-        "composer could not open while Core was starting\n{}",
+        session.wait_for("▌", Duration::from_secs(3)),
+        "composer was not ready while Core was starting\n{}",
         session.output_tail()
     );
     let prompt = "first message while core starts";
@@ -1492,10 +1705,9 @@ fn unavailable_core_send_shows_full_error_and_keeps_retry_draft() {
         Session::start_with_core_binary(&binary(), &root, 100, 28, Some(&missing_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     assert!(session.wait_for("CODING AGENT", Duration::from_secs(5)));
-    session.send(b"\r");
     assert!(
-        session.wait_for("Message on Agent", Duration::from_secs(5)),
-        "composer did not open when Core needs setup\n{}",
+        session.wait_for("▌", Duration::from_secs(5)),
+        "composer was not ready when Core needs setup\n{}",
         session.output_tail()
     );
 
@@ -1552,7 +1764,7 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
     session.wait_for_agent_surface();
     assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
-    session.send(b":agent spawn assistant offline task\r");
+    start_core_conversation(&mut session, "assistant", "offline task");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
         "agent command did not create the resident session\n{}",
@@ -1684,7 +1896,7 @@ fn three_fake_core_tasks_complete_without_stealing_selected_thread() {
         ("beta", "beta task", "agent-0002"),
         ("gamma", "gamma task", "agent-0003"),
     ] {
-        session.send(format!(":agent spawn {role} {task}\r").as_bytes());
+        start_core_conversation(&mut session, role, task);
         assert!(
             session.wait_for(&format!("Spawned {expected_id}"), Duration::from_secs(5)),
             "resident agent {role} was not created\n{}",
@@ -2064,20 +2276,19 @@ fn task_scheduler_threads_keep_task_identity_drafts_and_background_focus() {
     assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
     for (title, tag) in [
-        ("Alpha task", "alpha-job"),
-        ("Beta task", "beta-job"),
-        ("Gamma task", "gamma-job"),
+        ("Alpha", "alpha-job"),
+        ("Beta", "beta-job"),
+        ("Gamma", "gamma-job"),
     ]
     .into_iter()
     {
-        let arguments = serde_json::json!({
-            "title": title,
-            "goal": tag,
-            "prompt": tag,
-            "verification": {"kind": "settled"}
-        });
-        let command = format!("tool glass.task.create {arguments}");
-        paste_command(&mut session, &command);
+        complete_glass_action(
+            &mut session,
+            "glass create task",
+            "Create task",
+            "task create TITLE PROMPT",
+            &format!("{title} {tag}"),
+        );
         assert!(
             session.wait_for("one-use confirmation required", Duration::from_secs(5)),
             "task creation did not request its normal one-use confirmation\n{}",
@@ -2102,13 +2313,13 @@ fn task_scheduler_threads_keep_task_identity_drafts_and_background_focus() {
     }
 
     let registry_path = fixture_state.join("threads/registry.json");
-    session.send(b"1");
+    send_alt_digit(&mut session, b'1');
     assert!(session.wait_for_visible("CONVERSATION", Duration::from_secs(5)));
     let mut last_selected = 0;
     for (index, (task_id, title, tag, draft)) in [
-        ("task-0001", "Alpha task", "alpha-job", "alpha task draft"),
-        ("task-0002", "Beta task", "beta-job", "beta task draft"),
-        ("task-0003", "Gamma task", "gamma-job", "gamma task draft"),
+        ("task-0001", "Alpha", "alpha-job", "alpha task draft"),
+        ("task-0002", "Beta", "beta-job", "beta task draft"),
+        ("task-0003", "Gamma", "gamma-job", "gamma task draft"),
     ]
     .into_iter()
     .enumerate()
@@ -2170,7 +2381,7 @@ fn task_scheduler_threads_keep_task_identity_drafts_and_background_focus() {
     // Verify the scheduler's assignment projection and all three durable
     // conversation records while gamma remains selected.
     session.send(b"\x1b");
-    session.send(b"5");
+    send_alt_digit(&mut session, b'5');
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let visible = session.visible_output();
@@ -2219,7 +2430,7 @@ fn task_scheduler_threads_keep_task_identity_drafts_and_background_focus() {
         3,
         "task assignments use distinct durable threads"
     );
-    session.send(b"1");
+    send_alt_digit(&mut session, b'1');
     assert!(session.wait_for_visible("CONVERSATION", Duration::from_secs(5)));
     let mut previous_selection = 2;
     for (target, tag, draft) in [
@@ -2282,7 +2493,7 @@ fn task_scheduler_threads_keep_task_identity_drafts_and_background_focus() {
     session.settle(Duration::from_millis(500));
     let deadline = Instant::now() + Duration::from_secs(10);
     let settled = loop {
-        session.send(b"5");
+        send_alt_digit(&mut session, b'5');
         session.settle(Duration::from_millis(300));
         if session.wait_for_visible("task-0001", Duration::from_secs(2)) {
             let visible = session.visible_output();
@@ -2320,7 +2531,7 @@ fn task_scheduler_threads_keep_task_identity_drafts_and_background_focus() {
         );
     }
 
-    session.send(b"1");
+    send_alt_digit(&mut session, b'1');
     assert!(session.wait_for_visible("CONVERSATION", Duration::from_secs(5)));
     assert!(
         session.visible_output().contains("gamma-job"),
@@ -2393,7 +2604,7 @@ fn follow_up_queue_edits_persist_without_automatic_dispatch() {
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
     assert!(session.wait_for("Core available", Duration::from_secs(8)));
-    session.send(b":agent spawn queue-owner queue persistence\r");
+    start_core_conversation(&mut session, "queue-owner", "queue persistence");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
         "queue-owner agent did not spawn\n{}",
@@ -2535,13 +2746,13 @@ fn task_thread_queue_restart_requires_explicit_core_recovery() {
     session.wait_for_agent_surface();
     assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
-    let task_spec = serde_json::json!({
-        "title": "Recovery task",
-        "goal": "issue64-task-recovery",
-        "prompt": "issue64-task-recovery-prompt",
-        "verification": {"kind": "settled"}
-    });
-    paste_command(&mut session, &format!("tool glass.task.create {task_spec}"));
+    complete_glass_action(
+        &mut session,
+        "glass create task",
+        "Create task",
+        "task create TITLE PROMPT",
+        "Recovery issue64-task-recovery-prompt",
+    );
     assert!(session.wait_for("one-use confirmation required", Duration::from_secs(5)));
     session.send(b"y");
     assert!(session.wait_for("glass.task.create", Duration::from_secs(8)));
@@ -2582,7 +2793,7 @@ fn task_thread_queue_restart_requires_explicit_core_recovery() {
     );
 
     // Persist a real queue row through the selected task thread's queue UI.
-    session.send(b"1");
+    send_alt_digit(&mut session, b'1');
     assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
     send_ctrl_shift_t(&mut session);
     assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
@@ -2727,9 +2938,12 @@ fn task_thread_queue_restart_requires_explicit_core_recovery() {
         "enabled",
     )
     .unwrap();
-    paste_command(
+    complete_glass_action(
         &mut reopened,
-        "tool glass.task.resume {\"taskId\":\"task-0001\"}",
+        "glass resume task",
+        "Resume task",
+        "task resume TASK_ID",
+        "task-0001",
     );
     assert!(reopened.wait_for("one-use confirmation required", Duration::from_secs(5)));
     reopened.send(b"y");
@@ -2925,7 +3139,7 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
     assert!(session.wait_for("Core available", Duration::from_secs(8)));
-    session.send(b":agent spawn assistant live provider smoke\r");
+    start_core_conversation(&mut session, "assistant", "live provider smoke");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(8)),
         "resident agent did not start before the live prompt; visible status class={}",
@@ -3285,37 +3499,21 @@ fn gc_commands_are_discoverable_and_forwarded_from_the_launcher_terminal() {
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     session.wait_for_agent_surface();
 
-    // Commands are scoped to a Core session. Start that session with an
-    // offline greeting before discovering or forwarding its command surface.
-    session.send(b"\r");
-    assert!(session.wait_for("Message on Agent", Duration::from_secs(5)));
-    session.send_slowly(b"start the command smoke", Duration::from_millis(25));
-    session.send(b"\r");
-    assert!(
-        session.wait_for("handled start the command smoke", Duration::from_secs(8)),
-        "offline Core greeting did not initialize the selected session\n{}",
-        session.output_tail()
-    );
-    session.send(b"\x1b"); // close the composer before entering Glass's command palette
-
-    session.send(b":agent commands\r");
+    // `/` discovers the current Core catalogue without a greeting turn.
+    session.send(b"/");
     assert!(
         session.wait_for("/status", Duration::from_secs(8)),
-        "Glass did not display the command catalogue returned by Core\n{}",
+        "Core command catalogue was not discoverable at fresh launch\n{}",
         session.output_tail()
     );
     assert!(session.visible_output().contains("/model"));
-    // The human-readable event can arrive just before the workspace tool
-    // worker releases its short-lived lock.
-    session.settle(Duration::from_millis(500));
-
-    session.send(b":agent command status\r");
+    session.send(b"status\r");
     assert!(
         session.wait_for("fixture-model", Duration::from_secs(8)),
-        "Glass did not forward /status to the Core runtime\n{}",
+        "slash-selected /status was not forwarded to the Core runtime\n{}",
         session.output_tail()
     );
-    session.send(b":agent command model\r");
+    session.send(b"/model\r");
     assert!(
         session.wait_for("command-ui", Duration::from_secs(8)),
         "interactive Core command did not explain the native UI handoff\n{}",
@@ -3368,8 +3566,7 @@ fn live_core_greeting_settles_without_glass_approval_notice() {
         session.visible_output()
     );
 
-    session.send(b"\r");
-    assert!(session.wait_for("Message on Agent", Duration::from_secs(5)));
+    assert!(session.wait_for("▌", Duration::from_secs(5)));
     session.send_slowly(b"hello", Duration::from_millis(30));
     assert!(session.wait_for_composer_text("hello", Duration::from_secs(5)));
     session.send(b"\r");
@@ -3542,8 +3739,7 @@ fn live_core_browser_task_uses_native_glass_host_integration_on_local_fixture() 
         "configured Core did not become available; no provider retry was attempted"
     );
 
-    session.send(b"\r");
-    assert!(session.wait_for("Message on Agent", Duration::from_secs(5)));
+    assert!(session.wait_for("▌", Duration::from_secs(5)));
     let prompt = format!(
         "Use only advertised Glass browser tools, not bash. Start native. Navigate once to {}/oversized and record the CSS resource-limit error. Then navigate the same session to {}, observe, click Open fixture link using its current semantic reference and revision through glass.browser.act, and observe again. Do not retry the oversized URL. Stop. Report backend, recovery result, title, and clicked marker. marker clicked 91af",
         fixture.url.trim_end_matches("/fixture.html"),
@@ -3688,8 +3884,6 @@ fn fake_core_browser_flow_uses_real_host_router_for_recovery_and_action() {
         "fake Core did not become ready\n{}",
         session.output_tail()
     );
-    session.send(b"\r");
-    assert!(session.wait_for("Message on Agent", Duration::from_secs(5)));
     let oversized_url = format!(
         "{}/oversized",
         fixture.url.trim_end_matches("/fixture.html")
@@ -3701,14 +3895,26 @@ fn fake_core_browser_flow_uses_real_host_router_for_recovery_and_action() {
     session.send_slowly(prompt.as_bytes(), Duration::from_millis(5));
     assert!(session.wait_for_composer_text("fixture.html.", Duration::from_secs(8)));
     session.send(b"\r");
-    assert!(
-        session.wait_for("browser fixture flow complete", Duration::from_secs(90)),
-        "scripted Core browser flow did not settle through the real Glass tool router\n{}",
-        session.output_tail()
-    );
+    let results_path = fixture_state.join("e2e-browser-flow-results.jsonl");
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        let completed_calls = std::fs::read_to_string(&results_path)
+            .map(|contents| contents.lines().count())
+            .unwrap_or_default();
+        if completed_calls == 7 || Instant::now() >= deadline {
+            assert_eq!(
+                completed_calls,
+                7,
+                "scripted Core browser flow did not finish all seven host calls\n{}",
+                session.output_tail()
+            );
+            break;
+        }
+        session.settle(Duration::from_millis(100));
+    }
     session.kill();
 
-    let results = std::fs::read_to_string(fixture_state.join("e2e-browser-flow-results.jsonl"))
+    let results = std::fs::read_to_string(results_path)
         .expect("scripted Core records host tool results")
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
@@ -3735,7 +3941,7 @@ fn fake_core_browser_flow_uses_real_host_router_for_recovery_and_action() {
         results[1]["text"]
             .as_str()
             .unwrap()
-            .contains("invalid CSS style rules: value 513 exceeds limit 512"),
+            .contains("value 4097 exceeds limit 4096"),
         "oversized navigation returned an unexpected error: {}",
         results[1]["text"]
     );
@@ -3783,7 +3989,7 @@ fn active_run_queue_steer_reaches_its_run_and_settles_truthfully() {
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
     assert!(session.wait_for("Core available", Duration::from_secs(8)));
-    session.send(b":agent spawn queue-owner active-run-queue-target\r");
+    start_core_conversation(&mut session, "queue-owner", "active-run-queue-target");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
         "active queue target did not spawn\n{}",
@@ -4045,7 +4251,7 @@ fn ctrl_x_waits_for_core_cancel_settlement_and_keeps_exact_attempt_terminal() {
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
     assert!(session.wait_for("Core available", Duration::from_secs(8)));
-    session.send(b":agent spawn cancel-owner cancel-gated-target\r");
+    start_core_conversation(&mut session, "cancel-owner", "cancel-gated-target");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
         "cancel target did not spawn\n{}",
@@ -4135,7 +4341,7 @@ fn follow_up_queue_old_run_retarget_and_review_retry_are_explicit() {
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
     assert!(session.wait_for("Core available", Duration::from_secs(8)));
-    session.send(b":agent spawn queue-owner retarget-and-review\r");
+    start_core_conversation(&mut session, "queue-owner", "retarget-and-review");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
         "queue owner did not spawn\n{}",
@@ -4416,7 +4622,7 @@ fn follow_up_queue_old_run_retarget_and_review_retry_are_explicit() {
 }
 
 #[test]
-fn external_harness_routes_stay_inside_tui_until_confirmed() {
+fn external_harness_catalog_is_discoverable_without_dispatching_a_delegate() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;
     }
@@ -4427,27 +4633,30 @@ fn external_harness_routes_stay_inside_tui_until_confirmed() {
         "first frame never rendered"
     );
     session.wait_for_agent_surface();
-    assert!(
-        session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Agent surface never rendered after trust\n{}",
-        session.output_tail()
-    );
-    session.send(b":harness list\r");
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    session.send(b"/");
+    assert!(session.wait_for("CORE COMMANDS", Duration::from_secs(5)));
+    session.send(b"glass harness");
+    assert!(session.wait_for("Harness catalog", Duration::from_secs(5)));
+    session.send(b"\t");
+    assert!(session.wait_for("/glass harness list", Duration::from_secs(5)));
+    session.send(b"\r");
     assert!(
         session.wait_for("External harnesses", Duration::from_secs(5)),
         "harness catalog did not render in TUI\n{}",
         session.output_tail()
     );
-    session.send(
-        b":harness delegate codex inspect current diff --sandbox read-only --timeout-secs 5\r",
-    );
+    session.send(b"/");
+    assert!(session.wait_for("CORE COMMANDS", Duration::from_secs(5)));
+    session.send(b"glass harness delegate");
     assert!(
-        session.wait_for("CONFIRMATION", Duration::from_secs(5)),
-        "external delegate did not stop at Glass confirmation\n{}",
+        session.wait_for(
+            "No matching commands or Glass actions",
+            Duration::from_secs(5)
+        ),
+        "external harness delegation must not appear as a Glass-owned slash action\n{}",
         session.output_tail()
     );
-    session.send(b"\x1b");
-    session.settle(Duration::from_millis(300));
     session.kill();
 }
 
@@ -4487,10 +4696,9 @@ fn attention_inbox_keyboard_journey_keeps_composer_and_opens_proposal_context() 
         // Keep a composer draft underneath the asynchronous inbox refresh.
         // Closing the overlay must restore composer input, proven by appending
         // text before reopening the item list.
-        session.send(b"\r");
         assert!(
-            session.wait_for("CONVERSATION", Duration::from_secs(5)),
-            "Agent composer did not open at {cols}x{rows}\n{}",
+            session.wait_for("▌", Duration::from_secs(5)),
+            "Agent composer was not ready at {cols}x{rows}\n{}",
             session.output_tail()
         );
         session.send(b"draft");
@@ -4732,7 +4940,7 @@ fn live_core_response_crash_reopens_as_uncertain_without_replay() {
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
     assert!(session.wait_for("Core available", Duration::from_secs(8)));
-    session.send(b":agent spawn crash-owner recovery check\r");
+    start_core_conversation(&mut session, "crash-owner", "recovery check");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
         "resident agent did not spawn\n{}",
@@ -4956,7 +5164,7 @@ fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
         session.output_tail()
     );
 
-    session.send(b":agent resume\r");
+    session.send(b"\x1b:agent resume\r");
     assert!(
         session.wait_for("CONFIRMATION", Duration::from_secs(5)),
         "resuming the exact Core session did not ask for its normal confirmation\n{}",
@@ -4990,7 +5198,7 @@ fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
     // Registry persistence happens before the TUI's workspace snapshot is
     // refreshed. Let the resume transition settle before requesting retry.
     session.settle(Duration::from_millis(750));
-    session.send(b":agent retry\r");
+    session.send(b"\x1b:agent retry\r");
     assert!(
         session.wait_for("RETRY UNCERTAIN DELIVERY", Duration::from_secs(5)),
         "retry did not show duplicate-risk confirmation\n{}",
@@ -5011,7 +5219,7 @@ fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
         1
     );
 
-    session.send(b":agent retry\r");
+    session.send(b"\x1b:agent retry\r");
     assert!(session.wait_for("RETRY UNCERTAIN DELIVERY", Duration::from_secs(5)));
     session.send(b"\r");
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -5101,7 +5309,7 @@ fn failed_core_turn_is_reviewable_and_retry_requires_confirmation() {
     let requests = std::fs::read_to_string(&requests_path).unwrap();
     assert_eq!(requests.matches("\"method\":\"turn/prompt\"").count(), 0);
 
-    session.send(b":agent resume\r");
+    session.send(b"\x1b:agent resume\r");
     assert!(session.wait_for("CONFIRMATION", Duration::from_secs(5)));
     session.send(b"\r");
     let resume_deadline = Instant::now() + Duration::from_secs(12);
@@ -5125,7 +5333,7 @@ fn failed_core_turn_is_reviewable_and_retry_requires_confirmation() {
     // The registry is persisted before the TUI workspace snapshot has finished
     // observing the resumed Core run.
     session.settle(Duration::from_millis(750));
-    session.send(b":agent retry\r");
+    session.send(b"\x1b:agent retry\r");
     assert!(
         session.wait_for("RETRY FAILED CORE TURN", Duration::from_secs(5)),
         "failed Core response did not require an explicit retry confirmation\n{}",
@@ -5140,7 +5348,7 @@ fn failed_core_turn_is_reviewable_and_retry_requires_confirmation() {
     );
     let requests = std::fs::read_to_string(&requests_path).unwrap();
     assert_eq!(requests.matches("\"method\":\"turn/prompt\"").count(), 0);
-    session.send(b":agent retry\r");
+    session.send(b"\x1b:agent retry\r");
     assert!(session.wait_for("RETRY FAILED CORE TURN", Duration::from_secs(5)));
     session.send(b"\r");
     let retry_deadline = Instant::now() + Duration::from_secs(8);
@@ -5201,7 +5409,7 @@ fn failed_core_response_is_visible_and_can_be_retried_explicitly() {
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
     assert!(session.wait_for("Core available", Duration::from_secs(8)));
-    session.send(b":agent spawn assistant report a safe test failure\r");
+    start_core_conversation(&mut session, "assistant", "report a safe test failure");
     assert!(session.wait_for("Spawned agent-0001", Duration::from_secs(8)));
     send_ctrl_shift_t(&mut session);
     assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
@@ -5251,7 +5459,7 @@ fn failed_core_response_is_visible_and_can_be_retried_explicitly() {
     session.send(b"\r");
     assert!(session.wait_for("Core turn failed · inspect it", Duration::from_secs(5)));
     session.send(b"\x1b");
-    session.send(b":agent retry\r");
+    session.send(b"\x1b:agent retry\r");
     assert!(
         session.wait_for("RETRY FAILED CORE TURN", Duration::from_secs(5)),
         "failed Core attempt did not open its retry confirmation\n{}",
@@ -5310,52 +5518,27 @@ fn palette_and_help_survive_real_key_sequences() {
         session.wait_for_raw("CONVERSATION", Duration::from_secs(5)),
         "Agent surface did not open"
     );
-    session.send(b":");
+    session.send(b"/");
     assert!(
-        session.wait_for_visible("SELECT AN ACTION", Duration::from_secs(5)),
-        "command palette did not open\n{}",
+        session.wait_for_visible("CORE COMMANDS", Duration::from_secs(5)),
+        "slash command menu did not open\n{}",
         session.output_tail()
     );
     assert!(
-        session.wait_for_visible("Compose", Duration::from_secs(5)),
-        "surface actions missing\n{}",
-        session.output_tail()
+        session.visible_output().contains("GLASS"),
+        "Glass-owned group missing from menu"
     );
-    for _ in 0..2 {
-        session.send(b"\x1b[B");
-    }
-    session.clear_output();
-    session.send(b"\r");
+    session.send(b"glass");
     assert!(
-        session.wait_for_raw("Glass Core is ready", Duration::from_secs(5)),
-        "arrow selection did not route to the Glass Core setup guidance\n{}",
-        session.output_tail()
+        session.wait_for_visible("glass", Duration::from_secs(5)),
+        "slash filtering did not keep the Glass group searchable"
     );
     session.send(b"\x1b");
     session.settle(Duration::from_millis(300));
-    session.send(b":");
     assert!(
-        session.wait_for_visible("SELECT AN ACTION", Duration::from_secs(5)),
-        "palette did not reopen after cancelling confirmation"
+        session.wait_for("▌", Duration::from_secs(3)),
+        "Escape did not restore the ready composer"
     );
-    session.send(b"help");
-    assert!(
-        session.wait_for_visible("Filter:", Duration::from_secs(5)),
-        "palette filtering missing\n{}",
-        session.output_tail()
-    );
-    session.send(b"\x1b");
-    session.settle(Duration::from_millis(300));
-    session.send(b"\x1b");
-    session.settle(Duration::from_millis(300));
-    // Surfaces switch with number keys and each renders its header.
-    for (key, header) in [('2', "FILES"), ('3', "VISUAL PLANE"), ('4', "Task")] {
-        session.send(&[key as u8]);
-        assert!(
-            session.wait_for(header, Duration::from_secs(5)),
-            "{header} missing after {key}"
-        );
-    }
     session.kill();
 }
 
@@ -5371,17 +5554,15 @@ fn phone_size_keeps_primary_surfaces_reachable() {
         session.wait_for("Agent", Duration::from_secs(5)),
         "phone layout must keep Agent reachable"
     );
-    session.send(b":");
+    session.send(b"/");
     assert!(
-        session.wait_for_visible("SELECT AN ACTION", Duration::from_secs(5)),
-        "phone palette did not open\n{}",
+        session.wait_for_visible("CORE COMMANDS", Duration::from_secs(5)),
+        "phone slash menu did not open\n{}",
         session.output_tail()
     );
-    session.send(b"\x1b[B");
     assert!(
-        session.wait_for_raw("Readiness doctor", Duration::from_secs(5)),
-        "phone palette did not expose guided actions\n{}",
-        session.output_tail()
+        session.visible_output().contains("GLASS"),
+        "phone slash menu omitted the Glass action group"
     );
     session.send(b"\x1b");
     session.kill();
@@ -5407,12 +5588,9 @@ fn desktop_surface_tabs_render_every_workbench() {
         (b'2', "FILES"),
         (b'3', "VISUAL PLANE"),
         (b'4', "TERMINAL"),
-        (b'5', "SUMMARY"),
-        (b'6', "GIT"),
-        (b'7', "TESTS"),
-        (b'8', "ROUTES"),
+        (b'5', "GIT"),
     ] {
-        session.send(&[key]);
+        send_alt_digit(&mut session, key);
         assert!(
             session.wait_for(marker, Duration::from_secs(5)),
             "{marker} missing after desktop surface key {}\n{}",
@@ -5420,11 +5598,10 @@ fn desktop_surface_tabs_render_every_workbench() {
             session.output_tail()
         );
     }
-    // Tab from the overflow surface wraps back to the first primary surface.
-    session.send(b"\t");
+    send_alt_digit(&mut session, b'1');
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Tab did not wrap from More to Agent"
+        "Alt-1 did not return to Agent"
     );
     session.kill();
 }
@@ -5448,10 +5625,10 @@ fn phone_surface_tabs_keep_the_compact_workbench_reachable() {
     for (key, marker) in [
         (b'2', "FILES"),
         (b'3', "VISUAL PLANE"),
-        (b'4', "SUMMARY"),
-        (b'5', "ROUTES"),
+        (b'4', "TERMINAL"),
+        (b'5', "GIT"),
     ] {
-        session.send(&[key]);
+        send_alt_digit(&mut session, key);
         assert!(
             session.wait_for(marker, Duration::from_secs(5)),
             "{marker} missing after phone surface key {}\n{}",
@@ -5459,16 +5636,16 @@ fn phone_surface_tabs_keep_the_compact_workbench_reachable() {
             session.output_tail()
         );
     }
-    session.send(b"\t");
+    send_alt_digit(&mut session, b'1');
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Tab did not wrap from phone More to Agent"
+        "Alt-1 did not return from phone Git to Agent"
     );
     session.kill();
 }
 
 #[test]
-fn arrow_keys_cycle_surfaces_without_numeric_shortcuts() {
+fn arrows_remain_composer_input_and_alt_switch_preserves_draft() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;
     }
@@ -5485,23 +5662,21 @@ fn arrow_keys_cycle_surfaces_without_numeric_shortcuts() {
         "Agent surface never rendered after trust"
     );
 
+    session.send(b"arrow draft");
+    assert!(session.wait_for_composer_text("arrow draft", Duration::from_secs(3)));
     session.send(b"\x1b[C");
+    assert!(session.wait_for_composer_text("arrow draft", Duration::from_secs(3)));
+    send_alt_digit(&mut session, b'2');
     assert!(
         session.wait_for("FILES", Duration::from_secs(5)),
-        "Right arrow did not move to Code\n{}",
+        "Alt-2 did not open Code\n{}",
         session.output_tail()
     );
-    session.send(b"\x1b[C");
+    send_alt_digit(&mut session, b'1');
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
     assert!(
-        session.wait_for("VISUAL PLANE", Duration::from_secs(5)),
-        "Right arrow did not move to App\n{}",
-        session.output_tail()
-    );
-    session.send(b"\x1b[D");
-    assert!(
-        session.wait_for("FILES", Duration::from_secs(5)),
-        "Left arrow did not return to Code\n{}",
-        session.output_tail()
+        session.wait_for_composer_text("arrow draft", Duration::from_secs(3)),
+        "returning to Agent lost the draft"
     );
     session.kill();
 }
@@ -5522,12 +5697,9 @@ fn compact_surface_tabs_keep_primary_workbenches_reachable() {
         (b'2', "FILES"),
         (b'3', "VISUAL PLANE"),
         (b'4', "TERMINAL"),
-        (b'5', "SUMMARY"),
-        (b'6', "GIT"),
-        (b'7', "TESTS"),
-        (b'8', "ROUTES"),
+        (b'5', "GIT"),
     ] {
-        session.send(&[key]);
+        send_alt_digit(&mut session, key);
         assert!(
             session.wait_for(marker, Duration::from_secs(5)),
             "{marker} missing after compact surface key {}\n{}",
@@ -5535,10 +5707,10 @@ fn compact_surface_tabs_keep_primary_workbenches_reachable() {
             session.output_tail()
         );
     }
-    session.send(b"\t");
+    send_alt_digit(&mut session, b'1');
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
-        "Tab did not wrap from compact Debug to Agent"
+        "Alt-1 did not return from compact Git to Agent"
     );
     session.kill();
 }
@@ -5560,28 +5732,21 @@ fn launcher_routes_and_surface_actions_remain_interactive() {
         "Agent surface never rendered after trust"
     );
 
-    session.send(b":");
+    session.send(b"/");
     assert!(
-        session.wait_for("Compose message", Duration::from_secs(5)),
-        "Agent command center entries missing"
-    );
-    session.send(b"\x1b");
-    session.settle(Duration::from_millis(300));
-
-    session.send(b":");
-    assert!(
-        session.wait_for("Command search", Duration::from_secs(5)),
-        "command center did not open\n{}",
+        session.wait_for("CORE COMMANDS", Duration::from_secs(5)),
+        "Core command group was missing from slash menu\n{}",
         session.output_tail()
     );
-    session.send(b"agent setup");
     assert!(
-        session.wait_for("agent setup", Duration::from_secs(5)),
-        "command center route search did not render\n{}",
-        session.output_tail()
+        session.visible_output().contains("GLASS"),
+        "Glass action group was missing from slash menu"
     );
-    session.send(b"\t");
-    session.settle(Duration::from_millis(300));
+    session.send(b"glass");
+    assert!(
+        session.wait_for("glass", Duration::from_secs(5)),
+        "slash filtering did not retain Glass-owned entries"
+    );
     session.send(b"\x1b");
     session.settle(Duration::from_millis(300));
 
@@ -5589,12 +5754,9 @@ fn launcher_routes_and_surface_actions_remain_interactive() {
         (b'2', "FILES"),
         (b'3', "VISUAL PLANE"),
         (b'4', "TERMINAL"),
-        (b'5', "SUMMARY"),
-        (b'6', "GIT"),
-        (b'7', "TESTS"),
-        (b'8', "ROUTES"),
+        (b'5', "GIT"),
     ] {
-        session.send(&[key]);
+        send_alt_digit(&mut session, key);
         assert!(
             session.wait_for(marker, Duration::from_secs(5)),
             "{marker} missing before action test\n{}",
@@ -5630,27 +5792,21 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
         session.wait_for_raw("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust"
     );
-    session.send(b"i");
     assert!(
         session.wait_for("▌", Duration::from_secs(5)),
-        "Agent composer did not open\n{}",
+        "Agent composer was not ready immediately\n{}",
         session.output_tail()
     );
     session.send(b"\x1b");
     session.settle(Duration::from_millis(300));
 
-    session.send(b"2");
+    send_alt_digit(&mut session, b'2');
     assert!(
         session.wait_for("FILES", Duration::from_secs(5)),
         "Code surface did not render\n{}",
         session.output_tail()
     );
     session.send(b"i");
-    assert!(
-        session.wait_for("REVIEW", Duration::from_secs(5)),
-        "Code collaboration panel did not render\n{}",
-        session.output_tail()
-    );
     assert!(
         session.wait_for("EDITOR", Duration::from_secs(1)),
         "Code editor did not open\n{}",
@@ -5665,7 +5821,7 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
     session.send(b"\x1b");
     session.settle(Duration::from_millis(300));
 
-    session.send(b"3");
+    send_alt_digit(&mut session, b'3');
     assert!(
         session.wait_for("VISUAL PLANE", Duration::from_secs(5)),
         "Browser surface did not render\n{}",
@@ -5680,7 +5836,7 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
         session.output_tail()
     );
 
-    session.send(b"4");
+    send_alt_digit(&mut session, b'4');
     assert!(
         session.wait_for("TERMINAL", Duration::from_secs(5)),
         "Terminal surface did not render\n{}",
@@ -5696,22 +5852,7 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
     session.send(b"\x1b");
     session.settle(Duration::from_millis(300));
 
-    session.send(b"5");
-    assert!(
-        session.wait_for("SUMMARY", Duration::from_secs(5)),
-        "Tasks surface did not render\n{}",
-        session.output_tail()
-    );
-    session.send(b"a");
-    assert!(
-        session.wait_for("DETAILS", Duration::from_secs(5)),
-        "task launcher did not open\n{}",
-        session.output_tail()
-    );
-    session.send(b"\x1b");
-    session.settle(Duration::from_millis(300));
-
-    session.send(b"6");
+    send_alt_digit(&mut session, b'5');
     assert!(
         session.wait_for("GIT", Duration::from_secs(5)),
         "Git surface did not render\n{}",
@@ -5726,20 +5867,38 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
     session.send(b"\x1b");
     session.settle(Duration::from_millis(300));
 
-    session.send(b"7");
+    // The contextual Tasks view mirrors Core conversation lifecycle and keeps
+    // host-managed task flows visibly separate. Reach it through the unified
+    // slash catalogue rather than an obsolete task-only command menu.
+    send_alt_digit(&mut session, b'1');
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    session.send(b"\x15"); // Clear the prior Code-context draft; slash is literal in non-empty text.
+    session.settle(Duration::from_millis(200));
+    session.send(b"/");
     assert!(
-        session.wait_for("TESTS", Duration::from_secs(5)),
-        "Debug surface did not render\n{}",
+        session.wait_for("GLASS", Duration::from_secs(5)),
+        "unified command catalogue did not expose Glass task navigation\n{}",
         session.output_tail()
     );
-    session.send(b"a");
+    session.send(b"open task tracking");
     assert!(
-        session.wait_for("DETAILS", Duration::from_secs(5)),
-        "debug launcher did not open\n{}",
+        session.wait_for("Open task tracking", Duration::from_secs(5)),
+        "Glass Tasks action was not filterable from slash\n{}",
         session.output_tail()
     );
-    session.send(b"\x1b");
-    session.settle(Duration::from_millis(300));
+    session.send(b"\r");
+    assert!(
+        session.wait_for("TASKS", Duration::from_secs(5)),
+        "Tasks view did not open from the slash catalogue\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for("CORE CONVERSATIONS", Duration::from_secs(5))
+            || session.wait_for("No Core conversations yet", Duration::from_secs(1)),
+        "Tasks view omitted the Core conversation lifecycle panel\n{}",
+        session.output_tail()
+    );
+
     session.kill();
     let _ = std::fs::remove_file(fake_core);
 }
@@ -5761,7 +5920,7 @@ fn git_file_selection_opens_the_focused_diff_in_place() {
         "Agent surface never rendered after trust\n{}",
         session.output_tail()
     );
-    session.send(b"6");
+    send_alt_digit(&mut session, b'5');
     assert!(
         session.wait_for_visible("a-first.txt", Duration::from_secs(8)),
         "Git file list never rendered\n{}",
@@ -5802,7 +5961,7 @@ fn code_editor_accepts_and_saves_typed_text_through_pty() {
         "first frame never rendered"
     );
     session.wait_for_agent_surface();
-    session.send(b"2");
+    send_alt_digit(&mut session, b'2');
     assert!(
         session.wait_for_visible("FILES", Duration::from_secs(5)),
         "Code surface did not render\n{}",
@@ -5849,7 +6008,7 @@ fn git_stage_and_commit_work_in_an_isolated_local_repository() {
         "first frame never rendered"
     );
     session.wait_for_agent_surface();
-    session.send(b"6");
+    send_alt_digit(&mut session, b'5');
     assert!(
         session.wait_for_visible("a-first.txt", Duration::from_secs(8)),
         "Git surface did not load the isolated repository\n{}",

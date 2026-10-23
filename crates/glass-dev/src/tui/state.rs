@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_BROWSER_TOOL: AtomicU64 = AtomicU64::new(1);
 static NEXT_CHAT_MESSAGE: AtomicU64 = AtomicU64::new(1);
+const MAX_CODE_PROMPT_CONTEXT_BYTES: usize = 64 * 1024;
 pub(super) const BROWSER_RECOVERY_STATUS: &str =
     "Browser recovery available · current surface preserved";
 
@@ -1355,24 +1356,21 @@ impl DevSurface {
         Self::More,
     ];
 
-    pub const PRIMARY: [Self; 8] = [
+    pub const PRIMARY: [Self; 5] = [
         Self::Agent,
         Self::Code,
         Self::App,
         Self::Terminal,
-        Self::Tasks,
         Self::Git,
-        Self::Debug,
-        Self::More,
     ];
 
-    pub const PHONE: [Self; 5] = [Self::Agent, Self::Code, Self::App, Self::Tasks, Self::More];
+    pub const PHONE: [Self; 5] = Self::PRIMARY;
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Agent => "Agent",
             Self::Code => "Code",
-            Self::App => "App",
+            Self::App => "Browser",
             Self::Terminal => "Terminal",
             Self::Tasks => "Tasks",
             Self::Git => "Git",
@@ -1445,6 +1443,8 @@ pub struct DevTuiState {
     pub composer_input: String,
     pub composer_cursor: usize,
     pub composer_steer: bool,
+    /// Attach the explicitly viewed Code buffer to sends from the Code dock.
+    pub composer_code_context_enabled: bool,
     pub last_app_comment: Option<String>,
     pub session_todos: crate::SessionTodoList,
     pub composer_history: Vec<String>,
@@ -1595,6 +1595,16 @@ pub struct DevTuiState {
     pub agent_login_requested: bool,
     /// Set when the user explicitly hands the terminal to GC's native command UI.
     pub agent_command_ui_requested: bool,
+    last_core_handoff_response_id: Option<String>,
+    /// Dynamically discovered commands from the selected Glass Core session.
+    pub gc_command_menu_open: bool,
+    pub gc_command_query: String,
+    pub gc_command_items: Vec<serde_json::Value>,
+    pub gc_command_selected: usize,
+    pub gc_command_loading: bool,
+    pub gc_command_discovery_requested: bool,
+    composer_gc_command_completion: bool,
+    composer_glass_action_completion: Option<String>,
     /// Set by a palette action; the event loop hands the terminal to the
     /// selected external harness and resumes Glass after it exits.
     pub harness_launch_requested: Option<String>,
@@ -1781,9 +1791,9 @@ impl DevTuiState {
         let initial_status = if !initial_refresh {
             "Loading workspace snapshot · first refresh pending · ? help".to_string()
         } else if agent_readiness.starts_with("✓ Ready") {
-            "Core available · Enter chat · Ctrl-P files · : commands · ? help".to_string()
+            "Core available · type to chat · / commands · Ctrl-P files · ? help".to_string()
         } else {
-            "Agent setup required · press :actions or Enter to continue".to_string()
+            "Core setup required · type / for Core commands · Ctrl-K for Glass actions".to_string()
         };
         let mut state = Self {
             workspace,
@@ -1808,11 +1818,14 @@ impl DevTuiState {
             menu_selection: 0,
             help_open: false,
             help_scroll: 0,
-            composer_mode: false,
+            // Agent is the landing workspace and its composer is immediately
+            // ready for text, including digits and slash commands.
+            composer_mode: true,
             pending_plan: None,
             composer_input: String::new(),
             composer_cursor: 0,
             composer_steer: false,
+            composer_code_context_enabled: false,
             last_app_comment: None,
             session_todos: crate::SessionTodoList::default(),
             composer_history: Vec::new(),
@@ -1940,6 +1953,15 @@ impl DevTuiState {
             harnesses: crate::harness::summary(),
             agent_login_requested: false,
             agent_command_ui_requested: false,
+            last_core_handoff_response_id: None,
+            gc_command_menu_open: false,
+            gc_command_query: String::new(),
+            gc_command_items: Vec::new(),
+            gc_command_selected: 0,
+            gc_command_loading: false,
+            gc_command_discovery_requested: false,
+            composer_gc_command_completion: false,
+            composer_glass_action_completion: None,
             harness_launch_requested: None,
             agent_conversation:
                 "No conversation yet. Press Enter or start typing to compose a message.".into(),
@@ -1959,7 +1981,11 @@ impl DevTuiState {
             last_verify: None,
             last_proof_ok: None,
             pending_verify: None,
-            factory_split: true,
+            // Keep the Agent workspace focused on the conversation. An open
+            // editor buffer can outlive a surface change; showing the split
+            // merely because the composer opened makes that old file look
+            // like an implicit context attachment.
+            factory_split: false,
             lsp: String::new(),
             processes: String::new(),
             process_entries: Vec::new(),
@@ -2214,7 +2240,7 @@ impl DevTuiState {
         self.surface_actions().len() + 1
     }
 
-    /// Guided launchers for the current surface. `:actions` opens the command center.
+    /// Guided launchers for the current surface. `Ctrl-K` opens the command center.
     pub fn surface_actions(&self) -> &'static [command::SurfaceAction] {
         command::surface_actions_for(self.surface, crate::ResidentHarnessKind::default_kind())
     }
@@ -2650,6 +2676,8 @@ impl DevTuiState {
 
     pub fn open_palette(&mut self) {
         self.close_file_picker();
+        self.composer_mode = false;
+        self.composer_code_context_enabled = false;
         self.command_mode = true;
         self.command_input.clear();
         self.command_cursor = 0;
@@ -2665,13 +2693,16 @@ impl DevTuiState {
 
     pub fn close_palette(&mut self) {
         self.command_mode = false;
+        if self.surface == DevSurface::Agent {
+            self.composer_mode = true;
+        }
         self.command_input.clear();
         self.command_cursor = 0;
         self.command_history_index = None;
         self.palette_error = None;
         self.palette_scroll = 0;
         self.palette_selection = 0;
-        self.status = "Command palette closed · press : for guided launchers".into();
+        self.status = "Command palette closed · Ctrl-K opens Glass workspace actions".into();
     }
 
     pub fn palette_action_indices(&self) -> Vec<usize> {
@@ -3322,7 +3353,7 @@ impl DevTuiState {
         } else {
             "ask `open <url>` to attach"
         };
-        let mut header = format!("APP · {}", browser.connection_label());
+        let mut header = format!("BROWSER · {}", browser.connection_label());
         if include_title {
             header.push_str(" · ");
             header.push_str(title);
@@ -3462,7 +3493,24 @@ impl DevTuiState {
 
     pub fn composer_context_chips(&self) -> String {
         let mut chips = Vec::new();
-        if self.focused_editor_selection.is_some() {
+        if self.surface == DevSurface::Code
+            && self.composer_code_context_enabled
+            && !self.focused_editor_path.is_empty()
+        {
+            chips.push(format!(
+                "file {}{} · Ctrl-Shift-X remove",
+                self.focused_editor_path,
+                if self.focused_editor_dirty {
+                    " (unsaved)"
+                } else {
+                    ""
+                }
+            ));
+        }
+        if self.surface == DevSurface::Code
+            && self.composer_code_context_enabled
+            && self.focused_editor_selection.is_some()
+        {
             chips.push("selection".into());
         }
         if let Some(entity) = self.browser_workspace.state().selected() {
@@ -3475,6 +3523,23 @@ impl DevTuiState {
             chips.push("steer".into());
         }
         chips.join(" · ")
+    }
+
+    pub fn toggle_composer_code_context(&mut self) {
+        if self.surface != DevSurface::Code || self.focused_editor_path.is_empty() {
+            self.composer_code_context_enabled = false;
+            self.status = "Code context is available while asking from an open Code buffer".into();
+            return;
+        }
+        self.composer_code_context_enabled = !self.composer_code_context_enabled;
+        self.status = if self.composer_code_context_enabled {
+            format!(
+                "Code context attached on send · {}",
+                self.focused_editor_path
+            )
+        } else {
+            "Code context removed · your message will be sent without the buffer".into()
+        };
     }
 
     pub fn agent_chrome_line(&self) -> String {
@@ -3722,7 +3787,7 @@ impl DevTuiState {
             return;
         }
         self.status = format!(
-            "Selected {} · Enter chats · ]/[ switches agent",
+            "Selected {} · type to chat · ]/[ switches agent",
             selected.as_str()
         );
     }
@@ -4225,7 +4290,7 @@ impl DevTuiState {
                 self.surface = DevSurface::Agent;
                 self.attention_inbox_open = false;
                 self.status = format!(
-                    "{} · inspect it, then :agent retry requests confirmation · {detail}",
+                    "{} · inspect it, then use Ctrl-K and choose Retry send · {detail}",
                     send_attempt_attention_label(attempt_status)
                 );
             }
@@ -5043,6 +5108,11 @@ impl DevTuiState {
         if self.selected_agent == selected {
             return true;
         }
+        self.gc_command_items.clear();
+        if self.gc_command_menu_open {
+            self.gc_command_loading = true;
+            self.gc_command_discovery_requested = true;
+        }
         self.composer_retry_message_id = None;
         let current = self.selected_agent.clone();
         #[cfg(unix)]
@@ -5366,6 +5436,8 @@ impl DevTuiState {
     pub fn open_composer(&mut self) {
         self.close_file_picker();
         self.composer_mode = true;
+        self.composer_code_context_enabled =
+            self.surface == DevSurface::Code && !self.focused_editor_path.is_empty();
         self.status = format!(
             "Message on {} · Esc back · Enter sends · Tab mention · Shift-Enter newline",
             self.surface.label(),
@@ -5407,9 +5479,9 @@ impl DevTuiState {
     pub fn jump_to_app_keep_dock(&mut self) {
         self.surface = DevSurface::App;
         self.status = if self.composer_mode {
-            "App · dock stays open · watch the agent or type a follow-up".into()
+            "Browser · dock stays open · watch the agent or type a follow-up".into()
         } else {
-            "App selected · Ctrl-L talks about this page".into()
+            "Browser selected · Ctrl-L talks about this page".into()
         };
     }
 
@@ -5456,7 +5528,7 @@ impl DevTuiState {
         };
         self.last_app_comment = Some(format!("{} ({})", entity.name, entity.role));
         self.composer_input = format!(
-            "About the selected App control [{}] {}: ",
+            "About the selected Browser control [{}] {}: ",
             entity.role, entity.name
         );
         self.composer_cursor = self.composer_input.len();
@@ -5795,10 +5867,269 @@ impl DevTuiState {
         Ok(())
     }
 
+    /// Open the composer-integrated GC command catalogue. If the project has
+    /// no resident session yet, create an idle Core session before discovery;
+    /// this initializes the session protocol but does not send provider input.
+    pub fn open_gc_command_menu(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        self.surface = DevSurface::Agent;
+        self.composer_mode = true;
+        self.gc_command_menu_open = true;
+        self.gc_command_query.clear();
+        self.gc_command_selected = 0;
+        let catalogue_cached = !self.gc_command_items.is_empty();
+        self.gc_command_loading = !catalogue_cached;
+        self.gc_command_discovery_requested = false;
+        self.composer_gc_command_completion = false;
+        self.composer_glass_action_completion = None;
+        self.status = "Loading commands from Glass Core…".into();
+        if catalogue_cached {
+            return;
+        }
+        let mut arguments = serde_json::json!({});
+        if let Some(agent) = self.selected_agent.as_ref() {
+            arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
+        }
+        self.queue_gc_command_tool(worker, "glass.agent.commands", arguments);
+    }
+
+    fn queue_gc_command_tool(
+        &mut self,
+        worker: &mut super::snapshot::SnapshotWorker,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) {
+        match self.tool_request(tool, arguments, false) {
+            Ok((call, context)) => match worker.submit_tool(call, context) {
+                Ok(job) => {
+                    self.running_tool_job = Some(job);
+                    self.gc_command_loading = true;
+                }
+                Err(error) => {
+                    self.gc_command_loading = false;
+                    self.status = format!("Could not load GC commands: {error}");
+                }
+            },
+            Err(error) => {
+                self.gc_command_loading = false;
+                self.status = format!("Could not load GC commands: {error}");
+            }
+        }
+    }
+
+    /// Finish deferred command discovery once the idle Core worker is ready.
+    pub fn tick_gc_command_discovery(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        if !self.gc_command_menu_open || !self.gc_command_discovery_requested {
+            return;
+        }
+        let Some(agent) = self.selected_agent.clone() else {
+            return;
+        };
+        let Some(status) = self.agent_status_by_id.get(&agent).copied() else {
+            return;
+        };
+        if matches!(
+            status,
+            crate::AgentStatus::Queued
+                | crate::AgentStatus::Starting
+                | crate::AgentStatus::RecoveryPending
+                | crate::AgentStatus::Unavailable
+        ) {
+            return;
+        }
+        self.gc_command_discovery_requested = false;
+        self.queue_gc_command_tool(
+            worker,
+            "glass.agent.commands",
+            serde_json::json!({"agentId": agent.as_str()}),
+        );
+    }
+
+    pub fn insert_gc_command_query(&mut self, character: char) {
+        self.gc_command_query.push(character);
+        self.gc_command_selected = 0;
+        self.composer_gc_command_completion = false;
+        self.composer_glass_action_completion = None;
+    }
+
+    pub fn backspace_gc_command_query(&mut self) {
+        if let Some((index, _)) = self.gc_command_query.char_indices().next_back() {
+            self.gc_command_query.truncate(index);
+        }
+        self.gc_command_selected = 0;
+    }
+
+    pub fn move_gc_command_selection(&mut self, delta: i32) {
+        let total = self.gc_command_glass_actions().len()
+            + super::command::filter_gc_commands(&self.gc_command_items, &self.gc_command_query)
+                .len();
+        if total == 0 {
+            self.gc_command_selected = 0;
+            return;
+        }
+        self.gc_command_selected =
+            (self.gc_command_selected as i32 + delta).rem_euclid(total as i32) as usize;
+    }
+
+    pub fn gc_command_glass_actions(&self) -> Vec<command::SurfaceAction> {
+        let raw_query = self.gc_command_query.trim().to_ascii_lowercase();
+        let query = raw_query
+            .strip_prefix("glass")
+            .map(str::trim)
+            .unwrap_or(raw_query.as_str());
+        let mut actions = Vec::new();
+        for surface in DevSurface::ALL {
+            for action in command::surface_actions(surface) {
+                if actions
+                    .iter()
+                    .any(|known: &command::SurfaceAction| known.command == action.command)
+                {
+                    continue;
+                }
+                let searchable =
+                    format!("{} {} {}", action.label, action.command, action.description)
+                        .to_ascii_lowercase();
+                if query.is_empty()
+                    || query
+                        .split_whitespace()
+                        .all(|term| searchable.contains(term))
+                {
+                    actions.push(*action);
+                }
+            }
+        }
+        actions
+    }
+
+    pub fn gc_command_selection_is_glass(&self) -> bool {
+        let core_count =
+            super::command::filter_gc_commands(&self.gc_command_items, &self.gc_command_query)
+                .len();
+        self.gc_command_selected >= core_count
+    }
+
+    pub fn complete_gc_command_selection(&mut self) {
+        let glass_actions = self.gc_command_glass_actions();
+        let core_matches =
+            super::command::filter_gc_commands(&self.gc_command_items, &self.gc_command_query);
+        if let Some(action) = glass_actions
+            .get(self.gc_command_selected.saturating_sub(core_matches.len()))
+            .filter(|_| self.gc_command_selected >= core_matches.len())
+        {
+            self.composer_input = format!("/glass {}", action.command);
+            self.composer_cursor = self.composer_input.len();
+            self.composer_gc_command_completion = false;
+            self.composer_glass_action_completion = Some(action.command.to_string());
+            self.gc_command_menu_open = false;
+            self.gc_command_query.clear();
+            return;
+        }
+        let matches = core_matches;
+        let Some(item) = matches.get(self.gc_command_selected) else {
+            self.status = "No command to complete · keep typing or Esc to treat it as text".into();
+            return;
+        };
+        let Some(name) = item.get("name").and_then(serde_json::Value::as_str) else {
+            return;
+        };
+        let name = name.trim_start_matches('/');
+        let placeholder = item
+            .get("argumentsHint")
+            .or_else(|| item.get("arguments"))
+            .and_then(serde_json::Value::as_str)
+            .map(|hint| format!(" {hint}"))
+            .unwrap_or_else(|| " ".into());
+        self.composer_input = format!("/{name}{placeholder}");
+        self.composer_cursor = self.composer_input.len();
+        self.composer_gc_command_completion = true;
+        self.gc_command_menu_open = false;
+        self.gc_command_query.clear();
+    }
+
+    pub fn cancel_gc_command_menu(&mut self) {
+        self.composer_input = format!("/{}", self.gc_command_query);
+        self.composer_cursor = self.composer_input.len();
+        self.gc_command_menu_open = false;
+        self.gc_command_loading = false;
+        self.gc_command_discovery_requested = false;
+        self.composer_gc_command_completion = false;
+        self.composer_glass_action_completion = None;
+        self.gc_command_query.clear();
+        self.gc_command_selected = 0;
+        self.status = "Command menu closed · draft unchanged".into();
+    }
+
+    pub fn submit_gc_command_selection(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        if self.gc_command_loading {
+            self.status = "Glass Core command catalogue is still loading".into();
+            return;
+        }
+        let glass_actions = self.gc_command_glass_actions();
+        let core_matches =
+            super::command::filter_gc_commands(&self.gc_command_items, &self.gc_command_query);
+        if let Some(action) = glass_actions
+            .get(self.gc_command_selected.saturating_sub(core_matches.len()))
+            .copied()
+            .filter(|_| self.gc_command_selected >= core_matches.len())
+        {
+            self.gc_command_menu_open = false;
+            self.gc_command_query.clear();
+            self.composer_gc_command_completion = false;
+            self.composer_mode = false;
+            self.status = match command::execute(self, action.command) {
+                Ok(message) => message,
+                Err(error) => error,
+            };
+            if self.surface == DevSurface::Agent {
+                self.composer_mode = true;
+            }
+            return;
+        }
+        let matches = core_matches;
+        let Some(item) = matches.get(self.gc_command_selected) else {
+            self.status = "No matching Glass Core command".into();
+            return;
+        };
+        let Some(name) = item.get("name").and_then(serde_json::Value::as_str) else {
+            self.status = "Glass Core returned a command without a name".into();
+            return;
+        };
+        let name = name.trim_start_matches('/');
+        let query = self.gc_command_query.trim().trim_start_matches('/');
+        let arguments = query.strip_prefix(name).unwrap_or("").trim().to_string();
+        let interactive =
+            item.get("runtimeMode").and_then(serde_json::Value::as_str) == Some("interactive");
+        self.gc_command_menu_open = false;
+        self.composer_gc_command_completion = false;
+        if interactive {
+            self.gc_command_query.clear();
+            match self.request_agent_command_ui() {
+                Ok(()) => {}
+                Err(error) => self.status = error,
+            }
+            return;
+        }
+        let Some(agent) = self.selected_agent.as_ref() else {
+            self.status = "Select a Glass Core session before running this command".into();
+            return;
+        };
+        self.queue_gc_command_tool(
+            worker,
+            "glass.agent.command",
+            serde_json::json!({"agentId":agent.as_str(),"name":name,"arguments":arguments}),
+        );
+        self.gc_command_query.clear();
+    }
+
     pub fn close_composer(&mut self) {
-        self.composer_mode = false;
-        self.composer_steer = false;
-        self.status = "Composer closed".into();
+        if self.surface == DevSurface::Agent {
+            self.composer_mode = true;
+            self.composer_gc_command_completion = false;
+            self.status = "Conversation ready · draft preserved".into();
+        } else {
+            self.composer_mode = false;
+            self.composer_steer = false;
+            self.status = "Composer closed · surface focus restored".into();
+        }
     }
 
     pub fn move_composer_cursor(&mut self, right: bool) {
@@ -6101,6 +6432,42 @@ impl DevTuiState {
     }
 
     pub fn submit_composer(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        if let Some(default_command) = self.composer_glass_action_completion.take() {
+            let command = self
+                .composer_input
+                .strip_prefix("/glass ")
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(default_command.as_str())
+                .to_string();
+            self.composer_mode = false;
+            self.status = match command::execute(self, &command) {
+                Ok(message) => message,
+                Err(error) => error,
+            };
+            if self.surface == DevSurface::Agent {
+                self.composer_mode = true;
+            }
+            self.composer_input.clear();
+            self.composer_cursor = 0;
+            return;
+        }
+        if self.composer_gc_command_completion {
+            let command_exists =
+                !super::command::filter_gc_commands(&self.gc_command_items, &self.composer_input)
+                    .is_empty();
+            if command_exists {
+                self.gc_command_query = self.composer_input.clone();
+                self.gc_command_menu_open = true;
+                self.submit_gc_command_selection(worker);
+                self.composer_input.clear();
+                self.composer_cursor = 0;
+            } else {
+                self.status =
+                    "No matching Core command · draft kept; Esc then Enter sends it as text".into();
+            }
+            return;
+        }
         let prompt = self.composer_input.clone();
         self.submit_composer_prompt(&prompt, true, worker);
     }
@@ -6180,11 +6547,20 @@ impl DevTuiState {
         // state only for an explicit prove-it request; never serialize the
         // selected editor buffer, path, or unrelated project metadata into a
         // greeting or ordinary conversation turn.
-        let context = if prove.is_some() {
+        let mut context = if prove.is_some() {
             self.agent_prompt_context()
         } else {
             serde_json::Value::Null
         };
+        if self.surface == DevSurface::Code
+            && self.composer_code_context_enabled
+            && let Some(code) = self.code_prompt_context()
+        {
+            if context.is_null() {
+                context = serde_json::json!({});
+            }
+            context["code"] = code;
+        }
         let owner = self.selected_agent.clone();
         let retry_message_id = self.matching_composer_retry_message_id(&display_text);
         if self.composer_retry_message_id.is_some() && retry_message_id.is_none() {
@@ -6346,6 +6722,42 @@ impl DevTuiState {
                 glass_browser::browser_workspace::BrowserInputOwner::Agent;
         }
         context
+    }
+
+    fn code_prompt_context(&self) -> Option<serde_json::Value> {
+        if self.focused_editor_path.is_empty() {
+            return None;
+        }
+        let full_content = self.focused_editor_content.as_str();
+        let selection = self
+            .focused_editor_selection
+            .as_ref()
+            .and_then(|selection| {
+                crate::development::editor::selection_offsets(full_content, selection)
+            });
+        let (source, selected_only) = selection
+            .filter(|(start, end)| start < end)
+            .map(|(start, end)| (&full_content[start..end], true))
+            .unwrap_or((full_content, false));
+        let truncated = source.len() > MAX_CODE_PROMPT_CONTEXT_BYTES;
+        let content = if truncated {
+            let mut boundary = MAX_CODE_PROMPT_CONTEXT_BYTES;
+            while !source.is_char_boundary(boundary) {
+                boundary = boundary.saturating_sub(1);
+            }
+            &source[..boundary]
+        } else {
+            source
+        };
+        Some(serde_json::json!({
+            "path": self.focused_editor_path,
+            "language": super::file_view::classify(&self.focused_editor_path).label(),
+            "unsaved": self.focused_editor_dirty,
+            "selectedOnly": selected_only,
+            "selection": self.focused_editor_selection,
+            "truncated": truncated,
+            "content": content,
+        }))
     }
 
     pub fn approve_confirmation_async(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
@@ -6702,6 +7114,23 @@ impl DevTuiState {
                     self.open_session_picker(&value);
                     return;
                 }
+                if result.tool == "glass.agent.commands"
+                    && self.gc_command_menu_open
+                    && value
+                        .get("initializing")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                {
+                    if let Some(agent_id) = value
+                        .get("agentId")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|value| crate::AgentId::parse(value).ok())
+                    {
+                        self.select_agent(Some(agent_id));
+                    }
+                    self.gc_command_discovery_requested = true;
+                    self.gc_command_loading = true;
+                }
                 if result.tool == "glass.agent.stats" {
                     self.agent_token_summary = stats_summary(&value);
                     self.status = format!("Session stats · {}", self.agent_token_summary);
@@ -6936,6 +7365,16 @@ impl DevTuiState {
                 }
             }
             Err(error) => {
+                if matches!(
+                    result.tool.as_str(),
+                    "glass.agent.commands" | "glass.agent.command"
+                ) && self.gc_command_menu_open
+                {
+                    self.gc_command_loading = false;
+                    self.gc_command_discovery_requested = false;
+                    self.status = format!("Glass Core command request failed: {error}");
+                    return;
+                }
                 if result.tool == "glass.browser.verify" {
                     self.last_proof_ok = Some(false);
                     self.last_verify = Some(evidence_card("live page", 0, None, &error, false));
@@ -7017,7 +7456,7 @@ impl DevTuiState {
     }
 
     pub fn handle_printable(&mut self, character: char) {
-        if character == ':' {
+        if character == ':' && self.surface != DevSurface::Agent {
             self.open_palette();
             return;
         }
@@ -7025,9 +7464,9 @@ impl DevTuiState {
             self.open_menu();
             return;
         }
-        // Agent text wins over navigation. The event loop reserves only
-        // explicit modal controls and the `:` command prefix.
-        if self.surface == DevSurface::Agent && !character.is_ascii_digit() {
+        // Agent text always wins over workspace navigation. `/` is routed by
+        // the event loop only when it opens the explicit command menu.
+        if self.surface == DevSurface::Agent {
             // Always open the composer and retain the first typed character;
             // Core readiness can lag its prompt queue during startup.
             self.open_composer();
@@ -7039,31 +7478,10 @@ impl DevTuiState {
             self.enter_code_edit();
             return;
         }
-        if self.responsive_class(self.terminal_width, self.terminal_height)
-            == ResponsiveClass::Phone
-        {
-            let surface = match character {
-                '1' => Some(DevSurface::Agent),
-                '2' => Some(DevSurface::Code),
-                '3' => Some(DevSurface::App),
-                '4' => Some(DevSurface::Tasks),
-                '5' => Some(DevSurface::More),
-                _ => None,
-            };
-            if let Some(surface) = surface {
-                self.show_surface(surface);
-                return;
-            }
-        }
         let surface = match character {
-            '1' => Some(DevSurface::Agent),
-            '2' | 'c' => Some(DevSurface::Code),
-            '3' | 'v' => Some(DevSurface::App),
-            '4' => Some(DevSurface::Terminal),
-            '5' | 'w' => Some(DevSurface::Tasks),
-            '6' | 'g' => Some(DevSurface::Git),
-            '7' | 'd' => Some(DevSurface::Debug),
-            '8' | 'm' => Some(DevSurface::More),
+            'c' => Some(DevSurface::Code),
+            'v' => Some(DevSurface::App),
+            'g' => Some(DevSurface::Git),
             _ => None,
         };
         if let Some(surface) = surface {
@@ -7095,7 +7513,7 @@ impl DevTuiState {
             Ok(command) => command,
             Err(error) if error == "no detected dev command" => {
                 self.status =
-                    "No development command detected · use :process start NAME COMMAND".into();
+                    "No development command detected · configure a project command, then start it with Ctrl-K".into();
                 return;
             }
             Err(error) => {
@@ -7138,6 +7556,9 @@ impl DevTuiState {
 
     pub fn show_surface(&mut self, surface: DevSurface) {
         self.surface = surface;
+        self.composer_mode = surface == DevSurface::Agent;
+        self.composer_code_context_enabled =
+            surface == DevSurface::Code && !self.focused_editor_path.is_empty();
         self.status = format!("{} selected", surface.label());
         if surface != DevSurface::Code {
             self.pending_open_file = None;
@@ -7377,7 +7798,7 @@ impl DevTuiState {
             as usize;
         if let Some(entry) = self.selected_process_entry() {
             self.status = format!(
-                "{} · {} · Enter logs · Space restart · u App · x stop",
+                "{} · {} · Enter logs · Space restart · u Browser · x stop",
                 entry.name,
                 entry.health.label()
             );
@@ -7492,7 +7913,9 @@ impl DevTuiState {
             DebugPane::Sessions => {
                 if self.debug_sessions.is_empty() {
                     self.selected_debug_session = 0;
-                    self.status = "No debugger session · :debug start NAME COMMAND".into();
+                    self.status =
+                        "No debugger session · start a configured debugger from Ctrl-K actions"
+                            .into();
                     return;
                 }
                 self.selected_debug_session = (self.selected_debug_session as i32 + delta)
@@ -7562,7 +7985,7 @@ impl DevTuiState {
 
     pub fn queue_debug_threads(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let Some(session) = self.selected_debug_session().map(|row| row.name.clone()) else {
-            self.status = "Start a debugger with :debug start NAME COMMAND".into();
+            self.status = "Start a configured debugger from Ctrl-K actions".into();
             return;
         };
         let (call, context) = match self.tool_request(
@@ -8440,6 +8863,8 @@ impl DevTuiState {
         }
         if self.focused_buffer().is_some() || !self.focused_editor_path.is_empty() {
             self.surface = DevSurface::Code;
+            self.composer_mode = false;
+            self.composer_code_context_enabled = false;
             self.code_edit_mode = true;
             self.editor_exit_prompt = None;
             self.ensure_editor_cursor_visible();
@@ -10824,6 +11249,32 @@ impl DevTuiState {
                     .to_string();
             }
         }
+        if self.gc_command_menu_open
+            && let Some(agent_id) = self.selected_agent.as_ref()
+            && let Some(catalogue) = snapshot.core_command_catalogues.get(agent_id)
+        {
+            if let Some(error) = catalogue.error.as_deref() {
+                self.gc_command_loading = false;
+                self.gc_command_discovery_requested = false;
+                self.status = format!("Glass Core command discovery failed: {error}");
+            } else {
+                self.gc_command_items.clone_from(&catalogue.commands);
+                self.gc_command_loading = false;
+                self.gc_command_discovery_requested = false;
+            }
+        }
+        if let Some(agent_id) = self.selected_agent.as_ref()
+            && let Some(handoff) = snapshot.core_command_handoffs.get(agent_id)
+            && !handoff.response_id.is_empty()
+            && self.last_core_handoff_response_id.as_deref() != Some(&handoff.response_id)
+        {
+            self.last_core_handoff_response_id = Some(handoff.response_id.clone());
+            self.agent_command_ui_requested = true;
+            self.status = handoff.message.as_deref().map_or_else(
+                || "Opening the native Glass Core command UI…".into(),
+                |message| format!("{message} · opening Core UI"),
+            );
+        }
         let entry_count = self.conversation_entries_view().len();
         if entry_count == 0 {
             self.transcript_selection = 0;
@@ -10995,7 +11446,7 @@ impl DevTuiState {
             && self.browser_recovery.is_none()
             && !had_agent_lifecycle_notice
         {
-            self.status = "Workspace ready · Enter chat · Ctrl-P files · : actions".into();
+            self.status = "Workspace ready · type to chat · / commands · Ctrl-P files".into();
         }
         if had_agent_lifecycle_notice
             && self.agent_send_job.is_none()
@@ -11083,7 +11534,7 @@ impl DevTuiState {
             self.thread_picker_items = project_thread_picker_items(agents, &task_snapshots);
         }
         self.agents = match agent_snapshots {
-            Ok(agents) if agents.is_empty() => "No agents. :agent spawn ROLE TASK".into(),
+            Ok(agents) if agents.is_empty() => "No Glass workspace agents. Core conversations appear in the Agent workspace.".into(),
             Ok(agents) => agents
                 .iter()
                 .map(|agent| {
@@ -11119,7 +11570,7 @@ impl DevTuiState {
         };
         self.agent_conversation = match workspace.agents().history(0) {
             Ok(events) if events.is_empty() => {
-                "No conversation yet. Press Enter or start typing to compose a message.".into()
+                "No conversation yet. Type a message to start one.".into()
             }
             Ok(events) => super::projection::conversation(
                 &events
@@ -11132,10 +11583,25 @@ impl DevTuiState {
             ),
             Err(error) => format!("Conversation unavailable · {error}"),
         };
-        self.tasks = match workspace.tasks() {
-            Ok(tasks) if tasks.is_empty() => {
-                "No tasks. :task create TITLE PROMPT creates an autonomous task".into()
-            }
+        let core_threads = self
+            .thread_picker_items
+            .iter()
+            .map(|thread| {
+                let title = thread
+                    .title
+                    .chars()
+                    .filter(|character| !character.is_control())
+                    .take(120)
+                    .collect::<String>();
+                format!(
+                    "CORE · {} · {} · {}",
+                    thread.status,
+                    title,
+                    thread.agent_id.as_str()
+                )
+            })
+            .collect::<Vec<_>>();
+        let workspace_tasks = match workspace.tasks() {
             Ok(tasks) => tasks
                 .iter()
                 .map(|task| {
@@ -11189,7 +11655,19 @@ impl DevTuiState {
                 })
                 .collect::<Vec<_>>()
                 .join("\n\n"),
-            Err(error) => format!("Task scheduler failed: {error}"),
+            Err(error) => format!("Workspace task flows unavailable · {error}"),
+        };
+        let mut task_sections = Vec::new();
+        if !core_threads.is_empty() {
+            task_sections.push(format!("CORE CONVERSATIONS\n{}", core_threads.join("\n")));
+        }
+        if !workspace_tasks.is_empty() {
+            task_sections.push(format!("GLASS WORKSPACE FLOWS\n{workspace_tasks}"));
+        }
+        self.tasks = if task_sections.is_empty() {
+            "No Core conversations yet. Type a message in Agent to start one.".into()
+        } else {
+            task_sections.join("\n\n")
         };
         match workspace.project_mut().processes().list_checked() {
             Ok(items) => {
@@ -11451,7 +11929,7 @@ impl DevTuiState {
         self.debugger = if debugger_names.is_empty() {
             self.debug_sessions.clear();
             self.selected_debug_session = 0;
-            "No debugger sessions. :debug start NAME COMMAND [ARGS...]".into()
+            "No debugger sessions. Ctrl-K opens Debug actions.".into()
         } else {
             let snapshots: Result<Vec<_>, _> = debugger_names
                 .iter()
@@ -11586,8 +12064,8 @@ impl DevTuiState {
         let app_hint = detection
             .browser_url
             .as_deref()
-            .map(|url| format!("● open App {url}"))
-            .unwrap_or_else(|| "○ start App after a URL is detected".into());
+            .map(|url| format!("● open Browser {url}"))
+            .unwrap_or_else(|| "○ start a preview server to detect a Browser URL".into());
         let project_line = if detection.languages.is_empty() {
             "○ project type unknown".to_string()
         } else {
@@ -11595,12 +12073,12 @@ impl DevTuiState {
         };
         let workspace_line = "✓ workspace ready";
         let agent_hint = if self.agent_readiness.starts_with("✓ Ready") {
-            ":agent ready · type a message or press Enter to chat"
+            "Core ready · type a message to chat"
         } else {
-            "○ Glass Core setup · use :agent setup or :agent setup login"
+            "○ Core setup · type / to browse Core setup commands"
         };
         self.workspace_status = format!(
-            "WELCOME · {}\n{}\n\n{}\n{}\n\nNEXT ACTIONS\n◆ :actions guided launchers · per-surface flows\n◆ type a message or press Enter to talk to Glass Core\n◆ :process start dev · start the detected dev suite\n◆ Enter · open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
+            "WELCOME · {}\n{}\n\n{}\n{}\n\nNEXT ACTIONS\n◆ Ctrl-K · guided Glass workspace actions\n◆ / · discover Core commands and Glass workspace actions\n◆ type a message to talk to Glass Core\n◆ start the detected preview server to see its Browser URL\n◆ Enter · open the selected file in Code\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {}\nresident: {} workspace agents · {} workspace tasks · {} kernels · {} debuggers",
             detection.git_branch.as_deref().unwrap_or("no branch"),
             project_line,
             agent_hint,
@@ -15081,6 +15559,19 @@ mod tests {
     }
 
     #[test]
+    fn agent_printable_digits_colons_and_transcript_letters_go_to_composer() {
+        let (mut state, root) = routed_state("agent-printable-focus");
+        state.surface = DevSurface::Agent;
+        for character in ['1', 'f', ':'] {
+            state.handle_printable(character);
+        }
+        assert!(state.composer_mode);
+        assert_eq!(state.composer_input, "1f:");
+        assert!(!state.command_mode, "Agent punctuation stays message text");
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn beforeunload_status_reflects_the_user_decision() {
         assert_eq!(
             native_browser_dialog_resolution_status("beforeunload", true),
@@ -15224,6 +15715,51 @@ mod tests {
     }
 
     #[test]
+    fn moving_code_selection_refreshes_preview_and_preserves_dirty_buffers() {
+        let (mut state, root) = routed_state("file-selection-preview");
+        for (path, content) in [
+            ("a.txt", "ALPHA_PREVIEW_1\n"),
+            ("b.txt", "BETA_PREVIEW_2\n"),
+            ("c.txt", "GAMMA_PREVIEW_3\n"),
+        ] {
+            std::fs::write(root.join(path), content).expect("write preview fixture");
+        }
+        state.files = vec!["a.txt".into(), "b.txt".into(), "c.txt".into()];
+        state.show_surface(DevSurface::Code);
+        assert_eq!(state.focused_editor_path, "a.txt");
+        assert_eq!(state.focused_editor_content, "ALPHA_PREVIEW_1\n");
+
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .edit_buffer(
+                "a.txt",
+                "ALPHA_DIRTY_BUFFER\n".into(),
+                crate::development::Actor::local(),
+            )
+            .expect("edit first buffer");
+        state.refresh_editor_projection();
+        state.move_file_selection(1);
+        assert_eq!(state.focused_editor_path, "b.txt");
+        assert_eq!(state.focused_editor_content, "BETA_PREVIEW_2\n");
+        state.move_file_selection(1);
+        assert_eq!(state.focused_editor_path, "c.txt");
+        assert_eq!(state.focused_editor_content, "GAMMA_PREVIEW_3\n");
+        let workspace = state.ws().expect("workspace lock");
+        let first = workspace
+            .project()
+            .buffer("a.txt")
+            .expect("dirty first buffer retained");
+        assert!(first.dirty);
+        assert_eq!(first.content, "ALPHA_DIRTY_BUFFER\n");
+        drop(workspace);
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove preview workspace");
+    }
+
+    #[test]
     fn editor_writes_and_preserves_dirty_buffers_on_first_open() {
         let root = std::env::temp_dir().join(format!("glass-editor-review-{}", std::process::id()));
         std::fs::create_dir_all(root.join("src")).expect("create temporary workspace");
@@ -15239,7 +15775,7 @@ mod tests {
         state.files = vec!["src/README.md".into()];
         assert_eq!(state.surface, DevSurface::Agent);
 
-        state.handle_printable('2');
+        state.show_surface(DevSurface::Code);
         assert_eq!(state.surface, DevSurface::Code);
         state.selected_file = 0;
         state.open_selected_file();
@@ -15387,6 +15923,7 @@ mod tests {
         ] {
             let (mut state, root) = routed_state(label);
             state.surface = surface;
+            state.composer_mode = false;
             state.pending_browser_navigation = Some("https://example.test/after-recovery".into());
             match overlay {
                 "code" => state.code_edit_mode = true,
@@ -15438,6 +15975,7 @@ mod tests {
 
         let (mut state, root) = routed_state("browser-failure-preserves-ui");
         state.surface = DevSurface::Git;
+        state.composer_mode = false;
         state.browser_target_picker = true;
         state.browser_target_picker_requested = true;
         state.browser_target_query = "docs".into();
@@ -15763,27 +16301,19 @@ mod tests {
     }
 
     #[test]
-    fn colon_opens_palette_from_every_surface() {
-        for surface in DevSurface::ALL {
-            let root = std::env::temp_dir().join(format!(
-                "glass-palette-surface-{}-{}",
-                surface.label(),
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&root).expect("create temporary workspace");
-            let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop)
-                .expect("open temporary workspace");
-            state.surface = surface;
+    fn colon_is_literal_text_in_the_always_ready_agent_composer() {
+        let root =
+            std::env::temp_dir().join(format!("glass-composer-colon-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
 
-            state.handle_printable(':');
+        state.handle_printable(':');
 
-            assert!(
-                state.command_mode,
-                "colon did not open palette on {surface:?}"
-            );
-            assert!(!state.composer_mode);
-            std::fs::remove_dir_all(root).expect("remove temporary workspace");
-        }
+        assert!(state.composer_mode);
+        assert_eq!(state.composer_input, ":");
+        assert!(!state.command_mode);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 
     #[test]
@@ -15837,6 +16367,45 @@ mod tests {
         assert!(
             state.composer_cursor < state.composer_input.len(),
             "Up on a wrapped draft should move to the previous line before history"
+        );
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn agent_composer_does_not_reveal_an_existing_editor_buffer() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-agent-composer-editor-split-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join(".github/workflows"))
+            .expect("create temporary workspace");
+        std::fs::write(
+            root.join(".github/workflows/ci.yml"),
+            "name: harmless fixture\n",
+        )
+        .expect("write harmless source fixture");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state
+            .ws_mut()
+            .expect("workspace lock")
+            .project_mut()
+            .open_buffer(
+                ".github/workflows/ci.yml",
+                crate::development::Actor::local(),
+            )
+            .expect("open source fixture");
+        state.refresh_editor_projection();
+        assert_eq!(state.focused_editor_path, ".github/workflows/ci.yml");
+
+        state.surface = DevSurface::Agent;
+        state.open_composer();
+
+        assert!(state.composer_mode);
+        assert_eq!(state.focused_editor_path, ".github/workflows/ci.yml");
+        assert!(
+            !state.factory_split,
+            "composer must not reveal a previously opened editor buffer by default"
         );
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
@@ -16606,6 +17175,49 @@ mod tests {
         assert!(!serialized.contains("fixture content must not enter a greeting"));
         assert!(!serialized.contains("Git playbook:"));
         assert!(!serialized.contains("Agent playbook:"));
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn code_context_is_visible_removable_and_selection_first() {
+        let root =
+            std::env::temp_dir().join(format!("glass-code-prompt-context-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open temporary workspace");
+        state.show_surface(DevSurface::Code);
+        state.focused_editor_path = "src/main.rs".into();
+        state.focused_editor_content = "fn selected() {}\nfn hidden() {}\n".into();
+        state.focused_editor_dirty = true;
+        state.focused_editor_selection = Some(TextSelection {
+            anchor: crate::development::TextPosition { line: 1, column: 4 },
+            active: crate::development::TextPosition {
+                line: 1,
+                column: 10,
+            },
+        });
+        state.open_composer();
+
+        assert!(
+            state
+                .composer_context_chips()
+                .contains("src/main.rs (unsaved)")
+        );
+        let context = state.code_prompt_context().expect("Code context available");
+        assert_eq!(context["path"], "src/main.rs");
+        assert_eq!(context["language"], "Rust");
+        assert_eq!(context["selectedOnly"], true);
+        assert_eq!(context["content"], "select");
+
+        state.toggle_composer_code_context();
+        assert!(state.composer_context_chips().is_empty());
+        state.show_surface(DevSurface::Agent);
+        assert!(!state.composer_code_context_enabled);
+        let agent_context = state.agent_prompt_context();
+        let serialized = serde_json::to_string(&agent_context).expect("serialize context");
+        assert!(!serialized.contains("src/main.rs"));
+        assert!(!serialized.contains("fn hidden"));
 
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
@@ -17387,18 +17999,18 @@ mod tests {
         assert_eq!(desktop.status, "Code selected");
         desktop.previous_surface();
         assert_eq!(desktop.surface, DevSurface::Agent);
-        desktop.surface = DevSurface::Debug;
-        desktop.next_surface();
-        assert_eq!(desktop.surface, DevSurface::More);
+        desktop.surface = DevSurface::Git;
         desktop.next_surface();
         assert_eq!(desktop.surface, DevSurface::Agent);
+        desktop.next_surface();
+        assert_eq!(desktop.surface, DevSurface::Code);
 
         let mut phone =
             DevTuiState::open_for_tui(&root, TuiLayout::Mobile).expect("open phone workspace");
         phone.surface = DevSurface::Agent;
         phone.previous_surface();
-        assert_eq!(phone.surface, DevSurface::More);
-        assert_eq!(phone.status, "More selected");
+        assert_eq!(phone.surface, DevSurface::Git);
+        assert_eq!(phone.status, "Git selected");
         phone.next_surface();
         assert_eq!(phone.surface, DevSurface::Agent);
 

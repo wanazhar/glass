@@ -87,7 +87,8 @@ The development TUI uses these global routes:
 |---|---|
 | `?` | Open unified keyboard help |
 | `:` | Open the expert command palette |
-| `:actions` | Open guided actions for the current surface |
+| `/` in Agent | Discover GC's live slash commands and Glass workspace actions |
+| `Ctrl-K` or `:` outside Agent | Open Glass workspace actions |
 | `Enter` | Open/run the selected item or start/continue Agent composition |
 | `Tab` | Move to the next product surface outside editor mode |
 | `Ctrl-L` | Open the shared composer dock on the current surface |

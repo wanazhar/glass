@@ -23,12 +23,13 @@ pub(super) enum ActiveOverlay {
     AttentionInbox = 15,
     ThreadPicker = 16,
     SendAttemptRetryConfirmation = 17,
+    GcCommandMenu = 18,
 }
 
 impl ActiveOverlay {
     /// Whether this overlay covers the surface's full visual area.
     ///
-    /// The composer owns input in its dock while leaving the App surface's
+    /// The composer owns input in its dock while leaving the Browser surface's
     /// browser pane visible behind it.
     pub(super) fn occludes_surface(self) -> bool {
         !matches!(self, Self::Composer)
@@ -65,12 +66,16 @@ pub(super) fn active_overlay(state: &DevTuiState) -> Option<ActiveOverlay> {
         Some(ActiveOverlay::MutationConfirmation)
     } else if state.code_edit_mode && !state.composer_mode {
         Some(ActiveOverlay::FullscreenEditor)
-    } else if state.composer_mode {
-        Some(ActiveOverlay::Composer)
     } else if state.command_mode {
         Some(ActiveOverlay::CommandPalette)
     } else if state.browser_recovery.is_some() {
         Some(ActiveOverlay::BrowserRecovery)
+    } else if state.composer_mode {
+        if state.gc_command_menu_open {
+            Some(ActiveOverlay::GcCommandMenu)
+        } else {
+            Some(ActiveOverlay::Composer)
+        }
     } else {
         None
     }
@@ -122,11 +127,11 @@ mod tests {
         ));
         assert_eq!(active_overlay(&state), Some(ActiveOverlay::BrowserRecovery));
 
-        state.command_mode = true;
+        state.open_palette();
         assert_eq!(active_overlay(&state), Some(ActiveOverlay::CommandPalette));
-        state.command_mode = false;
+        state.close_palette();
         state.composer_mode = true;
-        assert_eq!(active_overlay(&state), Some(ActiveOverlay::Composer));
+        assert_eq!(active_overlay(&state), Some(ActiveOverlay::BrowserRecovery));
         state.composer_mode = false;
         state.code_edit_mode = true;
         assert_eq!(

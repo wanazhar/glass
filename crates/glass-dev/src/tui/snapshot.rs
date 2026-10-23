@@ -90,6 +90,10 @@ pub struct DisplaySnapshot {
     pub conversation_items: Vec<super::projection::ConversationEntry>,
     /// Conversation projections partitioned by their process-local resident agent.
     pub agent_conversations: std::collections::BTreeMap<crate::AgentId, AgentConversation>,
+    /// Core-owned slash command catalogues returned by each resident session.
+    pub core_command_catalogues: std::collections::BTreeMap<crate::AgentId, CoreCommandCatalogue>,
+    /// Core-owned commands that must hand control to the native Core UI.
+    pub core_command_handoffs: std::collections::BTreeMap<crate::AgentId, CoreCommandHandoff>,
     pub agent_chrome: Vec<AgentChrome>,
     pub tasks: String,
     pub editor: String,
@@ -124,6 +128,93 @@ pub struct DisplaySnapshot {
     pub duration: Duration,
     /// Browser supervision verdict for this pass.
     pub browser_health: BrowserHealth,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CoreCommandCatalogue {
+    pub commands: Vec<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CoreCommandHandoff {
+    pub response_id: String,
+    pub message: Option<String>,
+}
+
+fn core_command_handoffs(
+    events: &[crate::AgentEvent],
+) -> std::collections::BTreeMap<crate::AgentId, CoreCommandHandoff> {
+    let mut handoffs = std::collections::BTreeMap::new();
+    for event in events {
+        if event.kind != "response"
+            || event
+                .payload
+                .get("operation")
+                .and_then(serde_json::Value::as_str)
+                != Some("coreCommand")
+            || event.payload.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+            || event
+                .payload
+                .pointer("/result/requiresInteractive")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+        {
+            continue;
+        }
+        handoffs.insert(
+            event.agent_id.clone(),
+            CoreCommandHandoff {
+                response_id: event
+                    .payload
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                message: event
+                    .payload
+                    .pointer("/result/message")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            },
+        );
+    }
+    handoffs
+}
+
+fn core_command_catalogues(
+    events: &[crate::AgentEvent],
+) -> std::collections::BTreeMap<crate::AgentId, CoreCommandCatalogue> {
+    let mut catalogues = std::collections::BTreeMap::<crate::AgentId, CoreCommandCatalogue>::new();
+    for event in events {
+        if event.kind != "response"
+            || event
+                .payload
+                .get("operation")
+                .and_then(serde_json::Value::as_str)
+                != Some("coreCommands")
+        {
+            continue;
+        }
+        let catalogue = catalogues.entry(event.agent_id.clone()).or_default();
+        if event.payload.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+            catalogue.commands = event
+                .payload
+                .pointer("/result/commands")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            catalogue.error = None;
+        } else {
+            catalogue.error = event
+                .payload
+                .pointer("/error/message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| Some("Glass Core did not return its command catalogue".into()));
+        }
+    }
+    catalogues
 }
 
 #[derive(Debug, Clone, Default)]
@@ -445,6 +536,10 @@ fn worker_loop(
                     {
                         snapshot.conversation_items = items;
                         snapshot.agent_conversations = by_agent;
+                        snapshot.core_command_catalogues =
+                            core_command_catalogues(&conversation_events);
+                        snapshot.core_command_handoffs =
+                            core_command_handoffs(&conversation_events);
                         snapshot.conversation_cursor = highest;
                     }
                 }
@@ -521,6 +616,9 @@ fn worker_loop(
                     };
                     snapshot.conversation_items = items;
                     snapshot.agent_conversations = by_agent;
+                    snapshot.core_command_catalogues =
+                        core_command_catalogues(&conversation_events);
+                    snapshot.core_command_handoffs = core_command_handoffs(&conversation_events);
                     let highest = conversation_events
                         .iter()
                         .map(|event| event.sequence)
@@ -602,7 +700,7 @@ fn compute_snapshot(
         })
         .unwrap_or_default();
     snapshot.agents = match agent_snapshots {
-        Ok(agents) if agents.is_empty() => "No agents. :agent spawn ROLE TASK".into(),
+        Ok(agents) if agents.is_empty() => "No Glass workspace agents. Core conversations appear in the Agent workspace.".into(),
         Ok(agents) => agents
             .iter()
             .map(|agent| {
@@ -640,17 +738,39 @@ fn compute_snapshot(
         Ok(events) if events.is_empty() => {
             snapshot.conversation_items.clear();
             snapshot.agent_conversations.clear();
+            snapshot.core_command_catalogues.clear();
+            snapshot.core_command_handoffs.clear();
             "No conversation yet. Press Enter or start typing to compose a message.".into()
         }
         Ok(events) => {
             snapshot.conversation_items = crate::tui::projection::conversation_entries(&events);
             snapshot.agent_conversations = agent_conversations(&events);
+            snapshot.core_command_catalogues = core_command_catalogues(&events);
+            snapshot.core_command_handoffs = core_command_handoffs(&events);
             crate::tui::projection::conversation(&events)
         }
         Err(error) => format!("Conversation unavailable: {error}"),
     };
-    snapshot.tasks = match task_snapshots {
-        Ok(tasks) if tasks.is_empty() => "No tasks. :task create ID TITLE".into(),
+    let core_threads = snapshot
+        .thread_picker_items
+        .iter()
+        .map(|thread| {
+            let title = thread
+                .title
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(120)
+                .collect::<String>();
+            format!(
+                "CORE · {} · {} · {}",
+                thread.status,
+                title,
+                thread.agent_id.as_str()
+            )
+        })
+        .collect::<Vec<_>>();
+    let workspace_tasks = match task_snapshots {
+        Ok(tasks) if tasks.is_empty() => String::new(),
         Ok(tasks) => tasks
             .iter()
             .map(|task| {
@@ -699,7 +819,19 @@ fn compute_snapshot(
             })
             .collect::<Vec<_>>()
             .join("\n\n"),
-        Err(error) => format!("Task scheduler failed: {error}"),
+        Err(error) => format!("Workspace task flows unavailable · {error}"),
+    };
+    let mut task_sections = Vec::new();
+    if !core_threads.is_empty() {
+        task_sections.push(format!("CORE CONVERSATIONS\n{}", core_threads.join("\n")));
+    }
+    if !workspace_tasks.is_empty() {
+        task_sections.push(format!("GLASS WORKSPACE FLOWS\n{workspace_tasks}"));
+    }
+    snapshot.tasks = if task_sections.is_empty() {
+        "No Core conversations yet. Type a message in Agent to start one.".into()
+    } else {
+        task_sections.join("\n\n")
     };
     match locked.project_mut().processes().list_checked() {
         Ok(items) => {
@@ -817,7 +949,7 @@ fn compute_snapshot(
         })
         .collect();
     snapshot.debugger = if debug_rows.is_empty() {
-        "No debugger sessions. :debug start NAME COMMAND [ARGS...]".into()
+        "No debugger sessions. Ctrl-K opens Debug actions.".into()
     } else {
         debug_rows
             .iter()
@@ -1016,10 +1148,10 @@ fn workspace_status_projection(workspace: &mut crate::DevelopmentWorkspace) -> S
     let app_hint = detection
         .browser_url
         .as_deref()
-        .map(|url| format!("● open App {url}"))
-        .unwrap_or_else(|| "○ start App after a URL is detected".into());
+        .map(|url| format!("● open Browser {url}"))
+        .unwrap_or_else(|| "○ open Browser after a URL is detected".into());
     format!(
-        "WELCOME · {}\n{}\n\n✓ workspace ready\n\nNEXT ACTIONS\n◆ :actions guided launchers · per-surface flows\n◆ :agent doctor · check the resident engine and provider setup\n◆ :process start dev · start detected dev suite\n◆ Enter · open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
+        "WELCOME · {}\n{}\n\n✓ workspace ready\n\nNEXT ACTIONS\n◆ Ctrl-K · guided Glass workspace actions\n◆ / · discover Core commands and Glass workspace actions\n◆ start detected preview server to see its Browser URL\n◆ Enter · open the selected file in Code\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {}\nresident: {} workspace agents · {} workspace tasks · {} kernels · {} debuggers",
         detection.git_branch.as_deref().unwrap_or("no branch"),
         project_line,
         dev_hint,
@@ -1037,6 +1169,66 @@ fn workspace_status_projection(workspace: &mut crate::DevelopmentWorkspace) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn core_command_catalogues_keep_latest_session_result_and_errors() {
+        let agent = crate::AgentId::parse("agent-0001").unwrap();
+        let event = |sequence, payload| crate::AgentEvent {
+            sequence,
+            agent_id: agent.clone(),
+            timestamp_ms: 0,
+            kind: "response".into(),
+            payload,
+        };
+        let catalogues = core_command_catalogues(&[
+            event(
+                1,
+                serde_json::json!({
+                    "operation":"coreCommands",
+                    "ok":true,
+                    "result":{"commands":[{"name":"status"}]}
+                }),
+            ),
+            event(
+                2,
+                serde_json::json!({
+                    "operation":"coreCommands",
+                    "ok":true,
+                    "result":{"commands":[{"name":"status"},{"name":"model"}]}
+                }),
+            ),
+        ]);
+        assert_eq!(catalogues[&agent].commands.len(), 2);
+        assert_eq!(catalogues[&agent].commands[1]["name"], "model");
+
+        let catalogues = core_command_catalogues(&[event(
+            3,
+            serde_json::json!({
+                "operation":"coreCommands",
+                "ok":false,
+                "error":{"message":"catalogue unavailable"}
+            }),
+        )]);
+        assert_eq!(
+            catalogues[&agent].error.as_deref(),
+            Some("catalogue unavailable")
+        );
+
+        let handoffs = core_command_handoffs(&[crate::AgentEvent {
+            sequence: 4,
+            agent_id: agent.clone(),
+            timestamp_ms: 0,
+            kind: "response".into(),
+            payload: serde_json::json!({
+                "id":"request-4",
+                "operation":"coreCommand",
+                "ok":true,
+                "result":{"requiresInteractive":true,"message":"Select a model"}
+            }),
+        }]);
+        assert_eq!(handoffs[&agent].response_id, "request-4");
+        assert_eq!(handoffs[&agent].message.as_deref(), Some("Select a model"));
+    }
 
     #[test]
     fn agent_conversation_projection_partitions_events_by_owner() {

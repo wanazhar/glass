@@ -2406,6 +2406,10 @@ mod tests {
             "glass.editor.proposal.create"
         ));
         assert!(crate::tools::is_integration_tool("glass.task.create"));
+        assert!(crate::tools::is_integration_tool("glass.process.list"));
+        assert!(crate::tools::is_integration_tool("glass.process.start"));
+        assert!(crate::tools::is_integration_tool("glass.debug.start"));
+        assert!(crate::tools::is_integration_tool("glass.debug.threads"));
         assert!(!crate::tools::is_integration_tool("glass.file.read"));
         assert!(!crate::tools::is_integration_tool("glass.not_registered"));
         for excluded in [
@@ -2415,8 +2419,6 @@ mod tests {
             "glass.editor.proposal.accept",
             "glass.editor.checkpoint.restore",
             "glass.command.run",
-            "glass.process.start",
-            "glass.process.input",
             "glass.agent.models",
             "glass.agent.new-session",
             "glass.agent.prompt",

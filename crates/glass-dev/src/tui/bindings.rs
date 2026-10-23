@@ -48,12 +48,16 @@ fn documented_shortcut_help() -> &'static str {
 pub fn curriculum_help(surface: DevSurface) -> String {
     let surface_lines = match surface {
         DevSurface::Agent => {
-            "AGENT\n  type in the dock to talk · Enter sends\n  Ctrl-Shift-T project threads · : Glass actions"
+            "AGENT · COMPOSER READY\n  type to talk · Enter sends · / commands\n  Ctrl-Tab surfaces · Ctrl-Shift-T project threads\n  Ctrl-K Glass actions · Ctrl-F fork · Ctrl-R rewind\n  Ctrl-E edit last · Ctrl-O expand transcript"
         }
-        DevSurface::Code => "CODE\n  Enter opens · i inserts · gc comments",
-        DevSurface::App => "APP\n  Enter activates · g source · C comment",
+        DevSurface::Code => {
+            "CODE\n  ↑/↓ preview · Enter opens · Ctrl-L ask with this buffer · Ctrl-Shift-X remove context"
+        }
+        DevSurface::App => {
+            "BROWSER / PREVIEW\n  connected page, native-first · / browser actions · g source"
+        }
         DevSurface::Terminal => {
-            "TERMINAL\n  j/k select · Enter logs · Space restart · u App · x stop"
+            "TERMINAL\n  j/k select · Enter logs · Space restart · u Browser · x stop"
         }
         DevSurface::Git => {
             "GIT\n  Enter/d diff · Space stage · c commit · o open · x discard · r review"
@@ -62,15 +66,19 @@ pub fn curriculum_help(surface: DevSurface) -> String {
         DevSurface::Debug => {
             "DEBUG\n  j/k select · [ ] pane · Enter jump · Space continue · n/i/o step"
         }
-        DevSurface::More => "MORE\n  j/k or click routes · Enter/double-click runs · : actions",
+        DevSurface::More => "MORE\n  j/k or click routes · Enter/double-click runs · / actions",
     };
     format!(
-        "DO THIS\n  type in the dock   talk to Glass\n  :                  open actions and search\n  a outside Agent    this surface's actions\n  Enter              do the highlighted thing\n  Esc                back\n  ?                  close help\n\n{surface_lines}\n\nMORE\n  Agent · Code · App · Terminal · Tasks · Git · Debug · More\n\nKEYS\n{}\n  click dock · double-click open · right-click / long-press context actions",
+        "DO THIS\n  type in Agent      composer is ready immediately\n  /                  Core commands and Glass workspace actions\n  Ctrl-Tab            next surface · Ctrl-Shift-Tab previous\n  Alt-1…5             direct primary surface when terminal supports Alt\n  Ctrl-K              Glass action palette\n  Esc                 dismiss menu / return to surface\n  ?                   close help\n\n{surface_lines}\n\nWORKSPACE\n  Agent · Code · Browser · Terminal · Git\n  Tasks, Debug, and services are available in / actions\n\nKEYS\n{}\n  click surface tabs · double-click open · right-click / long-press context actions",
         documented_shortcut_help()
     )
 }
 
 pub fn dock_placeholder(surface: DevSurface) -> String {
-    let command_hint = ": actions/search";
+    let command_hint = if surface == DevSurface::Agent {
+        "/ commands · Ctrl-Tab surfaces"
+    } else {
+        "Ctrl-K actions · Ctrl-Tab surfaces"
+    };
     format!("Message Glass about {}…    {command_hint}", surface.label())
 }

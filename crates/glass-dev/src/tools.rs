@@ -1605,16 +1605,33 @@ impl DevelopmentToolRouter {
                     .map_err(|error| DevelopmentError::Process(error.to_string())),
             ),
             "glass.agent.hello" | "glass.agent.models" | "glass.agent.commands" | "glass.agent.command" => {
-                let id = optional_string(call, "agentId")
+                let selected = optional_string(call, "agentId")
                     .map(|value| agent_id(workspace, value))
                     .transpose()?
-                    .or_else(|| active_agent_id(workspace))
-                    .ok_or_else(|| {
-                        DevelopmentError::Conflict(
+                    .or_else(|| active_agent_id(workspace));
+                let id = match selected {
+                    Some(id) => id,
+                    None if call.name == "glass.agent.commands" => {
+                        // The first slash menu needs a Core session before a
+                        // provider turn exists. Start the idle runtime, then
+                        // let the TUI request commands once it reports ready.
+                        let id = workspace.agents().create(crate::agents::AgentSpec::new(
+                            "assistant",
+                            "interactive Glass workspace session",
+                        ))?;
+                        return Ok(serde_json::json!({
+                            "queued": true,
+                            "agentId": id.as_str(),
+                            "initializing": true
+                        }));
+                    }
+                    None => {
+                        return Err(DevelopmentError::Conflict(
                             "start an interactive agent session before requesting model state"
                                 .into(),
-                        )
-                    })?;
+                        ));
+                    }
+                };
                 let request = match call.name.as_str() {
                     "glass.agent.hello" => ResidentSessionRequest::Hello,
                     "glass.agent.models" => ResidentSessionRequest::Models,
@@ -1859,7 +1876,13 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
 /// Glass-owned integrations offered to Core's negotiated mixed-tool runtime.
 /// Core retains its native coding catalog and executes it locally.
 pub(crate) fn integration_tool_catalog() -> Vec<ToolDescriptor> {
-    const PREFIXES: &[&str] = &["glass.browser.", "glass.git.", "glass.task."];
+    const PREFIXES: &[&str] = &[
+        "glass.browser.",
+        "glass.git.",
+        "glass.task.",
+        "glass.process.",
+        "glass.debug.",
+    ];
     const ALLOWED: &[&str] = &[
         "glass.github.review",
         "glass.project.attach",
@@ -1890,7 +1913,7 @@ pub(crate) fn integration_tool_catalog() -> Vec<ToolDescriptor> {
         "glass.lsp.signature_help",
         "glass.lsp.semantic_tokens",
     ];
-    service_descriptors()
+    let mut catalog = service_descriptors()
         .into_iter()
         .filter(|descriptor| {
             ALLOWED.contains(&descriptor.name.as_str())
@@ -1898,7 +1921,56 @@ pub(crate) fn integration_tool_catalog() -> Vec<ToolDescriptor> {
                     .iter()
                     .any(|prefix| descriptor.name.starts_with(prefix))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    // Put the common workspace routes first so a host UI or model that only
+    // shows the start of a large mixed catalog still exposes the tools needed
+    // to inspect and act on the current project.
+    const COMMON_FIRST: &[&str] = &[
+        "glass.workspace.list",
+        "glass.workspace.inspect",
+        "glass.browser.state",
+        "glass.browser.start",
+        "glass.browser.navigate",
+        "glass.browser.observe",
+        "glass.browser.act",
+        "glass.browser.targets",
+        "glass.browser.screenshot",
+        "glass.git.status",
+        "glass.git.diff",
+        "glass.git.branches",
+        "glass.git.stage",
+        "glass.git.unstage",
+        "glass.git.commit",
+        "glass.process.list",
+        "glass.process.logs",
+        "glass.process.ports",
+        "glass.process.health",
+        "glass.process.start",
+        "glass.process.stop",
+        "glass.process.restart",
+        "glass.process.input",
+        "glass.debug.inspect",
+        "glass.debug.events",
+        "glass.debug.threads",
+        "glass.debug.stack",
+        "glass.debug.scopes",
+        "glass.debug.variables",
+        "glass.task.list",
+        "glass.task.get",
+        "glass.task.inspect",
+        "glass.editor.open",
+        "glass.editor.selection",
+        "glass.editor.buffers",
+        "glass.lsp.diagnostics",
+        "glass.lsp.list",
+    ];
+    catalog.sort_by_key(|descriptor| {
+        COMMON_FIRST
+            .iter()
+            .position(|name| *name == descriptor.name)
+            .unwrap_or(COMMON_FIRST.len())
+    });
+    catalog
 }
 
 pub(crate) fn is_integration_tool(name: &str) -> bool {
@@ -2130,6 +2202,8 @@ fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
         browser_tool_details(name)
     {
         (description.to_string(), schema)
+    } else if let Some((description, schema)) = process_tool_details(name) {
+        (description.to_string(), schema)
     } else if name == "glass.agent.commands" {
         (
             "Discover the current slash-command catalogue from the selected Glass Core session"
@@ -2241,7 +2315,12 @@ fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
             }),
         )
     } else if let Some(schema) = lsp_debug_schema(name) {
-        (format!("Resident Glass Dev operation {name}"), schema)
+        let description = if name.starts_with("glass.debug.") {
+            debug_tool_description(name)
+        } else {
+            format!("Resident Glass Dev language operation {name}")
+        };
+        (description, schema)
     } else {
         (
             format!("Resident Glass Dev operation {name}"),
@@ -2255,6 +2334,78 @@ fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
         mutating,
         available: true,
         unavailable_reason: None,
+    }
+}
+
+fn process_tool_details(name: &str) -> Option<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+
+    let text = |max_length| json!({"type":"string", "minLength":1, "maxLength":max_length});
+    let named = || json!({"type":"object", "properties":{"name":text(128)}, "required":["name"], "additionalProperties":false});
+    Some(match name {
+        "glass.process.list" => (
+            "List named long-running processes owned by this project, including state and working directory. This is the Glass workspace process manager, separate from Core's one-shot native bash tool.",
+            json!({"type":"object", "properties":{}, "additionalProperties":false}),
+        ),
+        "glass.process.ports" => (
+            "List project processes and their detected local service URLs/ports; this does not expose the service publicly.",
+            json!({"type":"object", "properties":{}, "additionalProperties":false}),
+        ),
+        "glass.process.logs" => (
+            "Read the bounded output captured from one named project process.",
+            named(),
+        ),
+        "glass.process.health" => (
+            "Inspect one named project process's state, health, and detected local URLs.",
+            named(),
+        ),
+        "glass.process.start" => (
+            "Start a named long-running project process in the project directory; use this for a development server or watcher whose state and output Glass should track. For one-shot commands, use Core's native bash tool.",
+            json!({"type":"object", "properties":{"name":text(128), "command":text(8192)}, "required":["name","command"], "additionalProperties":false}),
+        ),
+        "glass.process.stop" => ("Stop one named project process managed by Glass.", named()),
+        "glass.process.restart" => (
+            "Restart one named project process managed by Glass.",
+            named(),
+        ),
+        "glass.process.input" => (
+            "Send input to the PTY of one named project process; this targets that existing process, not a new shell.",
+            json!({"type":"object", "properties":{"name":text(128), "input":{"type":"string", "maxLength":8192}}, "required":["name","input"], "additionalProperties":false}),
+        ),
+        "glass.process.resize" => (
+            "Resize the PTY attached to one named project process.",
+            json!({"type":"object", "properties":{"name":text(128), "cols":{"type":"integer", "minimum":1, "maximum":65535}, "rows":{"type":"integer", "minimum":1, "maximum":65535}}, "required":["name","cols","rows"], "additionalProperties":false}),
+        ),
+        _ => return None,
+    })
+}
+
+fn debug_tool_description(name: &str) -> String {
+    let operation = name.strip_prefix("glass.debug.").unwrap_or(name);
+    match operation {
+        "start" => "Start a configured DAP adapter for a named debug session. Provide command/arguments or a matching glass.toml DAP entry; starting the adapter does not launch the debuggee.".into(),
+        "launch" => "Launch the debuggee through the already started DAP session using its launch configuration.".into(),
+        "attach" => "Attach the already started DAP session to a debuggee using its attach configuration.".into(),
+        "configuration_done" => "Tell the DAP session that initial breakpoint and exception configuration is complete.".into(),
+        "restart" => "Restart the debuggee in the named DAP session, optionally supplying a launch configuration.".into(),
+        "breakpoint.set" => "Set source breakpoints in a project file for the named DAP session.".into(),
+        "breakpoint.remove" => "Remove source breakpoints from a project file for the named DAP session.".into(),
+        "exception.set" => "Configure exception filters for the named DAP session.".into(),
+        "continue" => "Continue one paused debug thread in the named DAP session.".into(),
+        "pause" => "Pause one running debug thread in the named DAP session.".into(),
+        "step" => "Step one paused debug thread over, into, or out of the current statement.".into(),
+        "threads" => "List threads in the named DAP session.".into(),
+        "stack" => "Read one debug thread's stack trace in the named DAP session.".into(),
+        "scopes" => "List scopes available to a debug stack frame.".into(),
+        "variables" => "Read variables for a DAP variables reference.".into(),
+        "evaluate" => "Evaluate an expression in the selected debug frame or REPL context.".into(),
+        "events" => "Read pending events from the named DAP session.".into(),
+        "inspect" => "Read the current debugger session snapshot, including state and selected resources.".into(),
+        "processes" => "List debuggee processes reported by the named DAP session.".into(),
+        "disconnect" => "Disconnect the named DAP session, optionally terminating its debuggee.".into(),
+        "terminate" => "Terminate the debuggee for the named DAP session, optionally requesting restart.".into(),
+        "stop" => "Stop the named DAP adapter session.".into(),
+        _ => format!("Operate on the configured DAP debug session with {operation}."),
     }
 }
 
@@ -3077,6 +3228,64 @@ mod tests {
                 .contains("automatic native-engine fallback")
         );
         assert!(state.description.contains("actual backend provenance"));
+    }
+
+    #[test]
+    fn core_catalog_exposes_project_process_and_configured_debug_capabilities() {
+        let catalog = integration_tool_catalog();
+        let position = |name: &str| {
+            catalog
+                .iter()
+                .position(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("missing Core host tool {name}"))
+        };
+        let descriptor = |name: &str| {
+            catalog
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("missing Core host tool {name}"))
+        };
+
+        let process_list = descriptor("glass.process.list");
+        assert!(process_list.description.contains("project"));
+        let process_start = descriptor("glass.process.start");
+        assert_eq!(
+            process_start.input_schema["required"],
+            serde_json::json!(["name", "command"])
+        );
+        assert!(process_start.description.contains("long-running"));
+        assert!(
+            process_start
+                .description
+                .contains("Core's native bash tool")
+        );
+        let process_logs = descriptor("glass.process.logs");
+        assert_eq!(
+            process_logs.input_schema["required"],
+            serde_json::json!(["name"])
+        );
+        let process_input = descriptor("glass.process.input");
+        assert!(process_input.description.contains("existing process"));
+
+        let debug_start = descriptor("glass.debug.start");
+        assert!(debug_start.description.contains("DAP adapter"));
+        assert!(
+            debug_start
+                .description
+                .contains("does not launch the debuggee")
+        );
+        assert_eq!(
+            debug_start.input_schema["required"],
+            serde_json::json!(["session"])
+        );
+        let debug_threads = descriptor("glass.debug.threads");
+        assert!(debug_threads.description.contains("List threads"));
+
+        assert!(!is_integration_tool("glass.command.run"));
+        assert!(position("glass.workspace.inspect") < position("glass.browser.navigate"));
+        assert!(position("glass.browser.navigate") < position("glass.git.status"));
+        assert!(position("glass.git.status") < position("glass.process.list"));
+        assert!(position("glass.process.list") < position("glass.debug.inspect"));
     }
 
     #[test]

@@ -25,6 +25,52 @@ pub enum PaletteResolution {
     NoMatch,
 }
 
+/// Return Core command catalogue entries matching the slash menu query.
+/// Catalogue order is preserved so Core remains the source of truth for the
+/// command list and its preferred ordering.
+pub(super) fn filter_gc_commands<'a>(commands: &'a [Value], query: &str) -> Vec<&'a Value> {
+    let trimmed = query.trim();
+    if trimmed.eq_ignore_ascii_case("glass")
+        || trimmed
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("glass "))
+    {
+        return Vec::new();
+    }
+    let (query, command_only) = match trimmed.strip_prefix('/') {
+        Some(command) => (command.split_whitespace().next().unwrap_or_default(), true),
+        None => (trimmed, false),
+    };
+    let query = query.to_lowercase();
+    commands
+        .iter()
+        .filter(|command| {
+            if query.is_empty() {
+                return true;
+            }
+            let mut searchable = String::new();
+            let fields: &[&str] = if command_only {
+                &["name"]
+            } else {
+                &["name", "description", "hint"]
+            };
+            for field in fields {
+                if let Some(value) = command.get(field).and_then(Value::as_str) {
+                    searchable.push_str(value);
+                    searchable.push(' ');
+                }
+            }
+            if let Some(aliases) = command.get("aliases").and_then(Value::as_array) {
+                for alias in aliases.iter().filter_map(Value::as_str) {
+                    searchable.push_str(alias);
+                    searchable.push(' ');
+                }
+            }
+            searchable.to_lowercase().contains(&query)
+        })
+        .collect()
+}
+
 /// Resolve palette submission without allowing a fuzzy result to consume a
 /// complete typed command. A command prefix that still needs a documented
 /// placeholder resolves to the corresponding action so its prefill is reused.
@@ -116,99 +162,165 @@ fn is_complete_tui_command(input: &str) -> bool {
 
 const CORE_AGENT_ACTIONS: &[SurfaceAction] = &[
     SurfaceAction {
+        label: "Start Core conversation",
+        command: "agent spawn ROLE TASK",
+        key: "/",
+        description: "create another Glass Core-backed conversation for a separate task",
+    },
+    SurfaceAction {
+        label: "Glass session status",
+        command: "agent status",
+        key: "/",
+        description: "show Glass host readiness for the selected Core session",
+    },
+    SurfaceAction {
         label: "Compose message",
         command: "i",
-        key: ":",
+        key: "/",
         description: "ask the resident Glass Agent",
+    },
+    SurfaceAction {
+        label: "Toggle source pane",
+        command: "agent source",
+        key: "/",
+        description: "show or hide the source pane beside the conversation",
+    },
+    SurfaceAction {
+        label: "Open Agent conversation",
+        command: "view Agent",
+        key: "/",
+        description: "return to the selected Core conversation and ready composer",
+    },
+    SurfaceAction {
+        label: "Open Code",
+        command: "view Code",
+        key: "/",
+        description: "browse project files and inspect the selected buffer",
+    },
+    SurfaceAction {
+        label: "Open Browser",
+        command: "view Browser",
+        key: "/",
+        description: "inspect the connected page and Glass browser controls",
+    },
+    SurfaceAction {
+        label: "Open Terminal",
+        command: "view Terminal",
+        key: "/",
+        description: "inspect workspace-managed process sessions and output",
+    },
+    SurfaceAction {
+        label: "Open Git",
+        command: "view Git",
+        key: "/",
+        description: "review staged, unstaged, and untracked project changes",
+    },
+    SurfaceAction {
+        label: "Open task tracking",
+        command: "view Tasks",
+        key: "/",
+        description: "open workspace task and checklist details",
+    },
+    SurfaceAction {
+        label: "Open debugger",
+        command: "view Debug",
+        key: "/",
+        description: "open configured debugger sessions and evidence",
+    },
+    SurfaceAction {
+        label: "Open services and settings",
+        command: "view More",
+        key: "/",
+        description: "open advanced workspace services and settings",
     },
     SurfaceAction {
         label: "Readiness doctor",
         command: "agent doctor",
-        key: ":",
+        key: "/",
         description: "check Glass Core and provider configuration",
     },
     SurfaceAction {
         label: "Glass Core setup guidance",
         command: "agent setup",
-        key: ":",
+        key: "/",
         description: "show how to configure the resident engine",
     },
     SurfaceAction {
         label: "Glass Core provider login",
         command: "agent setup login",
-        key: ":",
+        key: "/",
         description: "open Glass Core's interactive provider login",
     },
     SurfaceAction {
         label: "List Core models",
         command: "agent models [AGENT_ID]",
-        key: ":",
+        key: "/",
         description: "list models from the selected resident session",
     },
     SurfaceAction {
         label: "Discover GC slash commands",
         command: "agent commands",
-        key: ":",
+        key: "/",
         description: "ask the resident Core for its current command catalogue",
     },
     SurfaceAction {
         label: "Open GC native command menu",
         command: "agent command-ui",
-        key: ":",
+        key: "/",
         description: "hand the terminal to standalone Glass Core",
     },
     SurfaceAction {
         label: "Select Core model",
         command: "agent model PROVIDER MODEL",
-        key: ":",
+        key: "/",
         description: "configure the selected resident session model",
     },
     SurfaceAction {
         label: "New conversation",
         command: "agent new",
-        key: ":",
+        key: "/",
         description: "start a separate resident session",
     },
     SurfaceAction {
         label: "Retry failed or uncertain message",
         command: "agent retry",
-        key: ":",
+        key: "/",
         description: "inspect and explicitly retry a selected failed or uncertain message",
     },
     SurfaceAction {
         label: "List conversations",
         command: "agent sessions",
-        key: ":",
+        key: "/",
         description: "pick a persisted conversation",
     },
     SurfaceAction {
         label: "Compact conversation",
         command: "agent compact",
-        key: ":",
+        key: "/",
         description: "summarize the selected conversation in place",
     },
     SurfaceAction {
         label: "Task loop",
         command: "task list",
-        key: ":",
+        key: "/",
         description: "inspect tasks and verification state",
     },
     SurfaceAction {
         label: "Create task",
         command: "task create TITLE PROMPT",
-        key: ":",
+        key: "/",
         description: "queue a verified development task",
     },
     SurfaceAction {
         label: "Resume task",
         command: "task resume TASK_ID",
-        key: ":",
+        key: "/",
         description: "resume a paused or blocked task",
     },
     SurfaceAction {
         label: "Review workspace changes",
         command: "review",
-        key: ":",
+        key: "/",
         description: "open the shippable review object",
     },
 ];
@@ -245,7 +357,7 @@ const CODE_ACTIONS: &[SurfaceAction] = &[
         description: "write the focused buffer",
     },
     SurfaceAction {
-        label: "Jump to App",
+        label: "Open Browser",
         command: "app page",
         key: ":",
         description: "open the detected app at this handler",
@@ -314,6 +426,24 @@ const APP_ACTIONS: &[SurfaceAction] = &[
         description: "request native or ANSI browser pixels",
     },
     SurfaceAction {
+        label: "Open SSH browser view",
+        command: "browser remote-open",
+        key: ":",
+        description: "start a tokenized loopback view for an explicit SSH tunnel",
+    },
+    SurfaceAction {
+        label: "SSH browser view status",
+        command: "browser remote-status",
+        key: ":",
+        description: "inspect the loopback Remote View without exposing CDP",
+    },
+    SurfaceAction {
+        label: "Close SSH browser view",
+        command: "browser remote-revoke",
+        key: ":",
+        description: "revoke the tokenized loopback Remote View",
+    },
+    SurfaceAction {
         label: "Jump to source",
         command: "app source",
         key: ":",
@@ -329,7 +459,7 @@ const APP_ACTIONS: &[SurfaceAction] = &[
         label: "Record click path",
         command: "workflow record start",
         key: ":",
-        description: "capture App activations as a reviewable workflow draft",
+        description: "capture Browser activations as a reviewable workflow draft",
     },
 ];
 
@@ -817,7 +947,7 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
                 .collect::<Vec<_>>()
                 .join(" · ");
             Ok(format!(
-                "Command center: `:actions` opens guided {} launchers; `:` searches every route. Groups: {}. `tool NAME JSON` exposes every resident tool. Mutations use one-use confirmation and revision guards. Project-provided commands: {}",
+                "Command center: `Ctrl-K` opens guided {} launchers; `/` opens the unified Core and Glass command catalogue. Groups: {}. `tool NAME JSON` exposes every resident tool. Human-initiated mutations use confirmation and revision guards. Project-provided commands: {}",
                 command_group_for(state.surface).label,
                 route_guide(),
                 if project_commands.is_empty() {
@@ -873,7 +1003,7 @@ fn execute_inner(state: &mut DevTuiState, input: &str) -> Result<String, String>
             ))
         }
         _ => Err(format!(
-            "unknown command {command}; press : for guided launchers or type :help"
+            "unknown command {command}; use / in the Agent composer or Ctrl-K for guided Glass actions"
         )),
     }
 }
@@ -1723,13 +1853,32 @@ fn execute_agent_for_harness(
         return Ok("Opened Glass Agent".into());
     };
     match action {
+        "source" => {
+            if parts.len() != 1 {
+                return Err("agent source takes no arguments".into());
+            }
+            state.surface = DevSurface::Agent;
+            state.factory_split = !state.factory_split;
+            if state.factory_split && state.focused_editor_path.is_empty() {
+                state.open_selected_file();
+                state.surface = DevSurface::Agent;
+                Ok(format!("Source pane shown · {}", state.status))
+            } else if state.factory_split {
+                Ok(format!(
+                    "Source pane shown beside the conversation · {}",
+                    state.focused_editor_path
+                ))
+            } else {
+                Ok("Source pane hidden · conversation focused".into())
+            }
+        }
         "doctor" | "status" => {
             let ready = state.refresh_agent_readiness()?;
             state.surface = DevSurface::Agent;
             Ok(if ready {
-                "Glass Agent is ready · press Enter or type to start a conversation".into()
+                "Glass Core is ready · type a message in the composer to start a conversation".into()
             } else {
-                "Glass Core needs setup · use :agent setup login for provider authentication, then Enter to chat".into()
+                "Glass Core needs setup · type / to browse Core setup commands, then return here to chat".into()
             })
         }
         "setup" | "update" => {
@@ -3099,6 +3248,71 @@ mod tests {
     }
 
     #[test]
+    fn gc_command_menu_filters_dynamic_catalogue_fields_without_reordering() {
+        let commands = vec![
+            json!({"name":"status","description":"View session status","runtimeMode":"runtime"}),
+            json!({"name":"model","description":"Select model","runtimeMode":"interactive","aliases":["m"]}),
+        ];
+        let all = filter_gc_commands(&commands, " /");
+        assert_eq!(
+            all.iter()
+                .map(|item| item["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["status", "model"]
+        );
+        let selected = filter_gc_commands(&commands, "MODE");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0]["name"], "model");
+        assert_eq!(filter_gc_commands(&commands, "m").len(), 1);
+        let completed = filter_gc_commands(&commands, "/model provider model");
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0]["name"], "model");
+    }
+
+    #[test]
+    fn slash_menu_keeps_same_name_core_and_glass_actions_distinct() {
+        let (mut state, root) = test_state("slash-owner-collision");
+        state.gc_command_items = vec![json!({
+            "name":"status",
+            "description":"Read the current Core session",
+            "runtimeMode":"runtime"
+        })];
+        state.gc_command_query = "status".into();
+        let glass = state.gc_command_glass_actions();
+        assert!(glass.iter().any(|action| action.command == "agent status"));
+        assert!(!state.gc_command_selection_is_glass());
+        state.gc_command_selected = 1;
+        assert!(state.gc_command_selection_is_glass());
+        state.gc_command_query = "agent spawn".into();
+        assert!(
+            state
+                .gc_command_glass_actions()
+                .iter()
+                .any(|action| action.command == "agent spawn ROLE TASK")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn agent_source_action_explicitly_toggles_the_source_pane() {
+        let (mut state, root) = test_state("agent-source-toggle");
+        fs::write(root.join("src.rs"), "fn main() {}\n").expect("write source fixture");
+        state.files = vec!["src.rs".into()];
+        state.selected_file = 0;
+        state.surface = DevSurface::Agent;
+
+        execute(&mut state, "agent source").expect("show source pane");
+        assert!(state.factory_split);
+        assert_eq!(state.surface, DevSurface::Agent);
+        assert_eq!(state.focused_editor_path, "src.rs");
+
+        execute(&mut state, "agent source").expect("hide source pane");
+        assert!(!state.factory_split);
+        assert_eq!(state.surface, DevSurface::Agent);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn every_major_surface_has_a_palette_route() {
         for surface in DevSurface::ALL {
             assert_eq!(parse_surface(surface.label()), Some(surface));
@@ -3345,11 +3559,11 @@ mod tests {
     fn help_explains_the_guided_command_center() {
         let (mut state, root) = test_state("help");
         let output = execute(&mut state, "help").expect("help route");
-        assert!(output.contains("`:actions` opens guided Agent launchers"));
+        assert!(output.contains("`Ctrl-K` opens guided Agent launchers"));
         assert!(output.contains("Agent: agent"));
         assert!(output.contains("Build: project · editor · github · lsp · git"));
         let error = execute(&mut state, "not-a-route").expect_err("unknown route");
-        assert!(error.contains("press : for guided launchers"));
+        assert!(error.contains("Ctrl-K for guided Glass actions"));
         let _ = fs::remove_dir_all(root);
     }
 

@@ -21,21 +21,22 @@ glass --tui-layout compact
 glass --tui-layout desktop
 ```
 
-Phone mode exposes five direct destinations:
+Phone mode keeps the same five primary destinations and adds a direct command
+menu for terminals that do not send Alt/Ctrl-Tab reliably:
 
 ```text
 [header]
-[Agent | Code | App | Tasks | More]  ← 1..5 or Tab/Shift-Tab
+[Agent | Code | Browser | Terminal | Git]  ← / in Agent or Ctrl-Tab
 [status / command palette / composer]
 ```
 
 | Key | View | Purpose |
 |---|---|---|
-| `1` | Agent | readiness, conversation, and agent controls |
-| `2` | Code | bounded files, editor buffers, and diagnostics |
-| `3` | App | semantic browser state, workflow, and selected live view |
-| `4` | Tasks | task state, verification, and task actions |
-| `5` | More | workspace status, kernels, experiments, and operations; click or `j/k` to select Routes |
+| `Alt-1` | Agent | readiness, conversation, and agent controls |
+| `Alt-2` | Code | bounded files, editor buffers, and diagnostics |
+| `Alt-3` | Browser | semantic browser state, workflow, and selected live view |
+| `Alt-4` | Terminal | managed project processes, logs, and exit states |
+| `Alt-5` | Git | change list, selected diff, staging, and commit |
 
 
 ## Input contract
@@ -45,22 +46,22 @@ The phone layout uses the same keyboard and authority rules as desktop:
 | Input | Behavior |
 |---|---|
 | `a` | open the current surface's action menu |
-| `:` | open the governed command palette |
-| More Routes | click selects; `Enter` or double-click runs the selected route |
+| `/` on Agent | open GC and Glass actions; filter by owner and press Enter to dispatch |
+| `Ctrl-K` | open the Glass action palette on workspace surfaces |
 | `?` | open scrollable keyboard help in navigation mode |
-| `j`/`k`, arrows, mouse wheel | scroll content; App `j`/`k` moves semantic selection |
+| `j`/`k`, arrows, mouse wheel | scroll content; Browser `j`/`k` moves semantic selection |
 | printable text on Agent | open the composer and insert the text when the resident engine is ready |
-| `Enter` on Agent | open the composer or report the engine repair step when unready |
-| `Enter` on Code/App | open a file or activate the selected browser entity |
+| `Enter` on Agent | submit the focused composer; empty input stays in the conversation |
+| `Enter` on Code/Browser | open a file or activate the selected browser entity |
 | `d` on Git | queue and display the inline diff |
-| `:browser view` | toggle the selected Herdr, Kitty, or ANSI live backend |
-| `H` / `G` on App | take human control / reconcile Glass control |
+| `Alt-1`…`Alt-5` / `Ctrl-Tab` | switch primary workspace surfaces; `/` offers an accessible menu |
+| `Ctrl-K` on Browser | open Start, Navigate, Observe, Targets, or View actions |
+| `H` / `G` on Browser | take human control / reconcile Glass control |
 | `Esc` | close the active menu, composer, palette, editor, diff, recovery sheet, or confirmation |
 | `Ctrl-L` | open the shared composer dock |
 | `Ctrl-C` | open Glass quit confirmation, including from the editor |
-| `:review` | prefill an evidence-aware review prompt |
-| `:harness list` | show installed external coding harnesses |
-| `:harness start NAME` | hand the terminal to one installed harness, then resume Glass |
+| `/` → Glass → Review workspace changes | open the evidence-aware review |
+| `/` → Glass → Harness catalog | inspect installed external harnesses (informational only) |
 
 In the full-screen Code editor, `Alt-W` toggles soft wrapping (off by default);
 on, lines wrap at whitespace where possible with continuation gutters and
@@ -88,7 +89,8 @@ Composer `Enter` sends and stays open; `Esc` closes. A local or pre-dispatch
 failure keeps the draft for retry, and background work does not silently
 discard typed text. If Core returns an error after accepting a prompt, Glass
 marks that attempt failed, returns the agent to idle, and lists it in Attention
-Inbox. Inspect the conversation before using `:agent retry`; a confirmation is
+Inbox. Inspect the conversation before choosing Retry failed or uncertain
+message from `/`; a confirmation is
 required, and the prompt is never replayed automatically.
 
 
@@ -117,19 +119,20 @@ coding tools and their permission decisions; Glass retains its workspace and
 browser integration controls and their normal confirmations.
 
 A browser startup collision or disconnect keeps the project workspace alive and
-opens a recovery sheet on the App surface. With a compatible endpoint, choices
+opens a recovery sheet on the Browser surface. With a compatible endpoint, choices
 are attach after checking the running browser, launch an isolated browser on an
 automatic free port, retry the preferred port, or dismiss. Without one, choices
 are launch on an automatic free port, retry the preferred port, or dismiss.
-From the development TUI command palette, `:browser start` starts the browser;
+From the Browser action palette, `Start browser` starts the browser;
 automatic port selection is a recovery-sheet choice, not an inline
 automatic-port launch command. Browser startup runs through the governed worker
 and the sheet never destroys files, tasks, agent state, or Git state.
 
 ## Live browser view
 
-Semantic browser state is the default. In the development TUI, use
-`:browser view` to toggle the selected backend. `--tui-live off` is default;
+Semantic browser state is the default. In the development TUI, open Browser
+actions with `Ctrl-K` and choose `Live browser view` to toggle the selected
+backend. `--tui-live off` is default;
 `auto` enables continuous frames only when the selected native path is
 available, while `on` permits bounded ANSI fallback. `--tui-live-backend auto`
 prefers Herdr, then Kitty, then ANSI; explicit Kitty emits terminal graphics,
@@ -170,12 +173,13 @@ glass --tui-layout mobile
 
 Herdr is optional. tmux remains compatible. Mosh can carry the terminal session
 on roaming links; use a separate SSH connection for any local port forward.
-For a full-fidelity iPhone browser, use Remote View from the development TUI:
+For a client-side browser view, open Browser actions with `Ctrl-K` and choose
+`Open SSH browser view`, `SSH browser view status`, or `Close SSH browser view`.
+The service binds to loopback; connect through an explicit SSH local-port
+forward rather than exposing it publicly:
 
 ```text
-:browser remote-open
-:browser remote-status
-:browser remote-revoke
+ssh -L <local-port>:127.0.0.1:<remote-port> <user>@<host>
 ```
 
 Glass prints a tokenized loopback URL and a hint equivalent to:
@@ -211,9 +215,8 @@ implemented surface contract is documented in
 ## Open the full application from a phone
 
 For the stable application-server iPhone workflow, use a private SSH local
-port forward. For the scoped current browser-session view, use the development
-TUI `:browser remote-open`, `:browser remote-status`, and
-`:browser remote-revoke` routes. Remote View remains loopback-only and does not
+port forward. For the scoped current browser-session view, use the Browser
+actions for Open/Status/Close SSH browser view. Remote View remains loopback-only and does not
 expose Chrome CDP.
 
 ## Further reading

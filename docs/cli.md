@@ -410,7 +410,7 @@ authority; live `--help` wins if an installed binary differs.
 | `ir` | Glass Web IR v1 JSON | validation, summary, diff, continuity, canonical JSON | invalid graph, revision drift, and ambiguous continuity stay explicit |
 | `checkpoint` | bounded workflow/checkpoint files | portable redacted checkpoint | definition/route/effect mismatch prevents resume |
 | `snapshot` | profile and snapshot selector | redacted bounded session evidence | snapshot data never restores live browser authority |
-| `browser` | optional `tui` subcommand | browser-first terminal workspace | browser startup/recovery stays in the workspace; use the TUI App surface for targets |
+| `browser` | optional `tui` subcommand | browser-first terminal workspace | browser startup/recovery stays in the workspace; use the TUI Browser surface for targets |
 | `session` | optional session name | persistent browser owner and attach metadata | `status` is read-only; `open` prints the attach command; `stop` closes the owned browser |
 
 ## Browser workspace and persistent sessions
@@ -423,9 +423,10 @@ glass browser
 glass browser tui
 ```
 
-The browser TUI owns browser startup, target selection, and recovery. Its
-command palette has routes such as `:browser start`, `:browser targets
-QUERY`, and `:browser remote-open`; these are not Clap subcommands. Browser
+The browser TUI owns browser startup, target selection, and recovery. The `/`
+Glass action group exposes browser workflows; the general command palette
+(`Ctrl-K`) accepts routes such as `browser start`, `browser targets QUERY`,
+and `browser remote-open`. These are not Clap subcommands. Browser
 startup is lazy until an explicit launch or browser operation. A busy or
 unusable endpoint is kept in the TUI recovery flow rather than silently
 reused. See [the development TUI guide](architecture/development-tui.md) and
@@ -660,20 +661,23 @@ glass agent prompt "read README.md" --root .
 
 `glass agent doctor` and `glass agent status` report Glass Core's runtime
 protocol, provider readiness, session storage, and ordered remediation without
-printing credential values. Provider setup stays in Core. The resident TUI's
-slash-command modal contains Glass-level aliases; `:` opens Glass workspace
-actions. See [Glass Core resident harness](glass-core-harness.md).
+printing credential values. Provider setup stays in Core. From the always-ready
+Agent composer, `/` opens Glass Core's live slash-command catalogue and Glass
+workspace actions. Filter by command name or description, use Tab to complete,
+and Enter to run the selected entry. Core runtime commands are forwarded to
+the selected Core session; interactive entries hand the terminal to Core's
+native UI. Glass actions remain host workspace controls. Choose Start Core
+conversation, replace the `ROLE TASK` placeholder, and submit to create another
+Core-backed conversation. See
+[Glass Core resident harness](glass-core-harness.md).
 
-With `:agent setup login`, Glass hands the terminal to Core's interactive
-provider login; Glass does not prompt for or store provider secrets. `:agent
-spawn ROLE TASK` starts a separate resident runtime that reads the current Core
-settings; `:agent new` reuses the current runtime. `:agent models [AGENT_ID]`
-lists models for the selected session, or
-the workspace's first active session when none is selected. `:agent model
-[AGENT_ID] PROVIDER MODEL` configures that session through Core's negotiated
+Choose Glass Core provider login to hand the terminal to Core's interactive
+provider login; Glass does not prompt for or store provider secrets. New
+conversation creates another Core-backed runtime; `agent new` reuses the
+current runtime. List Core models and Select Core model use Core's negotiated
 runtime methods. Model catalog responses appear in the Agent conversation.
-`:agent resume [AGENT_ID]` explicitly reattaches a recovery-pending project
-thread to its stored Core session; the Agent picker remains the navigation
+Select a recovery-pending project thread in the Agent picker to reattach its
+stored Core session; the picker remains the navigation
 surface. Recovery verifies the exact session ID, mixed ownership mode, and
 canonical project directory, then restores bounded transcript entries before
 accepting sends. A failed resume remains retryable and never creates a new
@@ -685,8 +689,8 @@ If an earlier send reopens as uncertain, inspect it in the Attention Inbox and
 resume its owning conversation first. A correlated Core error is a confirmed
 failed attempt and returns the run to idle; Glass shows a bounded error class,
 code, and retryability flag while omitting the raw message. Both failed and
-uncertain attempts can be selected from Attention Inbox. `:agent retry` opens
-a separate confirmation because Core may have partly processed either
+uncertain attempts can be selected from Attention Inbox. Retry failed or
+uncertain message from `/` opens a separate confirmation because Core may have partly processed either
 request. Confirming resends the saved text with the same client message ID and
 creates a new attempt ID; cancel leaves the original attempt unchanged. Glass
 refuses the retry if the attempt changed, the conversation is not active, or
@@ -700,16 +704,16 @@ folding, context, and limit; `find` matches project paths with `*` and `?`;
 `edit` applies one atomic set of unique exact replacements; and `bash` has a
 caller-selected timeout capped at 300 seconds.
 
-The collaborative native editor is TUI-owned. Its palette routes include
-`:editor open PATH`, `:editor edit`, `:editor selection PATH`,
-`:editor replace PATH OLD NEW`, `:editor replace-selection TEXT`,
-`:editor save PATH`, `:editor undo PATH`, `:editor redo PATH`,
-`:editor comments [PATH]`, `:editor comment PATH START END TEXT`,
-`:editor comment-selection TEXT`, `:editor comment-resolve ID`,
-`:editor proposals`, `:editor propose PATH SUMMARY TEXT`,
-`:editor accept ID`, `:editor reject ID`, `:editor checkpoints`,
-`:editor checkpoint NAME`, `:editor restore CHECKPOINT_ID`, and
-`:editor search QUERY`. These are command-palette routes, not Clap aliases;
+The collaborative native editor is TUI-owned. Its command-palette routes
+(`Ctrl-K`) include `editor open PATH`, `editor edit`, `editor selection PATH`,
+`editor replace PATH OLD NEW`, `editor replace-selection TEXT`,
+`editor save PATH`, `editor undo PATH`, `editor redo PATH`,
+`editor comments [PATH]`, `editor comment PATH START END TEXT`,
+`editor comment-selection TEXT`, `editor comment-resolve ID`,
+`editor proposals`, `editor propose PATH SUMMARY TEXT`,
+`editor accept ID`, `editor reject ID`, `editor checkpoints`,
+`editor checkpoint NAME`, `editor restore CHECKPOINT_ID`, and
+`editor search QUERY`. These are command-palette routes, not Clap aliases;
 they update the shared editor projection and use the TUI's confirmation,
 selection, and recovery state. The CLI `project edit PATH` remains the
 single-file native-buffer mutation with `--content` or `--input`.
@@ -723,9 +727,11 @@ glass harness list
 glass harness start codex --root .
 ```
 
-The equivalent TUI commands are `:harness list` and `:harness start codex`.
-Both launch the selected installed program in the project root and return to
-the client after it exits.
+The TUI exposes an informational harness catalog through `/` → Glass → Harness
+catalog. Glass does not dispatch external coding agents from the workspace;
+Core owns agent execution. `harness start` remains a CLI command for a human
+who explicitly chooses to run an installed program outside the resident Core
+conversation.
 
 ### Temporary external agents
 
@@ -739,9 +745,9 @@ glass agent delegate claude "review the current diff for regressions" --root .
 glass agent delegate opencode "summarize the project entrypoints" --root .
 ```
 
-The TUI equivalent is `:harness delegate NAME PROMPT`, with optional
-`--sandbox`, `--timeout-secs`, `--allow-mutation`, and `--yes` tokens. The
-prompt can be `-` to read it from stdin in the CLI. `NAME` must be `codex`,
+Glass does not expose external-agent delegation from the TUI. Send agent work
+to the resident Core session; the CLI command remains a separate explicit
+human workflow. The prompt can be `-` to read it from stdin. `NAME` must be `codex`,
 `claude`, or `opencode`; each installed executable is resolved from `PATH`.
 The default sandbox is `read-only`; `--sandbox workspace-write` requires both
 `--allow-mutation` and `--yes`. Timeout

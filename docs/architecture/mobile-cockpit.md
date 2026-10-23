@@ -55,16 +55,16 @@ Phone TUI
 ┌──────────────────────────────┐
 │ header · mode · status       │ 2 rows
 ├──────────────────────────────┤
-│ one active Agent/Code/App/   │ min 5 rows
+│ one active Agent/Code/Browser│ min 5 rows
 │ Tasks/More surface           │
 ├──────────────────────────────┤
 │ status, or composer + status │ 2 / 3 rows
 └──────────────────────────────┘
 ```
 
-Phone exposes five direct destinations: Agent, Code, App, Tasks, and More.
-Desktop and Compact expose Agent, Code, App, Terminal, Tasks, Git, Debug, and
-More; Compact removes the context column. Phone changes geometry only: the
+Agent, Code, Browser, Terminal, and Git are the five primary destinations on
+all layouts. Tasks, Debug, and services/settings are contextual `/` actions.
+Compact removes the context column. Phone changes geometry only: the
 same shared workspace, revision checks, agent ownership, and worker boundaries
 apply. Desktop/Compact/Phone details, modal precedence, editor projection,
 and key routing are authoritative in [Development TUI](development-tui.md),
@@ -139,7 +139,7 @@ shared workspace when a browser disconnects or the cockpit is stopped.
   On `409`, reload state and rebuild the action rather than retrying a stale
   mutation blindly.
 - A browser failure does not destroy workspace state. Browser recovery and
-  semantic-only operation belong to the embedded Browser workspace in the App
+  semantic-only operation belong to the embedded Browser workspace.
   surface; visual pixels remain optional and bounded.
 - Confirmation and actor policy remain enforced by the development tool
   executor even when a command originates from the cockpit.

@@ -361,7 +361,7 @@ fn status_line(state: &DevTuiState, width: u16) -> Line<'static> {
 /// Return the inner cell area reserved for a Kitty browser frame.
 ///
 /// The raw Kitty image is emitted after Ratatui draws, so this geometry must
-/// stay identical to the App surface's visual panel layout.
+/// stay identical to the Browser surface's visual panel layout.
 pub fn browser_visual_area(state: &DevTuiState, area: Rect) -> Option<Rect> {
     if state.surface != DevSurface::App
         || !state.browser_visual_live
@@ -582,6 +582,10 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
             render_help(frame, state, area);
             return;
         }
+        Some(ActiveOverlay::GcCommandMenu) => {
+            render_gc_command_menu(frame, state, area);
+            return;
+        }
         Some(ActiveOverlay::FullscreenEditor) => {
             render_fullscreen_editor(frame, state, area);
             return;
@@ -624,6 +628,157 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
         Some(ActiveOverlay::AttentionInbox) => render_attention_inbox(frame, state, area),
         _ => {}
     }
+}
+
+fn render_gc_command_menu(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let width = area.width.saturating_sub(4).min(88);
+    let height = area.height.saturating_sub(4).clamp(5, 16);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height: height.min(area.height),
+    };
+    let block = Block::default()
+        .title(" CORE COMMANDS · type to filter · ↑↓ move · Tab complete · Enter run · Esc close ")
+        .title_style(Style::default().fg(PURPLE).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PURPLE))
+        .bg(PANEL_BACKGROUND)
+        .padding(Padding::horizontal(1));
+    let glass_actions = state.gc_command_glass_actions();
+    let core_commands =
+        command::filter_gc_commands(&state.gc_command_items, &state.gc_command_query);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            "/",
+            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(&state.gc_command_query, Style::default().fg(TEXT)),
+        Span::styled("▏", Style::default().fg(PURPLE)),
+    ])];
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("CORE {} ", core_commands.len()),
+            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("· ", Style::default().fg(MUTED)),
+        Span::styled(
+            format!("GLASS {} ", glass_actions.len()),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "· type glass to filter host actions",
+            Style::default().fg(MUTED),
+        ),
+    ]));
+    let mut selected_line = 0usize;
+    if glass_actions.is_empty() && core_commands.is_empty() && !state.gc_command_loading {
+        lines.push(Line::from(Span::styled(
+            "No matching commands or Glass actions",
+            Style::default().fg(MUTED),
+        )));
+    } else if !glass_actions.is_empty() || !core_commands.is_empty() {
+        if !core_commands.is_empty() || state.gc_command_loading {
+            lines.push(Line::from(Span::styled(
+                "CORE COMMANDS · owned by Glass Core",
+                Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
+            )));
+        }
+        if state.gc_command_loading {
+            lines.push(Line::from(Span::styled(
+                "Loading commands from Glass Core…",
+                Style::default().fg(MUTED),
+            )));
+        }
+        for (index, item) in core_commands.iter().enumerate() {
+            let name = item
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?");
+            let description = item
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let runtime = item
+                .get("runtimeMode")
+                .and_then(serde_json::Value::as_str)
+                .map(|mode| {
+                    if mode == "interactive" {
+                        "native GC UI"
+                    } else {
+                        "Core runtime"
+                    }
+                })
+                .unwrap_or("Core runtime");
+            let style = if index == state.gc_command_selected {
+                Style::default().fg(TEXT).bg(ACTIVE_BACKGROUND)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    " CORE ",
+                    Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!("/{name:<16} "), style.add_modifier(Modifier::BOLD)),
+                Span::styled(description, style),
+                Span::styled(format!("  [{runtime}]"), Style::default().fg(MUTED)),
+            ]));
+            if index == state.gc_command_selected {
+                selected_line = lines.len() - 1;
+            }
+        }
+        if !glass_actions.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "GLASS WORKSPACE · host actions",
+                Style::default()
+                    .fg(ACCENT_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+        for (index, action) in glass_actions.iter().enumerate() {
+            let selected_index = core_commands.len() + index;
+            let style = if selected_index == state.gc_command_selected {
+                Style::default().fg(TEXT).bg(ACTIVE_BACKGROUND)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    " GLASS ",
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!("{} · {}", action.label, action.command), style),
+            ]));
+            if selected_index == state.gc_command_selected {
+                selected_line = lines.len() - 1;
+            }
+        }
+    } else if state.gc_command_loading {
+        lines.push(Line::from(Span::styled(
+            "Loading commands from Glass Core…",
+            Style::default().fg(MUTED),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "Tab completes in the composer · Enter runs the selected Core or Glass action",
+        Style::default().fg(MUTED),
+    )));
+    let inner = block.inner(modal);
+    let visible_lines = usize::from(inner.height);
+    let max_scroll = lines.len().saturating_sub(visible_lines);
+    let selected_scroll = selected_line.saturating_sub(visible_lines.saturating_sub(1));
+    let scroll = selected_scroll.min(max_scroll) as u16;
+    frame.render_widget(Clear, modal);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .scroll((scroll, 0))
+            .wrap(Wrap { trim: true })
+            .block(block),
+        modal,
+    );
 }
 
 fn render_send_attempt_retry_confirmation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -1847,7 +2002,7 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         vec![
             Line::from(Span::styled(
                 compact_line(
-                    "Tab surfaces · 1-5 jump · : actions · ? help",
+                    "Ctrl-Tab surfaces · Ctrl-K actions · ? help",
                     geometry.footer.width.saturating_sub(2),
                 ),
                 Style::default().fg(MUTED),
@@ -2192,7 +2347,7 @@ fn agent_progress(state: &DevTuiState) -> String {
         "sending prompt"
     } else if state.running_tool_job.is_some() {
         "Glass tool running"
-    } else if state.composer_mode {
+    } else if state.composer_mode && !state.composer_input.trim().is_empty() {
         "drafting prompt"
     } else if let Some(status) = state.selected_agent_status() {
         match status {
@@ -2277,11 +2432,6 @@ fn compact_agent_header(state: &DevTuiState, width: u16) -> String {
         .take(2)
         .collect::<Vec<_>>()
         .join(" · ");
-    let app_summary = app_summary
-        .strip_prefix("APP · ")
-        .map_or(app_summary.clone(), |summary| {
-            format!("APP (optional) · {summary}")
-        });
     let chrome = state.agent_chrome_line();
     let second = if chrome.is_empty() {
         format!("Ctrl-L · {app_summary}")
@@ -2361,17 +2511,18 @@ pub(super) fn agent_conversation_text(
     let position = transcript.scroll().saturating_add(1);
     let total = transcript.total_lines().max(1);
     let tail_hint = if at_tail { "↓ live" } else { "↓ new" };
+    let core_running = state.selected_agent_status() == Some(crate::AgentStatus::Working);
     let footer = if width < 52 {
         format!("PgUp/Dn Home/End · {position}/{total} {tail_hint}")
     } else if width < 112 {
         format!("PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · Ctrl-T reasoning")
     } else if !state.composer_mode {
         format!(
-            "PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · Ctrl-T reasoning · Enter chat · j/k select · f fork · r rewind · e last · o tools"
+            "PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · Ctrl-T reasoning · Ctrl-F fork · Ctrl-R rewind · Ctrl-E edit · Ctrl-O tools"
         )
     } else {
         let chips = state.composer_context_chips();
-        if state.composer_steer {
+        if state.composer_steer && core_running {
             format!(
                 "PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · {chips} · Ctrl-D follow-up · Ctrl-X abort"
             )
@@ -2387,8 +2538,105 @@ pub(super) fn agent_conversation_text(
         usize::from(message_height),
         state.transcript_selection,
     );
+    style_glass_transcript_lines(&mut lines);
     lines.push(Line::from(Span::styled(footer, Style::default().fg(MUTED))));
     Text::from(lines)
+}
+
+/// Apply Glass-only speaker and lifecycle labels over Core's shared Markdown
+/// and viewport output. The standalone Core transcript keeps its own styling.
+fn style_glass_transcript_lines(lines: &mut [Line<'static>]) {
+    let mut lifecycle_tone = None;
+    for line in lines {
+        let raw = line.to_string();
+        let trimmed = raw.trim_start();
+        if trimmed.is_empty() {
+            lifecycle_tone = None;
+            continue;
+        }
+
+        if let Some(body) = trimmed.strip_prefix("system ") {
+            let (label, tone, cleaned) = if let Some(error) = body.strip_prefix("ERROR") {
+                ("ERROR ·", ERROR, error.trim_start_matches([' ', '×', '·']))
+            } else if let Some(alert) = body.strip_prefix("⚠ ALERT") {
+                ("ACTION ·", WARNING, alert.trim_start_matches([' ', '·']))
+            } else {
+                let body = body.strip_prefix("SYSTEM").unwrap_or(body);
+                let body = body.trim_start_matches([' ', '·', ':']);
+                let failed = body.starts_with("× ");
+                let body = body
+                    .strip_prefix("✓ ")
+                    .or_else(|| body.strip_prefix("× "))
+                    .unwrap_or(body);
+                if let Some(rest) = body.strip_prefix("CORE · ") {
+                    ("CORE ·", if failed { ERROR } else { PURPLE }, rest)
+                } else if let Some(rest) = body.strip_prefix("GLASS · ") {
+                    ("GLASS ·", if failed { ERROR } else { ACCENT_BRIGHT }, rest)
+                } else if body.contains("glass.") {
+                    ("GLASS ·", if failed { ERROR } else { ACCENT_BRIGHT }, body)
+                } else if body.contains("coreCommand") || body.contains("models/list") {
+                    ("CORE ·", if failed { ERROR } else { PURPLE }, body)
+                } else {
+                    ("SYSTEM ·", MUTED, body)
+                }
+            };
+            let leading = raw.len().saturating_sub(trimmed.len());
+            let text = if cleaned.is_empty() {
+                label.to_string()
+            } else {
+                format!("{label} {cleaned}")
+            };
+            let selected = line
+                .spans
+                .iter()
+                .any(|span| span.style.add_modifier.contains(Modifier::REVERSED));
+            let mut style = Style::default().fg(tone).add_modifier(Modifier::BOLD);
+            if selected {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            let mut spans = Vec::with_capacity(2);
+            if leading > 0 {
+                spans.push(Span::raw(" ".repeat(leading)));
+            }
+            spans.push(Span::styled(text, style));
+            *line = Line::from(spans);
+            lifecycle_tone = Some(tone);
+            continue;
+        }
+
+        if let Some(tone) = lifecycle_tone {
+            for span in &mut line.spans {
+                span.style = span.style.fg(tone);
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("❯ YOU") {
+            for span in &mut line.spans {
+                span.style = span.style.fg(ACCENT_BRIGHT).add_modifier(Modifier::BOLD);
+            }
+        } else if trimmed.starts_with("GLASS AGENT") {
+            let leading = raw.len().saturating_sub(trimmed.len());
+            let selected = line
+                .spans
+                .iter()
+                .any(|span| span.style.add_modifier.contains(Modifier::REVERSED));
+            let mut style = Style::default().fg(PURPLE).add_modifier(Modifier::BOLD);
+            if selected {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            let mut spans = Vec::with_capacity(2);
+            if leading > 0 {
+                spans.push(Span::raw(" ".repeat(leading)));
+            }
+            spans.push(Span::styled("CORE", style));
+            *line = Line::from(spans);
+        } else if trimmed.starts_with("Thinking…") {
+            for span in &mut line.spans {
+                span.style = span.style.fg(MUTED).add_modifier(Modifier::ITALIC);
+            }
+        }
+    }
 }
 
 fn agent_landing(state: &DevTuiState) -> String {
@@ -2397,9 +2645,9 @@ fn agent_landing(state: &DevTuiState) -> String {
         return conversation;
     }
     if state.agent_readiness.starts_with("✓ Ready") {
-        return "START HERE\nDescribe a coding task.\nEnter to chat or type a message.\n: actions open Glass tools and settings.\nGlass can inspect, edit, run, and verify.\nOpen the browser for UI work.".into();
+        return "START HERE\nDescribe a coding task.\nType a message or / for commands.\nGlass can inspect, edit, run, and verify.\nOpen the browser for UI work.".into();
     }
-    "SETUP\nConfigure glass-core with a provider and credentials.\nUse :actions to inspect available agent setup options.\nAfter ✓ Ready, use : → Compose message · i to open a draft.\nSending needs a ready engine.".into()
+    "SETUP\nConfigure Glass Core with a provider and credentials.\nUse / to inspect Glass workspace actions.\nYour conversation draft is ready while setup finishes.".into()
 }
 
 fn agent_conversation_panel_rect(state: &DevTuiState) -> Rect {
@@ -2692,31 +2940,66 @@ fn render_file_tree(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 }
 
 fn render_code_editor(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let title = if state.focused_editor_path.is_empty() {
-        " EDITOR ".to_string()
-    } else {
-        format!(
-            " PREVIEW · Ln {} Col {} ",
-            state.focused_editor_line, state.focused_editor_column,
-        )
-    };
-    let content = if state.editor.trim().is_empty() {
+    let title = code_editor_title(state, area.width);
+    let content = if state.focused_editor_path.is_empty() {
         "No file open\n↑/↓ select a file\nEnter full-screen\ni edits"
     } else {
-        state.editor.as_str()
+        state.focused_editor_content.as_str()
     };
-    frame.render_widget(
-        Paragraph::new(file_view::render_editor(
+    let source = if file_view::classify(&state.focused_editor_path) == file_view::FileKind::Mermaid
+    {
+        file_view::render_editor(
             &state.focused_editor_path,
             content,
             state.focused_editor_selection.as_ref(),
-        ))
-        .style(Style::default().bg(PANEL_INSET))
-        .scroll((state.current_scroll(), 0))
-        .block(surface_block(title, ACCENT_BRIGHT))
-        .wrap(Wrap { trim: false }),
+        )
+    } else {
+        let marks = editor_mark_glyphs(state);
+        let notes = state.editor_source_notes();
+        let decorations = file_view::EditorDecorations {
+            marks: &marks,
+            inlays: &notes,
+            extra_selections: &state.editor_engine.extra_selections,
+        };
+        file_view::render_editable_source(
+            &state.focused_editor_path,
+            content,
+            state.focused_editor_line,
+            state.focused_editor_column,
+            state.focused_editor_selection.as_ref(),
+            &decorations,
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(source)
+            .style(Style::default().bg(PANEL_INSET))
+            .scroll((state.current_scroll(), 0))
+            .block(surface_block(title, ACCENT_BRIGHT))
+            .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn code_editor_title(state: &DevTuiState, width: u16) -> String {
+    if state.focused_editor_path.is_empty() {
+        return " CODE · choose a file ".to_string();
+    }
+    let language = file_view::classify(&state.focused_editor_path).label();
+    let edit_state = if state.focused_editor_dirty {
+        "edited"
+    } else {
+        "preview"
+    };
+    let suffix = format!(
+        " · {language} · {edit_state} · Ln {} Col {} ",
+        state.focused_editor_line, state.focused_editor_column,
+    );
+    let path_width = usize::from(width).saturating_sub(suffix.chars().count() + 2);
+    format!(
+        " {}{} ",
+        compact_path(&state.focused_editor_path, path_width as u16),
+        suffix
+    )
 }
 fn render_editor_collaboration(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let width = area.width.saturating_sub(4);
@@ -2942,7 +3225,19 @@ fn render_browser_visual(
         .presentation_reason
         .as_deref()
         .unwrap_or("Connect a browser to inspect the page.");
-    let content = format!("{}\n{}", browser_progress(state, browser), reason);
+    let mut content = format!(
+        "{}\n{}\nCtrl-K → Browser actions · Start / Navigate / Observe",
+        browser_progress(state, browser),
+        reason,
+    );
+    if browser.url.is_empty()
+        && let Some(hint) = state
+            .process_urls
+            .iter()
+            .find_map(|url| ssh_forward_hint(url))
+    {
+        content.push_str(&format!("\n\nLocal browser from SSH client:\n{hint}"));
+    }
     render_panel(
         frame,
         area,
@@ -2950,6 +3245,27 @@ fn render_browser_visual(
         content,
         WARNING,
     );
+}
+
+fn ssh_forward_hint(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host()?;
+    let remote_host = match host {
+        url::Host::Domain(domain)
+            if domain.eq_ignore_ascii_case("localhost")
+                || domain.to_ascii_lowercase().ends_with(".localhost") =>
+        {
+            domain.to_string()
+        }
+        url::Host::Ipv4(address) if address.is_loopback() => address.to_string(),
+        url::Host::Ipv6(address) if address.is_loopback() => format!("[{address}]"),
+        _ => return None,
+    };
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return None;
+    }
+    let port = parsed.port_or_known_default()?;
+    Some(format!("ssh -L {port}:{remote_host}:{port} <user>@<host>"))
 }
 
 fn render_browser_inspector(
@@ -3099,7 +3415,7 @@ fn render_app_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let browser = state.browser_workspace.state();
     let geometry = app_surface_geometry(state, area);
     let address = if browser.url.is_empty() {
-        "No page yet · :browser navigate URL".into()
+        "No page · Ctrl-K → Navigate to a URL".into()
     } else {
         compact_path(&browser.url, geometry.toolbar.width.saturating_sub(18))
     };
@@ -3228,7 +3544,7 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
         let empty_state = if state.processes.trim().is_empty()
             || state.processes.contains("No managed terminals")
         {
-            "No managed processes yet\ns starts the detected suite · a opens actions\n:process start dev runs a custom command".to_string()
+            "No managed processes yet\ns starts the detected suite · Ctrl-K opens actions\nGLASS process actions run and inspect named project services".to_string()
         } else {
             format!("No managed processes yet\n{}", state.processes.trim())
         };
@@ -3301,7 +3617,7 @@ fn render_terminal_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rec
         );
     }
     let logs = if state.process_logs.trim().is_empty() {
-        "Logs follow the selected process · Enter refreshes · Space restart · u App · x stop"
+        "Logs follow the selected process · Enter refreshes · Space restart · u Browser · x stop"
             .to_string()
     } else {
         state.process_logs.clone()
@@ -3316,13 +3632,16 @@ fn render_task_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     } else {
         "…".into()
     };
-    let guided_empty =
-        state.tasks.trim().is_empty() || state.tasks.trim_start().starts_with("No tasks.");
+    let guided_empty = state.tasks.trim().is_empty()
+        || state
+            .tasks
+            .trim_start()
+            .starts_with("No Core conversations yet.");
     let items = if !state.snapshot_ready {
         vec![ListItem::new(panel_text("Loading workspace snapshot…"))]
     } else if guided_empty {
         vec![ListItem::new(panel_text(
-            "No tasks yet.\na opens actions · :task create TITLE PROMPT",
+            "No Core conversations yet.\nType in Agent to start one · Ctrl-K for Glass flows",
         ))]
     } else {
         state
@@ -3348,6 +3667,16 @@ fn render_task_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 }
 
 fn render_tasks_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    if matches!(
+        state.responsive_class(area.width, area.height),
+        ResponsiveClass::Compact | ResponsiveClass::Phone
+    ) {
+        // Keep task state readable at narrow sizes. The contextual todo and
+        // summary panels stay available at desktop widths; stacking three
+        // columns into a 118-column terminal made the actual Core rows vanish.
+        render_task_list(frame, state, area);
+        return;
+    }
     let rows = if stack_for_phone(state, area) {
         Layout::default()
             .direction(Direction::Vertical)
@@ -3551,7 +3880,8 @@ fn render_git_file_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
                 if !state.snapshot_ready {
                     " CHANGES · … ".to_string()
                 } else {
-                    let mut title = format!(" CHANGES · {} ", state.git_entries.len());
+                    let mut title =
+                        format!(" CHANGES · {} · INDEX/WORKTREE ", state.git_entries.len());
                     let conflicts = state.git_conflicts.len();
                     let unstaged = state
                         .git_entries
@@ -3682,44 +4012,51 @@ fn render_git_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     } else {
         "loading…"
     };
-    let change_count = state.git_entries.len();
-    let change_count_label = if state.snapshot_ready {
-        change_count.to_string()
+    let (staged, unstaged, untracked) = state.git_entries.iter().fold(
+        (0usize, 0usize, 0usize),
+        |(staged, unstaged, untracked), entry| {
+            if entry.untracked {
+                (staged, unstaged, untracked + 1)
+            } else {
+                (
+                    staged + usize::from(entry.index_status != ' '),
+                    unstaged + usize::from(entry.worktree_status != ' '),
+                    untracked,
+                )
+            }
+        },
+    );
+    let change_count = if state.snapshot_ready {
+        state.git_entries.len().to_string()
     } else {
         "…".into()
     };
-    let review = if state.snapshot_ready {
-        state
-            .github_review
-            .lines()
-            .next()
-            .unwrap_or("no GitHub review")
+    let change_summary = if state.snapshot_ready && area.width < 58 {
+        format!(
+            "S:{staged} · U:{unstaged} · ?:{untracked} · !:{}\n↑↓ files · Enter diff · Space stage",
+            state.git_conflicts.len(),
+        )
+    } else if state.snapshot_ready && area.width < 96 {
+        format!(
+            "{change_count} files · {staged} staged · {unstaged} unstaged · {untracked} untracked · !{}\n↑↓ select · Enter diff · Space stage · c commit",
+            state.git_conflicts.len(),
+        )
+    } else if state.snapshot_ready {
+        format!(
+            "{change_count} files · {staged} staged · {unstaged} unstaged · {untracked} untracked · {} conflicts\n↑/↓ select · Enter diff · Space stage/unstage · c commit · o Code",
+            state.git_conflicts.len(),
+        )
     } else {
-        "workspace snapshot pending"
-    };
-    let conflicts = if state.git_conflicts.is_empty() {
-        String::new()
-    } else {
-        format!(" · {} conflict(s)", state.git_conflicts.len())
+        "Waiting for workspace snapshot · Git status will appear here".into()
     };
     render_panel(
         frame,
         geometry.summary,
         format!(
-            " GIT · {branch} ↑{} ↓{} ",
+            " GIT · {branch} · ↑{} ↓{} ",
             state.git_ahead, state.git_behind
         ),
-        format!(
-            "{change_count_label} changed{conflicts} · {}\n{review}",
-            if state.snapshot_ready {
-                state
-                    .selected_git_entry()
-                    .map(|entry| format!("selected {}", entry.path))
-                    .unwrap_or_else(|| "j/k choose · c commit · o open · x discard".into())
-            } else {
-                "waiting for workspace snapshot".into()
-            },
-        ),
+        change_summary,
         PURPLE,
     );
     render_git_file_list(frame, state, geometry.files);
@@ -3739,7 +4076,7 @@ fn render_debug_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
                 " DEBUG · … ".to_string()
             },
             if state.snapshot_ready {
-                "No debugger sessions\n:debug start NAME COMMAND\na opens actions".to_string()
+                "No debugger sessions\nCtrl-K opens Debug actions\nConfigure a DAP adapter before attaching a debuggee".to_string()
             } else {
                 "Loading workspace snapshot…".to_string()
             },
@@ -3825,7 +4162,7 @@ fn debug_session_lines(state: &DevTuiState) -> Vec<String> {
     if state.debug_sessions.is_empty() {
         return vec![
             "No debugger sessions".into(),
-            ":debug start NAME COMMAND".into(),
+            "Ctrl-K opens Debug actions".into(),
         ];
     }
     state
@@ -4999,6 +5336,71 @@ mod tests {
         state
     }
 
+    #[test]
+    fn code_preview_title_identifies_path_language_and_edit_state() {
+        let mut state = state(TuiLayout::Desktop);
+        state.focused_editor_path = "src/lib.rs".into();
+        state.focused_editor_line = 12;
+        state.focused_editor_column = 4;
+        let preview = code_editor_title(&state, 100);
+        assert!(preview.contains("src/lib.rs"));
+        assert!(preview.contains("Rust"));
+        assert!(preview.contains("preview"));
+        assert!(preview.contains("Ln 12 Col 4"));
+
+        state.focused_editor_dirty = true;
+        let edited = code_editor_title(&state, 100);
+        assert!(edited.contains("edited"));
+        assert!(!edited.contains(" preview "));
+    }
+
+    #[test]
+    fn code_preview_title_compacts_paths_for_narrow_terminals() {
+        let mut state = state(TuiLayout::Desktop);
+        state.focused_editor_path = "crates/a/very/long/path/to/module.rs".into();
+        let title = code_editor_title(&state, 44);
+        assert!(title.contains("Rust"));
+        assert!(title.contains("preview"));
+        assert!(title.chars().count() <= 44);
+    }
+
+    #[test]
+    fn code_preview_uses_the_selected_buffer_not_the_buffer_summary() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Code;
+        state.files = vec!["src/first.rs".into(), "src/selected.rs".into()];
+        state.selected_file = 1;
+        state.focused_editor_path = "src/selected.rs".into();
+        state.focused_editor_content = "fn selected_preview_marker() {}".into();
+        state.editor = "fn unrelated_buffer_summary_marker() {}".into();
+        let screen = rendered(&state, 120, 36);
+        assert!(screen.contains("selected_preview_marker"));
+        assert!(!screen.contains("unrelated_buffer_summary_marker"));
+    }
+
+    #[test]
+    fn browser_remote_preview_shows_a_safe_loopback_forward_hint() {
+        assert_eq!(
+            ssh_forward_hint("http://127.0.0.1:3000/"),
+            Some("ssh -L 3000:127.0.0.1:3000 <user>@<host>".into())
+        );
+        assert_eq!(
+            ssh_forward_hint("http://[::1]:4173/"),
+            Some("ssh -L 4173:[::1]:4173 <user>@<host>".into())
+        );
+        assert_eq!(ssh_forward_hint("https://example.com"), None);
+        assert_eq!(ssh_forward_hint("not a URL"), None);
+
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::App;
+        state.process_urls = vec!["http://localhost:3000/".into()];
+        let screen = rendered(&state, 120, 36);
+        assert!(screen.contains("Local browser from SSH client"));
+        assert!(screen.contains("ssh -L 3000"));
+        assert!(screen.contains("<user>@<host>"));
+        assert!(screen.contains("Browser actions"));
+    }
+
     fn overlay_state() -> (DevTuiState, std::path::PathBuf) {
         let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
@@ -5022,6 +5424,36 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>()
     }
+
+    #[test]
+    fn gc_slash_menu_renders_the_discovered_catalogue_and_runtime_mode() {
+        let (mut state, root) = overlay_state();
+        state.composer_mode = true;
+        state.gc_command_menu_open = true;
+        state.gc_command_query.clear();
+        state.gc_command_items = vec![serde_json::json!({
+            "name": "status",
+            "description": "View session status",
+            "runtimeMode": "runtime"
+        })];
+
+        let output = rendered(&state, 100, 30);
+        assert!(output.contains("CORE COMMANDS"));
+        assert!(output.contains("CORE 1"));
+        assert!(output.contains("GLASS "));
+        assert!(output.contains("/status"));
+        assert!(output.contains("View session status"));
+        assert!(output.contains("[Core runtime]"));
+        assert!(output.contains("GLASS WORKSPACE"));
+        assert!(output.contains("Glass session status"));
+        let host_actions = state.gc_command_glass_actions();
+        for command in ["view Tasks", "view Debug", "view More"] {
+            assert!(host_actions.iter().any(|action| action.command == command));
+        }
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn rendered_buffer(state: &DevTuiState, width: u16, height: u16) -> ratatui::buffer::Buffer {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -5270,14 +5702,13 @@ mod tests {
         let output = rendered(&state, 48, 18);
         if state.agent_readiness.starts_with("✓ Ready") {
             assert!(output.contains("START HERE"));
-            assert!(output.contains("Enter to chat"));
+            assert!(output.contains("Type a message or / for commands"));
         } else {
             assert!(output.contains("SETUP"));
             assert!(output.contains("Enter to install"));
         }
-        assert!(output.contains("APP (optional)"));
+        assert!(!output.contains("optional"));
         assert!(output.contains("● Ready"));
-        assert!(output.contains("Enter"));
 
         state.status = "browser failed".into();
         assert!(rendered(&state, 48, 18).contains("× browser failed"));
@@ -5290,11 +5721,9 @@ mod tests {
         let output = agent_landing(&state);
 
         assert!(output.contains("SETUP"));
-        assert!(output.contains("Configure glass-core with a provider and credentials"));
-        assert!(output.contains(":actions"));
-        assert!(output.contains("After ✓ Ready"));
-        assert!(output.contains("Compose message · i"));
-        assert!(output.contains("Sending needs a ready engine"));
+        assert!(output.contains("Configure Glass Core with a provider and credentials"));
+        assert!(output.contains("Use / to inspect Glass workspace actions"));
+        assert!(output.contains("conversation draft is ready"));
     }
 
     #[test]
@@ -5425,10 +5854,125 @@ mod tests {
         .collect();
 
         let output = rendered(&state, 140, 40);
-        for marker in ["YOU", "GLASS AGENT", "SYSTEM", "ALERT", "ERROR"] {
+        for marker in ["YOU", "CORE", "SYSTEM ·", "ACTION ·", "ERROR ·"] {
             assert!(output.contains(marker), "missing role marker {marker}");
         }
+        assert!(!output.contains("GLASS AGENT"));
+        assert!(!output.contains("system SYSTEM"));
+        assert!(!output.contains("ALERT\nALERT"));
         assert!(output.contains("CONVERSATION"));
+    }
+
+    #[test]
+    fn glass_transcript_labels_lifecycle_and_tool_evidence_once() {
+        let mut lines = vec![
+            Line::from("system SYSTEM · workspace revision 4"),
+            Line::from("system ✓ glass.browser.navigate · done"),
+            Line::from("system ERROR × glass.browser.observe · page unavailable"),
+            Line::from("system coreCommand · /status completed"),
+        ];
+        style_glass_transcript_lines(&mut lines);
+        let rendered = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("SYSTEM · workspace revision 4"));
+        assert!(rendered.contains("GLASS · glass.browser.navigate · done"));
+        assert!(rendered.contains("ERROR · glass.browser.observe · page unavailable"));
+        assert!(rendered.contains("CORE · coreCommand · /status completed"));
+        assert!(!rendered.contains("system SYSTEM"));
+        assert!(!rendered.contains("ERROR ×"));
+        assert_eq!(lines[0].spans[0].style.fg, Some(MUTED));
+        assert_eq!(lines[1].spans[0].style.fg, Some(ACCENT_BRIGHT));
+        assert_eq!(lines[2].spans[0].style.fg, Some(ERROR));
+        assert_eq!(lines[3].spans[0].style.fg, Some(PURPLE));
+    }
+
+    #[test]
+    fn glass_transcript_speaker_and_thinking_labels_have_distinct_tones() {
+        let mut lines = vec![
+            Line::from("❯ YOU"),
+            Line::from("GLASS AGENT"),
+            Line::from("Thinking…"),
+        ];
+        style_glass_transcript_lines(&mut lines);
+        assert_eq!(lines[0].to_string(), "❯ YOU");
+        assert_eq!(lines[0].spans[0].style.fg, Some(ACCENT_BRIGHT));
+        assert_eq!(lines[1].to_string(), "CORE");
+        assert_eq!(lines[1].spans[0].style.fg, Some(PURPLE));
+        assert_eq!(lines[2].spans[0].style.fg, Some(MUTED));
+        assert!(
+            lines[2].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::ITALIC)
+        );
+    }
+
+    #[test]
+    fn glass_transcript_attributes_native_and_host_tool_cards_at_terminal_widths() {
+        use super::super::projection::{ConversationEntry, ConversationKind};
+
+        let cards: Vec<ConversationEntry> = [
+            ("bash", "running", "Compiling fixture"),
+            (
+                "glass.browser.navigate https://example.test",
+                "completed",
+                "Fixture page loaded",
+            ),
+            (
+                "glass.browser.act click #missing",
+                "failed · element not found",
+                "Element not found",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (command, status, output))| ConversationEntry {
+            kind: ConversationKind::System,
+            text: String::new(),
+            streaming: false,
+            entry_id: Some(format!("tool-{index}")),
+            client_message_id: None,
+            tool_name: None,
+            tool_card: Some(glass_tui::ToolCard {
+                expanded: false,
+                call_id: format!("call-{index}"),
+                command: command.into(),
+                output: output.into(),
+                status: status.into(),
+                elapsed_ms: Some(1_200),
+                spill: None,
+                truncated: false,
+            }),
+        })
+        .collect();
+
+        for (width, height) in [(80, 24), (112, 32), (160, 48)] {
+            for (index, ((card, origin), status)) in cards
+                .iter()
+                .zip([
+                    "✓ CORE · bash ·",
+                    "✓ GLASS · browser ·",
+                    "× GLASS · browser ·",
+                ])
+                .zip(["running", "comp", "fail"])
+                .enumerate()
+            {
+                let mut state = state(TuiLayout::Desktop);
+                state.surface = DevSurface::Agent;
+                state.conversation_items = vec![card.clone()];
+                let output = rendered(&state, width, height);
+                assert!(
+                    output.contains(origin) && output.contains(status),
+                    "missing {origin} {status} at {width}x{height}, card {index}: {output:?}"
+                );
+                if index == 0 {
+                    assert!(output.contains("Compiling fixture"), "{width}x{height}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -5471,6 +6015,11 @@ mod tests {
         assert!(text.contains("↓ live"));
         assert!(!text.contains("Ctrl-X abort"));
         assert!(!text.contains("Ctrl-D follow-up"));
+
+        state.composer_steer = true;
+        let idle_steer = agent_conversation_text(&state, "", 72, 8).to_string();
+        assert!(!idle_steer.contains("Ctrl-X abort"));
+        assert!(!idle_steer.contains("Ctrl-D follow-up"));
     }
 
     #[test]
@@ -5641,7 +6190,7 @@ mod tests {
         let output = rendered(&state, 140, 40);
         assert!(output.contains("DEBUG · 0"));
         assert!(output.contains("No debugger sessions"));
-        assert!(output.contains(":debug start NAME COMMAND"));
+        assert!(output.contains("Ctrl-K opens Debug actions"));
         assert!(!output.contains("THREADS"));
         assert!(output.contains("VARIABLES"));
         assert!(output.contains("TESTS"));
@@ -5652,8 +6201,21 @@ mod tests {
         let mut state = state(TuiLayout::Desktop);
         state.surface = DevSurface::Tasks;
         let output = rendered(&state, 140, 40);
-        assert!(output.contains("No tasks yet."));
-        assert!(output.contains(":task create TITLE PROMPT"));
+        assert!(output.contains("No Core conversations yet."));
+        assert!(output.contains("Ctrl-K"), "{output}");
+    }
+
+    #[test]
+    fn task_surface_separates_core_thread_state_from_glass_workspace_flows() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Tasks;
+        state.snapshot_ready = true;
+        state.tasks = "CORE CONVERSATIONS\nCORE · Working · implementer · agent-0001\n\nGLASS WORKSPACE FLOWS\n● task-1  running  build verification".into();
+        let output = rendered(&state, 140, 40);
+        assert!(output.contains("CORE CONVERSATIONS"));
+        assert!(output.contains("CORE · Working"));
+        assert!(output.contains("GLASS WORKSPACE FLOWS"));
+        assert!(output.contains("task-1  running"));
     }
 
     #[test]
@@ -5706,7 +6268,7 @@ mod tests {
 
         for (surface, markers) in [
             (DevSurface::Agent, ["CONVERSATION", "START HERE"]),
-            (DevSurface::Code, ["FILES", "EDITOR"]),
+            (DevSurface::Code, ["FILES", "CODE"]),
             (DevSurface::App, ["VISUAL PLANE", "INSPECTOR"]),
             (DevSurface::Terminal, ["TERMINAL", "PROCESSES"]),
             (DevSurface::Tasks, ["TASKS", "SUMMARY"]),
@@ -5714,7 +6276,7 @@ mod tests {
             (DevSurface::Debug, ["DEBUG", "TESTS"]),
             (DevSurface::More, ["CORE", "ROUTES"]),
         ] {
-            state.surface = surface;
+            state.show_surface(surface);
             let output = rendered(&state, 220, 40);
             for marker in markers {
                 assert!(
@@ -5814,8 +6376,17 @@ mod tests {
         assert!(output.contains("src/main.rs"));
         assert!(output.contains("tests/agent.rs"));
         assert!(output.contains("src/main.rs"));
-        assert!(output.contains("Space stages"));
+        assert!(output.contains("Space stage"));
+        assert!(output.contains("0 staged"));
+        assert!(output.contains("1 unstaged"));
+        assert!(output.contains("1 untracked"));
         assert!(!output.contains("0!"));
+
+        state.layout = TuiLayout::Auto;
+        let compact = rendered(&state, 48, 18);
+        assert!(compact.contains("S:0"), "{compact}");
+        assert!(compact.contains("U:1"));
+        assert!(compact.contains("?:1"));
 
         state.move_git_selection(1);
         assert_eq!(
@@ -5833,7 +6404,7 @@ mod tests {
         state.scroll_help(16);
         assert!(state.help_scroll <= 16);
         assert!(
-            rendered(&state, 48, 18).contains("App"),
+            rendered(&state, 48, 18).contains("Browser"),
             "small-screen help must expose the remaining surface list after scrolling"
         );
 
@@ -5848,17 +6419,11 @@ mod tests {
     }
 
     #[test]
-    fn phone_sizes_keep_agent_code_app_tasks_more_flows_reachable() {
+    fn phone_sizes_keep_primary_surfaces_reachable() {
         for (width, height) in [(48, 18), (64, 24), (80, 24)] {
             let mut state = state(TuiLayout::Mobile);
-            for (key, expected) in [
-                ('1', DevSurface::Agent),
-                ('2', DevSurface::Code),
-                ('3', DevSurface::App),
-                ('4', DevSurface::Tasks),
-                ('5', DevSurface::More),
-            ] {
-                state.handle_printable(key);
+            for expected in DevSurface::PRIMARY {
+                state.show_surface(expected);
                 assert_eq!(state.surface, expected);
                 assert!(rendered(&state, width, height).contains(expected.label()));
             }
@@ -5892,6 +6457,10 @@ mod tests {
         assert!(!state.palette_matches().contains(&"browser"));
 
         state.close_palette();
+        assert!(
+            state.composer_mode,
+            "closing a Glass palette returns to Agent input"
+        );
         state.command_history = vec![
             "editor proposals".into(),
             "agent status".into(),
@@ -5962,7 +6531,7 @@ mod tests {
         assert!(output.contains("Compose message"));
         assert!(!output.contains("[i]"));
         assert!(output.contains("DETAILS"));
-        assert!(output.contains("ask the resident Glass Agent"));
+        assert!(output.contains("create another Glass Core-backed conversation"));
 
         let mut mobile = state(TuiLayout::Mobile);
         mobile.surface = DevSurface::Agent;

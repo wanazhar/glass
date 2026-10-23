@@ -73,15 +73,13 @@ URL hints as discovery metadata. Those values are informational: Glass does not
 launch detected language servers or infer extra development URLs unless the
 project configuration explicitly requests them.
 
-The Glass TUI's resident agent uses Glass Core's provider, model, native coding
-tools, and permission configuration. `:agent setup login` hands the terminal
-to Core's interactive provider login; Glass does not duplicate Core's coding
-permissions. `:agent spawn ROLE TASK` creates a separate resident runtime.
-`:agent new` creates a conversation in the existing runtime and does not reload
-its configuration. `:agent models [AGENT_ID]` and `:agent model [AGENT_ID]
-PROVIDER MODEL` use the selected session, or the
-workspace's first active session when none is selected, through negotiated
-model APIs. Model catalog responses are shown in the Agent conversation. Provider setup and model configuration remain in Glass Core; see the
+The Glass TUI's Agent surface mirrors Glass Core's provider, model, native
+coding tools, and permission configuration. Use `/` to discover Core commands
+and Glass workspace actions. Glass Core provider login hands the terminal to
+Core; Start Core conversation creates another Core-backed runtime, while New
+conversation reuses the selected runtime. List Core models and Select Core
+model use negotiated model APIs. Model catalog responses are shown in the
+Agent conversation. Provider setup and model configuration remain in Glass Core; see the
 [resident harness guide](glass-core-harness.md).
 
 Live resident agents have separate Agent TUI transcripts and composer drafts;
@@ -105,8 +103,8 @@ sessions appear as `recovery pending` on supported hosts; runs that never
 initialized, including work still queued at shutdown, appear as `unavailable`.
 Windows rows remain unavailable under the current inherited-ACL policy. These
 states reject sends.
-Use `:agent resume [AGENT_ID]` on a recovery-pending row to reattach its exact
-stored Core session. Glass verifies the returned session ID, mixed tool mode,
+Select a recovery-pending row in the Agent picker to reattach its exact stored
+Core session. Glass verifies the returned session ID, mixed tool mode,
 and canonical project directory, then restores bounded user/assistant history
 from Core session entries before enabling sends. Missing or mismatched sessions
 remain recovery-pending with an error; Glass does not create a replacement or
@@ -125,7 +123,7 @@ The TUI uses its ordinary confirmation for the resume action; subsequent
 conversation follows the existing session flow without per-tool-call
 confirmation. For an uncertain send on a supported Unix host, select its
 attention item, resume that owning Core session, inspect the conversation, then
-run `:agent retry`. A separate confirmation warns that the original may have
+choose Retry failed or uncertain message from `/`. A separate confirmation warns that the original may have
 been accepted. Confirming reuses the saved client message ID, creates a fresh
 attempt ID, and targets the current run; a changed, inactive, or mismatched
 thread is refused. Cancel leaves the uncertain attempt unchanged.
@@ -135,7 +133,8 @@ confirmed `failed` attempt, distinct from an uncertain delivery. Glass returns
 that run to idle and renders only Core's bounded error class, code, and
 retryability flag; it omits the raw error message. On Unix, a failed attempt
 with an engine request ID appears in Attention Inbox as `Core turn failed`.
-Open its conversation, inspect any partial work, and run `:agent retry` for a
+Open its conversation, inspect any partial work, and choose Retry failed or
+uncertain message from `/` for a
 separate confirmation. This resends the saved text with the same client message
 ID and a new attempt ID. It never retries automatically because Core may have
 partly processed the request. A local or pre-dispatch send failure instead
@@ -171,7 +170,7 @@ The tree skips generated/vendor roots such as `.git`, `target`, `node_modules`, 
 
 ## Native editor and conflict rules
 
-Opening a file creates an in-memory `EditorBuffer` with content, disk `originalHash`, dirty flag, one-based cursor, optional selection, and actor. Buffers are not automatically persisted. While the TUI is open, it checks open buffer paths every 500 ms. A clean buffer adopts changed file contents; a dirty buffer keeps its text and exposes an external snapshot or deletion with unknown actor attribution. `:editor compare`, `:editor reload`, and `:editor keep-local` explicitly inspect or resolve that state. Reload clears undo/redo; keep-local rebases the buffer to the observed file identity and leaves it dirty. `Ctrl-S` or `glass.editor.save` compares the target file's existence and content hash at the atomic replacement boundary. It rejects a target whose identity differs at that check, while unrelated project revision changes do not block the save. This is an optimistic check, not a cross-process lock or compare-and-swap against writers that change the file after the check. Undo and redo retain at most 256 content entries per path.
+Opening a file creates an in-memory `EditorBuffer` with content, disk `originalHash`, dirty flag, one-based cursor, optional selection, and actor. Buffers are not automatically persisted. While the TUI is open, it checks open buffer paths every 500 ms. A clean buffer adopts changed file contents; a dirty buffer keeps its text and exposes an external snapshot or deletion with unknown actor attribution. Use `Ctrl-K` with `editor compare`, `editor reload`, or `editor keep-local` to inspect or resolve that state. Reload clears undo/redo; keep-local rebases the buffer to the observed file identity and leaves it dirty. `Ctrl-S` or `glass.editor.save` compares the target file's existence and content hash at the atomic replacement boundary. It rejects a target whose identity differs at that check, while unrelated project revision changes do not block the save. This is an optimistic check, not a cross-process lock or compare-and-swap against writers that change the file after the check. Undo and redo retain at most 256 content entries per path.
 
 The native editor supports arrows, text insertion, `Enter`, `Backspace`, `Shift` plus arrows for a selection, `Ctrl-S`, `Ctrl-Z`, `Ctrl-Y`, and `Alt-A` to prepare an agent prompt. The editor starts in INSERT. `Esc` returns to NORMAL. `Esc` from NORMAL on a clean buffer leaves the editor. Unsaved content still opens the exit prompt (`S` save, `D` discard, `Q` discard and quit, `Esc`/`N` stay). `Ctrl-C` opens Glass quit confirmation from editor input; if the unsaved-exit prompt is already open, its save/discard/stay choices take priority. `Tab` remains product navigation outside editor mode. `Delete` has no editor mutation binding.
 

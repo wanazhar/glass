@@ -158,13 +158,13 @@ a second keybinding or state owner.
 
 | Surface | Authoritative projection | Guided empty/loading behavior |
 |---|---|---|
-| Agent | Selected Glass Core session state and events, shared transcript viewport, typed event/tool cards | shows `START HERE` when Core is ready; otherwise `:actions` offers setup and repair guidance |
+| Agent | Selected Glass Core session state and events, shared transcript viewport, typed event/tool cards | shows `START HERE` when Core is ready; `/` discovers Core commands and Glass workspace actions |
 | Code | bounded files, focused buffer, cursor/dirty state, review comments/proposals/checkpoints, LSP | no files/file open messages direct to selection and Enter; no diagnostics is a valid state |
-| App | embedded `BrowserWorkspaceController`: connection, target, semantic entities, workflow, visual path | detached/no page/loading/failed/recovery/semantic-only states stay visible |
+| Browser | embedded `BrowserWorkspaceController`: connection, target, semantic entities, workflow, visual path | detached/no page/loading/failed/recovery/semantic-only states stay visible |
 | Terminal | managed process rows with health, PID, command and detected URL | `s` starts the detected suite; `a` opens actions; no process is an empty state |
-| Tasks | workspace-local Agent checklist plus overnight DAG rows | empty todos direct to `glass.todo.write`; empty DAG directs to `a` or `:task create TITLE PROMPT` |
+| Tasks | workspace task records and evidence, with Core task state where reported | `/` Glass task actions show task creation and controls; the full task command group is available from `Ctrl-K` |
 | Git | branch/change rows, selected file and inline diff | opening Git loads the selected diff; loading is visible and off-thread |
-| Debug | debugger sessions and test evidence | no sessions is one start panel (`:debug start NAME COMMAND`) |
+| Debug | configured debugger sessions and test evidence | no sessions is one start panel; use the Debug actions from `/` or `Ctrl-K` |
 | More | Core readiness, kernels, experiments/replay, harnesses and routes | `j/k` or click selects a route; Enter/double-click runs it; results stay on More |
 
 The Agent pane keeps a compact Glass-only presentation around Core's
@@ -178,6 +178,64 @@ viewport. New output follows when the viewport is at the tail; a manually
 scrolled position is preserved and indicates when newer output is below.
 
 ## Navigation and modal routing
+
+### Workspace interaction contract
+
+The workspace has three visible layers and one primary navigation model:
+
+```text
+┌ Workspace: project · selected thread · connection ───────────┐
+│ Agent · Code · Browser · Terminal · Git                       │
+│ Conversation / files / page preview / process / changes         │
+├─────────────────────────────────────────────────────────────────┤
+│ Persistent composer · / commands and Glass workspace actions   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+The selected project and thread remain visible in the workspace header.
+Surface navigation changes the Glass workspace projection; the Agent surface
+continues to mirror the selected Glass Core session. Core owns agent execution,
+turn state, tool selection, and permission decisions. Glass owns workspace
+navigation, drafts and focus, presentation, and host capabilities such as the
+browser, files, Git, and terminal. Glass routes Core input and presents Core
+events without inventing a second agent lifecycle or approval step.
+
+The composer is the primary text entry surface. Agent keeps its conversation
+composer focused from launch and whenever the user returns to Agent; no
+preliminary Enter or mode key is needed. Ordinary typing enters that composer;
+it never opens or edits a file as a side effect. A focused Code buffer is shown only on
+the Code surface or after an explicit user action that opens a source context.
+Switching to Agent does not reveal a previously focused file, and resizing does
+not change which file is open or which pane owns keyboard focus. File preview,
+full-screen editing, and Agent context attachment are separate explicit
+actions. Opening the composer from Code shows a removable file-context chip; the
+selected range takes priority, and the unsaved buffer is sent as a bounded
+snapshot only from that Code composer. `Ctrl-Shift-X` removes or restores the
+chip. The ordinary Agent composer never attaches the last viewed file.
+
+`/` at an empty composer opens a live catalogue: GC entries come from the
+selected Core session and Glass entries describe workspace actions. The menu
+labels the owner of each command. Up/Down filters and selects, Tab completes,
+Enter runs the selected runtime-safe command or hands off to the native Core UI
+when the command is interactive, and Esc returns to the unchanged composer.
+Typing a slash after other draft text remains literal text; paths and messages
+are not parsed as commands. The catalogue is available before the first prompt
+by initializing a Core session without sending provider input. Glass workspace
+actions remain available through `Ctrl-K`; Core's command catalogue stays
+owned by the selected GC session.
+
+Esc closes one visible popup and returns focus to its invoking surface. Agent
+stays ready and preserves its draft when Escape is pressed; `Ctrl-L` opens a
+temporary composer on another surface, and Escape there restores that surface.
+Help, pickers, and command menus show their active key hints beside their content.
+Compact and phone layouts keep the same primary surface order, composer, and
+command semantics; layout changes only rearrange regions. The Browser surface
+identifies the connected browser backend and offers a clear connect, return, or
+recovery action for its current state. Git review and terminal controls remain
+scoped to their surfaces, and neither steals composer focus while the Agent
+surface is selected. Tasks, Debug, and service/settings routes remain available
+as contextual Glass actions from `/`; they are no longer persistent primary
+tabs. Their underlying workspace records are preserved.
 
 One active-overlay resolver owns keyboard, mouse, and terminal-overlay
 precedence. From highest priority to lowest it selects quit confirmation,
@@ -193,7 +251,8 @@ wheel events cannot reach the covered surface. The command-center menu accepts
 pointer selection, and help accepts its documented wheel scrolling. `Esc`
 closes the active modal/overlay; it does not cancel a running worker job. Git
 keys stay live while a diff is open, but they do not trap confirm or palette
-input.
+input. Agent remains the one surface with continuous text focus; navigation
+keys switch surfaces without treating digits or ordinary letters as routes.
 
 A browser crash snapshot or qualifying browser tool failure installs an
 explicit recovery offer without changing the selected surface or closing its
@@ -218,28 +277,33 @@ mouse, paste, or surface input while a higher-priority overlay is active.
 
 | Input | Route and behavior |
 |---|---|
-| `1`–`8` (desktop/compact) | Agent, Code, App, Terminal, Tasks, Git, Debug, More |
-| `1`–`5` (Phone) | Agent, Code, App, Tasks, More |
-| `c` / `v` / `w` / `g` / `d` / `m` (desktop/compact) | mnemonic aliases for Code / App / Tasks / Git / Debug / More when the current surface has not claimed the key; Agent treats printable input as composer text |
-| `Tab` / `Shift-Tab` | next/previous primary surface |
-| Left/Right | previous/next surface (unless Alt-modified browser history) |
+| `Alt-1`…`Alt-5` | direct primary surface selection (Agent, Code, Browser, Terminal, Git); clicking the surface tabs remains available |
+| `Ctrl-Tab` / `Ctrl-Shift-Tab` | next/previous primary surface, including while Agent composer is ready |
+| `Tab` / `Shift-Tab` | next/previous surface outside a text composer; in Agent composer, Tab completes a mention or the slash menu selection |
+| `c` / `v` / `g` (outside Agent) | mnemonic aliases for Code / Browser / Git when the current surface has not claimed the key; digits remain ordinary text |
+| `/` host actions `Open task tracking`, `Open debugger`, `Open services and settings` | open the contextual Tasks, Debug, or advanced services surface without keeping each in the primary tab strip |
+| Left/Right outside a text editor/composer | previous/next surface (unless Alt-modified browser history) |
 | Up/Down, `j`/`k` | focused list movement; otherwise the current surface scrolls |
 | PageUp/PageDown, Home/End | Agent transcript viewport when Agent is active; otherwise surface scroll/page or bounds |
-| `a` outside Agent | open the current surface command center; `:` opens the filtered palette |
-| `:` | open Glass workspace actions |
-| `Ctrl-L` | open the shared composer dock on the current surface |
-| `Ctrl-P` | open the file picker; in the composer or palette, it keeps its local history behavior |
-| `Ctrl-K` / `Ctrl-Shift-P` | open the command palette from the normal surface view |
-| `Ctrl-G` | jump to App while keeping the composer dock open |
+| `a` outside Agent | open the current surface command center |
+| `/` in the Agent composer | open the dynamic Core command catalogue; search Glass actions with `glass` |
+| `Ctrl-K` / `Ctrl-Shift-P` | open the Glass workspace action palette outside a composer |
+| `Ctrl-L` | open the shared composer dock on the current non-Agent surface |
+| `Ctrl-P` | open the file picker outside a composer; in Agent composer it navigates prompt history |
+| `Ctrl-K` / `Ctrl-Shift-P` | open the Glass action palette outside a composer |
+| `Ctrl-G` | jump to Browser while keeping the composer dock open |
 | `Ctrl-Shift-T` on Agent | open the project conversation picker; Enter selects a thread without dispatching a prompt, Esc returns to the current conversation |
+| `Ctrl-F` / `Ctrl-R` / `Ctrl-E` / `Ctrl-O` on Agent | fork / rewind / edit last user message / expand or collapse transcript; plain letters remain composer text |
 | `Ctrl-Shift-A` | open Attention Inbox for reviewable Core failures and other actionable events |
 | `?` | help; `j`/`k`, PageUp/PageDown and Home/End scroll; `?`/Esc closes |
-| `Enter` on Agent | start/continue the agent interaction; with text focus, submit composer |
+| `Enter` on Agent | submit the ready composer; empty input stays in the conversation |
 | `Enter` on Code | open the selected file for full-screen edit; preview queues if the workspace is busy |
+| `Ctrl-L` on Code | open the composer with the viewed file/range attached as removable context |
+| `Ctrl-Shift-X` in the Code composer | remove or restore the selected Code context chip |
 | `[` / `]` | cycle Agent session or Code buffer |
-| `T` on App | queue browser target picker; App Enter activates selected semantic entity |
-| `Alt-Left` / `Alt-Right` on App | guarded browser Back/Forward |
-| `Ctrl-R` on App | guarded browser reload |
+| `T` on Browser | queue browser target picker; Browser Enter activates selected semantic entity |
+| `Alt-Left` / `Alt-Right` on Browser | guarded browser Back/Forward |
+| `Ctrl-R` on Browser | guarded browser reload |
 | `Enter` on a JavaScript alert | acknowledge and resume the suspended page script |
 | `Y` / Enter on confirm; `N` / Esc | accept or dismiss the pending JavaScript confirm |
 | Enter / Esc on prompt | submit the edited response or dismiss with `null` |
@@ -256,7 +320,7 @@ mouse, paste, or surface input while a higher-priority overlay is active.
 
 Pointer hit testing uses the same responsive shell and panel rectangles as
 rendering. It selects only visible rows in the Code file list, Git change list,
-Terminal process list, Debug session list, and App inspector entity list.
+Terminal process list, Debug session list, and Browser inspector entity list.
 Navigation and dock hits follow their rendered content area, including the
 composer's dynamic footer height. Panel borders, summary/diff/log panes, unused
 list rows, empty collections, and wrapped or otherwise ambiguous text do not
@@ -278,7 +342,7 @@ its revision checks.
 
 ### Native browser JavaScript dialog overlay
 
-The App surface starts the native browser with modal dialogs enabled; explicit
+The Browser surface starts the native browser with modal dialogs enabled; explicit
 `browser start --attach` remains a Chromium/CDP session without native dialog
 control. Native starts omit Chromium-only `headed` and `chromePath` settings. A
 cloneable `BrowserService` control handle is retained by the TUI separately
@@ -288,7 +352,7 @@ page operation remains suspended. This keeps the TUI responsive while the
 the page script or issue a second navigation.
 
 ```text
-┌──────────────── Glass Dev · App ──────────────────┐
+┌──────────────── Glass Dev · Browser ───────────────┐
 │ Browser page / semantic view (temporarily covered) │
 │                                                    │
 │       ┌──────── JavaScript confirm ─────────┐      │
@@ -332,10 +396,12 @@ resize or focus-loss event does not silently dismiss the page dialog.
 
 ### Glass action palette
 
-The `:` palette routes workspace actions to Glass integrations. Core login,
-model configuration, native coding tools, and their permission decisions stay
-with Glass Core. The shared composer sends conversation prompts to the active
-Core session; typing `/` does not open a Pi or second-agent command menu.
+The `Ctrl-K` palette routes workspace actions to Glass integrations. The `/`
+catalogue combines those host actions with commands discovered from the
+selected Core session, labels each owner, and sends Core commands to GC. Core
+login, model configuration, native coding tools, and permission decisions stay
+with Glass Core. The shared composer sends conversation prompts to that active
+Core session; Glass does not create a parallel agent command catalogue.
 
 ## First launch and agent composer
 
@@ -434,8 +500,8 @@ that attempt; run-level waiting or settled events cannot settle an ambiguous
 message. Unresolved attempts reopen as uncertain and link from the attention
 inbox to their owning thread. These message records remain process-local on
 Windows while the project ledger inherits workspace ACLs. After resuming the
-exact Core session, select the uncertain attempt from the inbox and run
-`:agent retry`. Glass verifies the same thread still owns an uncertain attempt
+exact Core session, select the uncertain attempt from the inbox and choose
+Retry failed or uncertain message from `/`. Glass verifies the same thread still owns an uncertain attempt
 and that its current run can accept the saved mode, then asks for explicit
 confirmation because Core may already have accepted the original. Confirming
 resends the stored text with the original client message ID and records a new
@@ -512,8 +578,9 @@ selection changes.
 The TUI reconciles only open editor paths on a bounded 500 ms interval. Clean
 buffers adopt changed contents and clamp cursor/selection to valid positions.
 Dirty buffers keep their text and show an external-change affordance. Use
-`:editor compare` for a bounded unified diff view, `:editor reload` to accept disk
-content, or `:editor keep-local` to rebase local text before saving. A deleted
+`editor compare` from the `Ctrl-K` palette for a bounded unified diff view,
+`editor reload` to accept disk content, or `editor keep-local` to rebase local
+text before saving. A deleted
 path remains a conflict; reload reports the missing file, while keep-local
 allows an explicit save to recreate it. Filesystem observations have unknown
 actor attribution. Saves compare the target file identity at the replacement
@@ -564,12 +631,12 @@ priority.
 
 ## Browser visual plane and dev-suite actions
 
-App embeds the canonical browser workspace with adapter kind
+Browser embeds the canonical browser workspace with adapter kind
 `EmbeddedDevelopment`; standalone Browser TUI uses `Standalone` and must not be
-mixed with this surface. The App visual plane keeps semantic inspection live
-while optional pixels are displayed. `:browser start`, `:browser navigate URL`,
-`:browser observe`, `:browser targets`, and guarded type/activate actions go
-through `SnapshotWorker` tool requests. Target selection and actions carry the
+mixed with this surface. The Browser visual plane keeps semantic inspection live
+while optional pixels are displayed. The `/` Browser actions and `Ctrl-K`
+routes `browser start`, `browser navigate URL`, `browser observe`, and
+`browser targets` go through `SnapshotWorker` tool requests. Target selection and actions carry the
 expected browser revision; stale references fail closed and require a fresh
 observation. Browser start failures expose a recovery sheet: attach a compatible
 endpoint, launch an isolated automatic port, retry the preferred port (where
@@ -577,12 +644,12 @@ applicable), or dismiss. The recovery offer preserves the current TUI surface
 and waits below existing overlays; dismissing it restores that same surface.
 Project and agent state survive browser recovery.
 
-`browser view` from typed palette input, the App action menu, or a selected
+`browser view` from typed palette input, the Browser action menu, or a selected
 palette action toggles live presentation through one queued runtime request;
 pointer menu activation uses the same menu action path. There is no standalone
-`v` toggle in the Glass Dev reducer (`v` selects App in wide navigation). The
+`v` toggle in the Glass Dev reducer (`v` selects Browser in wide navigation). The
 selected path is Herdr, Kitty, or bounded ANSI when available and allowed,
-otherwise Semantic-only with a visible reason. In App, ANSI frames use a
+otherwise Semantic-only with a visible reason. In Browser, ANSI frames use a
 bounded `AnsiPane`; Herdr uses its latest-frame queue; Kitty writes native
 graphics after Ratatui and clears/repositions on geometry change. Live capture
 is off by default unless CLI live mode is On/Auto, and an unavailable path
@@ -596,7 +663,7 @@ restart the stream, so a new TUI runtime is required to retry it. Visual
 requests are coalesced and do not block key handling.
 
 Live browser screenshot scheduling and result application use the same
-rendered App visual-pane geometry, including the Workflow footer bounds. ANSI
+rendered Browser visual-pane geometry, including the Workflow footer bounds. ANSI
 pixels and Kitty frames use the same one-cell border inset within that visual
 panel. The pane remains available under Composer;
 an occluding overlay, another surface, or an empty pane pauses capture. A
@@ -626,7 +693,7 @@ context; confirmations are one-use and denial is explicit.
 Every surface preserves its prior projection while loading or busy and exposes
 an actionable status. Empty means no data (not a hidden error); errors retain
 previous data when safe and show recovery text; constrained terminals retain
-header/footer and truncate panel content. App additionally distinguishes
+header/footer and truncate panel content. Browser additionally distinguishes
 Detached, Starting, Connected, Recovering, and Failed browser connection phases,
 plus semantic-only and live presentation. Agent distinguishes setup, drafting,
 sending, tool-running, waiting, failed-send and settled conversation states.

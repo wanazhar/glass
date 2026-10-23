@@ -869,6 +869,10 @@ fn validate_service_name(name: &str) -> DebugResult<()> {
 #[derive(Clone)]
 pub struct SharedDevelopmentWorkspace {
     inner: Arc<Mutex<DevelopmentWorkspace>>,
+    /// Project identity is immutable for this shared handle. Keep it outside
+    /// the workspace mutex so UI handoffs can resolve the active project even
+    /// while a background integration temporarily owns mutable state.
+    root: PathBuf,
 }
 impl SharedDevelopmentWorkspace {
     pub fn open(root: impl AsRef<Path>) -> DevelopmentResult<Self> {
@@ -890,6 +894,7 @@ impl SharedDevelopmentWorkspace {
     ) -> DevelopmentResult<Self> {
         let development_workspace =
             DevelopmentWorkspace::open_with_browser_policy(root, browser_policy)?;
+        let root = development_workspace.root().to_path_buf();
         let inner = Arc::new(Mutex::new(development_workspace));
         let weak = Arc::downgrade(&inner);
         let executor: AgentToolExecutor = Arc::new(move |call, authorization| {
@@ -920,7 +925,11 @@ impl SharedDevelopmentWorkspace {
             })?
             .agents()
             .set_local_tool_executor(executor);
-        Ok(Self { inner })
+        Ok(Self { inner, root })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     pub fn lock(&self) -> DevelopmentResult<MutexGuard<'_, DevelopmentWorkspace>> {

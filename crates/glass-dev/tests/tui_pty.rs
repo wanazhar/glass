@@ -1172,21 +1172,49 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
         "offline Core did not return to its ready state after the prompt\n{}",
         session.output_tail()
     );
+    assert!(
+        session.wait_for("handled offline prompt round trip", Duration::from_secs(5)),
+        "coalesced streamed response never reached the transcript\n{}",
+        session.output_tail()
+    );
+    session.settle(Duration::from_millis(300));
+    let transcript = session.visible_output();
+    assert!(
+        transcript.contains("YOU") && transcript.contains("offline prompt round trip"),
+        "final transcript did not render the submitted body as a user bubble\n{transcript}"
+    );
+    assert!(
+        transcript.contains("GLASS AGENT")
+            && transcript.contains("handled offline prompt round trip"),
+        "final transcript did not coalesce streamed deltas into one assistant response\n{transcript}"
+    );
+    assert!(
+        !transcript.contains("fixture reasoning must remain internal"),
+        "provider reasoning was rendered as visible conversation text\n{transcript}"
+    );
+    assert!(
+        !transcript.contains("Agent playbook: inspect, write session todos"),
+        "surface playbook leaked into the visible user message\n{transcript}"
+    );
     let requests = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
         .expect("fake Core request log is present");
-    assert!(
-        requests.lines().any(|line| {
-            serde_json::from_str::<serde_json::Value>(line)
-                .ok()
-                .is_some_and(|request| {
-                    request["method"] == "turn/prompt"
-                        && request["params"]["text"]
-                            .as_str()
-                            .is_some_and(|text| text.contains("offline prompt round trip"))
-                })
-        }),
-        "fake Core did not receive a turn/prompt"
+    let prompt_request = requests
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|request| request["method"] == "turn/prompt")
+        .expect("fake Core received a turn/prompt");
+    assert_eq!(
+        prompt_request["params"]["text"], "offline prompt round trip",
+        "playbook context must not be injected into the human message body"
     );
+    let context = &prompt_request["params"]["context"][0]["value"];
+    assert_eq!(context["surface"], "agent");
+    assert_eq!(context["runMode"], "agent");
+    assert!(context.get("playbook").is_none());
+    assert!(context.get("playbookText").is_none());
+    let serialized_context = serde_json::to_string(context).expect("serialize Glass context");
+    assert!(!serialized_context.contains("playbook"));
+    assert!(!serialized_context.contains("Agent playbook:"));
     let registry_path = fixture_state.join("threads/registry.json");
     let deadline = Instant::now() + Duration::from_secs(8);
     let registry = loop {

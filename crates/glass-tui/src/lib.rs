@@ -5,6 +5,7 @@
 //! bounded viewport layout, and transcript controller. Inline and fullscreen
 //! readers share anchors, search, paging, and follow state without a scrollbar.
 
+pub mod conversation;
 pub mod editor;
 pub mod layout;
 pub mod markdown;
@@ -23,12 +24,13 @@ pub mod transcript;
 pub use crossterm;
 pub use ratatui;
 
+pub use conversation::{Conversation, ConversationEvent, ConversationItem};
 pub use editor::{Edit, Editor};
 pub use transcript::Transcript;
 pub use transcript::wrap_width;
 
 /// One renderable entry in the transcript.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub role: Role,
     pub text: String,

@@ -24,6 +24,7 @@ use glass_browser::cli::args::TuiLayout;
 use glass_browser::terminal_graphics::AnsiCanvas;
 use glass_browser::tui::live_view::AnsiPane;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1490,10 +1491,13 @@ pub struct DevTuiState {
     pub file_picker_selection: usize,
     pub transcript_selection: usize,
     pub transcript_expanded: bool,
+    /// Shows provider reasoning in isolation after an explicit Ctrl-T toggle.
+    pub reasoning_view_open: bool,
     pub session_picker_open: bool,
     pub session_picker_items: Vec<SessionPickerItem>,
     pub session_picker_selection: usize,
     pub conversation_items: Vec<super::projection::ConversationEntry>,
+    pub(super) core_conversation_layout: RefCell<super::core_conversation::InlineLayout>,
     pub agent_conversations:
         std::collections::BTreeMap<crate::AgentId, super::snapshot::AgentConversation>,
     pub agent_model: String,
@@ -1895,6 +1899,10 @@ impl DevTuiState {
             file_picker_selection: 0,
             transcript_selection: 0,
             transcript_expanded: false,
+            reasoning_view_open: false,
+            core_conversation_layout: RefCell::new(
+                super::core_conversation::InlineLayout::default(),
+            ),
             session_picker_open: false,
             session_picker_items: Vec::new(),
             session_picker_selection: 0,
@@ -4064,6 +4072,15 @@ impl DevTuiState {
         };
     }
 
+    pub fn toggle_reasoning_view(&mut self) {
+        self.reasoning_view_open = !self.reasoning_view_open;
+        self.status = if self.reasoning_view_open {
+            "Core reasoning · Ctrl-T or Esc to return".into()
+        } else {
+            "Conversation transcript".into()
+        };
+    }
+
     pub fn fork_selected_transcript(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         self.branch_selected_transcript("glass.agent.fork", worker);
     }
@@ -5623,6 +5640,7 @@ impl DevTuiState {
             },
         );
         self.selected_agent = selected.clone();
+        self.reasoning_view_open = false;
         if let Some(conversation) = selected
             .as_ref()
             .and_then(|id| self.agent_conversations.get(id))
@@ -6875,67 +6893,14 @@ impl DevTuiState {
         let _ = self.ws_mut().map(|mut workspace| {
             workspace.set_agent_turn_mode(self.composer_run_mode);
         });
-        let mut context = self.agent_browser_context();
-        context["editor"] = self.agent_editor_context();
-        context["surface"] = serde_json::Value::String(self.surface.label().to_ascii_lowercase());
-        context["runMode"] =
-            serde_json::Value::String(self.composer_run_mode.label().to_ascii_lowercase());
-        context["playbook"] =
-            serde_json::Value::String(super::playbooks::playbook_name(self.surface).into());
-        context["playbookText"] =
-            serde_json::Value::String(super::playbooks::playbook(self.surface).into());
-        context["todos"] =
-            serde_json::to_value(&self.session_todos).unwrap_or(serde_json::json!({}));
-        if let Some(path) = self.selected_git_entry().map(|entry| entry.path.clone()) {
-            context["git"] = serde_json::json!({
-                "branch": self.git_branch,
-                "selectedPath": path,
-            });
-        }
-        if let Some(process) = self.selected_process_entry() {
-            context["process"] = serde_json::json!({
-                "name": process.name,
-                "health": process.health.label(),
-                "pid": process.pid,
-                "url": process.url,
-            });
-        }
-        if let Some(session) = self.selected_debug_session() {
-            context["debug"] = serde_json::json!({
-                "session": session.name,
-                "state": session.state.label(),
-                "threadId": self.selected_debug_thread().map(|thread| thread.id),
-                "frameId": self.selected_debug_frame().map(|frame| frame.id),
-                "path": self.selected_debug_frame().and_then(|frame| frame.path.clone()),
-                "line": self.selected_debug_frame().and_then(|frame| frame.line),
-            });
-        }
-        if let Some(plan) = &self.pending_plan {
-            context["plan"] = serde_json::json!({
-                "id": plan.id,
-                "goal": plan.goal,
-                "accepted": plan.accepted,
-            });
-        }
-        if let Some(comment) = &self.last_app_comment {
-            context["appComment"] = serde_json::Value::String(comment.clone());
-        }
-        if context["browser"]["selectedEntity"].is_object() {
-            self.browser_workspace.state_mut().input_owner =
-                glass_browser::browser_workspace::BrowserInputOwner::Agent;
-        }
-        let playbook = super::playbooks::playbook(self.surface);
-        let prefixed = match self.composer_run_mode.instruction() {
-            "" => format!("{playbook}\n\n{text}"),
-            instruction => format!("{instruction}\n\n{playbook}\n\n{text}"),
-        };
+        let context = self.agent_prompt_context();
         let message_id = format!(
             "chat-{}-{}",
             std::process::id(),
             NEXT_CHAT_MESSAGE.fetch_add(1, Ordering::Relaxed)
         );
         let mut arguments = serde_json::json!({
-            "text": prefixed,
+            "text": text,
             "mode": if steer { "steer" } else { "follow-up" },
             "context": context,
             "clientMessageId": message_id.clone(),
@@ -7011,6 +6976,55 @@ impl DevTuiState {
                 false
             }
         }
+    }
+
+    fn agent_prompt_context(&mut self) -> serde_json::Value {
+        let mut context = self.agent_browser_context();
+        context["editor"] = self.agent_editor_context();
+        context["surface"] = serde_json::Value::String(self.surface.label().to_ascii_lowercase());
+        context["runMode"] =
+            serde_json::Value::String(self.composer_run_mode.label().to_ascii_lowercase());
+        context["todos"] =
+            serde_json::to_value(&self.session_todos).unwrap_or(serde_json::json!({}));
+        if let Some(path) = self.selected_git_entry().map(|entry| entry.path.clone()) {
+            context["git"] = serde_json::json!({
+                "branch": self.git_branch,
+                "selectedPath": path,
+            });
+        }
+        if let Some(process) = self.selected_process_entry() {
+            context["process"] = serde_json::json!({
+                "name": process.name,
+                "health": process.health.label(),
+                "pid": process.pid,
+                "url": process.url,
+            });
+        }
+        if let Some(session) = self.selected_debug_session() {
+            context["debug"] = serde_json::json!({
+                "session": session.name,
+                "state": session.state.label(),
+                "threadId": self.selected_debug_thread().map(|thread| thread.id),
+                "frameId": self.selected_debug_frame().map(|frame| frame.id),
+                "path": self.selected_debug_frame().and_then(|frame| frame.path.clone()),
+                "line": self.selected_debug_frame().and_then(|frame| frame.line),
+            });
+        }
+        if let Some(plan) = &self.pending_plan {
+            context["plan"] = serde_json::json!({
+                "id": plan.id,
+                "goal": plan.goal,
+                "accepted": plan.accepted,
+            });
+        }
+        if let Some(comment) = &self.last_app_comment {
+            context["appComment"] = serde_json::Value::String(comment.clone());
+        }
+        if context["browser"]["selectedEntity"].is_object() {
+            self.browser_workspace.state_mut().input_owner =
+                glass_browser::browser_workspace::BrowserInputOwner::Agent;
+        }
+        context
     }
 
     fn submit_composer_slash(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
@@ -11664,6 +11678,7 @@ impl DevTuiState {
         let was_waiting_for_snapshot = !self.snapshot_ready;
         let mut browser_recovery_status = None;
         self.snapshot_ready = true;
+        self.conversation_cursor = snapshot.conversation_cursor;
         self.refresh_latency_ms = snapshot.duration.as_millis() as u64;
         let selected_agent_status = self.selected_agent.as_ref().and_then(|selected| {
             snapshot
@@ -13943,30 +13958,43 @@ fn format_editor_buffers(buffers: &[crate::development::EditorBuffer]) -> String
 
 fn parse_conversation_view(conversation: &str) -> Vec<super::projection::ConversationEntry> {
     let mut entries = Vec::new();
-    for block in conversation.split("\n\n") {
-        let mut lines = block.lines();
-        let Some(first) = lines.next() else {
-            continue;
+    let mut current: Option<(super::projection::ConversationKind, Vec<&str>)> = None;
+    for line in conversation.lines() {
+        let kind = match line.trim() {
+            "YOU" => Some(super::projection::ConversationKind::User),
+            "GLASS AGENT" => Some(super::projection::ConversationKind::Assistant),
+            "ALERT" => Some(super::projection::ConversationKind::Alert),
+            "ERROR" => Some(super::projection::ConversationKind::Error),
+            "SYSTEM" => Some(super::projection::ConversationKind::System),
+            _ => None,
         };
-        let body = lines.collect::<Vec<_>>().join("\n");
-        let (kind, text) = match first.trim() {
-            "YOU" => (super::projection::ConversationKind::User, body),
-            "GLASS AGENT" => (super::projection::ConversationKind::Assistant, body),
-            "ALERT" => (super::projection::ConversationKind::Alert, body),
-            "ERROR" => (super::projection::ConversationKind::Error, body),
-            "SYSTEM" => (super::projection::ConversationKind::System, body),
-            _ => continue,
-        };
-        entries.push(super::projection::ConversationEntry {
-            kind,
-            text,
-            streaming: false,
-            entry_id: None,
-            client_message_id: None,
-            tool_name: None,
-        });
+        if let Some(kind) = kind {
+            if let Some((previous_kind, lines)) = current.take() {
+                entries.push(conversation_entry_from_lines(previous_kind, lines));
+            }
+            current = Some((kind, Vec::new()));
+        } else if let Some((_, lines)) = &mut current {
+            lines.push(line);
+        }
+    }
+    if let Some((kind, lines)) = current {
+        entries.push(conversation_entry_from_lines(kind, lines));
     }
     entries
+}
+
+fn conversation_entry_from_lines(
+    kind: super::projection::ConversationKind,
+    lines: Vec<&str>,
+) -> super::projection::ConversationEntry {
+    super::projection::ConversationEntry {
+        kind,
+        text: lines.join("\n").trim_matches('\n').to_string(),
+        streaming: false,
+        entry_id: None,
+        client_message_id: None,
+        tool_name: None,
+    }
 }
 
 fn parse_debug_threads(value: &serde_json::Value) -> Vec<DebugThreadRow> {
@@ -15622,6 +15650,7 @@ mod tests {
                 super::super::snapshot::AgentConversation {
                     text: transcript.into(),
                     items: Vec::new(),
+                    reasoning: String::new(),
                 },
             );
         }
@@ -18367,6 +18396,32 @@ mod tests {
     }
 
     #[test]
+    fn agent_prompt_context_keeps_glass_integrations_without_injected_playbook() {
+        let root =
+            std::env::temp_dir().join(format!("glass-agent-prompt-context-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
+        state.surface = DevSurface::Git;
+        state.composer_run_mode = crate::AgentTurnMode::Plan;
+
+        let context = state.agent_prompt_context();
+        let serialized = serde_json::to_string(&context).expect("serialize context");
+        assert_eq!(context["surface"], "git");
+        assert_eq!(context["runMode"], "plan");
+        assert!(context.get("browser").is_some());
+        assert!(context.get("editor").is_some());
+        assert!(context.get("todos").is_some());
+        assert!(context.get("authority").is_some());
+        assert!(context.get("playbook").is_none());
+        assert!(context.get("playbookText").is_none());
+        assert!(!serialized.contains("Git playbook:"));
+        assert!(!serialized.contains("Agent playbook:"));
+
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
     fn untrusted_workflow_recording_cannot_start_capture_or_write_draft() {
         let root =
             std::env::temp_dir().join(format!("glass-workflow-untrusted-{}", std::process::id()));
@@ -18749,6 +18804,7 @@ mod tests {
             super::super::snapshot::AgentConversation {
                 text: "transcript A".into(),
                 items: vec![entry("a", "message A")],
+                reasoning: String::new(),
             },
         );
         state.agent_conversations.insert(
@@ -18756,6 +18812,7 @@ mod tests {
             super::super::snapshot::AgentConversation {
                 text: "transcript B".into(),
                 items: vec![entry("b", "message B")],
+                reasoning: String::new(),
             },
         );
         state.select_agent(Some(agent_a.clone()));
@@ -18818,6 +18875,7 @@ mod tests {
             super::super::snapshot::AgentConversation {
                 text: "transcript A".into(),
                 items: Vec::new(),
+                reasoning: String::new(),
             },
         );
         state.agent_conversations.insert(
@@ -18825,6 +18883,7 @@ mod tests {
             super::super::snapshot::AgentConversation {
                 text: "transcript B".into(),
                 items: Vec::new(),
+                reasoning: String::new(),
             },
         );
         state.select_agent(Some(agent_a.clone()));

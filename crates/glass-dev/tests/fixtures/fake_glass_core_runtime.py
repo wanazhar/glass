@@ -91,6 +91,9 @@ def run_turn(identifier, params: dict) -> None:
     text = str(params.get("text", ""))
     turn = "turn-1"
     event("turn_start", {}, turn)
+    exercise_conversation_projection = "offline prompt round trip" in text
+    if exercise_conversation_projection:
+        event("reasoning", {"text": "fixture reasoning must remain internal"}, turn)
     gate_root = os.path.join(os.getcwd(), ".glass")
     if "issue64-task-recovery-prompt" in text:
         if os.path.exists(os.path.join(gate_root, "e2e-core-task-recovery-gate")):
@@ -203,8 +206,16 @@ def run_turn(identifier, params: dict) -> None:
             {},
         )
     tool_error = bool(result.get("isError"))
-    event("tool_end", {"callId": "call-1", "isError": tool_error}, turn)
-    event("text", {"text": f"handled {text.strip() or 'the request'}"}, turn)
+    event(
+        "tool_end",
+        {"callId": "call-write" if "write" in text else "call-read", "isError": tool_error},
+        turn,
+    )
+    if exercise_conversation_projection:
+        event("text", {"text": "handled "}, turn)
+        event("text", {"text": text.strip() or "the request"}, turn)
+    else:
+        event("text", {"text": f"handled {text.strip() or 'the request'}"}, turn)
     event("usage", {"input": 12, "output": 8}, turn)
     event("settled", {"reason": "completed"}, turn)
     reply(identifier, {"sessionId": SESSION_ID, "settled": True})

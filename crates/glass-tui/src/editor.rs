@@ -66,6 +66,18 @@ impl Editor {
         self.cursor = self.buf.len();
     }
 
+    /// Place the cursor at a UTF-8 byte offset, clamped to a valid boundary.
+    /// Hosts with durable drafts can restore their own cursor without giving
+    /// this editor ownership of persistence or session identity.
+    pub fn set_cursor(&mut self, cursor: usize) {
+        let cursor = cursor.min(self.buf.len());
+        self.cursor = (0..=cursor)
+            .rev()
+            .find(|offset| self.buf.is_char_boundary(*offset))
+            .unwrap_or(0);
+        self.goal_col = None;
+    }
+
     pub fn clear(&mut self) {
         self.buf.clear();
         self.cursor = 0;
@@ -508,6 +520,16 @@ pub fn repaint_rows(base_row: u16, count: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_cursor_clamps_to_utf8_boundaries() {
+        let mut editor = Editor::new();
+        editor.set_text("aéz");
+        editor.set_cursor(2);
+        assert_eq!(editor.cursor(), 1);
+        editor.set_cursor(3);
+        assert_eq!(editor.cursor(), 3);
+    }
 
     #[test]
     fn typed_character_is_not_overwritten_by_a_cursor_cell() {

@@ -2492,87 +2492,97 @@ fn conversation_entry_lines(
     selected: usize,
     expanded: bool,
     width: u16,
+    shared_layout: &mut super::core_conversation::InlineLayout,
 ) -> Vec<Line<'static>> {
-    let mut rendered = String::new();
-    for (index, entry) in entries.iter().enumerate() {
-        if !rendered.is_empty() {
-            rendered.push_str("\n\n");
-        }
-        let mut block = if !expanded && entry.tool_name.is_some() {
-            let heading = match entry.kind {
-                super::projection::ConversationKind::Alert => "ALERT",
-                super::projection::ConversationKind::Error => "ERROR",
-                _ => "SYSTEM",
-            };
-            format!("{heading}\n{}", entry.card_line())
-        } else {
-            entry.render()
-        };
-        if index == selected {
-            block = format!("▸ {block}");
-        }
-        rendered.push_str(&block);
-    }
-    conversation_bubble_lines(&rendered, width)
-}
-
-fn conversation_bubble_lines(content: &str, width: u16) -> Vec<Line<'static>> {
     let available = usize::from(width).max(24);
     let mut lines = Vec::new();
-    for (index, block) in content.split("\n\n").enumerate() {
-        if index > 0 {
+    let mut rendered_count = 0;
+    for (index, entry) in entries.iter().enumerate() {
+        if entry.kind == super::projection::ConversationKind::Assistant
+            && entry.streaming
+            && entry.text.is_empty()
+        {
+            continue;
+        }
+        if rendered_count > 0 {
             lines.push(Line::from(""));
         }
-        let mut block_lines = block.lines();
-        let first = block_lines.next().unwrap_or_default().trim();
-        let (selected_bubble, first) = first
-            .strip_prefix("▸ ")
-            .map(|rest| (true, rest))
-            .unwrap_or((false, first));
-        let (kind, label, body) = match first {
-            "YOU" => (
-                ConversationBubbleKind::User,
-                "YOU",
-                block_lines.collect::<Vec<_>>().join("\n"),
-            ),
-            "GLASS AGENT" => (
-                ConversationBubbleKind::Agent,
-                "GLASS AGENT",
-                block_lines.collect::<Vec<_>>().join("\n"),
-            ),
-            "SYSTEM" => (
-                ConversationBubbleKind::System,
-                "SYSTEM",
-                block_lines.collect::<Vec<_>>().join("\n"),
-            ),
-            "ALERT" => (
-                ConversationBubbleKind::Alert,
-                "ALERT",
-                block_lines.collect::<Vec<_>>().join("\n"),
-            ),
-            "ERROR" => (
-                ConversationBubbleKind::Error,
-                "ERROR",
-                block_lines.collect::<Vec<_>>().join("\n"),
-            ),
-            _ => (ConversationBubbleKind::System, "SYSTEM", block.to_string()),
+        rendered_count += 1;
+        let shared_entry = super::core_conversation::transcript_entry(entry, index);
+        let collapsed_tool = !expanded && entry.tool_name.is_some();
+        let kind = if collapsed_tool {
+            match entry.kind {
+                super::projection::ConversationKind::Alert => ConversationBubbleKind::Alert,
+                super::projection::ConversationKind::Error => ConversationBubbleKind::Error,
+                _ => ConversationBubbleKind::System,
+            }
+        } else {
+            match entry.kind {
+                super::projection::ConversationKind::User => ConversationBubbleKind::User,
+                super::projection::ConversationKind::Assistant => ConversationBubbleKind::Agent,
+                super::projection::ConversationKind::System => ConversationBubbleKind::System,
+                super::projection::ConversationKind::Alert => ConversationBubbleKind::Alert,
+                super::projection::ConversationKind::Error => ConversationBubbleKind::Error,
+            }
+        };
+        let label = match kind {
+            ConversationBubbleKind::User => "YOU",
+            ConversationBubbleKind::Agent => "GLASS AGENT",
+            ConversationBubbleKind::System => "SYSTEM",
+            ConversationBubbleKind::Alert => "ALERT",
+            ConversationBubbleKind::Error => "ERROR",
+        };
+        let label = if index == selected {
+            format!("▸ {label}")
+        } else {
+            label.to_string()
         };
         let (border, background, text_color) = conversation_bubble_style(kind);
+        let body_style = Style::default().fg(text_color).bg(background);
         let bubble_width = if matches!(kind, ConversationBubbleKind::User) {
             available.saturating_sub(8).max(18).min(available)
         } else {
             available
         };
         let inner_width = bubble_width.saturating_sub(4).max(8);
+        let body_lines = if collapsed_tool {
+            wrap_bubble_line(&entry.card_line(), inner_width)
+                .into_iter()
+                .map(Line::from)
+                .collect::<Vec<_>>()
+        } else if shared_entry.role == glass_tui::Role::Assistant {
+            let mut rendered = shared_layout.assistant_lines(index, inner_width);
+            if rendered.len() > 24 {
+                rendered.truncate(24);
+                rendered.push(Line::from("…"));
+            }
+            if entry.streaming {
+                rendered.push(Line::from("… streaming"));
+            }
+            rendered
+        } else {
+            let mut rendered = entry
+                .text
+                .lines()
+                .take(24)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if entry.text.lines().count() > 24 {
+                rendered.push("…".into());
+            }
+            if entry.streaming {
+                rendered.push("… streaming".into());
+            }
+            rendered
+                .iter()
+                .flat_map(|line| wrap_bubble_line(line, inner_width))
+                .map(Line::from)
+                .collect()
+        };
         let indent = if matches!(kind, ConversationBubbleKind::User) {
             available.saturating_sub(bubble_width)
         } else {
             0
-        };
-        let label = if selected_bubble {
-            format!("▸ {label}")
-        } else {
-            label.to_string()
         };
         let label_width = label.chars().count();
         let rule = "─".repeat(inner_width.saturating_sub(label_width + 1));
@@ -2585,20 +2595,24 @@ fn conversation_bubble_lines(content: &str, width: u16) -> Vec<Line<'static>> {
                 .bg(background)
                 .add_modifier(Modifier::BOLD),
         )));
-        let body_lines = body
-            .lines()
-            .flat_map(|line| wrap_bubble_line(line, inner_width))
-            .collect::<Vec<_>>();
         for line in if body_lines.is_empty() {
-            vec![String::new()]
+            vec![Line::from("")]
         } else {
             body_lines
         } {
-            let padded = format!("{line:<inner_width$}");
-            lines.push(Line::from(Span::styled(
-                format!("{prefix}│ {padded} │"),
-                Style::default().fg(text_color).bg(background),
-            )));
+            let used_width = line.width().min(inner_width);
+            let padding = inner_width.saturating_sub(used_width);
+            let mut spans = Vec::with_capacity(line.spans.len() + 3);
+            spans.push(Span::styled(format!("{prefix}│ "), body_style));
+            spans.extend(line.spans.into_iter().map(|span| {
+                Span::styled(
+                    span.content.into_owned(),
+                    body_style.patch(span.style).bg(background),
+                )
+            }));
+            spans.push(Span::styled(" ".repeat(padding), body_style));
+            spans.push(Span::styled(" │", body_style));
+            lines.push(Line::from(spans));
         }
         lines.push(Line::from(Span::styled(
             format!("{prefix}╰{}╯", "─".repeat(inner_width + 2)),
@@ -2609,7 +2623,56 @@ fn conversation_bubble_lines(content: &str, width: u16) -> Vec<Line<'static>> {
 }
 
 fn agent_conversation_text(state: &DevTuiState, landing: &str, width: u16) -> Text<'static> {
+    if state.reasoning_view_open {
+        let reasoning = state
+            .selected_agent
+            .as_ref()
+            .and_then(|agent| state.agent_conversations.get(agent))
+            .map(|conversation| conversation.reasoning.as_str())
+            .filter(|reasoning| !reasoning.is_empty());
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "CORE REASONING · Ctrl-T or Esc to return",
+                Style::default().fg(WARNING),
+            )),
+            Line::from(""),
+        ];
+        if let Some(reasoning) = reasoning {
+            lines.extend(reasoning.lines().map(|line| Line::from(line.to_string())));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "No provider reasoning is available for this thread.",
+                Style::default().fg(MUTED),
+            )));
+        }
+        return Text::from(lines);
+    }
+
     let entries = state.conversation_entries_view();
+    let mut shared_layout = state.core_conversation_layout.borrow_mut();
+    shared_layout.set_entries_if_changed(
+        &entries,
+        super::core_conversation::InlineLayoutKey {
+            event_cursor: state.conversation_cursor,
+            selected_agent: state
+                .selected_agent
+                .as_ref()
+                .map(|agent_id| agent_id.as_str().to_owned()),
+            entry_count: entries.len(),
+            pending_signature: state
+                .pending_chat_messages
+                .iter()
+                .filter(|message| message.agent_id == state.selected_agent)
+                .map(|message| {
+                    (
+                        message.message_id.clone(),
+                        message.state,
+                        message.error.clone(),
+                    )
+                })
+                .collect(),
+        },
+    );
     let mut lines = if entries.is_empty() {
         panel_text(landing).lines
     } else {
@@ -2618,12 +2681,13 @@ fn agent_conversation_text(state: &DevTuiState, landing: &str, width: u16) -> Te
             state.transcript_selection,
             state.transcript_expanded,
             width,
+            &mut shared_layout,
         )
     };
     if !state.composer_mode {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Enter chat · j/k bubbles · f fork · r rewind · e last",
+            "Ctrl-T reasoning · Enter chat · j/k bubbles · f fork · r rewind · e last",
             Style::default().fg(MUTED),
         )));
     } else {
@@ -5695,6 +5759,27 @@ mod tests {
     }
 
     #[test]
+    fn assistant_bubble_preserves_shared_markdown_styles() {
+        let entries = [super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::Assistant,
+            text: "A **bold** response.".into(),
+            streaming: false,
+            entry_id: Some("entry-1".into()),
+            client_message_id: None,
+            tool_name: None,
+        }];
+        let mut layout = super::super::core_conversation::InlineLayout::default();
+        layout.set_entries(&entries);
+
+        let lines = conversation_entry_lines(&entries, 0, false, 80, &mut layout);
+        assert!(lines.iter().flat_map(|line| &line.spans).any(|span| {
+            span.content.contains("bold")
+                && span.style.add_modifier.contains(Modifier::BOLD)
+                && span.style.bg == Some(AGENT_BUBBLE_BG)
+        }));
+    }
+
+    #[test]
     fn quit_confirmation_renders_a_clear_modal() {
         let mut state = state(TuiLayout::Desktop);
         state.request_quit();
@@ -6859,6 +6944,42 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_reader_is_explicit_and_selected_thread_scoped() {
+        let mut state = state(TuiLayout::Desktop);
+        state.surface = DevSurface::Agent;
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        state.selected_agent = Some(agent_id.clone());
+        state.agent_conversation = "GLASS AGENT\nvisible answer".into();
+        state.agent_conversations.insert(
+            agent_id,
+            super::super::snapshot::AgentConversation {
+                text: state.agent_conversation.clone(),
+                items: Vec::new(),
+                reasoning: "provider reasoning detail".into(),
+            },
+        );
+
+        let normal = agent_conversation_text(&state, "", 80)
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(normal.contains("visible answer"));
+        assert!(!normal.contains("provider reasoning detail"));
+
+        state.toggle_reasoning_view();
+        let reasoning = agent_conversation_text(&state, "", 80)
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(reasoning.contains("provider reasoning detail"));
+        assert!(!reasoning.contains("visible answer"));
+    }
+
+    #[test]
     fn agent_chat_send_result_has_success_and_retry_states() {
         let mut state = state(TuiLayout::Desktop);
         state.surface = DevSurface::Agent;
@@ -6975,6 +7096,7 @@ mod tests {
                         client_message_id: Some("chat-hello-1".into()),
                         tool_name: None,
                     }],
+                    reasoning: "provider-only thought".into(),
                 },
             )]),
             ..Default::default()

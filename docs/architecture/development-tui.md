@@ -45,6 +45,15 @@ editing may use its last observed RunId while the workspace is busy; every
 dispatch carries that expected RunId, which the tool router checks against the
 live agent before sending.
 
+For opt-in diagnosis of a stalled Core runtime, `GLASS_RUNTIME_DIAGNOSTIC_TRACE`
+is a base path for separate Core-writer, Glass-reader, and Glass-consumer trace
+files. They record fixed frame classes, byte counts, and elapsed write/read/
+queue phases. They never record frame payloads, IDs, text, provider names, or
+tool arguments. Put the base path inside a private directory; omit the variable
+during normal use. The live-provider PTY test accepts
+`GLASS_LIVE_PROVIDER_TIMEOUT_SECS` (15–610, default 610) to bound one diagnostic
+run without changing Core's provider request deadline.
+
 Git diff, process log, and debugger selection previews use one active request
 and one replaceable pending request. Each result belongs to its captured job
 ID and selected item; switching selection or surface makes an older result

@@ -12,7 +12,7 @@ use crate::development::{DevelopmentError, DevelopmentResult, ToolCall};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -35,6 +35,62 @@ pub const GLASS_CORE_BINARY_ENV: &str = "GLASS_CORE_BINARY";
 pub const GLASS_CORE_BINARY_CANDIDATES: [&str; 2] = ["glass-core", "gc"];
 /// Glass-authored collaboration brief handed to every resident session.
 const SYSTEM_INSTRUCTIONS: &str = include_str!("../assets/glass-core-system.md");
+
+/// Optional privacy-safe phase trace for a stalled Core runtime. It records
+/// only static frame classes, byte counts, and queue/write durations.
+fn trace_runtime_frame(
+    component: &str,
+    phase: &str,
+    class: &str,
+    bytes: usize,
+    elapsed_us: Option<u128>,
+) {
+    let Some(path) = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path).with_extension(format!("{component}.jsonl"));
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = file.metadata() {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o600);
+            let _ = file.set_permissions(permissions);
+        }
+    }
+    let record = json!({
+        "component": component,
+        "phase": phase,
+        "class": class,
+        "bytes": bytes,
+        "elapsed_us": elapsed_us,
+    });
+    let _ = writeln!(file, "{record}");
+}
+
+fn core_frame_class(value: &Value) -> &'static str {
+    match value.get("method").and_then(Value::as_str) {
+        Some("runtime/event") => match value.pointer("/params/type").and_then(Value::as_str) {
+            Some("usage") => "event:usage",
+            Some("settled") => "event:settled",
+            Some("text") => "event:text",
+            Some("reasoning") => "event:reasoning",
+            Some("tool_start") => "event:tool_start",
+            Some("tool_end") => "event:tool_end",
+            Some("tool_progress") => "event:tool_progress",
+            Some("turn_start") => "event:turn_start",
+            _ => "event:other",
+        },
+        Some("tool/execute") => "host_tool_request",
+        Some(_) => "rpc_request",
+        None if value.get("id").is_some() && value.get("error").is_some() => "rpc_error",
+        None if value.get("id").is_some() => "rpc_response",
+        _ => "other",
+    }
+}
 
 /// Readiness state of one Glass Core component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -829,7 +885,16 @@ impl GlassCoreRuntime {
 
     fn recv_frame(&mut self, timeout: Duration) -> DevelopmentResult<Option<Value>> {
         match self.output.recv_timeout(timeout) {
-            Ok(Ok(value)) => Ok(Some(value)),
+            Ok(Ok(value)) => {
+                trace_runtime_frame(
+                    "glass_consumer",
+                    "frame_dequeued",
+                    core_frame_class(&value),
+                    value.to_string().len(),
+                    None,
+                );
+                Ok(Some(value))
+            }
             Ok(Err(error)) => Err(DevelopmentError::Process(error)),
             Err(RecvTimeoutError::Timeout) => Ok(None),
             Err(RecvTimeoutError::Disconnected) => Err(DevelopmentError::Process(
@@ -1300,6 +1365,7 @@ fn read_frames(mut stream: impl std::io::Read, sender: mpsc::SyncSender<Result<V
     let mut line = String::new();
     loop {
         line.clear();
+        let read_started = Instant::now();
         match reader.read_line(&mut line) {
             Ok(0) => {
                 let _ = sender.send(Err("Glass Core runtime closed its output stream".into()));
@@ -1320,9 +1386,30 @@ fn read_frames(mut stream: impl std::io::Read, sender: mpsc::SyncSender<Result<V
             return;
         }
         let value = serde_json::from_str::<Value>(trimmed).map_err(|error| error.to_string());
+        let class = value
+            .as_ref()
+            .map(core_frame_class)
+            .unwrap_or("invalid_frame");
+        let bytes = trimmed.len();
+        trace_runtime_frame(
+            "glass_reader",
+            "frame_read",
+            class,
+            bytes,
+            Some(read_started.elapsed().as_micros()),
+        );
+        let queue_started = Instant::now();
+        trace_runtime_frame("glass_reader", "queue_send_begin", class, bytes, None);
         if sender.send(value).is_err() {
             return;
         }
+        trace_runtime_frame(
+            "glass_reader",
+            "queue_send_complete",
+            class,
+            bytes,
+            Some(queue_started.elapsed().as_micros()),
+        );
     }
 }
 
@@ -2281,5 +2368,35 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("no Glass Core tool call"));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn output_reader_preserves_usage_settlement_and_rpc_reply_under_backpressure() {
+        let input = concat!(
+            "{\"jsonrpc\":\"2.0\",\"method\":\"runtime/event\",\"params\":{\"type\":\"usage\"}}\n",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"runtime/event\",\"params\":{\"type\":\"settled\"}}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":\"prompt-1\",\"result\":{\"settled\":true}}\n",
+        );
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let reader = thread::spawn(move || read_frames(std::io::Cursor::new(input), sender));
+
+        let usage = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(usage.pointer("/params/type"), Some(&json!("usage")));
+        let settled = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(settled.pointer("/params/type"), Some(&json!("settled")));
+        let response = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.get("id"), Some(&json!("prompt-1")));
+        assert_eq!(response.pointer("/result/settled"), Some(&json!(true)));
+
+        reader.join().unwrap();
     }
 }

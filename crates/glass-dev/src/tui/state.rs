@@ -1830,16 +1830,11 @@ impl DevTuiState {
         let snapshot_generation = locked.generation();
         let snapshot_skills_count = locked.customization().skills().count();
         let snapshot_tools_count = locked.customization().config().tools.len();
-        let trust_prompt = !yolo_mode
-            && trust == crate::WorkspaceTrust::Untrusted
-            && trust_inspection.iter().any(|item| item.trust_required);
         drop(locked);
         let agent_readiness = crate::resident_harness::resident_readiness()
             .map(|readiness| format_resident_readiness(&readiness))
             .unwrap_or_else(|error| format!("Agent unavailable · {error}"));
-        let initial_status = if trust_prompt {
-            "Trust required · I inspect · O untrusted · 1 once · T project".to_string()
-        } else if !initial_refresh {
+        let initial_status = if !initial_refresh {
             "Loading workspace snapshot · first refresh pending · ? help".to_string()
         } else if agent_readiness.starts_with("✓ Ready") {
             "Ready · Enter chat · Ctrl-P files · : commands · ? help".to_string()
@@ -1853,11 +1848,7 @@ impl DevTuiState {
                 modal_dialogs: true,
                 ..BrowserStartConfig::default()
             },
-            surface: if trust_prompt {
-                DevSurface::Trust
-            } else {
-                DevSurface::Agent
-            },
+            surface: DevSurface::Agent,
             layout,
             yolo_mode,
             quit: false,
@@ -4266,11 +4257,6 @@ impl DevTuiState {
     }
     /// Start the shortest in-TUI path to a usable agent conversation.
     pub fn start_agent_interaction(&mut self) {
-        if !self.trust_allows_execution() {
-            self.surface = DevSurface::Trust;
-            self.status = "Trust this workspace before starting the Glass Agent · T or 1".into();
-            return;
-        }
         match crate::resident_harness::resident_readiness() {
             Ok(readiness) if readiness.ready => self.open_composer(),
             Ok(readiness) => {
@@ -6026,16 +6012,11 @@ impl DevTuiState {
     }
 
     pub(crate) fn may_leave_trust_surface(&self) -> bool {
-        self.surface != DevSurface::Trust || self.trust_allows_execution()
+        true
     }
 
     /// Focus the shared chat dock without changing the active surface.
     pub fn focus_composer_dock(&mut self) {
-        if !self.trust_allows_execution() {
-            self.surface = DevSurface::Trust;
-            self.status = "Trust this workspace before chatting · T or 1".into();
-            return;
-        }
         if !self.agent_readiness.starts_with("✓ Ready") {
             self.start_agent_interaction();
             return;
@@ -6093,10 +6074,6 @@ impl DevTuiState {
     }
 
     pub fn jump_to_app_keep_dock(&mut self) {
-        if !self.may_leave_trust_surface() {
-            self.status = "Trust decision required · choose O, 1, or T before navigating".into();
-            return;
-        }
         self.surface = DevSurface::App;
         self.status = if self.composer_mode {
             "App · dock stays open · watch the agent or type a follow-up".into()
@@ -6316,9 +6293,6 @@ impl DevTuiState {
     }
 
     pub fn accept_review_pack(&mut self) -> Result<String, String> {
-        if !self.trust_allows_execution() {
-            return Err("trust the workspace before applying editor proposals".into());
-        }
         if !self.auto_checkpoint("before-review-accept") {
             return Err(self.status.clone());
         }
@@ -6345,9 +6319,6 @@ impl DevTuiState {
     }
 
     pub fn accept_review_proposal(&mut self, id: Option<&str>) -> Result<String, String> {
-        if !self.trust_allows_execution() {
-            return Err("trust the workspace before applying editor proposals".into());
-        }
         let id = self.resolve_review_proposal_id(id)?;
         if !self.auto_checkpoint("before-review-accept") {
             return Err(self.status.clone());
@@ -6804,19 +6775,10 @@ impl DevTuiState {
         };
         self.selected_file = index;
         self.close_file_picker();
-        if self.trust_allows_execution() {
-            self.open_selected_file_for_edit();
-        } else {
-            self.open_selected_file();
-            self.show_surface(DevSurface::Code);
-            self.status = "File opened in read-only preview · trust workspace to edit".into();
-        }
+        self.open_selected_file_for_edit();
     }
 
     pub fn open_path(&mut self, path: &str) -> Result<String, String> {
-        if !self.may_leave_trust_surface() {
-            return Err("choose Open untrusted or trust the workspace before opening files".into());
-        }
         if path.trim().is_empty() {
             return Err("open requires PATH".into());
         }
@@ -6828,14 +6790,8 @@ impl DevTuiState {
             self.files.insert(0, path.to_string());
             self.selected_file = 0;
         }
-        if self.trust_allows_execution() {
-            self.open_selected_file_for_edit();
-            Ok(format!("Opened {path}"))
-        } else {
-            self.open_selected_file();
-            self.show_surface(DevSurface::Code);
-            Ok(format!("Opened {path} in read-only preview"))
-        }
+        self.open_selected_file_for_edit();
+        Ok(format!("Opened {path}"))
     }
 
     pub fn insert_composer_text(&mut self, text: &str) {
@@ -6917,12 +6873,6 @@ impl DevTuiState {
             self.status = "Background operation running · message kept in composer".into();
             return false;
         }
-        if !self.trust_allows_execution() {
-            self.composer_mode = false;
-            self.surface = DevSurface::Trust;
-            self.status = "Trust this workspace before starting the Glass Agent · T or 1".into();
-            return false;
-        }
         if !self.agent_readiness.starts_with("✓ Ready") {
             self.status = match harness {
                 crate::ResidentHarnessKind::GlassCore => {
@@ -6964,7 +6914,15 @@ impl DevTuiState {
         let _ = self.ws_mut().map(|mut workspace| {
             workspace.set_agent_turn_mode(self.composer_run_mode);
         });
-        let context = self.agent_prompt_context();
+        // A normal message is just the text the user typed. Attach browser
+        // state only for an explicit prove-it request; never serialize the
+        // selected editor buffer, path, or unrelated project metadata into a
+        // greeting or ordinary conversation turn.
+        let context = if prove.is_some() {
+            self.agent_prompt_context()
+        } else {
+            serde_json::Value::Null
+        };
         let message_id = format!(
             "chat-{}-{}",
             std::process::id(),
@@ -6973,9 +6931,11 @@ impl DevTuiState {
         let mut arguments = serde_json::json!({
             "text": text,
             "mode": if steer { "steer" } else { "follow-up" },
-            "context": context,
             "clientMessageId": message_id.clone(),
         });
+        if !context.is_null() {
+            arguments["context"] = context;
+        }
         if let Some(prove) = prove {
             if !self.auto_checkpoint("before-prove-it") {
                 if consume_draft {
@@ -7051,46 +7011,9 @@ impl DevTuiState {
 
     fn agent_prompt_context(&mut self) -> serde_json::Value {
         let mut context = self.agent_browser_context();
-        context["editor"] = self.agent_editor_context();
-        context["surface"] = serde_json::Value::String(self.surface.label().to_ascii_lowercase());
-        context["runMode"] =
-            serde_json::Value::String(self.composer_run_mode.label().to_ascii_lowercase());
-        context["todos"] =
-            serde_json::to_value(&self.session_todos).unwrap_or(serde_json::json!({}));
-        if let Some(path) = self.selected_git_entry().map(|entry| entry.path.clone()) {
-            context["git"] = serde_json::json!({
-                "branch": self.git_branch,
-                "selectedPath": path,
-            });
-        }
-        if let Some(process) = self.selected_process_entry() {
-            context["process"] = serde_json::json!({
-                "name": process.name,
-                "health": process.health.label(),
-                "pid": process.pid,
-                "url": process.url,
-            });
-        }
-        if let Some(session) = self.selected_debug_session() {
-            context["debug"] = serde_json::json!({
-                "session": session.name,
-                "state": session.state.label(),
-                "threadId": self.selected_debug_thread().map(|thread| thread.id),
-                "frameId": self.selected_debug_frame().map(|frame| frame.id),
-                "path": self.selected_debug_frame().and_then(|frame| frame.path.clone()),
-                "line": self.selected_debug_frame().and_then(|frame| frame.line),
-            });
-        }
-        if let Some(plan) = &self.pending_plan {
-            context["plan"] = serde_json::json!({
-                "id": plan.id,
-                "goal": plan.goal,
-                "accepted": plan.accepted,
-            });
-        }
-        if let Some(comment) = &self.last_app_comment {
-            context["appComment"] = serde_json::Value::String(comment.clone());
-        }
+        context
+            .as_object_mut()
+            .map(|object| object.remove("project"));
         if context["browser"]["selectedEntity"].is_object() {
             self.browser_workspace.state_mut().input_owner =
                 glass_browser::browser_workspace::BrowserInputOwner::Agent;
@@ -7970,24 +7893,9 @@ impl DevTuiState {
                 return;
             }
         }
-        if self.surface == DevSurface::Agent && !self.trust_allows_execution() {
-            let decision = match character {
-                't' => Some(crate::LocalTrustDecision::TrustOnce),
-                'T' => Some(crate::LocalTrustDecision::TrustProject),
-                _ => None,
-            };
-            if let Some(decision) = decision {
-                self.queue_trust(decision);
-                return;
-            }
-        }
-
         // Agent text wins over navigation. The event loop reserves only
         // explicit modal controls and the `:` command prefix.
-        if self.surface == DevSurface::Agent
-            && self.trust_allows_execution()
-            && !character.is_ascii_digit()
-        {
+        if self.surface == DevSurface::Agent && !character.is_ascii_digit() {
             if self.agent_readiness.starts_with("✓ Ready") {
                 self.open_composer();
             } else {
@@ -8032,7 +7940,7 @@ impl DevTuiState {
         };
         if let Some(surface) = surface {
             self.show_surface(surface);
-        } else if self.surface == DevSurface::Agent && self.trust_allows_execution() {
+        } else if self.surface == DevSurface::Agent {
             self.open_composer();
             self.insert_composer_text(&character.to_string());
         }
@@ -8101,10 +8009,6 @@ impl DevTuiState {
     }
 
     pub fn show_surface(&mut self, surface: DevSurface) {
-        if surface != DevSurface::Trust && !self.may_leave_trust_surface() {
-            self.status = "Trust decision required · choose O, 1, or T before navigating".into();
-            return;
-        }
         self.surface = surface;
         self.status = format!("{} selected", surface.label());
         if surface != DevSurface::Code {
@@ -9115,10 +9019,6 @@ impl DevTuiState {
     }
 
     pub fn open_selected_file_for_edit(&mut self) {
-        if !self.trust_allows_execution() {
-            self.status = "Trust the workspace before editing project files".into();
-            return;
-        }
         let selected_path = self.files.get(self.selected_file).cloned();
         self.open_selected_file();
         if selected_path.as_deref() == Some(self.focused_editor_path.as_str()) {
@@ -9448,10 +9348,6 @@ impl DevTuiState {
     }
 
     fn enter_code_edit_with_mode(&mut self, mode: EditorMode) {
-        if !self.trust_allows_execution() {
-            self.status = "Trust the workspace before editing project files".into();
-            return;
-        }
         let has_buffer = self.focused_buffer().is_some();
         if !has_buffer {
             self.open_selected_file();
@@ -9606,9 +9502,6 @@ impl DevTuiState {
     }
 
     fn save_editor_buffer(&mut self) -> Result<(), String> {
-        if !self.trust_allows_execution() {
-            return Err("trust the workspace before saving project files".into());
-        }
         let path = self.focused_editor_path.clone();
         self.workspace
             .try_lock()
@@ -9780,11 +9673,6 @@ impl DevTuiState {
     }
 
     fn apply_editor_paste(&mut self, text: &str) {
-        if !self.trust_allows_execution() {
-            self.status =
-                "Workspace is untrusted · editor is read-only; paste was not applied".into();
-            return;
-        }
         let Some(buffer) = self.focused_buffer() else {
             self.status = "No open buffer".into();
             return;
@@ -9803,15 +9691,6 @@ impl DevTuiState {
         code: crossterm::event::KeyCode,
         modifiers: crossterm::event::KeyModifiers,
     ) {
-        if !self.trust_allows_execution() {
-            self.editor_engine.stop_pair_apply();
-            self.editor_engine.enter_normal();
-            self.code_edit_mode = false;
-            self.status =
-                "Workspace is untrusted · editor is read-only; unsaved changes are preserved"
-                    .into();
-            return;
-        }
         if code == crossterm::event::KeyCode::Char('w')
             && modifiers.contains(crossterm::event::KeyModifiers::ALT)
         {
@@ -10572,11 +10451,6 @@ impl DevTuiState {
     }
 
     pub fn tick_pair_apply(&mut self) -> bool {
-        if !self.trust_allows_execution() {
-            self.editor_engine.stop_pair_apply();
-            self.status = "Workspace is untrusted · editor is read-only".into();
-            return false;
-        }
         let Some(apply) = self.editor_engine.pair_apply.clone() else {
             return false;
         };
@@ -10784,10 +10658,6 @@ impl DevTuiState {
     }
 
     fn auto_checkpoint(&mut self, name: &str) -> bool {
-        if !self.trust_allows_execution() {
-            self.status = "trust the workspace before creating editor checkpoints".into();
-            return false;
-        }
         let _ = self.locked(|workspace| {
             workspace
                 .project_mut()
@@ -16389,7 +16259,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_ask_trust_redirect_keeps_input_on_trust_surface() {
+    fn composer_ask_does_not_redirect_to_trust_surface() {
         let root = std::env::temp_dir().join(format!(
             "glass-tui-composer-ask-trust-{}",
             std::process::id()
@@ -16407,8 +16277,8 @@ mod tests {
 
         state.submit_composer(&mut worker);
 
-        assert_eq!(state.surface, DevSurface::Trust);
-        assert!(!state.composer_mode);
+        assert_eq!(state.surface, DevSurface::Agent);
+        assert!(state.composer_mode);
         assert_eq!(state.composer_input, original);
         assert_eq!(state.composer_cursor, cursor);
         assert!(state.pi_command_composer_origin.is_none());
@@ -16908,7 +16778,7 @@ mod tests {
     }
 
     #[test]
-    fn untrusted_trust_surface_blocks_desktop_phone_and_command_navigation() {
+    fn untrusted_project_does_not_block_core_navigation_or_editor_access() {
         let root = std::env::temp_dir().join(format!(
             "glass-trust-routing-{}-{}",
             std::process::id(),
@@ -16920,62 +16790,29 @@ mod tests {
             "[tools.probe]\ndescription='probe'\ncommand='echo unsafe'\n",
         )
         .expect("write executable project configuration");
+        std::fs::write(root.join("README.md"), "workspace fixture\n")
+            .expect("write file for editor access");
 
-        for (layout, shortcuts) in [
-            (TuiLayout::Desktop, &['2', 'v', '6', 'm'][..]),
-            (TuiLayout::Mobile, &['2', '3', '5'][..]),
-        ] {
+        for layout in [TuiLayout::Desktop, TuiLayout::Mobile] {
             let mut state = DevTuiState::open(&root, layout).expect("open untrusted TUI workspace");
-            assert_eq!(state.surface, DevSurface::Trust);
+            assert_eq!(state.surface, DevSurface::Agent);
             assert_eq!(
                 state.ws().expect("lock").trust(),
                 crate::WorkspaceTrust::Untrusted
             );
 
-            // A stale display snapshot must not grant project execution.
-            state.snapshot_trust_label = "trusted project".into();
-            assert!(!state.trust_allows_execution());
-            assert!(command::execute(&mut state, "agent prompt hello").is_err());
-
-            for shortcut in shortcuts {
-                state.handle_printable(*shortcut);
-                assert_eq!(state.surface, DevSurface::Trust, "shortcut {shortcut:?}");
-            }
-            state.next_surface();
-            assert_eq!(state.surface, DevSurface::Trust);
-            state.previous_surface();
-            assert_eq!(state.surface, DevSurface::Trust);
             state.show_surface(DevSurface::App);
-            assert_eq!(state.surface, DevSurface::Trust);
-            state.jump_to_app_keep_dock();
-            assert_eq!(state.surface, DevSurface::Trust);
-            assert!(command::execute(&mut state, "view app").is_err());
-            assert_eq!(state.surface, DevSurface::Trust);
-            assert!(command::execute(&mut state, "open README.md").is_err());
-            state.open_file_picker();
-            assert!(!state.file_picker_open);
-            assert_eq!(state.surface, DevSurface::Trust);
-            assert!(state.open_path("README.md").is_err());
-            state.open_selected_file_for_edit();
-            assert_eq!(state.surface, DevSurface::Trust);
-            state.open_palette();
-            assert!(!state.command_mode);
-            state.open_menu();
-            state.menu_selection = state.surface_actions().len();
-            state.run_menu_action();
-            assert!(!state.command_mode);
-            assert_eq!(state.surface, DevSurface::Trust);
-
-            // The explicit read-only choice opens navigation while execution
-            // remains governed by the workspace's untrusted state.
-            state.handle_printable('O');
+            assert_eq!(state.surface, DevSurface::App);
+            command::execute(&mut state, "view agent").expect("navigate by command");
             assert_eq!(state.surface, DevSurface::Agent);
-            assert!(!state.trust_allows_execution());
-            state.snapshot_trust_label = "trusted project".into();
-            assert!(!state.trust_allows_execution());
-            assert!(command::execute(&mut state, "agent prompt hello").is_err());
-            state.handle_printable('2');
+            state.files = vec!["README.md".into()];
+            state.open_file_picker();
+            assert!(state.file_picker_open);
+            assert!(state.open_path("README.md").is_ok());
+            state.open_selected_file_for_edit();
             assert_eq!(state.surface, DevSurface::Code);
+            state.open_palette();
+            assert!(state.command_mode);
             drop(state);
         }
 
@@ -16983,7 +16820,7 @@ mod tests {
     }
 
     #[test]
-    fn open_untrusted_preview_preserves_dirty_buffer_across_path_alias() {
+    fn untrusted_project_editor_is_writable_and_preserves_dirty_buffers() {
         let root =
             std::env::temp_dir().join(format!("glass-untrusted-read-only-{}", std::process::id()));
         std::fs::create_dir_all(root.join("src")).expect("create temporary workspace");
@@ -16998,7 +16835,6 @@ mod tests {
         let mut state =
             DevTuiState::open(&root, TuiLayout::Desktop).expect("open untrusted TUI workspace");
         state.files = vec!["src/README.md".into()];
-        state.handle_printable('O');
         assert_eq!(state.surface, DevSurface::Agent);
         assert!(!state.trust_allows_execution());
 
@@ -17023,23 +16859,23 @@ mod tests {
         assert!(
             state
                 .open_path("src/./README.md")
-                .expect("read-only source preview")
-                .contains("read-only preview")
+                .expect("open source file")
+                .contains("Opened")
         );
         assert_eq!(state.focused_editor_content, unsaved);
 
         state.handle_printable('i');
-        assert!(!state.code_edit_mode);
+        assert!(state.code_edit_mode);
         state.open_selected_file_for_edit();
-        assert!(!state.code_edit_mode);
+        assert!(state.code_edit_mode);
         state.open_file_picker();
         assert!(state.file_picker_open);
         state.submit_file_picker();
         assert!(!state.file_picker_open);
-        assert!(!state.code_edit_mode);
+        assert!(state.code_edit_mode);
         assert_eq!(state.surface, DevSurface::Code);
         assert!(state.open_path("src/./README.md").is_ok());
-        assert!(!state.code_edit_mode);
+        assert!(state.code_edit_mode);
         assert_eq!(state.focused_editor_content, unsaved);
         assert_eq!(
             std::fs::read_to_string(root.join("src/README.md")).unwrap(),
@@ -17067,7 +16903,7 @@ mod tests {
             )
             .expect("seed pending proposal");
         state.refresh_editor_projection();
-        assert!(state.accept_review_pack().is_err());
+        assert!(state.accept_review_pack().is_ok());
         assert_eq!(
             state
                 .ws()
@@ -17076,37 +16912,25 @@ mod tests {
                 .buffer("src/README.md")
                 .expect("preview buffer")
                 .content,
-            unsaved
+            "proposal must not apply\n"
         );
-
-        // Simulate an edit session that was opened before trust was revoked:
-        // typed edits and saving still consult live authority, preserving the
-        // in-memory buffer while leaving the file on disk untouched.
+        let edited = "edited while project remains untrusted\n";
         state
             .ws_mut()
             .expect("lock temporary workspace")
             .project_mut()
             .edit_buffer(
                 "src/README.md",
-                "dirty but unsaved\n".into(),
+                edited.into(),
                 crate::development::Actor::local(),
             )
-            .expect("seed stale unsaved buffer");
+            .expect("edit buffer as the local human");
         state.refresh_editor_projection();
-        state.code_edit_mode = true;
-        state.edit_code_key(
-            crossterm::event::KeyCode::Char('X'),
-            crossterm::event::KeyModifiers::NONE,
-        );
-        assert!(!state.code_edit_mode);
-        assert_eq!(
-            state.focused_editor_content, "dirty but unsaved\n",
-            "revoked trust must preserve existing unsaved editor content"
-        );
-        assert!(state.save_editor_buffer().is_err());
+        assert_eq!(state.focused_editor_content, edited);
+        state.save_editor_buffer().expect("save editor buffer");
         assert_eq!(
             std::fs::read_to_string(root.join("src/README.md")).expect("read file"),
-            original
+            edited
         );
 
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
@@ -18490,25 +18314,28 @@ mod tests {
     }
 
     #[test]
-    fn agent_prompt_context_keeps_glass_integrations_without_injected_playbook() {
+    fn agent_prompt_context_does_not_attach_unselected_hidden_or_editor_files() {
         let root =
             std::env::temp_dir().join(format!("glass-agent-prompt-context-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let hidden_path = root.join(".harmless-context-fixture");
+        std::fs::write(&hidden_path, "fixture content must not enter a greeting").unwrap();
         let mut state =
             DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
         state.surface = DevSurface::Git;
         state.composer_run_mode = crate::AgentTurnMode::Plan;
+        state.focused_editor_path = ".harmless-context-fixture".into();
 
         let context = state.agent_prompt_context();
         let serialized = serde_json::to_string(&context).expect("serialize context");
-        assert_eq!(context["surface"], "git");
-        assert_eq!(context["runMode"], "plan");
         assert!(context.get("browser").is_some());
-        assert!(context.get("editor").is_some());
-        assert!(context.get("todos").is_some());
         assert!(context.get("authority").is_some());
+        assert!(context.get("editor").is_none());
+        assert!(context.get("project").is_none());
         assert!(context.get("playbook").is_none());
         assert!(context.get("playbookText").is_none());
+        assert!(!serialized.contains(".harmless-context-fixture"));
+        assert!(!serialized.contains("fixture content must not enter a greeting"));
         assert!(!serialized.contains("Git playbook:"));
         assert!(!serialized.contains("Agent playbook:"));
 

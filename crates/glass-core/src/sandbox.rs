@@ -1977,6 +1977,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(outside);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn strict_extension_requires_a_complete_sidecar_and_rejects_symlink_sidecars() {
         let dir = std::env::temp_dir().join(format!("gc-ext-caps-{}", std::process::id()));
@@ -2028,6 +2029,16 @@ mod tests {
                 .contains("openat2 refused")
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn capability_inspection_reports_its_linux_requirement() {
+        let error = inspect_extension_capabilities("", std::path::Path::new(".")).unwrap_err();
+        assert_eq!(
+            error,
+            "safe capability path inspection requires Linux openat2"
+        );
     }
 
     #[cfg(target_os = "linux")]

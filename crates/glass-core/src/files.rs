@@ -6,7 +6,7 @@ use std::{
     io::{Read, Write},
     os::fd::{AsRawFd, FromRawFd},
     os::unix::fs::{MetadataExt, PermissionsExt},
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     time::{Duration, Instant},
 };
 const MAX_FILE: usize = 8 * 1024 * 1024;
@@ -31,6 +31,26 @@ fn open_at(dir: &File, name: &CString, flags: i32, mode: u32) -> Result<File, St
         Err(error(std::io::Error::last_os_error()))
     } else {
         Ok(unsafe { File::from_raw_fd(fd) })
+    }
+}
+fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf, String> {
+    let mut cursor = path;
+    let mut suffix = Vec::new();
+    loop {
+        match cursor.canonicalize() {
+            Ok(mut resolved) => {
+                for component in suffix.iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let component = cursor.file_name().ok_or_else(|| error.to_string())?;
+                suffix.push(component.to_os_string());
+                cursor = cursor.parent().ok_or_else(|| error.to_string())?;
+            }
+            Err(error) => return Err(error.to_string()),
+        }
     }
 }
 thread_local! { static APPROVED_CALL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
@@ -84,6 +104,19 @@ impl Target {
                 Component::CurDir => {}
                 other => normalized.push(other.as_os_str()),
             }
+        }
+        if unrestricted && requested.is_absolute() {
+            // `/var` is a symlink to `/private/var` on macOS. Resolve existing
+            // parent components before descriptor-relative NOFOLLOW walking,
+            // while leaving the final filename untouched so symlink targets
+            // are still rejected and missing parents can still be created.
+            let parent = normalized
+                .parent()
+                .ok_or_else(|| "file path has no parent directory".to_string())?;
+            let name = normalized
+                .file_name()
+                .ok_or_else(|| "file path has no filename".to_string())?;
+            normalized = canonicalize_existing_prefix(parent)?.join(name);
         }
         let root = if unrestricted {
             Path::new("/").to_path_buf()
@@ -1031,7 +1064,7 @@ mod tests {
             N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir(&p).unwrap();
-        Dir(p)
+        Dir(p.canonicalize().unwrap())
     }
     fn write(d: &Dir, name: &str, text: &str) {
         std::fs::write(d.0.join(name), text).unwrap();

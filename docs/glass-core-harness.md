@@ -96,18 +96,19 @@ Core's `auth/status.credentialReady` result; provider setup remains in Core.
 `glass-core doctor --probe` is a separate provider check and does not change the
 saved configuration.
 
-From the Glass TUI, `:agent setup login` resolves the same Core executable,
-suspends the Glass screen, and starts `glass-core` in its interactive mode in
+From the Glass TUI, choose Glass Core provider login in the `/` Glass group.
+Glass resolves the same Core executable, suspends its screen, and starts
+`glass-core` in its interactive mode in
 the current workspace with the terminal streams attached. Use Core's `/login`
 there, then exit Core to return to Glass. Glass does not receive or store
 provider credentials. After return, Glass refreshes Core readiness. The
 resident Core process and its existing conversation are left running with
-their current in-memory settings; a newly spawned resident agent starts a new
-Core runtime and reads the updated configuration. `:agent new` reuses the
+their current in-memory settings; Start Core conversation creates a new Core
+runtime and reads the updated configuration. New conversation reuses the
 existing runtime and therefore does not reload provider settings.
 
-The Agent palette labels the Core login and model controls explicitly.
-`:agent models [AGENT_ID]` and `:agent model [AGENT_ID] PROVIDER MODEL` operate
+The `/` action catalogue labels Core login and model controls explicitly.
+List Core models and Select Core model operate
 on the selected resident session (or the workspace's first active session when
 none is selected) using the negotiated `models/list` and `session/configure`
 methods. Model catalog responses appear in the Agent conversation with the

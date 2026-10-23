@@ -967,7 +967,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                             == Some(true)
                         {
                             format!(
-                                "{}\nOpen Glass Core with :agent command-ui, then press : to open its native command menu.",
+                                "{}\nThis command needs GC's native interface. Open /, choose GLASS → Open GC native command menu, then use GC's native command controls.",
                                 text
                             )
                         } else {
@@ -1056,7 +1056,7 @@ fn core_command_catalog_text(result: &Value) -> String {
             lines.push(format!("/{name} · {description} · {mode}"));
         }
     }
-    lines.push("Resident commands run through Glass; for other commands use :agent command-ui, then press : in GC.".into());
+    lines.push("Commands run through Glass Core. Interactive commands use / → GLASS → Open GC native command menu.".into());
     lines.join("\n")
 }
 
@@ -1300,7 +1300,10 @@ mod tests {
             payload: serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"model","requiresInteractive":true,"message":"/model is available in Glass Core's native command menu."}}),
         };
         let rendered = conversation(&[event]);
-        assert!(rendered.contains(":agent command-ui"), "{rendered}");
+        assert!(
+            rendered.contains("Open GC native command menu"),
+            "{rendered}"
+        );
     }
 
     #[test]

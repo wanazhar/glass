@@ -660,8 +660,8 @@ Project reads are handle-bound and capped. Mutations stay inside the canonical
 root and record actor provenance. Prompt text and tool arguments are represented
 in audit state by bounded metadata and digests, not raw values.
 
-Desktop exposes eight destinations—Agent, Code, App, Terminal, Tasks, Git,
-Debug, and More. Phone exposes Agent, Code, App, Tasks, and More. Auto layout
+The five primary destinations are Agent, Code, Browser, Terminal, and Git.
+Tasks, Debug, and services/settings are contextual `/` actions. Auto layout
 uses phone below 72 columns or 22 rows, compact below 118 columns or 32 rows,
 and desktop otherwise; `--tui-layout` can force a mode.
 
@@ -671,8 +671,8 @@ operations and integrations. `Ctrl-L` opens the shared composer dock on every
 surface. Composer `Enter` sends and stays open; `Esc` closes. Local or
 pre-dispatch failures keep the draft for retry. A Core error for an accepted
 prompt marks its attempt failed and the agent idle, shows a bounded error
-summary, and adds the attempt to Attention Inbox. Inspect it and use
-`:agent retry` to retry explicitly; Glass does not replay it automatically.
+summary, and adds the attempt to Attention Inbox. Inspect it and choose Retry
+failed or uncertain message from `/`; Glass does not replay it automatically.
 
 The Code file preview shows the selected file and wraps long lines on narrow terminals.
 Switching to Code queues the selected-file preview if the workspace is busy.
@@ -680,8 +680,10 @@ Switching to Code queues the selected-file preview if the workspace is busy.
 default; wrapped source uses whitespace-aware reflow and continuation gutters,
 keeping cursor, selection, and syntax highlighting synchronized. Off uses
 horizontal source-column scrolling. `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y` undo/redo,
-and `Alt-A` attaches focused path/cursor/selection and unsaved content to a
-do-not-edit resident-agent prompt. The editor starts in INSERT. `Esc` returns to NORMAL.
+and opening the composer from Code shows a removable context chip for the
+focused path, selected range, and unsaved buffer snapshot. The Agent surface
+does not attach viewed files implicitly. The editor starts in INSERT. `Esc`
+returns to NORMAL.
 `Esc` from NORMAL on a clean buffer leaves the editor. Unsaved buffers offer
 `S` save, `D` discard, `Q` discard-and-quit, or `Esc`/`N` stay. `Ctrl-C` opens
 Glass quit confirmation from editor input; an already-open unsaved-exit prompt
@@ -696,16 +698,17 @@ accept/reject/yield, while prove-it text attaches a predicate to the agent
 request and becomes evidence only after live browser verification passes.
 
 The `REVIEW` panel summarizes open anchored comments, pending exact-base
-proposals, and checkpoints. Collaboration routes include `:editor
-comment-selection TEXT`, `:editor comment PATH START END TEXT`, `:editor
-comment-resolve ID`, `:editor propose PATH SUMMARY TEXT`, `:editor proposals`,
-`:editor accept ID`, `:editor reject ID`, `:editor checkpoint NAME`, `:editor
-restore CHECKPOINT_ID`, and `:editor replace-selection TEXT`. Conflicting
-claims and stale proposal bases fail closed; resident buffers change until
-`:editor save PATH` or `Ctrl-S`.
+proposals, and checkpoints. Collaboration routes from the general command
+palette (`Ctrl-K`) include `editor comment-selection TEXT`,
+`editor comment PATH START END TEXT`, `editor comment-resolve ID`,
+`editor propose PATH SUMMARY TEXT`, `editor proposals`, `editor accept ID`,
+`editor reject ID`, `editor checkpoint NAME`, `editor restore CHECKPOINT_ID`,
+and `editor replace-selection TEXT`. Conflicting claims and stale proposal
+bases fail closed; resident buffers change until `editor save PATH` from the
+palette or `Ctrl-S`.
 
 The optional development-TUI browser presentation is semantic-first and
-pixel-off by default. `:browser view` toggles the selected path. With
+pixel-off by default. `browser view` from `Ctrl-K` toggles the selected path. With
 `--tui-live auto` and backend `auto`, Herdr is used only when detected;
 otherwise presentation stays semantic-only. `--tui-live on` with backend
 `auto` uses bounded ANSI; explicit Kitty emits Kitty graphics and explicit
@@ -715,7 +718,7 @@ failed capture clears live mode. The standalone `glass-browser` TUI uses
 `live on`/`live off` and has no project, agent, editor, PTY, or Remote View
 routes.
 
-The development-TUI `:browser remote-open` route starts a tokenized,
+The development-TUI `browser remote-open` action in `Ctrl-K` starts a tokenized,
 revocable, loopback-only Remote View and prints an SSH-forward hint. It is not
 a standalone `glass-browser` command. Chrome CDP, Remote View, and application
 servers must remain private.

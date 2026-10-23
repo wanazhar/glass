@@ -66,7 +66,19 @@ def topic_for(path: str) -> str:
         return "api"
     if path.startswith(("scripts/", ".github/")) or any(token in path.lower() for token in ("contribut", "maintain", "release", "test", "build", "develop")):
         return "development"
-    if any(token in path.lower() for token in ("browser", "profile", "action", "semantic", "policy", "site-smoke")):
+    if any(
+        token in path.lower()
+        for token in (
+            "browser",
+            "profile",
+            "action",
+            "semantic",
+            "policy",
+            "site-smoke",
+            "bug_report",
+            "bug_hunt_report",
+        )
+    ):
         return "workspace"
     return "reference"
 

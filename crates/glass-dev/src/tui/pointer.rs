@@ -203,6 +203,10 @@ pub fn hit_test(state: &DevTuiState, column: u16, row: u16) -> HitRegion {
                 .unwrap_or(HitRegion::Other);
         }
         Some(ActiveOverlay::Composer) => {
+            if let Some(surface) = super::render::navigation_surface_at(state, screen, column, row)
+            {
+                return HitRegion::Surface(surface);
+            }
             return if contains(footer, column, row) {
                 HitRegion::Dock
             } else {
@@ -363,7 +367,11 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&root).expect("create test workspace");
-        let state = DevTuiState::open(&root, TuiLayout::Desktop).expect("open TUI state");
+        let mut state = DevTuiState::open(&root, TuiLayout::Desktop).expect("open TUI state");
+        // These hit tests move among non-Agent surfaces directly. Model the
+        // focus state a real surface navigation creates instead of leaving
+        // the new always-ready Agent composer over the clicked content.
+        state.composer_mode = false;
         (state, root)
     }
 
@@ -1187,12 +1195,44 @@ mod tests {
     }
 
     #[test]
+    fn ready_agent_composer_keeps_surface_tabs_clickable() {
+        let (mut state, root) = overlay_state();
+        set_viewport(&mut state, TuiLayout::Desktop, 140, 40);
+        state.surface = DevSurface::Agent;
+        state.composer_mode = true;
+        let target = (0..state.terminal_height).find_map(|row| {
+            (0..state.terminal_width).find_map(|column| {
+                (super::super::render::navigation_surface_at(&state, screen(&state), column, row)
+                    == Some(DevSurface::Code))
+                .then_some((column, row))
+            })
+        });
+        let (column, row) = target.expect("visible Code navigation tab");
+        assert_eq!(
+            hit_test(&state, column, row),
+            HitRegion::Surface(DevSurface::Code)
+        );
+        apply_select(&mut state, &HitRegion::Surface(DevSurface::Code));
+        assert_eq!(state.surface, DevSurface::Code);
+        assert!(!state.composer_mode, "Code must own input after navigation");
+        state.show_surface(DevSurface::Agent);
+        assert!(
+            state.composer_mode,
+            "returning to Agent restores composer focus"
+        );
+
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn more_route_click_selects_and_double_click_runs_the_launcher() {
         let root = std::env::temp_dir().join(format!("glass-more-hit-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop).unwrap();
         state.terminal_width = 140;
         state.terminal_height = 40;
+        state.composer_mode = false;
         state.surface = DevSurface::More;
 
         let target = (0..state.terminal_height).find_map(|row| {

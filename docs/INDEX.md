@@ -37,6 +37,11 @@ class, topic, canonical route, and heading anchors. Run the
 [documentation change check](../scripts/check-documentation-wiki.py) to see
 page, section, anchor, and body-only changes against a base commit.
 
+The [workspace implementation matrix](../BUG_HUNT_REPORT.md) tracks the
+current GC/Glass ownership and end-to-end evidence for the workspace changes
+under review. The [bug report note](../BUG_REPORT.md) routes readers to that
+matrix.
+
 ## Choose your path
 
 | You are… | Start here | Then read |
@@ -107,8 +112,9 @@ page, section, anchor, and body-only changes against a base commit.
 - [Development Runtime](development-runtime.md) — project files, native
   editor, PTYs, Git, LSP diagnostics, graph, replay, collaboration, and agents.
 - [Development TUI](architecture/development-tui.md) and
-  [terminal UI architecture](architecture/tui.md) — panes, navigation,
-  keyboard and mouse interaction, responsive layout, and workers.
+  [terminal UI architecture](architecture/tui.md) — workspace surfaces,
+  conversation and source focus, live GC commands, keyboard and mouse
+  interaction, responsive layout, and workers.
 - [Mobile and remote development](mobile-remote.md) — SSH/Mosh, phone access,
   terminal rendering, and browser controls.
 - [Processes and daemon](daemon.md) — persistent clients, project sessions,
@@ -374,9 +380,11 @@ current user instructions.
   and [research index](../products/glass-core/research/README.md) — Core-owned
   proposal, implementation, and dated research records.
 - [Migration records](migration/0.3.14.md) — current upgrade contract and
-  links to the previous versioned migrations. The [retired Pi runtime note](migration/pi-sdk-runtime.md)
-  is historical and describes removed implementation history, not a supported
-  backend or compatibility route.
+  links to previous versioned migration records. These records document
+  historical changes; they do not describe supported compatibility routes.
+- [Legacy resident runtime migration archive](migration/pi-sdk-runtime.md) —
+  historical implementation record only; Glass Dev has no Pi runtime or
+  compatibility selector.
 - [Retired workspace trust controls](migration/workspace-trust.md) — historical
   account of the former project gate; follow current guides for present
   workspace behavior.

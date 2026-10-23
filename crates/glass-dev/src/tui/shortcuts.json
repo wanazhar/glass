@@ -6,28 +6,40 @@
       "text": "Ctrl-L  dock · Alt-A dock from editor"
     },
     {
-      "keys": ["Ctrl-P", "Ctrl-K", "Ctrl-Shift-P"],
-      "text": "Ctrl-P  file · Ctrl-K / Ctrl-Shift-P palette"
+      "keys": ["Ctrl-P", "Ctrl-Shift-P"],
+      "text": "Ctrl-P  file · Ctrl-Shift-P palette"
     },
     {
       "keys": ["Ctrl-Shift-T"],
       "text": "Ctrl-Shift-T  open project conversations on Agent"
     },
     {
-      "keys": ["Ctrl-G", "Tab", "Alt-Left", "Alt-Right"],
-      "text": "Ctrl-G  App · Tab surfaces · App Alt-Left/Alt-Right history"
+      "keys": ["/", "Ctrl-K"],
+      "text": "/  Core commands and Glass workspace actions · Ctrl-K Glass action palette"
+    },
+    {
+      "keys": ["Ctrl-F", "Ctrl-R", "Ctrl-E"],
+      "text": "Agent Ctrl-F fork · Ctrl-R rewind · Ctrl-E edit last message"
+    },
+    {
+      "keys": ["Ctrl-Shift-X"],
+      "text": "Code composer Ctrl-Shift-X  remove or restore the viewed-file context chip"
+    },
+    {
+      "keys": ["Ctrl-G", "Ctrl-Tab", "Ctrl-Shift-Tab", "Alt-1", "Alt-5", "Alt-Left", "Alt-Right"],
+      "text": "Ctrl-G  Browser · Ctrl-Tab surfaces · Ctrl-Shift-Tab previous · Alt-1…Alt-5 primary surface · Browser Alt-Left/Alt-Right history"
     },
     {
       "keys": ["Ctrl-O", "Ctrl-D", "Ctrl-X"],
-      "text": "editor Ctrl-O symbols · Ctrl-D steer · Ctrl-X abort"
+      "text": "Agent Ctrl-O expand transcript · editor Ctrl-O symbols · Ctrl-D steer · Ctrl-X abort"
     }
   ],
   "documentation": [
     {
       "path": "docs/architecture/development-tui.md",
       "markers": [
-        "`1`–`8`",
-        "`Tab`", "`Shift-Tab`", "`?`", "`/`", "`:`", "`a`",
+        "`Alt-1`", "`Alt-5`", "`Ctrl-Tab`", "`Ctrl-Shift-Tab`",
+        "`Tab`", "`Shift-Tab`", "`?`", "`/`", "`a`",
         "`Ctrl-L`", "`Ctrl-P`", "`Ctrl-K`", "`Ctrl-Shift-P`", "`Ctrl-G`",
         "`Alt-Left`", "`Alt-Right`", "`Ctrl-R`", "`Alt-W`", "`Ctrl-S`",
         "`Ctrl-Z`", "`Ctrl-Y`", "`Ctrl-D`", "`Ctrl-Shift-T`"
@@ -36,7 +48,7 @@
     {
       "path": "crates/glass-dev/README.md",
       "markers": [
-        "`Ctrl-L`", "`Alt-A`", "`Ctrl-Shift-A`", "`/`", "`:`", "`Ctrl-D`", "`Alt-W`",
+        "`Ctrl-L`", "`Alt-A`", "`Ctrl-Shift-A`", "`/`", "`Ctrl-D`", "`Alt-W`",
         "`Ctrl-S`", "`Ctrl-Z`", "`Ctrl-Y`", "`Ctrl-C`", "`Ctrl-Shift-T`"
       ]
     },
@@ -44,7 +56,7 @@
       "path": "docs/architecture/development-tui.md",
       "markers": [
         "`Ctrl-L`", "`Alt-A`", "`Ctrl-P`", "`Ctrl-K`", "`Ctrl-Shift-P`",
-        "`Ctrl-Shift-A`", "`/`", "`:`", "`Ctrl-G`", "`Tab`", "`Alt-Left`", "`Alt-Right`",
+        "`Ctrl-Shift-A`", "`/`", "`Ctrl-G`", "`Tab`", "`Ctrl-Shift-X`", "`Alt-Left`", "`Alt-Right`",
         "`Ctrl-R`", "Ctrl-O", "Ctrl-D", "Ctrl-X", "`Alt-W`",
         "`Ctrl-S`", "`Ctrl-Z`", "`Ctrl-Y`", "`Ctrl-C`", "`Ctrl-Shift-T`"
       ]

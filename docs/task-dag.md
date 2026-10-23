@@ -31,7 +31,9 @@ recovered. Glass Core is the sole resident engine. See [Development Runtime](dev
 
 ## Entry points
 
-The TUI exposes `:task` commands. MCP and resident agents use these tool names:
+The TUI exposes task creation and common controls from `/` → Glass → Tasks;
+the general command palette (`Ctrl-K`) provides the full host task command
+surface. MCP and Core agents use these tool names:
 
 ```text
 glass.task.create          glass.task.list
@@ -59,27 +61,27 @@ crew summary has a separate durable record: Glass writes
 `.glass/crew/latest.json` with the latest `CrewWake` record. `glass.task.wake`
 is read-only and returns that latest record. A wake refresh folds member states,
 bounded Git diff and test output, plus live verify, page, and proposal-accept
-evidence into the persisted summary. The TUI exposes the same operations as
-`:task crew GOAL` and `:task wake`.
+evidence into the persisted summary. The TUI exposes crew and wake actions
+through the `/` Glass task actions.
 
 Crew wakes are distinct from `glass.todo.*`: the workspace-local Agent
 checklist is persisted at `.glass/todos/session.json`, while a crew is an
 overnight factory orchestration record.
 
-There is no standalone `glass task ...` scheduling CLI family in the current command parser. `glass task validate/compile` is a separate browser-free Task Protocol feature and does not create scheduler records. Use the TUI or a workspace router client:
+There is no standalone `glass task ...` scheduling CLI family in the current command parser. `glass task validate/compile` is a separate browser-free Task Protocol feature and does not create scheduler records. Use `/` → Glass → Tasks or `Ctrl-K` and the workspace task commands:
 
 ```text
-:task create TITLE PROMPT
-:task create-after TASK-ID TITLE PROMPT
-:task list
-:task inspect TASK-ID
-:task pause TASK-ID
-:task resume TASK-ID
-:task cancel TASK-ID
-:task retry TASK-ID
-:task reassign TASK-ID ROLE [MODEL] [THINKING]
-:task override TASK-ID
-:task evidence TASK-ID KIND true|false [JSON]
+task create TITLE PROMPT
+task create-after TASK-ID TITLE PROMPT
+task list
+task inspect TASK-ID
+task pause TASK-ID
+task resume TASK-ID
+task cancel TASK-ID
+task retry TASK-ID
+task reassign TASK-ID ROLE [MODEL] [THINKING]
+task override TASK-ID
+task evidence TASK-ID KIND true|false [JSON]
 ```
 
 Task creation, control, and evidence use the shared workspace router. Calls

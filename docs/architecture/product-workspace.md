@@ -28,10 +28,10 @@ DevelopmentWorkspace (resident authority)
              │
              v
        DevTuiState / DisplaySnapshot
-       Agent · Code · App · Terminal · Tasks · Git · Debug · More
+       Agent · Code · Browser · Terminal · Git
 ```
 
-Destination changes only projection and focus. In particular, App does not move
+Destination changes only projection and focus. In particular, Browser does not move
 browser state into `ProjectWorkspace`, and Code does not create an editor that
 is separate from the project's shared buffers. The [Glass Dev TUI guide](development-tui.md)
 and [Development Runtime guide](../development-runtime.md) define user-facing
@@ -40,30 +40,31 @@ contracts.
 
 ## Product destinations
 
-Desktop exposes eight destinations; phone exposes five. Advanced runtime,
-workspace, replay, kernel, experiment, and customization details remain
-in More or the contextual command palette.
+The primary workspace keeps five destinations: Agent, Code, Browser, Terminal,
+and Git. Tasks, Debug, and service/settings details remain available as
+contextual actions under `/`; they are not persistent primary tabs. Advanced
+runtime, replay, kernel, experiment, and customization details are still
+reachable without taking space from the main work.
 
 ```text
-Desktop: Agent · Code · App · Terminal · Tasks · Git · Debug · More
-Phone:   Agent · Code · App · Tasks · More
+Desktop and phone: Agent · Code · Browser · Terminal · Git
 
 Desktop
 ┌ GLASS · project · branch ──────────────────────────────────────────────────┐
-│ FILES / TASKS       PRIMARY SURFACE                 CONTEXT / EVIDENCE      │
-│ project tree        Agent / Code / App / Terminal   selected symbol, event, │
-│ and changes        Tasks / Git / Debug / More       browser entity, action │
+│ FILES / CHANGES     PRIMARY SURFACE                 CONTEXT / EVIDENCE      │
+│ project tree        Agent / Code / Browser          selected symbol, event, │
+│ and Git status      Terminal / Git                  page, process or change │
 ├────────────────────────────────────────────────────────────────────────────┤
-│ Agent  Code  App  Terminal  Tasks  Git  Debug  More              : palette │
+│ Agent  Code  Browser  Terminal  Git                         / actions     │
 └────────────────────────────────────────────────────────────────────────────┘
 
 Phone
 ┌ GLASS · project · branch ─────────────┐
 │ focused destination                   │
 │ one scrollable primary pane           │
-│ composer/status when active            │
+│ composer/status when active           │
 ├───────────────────────────────────────┤
-│ Agent · Code · App · Tasks · More      │
+│ / menu · Ctrl-Tab · surface controls  │
 └───────────────────────────────────────┘
 ```
 
@@ -89,9 +90,9 @@ failures are projected as bounded states; they do not erase unrelated workspace
 state. Workspace shutdown restores terminal modes and closes or detaches
 owned runtime resources without waiting indefinitely on active UI work.
 
-## Browser App integration
+## Browser workspace integration
 
-App is the development projection of the canonical
+Browser is the development projection of the canonical
 [`BrowserWorkspace`](browser-workspace.md). `BrowserService` runs in a named
 resident worker (`glass-browser-workspace`) and serializes browser commands. It
 owns the session generation, browser revision, optional owned Chrome PID,
@@ -99,7 +100,7 @@ workflow state, last start configuration, and optional Remote View. The project
 workspace owns none of these values.
 
 ```text
-App navigation / Agent context
+Browser navigation / Agent context
             │
             v
 BrowserWorkspaceController (selection, focus, ownership, bounded projection)
@@ -111,13 +112,13 @@ BrowserService → BrowserWorker → BrowserRuntimeSession (native by default)
 
 `browser navigate URL` may start a detached development browser, then performs
 an observation before issuing the revision-bound navigation. Other actions
-require a current observation revision. App target selection refreshes the
+require a current observation revision. Browser target selection refreshes the
 selected route and semantic observation. A browser generation can be stopped,
 reconnected, or lost while project files, PTYs, tasks, and the agent continue.
 See [Browser connection controller](browser-connection.md) for endpoint and
 Remote View details.
 
-App context sent to the Agent is bounded and explicit: current connection,
+Browser context sent to the Agent is bounded and explicit: current connection,
 selected target, title, redacted page URL/origin, browser revision, semantic
 summary, selected entity, workflow state, input owner, and freshness. An
 actionable selected entity transfers browser mutation ownership to the Agent;
@@ -190,7 +191,7 @@ unlock or overwrite an editor write claim.
 
 Browser workflows execute through the resident `BrowserService`, return step
 results and a final browser revision, and expose list/pause/resume/cancel/verify
-projections in App. They do not become project task evidence automatically.
+projections in Browser. They do not become project task evidence automatically.
 Tasks, Git, editor events, browser observations, and workflow results are linked
 through the development timeline and explicit evidence fields. A workflow or
 browser action that loses its revision remains failed/stale rather than silently
@@ -200,7 +201,7 @@ replaying against a new page.
 
 Source tests exercise destination and responsive rendering, workspace startup,
 Agent context, shared editor selection and collaboration, stale proposals,
-checkpoint restore, App semantic selection, browser revision guards, recovery,
+checkpoint restore, Browser semantic selection, browser revision guards, recovery,
 and bounded asynchronous refresh. Tests also cover PTY cleanup, focus/mouse/
 paste/resize paths, and 48x18, 64x24, and 80x24 phone flows. These architecture
 contracts do not claim support for standalone Remote View, unimplemented image

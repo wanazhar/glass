@@ -52,8 +52,9 @@ cd /path/to/project
 glass
 ```
 
-Desktop mode opens the Development coding workspace by default. Its eight
-destinations are Agent, Code, App, Terminal, Tasks, Git, Debug, and More. The
+Desktop mode opens the Development coding workspace by default. Its five
+primary destinations are Agent, Code, Browser, Terminal, and Git. Tasks, Debug,
+and services/settings remain available as contextual `/` actions. The
 workspace owns a bounded file tree, native editor, PTY processes, diagnostics,
 actors, timeline, source/runtime graph, diff, replay, and optional Neovim
 adapters.
@@ -62,7 +63,7 @@ adapters.
 Desktop: navigation | active surface / editor / browser | context
           status and command/composer footer
 Phone:   header
-         one active surface: Agent | Code | App | Tasks | More
+         one active surface: Agent | Code | Browser | Terminal | Git
          status, command palette, or composer
 ```
 
@@ -83,10 +84,11 @@ glass project diff --root .
 glass agent prompt "read README.md" --root .
 ```
 
-Glass opens directly on Agent; type a prompt or
-press `Enter`; when the resident engine is not ready, Glass reports the exact
+Glass opens directly on Agent with the composer ready; type a prompt
+immediately. When the resident engine is not ready, Glass reports the exact
 repair step — install `glass-core`, set `GLASS_CORE_BINARY`, or connect a
-provider. `:agent doctor` and `:agent status` report readiness at any time. Provider setup stays in Glass
+provider. Press `/` and filter for Readiness doctor or Glass session status to
+inspect readiness. Provider setup stays in Glass
 Core, and Glass reports readiness without printing credentials.
 
 Talk from any surface. `Ctrl-L` opens the shared composer dock (not a redraw).
@@ -95,7 +97,10 @@ connections, agent execution, and native coding-tool permissions. Glass owns
 workspace, browser, Git, and review integrations. It executes Core-authorized
 tool calls after checking the current workspace and resource revisions; it
 does not ask for a second approval. Direct human actions retain their explicit
-UI behavior. Ordinary messages do not attach the focused file or selection.
+UI behavior. Ordinary Agent messages do not attach a file or selection. Opening
+the composer from Code shows a removable context chip for the viewed buffer;
+selected text takes priority, unsaved content is labeled, and `Ctrl-Shift-X`
+removes or restores the bounded context before send.
 `Enter` sends and keeps the dock open; `Esc` closes it. `Ctrl-D` toggles steer
 mode; follow-up mode queues a message. `Ctrl-Shift-A` opens Attention Inbox.
 Sent prompts remain as `YOU`, and `GLASS AGENT` streams replies and tool
@@ -104,22 +109,26 @@ edit-and-retry; busy background work retains new text. If Core returns an error
 for a correlated `turn/prompt` or `turn/followUp`, Glass marks the attempt
 failed and returns its agent phase to idle. The failure is summarized with a
 safe error class and code, then listed in Attention Inbox. Inspect the owning
-conversation and use `:agent retry` to request explicit confirmation before a
-possibly uncertain prompt is sent again; Glass never replays the attempt
-automatically. Type in the dock to talk, use `:` to open actions and search
-commands, and press `a` on non-Agent surfaces for their actions. `:process start dev`
+conversation and choose Retry failed or uncertain message from `/` to request
+explicit confirmation before a possibly uncertain prompt is sent again; Glass never replays the attempt
+automatically. Type in the Agent dock to talk; `/` discovers the live Core
+command catalogue and Glass workspace actions without sending a prompt. Core
+runtime commands stay with Core, interactive commands hand off to Core's native
+UI, and Glass actions operate workspace surfaces. `Ctrl-K` opens the general
+Glass command palette. Press `a` on
+non-Agent surfaces for their actions. `:process start dev`
 starts the detected suite, Tasks owns the workspace-local Agent checklist
-(`.glass/todos/session.json`) plus the overnight DAG. More is the
-workspace-services dashboard: Services and Experiments are live
-projections, while Routes can be selected with `j/k` or a click and run with
-`Enter` or a double-click. Its `doctor`, cockpit, kernel, experiment, and
-harness routes keep the result on More; `:cockpit start` starts a tokenized
-loopback-only cockpit and reports its URL.
+(`.glass/todos/session.json`) plus the overnight DAG. Tasks, Debug, and
+workspace services are advanced destinations available through the `/` Glass
+action group; they no longer occupy persistent primary tabs. Services and
+Experiments remain live projections, while route actions run only after an
+explicit selection.
 
-On the App surface, `:browser targets` opens a searchable picker; type a
+On the Browser surface, `Ctrl-K` opens browser actions; from Agent, filter the
+`/` catalogue by `glass browser`. `browser targets` opens a searchable picker; type a
 redacted title, URL, or target ID, use arrows, and press `Enter` to queue one
-explicit selection. `:browser start` is headed/persistent by default;
-`:browser start --incognito --headless` is disposable. Startup collisions keep
+explicit selection. `browser start` from `Ctrl-K` is headed/persistent by
+default; `browser start --incognito --headless` is disposable. Startup collisions keep
 the TUI alive and offer attach, free-port, retry, or dismiss recovery.
 
 The resident process owns editor buffers, PTYs, language services, browser,
@@ -157,27 +166,27 @@ textobjects with lexical fallback, FIM ghosts, LSP navigation/inlays, gutter
 evidence marks, and bounded proposal hunk review.
 
 The `REVIEW` panel shows open comments, pending proposals, and checkpoints.
-Use `:editor comment-selection TEXT`, `:editor comment PATH START END TEXT`,
-`:editor comment-resolve ID`, `:editor propose PATH SUMMARY TEXT`, `:editor
-proposals`, `:editor accept ID`, `:editor reject ID`, `:editor checkpoint
-NAME`, `:editor restore CHECKPOINT_ID`, and `:editor replace-selection TEXT`.
+Use `Ctrl-K` and the `editor` routes for `comment-selection TEXT`,
+`comment PATH START END TEXT`, `comment-resolve ID`, `propose PATH SUMMARY
+TEXT`, `proposals`, `accept ID`, `reject ID`, `checkpoint NAME`,
+`restore CHECKPOINT_ID`, and `replace-selection TEXT`.
 Proposals are exact-base and conflict-checked; stale proposals are not
-applied. Checkpoints/proposals affect resident buffers until `:editor save PATH`
-or `Ctrl-S`.
+applied. Checkpoints/proposals affect resident buffers until `editor save PATH`
+from the palette or `Ctrl-S`.
 `--tui-live off` is the default. With `--tui-live auto` and backend `auto`,
 Herdr is used only when detected; otherwise presentation stays semantic-only.
 `--tui-live on` with backend `auto` uses the bounded ANSI fallback. Explicit
 `--tui-live-backend kitty` emits Kitty terminal graphics; explicit `ansi`
 renders true-color Unicode half-blocks; an unavailable explicit Herdr backend
 remains semantic-only. Quality `data`, `balanced`, and `smooth` targets
-approximately 3, 6, and 12 FPS. In the development TUI, `:browser view`
-toggles the selected path; the standalone `glass-browser` TUI instead uses
+approximately 3, 6, and 12 FPS. In the development TUI, `browser view` from
+`Ctrl-K` toggles the selected path; the standalone `glass-browser` TUI instead uses
 `live on`/`live off`.
 
 
 Herdr is optional but can own a persistent PTY for detach/reattach; tmux and
 Mosh remain compatible for terminal transport. The development TUI's
-`:browser remote-open` starts a tokenized, revocable, loopback-only Remote
+`browser remote-open` action from `Ctrl-K` starts a tokenized, revocable, loopback-only Remote
 View and prints an SSH-forward hint; configure the matching local forward and
 open the printed URL in Safari. The standalone `glass-browser` package does
 not provide Remote View or the project/agent runtime. Never expose CDP,
@@ -211,16 +220,15 @@ levels, follow-up messages, abort, persistent sessions, resume, fork, compact,
 and event streaming. It starts without built-in tools and is the sole resident
 agent engine.
 
-The same workspace exposes the fixed external-harness catalog to both clients:
-`glass harness list` and `:harness list` report PATH availability, while
-`glass harness start NAME --root .` and `:harness start NAME` launch the same
-interactive handoff.
+The same workspace exposes an informational external-harness catalog to the
+CLI and the Glass `/` actions. `glass harness list` and `/` → Glass → Harness
+catalog report PATH availability. `glass harness start NAME --root .` remains
+a CLI-only human handoff; the Glass workspace does not dispatch external coding
+agents because Core owns agent execution.
 
-It can also make a temporary one-shot delegation to installed Codex CLI, Claude
-Code, or OpenCode through `glass agent delegate HARNESS PROMPT --root .` or
-the TUI's `:harness delegate NAME PROMPT` route. Delegation is read-only by
-default, returns bounded structured output, and requires explicit mutation
-authority plus confirmation for a `workspace-write` sandbox.
+The CLI retains an explicit one-shot delegation command for installed Codex
+CLI, Claude Code, or OpenCode. Glass does not expose external-agent delegation
+from its TUI; send agent work to the resident Core session.
 
 Run `glass agent doctor` or `glass agent status` to check Glass Core. Glass
 does not download an engine when it starts. Provider setup and credentials are

@@ -5,7 +5,7 @@ Status: Current 0.3.14 source behavior
 ## Purpose and boundary
 
 `BrowserWorkspaceController` is the shared, human-facing state projection for the
-focused `glass-browser` TUI and Glass Dev's embedded `App` surface. It owns
+focused `glass-browser` TUI and Glass Dev's embedded `Browser` surface. It owns
 bounded presentation state, selection, focus, browser input ownership, and
 recovery hints. It does **not** own Chrome, CDP, project files, editor buffers,
 PTYs, resident-agent sessions, or workflow execution.
@@ -25,7 +25,7 @@ standalone glass-browser                         glass (Glass Dev)
        browser semantic + visual                  │  BrowserWorkspaceController│
                                                   └─────────────┬────────────┘
                                                                 v
-                                                        App projection
+                                                        Browser projection
 ```
 
 The embedded adapter is resident: `BrowserService` serializes commands on one
@@ -58,12 +58,13 @@ observe again. Text fields are bounded; state is not an event or frame history.
 
 The standalone TUI has Browser, Semantic, and Help modes. Its visual pane is
 optional; its command line and semantic list remain usable without pixels.
-Glass Dev's `App` is one destination among Agent, Code, Terminal, Tasks, Git,
-Debug, and More. It renders browser visual/semantic state and a workflow summary;
+Glass Dev's Browser is a primary destination alongside Agent, Code, Terminal,
+and Git. Tasks, Debug, and advanced services are contextual actions. The
+Browser surface renders visual/semantic state and a workflow summary;
 it is not the standalone browser product embedded wholesale.
 
 ```text
-Glass Dev App (desktop)
+Glass Dev Browser (desktop)
 ┌ BROWSER · loading/ready · Connected · redacted page path ────────────────────┐
 │ ┌ VISUAL PLANE · semantic/ANSI/native ┐  ┌ INSPECTOR ─────────────────────┐ │
 │ │ newest bounded frame, or reason      │  │ title · path · revision         │ │
@@ -73,7 +74,7 @@ Glass Dev App (desktop)
 ├ WORKFLOW · idle/running/completed/paused/failed/cancelled ───────────────────┤
 └──────────────────────────────────────────────────────────────────────────────┘
 
-Glass Dev App (phone/compact)
+Glass Dev Browser (phone/compact)
 ┌ BROWSER · connection · page/revision ─────┐
 │ visual or semantic browser pane            │
 │ (semantic is the reliable default)         │
@@ -106,7 +107,8 @@ observe fresh ──> revision R + entities stamped R
        └─ resize/visual geometry ──> visual geometry revision (separate token)
 ```
 
-The App submits browser operations through governed `glass.browser.*` tools.
+The Browser surface submits browser operations through the Core-hosted
+`glass.browser.*` tools.
 Core-authorized resident calls do not receive a second Glass approval prompt;
 the workspace still checks the current browser lease, target identity, and
 revision. Human-initiated direct mutations retain their explicit confirmation
@@ -119,13 +121,13 @@ checkpoint is reconciled.
 
 The embedded target picker loads targets asynchronously, filters by target ID,
 title, or URL, shows at most 16 matches, and queues selection through the
-confirmation path. Closing or a disappeared target leaves the App open. The
+confirmation path. Closing or a disappeared target leaves the Browser surface open. The
 controller itself caps target storage at 64. The session's selected target and
 frame route are the execution authority; the UI's `selected` marker is only a
 projection.
 
 Connection failures do not destroy project, editor, process, task, or agent
-state. Glass Dev opens an App recovery offer with attach (when the error looks
+state. Glass Dev opens a Browser recovery offer with attach (when the error looks
 like a compatible DevTools endpoint), an isolated automatic-port launch, retry,
 or dismissal. Standalone reports the failure in its status line and supports
 `reconnect`, `launch auto`, `launch PORT`, and `attach PORT`; it has no embedded
@@ -153,7 +155,7 @@ redaction from process memory or terminal scrollback.
 Source tests cover shared adapter revision selection, bounded entities/targets,
 focus movement, takeover/reconciliation, unsupported capabilities, standalone
 and embedded recovery transitions, target filtering/redaction in the embedded
-projection, App rendering, and stale browser actions. The intended integration
+projection, Browser rendering, and stale browser actions. The intended integration
 matrix includes desktop, compact, phone, and 48x18/64x24/80x24 layouts, plus
 PTY cleanup, resize, mouse, paste, and Ctrl-C where the host supports them.
 These tests do not certify unsupported Sixel/iTerm renderers or a standalone

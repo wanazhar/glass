@@ -10,6 +10,21 @@ browser, Git, workspace/project, review, language-server context, and project
 task integrations; it omits direct editor writes, generic commands, process
 controls, and duplicate Core agent/model/session controls.
 
+Core also provides `web_search` and `web_fetch`. Search uses Exa's hosted MCP
+endpoint (`https://mcp.exa.ai/mcp`) and labels its source in the result; the
+endpoint can be changed with `exa_mcp_url` in `~/.config/glass-core/web.json`
+or `GC_WEB_SEARCH_ENDPOINT`, and a key can be supplied as `exa_api_key` or
+`EXA_API_KEY`. Keyless endpoint use is subject to Exa's rate limits, and Core
+does not retry failed searches. Search output preserves Exa's titles, source
+URLs, publication details, authors, and highlights; duplicate URLs differing
+only by fragments or common tracking parameters are collapsed before counting.
+`web_fetch` reads one HTTP(S) URL directly, without launching a browser. It
+accepts text and structured text media types, extracts readable text from HTML,
+respects declared character encodings, reads at most 512 KiB, and returns at
+most 20,000 characters by default (60,000 maximum). Unsupported media types,
+oversized bodies, redirects, and transport failures are reported as tool
+results rather than presented as successful page content.
+
 The Rust packages live under [`crates/`](../crates/glass-core/Cargo.toml) in
 the root Cargo workspace. They share the root package version, currently
 `0.3.14`, while retaining `MIT OR Apache-2.0` package metadata and the

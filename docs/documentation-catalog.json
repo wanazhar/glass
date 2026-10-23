@@ -63,6 +63,70 @@
       ]
     },
     {
+      "path": "BUG_HUNT_REPORT.md",
+      "class": "current",
+      "topic": "workspace",
+      "audience": "repository-reference",
+      "status": "current-source-guidance",
+      "recommendation": "KEEP_PUBLIC",
+      "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "BUG_REPORT.md",
+        "docs/INDEX.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#workspace-operations",
+      "route": "BUG_HUNT_REPORT.md#glass-workspace-implementation-matrix",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Glass workspace implementation matrix",
+          "anchor": "glass-workspace-implementation-matrix"
+        },
+        {
+          "level": "2",
+          "title": "Ownership contract",
+          "anchor": "ownership-contract"
+        },
+        {
+          "level": "2",
+          "title": "Workspace coverage",
+          "anchor": "workspace-coverage"
+        },
+        {
+          "level": "2",
+          "title": "Verification in this working tree",
+          "anchor": "verification-in-this-working-tree"
+        }
+      ]
+    },
+    {
+      "path": "BUG_REPORT.md",
+      "class": "current",
+      "topic": "workspace",
+      "audience": "repository-reference",
+      "status": "current-source-guidance",
+      "recommendation": "KEEP_PUBLIC",
+      "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md"
+      ],
+      "dependencies": [
+        "BUG_HUNT_REPORT.md"
+      ],
+      "topicRoute": "docs/INDEX.md#workspace-operations",
+      "route": "BUG_REPORT.md#workspace-review",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Workspace review",
+          "anchor": "workspace-review"
+        }
+      ]
+    },
+    {
       "path": "CHANGELOG.md",
       "class": "record",
       "topic": "history",
@@ -1579,6 +1643,8 @@
       ],
       "dependencies": [
         "AGENTS.md",
+        "BUG_HUNT_REPORT.md",
+        "BUG_REPORT.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "README.md",
@@ -2448,6 +2514,11 @@
         },
         {
           "level": "3",
+          "title": "Workspace interaction contract",
+          "anchor": "workspace-interaction-contract"
+        },
+        {
+          "level": "3",
           "title": "Native browser JavaScript dialog overlay",
           "anchor": "native-browser-javascript-dialog-overlay"
         },
@@ -3042,8 +3113,8 @@
         },
         {
           "level": "2",
-          "title": "Browser App integration",
-          "anchor": "browser-app-integration"
+          "title": "Browser workspace integration",
+          "anchor": "browser-workspace-integration"
         },
         {
           "level": "2",

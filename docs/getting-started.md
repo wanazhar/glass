@@ -163,10 +163,10 @@ The first-run path is:
 glass → Agent → engine readiness → composer
 ```
 
-On `Agent`, type a prompt or press `Enter`. If the engine is not
-ready, Glass reports the exact repair step: install `glass-core`, set
-`GLASS_CORE_BINARY`, or connect a provider for the engine. `:agent doctor` and
-`:agent status` report readiness at any time.
+On `Agent`, type a prompt immediately; the composer is ready at launch. If the
+engine is not ready, Glass reports the exact repair step: install
+`glass-core`, set `GLASS_CORE_BINARY`, or connect a provider for the engine.
+Press `/` and choose Readiness doctor or Glass session status to inspect it.
 
 Talk from any surface with `Ctrl-L`. Glass Core owns agent execution, coding
 tools, and permission decisions. Glass executes Core-authorized browser, Git,
@@ -181,25 +181,28 @@ and tool activity. A local or pre-dispatch failure restores the draft for
 editing and retry; background work retains newly typed text. When Core returns
 an error for an accepted prompt, Glass marks the attempt failed, returns the
 agent to idle, and lists it in Attention Inbox with a bounded error summary.
-Inspect the conversation and use `:agent retry` to confirm before resending a
+Inspect the conversation and choose Retry failed or uncertain message from `/`
+to confirm before resending a
 prompt whose original outcome may be uncertain; Glass does not replay failed
 prompts automatically.
 
-Desktop uses `1`–`8` for Agent, Code, App, Terminal, Tasks, Git, Debug, and
-More. Phone uses `1`–`5` for Agent, Code, App, Tasks, and More. Auto chooses
-phone below 72 columns or 22 rows, compact below 118 columns or 32 rows, and
-desktop otherwise; override with `--tui-layout mobile|compact|desktop`.
-`Tab`/`Shift-Tab` cycle surfaces. Type in the dock to talk, `:` to search
-commands, `a` to open this surface's actions, and `?` to open help.
+`Alt-1`–`Alt-5` select Agent, Code, Browser, Terminal, and Git. `Ctrl-Tab` and
+`Ctrl-Shift-Tab` cycle those primary surfaces; `/` in Agent opens the combined
+GC and Glass action catalogue. Tasks, Debug, and services/settings stay
+available from the Glass action group instead of taking primary tab space. Auto
+chooses phone below 72 columns or 22 rows, compact below 118 columns or 32 rows,
+and desktop otherwise; override with `--tui-layout mobile|compact|desktop`.
+`Ctrl-L` opens the composer on other surfaces; `?` opens help.
 
-Use these first routes:
+Use `/` on Agent for workspace destinations. Open the general command palette
+with `Ctrl-K` for advanced Glass actions such as:
 
 ```text
-:process start dev                 # detected dev suite, confirmation-gated
-:task list                         # inspect task state
-:cockpit start                     # More: private loopback cockpit
-:browser start                     # headed, persistent browser
-:browser targets                   # search and select a page target
+process start dev                  # detected dev suite
+task list                          # inspect task state
+cockpit start                      # private loopback cockpit
+browser start                      # native-first browser workspace
+browser targets                    # search and select a page target
 ```
 
 On Code, select a file and press `Enter` (or `i`) to enter the full-screen
@@ -217,19 +220,20 @@ the unsaved-exit prompt is already open, its save/discard/stay choices take
 priority.
 
 The Code `REVIEW` panel exposes anchored comments, proposals, and checkpoints.
-Use `:editor comment-selection TEXT`, `:editor comment PATH START END TEXT`,
-`:editor comment-resolve ID`, `:editor propose PATH SUMMARY TEXT`, `:editor
-proposals`, `:editor accept ID`, `:editor reject ID`, `:editor checkpoint NAME`,
-`:editor restore CHECKPOINT_ID`, and `:editor replace-selection TEXT`.
+Use the general command palette (`Ctrl-K`) for `editor comment-selection
+TEXT`, `editor comment PATH START END TEXT`, `editor comment-resolve ID`,
+`editor propose PATH SUMMARY TEXT`, `editor proposals`, `editor accept ID`,
+`editor reject ID`, `editor checkpoint NAME`, `editor restore CHECKPOINT_ID`,
+and `editor replace-selection TEXT`.
 Proposals are exact-base and become stale on conflicting edits; resident
-buffers change only until `:editor save PATH` or `Ctrl-S`.
+buffers change only until `editor save PATH` in the palette or `Ctrl-S`.
 
 The resident process owns editor buffers, PTYs, language services, browser,
 agent, and event state. Browser recovery leaves project, process, editor, and
 agent state alive.
 
 Continuous browser pixels are off by default. In the development TUI use
-`:browser view` to toggle the selected presentation backend; use
+`Ctrl-K` then `browser view` to toggle the selected presentation backend; use
 `--tui-live ...` before launch to choose it. The standalone browser TUI uses
 `live on`/`live off`.
 
@@ -293,17 +297,17 @@ render policy, and an SSH environment variable does not prove graphics
 support.
 
 The semantic-first phone UI works without pixels. Use Herdr or tmux to retain
-the PTY across detach. In the development TUI, use `:browser view` for the
-selected live backend. For the private iPhone browser, run `:browser
-remote-open`; Glass prints a tokenized loopback URL and a hint equivalent to:
+the PTY across detach. In the development TUI, use `browser view` from `Ctrl-K` for the
+selected live backend. For the private iPhone browser, choose `browser remote-open`
+from the general command palette; Glass prints a tokenized loopback URL and a hint equivalent to:
 
 ```console
 ssh -N -L PORT:127.0.0.1:PORT USER@HOST
 ```
 
 Run that forward from the iPhone-side network, then open the printed local URL
-in Safari. Use `:browser remote-status` while sharing and `:browser
-remote-revoke` when finished. Never expose Chrome CDP publicly.
+in Safari. Use `browser remote-status` from `Ctrl-K` while sharing and
+`browser remote-revoke` when finished. Never expose Chrome CDP publicly.
 
 Follow [Mobile and remote development](mobile-remote.md) for forwarding,
 Herdr, Mosh, Remote View, browser recovery, terminal compatibility, and
@@ -358,9 +362,9 @@ errors, and optional development-runtime APIs.
 | `doctor` cannot find Chrome | No supported executable was discovered | Install system Chrome/Chromium, run `install-chromium` where supported, or pass `--chrome-path`. |
 | Chrome exits with profile status 21 | A confined browser cannot access a host profile path | Upgrade to 0.3.4 or newer; Glass automatically selects Snap Chromium's accessible persistent profile root. |
 | Agent engine not ready | `glass-core` is missing, incompatible, or has no provider | Run `glass agent doctor` and apply the reported step: install `glass-core`, set `GLASS_CORE_BINARY`, or connect a provider. |
-| Live backend unavailable or capture fails | Requested native graphics path or screenshot was not usable | Use `:browser view` with semantic-only state, choose explicit ANSI, or turn live mode off; semantic observation remains available. |
+| Live backend unavailable or capture fails | Requested native graphics path or screenshot was not usable | Use `browser view` from `Ctrl-K` with semantic-only state, choose explicit ANSI, or turn live mode off; semantic observation remains available. |
 | Port `9222` is occupied | Another process owns the preferred CDP port | In the TUI run `browser start`; the recovery sheet can attach to a verified endpoint, launch an isolated browser on a free local port, or retry `9222`. Project and agent state remain alive. |
-| Multiple targets found | More than one page is eligible | Run `browser targets` (optionally followed by a query), then select the intended target from the App surface. |
+| Multiple targets found | More than one page is eligible | Run `browser targets` (optionally followed by a query), then select the intended target from the Browser surface. |
 | LSP unavailable | The detected language server is missing or failed initialization | Install the server, inspect diagnostics, and retry; Glass does not fabricate diagnostics. |
 | One-shot process cannot remain running | The CLI owner is exiting | Use `--wait` for finite work or use TUI/MCP/daemon for a resident process. |
 | Stale revision | Browser/project state changed after observation | Re-observe or reread, then issue a new revision-bound request. |

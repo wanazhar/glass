@@ -543,6 +543,40 @@ pub(crate) fn run_with_browser_policy(
                             KeyCode::Home => state.help_scroll = 0,
                             _ => {}
                         }
+                    } else if matches!(
+                        active_overlay,
+                        None | Some(overlay::ActiveOverlay::Composer)
+                    ) && key.code == KeyCode::Tab
+                        && key
+                            .modifiers
+                            .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+                    {
+                        state.previous_surface();
+                    } else if matches!(
+                        active_overlay,
+                        None | Some(overlay::ActiveOverlay::Composer)
+                    ) && key.code == KeyCode::Tab
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        state.next_surface();
+                    } else if matches!(
+                        active_overlay,
+                        None | Some(overlay::ActiveOverlay::Composer)
+                    ) && key.modifiers.contains(KeyModifiers::ALT)
+                        && let KeyCode::Char(digit @ '1'..='8') = key.code
+                    {
+                        let number = digit.to_digit(10).unwrap_or_default() as usize - 1;
+                        let surfaces: &[DevSurface] = if state
+                            .responsive_class(state.terminal_width, state.terminal_height)
+                            == ResponsiveClass::Phone
+                        {
+                            &DevSurface::PHONE
+                        } else {
+                            &DevSurface::PRIMARY
+                        };
+                        if let Some(surface) = surfaces.get(number) {
+                            state.show_surface(*surface);
+                        }
                     } else if active_overlay == Some(overlay::ActiveOverlay::AttentionInbox) {
                         match key.code {
                             KeyCode::Esc => state.close_attention_inbox(),
@@ -621,6 +655,14 @@ pub(crate) fn run_with_browser_policy(
                         state.open_follow_up_queue();
                     } else if active_overlay.is_none() && key.code == KeyCode::Char('?') {
                         state.toggle_help();
+                    } else if active_overlay.is_none()
+                        && state.surface == DevSurface::Agent
+                        && key.code == KeyCode::Char('/')
+                        && !key.modifiers.intersects(
+                            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                        )
+                    {
+                        state.open_gc_command_menu(&mut worker);
                     } else if active_overlay == Some(overlay::ActiveOverlay::CommandCenterMenu) {
                         match key.code {
                             KeyCode::Esc => state.close_menu(),
@@ -788,6 +830,23 @@ pub(crate) fn run_with_browser_policy(
                             }
                             _ => {}
                         }
+                    } else if active_overlay == Some(overlay::ActiveOverlay::GcCommandMenu) {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Esc, _) => state.cancel_gc_command_menu(),
+                            (KeyCode::Enter, _) => state.submit_gc_command_selection(&mut worker),
+                            (KeyCode::Tab, _) => state.complete_gc_command_selection(),
+                            (KeyCode::Up, _) => state.move_gc_command_selection(-1),
+                            (KeyCode::Down, _) => state.move_gc_command_selection(1),
+                            (KeyCode::Backspace, _) => state.backspace_gc_command_query(),
+                            (KeyCode::Char(character), modifiers)
+                                if !modifiers.intersects(
+                                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                                ) =>
+                            {
+                                state.insert_gc_command_query(character)
+                            }
+                            _ => {}
+                        }
                     } else if active_overlay == Some(overlay::ActiveOverlay::Composer)
                         && state.surface == DevSurface::Agent
                         && matches!(
@@ -804,6 +863,30 @@ pub(crate) fn run_with_browser_policy(
                         }
                     } else if active_overlay == Some(overlay::ActiveOverlay::Composer) {
                         match (key.code, key.modifiers) {
+                            (KeyCode::Char('f'), modifiers)
+                                if state.surface == DevSurface::Agent
+                                    && modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.fork_selected_transcript(&mut worker);
+                            }
+                            (KeyCode::Char('r'), modifiers)
+                                if state.surface == DevSurface::Agent
+                                    && modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.rewind_selected_transcript(&mut worker);
+                            }
+                            (KeyCode::Char('e'), modifiers)
+                                if state.surface == DevSurface::Agent
+                                    && modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.edit_last_user_message();
+                            }
+                            (KeyCode::Char('o'), modifiers)
+                                if state.surface == DevSurface::Agent
+                                    && modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.toggle_transcript_expand();
+                            }
                             (KeyCode::Esc, _) => state.close_composer(),
                             (KeyCode::Enter, value)
                                 if value.intersects(
@@ -821,6 +904,18 @@ pub(crate) fn run_with_browser_policy(
                                 }
                             }
                             (KeyCode::Enter, _) => state.submit_composer(&mut worker),
+                            (KeyCode::Char('/'), modifiers)
+                                if state.surface == DevSurface::Agent
+                                    && state.composer_input.is_empty()
+                                    && state.composer_cursor == 0
+                                    && !modifiers.intersects(
+                                        KeyModifiers::CONTROL
+                                            | KeyModifiers::ALT
+                                            | KeyModifiers::SUPER,
+                                    ) =>
+                            {
+                                state.open_gc_command_menu(&mut worker)
+                            }
                             (KeyCode::Tab, _) => state.complete_composer_mention(),
                             (KeyCode::Up, _) => state.navigate_composer_history(true),
                             (KeyCode::Down, _) => state.navigate_composer_history(false),
@@ -833,6 +928,13 @@ pub(crate) fn run_with_browser_policy(
                                 if value.contains(KeyModifiers::CONTROL) =>
                             {
                                 state.navigate_composer_history(false);
+                            }
+                            (KeyCode::Char('x'), value)
+                                if state.surface == DevSurface::Code
+                                    && value.contains(KeyModifiers::CONTROL)
+                                    && value.contains(KeyModifiers::SHIFT) =>
+                            {
+                                state.toggle_composer_code_context();
                             }
                             (KeyCode::Char('x'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
@@ -1159,16 +1261,28 @@ pub(crate) fn run_with_browser_policy(
                             {
                                 state.queue_browser_intent(BrowserWorkspaceIntent::Reload)
                             }
-                            (KeyCode::Char('f'), _) if state.surface == DevSurface::Agent => {
+                            (KeyCode::Char('f'), modifiers)
+                                if state.surface == DevSurface::Agent
+                                    && modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
                                 state.fork_selected_transcript(&mut worker);
                             }
-                            (KeyCode::Char('r'), _) if state.surface == DevSurface::Agent => {
+                            (KeyCode::Char('r'), modifiers)
+                                if state.surface == DevSurface::Agent
+                                    && modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
                                 state.rewind_selected_transcript(&mut worker);
                             }
-                            (KeyCode::Char('e'), _) if state.surface == DevSurface::Agent => {
+                            (KeyCode::Char('e'), modifiers)
+                                if state.surface == DevSurface::Agent
+                                    && modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
                                 state.edit_last_user_message();
                             }
-                            (KeyCode::Char('o'), _) if state.surface == DevSurface::Agent => {
+                            (KeyCode::Char('o'), modifiers)
+                                if state.surface == DevSurface::Agent
+                                    && modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
                                 state.toggle_transcript_expand();
                             }
                             (KeyCode::Up, _) | (KeyCode::Char('k'), _)
@@ -1318,6 +1432,7 @@ pub(crate) fn run_with_browser_policy(
         {
             state.submit_queued_tool(&mut worker);
         }
+        state.tick_gc_command_discovery(&mut worker);
         state.flush_pending_selection_preview(&mut worker);
         if state.tick_pair_apply() {
             render_requested = true;
@@ -1465,7 +1580,10 @@ fn terminal_overlay_mask(state: &DevTuiState) -> u32 {
                 overlay::ActiveOverlay::AttentionInbox => 30,
                 overlay::ActiveOverlay::ThreadPicker => 29,
                 overlay::ActiveOverlay::SendAttemptRetryConfirmation => 28,
-                _ => 16 + active as u32,
+                // Overlay ids have grown past the upper bits over time. Keep
+                // ordinary overlays in 8..27, leaving bit 7 for Git diff and
+                // 28..30 for the three independently tracked inbox states.
+                _ => 8 + active as u32,
             };
             1_u32 << bit
         })
@@ -1644,10 +1762,10 @@ fn run_core_login(state: &mut DevTuiState, guard: &mut TerminalGuard) {
                 .map_or_else(|| "a signal".into(), |code| format!("status {code}"));
             state.status = match readiness {
                 Ok(true) => format!(
-                    "Glass Core exited ({exit}) · readiness refreshed. New settings apply to a newly spawned resident agent (`:agent spawn`); existing conversations remain available."
+                    "Glass Core exited ({exit}) · readiness refreshed. New settings apply to a newly created Core session; existing conversations remain available."
                 ),
                 Ok(false) => format!(
-                    "Glass Core exited ({exit}) · provider setup is still incomplete. Use `:agent setup login` to continue. Existing conversations remain available."
+                    "Glass Core exited ({exit}) · provider setup is still incomplete. Use / to browse Core login commands. Existing conversations remain available."
                 ),
                 Err(error) => format!(
                     "Glass Core exited ({exit}), but readiness refresh failed: {error}. Existing conversations remain available."
@@ -1669,13 +1787,10 @@ fn run_core_login(state: &mut DevTuiState, guard: &mut TerminalGuard) {
 }
 
 fn run_core_command_ui(state: &mut DevTuiState, guard: &mut TerminalGuard) {
-    let root = match state.ws().map(|workspace| workspace.root().to_path_buf()) {
-        Ok(root) => root,
-        Err(error) => {
-            state.status = format!("Glass Core command UI unavailable · {error}");
-            return;
-        }
-    };
+    // Project identity is immutable; do not make this explicit terminal
+    // handoff fail because a background host integration briefly owns the
+    // mutable workspace mutex.
+    let root = state.workspace.root().to_path_buf();
     let binary = match crate::core_runtime::resolve_core_binary(None).and_then(|binary| {
         std::fs::canonicalize(&binary).map_err(|error| {
             crate::development::DevelopmentError::NotFound(format!(
@@ -2529,7 +2644,10 @@ mod tests {
             },
             Instant::now() + Duration::from_millis(500),
         ));
-        assert!(!state.composer_mode);
+        assert!(
+            state.composer_mode,
+            "return to the ready composer after the overlay closes"
+        );
         drop(state);
         std::fs::remove_dir_all(root).expect("remove test workspace");
     }

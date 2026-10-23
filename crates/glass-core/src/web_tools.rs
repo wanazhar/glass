@@ -5,6 +5,7 @@
 //! browser or asks a second permission authority.
 
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -111,18 +112,22 @@ pub fn fetch(arguments: &Value) -> Result<String, String> {
         .limit(MAX_FETCH_BYTES)
         .read_to_vec()
         .map_err(|error| format!("web_fetch could not read response body: {error}"))?;
-    let source = String::from_utf8_lossy(&bytes);
+    let (source, decode_warning) = decode_response(&bytes, &content_type);
     let text = if media_type == "text/html" || media_type == "application/xhtml+xml" {
         html_to_text(&source)
     } else {
-        source.into_owned()
+        source
     };
     let char_count = text.chars().count();
     let excerpt: String = text.chars().take(max_chars).collect();
     let truncated = char_count > max_chars;
     Ok(format!(
-        "URL: {final_url}\nHTTP: {status}\nContent-Type: {content_type}\n{}{}",
+        "URL: {final_url}\nHTTP: {status}\nContent-Type: {content_type}\n{}{}{}",
         excerpt.trim(),
+        decode_warning
+            .as_deref()
+            .map(|warning| format!("\n[{warning}]"))
+            .unwrap_or_default(),
         if truncated {
             "\n[content truncated; use web_fetch with a larger max_chars, up to 60000]"
         } else {
@@ -195,12 +200,123 @@ fn exa_search_at(
     if text.is_empty() {
         return Err("Exa MCP returned empty search content".into());
     }
+    let text = format_exa_search_results(&text, count as usize);
     let character_count = text.chars().count();
     let mut output: String = text.chars().take(32_000).collect();
     if character_count > 32_000 {
         output.push_str("\n[search output truncated at 32000 characters]");
     }
     Ok(output)
+}
+
+fn format_exa_search_results(text: &str, count: usize) -> String {
+    let mut blocks = Vec::new();
+    let mut block = String::new();
+    for line in text.lines() {
+        if line.trim() == "---" {
+            blocks.push(std::mem::take(&mut block));
+        } else {
+            if !block.is_empty() {
+                block.push('\n');
+            }
+            block.push_str(line);
+        }
+    }
+    if !block.is_empty() {
+        blocks.push(block);
+    }
+    let has_source_urls = blocks.iter().any(|block| source_url(block).is_some());
+    if !has_source_urls {
+        return format!("Search provider: Exa MCP\n\n{text}");
+    }
+
+    let mut selected = Vec::new();
+    let mut seen = HashSet::new();
+    let mut source_count = 0usize;
+    for block in &blocks {
+        if let Some(raw_url) = source_url(block) {
+            if let Some(key) = canonical_search_url(raw_url)
+                && !seen.insert(key)
+            {
+                continue;
+            }
+            if source_count >= count {
+                break;
+            }
+            source_count += 1;
+            selected.push(block.as_str());
+        } else if source_count == 0 && selected.is_empty() {
+            // Preserve an introductory note before the first result, if any.
+            selected.push(block.as_str());
+        }
+    }
+    format!(
+        "Search provider: Exa MCP · {source_count} unique sources\n\n{}",
+        selected.join("\n\n---\n\n")
+    )
+}
+
+fn source_url(block: &str) -> Option<&str> {
+    block.lines().find_map(|line| {
+        line.strip_prefix("URL:")
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+    })
+}
+
+fn canonical_search_url(raw: &str) -> Option<String> {
+    let mut url = Url::parse(raw).ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return None;
+    }
+    url.set_fragment(None);
+    let query = url
+        .query_pairs()
+        .filter(|(name, _)| {
+            let name = name.to_ascii_lowercase();
+            !(name.starts_with("utm_")
+                || matches!(
+                    name.as_str(),
+                    "fbclid" | "gclid" | "dclid" | "msclkid" | "mc_cid" | "mc_eid"
+                ))
+        })
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    url.set_query(None);
+    if !query.is_empty() {
+        url.query_pairs_mut().extend_pairs(query);
+    }
+    Some(url.to_string())
+}
+
+fn decode_response(bytes: &[u8], content_type: &str) -> (String, Option<String>) {
+    let declared = content_type.split(';').skip(1).find_map(|parameter| {
+        let (name, value) = parameter.split_once('=')?;
+        name.trim()
+            .eq_ignore_ascii_case("charset")
+            .then(|| value.trim().trim_matches('"').trim_matches('\'').to_owned())
+    });
+    if let Some(label) = declared {
+        if let Some(encoding) = encoding_rs::Encoding::for_label(label.as_bytes()) {
+            let (decoded, _, had_errors) = encoding.decode(bytes);
+            let warning = had_errors
+                .then(|| format!("invalid bytes for declared {label} charset were replaced"));
+            return (decoded.into_owned(), warning);
+        }
+        let (decoded, _, _) = encoding_rs::UTF_8.decode(bytes);
+        return (
+            decoded.into_owned(),
+            Some(format!(
+                "unknown declared charset {label}; decoded as UTF-8"
+            )),
+        );
+    }
+    let (decoded, _, had_errors) = encoding_rs::UTF_8.decode(bytes);
+    let warning = had_errors.then(|| "invalid UTF-8 bytes were replaced".to_owned());
+    (decoded.into_owned(), warning)
 }
 
 fn mcp_post(
@@ -518,12 +634,19 @@ mod tests {
     }
 
     fn reply(stream: &mut TcpStream, status: &str, headers: &str, body: &str) {
+        reply_bytes(stream, status, headers, body.as_bytes());
+    }
+
+    fn reply_bytes(stream: &mut TcpStream, status: &str, headers: &str, body: &[u8]) {
+        // The header is written separately so arbitrary encoded response bytes
+        // are never formatted as UTF-8 text.
         write!(
             stream,
-            "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         )
         .unwrap();
+        stream.write_all(body).unwrap();
         stream.flush().unwrap();
     }
 
@@ -590,6 +713,58 @@ mod tests {
     }
 
     #[test]
+    fn fetch_decodes_declared_legacy_charset_and_reports_unknown_charset() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut legacy, _) = listener.accept().unwrap();
+            let _ = read_request(&mut legacy);
+            reply_bytes(
+                &mut legacy,
+                "200 OK",
+                "Content-Type: text/plain; charset=windows-1252\r\n",
+                b"caf\xe9",
+            );
+            let (mut unknown, _) = listener.accept().unwrap();
+            let _ = read_request(&mut unknown);
+            reply_bytes(
+                &mut unknown,
+                "200 OK",
+                "Content-Type: text/plain; charset=x-no-such-charset\r\n",
+                b"plain utf-8 text",
+            );
+        });
+        let legacy = fetch(&json!({"url":format!("http://{address}/legacy")})).unwrap();
+        assert!(legacy.contains("café"), "{legacy}");
+        let unknown = fetch(&json!({"url":format!("http://{address}/unknown")})).unwrap();
+        assert!(unknown.contains("plain utf-8 text"), "{unknown}");
+        assert!(unknown.contains("unknown declared charset x-no-such-charset"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_fails_explicitly_when_body_exceeds_the_byte_limit() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_request(&mut stream);
+            reply_bytes(
+                &mut stream,
+                "200 OK",
+                "Content-Type: text/plain; charset=utf-8\r\n",
+                &vec![b'x'; MAX_FETCH_BYTES as usize + 1],
+            );
+        });
+        let error = fetch(&json!({"url":format!("http://{address}/large")})).unwrap_err();
+        server.join().unwrap();
+        assert!(
+            error.contains("web_fetch could not read response body"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn fetch_rejects_credentialed_redirect_before_following_it() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -641,7 +816,7 @@ mod tests {
                         "",
                     ),
                     "tools/call" => {
-                        let mut result = "URL: https://docs.example.test/\n".to_string();
+                        let mut result = "Title: First\nURL: https://docs.example.test/?utm_source=one#section\nPublished: 2026-10-23\nHighlights:\nPrimary excerpt.\n\n---\n\nTitle: Duplicate\nURL: https://docs.example.test/\nPublished: 2026-10-22\nHighlights:\nDuplicate excerpt.\n\n---\n\nTitle: Second\nURL: https://other.example.test/\nPublished: 2026-10-21\nHighlights:\nAnother source.".to_string();
                         result.push_str(&"x".repeat(32_010));
                         let response = json!({"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":result}]}}).to_string();
                         reply(
@@ -659,11 +834,34 @@ mod tests {
         let endpoint = Url::parse(&format!("http://{address}/mcp")).unwrap();
         let result = exa_search_at(&endpoint, Some("test-key"), "fixture query", 4).unwrap();
         let requests = server.join().unwrap();
+        assert!(result.starts_with("Search provider: Exa MCP · 2 unique sources"));
         assert!(result.contains("https://docs.example.test/"));
+        assert!(result.contains("Primary excerpt."));
+        assert!(!result.contains("Duplicate excerpt."));
+        assert!(result.contains("Title: Second"));
         assert!(result.contains("[search output truncated at 32000 characters]"));
         assert_eq!(requests[2]["params"]["name"], "web_search_exa");
         assert_eq!(requests[2]["params"]["arguments"]["query"], "fixture query");
         assert_eq!(requests[2]["params"]["arguments"]["numResults"], 4);
+    }
+
+    #[test]
+    fn search_deduplicates_tracking_and_fragment_variants_before_counting_sources() {
+        let response = "Title: First ranked\nURL: https://EXAMPLE.test/article?utm_source=one#intro\nPublished: 2026-10-23\nHighlights:\nFirst excerpt.\n\n---\n\nTitle: Duplicate\nURL: https://example.test/article?utm_campaign=two\nPublished: 2026-10-23\nHighlights:\nDuplicate excerpt.\n\n---\n\nTitle: Distinct query\nURL: https://example.test/article?id=2\nPublished: 2026-10-22\nHighlights:\nDistinct excerpt.";
+        let output = format_exa_search_results(response, 2);
+        assert!(output.starts_with("Search provider: Exa MCP · 2 unique sources"));
+        assert!(output.contains("Title: First ranked"));
+        assert!(output.contains("URL: https://EXAMPLE.test/article?utm_source=one#intro"));
+        assert!(output.contains("Published: 2026-10-23"));
+        assert!(output.contains("First excerpt."));
+        assert!(!output.contains("Title: Duplicate"));
+        assert!(!output.contains("Duplicate excerpt."));
+        assert!(output.contains("Title: Distinct query"));
+        assert!(output.contains("Distinct excerpt."));
+        assert_ne!(
+            canonical_search_url("https://example.test/article?id=1"),
+            canonical_search_url("https://example.test/article?id=2")
+        );
     }
 
     #[test]
@@ -677,5 +875,18 @@ mod tests {
         assert_eq!(text, "one & two\nthree");
         assert!(validate_http_url("file:///etc/passwd").is_err());
         assert!(validate_http_url("https://user:secret@example.test/").is_err());
+    }
+
+    #[test]
+    fn exa_search_metadata_preserves_source_provenance() {
+        let formatted = format_exa_search_results(
+            "Title: Official guide\nURL: https://docs.example.test/guide\nPublished: 2026-10-22\nAuthor: Core team\nHighlights:\nPrimary source excerpt.",
+            5,
+        );
+        assert!(formatted.starts_with("Search provider: Exa MCP · 1 unique sources"));
+        assert!(formatted.contains("URL: https://docs.example.test/guide"));
+        assert!(formatted.contains("Published: 2026-10-22"));
+        assert!(formatted.contains("Author: Core team"));
+        assert!(formatted.contains("Primary source excerpt."));
     }
 }

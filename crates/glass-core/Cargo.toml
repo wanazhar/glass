@@ -21,6 +21,7 @@ glass-tui.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
+encoding_rs = { version = "0.8.42", default-features = false, features = ["alloc"] }
 ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 
 base64 = "0.22"

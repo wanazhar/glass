@@ -1215,6 +1215,7 @@ name = "glass-core"
 version = "0.3.14"
 dependencies = [
  "base64 0.22.1",
+ "encoding_rs",
  "fs2",
  "glass-mod-api",
  "glass-tui",

@@ -34,17 +34,31 @@ impl LocalHttpFixture {
         let address = listener.local_addr().expect("read fixture address");
         let (stop, stopped) = std::sync::mpsc::channel();
         let body =
-            b"<!doctype html><title>Glass Native Fixture</title><main>native-fixture-7e41</main>";
+            b"<!doctype html><title>Glass Native Fixture</title><main>native-fixture-7e41</main><a href=\"/clicked\">Open fixture link</a>";
         let thread = std::thread::spawn(move || {
             while stopped.try_recv().is_err() {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        let mut request = [0_u8; 2048];
+                        let request_len = stream.read(&mut request).unwrap_or_default();
+                        let request = String::from_utf8_lossy(&request[..request_len]);
+                        let request_path = request.lines().next().unwrap_or_default();
+                        let response_body: Vec<u8> = if request_path.contains("/oversized") {
+                            let oversized_css = (0..513)
+                                .map(|index| format!(".rule-{index} {{ color: red; }}"))
+                                .collect::<String>();
+                            format!("<!doctype html><title>Oversized Fixture</title><style>{oversized_css}</style><main>oversized-css-513</main>").into_bytes()
+                        } else if request_path.contains("/clicked") {
+                            b"<!doctype html><title>Clicked Fixture</title><main>native-clicked-91af</main>".to_vec()
+                        } else {
+                            body.to_vec()
+                        };
                         let response = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                            body.len()
+                            response_body.len()
                         );
                         let _ = stream.write_all(response.as_bytes());
-                        let _ = stream.write_all(body);
+                        let _ = stream.write_all(&response_body);
                         let _ = stream.flush();
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -117,10 +131,13 @@ def trace(direction, frame):
             "steered", "queued", "notice", "error", "settled"
         } else "unknown"
         data = frame.get("params", {}).get("data", {})
-        if event_type == "tool_start" and isinstance(data, dict):
-            name = data.get("name")
+        if event_type in ("tool_start", "tool_end") and isinstance(data, dict):
+            call_id = data.get("callId")
+            name = data.get("name") or tool_names.get(call_id)
             if isinstance(name, str):
                 record["tool_name"] = "".join(ch for ch in name if ch.isprintable())[:120]
+                if event_type == "tool_start" and isinstance(call_id, str):
+                    tool_names[call_id] = name
         if event_type == "tool_end" and isinstance(data, dict):
             is_error = data.get("isError")
             if isinstance(is_error, bool):
@@ -143,6 +160,7 @@ def trace(direction, frame):
 
 source_to_target = {sys.stdin.buffer: child.stdin, child.stdout: sys.stdout.buffer}
 open_sources = set(source_to_target)
+tool_names = {}
 while open_sources:
     readable, _, _ = select.select(list(open_sources), [], [])
     for source in readable:
@@ -3527,11 +3545,15 @@ fn live_core_browser_task_uses_native_glass_host_integration_on_local_fixture() 
     session.send(b"\r");
     assert!(session.wait_for("Message on Agent", Duration::from_secs(5)));
     let prompt = format!(
-        "Use Glass Dev's browser integration only, not bash or the standalone browser CLI. Check browser state; if disconnected, call glass.browser.start with backend native. Navigate to {} and observe the page. Reply with the backend, title, and page marker.",
+        "Use only advertised Glass browser tools, not bash. Start native. Navigate once to {}/oversized and record the CSS resource-limit error. Then navigate the same session to {}, observe, click Open fixture link using its current semantic reference and revision through glass.browser.act, and observe again. Do not retry the oversized URL. Stop. Report backend, recovery result, title, and clicked marker. marker clicked 91af",
+        fixture.url.trim_end_matches("/fixture.html"),
         fixture.url
     );
-    session.send_slowly(prompt.as_bytes(), Duration::from_millis(2));
-    assert!(session.wait_for_composer_text("page marker", Duration::from_secs(5)));
+    session.send_slowly(prompt.as_bytes(), Duration::from_millis(8));
+    assert!(
+        session.wait_for_composer_text("marker clicked 91af", Duration::from_secs(10)),
+        "browser task prompt was not visible in the composer; did not send it to Core"
+    );
     session.send(b"\r");
 
     let registry_path = fixture_state.join("threads/registry.json");
@@ -3612,6 +3634,9 @@ fn live_core_browser_task_uses_native_glass_host_integration_on_local_fixture() 
         })
         .collect::<Vec<_>>()
         .join(", ");
+    let browser_action_settled = safe_trace.contains("tool_end:glass.browser.act:ok");
+    let oversized_navigation_failed = safe_trace.contains("tool_end:glass.browser.navigate:error");
+    preserve_live_core_trace(&trace_path);
     session.kill();
     assert!(
         settled,
@@ -3620,7 +3645,8 @@ fn live_core_browser_task_uses_native_glass_host_integration_on_local_fixture() 
     assert!(
         normalized.contains("glass.browser.start")
             && normalized.contains("glass.browser.navigate")
-            && normalized.contains("glass.browser.observe"),
+            && normalized.contains("glass.browser.observe")
+            && normalized.contains("glass.browser.act"),
         "transcript did not show the native Glass browser tool flow"
     );
     assert!(
@@ -3629,8 +3655,114 @@ fn live_core_browser_task_uses_native_glass_host_integration_on_local_fixture() 
             && normalized.contains("native-fixture-7e41"),
         "Core did not report the expected local page/backend result"
     );
+    assert!(
+        normalized.contains("native-clicked-91af"),
+        "Core did not verify the result of a Glass browser action"
+    );
+    assert!(
+        browser_action_settled && oversized_navigation_failed,
+        "Core did not execute both the oversized-page failure and native browser action; sanitized trace: {safe_trace}"
+    );
 
     core_guard.terminate();
+    drop(fixture);
+}
+
+#[test]
+fn fake_core_browser_flow_uses_real_host_router_for_recovery_and_action() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+
+    let root = workspace_root();
+    let _cleanup = TemporaryProjectGuard(root.clone());
+    let fixture = LocalHttpFixture::start();
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-browser-flow"), "enabled").unwrap();
+    let fake_core = fake_core_binary_with_mode("browser-flow");
+    let mut session = Session::start_with_core_binary(&binary(), &root, 118, 32, Some(&fake_core));
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    assert!(
+        session.wait_for("Core available", Duration::from_secs(12)),
+        "fake Core did not become ready\n{}",
+        session.output_tail()
+    );
+    session.send(b"\r");
+    assert!(session.wait_for("Message on Agent", Duration::from_secs(5)));
+    let oversized_url = format!(
+        "{}/oversized",
+        fixture.url.trim_end_matches("/fixture.html")
+    );
+    let prompt = format!(
+        "Run the local native browser fixture flow for {oversized_url} and {}.",
+        fixture.url
+    );
+    session.send_slowly(prompt.as_bytes(), Duration::from_millis(5));
+    assert!(session.wait_for_composer_text("fixture.html.", Duration::from_secs(8)));
+    session.send(b"\r");
+    assert!(
+        session.wait_for("browser fixture flow complete", Duration::from_secs(90)),
+        "scripted Core browser flow did not settle through the real Glass tool router\n{}",
+        session.output_tail()
+    );
+    session.kill();
+
+    let results = std::fs::read_to_string(fixture_state.join("e2e-browser-flow-results.jsonl"))
+        .expect("scripted Core records host tool results")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let names = results
+        .iter()
+        .filter_map(|result| result["name"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            "glass.browser.start",
+            "glass.browser.navigate",
+            "glass.browser.navigate",
+            "glass.browser.observe",
+            "glass.browser.act",
+            "glass.browser.observe",
+            "glass.browser.stop",
+        ]
+    );
+    assert_eq!(results[0]["isError"], false);
+    assert_eq!(results[1]["isError"], true);
+    assert!(
+        results[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("invalid CSS style rules: value 513 exceeds limit 512"),
+        "oversized navigation returned an unexpected error: {}",
+        results[1]["text"]
+    );
+    assert_eq!(
+        results[2]["isError"], false,
+        "same-session recovery navigation failed: {}",
+        results[2]["text"]
+    );
+    let recovered = serde_json::from_str::<serde_json::Value>(results[2]["text"].as_str().unwrap())
+        .expect("recovery navigation result is JSON");
+    assert_eq!(recovered["backend"], "native");
+    assert_eq!(recovered["url"], fixture.url);
+    assert_eq!(results[4]["isError"], false);
+    let action = serde_json::from_str::<serde_json::Value>(results[4]["text"].as_str().unwrap())
+        .expect("browser act result is JSON");
+    assert_eq!(action["backend"], "native");
+    assert_eq!(action["status"], "succeeded");
+    assert!(
+        action["currentRevision"].as_u64().unwrap_or_default()
+            > recovered["browserRevision"].as_u64().unwrap_or_default()
+    );
+    let after_click =
+        serde_json::from_str::<serde_json::Value>(results[5]["text"].as_str().unwrap())
+            .expect("post-action observation is JSON");
+    assert_eq!(after_click["backend"], "native");
+    assert_eq!(after_click["browserRevision"], action["currentRevision"]);
+    assert_eq!(results[6]["isError"], false);
     drop(fixture);
 }
 

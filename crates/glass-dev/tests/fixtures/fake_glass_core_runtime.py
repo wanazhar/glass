@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import select
 import sys
 import time
@@ -87,10 +88,71 @@ def request_tool(call_id: str, name: str, arguments: dict) -> dict:
             return message.get("result", {})
 
 
+def run_browser_flow(identifier, params: dict, turn: str) -> None:
+    """Exercise Glass's real browser integration router without a provider."""
+    text = str(params.get("text", ""))
+    urls = re.findall(r"http://127\.0\.0\.1:\d+/[^\s]+", text)
+    oversized_url = next((url.rstrip(".,") for url in urls if "/oversized" in url), None)
+    fixture_url = next((url.rstrip(".,") for url in urls if "/fixture.html" in url), None)
+    if not oversized_url or not fixture_url:
+        raise ValueError("browser-flow prompt must include local oversized and fixture URLs")
+
+    calls = [
+        ("browser-start", "glass.browser.start", {"backend": "native"}),
+        (
+            "browser-navigate-oversized",
+            "glass.browser.navigate",
+            {"url": oversized_url, "timeoutSeconds": 30},
+        ),
+        (
+            "browser-navigate-recovery",
+            "glass.browser.navigate",
+            {"url": fixture_url, "timeoutSeconds": 30},
+        ),
+        ("browser-observe-before-click", "glass.browser.observe", {}),
+        (
+            "browser-act-click",
+            "glass.browser.act",
+            {"action": "click", "target": "role=link[name=Open fixture link]"},
+        ),
+        ("browser-observe-after-click", "glass.browser.observe", {}),
+        ("browser-stop", "glass.browser.stop", {}),
+    ]
+    results_path = os.path.join(os.getcwd(), ".glass", "e2e-browser-flow-results.jsonl")
+    for call_id, name, arguments in calls:
+        event("tool_start", {"callId": call_id, "name": name}, turn)
+        result = request_tool(call_id, name, arguments)
+        if os.path.exists(os.path.join(os.getcwd(), ".glass", "e2e-browser-flow")):
+            with open(results_path, "a", encoding="utf-8") as log:
+                log.write(
+                    json.dumps(
+                        {
+                            "name": name,
+                            "isError": bool(result.get("isError")),
+                            "text": result.get("text", ""),
+                        },
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+        event(
+            "tool_end",
+            {"callId": call_id, "name": name, "isError": bool(result.get("isError"))},
+            turn,
+        )
+    event("text", {"text": "browser fixture flow complete"}, turn)
+    event("usage", {"input": 1, "output": 1}, turn)
+    event("settled", {"reason": "completed"}, turn)
+    reply(identifier, {"sessionId": SESSION_ID, "settled": True})
+
+
 def run_turn(identifier, params: dict) -> None:
     text = str(params.get("text", ""))
     turn = "turn-1"
     event("turn_start", {}, turn)
+    if MODE == "browser-flow":
+        run_browser_flow(identifier, params, turn)
+        return
     if MODE in ("cancel-gated", "cancel-unconfirmed") and "cancel-gated-turn" in text:
         gate_root = os.path.join(os.getcwd(), ".glass")
         with open(

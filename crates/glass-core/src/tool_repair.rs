@@ -16,16 +16,7 @@ pub fn validate(call: &ToolCall, tools: &[(String, Value)]) -> Result<(), String
     let schema = tools
         .iter()
         .find(|(name, _)| name == &call.name)
-        .ok_or_else(|| {
-            format!(
-                "unknown tool; available tools: {}",
-                tools
-                    .iter()
-                    .map(|(n, _)| n.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })?;
+        .ok_or_else(|| unknown_tool_feedback(&call.name, tools))?;
     schema_shape(&schema.1, 0)?;
     let args: Value = serde_json::from_str(&call.arguments).map_err(|e| {
         format!(
@@ -38,6 +29,55 @@ pub fn validate(call: &ToolCall, tools: &[(String, Value)]) -> Result<(), String
         return Err("arguments must be a JSON object".into());
     }
     check(&schema.1, &args, "$", 0)
+}
+
+fn unknown_tool_feedback(name: &str, tools: &[(String, Value)]) -> String {
+    let Some((namespace, requested)) = name.rsplit_once('.') else {
+        return "unknown tool; use the exact names in the current tool catalog".into();
+    };
+    let prefix = format!("{namespace}.");
+    let scoped = tools
+        .iter()
+        .filter_map(|(candidate, _)| candidate.strip_prefix(&prefix))
+        .collect::<Vec<_>>();
+    if scoped.is_empty() {
+        return "unknown tool; use the exact names in the current tool catalog".into();
+    }
+
+    // Catch common near-misses like `glass.browser.action` without creating
+    // an alias or accepting an unadvertised name. The suggestion is still
+    // validated against the exact current catalog on the next request.
+    let close_matches = scoped
+        .iter()
+        .filter(|candidate| candidate.starts_with(requested) || requested.starts_with(**candidate))
+        .take(3)
+        .map(|candidate| format!("{prefix}{candidate}"))
+        .collect::<Vec<_>>();
+    if !close_matches.is_empty() {
+        return format!(
+            "unknown tool name; use the exact advertised name {}",
+            close_matches.join(" or ")
+        );
+    }
+
+    let preferred = if namespace == "glass.browser" {
+        ["act", "navigate", "observe", "state", "start", "stop"]
+            .into_iter()
+            .filter(|candidate| scoped.contains(candidate))
+            .take(4)
+            .map(|candidate| format!("{prefix}{candidate}"))
+            .collect::<Vec<_>>()
+    } else {
+        scoped
+            .into_iter()
+            .take(4)
+            .map(|candidate| format!("{prefix}{candidate}"))
+            .collect::<Vec<_>>()
+    };
+    format!(
+        "unknown tool name; use an exact advertised name in this namespace, such as {}",
+        preferred.join(", ")
+    )
 }
 
 /// Bounded, value-free diagnostic for the visible transcript when a batch is
@@ -332,6 +372,76 @@ mod tests {
             "glass.browser.navigate: $.browserRevision: expected integer"
         );
         assert!(!summary.contains("private-value"));
+    }
+
+    #[test]
+    fn unknown_browser_tool_suggests_the_exact_action_tool_without_generic_catalog_dump() {
+        let tools = vec![
+            ("bash".into(), serde_json::json!({"type":"object"})),
+            (
+                "glass.file.read".into(),
+                serde_json::json!({"type":"object"}),
+            ),
+            (
+                "glass.browser.navigate".into(),
+                serde_json::json!({"type":"object"}),
+            ),
+            (
+                "glass.browser.act".into(),
+                serde_json::json!({"type":"object"}),
+            ),
+            (
+                "glass.browser.observe".into(),
+                serde_json::json!({"type":"object"}),
+            ),
+        ];
+        let bad = call(
+            "glass.browser.action",
+            r#"{"action":"click","target":"private"}"#,
+        );
+        let error = validate(&bad, &tools).unwrap_err();
+        assert_eq!(
+            error,
+            "unknown tool name; use the exact advertised name glass.browser.act"
+        );
+        let summary = rejection_summary(&[bad], &[Some(error)]);
+        assert!(summary.contains("glass.browser.act"));
+        assert!(!summary.contains("bash"));
+        assert!(!summary.contains("glass.file.read"));
+        assert!(!summary.contains("private"));
+        assert!(summary.len() < 240);
+    }
+
+    #[test]
+    fn unknown_tool_feedback_is_bounded_to_its_namespace() {
+        let tools = vec![
+            ("bash".into(), serde_json::json!({"type":"object"})),
+            (
+                "glass.browser.act".into(),
+                serde_json::json!({"type":"object"}),
+            ),
+            (
+                "glass.browser.navigate".into(),
+                serde_json::json!({"type":"object"}),
+            ),
+            (
+                "glass.browser.observe".into(),
+                serde_json::json!({"type":"object"}),
+            ),
+            (
+                "glass.browser.state".into(),
+                serde_json::json!({"type":"object"}),
+            ),
+            (
+                "glass.browser.start".into(),
+                serde_json::json!({"type":"object"}),
+            ),
+        ];
+        let error = validate(&call("glass.browser.unknown", "{}"), &tools).unwrap_err();
+        assert!(error.contains("glass.browser.act"));
+        assert!(error.contains("glass.browser.navigate"));
+        assert!(!error.contains("bash"));
+        assert!(error.len() < 240);
     }
 
     #[test]

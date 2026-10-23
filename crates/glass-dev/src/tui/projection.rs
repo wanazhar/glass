@@ -184,6 +184,9 @@ pub fn browser_evidence(value: &Value) -> String {
         if ok { "✓" } else { "×" },
         tool
     )];
+    if let Some(backend) = value.get("backend").and_then(Value::as_str) {
+        lines.push(format!("  backend {backend}"));
+    }
     if let Some(title) = value.get("title").and_then(Value::as_str) {
         lines.push(format!("  page {title}"));
     }
@@ -1377,6 +1380,7 @@ mod tests {
             "type": "glass_browser_evidence",
             "toolName": "glass.browser.navigate",
             "ok": true,
+            "backend": "native",
             "title": "Checkout",
             "url": "https://example.test/checkout?token=secret#payment",
             "browserRevision": 42,
@@ -1385,6 +1389,7 @@ mod tests {
         });
         let projected = browser_evidence(&value);
         assert!(projected.contains("Checkout"));
+        assert!(projected.contains("backend native"));
         assert!(projected.contains("browser revision 42"));
         assert!(projected.contains("https://example.test/checkout"));
         assert!(!projected.contains("token=secret"));
@@ -1921,5 +1926,54 @@ mod tests {
         assert!(projected.contains("glass.browser.observe"));
         assert!(projected.contains("SYSTEM"));
         assert!(projected.contains("browser revision 9"));
+    }
+
+    #[test]
+    fn failed_core_browser_evidence_keeps_the_host_error_authoritative() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let event = |sequence: u64, kind: &str, payload| crate::AgentEvent {
+            sequence,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: kind.into(),
+            payload,
+        };
+        let entries = conversation_entries(&[
+            event(
+                1,
+                "tool_execution_start",
+                serde_json::json!({
+                    "callId": "call-browser-1",
+                    "toolName": "glass.browser.navigate",
+                    "command": "https://example.test"
+                }),
+            ),
+            event(
+                2,
+                "tool_execution_end",
+                serde_json::json!({
+                    "callId": "call-browser-1",
+                    "isError": false,
+                    "text": "completed"
+                }),
+            ),
+            event(
+                3,
+                "glass_browser_evidence",
+                serde_json::json!({
+                    "type": "glass_browser_evidence",
+                    "toolName": "glass.browser.navigate",
+                    "ok": false,
+                    "error": "connection failure: no committed document generation"
+                }),
+            ),
+        ]);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, ConversationKind::Error);
+        assert!(entries[0].text.contains("glass.browser.navigate"));
+        assert!(entries[0].text.contains("no committed document generation"));
+        assert!(!entries[0].text.contains("completed"));
+        assert!(!entries[0].text.contains("SYSTEM"));
     }
 }

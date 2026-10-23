@@ -37,7 +37,10 @@ Every tool call is executed by Glass, not by you:
 - Use the `glass.browser.*` host integration for browser tasks inside Glass Dev.
   Start with `glass.browser.state`; if disconnected, call `glass.browser.start`
   to start Glass's native engine, then observe the page and act through the
-  current browser revision.
+  current browser revision. Navigate with `glass.browser.navigate`; use the
+  exact `glass.browser.act` tool for `back`, `forward`, `reload`, `stopLoading`,
+  `click`, `type`, and `scroll` actions. Use only tool names present in the
+  negotiated catalog; the action operation is named `act`.
 - Use the connected backend reported by `glass.browser.state` and the backend
   provenance returned with browser results. If a native operation is
   unsupported, report that result. When the requested capability is supported

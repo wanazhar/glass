@@ -681,11 +681,21 @@ impl NativeContentProcess {
             }
         };
         if response.get("kind").and_then(Value::as_str) == Some("error") {
-            return Err(decode_content_process_error_response(
+            let error = decode_content_process_error_response(
                 &response,
                 "content process load",
                 "content process rejected the document load",
-            ));
+            );
+            // A worker that has never committed a document cannot service
+            // document-owned requests after a rejected initial load. Retire
+            // it now so the next navigation starts with a clean generation
+            // owner. Once a document has committed, leave that process and
+            // its revision intact when a later navigation fails.
+            if self.current_document_generation.is_none() {
+                self.terminate_and_reap("retire content process after failed initial load")
+                    .await?;
+            }
+            return Err(error);
         }
         let result = decode_load_response(&response, id);
         if cancellation.is_some_and(NativeNavigationCancellation::is_cancelled) {

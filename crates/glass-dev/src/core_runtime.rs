@@ -1300,12 +1300,52 @@ fn translate_event(params: &Value) -> Vec<Value> {
 
 fn tool_evidence(call: &ToolCall, result: &DevelopmentResult<Value>) -> Value {
     let browser = call.name.starts_with("glass.browser.");
-    json!({
+    let mut evidence = json!({
         "type": if browser { "glass_browser_evidence" } else { "glass_tool_evidence" },
         "toolName": call.name,
         "ok": result.is_ok(),
         "error": result.as_ref().err().map(|error| redact_text(&error.to_string())),
-    })
+    });
+    if browser && let Ok(result) = result {
+        if let Some(backend) = result.get("backend").and_then(Value::as_str)
+            && matches!(backend, "native" | "chromium")
+        {
+            evidence["backend"] = Value::from(backend);
+        }
+        for key in ["title", "status", "action", "targetId"] {
+            if let Some(value) = result.get(key).and_then(Value::as_str) {
+                let bounded = value
+                    .chars()
+                    .map(|character| {
+                        if character.is_control() {
+                            ' '
+                        } else {
+                            character
+                        }
+                    })
+                    .take(if key == "title" { 160 } else { 96 })
+                    .collect::<String>()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !bounded.is_empty() {
+                    evidence[key] = Value::from(bounded);
+                }
+            }
+        }
+        let revision = result
+            .get("browserRevision")
+            .or_else(|| result.get("currentRevision"))
+            .or_else(|| result.get("revision"))
+            .and_then(Value::as_u64);
+        if let Some(revision) = revision {
+            evidence["browserRevision"] = Value::from(revision);
+        }
+        if let Some(count) = result.get("semanticEntityCount").and_then(Value::as_u64) {
+            evidence["semanticEntityCount"] = Value::from(count);
+        }
+    }
+    evidence
 }
 
 /// True when a field name, flag, or environment variable carries a credential.
@@ -2319,6 +2359,36 @@ mod tests {
         let error = evidence["error"].as_str().unwrap();
         assert!(error.contains("<redacted>"), "{error}");
         assert!(!error.contains("abcdef"), "{error}");
+    }
+
+    #[test]
+    fn browser_evidence_forwards_only_bounded_backend_and_result_facts() {
+        let evidence = tool_evidence(
+            &ToolCall {
+                id: "call-2".into(),
+                name: "glass.browser.observe".into(),
+                arguments: json!({"url":"private input must not be copied"}),
+            },
+            &Ok(json!({
+                "backend":"native",
+                "title":"Checkout\nprivate title suffix",
+                "url":"https://example.test/?token=private",
+                "browserRevision":42,
+                "targetId":"page-1",
+                "semanticEntityCount":3,
+                "body":"private page body",
+                "cookies":"private cookie"
+            })),
+        );
+        assert_eq!(evidence["backend"], "native");
+        assert_eq!(evidence["title"], "Checkout private title suffix");
+        assert_eq!(evidence["browserRevision"], 42);
+        assert_eq!(evidence["targetId"], "page-1");
+        assert_eq!(evidence["semanticEntityCount"], 3);
+        assert!(evidence.get("url").is_none());
+        assert!(evidence.get("body").is_none());
+        assert!(evidence.get("cookies").is_none());
+        assert!(evidence.get("arguments").is_none());
     }
 
     #[test]

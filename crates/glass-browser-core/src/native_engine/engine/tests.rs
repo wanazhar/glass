@@ -89,6 +89,88 @@ async fn asynchronous_effect_turn_runs_in_the_matching_page_owner() {
 }
 
 #[tokio::test]
+async fn failed_first_content_load_restarts_owner_before_next_navigation() {
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for (body, expected_path) in [
+            (
+                format!(
+                    "<!doctype html><style>{}</style><main>bad</main>",
+                    (0..513)
+                        .map(|index| format!(".r{index}{{color:red}}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+                "/too-many-rules",
+            ),
+            (
+                "<!doctype html><title>Recovered</title><main>ok</main>".into(),
+                "/good",
+            ),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let request = String::from_utf8_lossy(&request);
+            assert!(request.starts_with(&format!("GET {expected_path} ")));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://failed-initial-load/start")
+        .with_fixture("fixture://failed-initial-load/start", "<main>start</main>")
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    let committed_revision = engine.revision();
+
+    let error = engine
+        .navigate_async(format!("http://{address}/too-many-rules"))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("CSS style rules exceeds limit 512 (actual 513)")
+    );
+    assert_eq!(
+        engine.revision(),
+        committed_revision,
+        "failed load must not commit a revision"
+    );
+    assert!(
+        engine.take_async_effect_notifications().unwrap().is_empty(),
+        "the background effect pump must discard the retired worker's terminal pipe error"
+    );
+
+    let recovered = engine
+        .navigate_async(format!("http://{address}/good"))
+        .await
+        .expect("a later navigation must create a fresh content owner");
+    assert_eq!(recovered.url, format!("http://{address}/good"));
+    assert!(recovered.visible_text.contains("ok"));
+    assert!(engine.revision() > committed_revision);
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_worker_timer_fetch_uses_parent_cookie_authority() {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},

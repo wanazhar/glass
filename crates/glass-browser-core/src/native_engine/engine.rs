@@ -824,6 +824,21 @@ impl NativeEngine {
     pub fn take_async_effect_notifications(
         &mut self,
     ) -> Result<Vec<NativeContentAsyncEffectNotification>, NativeEngineError> {
+        // A content worker can be deliberately retired after an initial
+        // navigation fails before it commits any document. The asynchronous
+        // effect pump may still receive the child's terminal pipe error after
+        // that navigation has already returned its typed failure. There is
+        // no live document owner whose effects can be dispatched in this
+        // state; drop that retired handle so a later navigation can start a
+        // fresh worker instead of poisoning the whole browser backend.
+        if self
+            .content_process
+            .as_mut()
+            .is_some_and(|process| !process.is_healthy() && !process.has_current_document())
+        {
+            self.content_process.take();
+            return Ok(Vec::new());
+        }
         match self.content_process.as_mut() {
             Some(process) => process.take_async_effect_notifications(),
             None => Ok(Vec::new()),

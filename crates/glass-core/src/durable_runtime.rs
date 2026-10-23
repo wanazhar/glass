@@ -1235,6 +1235,44 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_finish_append_keeps_task_unsettled_and_buffered() {
+        let (dir, host) = setup();
+        running_task(&host, "generation");
+        let context = Context::new(host.store.clone(), "generation".into(), "root".into());
+        context
+            .buffer
+            .borrow_mut()
+            .push(Record::Reasoning("buffered reasoning".into()));
+        {
+            let mut partial = context.partial.borrow_mut();
+            partial.text = "partial answer".into();
+            partial.pending_text = "answer".into();
+        }
+        host.store.borrow_mut().fail_writes_for_test().unwrap();
+        let before = host.store.borrow().state.sequence;
+
+        assert!(
+            context
+                .finish("completed", None, &json!("turn-1"))
+                .unwrap_err()
+                .contains("durable append uncertain")
+        );
+
+        let store = host.store.borrow();
+        assert_eq!(store.state.sequence, before);
+        assert_eq!(store.state.tasks["generation"].status, "running");
+        assert!(!store.state.documents.contains_key("root:gc.live"));
+        assert!(store.is_poisoned());
+        drop(store);
+        assert_eq!(context.buffer.borrow().len(), 1);
+        assert_eq!(context.partial.borrow().pending_text, "answer");
+        drop(context);
+        drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn early_disconnected_runtime_exit_is_checkpointed_as_interrupted() {
         let (dir, host) = setup();

@@ -937,7 +937,7 @@ mod wire_shape {
         // of the four slots.
         let body = body_for(&[glass_mod_api::Message::User("hi".into())]);
         let tools = body["tools"].as_array().expect("tools present");
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 9);
         assert!(tools.iter().all(|t| t.get("cache_control").is_none()));
     }
 

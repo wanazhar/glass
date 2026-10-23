@@ -20,7 +20,10 @@ an additional runtime. Review its access and configuration first.
 | [TypeScript starter](typescript/README.md) | Typed tools, native previews and diagnostics | Node |
 | [Todo](todo/README.md) | Compatibility adapter for the native durable checklist | Python |
 | [Verify](verify/README.md) | Project checks after detected shell writes | Python |
-| [Web](web/README.md) | Readable pages and search results | Python |
+
+Web search and direct page fetching are now native Core tools; see
+[Web search and fetch](../docs/web-tools.md). They are available without
+enabling a subprocess extension.
 
 The [companion](companion/README.md) and [structure](structure/README.md) directories
 contain explicit CLI helpers rather than normal tool-handshake extensions.

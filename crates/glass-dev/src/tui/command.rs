@@ -146,6 +146,18 @@ const CORE_AGENT_ACTIONS: &[SurfaceAction] = &[
         description: "list models from the selected resident session",
     },
     SurfaceAction {
+        label: "Discover GC slash commands",
+        command: "agent commands",
+        key: ":",
+        description: "ask the resident Core for its current command catalogue",
+    },
+    SurfaceAction {
+        label: "Open GC native command menu",
+        command: "agent command-ui",
+        key: ":",
+        description: "hand the terminal to standalone Glass Core",
+    },
+    SurfaceAction {
         label: "Select Core model",
         command: "agent model PROVIDER MODEL",
         key: ":",
@@ -1793,9 +1805,11 @@ fn execute_agent_for_harness(
             state.surface = DevSurface::Agent;
             Ok(compact_result("glass.agent.send", &result))
         }
-        "hello" | "models" => {
+        "hello" | "models" | "commands" => {
             let tool = if action == "hello" {
                 "glass.agent.hello"
+            } else if action == "commands" {
+                "glass.agent.commands"
             } else {
                 "glass.agent.models"
             };
@@ -1809,6 +1823,22 @@ fn execute_agent_for_harness(
             let result = run_tool(state, tool, arguments, false)?;
             state.surface = DevSurface::Agent;
             Ok(compact_result(tool, &result))
+        }
+        "command-ui" => {
+            if parts.len() != 1 { return Err("agent command-ui takes no arguments".into()); }
+            state.request_agent_command_ui()?;
+            Ok(state.status.clone())
+        }
+        "command" => {
+            let name = parts.get(1).ok_or("agent command requires NAME [ARGUMENTS]")?;
+            let arguments = parts.get(2..).unwrap_or_default().join(" ");
+            let mut payload = json!({"name":name});
+            if !arguments.is_empty() { payload["arguments"] = Value::String(arguments); }
+            let (agent_id, _) = explicit_or_active_agent(state, &parts)?;
+            if let Some(agent_id) = agent_id { payload["agentId"] = Value::String(agent_id); }
+            let result = run_tool(state, "glass.agent.command", payload, false)?;
+            state.surface = DevSurface::Agent;
+            Ok(compact_result("glass.agent.command", &result))
         }
         "cancel" | "abort" => {
             let (agent_id, _) = explicit_or_active_agent(state, &parts)?;
@@ -3450,6 +3480,34 @@ mod tests {
             state.ws().expect("workspace lock").generation()
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn gc_commands_are_discovered_and_dispatched_through_core_tools() {
+        let (mut state, root) = test_state("gc-commands");
+        execute(&mut state, "agent commands").expect("queue GC command discovery");
+        let (call, _) = state
+            .queued_tool_request
+            .take()
+            .expect("command discovery tool");
+        assert_eq!(call.name, "glass.agent.commands");
+        execute(&mut state, "agent command status").expect("queue GC runtime command");
+        let (call, _) = state
+            .queued_tool_request
+            .take()
+            .expect("command dispatch tool");
+        assert_eq!(call.name, "glass.agent.command");
+        assert_eq!(call.arguments["name"], "status");
+        _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn gc_native_command_ui_uses_explicit_terminal_handoff() {
+        let (mut state, root) = test_state("gc-command-ui");
+        execute(&mut state, "agent command-ui").expect("request native GC UI");
+        assert!(state.agent_command_ui_requested);
+        assert!(state.status.contains("press : in GC"));
+        _ = fs::remove_dir_all(root);
     }
 
     #[test]

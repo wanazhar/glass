@@ -1458,6 +1458,11 @@
         },
         {
           "level": "2",
+          "title": "Web research",
+          "anchor": "web-research"
+        },
+        {
+          "level": "2",
           "title": "Collaboration",
           "anchor": "collaboration"
         }
@@ -1691,6 +1696,7 @@
         "products/glass-core/docs/configuration.md",
         "products/glass-core/docs/getting-started.md",
         "products/glass-core/docs/plan/README.md",
+        "products/glass-core/docs/web-tools.md",
         "products/glass-core/extensions/README.md",
         "products/glass-core/research/README.md"
       ],
@@ -83031,6 +83037,7 @@
         "products/glass-core/docs/sessions.md",
         "products/glass-core/docs/terminal.md",
         "products/glass-core/docs/tools.md",
+        "products/glass-core/docs/web-tools.md",
         "products/glass-core/docs/workflows.md"
       ],
       "dependencies": [
@@ -83050,6 +83057,7 @@
         "products/glass-core/docs/security.md",
         "products/glass-core/docs/terminal.md",
         "products/glass-core/docs/tools.md",
+        "products/glass-core/docs/web-tools.md",
         "products/glass-core/docs/workflows.md",
         "products/glass-core/packages/extension-sdk/README.md",
         "products/glass-core/packages/runtime-client/README.md"
@@ -83285,6 +83293,7 @@
         "products/glass-core/docs/sessions.md",
         "products/glass-core/docs/terminal.md",
         "products/glass-core/docs/tools.md",
+        "products/glass-core/docs/web-tools.md",
         "products/glass-core/docs/workflows.md",
         "products/glass-core/docs/writing.md",
         "products/glass-core/research/README.md",
@@ -83322,6 +83331,7 @@
         "products/glass-core/docs/sessions.md",
         "products/glass-core/docs/terminal.md",
         "products/glass-core/docs/tools.md",
+        "products/glass-core/docs/web-tools.md",
         "products/glass-core/docs/workflows.md",
         "products/glass-core/docs/writing.md",
         "products/glass-core/extensions/README.md",
@@ -83838,8 +83848,8 @@
         "products/glass-core/README.md",
         "products/glass-core/docs/INDEX.md",
         "products/glass-core/docs/tools.md",
-        "products/glass-core/extensions/hashline/README.md",
-        "products/glass-core/extensions/web/README.md"
+        "products/glass-core/docs/web-tools.md",
+        "products/glass-core/extensions/hashline/README.md"
       ],
       "topicRoute": "docs/INDEX.md#product-and-package-boundaries",
       "route": "products/glass-core/docs/integrations.md#optional-integrations",
@@ -91076,6 +91086,7 @@
         "products/glass-core/docs/reference/checklist.md",
         "products/glass-core/docs/reference/interaction.md",
         "products/glass-core/docs/reference/storage.md",
+        "products/glass-core/docs/web-tools.md",
         "products/glass-core/extensions/browser/README.md"
       ],
       "topicRoute": "docs/INDEX.md#product-and-package-boundaries",
@@ -91130,6 +91141,53 @@
           "level": "2",
           "title": "Pi tool comparison",
           "anchor": "pi-tool-comparison"
+        }
+      ]
+    },
+    {
+      "path": "products/glass-core/docs/web-tools.md",
+      "class": "current",
+      "topic": "products",
+      "audience": "product-user-or-developer",
+      "status": "current-source-guidance",
+      "recommendation": "KEEP_PUBLIC",
+      "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md",
+        "products/glass-core/README.md",
+        "products/glass-core/docs/INDEX.md",
+        "products/glass-core/docs/integrations.md",
+        "products/glass-core/docs/tools.md",
+        "products/glass-core/extensions/README.md",
+        "products/glass-core/extensions/web/README.md"
+      ],
+      "dependencies": [
+        "products/glass-core/README.md",
+        "products/glass-core/docs/INDEX.md"
+      ],
+      "topicRoute": "docs/INDEX.md#product-and-package-boundaries",
+      "route": "products/glass-core/docs/web-tools.md#web-search-and-fetch",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Web search and fetch",
+          "anchor": "web-search-and-fetch"
+        },
+        {
+          "level": "2",
+          "title": "Search",
+          "anchor": "search"
+        },
+        {
+          "level": "2",
+          "title": "Fetch",
+          "anchor": "fetch"
+        },
+        {
+          "level": "2",
+          "title": "Offline verification",
+          "anchor": "offline-verification"
         }
       ]
     },
@@ -91312,6 +91370,7 @@
       "dependencies": [
         "products/glass-core/docs/extending.md",
         "products/glass-core/docs/security.md",
+        "products/glass-core/docs/web-tools.md",
         "products/glass-core/extensions/adapters/README.md",
         "products/glass-core/extensions/browser/README.md",
         "products/glass-core/extensions/cache-warmer/README.md",
@@ -91327,8 +91386,7 @@
         "products/glass-core/extensions/subagent/README.md",
         "products/glass-core/extensions/todo/README.md",
         "products/glass-core/extensions/typescript/README.md",
-        "products/glass-core/extensions/verify/README.md",
-        "products/glass-core/extensions/web/README.md"
+        "products/glass-core/extensions/verify/README.md"
       ],
       "topicRoute": "docs/INDEX.md#product-and-package-boundaries",
       "route": "products/glass-core/extensions/README.md#optional-extensions-and-helpers",
@@ -91856,28 +91914,17 @@
       "recommendation": "KEEP_PUBLIC",
       "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
       "canonicalSuccessor": null,
-      "consumers": [
-        "products/glass-core/docs/integrations.md",
-        "products/glass-core/extensions/README.md"
+      "consumers": [],
+      "dependencies": [
+        "products/glass-core/docs/web-tools.md"
       ],
-      "dependencies": [],
       "topicRoute": "docs/INDEX.md#product-and-package-boundaries",
-      "route": "products/glass-core/extensions/web/README.md#web-extension",
+      "route": "products/glass-core/extensions/web/README.md#web-extension-retired",
       "sections": [
         {
           "level": "1",
-          "title": "Web extension",
-          "anchor": "web-extension"
-        },
-        {
-          "level": "2",
-          "title": "Cached reading",
-          "anchor": "cached-reading"
-        },
-        {
-          "level": "2",
-          "title": "Configuration",
-          "anchor": "configuration"
+          "title": "Web extension (retired)",
+          "anchor": "web-extension-retired"
         }
       ]
     },

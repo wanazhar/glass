@@ -414,6 +414,30 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
             })
             .to_string(),
         ),
+        (
+            "web_search".to_string(),
+            "Search current web pages through Exa's hosted MCP search. Returns provider-supplied source URLs and content; no browser is launched and no extra model summary call is made. Default keyless service is rate-limited; optional EXA_API_KEY or GC web config may authenticate.".to_string(),
+            serde_json::json!({
+                "type":"object",
+                "properties":{
+                    "query":{"type":"string","minLength":1,"maxLength":2048,"description":"Natural-language description of the pages to find"},
+                    "count":{"type":"integer","minimum":1,"maximum":25,"default":8}
+                },
+                "required":["query"],"additionalProperties":false
+            }).to_string(),
+        ),
+        (
+            "web_fetch".to_string(),
+            "Fetch one HTTP(S) page directly and return bounded readable text with final URL, status and content type. Does not launch a browser; use browser tools for visual or interactive pages.".to_string(),
+            serde_json::json!({
+                "type":"object",
+                "properties":{
+                    "url":{"type":"string","format":"uri","description":"Absolute HTTP or HTTPS page URL"},
+                    "max_chars":{"type":"integer","minimum":1,"maximum":60000,"default":20000}
+                },
+                "required":["url"],"additionalProperties":false
+            }).to_string(),
+        ),
     ];
     tools.extend(crate::files::schemas());
     tools
@@ -502,19 +526,21 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn builtin_surface_has_seven_compact_tools() {
+    fn builtin_surface_has_nine_compact_tools() {
         let tools = builtin_tools();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 9);
+        let schema_bytes = tools
+            .iter()
+            .map(|(name, description, schema)| name.len() + description.len() + schema.len())
+            .sum::<usize>();
         assert!(
-            tools
-                .iter()
-                .map(|(n, d, s)| n.len() + d.len() + s.len())
-                .sum::<usize>()
-                <= 7000,
-            "core schema byte budget exceeded"
+            schema_bytes <= 8000,
+            "core schema byte budget exceeded: {schema_bytes}"
         );
         assert_eq!(tools[0].0, "bash");
         assert_eq!(tools[1].0, "state");
+        assert_eq!(tools[2].0, "web_search");
+        assert_eq!(tools[3].0, "web_fetch");
     }
 
     #[test]
@@ -544,7 +570,7 @@ mod tests {
         let tools = builtin_tools();
         let bash: Value = serde_json::from_str(&tools[0].2).unwrap();
         let state: Value = serde_json::from_str(&tools[1].2).unwrap();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 9);
         assert_eq!(bash["anyOf"][0]["required"][0], "command");
         assert_eq!(bash["anyOf"][1]["required"][0], "job");
         assert_eq!(bash["properties"]["job"]["required"][0], "action");
@@ -575,6 +601,8 @@ mod tests {
             vec![
                 "bash",
                 "state",
+                "web_search",
+                "web_fetch",
                 "display_image",
                 "view_image",
                 "read",

@@ -13,9 +13,9 @@ reports:
 
 | Metric | Measured value |
 |---|---:|
-| Negotiated tools | 337 |
-| Serialized `tools` array | 181,596 UTF-8 bytes |
-| Four-bytes-per-token estimate | 45,399 tokens (rounded up) |
+| Negotiated tools | 339 |
+| Serialized `tools` array | 183,532 UTF-8 bytes |
+| Four-bytes-per-token estimate | 45,883 tokens (rounded up) |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,
@@ -61,13 +61,14 @@ workspace catalog. This is a regression alarm, not permission to consume the
 remaining space. Any increase must include the before/after scoreboard and
 explain why a new public tool is preferable to an existing typed verb or a
 namespaced resource.
-The measured full-product catalog is 17,756 bytes above the 160 KiB ceiling on this checkout. Treat that as an active budget exception: release documentation must not call the catalog within budget until the catalog is reduced or the ceiling is deliberately changed with compatibility and release evidence.
+The measured full-product catalog is 19,692 bytes above the 160 KiB ceiling on this checkout. Treat that as an active budget exception: release documentation must not call the catalog within budget until the catalog is reduced or the ceiling is deliberately changed with compatibility and release evidence.
 
 The increase from the published 0.3.4 measurement of 129,444 bytes to the
-current 181,596-byte development inventory covers autonomous tasks, measured
+current 183,532-byte development inventory covers autonomous tasks, measured
 experiments, debugger inspection, governed-kernel operations, Core-owned Agent
 runtime setup, workspace-local Agent todos, Git fetch/pull/merge/rebase, and
-the explicit native/Chromium browser backend options and tool descriptions.
+the explicit native/Chromium browser backend options, tool descriptions, and
+Core-owned slash-command discovery and forwarding.
 Glass no longer exposes a separate resident-agent trust or coding-permission
 gate; Core owns resident tool decisions and permissions.
 `glass` exposes the same typed resident services used by Glass Core, the TUI, CLI, and
@@ -135,7 +136,7 @@ effective agreement. Inspect `glassAgreement`, then use `tools/list` and
 capability/schema checks for optional behavior. A reconnect creates a new
 agreement and requires fresh discovery.
 
-The current `glass` executable advertises the 337-tool canonical catalog in the
+The current `glass` executable advertises the 339-tool canonical catalog in the
 reproducible scoreboard; `glass-browser` retains its independently measured
 browser catalog. The effective capability
 agreement determines which optional operations are usable. Context reduction

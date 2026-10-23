@@ -536,11 +536,11 @@ impl DevelopmentToolRouter {
                 .select_target(string("targetId")?.into()),
             "glass.browser.navigate" => workspace.browser().navigate(
                 string("url")?.into(),
-                unsigned(call, "browserRevision", 0)?,
+                optional_unsigned(call, "browserRevision")?,
                 timeout(call, 180)?.unwrap_or(Duration::from_secs(30)),
             ),
             "glass.browser.act" => {
-                let revision = unsigned(call, "browserRevision", 0)?;
+                let revision = optional_unsigned(call, "browserRevision")?;
                 match string("action")? {
                     "back" => workspace.browser().back(revision),
                     "forward" => workspace.browser().forward(revision),
@@ -1601,7 +1601,7 @@ impl DevelopmentToolRouter {
                 crate::daemon::log_tail(None)
                     .map_err(|error| DevelopmentError::Process(error.to_string())),
             ),
-            "glass.agent.hello" | "glass.agent.models" => {
+            "glass.agent.hello" | "glass.agent.models" | "glass.agent.commands" | "glass.agent.command" => {
                 let id = optional_string(call, "agentId")
                     .map(|value| agent_id(workspace, value))
                     .transpose()?
@@ -1612,10 +1612,14 @@ impl DevelopmentToolRouter {
                                 .into(),
                         )
                     })?;
-                let request = if call.name.ends_with("hello") {
-                    ResidentSessionRequest::Hello
-                } else {
-                    ResidentSessionRequest::Models
+                let request = match call.name.as_str() {
+                    "glass.agent.hello" => ResidentSessionRequest::Hello,
+                    "glass.agent.models" => ResidentSessionRequest::Models,
+                    "glass.agent.commands" => ResidentSessionRequest::CoreCommands,
+                    _ => ResidentSessionRequest::CoreCommand {
+                        name: required_string(call, "name")?.to_string(),
+                        arguments: optional_string(call, "arguments").map(str::to_owned),
+                    },
                 };
                 map_service(workspace.agents().request(&id, request))?;
                 Ok(serde_json::json!({"queued":true,"agentId":id.as_str()}))
@@ -1658,6 +1662,8 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.daemon.logs",
         "glass.agent.hello",
         "glass.agent.models",
+        "glass.agent.commands",
+        "glass.agent.command",
         "glass.lsp.list",
         "glass.lsp.events",
         "glass.lsp.hover",
@@ -2121,6 +2127,14 @@ fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
         browser_tool_details(name)
     {
         (description.to_string(), schema)
+    } else if name == "glass.agent.commands" {
+        (
+            "Discover the current slash-command catalogue from the selected Glass Core session"
+                .into(),
+            serde_json::json!({"type":"object","properties":{"agentId":{"type":"string","minLength":1,"maxLength":64}},"additionalProperties":false}),
+        )
+    } else if name == "glass.agent.command" {
+        ("Dispatch a Glass Core slash command; the Core reports whether it runs in-session or needs its native command UI".into(), serde_json::json!({"type":"object","properties":{"agentId":{"type":"string","minLength":1,"maxLength":64},"name":{"type":"string","minLength":1,"maxLength":128},"arguments":{"type":"string","maxLength":16384}},"required":["name"],"additionalProperties":false}))
     } else if name == "glass.agent.resume" {
         (
             "Explicitly reattach a recovery-pending Glass thread to its stored Core session"
@@ -2247,7 +2261,7 @@ fn browser_tool_details(name: &str) -> Option<(&'static str, serde_json::Value)>
     let object = json!({"type":"object","additionalProperties":false});
     Some(match name {
         "glass.browser.start" => (
-            "Start Glass Dev's native browser engine by default. Set backend=chromium only for a task that needs the supported Chromium/CDP backend; selection is explicit and failures never switch backends. Use glass.browser.state to confirm backend provenance.",
+            "Start Glass Dev's native browser engine by default. Set backend=chromium only for a task that needs the supported Chromium/CDP backend; selection is explicit and failures never switch backends. If a different backend is already connected, call glass.browser.stop first; the conflict response explains the required transition. Use glass.browser.state to confirm backend provenance.",
             json!({
                 "type":"object",
                 "properties":{
@@ -2315,11 +2329,11 @@ fn browser_tool_details(name: &str) -> Option<(&'static str, serde_json::Value)>
             json!({"type":"object","properties":{"targetId":{"type":"string","minLength":1}},"required":["targetId"],"additionalProperties":false}),
         ),
         "glass.browser.navigate" => (
-            "Navigate the connected Glass browser backend to a URL. glass.browser.start uses the native engine; backend provenance is returned with the result.",
+            "Navigate the connected Glass browser backend to a URL. If browserRevision is omitted, Glass uses the worker's latest observed revision; when supplied it is checked exactly, and a stale value is rejected. glass.browser.start uses the native engine; backend provenance is returned with the result.",
             json!({"type":"object","properties":{"url":{"type":"string","minLength":1},"browserRevision":{"type":"integer","minimum":0},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":180}},"required":["url"],"additionalProperties":false}),
         ),
         "glass.browser.act" => (
-            "Perform a supported browser action against the current revision using the connected Glass browser backend; unsupported native operations return an explicit error without switching backends.",
+            "Perform a supported browser action against the current revision using the connected Glass browser backend. If browserRevision is omitted, Glass uses the worker's latest observed revision; when supplied it is checked exactly, and a stale value is rejected. Unsupported native operations return an explicit error without switching backends.",
             json!({"type":"object","properties":{"action":{"type":"string","enum":["back","forward","reload","stopLoading","click","type","scroll"]},"target":{"type":"string"},"text":{"type":"string"},"dx":{"type":"number"},"dy":{"type":"number"},"browserRevision":{"type":"integer","minimum":0}},"required":["action"],"additionalProperties":false}),
         ),
         "glass.browser.screenshot" => (
@@ -2408,6 +2422,28 @@ fn unsigned(call: &ToolCall, name: &str, default: u64) -> DevelopmentResult<u64>
     (value <= i64::MAX as u64).then_some(value).ok_or_else(|| {
         DevelopmentError::InvalidInput(format!("{}.{} is out of range", call.name, name))
     })
+}
+
+fn optional_unsigned(call: &ToolCall, name: &str) -> DevelopmentResult<Option<u64>> {
+    match call.arguments.get(name) {
+        None => Ok(None),
+        Some(value) => {
+            let value = value.as_u64().ok_or_else(|| {
+                DevelopmentError::InvalidInput(format!(
+                    "{}.{} must be a non-negative integer",
+                    call.name, name
+                ))
+            })?;
+            (value <= i64::MAX as u64)
+                .then_some(Some(value))
+                .ok_or_else(|| {
+                    DevelopmentError::InvalidInput(format!(
+                        "{}.{} is out of range",
+                        call.name, name
+                    ))
+                })
+        }
+    }
 }
 
 fn integer(call: &ToolCall, name: &str) -> DevelopmentResult<i64> {
@@ -3038,6 +3074,28 @@ mod tests {
                 .contains("automatic native-engine fallback")
         );
         assert!(state.description.contains("actual backend provenance"));
+    }
+
+    #[test]
+    fn omitted_browser_revision_stays_distinct_from_explicit_zero() {
+        let omitted = ToolCall {
+            id: "navigate-omitted-revision".into(),
+            name: "glass.browser.navigate".into(),
+            arguments: json!({"url":"http://127.0.0.1/"}),
+        };
+        let explicit_zero = ToolCall {
+            id: "navigate-explicit-zero".into(),
+            name: "glass.browser.navigate".into(),
+            arguments: json!({"url":"http://127.0.0.1/","browserRevision":0}),
+        };
+        assert_eq!(
+            optional_unsigned(&omitted, "browserRevision").unwrap(),
+            None
+        );
+        assert_eq!(
+            optional_unsigned(&explicit_zero, "browserRevision").unwrap(),
+            Some(0)
+        );
     }
 
     #[test]

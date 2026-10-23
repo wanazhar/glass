@@ -36,6 +36,13 @@ pub enum ResidentSessionRequest {
     Abort,
     State,
     Models,
+    /// Discover the command catalogue advertised by Glass Core.
+    CoreCommands,
+    /// Dispatch one GC-owned human command through the runtime protocol.
+    CoreCommand {
+        name: String,
+        arguments: Option<String>,
+    },
     SetModel {
         provider: String,
         model_id: String,

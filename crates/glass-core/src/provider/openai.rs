@@ -1068,7 +1068,7 @@ mod shape_tests {
         let tools = build_tools(&builtin_tools());
         assert!(tools.is_array(), "tools must be an array");
         let arr = tools.as_array().expect("array");
-        assert_eq!(arr.len(), 7, "one entry per tool, not one entry per array");
+        assert_eq!(arr.len(), 9, "one entry per tool, not one entry per array");
         for t in arr {
             assert!(
                 t.get("type").and_then(Value::as_str) == Some("function"),
@@ -1098,6 +1098,8 @@ mod shape_tests {
             vec![
                 "bash",
                 "state",
+                "web_search",
+                "web_fetch",
                 "display_image",
                 "view_image",
                 "read",
@@ -1134,7 +1136,7 @@ mod shape_tests {
         });
         body["tools"] = build_tools(req.tools);
         let arr = body["tools"].as_array().expect("array");
-        assert_eq!(arr.len(), 7);
+        assert_eq!(arr.len(), 9);
         assert!(arr.iter().all(|t| t["function"]["name"].is_string()));
         let _ = p;
     }

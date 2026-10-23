@@ -256,11 +256,16 @@ python3 examples/runtime_host.py --binary gc --storage /tmp/gc-host-demo \
   --workspace "$PWD" "Read README.md and ask which part to improve"
 ```
 
-Glass Dev is the intended first production integration. Its governed tool router
-can implement tool/execute and its existing approval UI can pause that response.
+Glass Dev is the intended first production integration. Its host router
+implements tool/execute for workspace capabilities while GC remains the owner
+of resident execution and permission decisions.
 Glass Dev uses this negotiated v2 mixed surface for resident Core sessions.
-Its adapter preserves the explicit Pi SDK backend as a separate legacy
-selection.
+The runtime also exposes `commands/list` and `commands/execute` for GC's
+authoritative built-in human command catalogue. The listing includes each command's
+description and whether it can execute in the resident session or needs GC's
+native interactive command UI. Runtime-safe commands return their actual result;
+interactive-only commands report that they need the native UI instead of being
+silently treated as completed.
 
 The runtime supports an isolated prefix/suffix completion lane and inline image
 inputs. These are protocol capabilities, not guarantees that a particular model

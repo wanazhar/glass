@@ -835,6 +835,29 @@ fn metadata(
         if mode == ToolMode::Host {"You are a coding agent. Use only the supplied tools. The host owns permissions and user interactions."}else{&cfg.system_prompt}).to_owned();
     Ok((cfg, host_tools, mode, instructions))
 }
+fn runtime_command_catalogue() -> Value {
+    let commands = crate::actions::catalogue().into_iter().map(|command| {
+        let mode = if matches!(command.name.as_str(), "help" | "status" | "compact") { "runtime" } else { "interactive" };
+        json!({"name":command.name,"hint":command.hint,"description":command.description,"aliases":command.aliases,"requiredArgs":command.required_args,"runtimeMode":mode})
+    }).collect::<Vec<_>>();
+    json!({"source":"glass-core","scope":"built-in actions","completeBuiltinCatalogue":true,"commands":commands})
+}
+
+fn runtime_command_help() -> String {
+    crate::actions::catalogue()
+        .into_iter()
+        .map(|command| {
+            let mode = if matches!(command.name.as_str(), "help" | "status" | "compact") {
+                "resident"
+            } else {
+                "native GC UI"
+            };
+            format!("/{:<18} {} [{}]", command.name, command.description, mode)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn serve(cfg: config::Config) -> Result<(), String> {
     let (tx, rx) = mpsc::sync_channel(64);
     std::thread::spawn(move || {
@@ -979,8 +1002,8 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 "capabilities":{"durable":true,"hostTools":true,"localTools":true,"steering":true,"followUp":true,"cancel":true,
                     "mixedTools":requested_protocol >= 2,
                     "resume":true,"fork":true,"rewind":"context_only","compact":true,"sessionConfigure":true,
-                    "hostInteractions":"host tools may implement questions and approvals","concurrentTurns":false,
-                    "imagePrompt":true,"completion":true,"typedContext":true,"structuredResults":true,"toolProgress":true,"toolCancellationAck":true,"incrementalEntries":true,"modelDiscovery":true,"authenticationReadiness":true,"structuredEntries":true,"sessionNames":true,"statistics":true,"lineage":true,"completionCancellation":true,"safeResumeById":true,"toolReconciliation":true},
+                    "hostInteractions":"host tools provide workspace capabilities and structured questions; Glass does not re-decide Core tool permissions","concurrentTurns":false,
+                    "imagePrompt":true,"completion":true,"typedContext":true,"structuredResults":true,"toolProgress":true,"toolCancellationAck":true,"incrementalEntries":true,"modelDiscovery":true,"authenticationReadiness":true,"structuredEntries":true,"sessionNames":true,"statistics":true,"lineage":true,"completionCancellation":true,"safeResumeById":true,"toolReconciliation":true,"commandDiscovery":true,"commandDispatch":true},
                 "limits":{"frameBytes":MAX_FRAME,"toolResultBytes":512*1024,"queuedFollowUps":MAX_PENDING},
                 "storageDir":root}),
             );
@@ -1122,6 +1145,8 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                         | "turn/prompt"
                         | "turn/followUp"
                         | "session/compact"
+                        | "commands/list"
+                        | "commands/execute"
                         | "turn/cancel"
                 ) {
                     return Err(format!("method not found: {method}"));
@@ -1129,6 +1154,42 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                 let sid = string(p, "sessionId")?;
                 let c = conversations.get_mut(sid).ok_or("unknown open session")?;
                 match method {
+                    "commands/list" => Ok(runtime_command_catalogue()),
+                    "commands/execute" => {
+                        let requested = string(p, "name")?.trim_start_matches('/');
+                        let command = crate::actions::catalogue()
+                            .into_iter()
+                            .find(|command| {
+                                command.name == requested
+                                    || command.aliases.iter().any(|alias| alias == requested)
+                            })
+                            .ok_or_else(|| format!("unknown Glass Core command: /{requested}"))?;
+                        let arguments = p.get("arguments").and_then(Value::as_str).unwrap_or("");
+                        if arguments.len() > 16 * 1024 {
+                            return Err("command arguments exceed 16 KiB".into());
+                        }
+                        match command.name.as_str() {
+                            "help" => Ok(json!({"name":"help","text":runtime_command_help()})),
+                            "status" => Ok(
+                                json!({"name":"status","text":format!("Glass Core · {} · {} · session {}", c.cfg.provider, c.cfg.model, c.session.id),"provider":c.cfg.provider,"model":c.cfg.model,"sessionId":c.session.id}),
+                            ),
+                            "compact" => {
+                                let provider = provider(&c.cfg, &c.session)?;
+                                let (kept, dropped) = crate::compact::run_manual(
+                                    provider.as_ref(),
+                                    &mut c.session,
+                                    &c.state,
+                                    (!arguments.trim().is_empty()).then_some(arguments),
+                                )?;
+                                Ok(
+                                    json!({"name":"compact","text":format!("Compacted session · kept {kept}, dropped {dropped}"),"kept":kept,"dropped":dropped}),
+                                )
+                            }
+                            _ => Ok(
+                                json!({"name":command.name,"requiresInteractive":true,"message":format!("/{0} is available in Glass Core's native command menu. Use :agent command-ui in Glass Dev to open it.", command.name)}),
+                            ),
+                        }
+                    }
                     "session/entries" => support::entries(&c.session, p),
                     "session/entry" => support::entry(&c.session, p),
                     "session/stats" => {
@@ -1865,6 +1926,29 @@ mod tests {
         assert!(validate_tool_mode(Some(1), ToolMode::Local).is_ok());
         assert!(validate_tool_mode(Some(1), ToolMode::Mixed).is_err());
         assert!(validate_tool_mode(Some(2), ToolMode::Mixed).is_ok());
+    }
+
+    #[test]
+    fn command_catalogue_is_gc_owned_and_marks_only_resident_commands() {
+        let catalogue = runtime_command_catalogue();
+        assert_eq!(catalogue["source"], "glass-core");
+        assert_eq!(catalogue["completeBuiltinCatalogue"], true);
+        let commands = catalogue["commands"].as_array().unwrap();
+        assert!(
+            commands
+                .iter()
+                .any(|command| command["name"] == "status" && command["runtimeMode"] == "runtime")
+        );
+        assert!(
+            commands.iter().any(
+                |command| command["name"] == "model" && command["runtimeMode"] == "interactive"
+            )
+        );
+        assert!(
+            commands
+                .iter()
+                .all(|command| command.get("description").is_some())
+        );
     }
 
     #[test]

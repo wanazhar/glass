@@ -1593,6 +1593,8 @@ pub struct DevTuiState {
     /// Set by an in-TUI login action; the event loop temporarily hands the
     /// terminal to the selected runtime's interactive login flow.
     pub agent_login_requested: bool,
+    /// Set when the user explicitly hands the terminal to GC's native command UI.
+    pub agent_command_ui_requested: bool,
     /// Set by a palette action; the event loop hands the terminal to the
     /// selected external harness and resumes Glass after it exits.
     pub harness_launch_requested: Option<String>,
@@ -1937,6 +1939,7 @@ impl DevTuiState {
             agent_readiness,
             harnesses: crate::harness::summary(),
             agent_login_requested: false,
+            agent_command_ui_requested: false,
             harness_launch_requested: None,
             agent_conversation:
                 "No conversation yet. Press Enter or start typing to compose a message.".into(),
@@ -5775,6 +5778,20 @@ impl DevTuiState {
         self.agent_login_requested = true;
         self.surface = DevSurface::Agent;
         self.status = "Core login will open in this terminal · complete the provider sign-in, then exit to return".into();
+        Ok(())
+    }
+
+    pub fn request_agent_command_ui(&mut self) -> Result<(), String> {
+        if self.background_action_running() {
+            let error =
+                "Finish the current background action before opening Glass Core".to_string();
+            self.status = error.clone();
+            return Err(error);
+        }
+        self.agent_command_ui_requested = true;
+        self.surface = DevSurface::Agent;
+        self.status =
+            "Glass Core will open in this terminal · press : in GC to open its command menu".into();
         Ok(())
     }
 
@@ -10824,7 +10841,9 @@ impl DevTuiState {
         {
             match selected_agent_status {
                 Some(crate::AgentStatus::Idle) => {
-                    self.status = "Glass Agent ready · response received".into();
+                    // Core's idle state means no turn is currently running;
+                    // it does not prove that the previous prompt succeeded.
+                    self.status = "Glass Agent idle".into();
                 }
                 Some(crate::AgentStatus::Failed) => {
                     self.status = "Glass Agent failed · press Enter to retry".into();
@@ -10987,7 +11006,9 @@ impl DevTuiState {
         {
             match self.selected_agent_status() {
                 Some(crate::AgentStatus::Idle) => {
-                    self.status = "Glass Agent ready · response received".into();
+                    // Idle is a lifecycle observation, not a successful
+                    // response event. Keep failures visible in the transcript.
+                    self.status = "Glass Agent idle".into();
                 }
                 Some(crate::AgentStatus::Failed) => {
                     self.status = "Glass Agent failed · press Enter to retry".into();
@@ -17108,7 +17129,7 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_status_uses_snapshot_cache_and_clears_stale_waiting_notice() {
+    fn lifecycle_status_does_not_claim_idle_means_response() {
         let (mut state, root) = routed_state("agent-lifecycle-status-cache");
         let agent_id = crate::AgentId::parse("agent-0001").unwrap();
         state.selected_agent = Some(agent_id.clone());
@@ -17117,6 +17138,13 @@ mod tests {
             agents: "agent snapshot".into(),
             ..Default::default()
         };
+        snapshot.agent_conversations.insert(
+            agent_id.clone(),
+            super::super::snapshot::AgentConversation {
+                text: "Core prompt failed: -32000".into(),
+                ..Default::default()
+            },
+        );
         snapshot
             .agent_states
             .push((agent_id.clone(), crate::AgentStatus::Idle));
@@ -17131,7 +17159,8 @@ mod tests {
             });
         state.status = "Sent · Glass Core is thinking…".into();
         state.apply_snapshot(&snapshot);
-        assert_eq!(state.status, "Glass Agent ready · response received");
+        assert_eq!(state.status, "Glass Agent idle");
+        assert!(state.agent_conversation.contains("-32000"));
 
         // Rendering must keep using the last published status during workspace
         // lock contention instead of alternating to global Core availability.
@@ -17153,7 +17182,7 @@ mod tests {
         snapshot.agent_chrome[0].status = crate::AgentStatus::Idle;
         state.status = "Glass Agent waiting for approval".into();
         state.apply_snapshot(&snapshot);
-        assert_eq!(state.status, "Glass Agent ready · response received");
+        assert_eq!(state.status, "Glass Agent idle");
 
         state.status = "GitHub review refreshed".into();
         state.apply_snapshot(&snapshot);

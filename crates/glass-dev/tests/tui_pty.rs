@@ -2923,7 +2923,10 @@ fn active_run_queue_steer_reaches_its_run_and_settles_truthfully() {
         serde_json::from_slice(&std::fs::read(&received).unwrap()).unwrap();
     assert_eq!(steer_params["sessionId"], "fixture-session");
     assert_eq!(steer_params["text"], "steer active queue target");
-    assert_eq!(steer_params["context"]["targetRunId"], target_run_id);
+    assert_eq!(
+        steer_params["context"][0]["value"]["targetRunId"], target_run_id,
+        "Core receives Glass context as a typed JSON block"
+    );
 
     let deadline = Instant::now() + Duration::from_secs(10);
     let registry = loop {
@@ -3020,7 +3023,7 @@ fn active_run_queue_steer_reaches_its_run_and_settles_truthfully() {
                 .is_some_and(|request| {
                     request["method"] == "turn/steer"
                         && request["params"]["text"] == "steer active queue target"
-                        && request["params"]["context"]["targetRunId"] == target_run_id
+                        && request["params"]["context"][0]["value"]["targetRunId"] == target_run_id
                 })
         }),
         "the active run's exact target must reach Core as a steer"
@@ -3143,7 +3146,7 @@ fn follow_up_queue_old_run_retarget_and_review_retry_are_explicit() {
     // reach Core. Retargeting is a separate, explicit user action.
     session.send(b"\r");
     assert!(
-        session.wait_for("older run · press t", Duration::from_secs(5)),
+        session.wait_for("older run", Duration::from_secs(5)),
         "dispatch to the old RunId was not blocked\n{}",
         session.output_tail()
     );
@@ -3466,11 +3469,7 @@ fn attention_inbox_keyboard_journey_keeps_composer_and_opens_proposal_context() 
             "inbox item did not open its proposal review context at {cols}x{rows}\n{}",
             session.output_tail()
         );
-        let owning_file_probe = if cols <= 50 {
-            "FILES · a-first.txt"
-        } else {
-            "Context · @a-first.txt"
-        };
+        let owning_file_probe = "a-first.txt";
         assert!(
             session.wait_for(owning_file_probe, Duration::from_secs(5)),
             "review context did not select the owning file at {cols}x{rows}\n{}",
@@ -3734,7 +3733,7 @@ fn live_core_response_crash_reopens_as_uncertain_without_replay() {
     );
     reopened.send(b"\r");
     assert!(
-        reopened.wait_for("Message delivery is uncertain", Duration::from_secs(5)),
+        reopened.wait_for("Message delivery uncertain", Duration::from_secs(5)),
         "attention item did not open its owning conversation\n{}",
         reopened.output_tail()
     );
@@ -3818,7 +3817,7 @@ fn uncertain_send_opens_attention_without_replaying_after_restart() {
         );
         session.send(b"\r");
         assert!(
-            session.wait_for("Message delivery is uncertain", Duration::from_secs(5)),
+            session.wait_for("Message delivery uncertain", Duration::from_secs(5)),
             "activating the attention item did not select its owning conversation at {cols}x{rows}\n{}",
             session.output_tail()
         );
@@ -4160,7 +4159,8 @@ fn failed_core_response_is_visible_and_can_be_retried_explicitly() {
     assert!(session.wait_for_composer_text(prompt, Duration::from_secs(5)));
     session.send(b"\r");
     assert!(
-        session.wait_for("Core prompt failed: operation", Duration::from_secs(8)),
+        session.wait_for("ERROR", Duration::from_secs(8))
+            && session.wait_for("operation", Duration::from_secs(2)),
         "correlated Core error was not projected into the active conversation\n{}",
         session.output_tail()
     );

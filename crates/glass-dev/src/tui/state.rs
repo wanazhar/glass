@@ -4711,12 +4711,25 @@ impl DevTuiState {
                         && proposal.path == path
                         && proposal.state == crate::development::EditorProposalState::Pending
                 });
-                let Some(normalized_path) = self.workspace.try_lock().ok().and_then(|workspace| {
-                    workspace.project().normalize_existing_file_path(&path).ok()
-                }) else {
-                    self.attention_status_stale();
-                    return;
+                let workspace = match self.workspace.try_lock() {
+                    Ok(workspace) => workspace,
+                    Err(error) => {
+                        self.status = format!(
+                            "Cannot verify this review right now · {error} · press Enter to retry"
+                        );
+                        return;
+                    }
                 };
+                let normalized_result = workspace.project().normalize_existing_file_path(&path);
+                let normalized_path = match normalized_result {
+                    Ok(path) => path,
+                    Err(_) => {
+                        drop(workspace);
+                        self.attention_status_stale();
+                        return;
+                    }
+                };
+                drop(workspace);
                 if !pending {
                     self.attention_status_stale();
                     return;
@@ -5614,20 +5627,42 @@ impl DevTuiState {
     }
 
     fn selected_agent_is_working(&self, agent_id: &crate::AgentId) -> bool {
-        self.workspace
-            .try_lock()
-            .ok()
-            .and_then(|mut workspace| workspace.agents().snapshot(agent_id).ok())
-            .is_some_and(|snapshot| snapshot.status == crate::AgentStatus::Working)
+        match self.workspace.try_lock() {
+            Ok(mut workspace) => workspace
+                .agents()
+                .snapshot(agent_id)
+                .is_ok_and(|snapshot| snapshot.status == crate::AgentStatus::Working),
+            Err(error) if Self::is_workspace_busy(&error) => self
+                .follow_up_queue_snapshots
+                .get(agent_id)
+                .is_some_and(|snapshot| {
+                    snapshot.send_attempts.iter().any(|attempt| {
+                        attempt.target_run_id == snapshot.current_run_id
+                            && attempt.status == crate::thread_store::SendAttemptStatus::Working
+                    })
+                }),
+            Err(_) => false,
+        }
     }
 
     fn refresh_follow_up_queue_run(&mut self, agent_id: &crate::AgentId) -> bool {
-        let target = self.workspace.try_lock().and_then(|mut workspace| {
-            workspace
+        let target = match self.workspace.try_lock() {
+            Ok(mut workspace) => workspace
                 .agents()
                 .follow_up_queue_target(agent_id)
-                .map(|(_, thread_id, run_id)| (thread_id, run_id))
-        });
+                .map(|(_, thread_id, run_id)| (thread_id, run_id)),
+            Err(error) if Self::is_workspace_busy(&error) => {
+                // Queue snapshots carry the last observed destination. It is
+                // safe to use while the workspace is busy because every
+                // eventual send includes this expected RunId and the tool
+                // router revalidates it against the live agent before dispatch.
+                return self
+                    .follow_up_queue_snapshots
+                    .get(agent_id)
+                    .is_some_and(|snapshot| !snapshot.current_run_id.is_empty());
+            }
+            Err(_) => return false,
+        };
         let Ok((thread_id, run_id)) = target else {
             return false;
         };

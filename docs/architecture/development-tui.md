@@ -39,6 +39,11 @@ scroll projection, browser workspace controller, and the latest display fields.
 jobs. It publishes the latest versioned `DisplaySnapshot`; rendering never
 waits for a refresh. UI callbacks use `try_lock`; a workspace lock held by an
 actor becomes a visible wait/error status rather than a terminal freeze.
+Attention proposal activation keeps the inbox open when path verification hits
+temporary workspace contention, and asks the user to retry. Follow-up queue
+editing may use its last observed RunId while the workspace is busy; every
+dispatch carries that expected RunId, which the tool router checks against the
+live agent before sending.
 
 Git diff, process log, and debugger selection previews use one active request
 and one replaceable pending request. Each result belongs to its captured job

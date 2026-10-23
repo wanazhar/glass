@@ -388,6 +388,17 @@ Core runtime; this UI adapter does not start another terminal or provider
 process. `glass-tui` owns the conversation reducer, cached layout, and
 transcript viewport behavior, while Glass keeps project navigation, session
 identity, and the governed event protocol.
+Glass's existing `agent models` and `agent model` actions forward discovery
+and model changes to `models/list` and `session/configure` for the selected
+Core session. Core remains the authority for provider configuration and model
+validation; Glass sends only the requested provider/model selection and does
+not collect credentials or endpoint settings. Provider login stays in Core's
+setup flow because it owns authentication. The standalone Core terminal's
+session navigation and turn keys also remain Core-specific: Glass routes
+abort, steer, follow-up, and queued sends through the selected project agent
+and its resident session, preserving Glass thread IDs and send-attempt
+tracking. The shared crate supplies the conversation presentation and reducer,
+not a second command loop or terminal process.
 `Ctrl-D` toggles steer mode for an active
 turn; `Ctrl-X` aborts the selected agent. `Ctrl-A/E/U/W` move to start/end,
 clear, or delete a word; Left/Right and Backspace edit the draft. Bracketed

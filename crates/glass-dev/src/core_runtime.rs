@@ -1885,6 +1885,32 @@ mod tests {
     }
 
     #[test]
+    fn model_affordances_are_scoped_to_the_selected_core_session() {
+        let (method, params) =
+            request_parts("selected-session", &PiSessionRequest::Models).unwrap();
+        assert_eq!(method, "models/list");
+        assert_eq!(
+            params,
+            json!({"sessionId": "selected-session", "cursor": 0})
+        );
+
+        let (method, params) = request_parts(
+            "selected-session",
+            &PiSessionRequest::SetModel {
+                provider: "anthropic".into(),
+                model_id: "claude-opus".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(method, "session/configure");
+        assert_eq!(params["sessionId"], "selected-session");
+        assert_eq!(params["provider"], "anthropic");
+        assert_eq!(params["model"], "claude-opus");
+        assert!(params.get("apiKey").is_none());
+        assert!(params.get("baseUrl").is_none());
+    }
+
+    #[test]
     fn unsupported_operations_explain_the_gap() {
         let error = request_parts(
             "s-1",

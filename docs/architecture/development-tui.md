@@ -442,10 +442,11 @@ and shutdown waits while continuing to drain reliable worker events; this keeps
 a full event queue from blocking the worker before its terminal event. If the
 runtime cannot confirm cancellation within ten seconds, or a worker does not
 stop within the shutdown grace period, Glass records unresolved attempts as
-uncertain and the run as recovery-pending; it does not claim those attempts
-settled or replay them. Registry shutdown drains events until its bounded
-deadline, then detaches any worker that remains blocked after persisting the
-recovery state. On Unix Glass saves each selected
+uncertain; it does not claim those attempts settled or replay them. If a worker
+cannot stop within the shutdown grace period, Glass also records the run as
+recovery-pending. Registry shutdown drains events until its bounded deadline,
+then detaches any worker that remains blocked after persisting the recovery
+state. On Unix Glass saves each selected
 thread's bounded composer text
 and UTF-8 byte cursor with its durable ThreadId in the private
 `.glass/threads/registry.json` ledger, restoring them after restart even when

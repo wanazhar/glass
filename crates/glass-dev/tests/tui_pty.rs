@@ -2809,6 +2809,7 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         return;
     }
     let browser_smoke = std::env::var("GLASS_LIVE_BROWSER").ok().as_deref() == Some("1");
+    let spawn_only = std::env::var("GLASS_LIVE_SPAWN_ONLY").ok().as_deref() == Some("1");
 
     let core_binary = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/debug/glass-core")
@@ -2909,7 +2910,34 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     session.send(b":agent spawn assistant live provider smoke\r");
     assert!(
         session.wait_for("Spawned agent-0001", Duration::from_secs(8)),
-        "resident agent did not start before the live prompt"
+        "resident agent did not start before the live prompt; visible status class={}",
+        if session
+            .visible_output()
+            .to_ascii_lowercase()
+            .contains("authentication")
+        {
+            "authentication"
+        } else if session
+            .visible_output()
+            .to_ascii_lowercase()
+            .contains("provider")
+        {
+            "provider"
+        } else if session
+            .visible_output()
+            .to_ascii_lowercase()
+            .contains("core unavailable")
+        {
+            "core-unavailable"
+        } else if session
+            .visible_output()
+            .to_ascii_lowercase()
+            .contains("failed")
+        {
+            "failed"
+        } else {
+            "unclassified"
+        }
     );
     send_ctrl_shift_t(&mut session);
     assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
@@ -2921,6 +2949,10 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         session.wait_for("idle", Duration::from_secs(12)),
         "spawned live-provider agent did not become idle"
     );
+    if spawn_only {
+        preserve_live_core_trace(&trace_path);
+        return;
+    }
     session.send(b"\r");
     assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
     session.clear_output();

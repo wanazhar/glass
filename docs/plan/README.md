@@ -15,9 +15,7 @@ The structural and version migration is complete in `f067a3bc`, with follow-up
 commits for inherited Core test expectations, Core formatting, and shared
 target-path handling. The [workspace design](analysis/shared-workspace.md) and
 [implementation task](tasks/workspace-glass-core-001.md) record the result and
-verification. Mixed runtime tools and the collaboration TUI remain subsequent
-issue #64 slices, with their own contracts and acceptance evidence. The
-negotiated Core-coding/Glass-integration runtime slice is documented in the
+verification. The negotiated Core-coding/Glass-integration runtime slice is documented in the
 [mixed-runtime analysis](analysis/mixed-runtime-tools.md) and tracked in the
 [mixed-tools task checklist](tasks/issue63-mixed-tools-001.md).
 External Core edits to already-open Glass buffers are tracked in the
@@ -87,6 +85,11 @@ verifies that task creation, task snapshots, task-labeled conversations, and
 durable thread drafts are connected in the live TUI, including cursor
 restoration after switching. The manual-agent three-thread journey is separate
 evidence and does not establish this task-backed flow.
+The same three-thread journey records a Linux debug-build responsiveness
+baseline, provisional comparison budgets, and the scope limits for idle and
+background-update measurements. Its background completion check verifies
+focus/draft/cursor preservation but does not benchmark updates under sustained
+event load.
 
 ## Current source line: Glass 0.3.14
 

@@ -2117,7 +2117,11 @@ fn lsp_debug_schema(name: &str) -> Option<serde_json::Value> {
 }
 
 fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
-    let (description, input_schema) = if name == "glass.agent.resume" {
+    let (description, input_schema) = if let Some((description, schema)) =
+        browser_tool_details(name)
+    {
+        (description.to_string(), schema)
+    } else if name == "glass.agent.resume" {
         (
             "Explicitly reattach a recovery-pending Glass thread to its stored Core session"
                 .to_string(),
@@ -2235,6 +2239,117 @@ fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
         available: true,
         unavailable_reason: None,
     }
+}
+
+fn browser_tool_details(name: &str) -> Option<(&'static str, serde_json::Value)> {
+    use serde_json::json;
+
+    let object = json!({"type":"object","additionalProperties":false});
+    Some(match name {
+        "glass.browser.start" => (
+            "Start Glass Dev's native browser engine by default. Set backend=chromium only for a task that needs the supported Chromium/CDP backend; selection is explicit and failures never switch backends. Use glass.browser.state to confirm backend provenance.",
+            json!({
+                "type":"object",
+                "properties":{
+                    "backend":{"type":"string","enum":["native","chromium"],"default":"native"},
+                    "incognito":{"type":"boolean","default":true},
+                    "profile":{"type":"string","minLength":1},
+                    "viewport":{"type":"array","items":{"type":"integer","minimum":1},"minItems":2,"maxItems":2},
+                    "headed":{"type":"boolean"},
+                    "chromePath":{"type":"string","minLength":1},
+                    "port":{"type":"integer","minimum":1,"maximum":65535},
+                    "interaction":{"type":"string","enum":["human","fast"]},
+                    "audit":{"type":"boolean"},
+                    "modalDialogs":{"type":"boolean","default":false}
+                },
+                "additionalProperties":false
+            }),
+        ),
+        "glass.browser.attach" => (
+            "Explicitly attach Glass Dev to an existing Chromium/CDP browser. Use only when that browser is requested; this is separate from selecting backend=chromium to launch a managed Chromium session, and neither path is an automatic native-engine fallback.",
+            json!({
+                "type":"object",
+                "properties":{
+                    "port":{"type":"integer","minimum":1,"maximum":65535},
+                    "incognito":{"type":"boolean"},
+                    "headed":{"type":"boolean"},
+                    "profile":{"type":"string","minLength":1},
+                    "chromePath":{"type":"string","minLength":1},
+                    "viewport":{"type":"array","items":{"type":"integer","minimum":1},"minItems":2,"maxItems":2},
+                    "interaction":{"type":"string","enum":["human","fast"]},
+                    "audit":{"type":"boolean"}
+                },
+                "additionalProperties":false
+            }),
+        ),
+        "glass.browser.state" => (
+            "Read the resident Glass browser connection and its actual backend provenance (native or chromium).",
+            object.clone(),
+        ),
+        "glass.browser.observe" => (
+            "Observe the current page through the connected Glass browser backend and return structured page evidence plus backend provenance.",
+            object.clone(),
+        ),
+        "glass.browser.snapshot" => (
+            "Capture the current page snapshot through the connected Glass browser backend.",
+            object.clone(),
+        ),
+        "glass.browser.semantic" => (
+            "Inspect the current page with the connected backend's semantic observation support.",
+            json!({"type":"object","properties":{"level":{"type":"string","enum":["summary","interactive","structured","detailed","raw"]}},"additionalProperties":false}),
+        ),
+        "glass.browser.web_ir" => (
+            "Extract Web IR from the current page through the connected Glass browser backend.",
+            object.clone(),
+        ),
+        "glass.browser.diff" => (
+            "Return changes since the prior observation when supported by the connected backend.",
+            object.clone(),
+        ),
+        "glass.browser.targets" => (
+            "List page targets known to the connected Glass browser backend.",
+            object.clone(),
+        ),
+        "glass.browser.target.select" => (
+            "Select a page target in the connected Glass browser backend.",
+            json!({"type":"object","properties":{"targetId":{"type":"string","minLength":1}},"required":["targetId"],"additionalProperties":false}),
+        ),
+        "glass.browser.navigate" => (
+            "Navigate the connected Glass browser backend to a URL. glass.browser.start uses the native engine; backend provenance is returned with the result.",
+            json!({"type":"object","properties":{"url":{"type":"string","minLength":1},"browserRevision":{"type":"integer","minimum":0},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":180}},"required":["url"],"additionalProperties":false}),
+        ),
+        "glass.browser.act" => (
+            "Perform a supported browser action against the current revision using the connected Glass browser backend; unsupported native operations return an explicit error without switching backends.",
+            json!({"type":"object","properties":{"action":{"type":"string","enum":["back","forward","reload","stopLoading","click","type","scroll"]},"target":{"type":"string"},"text":{"type":"string"},"dx":{"type":"number"},"dy":{"type":"number"},"browserRevision":{"type":"integer","minimum":0}},"required":["action"],"additionalProperties":false}),
+        ),
+        "glass.browser.screenshot" => (
+            "Capture the current browser page as PNG using the connected backend.",
+            object.clone(),
+        ),
+        "glass.browser.stop" => (
+            "Stop and disconnect the resident Glass browser session.",
+            object.clone(),
+        ),
+        "glass.browser.reconnect" => (
+            "Reconnect using the last explicit Glass browser configuration and backend.",
+            object.clone(),
+        ),
+        "glass.browser.remote-view.open" => (
+            "Open a loopback-only remote view for the connected browser session.",
+            object.clone(),
+        ),
+        "glass.browser.remote-view.revoke" => {
+            ("Revoke the current remote browser view.", object.clone())
+        }
+        "glass.browser.remote-view.status" => {
+            ("Read remote browser view availability.", object.clone())
+        }
+        "glass.browser.verify" => (
+            "Verify a predicate against the current browser page using the connected backend.",
+            json!({"type":"object","properties":{"predicate":{"type":"object"},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":30}},"required":["predicate"],"additionalProperties":false}),
+        ),
+        _ => return None,
+    })
 }
 
 fn required_string<'a>(call: &'a ToolCall, name: &str) -> DevelopmentResult<&'a str> {
@@ -2881,6 +2996,48 @@ mod tests {
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
         }
+    }
+
+    #[test]
+    fn resident_browser_catalog_explains_native_default_and_explicit_chromium() {
+        let catalog = integration_tool_catalog();
+        let start = catalog
+            .iter()
+            .find(|tool| tool.name == "glass.browser.start")
+            .unwrap();
+        let attach = catalog
+            .iter()
+            .find(|tool| tool.name == "glass.browser.attach")
+            .unwrap();
+        let state = catalog
+            .iter()
+            .find(|tool| tool.name == "glass.browser.state")
+            .unwrap();
+
+        assert!(
+            start
+                .description
+                .contains("native browser engine by default")
+        );
+        assert_eq!(
+            start.input_schema["properties"]["backend"]["default"],
+            "native"
+        );
+        assert_eq!(
+            start.input_schema["properties"]["backend"]["enum"][1],
+            "chromium"
+        );
+        assert_eq!(
+            start.input_schema["properties"]["incognito"]["default"],
+            true
+        );
+        assert!(attach.description.contains("Chromium/CDP"));
+        assert!(
+            attach
+                .description
+                .contains("automatic native-engine fallback")
+        );
+        assert!(state.description.contains("actual backend provenance"));
     }
 
     #[test]

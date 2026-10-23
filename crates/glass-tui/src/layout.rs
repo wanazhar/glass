@@ -44,6 +44,9 @@ pub struct Layout {
     /// everything, since soft-wrapping is width-dependent.
     last_width: Option<u16>,
     dirty: bool,
+    /// Glass Dev opts into a denser host presentation; Core keeps the legacy
+    /// transcript presentation by default.
+    glass_presentation: bool,
 }
 
 impl Layout {
@@ -81,6 +84,15 @@ impl Layout {
         self.cards = cards;
         self.dirty = true;
         true
+    }
+
+    /// Select Glass Dev's compact tool-card presentation without changing
+    /// the default presentation used by standalone Glass Core.
+    pub fn set_glass_presentation(&mut self, enabled: bool) {
+        if self.glass_presentation != enabled {
+            self.glass_presentation = enabled;
+            self.dirty = true;
+        }
     }
 
     /// Return one cached entry's presentation rows for an inline host.
@@ -189,6 +201,9 @@ impl Layout {
         let Some(card) = self.cards.get(&idx).filter(|_| role != Role::Meta) else {
             return entry_lines(text, role, width, idx > 0);
         };
+        if self.glass_presentation {
+            return glass_tool_lines(card, role, width);
+        }
         let status = card.status.split(" · ").next().unwrap_or(&card.status);
         let failed = !matches!(status, "exit 0" | "completed" | "running");
         let name = if role == Role::Bash {
@@ -354,6 +369,102 @@ impl Layout {
             .position(|(_, _, t)| *t == turn)
             .and_then(|i| self.starts.get(i).copied())
     }
+}
+
+fn glass_tool_lines(card: &crate::ToolCard, role: Role, width: u16) -> Vec<Line<'static>> {
+    use crate::theme::{self, Tone};
+    use ratatui::style::{Modifier, Style};
+
+    let width = usize::from(width.max(1));
+    let command = card.command.trim();
+    let raw_identity = if role == Role::Bash {
+        "bash"
+    } else {
+        command.split_whitespace().next().unwrap_or("tool")
+    };
+    let identity = if raw_identity.starts_with("glass.browser") {
+        "browser"
+    } else if raw_identity.starts_with("glass.git") {
+        "git"
+    } else {
+        raw_identity
+    };
+    let group =
+        if raw_identity.starts_with("glass.browser") || raw_identity.starts_with("glass.git") {
+            "GLASS"
+        } else {
+            "CORE"
+        };
+    let status = card.status.split(" · ").next().unwrap_or(&card.status);
+    let failed = !matches!(status, "exit 0" | "completed" | "running");
+    let state = match status {
+        "running" => "running".to_string(),
+        "completed" | "exit 0" => "completed".to_string(),
+        _ => format!("failed · {}", status.trim_start_matches("failed · ")),
+    };
+    let duration = card
+        .elapsed_ms
+        .filter(|ms| *ms >= 1_000)
+        .map(|ms| format!(" · {:.1}s", ms as f32 / 1_000.0))
+        .unwrap_or_default();
+    let tone = if failed {
+        Tone::Error
+    } else if group == "GLASS" {
+        Tone::Accent
+    } else {
+        Tone::Core
+    };
+    let header = format!(
+        "{} {group} · {identity} · {state}{duration}",
+        if failed { "×" } else { "✓" }
+    );
+    let mut rows = vec![Line::from(Span::styled(
+        crate::text::clip(&header, width),
+        Style::new()
+            .fg(theme::color(tone))
+            .add_modifier(Modifier::BOLD),
+    ))];
+
+    if card.expanded && !command.is_empty() && command != identity {
+        for row in wrap_width(&crate::markdown::sanitize(command), width.saturating_sub(2)) {
+            rows.push(Line::from(Span::styled(
+                format!("  {row}"),
+                Style::new().fg(theme::color(Tone::Secondary)),
+            )));
+        }
+    }
+
+    let output = card.output.trim();
+    if !output.is_empty() {
+        let mut shown = 0usize;
+        for raw in output.lines() {
+            if !card.expanded && shown == 1 {
+                break;
+            }
+            for row in wrap_width(&crate::markdown::sanitize(raw), width.saturating_sub(2)) {
+                rows.push(Line::from(Span::styled(
+                    format!("  {row}"),
+                    Style::new().fg(theme::color(if failed { Tone::Error } else { Tone::Muted })),
+                )));
+                shown += 1;
+                if !card.expanded {
+                    break;
+                }
+            }
+        }
+        if !card.expanded && output.lines().count() > 1 {
+            rows.push(Line::from(Span::styled(
+                "  … o to expand",
+                Style::new().fg(theme::color(Tone::Muted)),
+            )));
+        }
+    } else if card.expanded {
+        rows.push(Line::from(Span::styled(
+            "  (no output)",
+            Style::new().fg(theme::color(Tone::Muted)),
+        )));
+    }
+    rows
 }
 
 fn entry_lines(text: &str, role: Role, width: u16, boundary: bool) -> Vec<Line<'static>> {
@@ -539,6 +650,74 @@ mod tests {
                     .all(|row| crate::text::width(&row.to_string()) <= usize::from(width))
             );
         }
+    }
+
+    #[test]
+    fn glass_presentation_is_compact_and_core_default_keeps_legacy_card() {
+        let card = crate::ToolCard {
+            expanded: false,
+            call_id: "call-1".into(),
+            command: "bash".into(),
+            output: String::new(),
+            status: "completed".into(),
+            elapsed_ms: None,
+            spill: None,
+            truncated: false,
+        };
+        let mut glass = Layout::new(vec![(String::new(), Role::Bash, 0)]);
+        glass.set_cards(HashMap::from([(0, card.clone())]));
+        glass.set_glass_presentation(true);
+        let compact = glass
+            .entry_lines(0)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(compact.contains("CORE · bash · completed"));
+        assert!(!compact.contains("$ bash"));
+        assert!(!compact.contains("0.0s"));
+        assert!(!compact.contains("No output"));
+        assert_eq!(
+            glass.entry_lines(0)[0].spans[0].style.fg,
+            Some(crate::theme::color(crate::theme::Tone::Core))
+        );
+
+        let mut core = Layout::new(vec![(String::new(), Role::Bash, 0)]);
+        core.set_cards(HashMap::from([(0, card)]));
+        let native = core
+            .entry_lines(0)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(native.contains("bash"));
+        assert!(native.contains("$ bash"));
+        assert!(native.contains("0.0s"));
+        assert!(native.contains("No output"));
+
+        let browser = crate::ToolCard {
+            command: "glass.browser.act navigate https://example.test".into(),
+            ..crate::ToolCard {
+                expanded: false,
+                call_id: "call-browser".into(),
+                command: String::new(),
+                output: "fixture page loaded".into(),
+                status: "completed".into(),
+                elapsed_ms: Some(1_400),
+                spill: None,
+                truncated: false,
+            }
+        };
+        let mut host = Layout::new(vec![(String::new(), Role::Tool, 0)]);
+        host.set_cards(HashMap::from([(0, browser)]));
+        host.set_glass_presentation(true);
+        let row = host
+            .entry_lines(0)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(row.contains("GLASS · browser · completed · 1.4s"));
     }
     #[test]
     fn tool_cards_use_bounded_colored_renderer_until_explicit_expansion() {

@@ -30,9 +30,21 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(180);
 const BROWSER_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
 
 /// Options used to create or attach the resident development browser session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BrowserStartBackend {
+    /// Use Glass's resident native browser engine.
+    #[default]
+    Native,
+    /// Explicitly use a managed Chromium/CDP browser session.
+    Chromium,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct BrowserStartConfig {
+    /// Browser backend choice. Chromium is never selected as an automatic fallback.
+    pub backend: BrowserStartBackend,
     /// Chrome DevTools port.
     pub port: u16,
     /// Attach to an existing browser rather than launching one.
@@ -58,6 +70,7 @@ pub struct BrowserStartConfig {
 impl Default for BrowserStartConfig {
     fn default() -> Self {
         Self {
+            backend: BrowserStartBackend::Native,
             port: default_port(),
             attach: false,
             incognito: true,
@@ -602,7 +615,9 @@ impl BrowserWorker {
                 "browser workspace already has a connected session".into(),
             ));
         }
-        if config.attach && config.modal_dialogs {
+        if (config.attach || config.backend == BrowserStartBackend::Chromium)
+            && config.modal_dialogs
+        {
             return Err(DevelopmentError::InvalidInput(
                 "modalDialogs is supported only by the native browser runtime".into(),
             ));
@@ -618,7 +633,7 @@ impl BrowserWorker {
                     .into(),
             ));
         }
-        let session = if config.attach {
+        let session = if config.attach || config.backend == BrowserStartBackend::Chromium {
             if let Some((width, height)) = config.viewport
                 && (!(320..=10_000).contains(&width) || !(240..=10_000).contains(&height))
             {
@@ -629,7 +644,7 @@ impl BrowserWorker {
             let policy = self.policy.clone();
             let mut builder = SessionOptions::builder()
                 .port(config.port)
-                .attach(true)
+                .attach(config.attach)
                 .incognito(config.incognito)
                 .headed(config.headed)
                 .profile(config.profile.clone())
@@ -1250,7 +1265,11 @@ impl BrowserWorker {
                 }
             }
         }?;
-        Ok(project_browser_revision(value, self.revision))
+        let backend = self
+            .session
+            .as_ref()
+            .map(ResidentBrowserSession::backend_id);
+        Ok(project_browser_revision(value, self.revision, backend))
     }
 
     async fn publish_remote_frame(&self) -> DevelopmentResult<()> {
@@ -1385,9 +1404,18 @@ fn browser_error(error: Box<dyn std::error::Error>) -> DevelopmentError {
     DevelopmentError::Process(error.to_string())
 }
 
-fn project_browser_revision(mut value: Value, revision: Option<u64>) -> Value {
-    if let (Value::Object(object), Some(revision)) = (&mut value, revision) {
-        object.insert("browserRevision".into(), Value::from(revision));
+fn project_browser_revision(
+    mut value: Value,
+    revision: Option<u64>,
+    backend: Option<&str>,
+) -> Value {
+    if let Value::Object(object) = &mut value {
+        if let Some(revision) = revision {
+            object.insert("browserRevision".into(), Value::from(revision));
+        }
+        if let Some(backend) = backend {
+            object.insert("backend".into(), Value::from(backend));
+        }
     }
     value
 }
@@ -1493,12 +1521,48 @@ mod tests {
         assert_eq!(observation["level"], "structured");
         assert!(observation["page"].is_object());
         assert_eq!(observation["browserRevision"], observation["revision"]);
+        assert_eq!(observation["backend"], "native");
         let web_ir = service.web_ir().unwrap();
         assert_eq!(web_ir["schemaVersion"], 1);
         assert!(web_ir["entityCount"].as_u64().is_some());
+        assert_eq!(web_ir["backend"], "native");
 
         let stopped = service.stop().unwrap();
         assert_eq!(stopped["connected"], false);
+    }
+
+    #[test]
+    fn explicit_chromium_backend_never_falls_back_to_native() {
+        let service = BrowserService::new(std::env::temp_dir()).unwrap();
+        let missing_chromium = std::env::temp_dir().join(format!(
+            "glass-missing-chromium-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let error = service
+            .start(BrowserStartConfig {
+                backend: BrowserStartBackend::Chromium,
+                chrome_path: Some(missing_chromium),
+                ..BrowserStartConfig::default()
+            })
+            .unwrap_err();
+        assert!(!error.to_string().is_empty());
+        assert_eq!(service.state().unwrap()["connected"], false);
+        assert_eq!(service.state().unwrap()["browserBackend"], Value::Null);
+    }
+
+    #[test]
+    fn browser_result_projection_includes_only_actual_connected_backend() {
+        let value = serde_json::json!({"text":"page"});
+        let connected = project_browser_revision(value.clone(), Some(4), Some("native"));
+        assert_eq!(connected["backend"], "native");
+        assert_eq!(connected["browserRevision"], 4);
+        let disconnected = project_browser_revision(value, None, None);
+        assert!(disconnected.get("backend").is_none());
+        assert!(disconnected.get("browserRevision").is_none());
     }
 
     #[test]
@@ -1660,11 +1724,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(baseline_result["backend"], "native");
-        assert_eq!(
-            service.observe().unwrap()["text"],
-            "baseline mutation",
-            "the non-modal control flow must publish its DOM mutation"
-        );
+        let baseline_observation = service.observe().unwrap();
+        assert_eq!(baseline_observation["text"], "baseline mutation");
+        assert_eq!(baseline_observation["backend"], "native");
         let revision = service.state().unwrap()["browserRevision"]
             .as_u64()
             .unwrap();

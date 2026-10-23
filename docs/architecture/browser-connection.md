@@ -20,7 +20,12 @@ owns the session:
 | Product path | Execution owner | Process ownership |
 |---|---|---|
 | Standalone `glass-browser` TUI | native `BrowserRuntimeSession`; explicit `CdpBrowserSession` for Chromium | Native owns its Glass context; CDP owned launch owns Chrome and attach never owns the external browser. |
-| Glass Dev embedded App | `BrowserService` → one `BrowserWorker` → native runtime session by default | Explicit Chromium selection uses `CdpBrowserSession`; the resident worker serializes commands. |
+| Glass Dev embedded App | `BrowserService` → one `BrowserWorker` → native runtime session by default | `backend: "chromium"` explicitly launches `CdpBrowserSession`; `glass.browser.attach` connects to an existing CDP session. The resident worker serializes commands. |
+
+`glass.browser.start` defaults to native; native errors never trigger an
+automatic Chromium switch. Browser state reports `browserBackend`, and
+successful browser results report the actual connected `backend`. Chromium is
+an explicit option for supported tasks that need its broader CDP surface.
 
 Project files, editor buffers, PTYs, tasks, resident conversations, and development
 revisions outlive a browser session. The native session owns its Glass
@@ -99,9 +104,11 @@ The embedded target picker requests `glass.browser.targets` asynchronously from
 the resident worker, stores at most 64 targets, filters by ID/title/URL, and
 shows at most 16 matches. Displayed URLs pass the embedded `safe_browser_url`
 projection, which removes query and fragment and limits the visible string to
-2,048 characters. Selecting a target is a governed, confirmed operation; the
-worker calls `select_target` and then performs a fresh observation. A target
-that disappears closes neither the App nor the surrounding workspace.
+2,048 characters. Human selection uses the picker interaction; an agent
+`tool/execute` request is authorized by Core and Glass does not add a second
+approval. In either path the worker calls `select_target` and then performs a
+fresh observation. A target that disappears closes neither the App nor the
+surrounding workspace.
 
 Standalone uses the session directly. `targets` lists targets and `select ID`
 changes the active route followed by `observe`; its current target listing
@@ -116,11 +123,13 @@ and semantic intent execution can require the expected revision. A mismatch
 fails closed; the caller must observe or reconcile rather than replay a stale
 reference. Geometry revision is a separate presentation token for visual input.
 
-App mutations go through governed `glass.browser.*` tools and require mutation
-authority plus confirmation. Agent browser ownership is explicit. Human takeover
-pauses agent browser mutation until a checkpoint is reconciled and control is
-returned. Standalone keyboard actions use the same session revision checks but
-have no Glass Dev project/agent authority layer.
+Core owns agent tool decisions and permissions. Glass executes valid
+`tool/execute` calls without another human approval, while validating the
+workspace session, target identity, and expected browser revision. Direct human
+browser actions retain their own UI semantics. Human takeover pauses agent
+browser mutation until a checkpoint is reconciled and control is returned.
+Standalone keyboard actions use the same session revision checks but have no
+Glass Dev project/agent authority layer.
 
 ## Remote View (embedded Glass Dev only)
 

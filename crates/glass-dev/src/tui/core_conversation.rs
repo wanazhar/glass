@@ -35,8 +35,10 @@ pub(super) struct InlineTranscriptKey {
 
 impl Default for InlineTranscript {
     fn default() -> Self {
+        let mut transcript = glass_tui::Transcript::new(Vec::new());
+        transcript.set_glass_presentation(true);
         Self {
-            transcript: glass_tui::Transcript::new(Vec::new()),
+            transcript,
             source_key: None,
         }
     }
@@ -80,7 +82,7 @@ impl InlineTranscript {
             .into_iter()
             .map(|visible| {
                 if visible.entry_index != selected_entry {
-                    return visible.line;
+                    return tint_tool_identity(visible.line);
                 }
                 let spans = visible
                     .line
@@ -94,7 +96,9 @@ impl InlineTranscript {
                         )
                     })
                     .collect::<Vec<_>>();
-                glass_tui::ratatui::text::Line::from(spans).style(visible.line.style)
+                tint_tool_identity(
+                    glass_tui::ratatui::text::Line::from(spans).style(visible.line.style),
+                )
             })
             .collect()
     }
@@ -119,6 +123,10 @@ impl InlineTranscript {
         self.transcript.scroll
     }
 
+    pub(super) fn is_following(&self) -> bool {
+        self.transcript.follow
+    }
+
     pub(super) fn total_lines(&self) -> usize {
         self.transcript.total_lines()
     }
@@ -126,6 +134,26 @@ impl InlineTranscript {
     pub(super) fn set_width(&mut self, width: u16) {
         self.transcript.set_width(width.max(1));
     }
+}
+
+fn tint_tool_identity(
+    mut line: glass_tui::ratatui::text::Line<'static>,
+) -> glass_tui::ratatui::text::Line<'static> {
+    use glass_tui::ratatui::style::Color;
+    let text = line.to_string();
+    let color = if text.contains("CORE ·") {
+        Some(Color::Rgb(180, 145, 230))
+    } else if text.contains("GLASS ·") {
+        Some(Color::Rgb(79, 214, 195))
+    } else {
+        None
+    };
+    if let Some(color) = color
+        && let Some(span) = line.spans.first_mut()
+    {
+        span.style = span.style.fg(color);
+    }
+    line
 }
 
 pub(super) fn transcript_entry(
@@ -251,6 +279,59 @@ mod tests {
         assert_eq!(card.call_id, "call-stable-17");
         assert_eq!(card.status, "completed");
         assert_eq!(card.elapsed_ms, Some(37));
+    }
+
+    #[test]
+    fn glass_embed_selects_compact_cards_without_changing_core_default() {
+        let mut row = entry(ConversationKind::System, "");
+        row.tool_name = Some("bash".into());
+        row.tool_card = Some(glass_tui::ToolCard {
+            expanded: false,
+            call_id: "call-glass-1".into(),
+            command: "bash".into(),
+            output: String::new(),
+            status: "completed".into(),
+            elapsed_ms: None,
+            spill: None,
+            truncated: false,
+        });
+        let mut embedded = InlineTranscript::default();
+        embedded.set_entries_if_changed(&[row], key(1, 1), false);
+        let rendered = embedded
+            .visible_lines(48, 8, usize::MAX)
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("CORE · bash · completed"));
+        assert!(!rendered.contains("$ bash"));
+        assert!(!rendered.contains("0.0s"));
+        assert!(!rendered.contains("No output"));
+
+        let mut core = glass_tui::Transcript::new(vec![glass_tui::Entry {
+            role: glass_tui::Role::Bash,
+            text: String::new(),
+            turn: 0,
+            tool_card: Some(glass_tui::ToolCard {
+                expanded: false,
+                call_id: "call-core-1".into(),
+                command: "bash".into(),
+                output: String::new(),
+                status: "completed".into(),
+                elapsed_ms: None,
+                spill: None,
+                truncated: false,
+            }),
+        }]);
+        let core_lines = core.visible_lines(glass_tui::ratatui::layout::Rect::new(0, 0, 48, 8));
+        let core_rendered = core_lines
+            .iter()
+            .map(|line| line.line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(core_rendered.contains("$ bash"));
+        assert!(core_rendered.contains("0.0s"));
+        assert!(core_rendered.contains("No output"));
     }
 
     #[test]

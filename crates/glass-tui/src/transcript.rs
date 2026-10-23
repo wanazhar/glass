@@ -27,6 +27,7 @@ pub struct Transcript {
     anchor: Option<Anchor>,
     matches: Vec<usize>,
     match_index: Option<usize>,
+    glass_presentation: bool,
 }
 
 /// One visible wrapped line and the transcript entry it belongs to.
@@ -72,6 +73,7 @@ impl Transcript {
             anchor: None,
             matches: Vec::new(),
             match_index: None,
+            glass_presentation: false,
         }
     }
 
@@ -154,6 +156,13 @@ impl Transcript {
         let anchor = self.capture_anchor();
         self.layout.set_width(width.max(1));
         self.restore_anchor(anchor);
+    }
+
+    /// Enable the host-specific compact presentation for Glass Dev embeds.
+    /// Standalone Core leaves this disabled and retains its native appearance.
+    pub fn set_glass_presentation(&mut self, enabled: bool) {
+        self.glass_presentation = enabled;
+        self.layout.set_glass_presentation(enabled);
     }
 
     /// Clamp `scroll` so the viewport can always be filled.
@@ -353,6 +362,7 @@ impl Transcript {
             .collect();
         let cards = self.layout.cards();
         self.layout = Layout::new(rows);
+        self.layout.set_glass_presentation(self.glass_presentation);
         self.layout.set_cards(cards);
         self.layout.set_width(width);
         self.scroll = keep.min(self.layout.total_lines().saturating_sub(1));

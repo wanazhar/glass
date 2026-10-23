@@ -12,20 +12,20 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
 };
 
-// GitHub/Druk-inspired neutrals keep the data readable while the accent colors
-// reserve meaning for focus, progress, confirmation, and failure.
-const ACCENT: Color = Color::Rgb(88, 166, 255);
-const ACCENT_BRIGHT: Color = Color::Rgb(121, 192, 255);
+// Glass Dev uses graphite surfaces, teal workspace accents, and violet Core
+// accents; status colors remain reserved for success, warnings, and errors.
+const ACCENT: Color = Color::Rgb(45, 183, 167);
+const ACCENT_BRIGHT: Color = Color::Rgb(79, 214, 195);
 const PANEL_BORDER: Color = Color::Rgb(48, 54, 61);
 const PANEL_BACKGROUND: Color = Color::Rgb(22, 27, 34);
 const PANEL_INSET: Color = Color::Rgb(13, 17, 23);
-const ACTIVE_BACKGROUND: Color = Color::Rgb(31, 50, 72);
+const ACTIVE_BACKGROUND: Color = Color::Rgb(22, 55, 55);
 const TEXT: Color = Color::Rgb(230, 237, 243);
 const MUTED: Color = Color::Rgb(139, 148, 158);
 const SUCCESS: Color = Color::Rgb(126, 231, 135);
 const WARNING: Color = Color::Rgb(210, 153, 34);
 const ERROR: Color = Color::Rgb(255, 123, 114);
-const PURPLE: Color = Color::Rgb(210, 168, 255);
+const PURPLE: Color = Color::Rgb(180, 145, 230);
 fn panel_text(content: &str) -> Text<'static> {
     Text::from(
         content
@@ -2294,7 +2294,7 @@ fn compact_agent_header(state: &DevTuiState, width: u16) -> String {
         compact_line(&second, width)
     )
 }
-fn agent_conversation_text(
+pub(super) fn agent_conversation_text(
     state: &DevTuiState,
     landing: &str,
     width: u16,
@@ -2357,17 +2357,28 @@ fn agent_conversation_text(
         lines.truncate(usize::from(height.max(1)));
         return Text::from(lines);
     }
-    let footer = if !state.composer_mode {
-        "Ctrl-T reasoning · Enter chat · j/k select · f fork · r rewind · e last · o tools"
-            .to_string()
+    let at_tail = transcript.is_following();
+    let position = transcript.scroll().saturating_add(1);
+    let total = transcript.total_lines().max(1);
+    let tail_hint = if at_tail { "↓ live" } else { "↓ new" };
+    let footer = if width < 52 {
+        format!("PgUp/Dn Home/End · {position}/{total} {tail_hint}")
+    } else if width < 112 {
+        format!("PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · Ctrl-T reasoning")
+    } else if !state.composer_mode {
+        format!(
+            "PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · Ctrl-T reasoning · Enter chat · j/k select · f fork · r rewind · e last · o tools"
+        )
     } else {
         let chips = state.composer_context_chips();
         if state.composer_steer {
-            format!("{chips} · Ctrl-D follow-up · Ctrl-X abort")
+            format!(
+                "PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · {chips} · Ctrl-D follow-up · Ctrl-X abort"
+            )
         } else if chips.is_empty() {
-            "Ctrl-T reasoning · Ctrl-D follow-up · Ctrl-X abort".into()
+            format!("PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · Ctrl-T reasoning")
         } else {
-            chips
+            format!("PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · {chips}")
         }
     };
     let message_height = height.saturating_sub(1).max(1);
@@ -2401,9 +2412,9 @@ fn agent_conversation_panel_rect(state: &DevTuiState) -> Rect {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints(if compact {
-            [Constraint::Length(4), Constraint::Min(5)]
+            [Constraint::Length(2), Constraint::Min(5)]
         } else {
-            [Constraint::Length(4), Constraint::Min(6)]
+            [Constraint::Length(2), Constraint::Min(6)]
         })
         .split(area);
     if compact || area.width < 84 {
@@ -2490,13 +2501,33 @@ fn render_agent_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints(if compact {
-            [Constraint::Length(4), Constraint::Min(5)]
+            [Constraint::Length(2), Constraint::Min(5)]
         } else {
-            [Constraint::Length(4), Constraint::Min(6)]
+            [Constraint::Length(2), Constraint::Min(6)]
         })
         .split(area);
-    let header = compact_agent_header(state, rows[0].width.saturating_sub(4));
-    render_panel(frame, rows[0], " CODING AGENT ", header, ACCENT_BRIGHT);
+    let raw_header = compact_agent_header(state, rows[0].width.saturating_sub(16));
+    let mut header_lines = raw_header.lines();
+    let core_header = header_lines.next().unwrap_or("Core available").to_string();
+    let metadata = header_lines.next().unwrap_or("").to_string();
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::from(vec![
+                Span::styled(
+                    "CODING AGENT",
+                    Style::default()
+                        .fg(ACCENT_BRIGHT)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" · ", Style::default().fg(MUTED)),
+                Span::styled(core_header, Style::default().fg(PURPLE)),
+            ]),
+            Line::from(Span::styled(metadata, Style::default().fg(MUTED))),
+        ]))
+        .style(Style::default().bg(PANEL_BACKGROUND))
+        .wrap(Wrap { trim: true }),
+        rows[0],
+    );
 
     let landing = agent_landing(state);
     if compact || area.width < 84 {
@@ -5419,6 +5450,27 @@ mod tests {
         assert!(lines.iter().flat_map(|line| &line.spans).any(|span| {
             span.content.contains("bold") && span.style.add_modifier.contains(Modifier::BOLD)
         }));
+    }
+
+    #[test]
+    fn agent_transcript_exposes_scroll_position_without_idle_abort_hints() {
+        let mut state = state(TuiLayout::Compact);
+        state.surface = DevSurface::Agent;
+        state.conversation_items = vec![super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::Assistant,
+            text: "A settled response.".into(),
+            streaming: false,
+            entry_id: Some("settled-1".into()),
+            client_message_id: None,
+            tool_name: None,
+            tool_card: None,
+        }];
+        let text = agent_conversation_text(&state, "", 72, 8).to_string();
+        assert!(text.contains("PgUp/PgDn"));
+        assert!(text.contains("Home/End"));
+        assert!(text.contains("↓ live"));
+        assert!(!text.contains("Ctrl-X abort"));
+        assert!(!text.contains("Ctrl-D follow-up"));
     }
 
     #[test]

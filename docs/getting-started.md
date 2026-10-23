@@ -168,9 +168,11 @@ ready, Glass reports the exact repair step: install `glass-core`, set
 `GLASS_CORE_BINARY`, or connect a provider for the engine. `:agent doctor` and
 `:agent status` report readiness at any time.
 
-Talk from any surface with `Ctrl-L`. Glass Core owns coding tools and their
-permissions. Glass handles browser, Git, and workspace actions, with reviewable
-confirmations for its own mutations. A normal message does not attach the
+Talk from any surface with `Ctrl-L`. Glass Core owns agent execution, coding
+tools, and permission decisions. Glass executes Core-authorized browser, Git,
+and workspace integration calls after checking live workspace/resource
+identity and revisions; it does not add another approval prompt. Direct human
+actions retain their explicit UI behavior. A normal message does not attach the
 focused file or selection; ask Glass to inspect a file when you want to share
 it. When ready, `Enter` sends the draft and leaves the dock open for the next prompt;
 `Esc` closes it. `Ctrl-D` toggles steer mode; default follow-up mode queues the
@@ -179,9 +181,9 @@ and tool activity. A local or pre-dispatch failure restores the draft for
 editing and retry; background work retains newly typed text. When Core returns
 an error for an accepted prompt, Glass marks the attempt failed, returns the
 agent to idle, and lists it in Attention Inbox with a bounded error summary.
-Inspect the conversation and use `:agent retry` to open a confirmation; Glass
-does not replay failed prompts automatically. Mutating calls pause for one-use
-approval (`Enter`/`Y` approve, `Esc`/`N` deny).
+Inspect the conversation and use `:agent retry` to confirm before resending a
+prompt whose original outcome may be uncertain; Glass does not replay failed
+prompts automatically.
 
 Desktop uses `1`–`8` for Agent, Code, App, Terminal, Tasks, Git, Debug, and
 More. Phone uses `1`–`5` for Agent, Code, App, Tasks, and More. Auto chooses

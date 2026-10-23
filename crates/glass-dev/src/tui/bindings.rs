@@ -63,19 +63,19 @@ pub fn curriculum_help(surface: DevSurface) -> String {
         DevSurface::Debug => {
             "DEBUG\n  j/k select · [ ] pane · Enter jump · Space continue · n/i/o step"
         }
-        DevSurface::More => "MORE\n  j/k or click routes · Enter/double-click runs · a actions",
+        DevSurface::More => "MORE\n  j/k or click routes · Enter/double-click runs · : actions",
     };
     format!(
-        "DO THIS\n  type in the dock   talk to Glass\n  :                  search commands\n  a                  this surface's actions\n  Enter              do the highlighted thing\n  Esc                back\n  ?                  close help\n\n{surface_lines}\n\nMORE\n  Agent · Code · App · Terminal · Tasks · Git · Debug · More\n\nKEYS\n{}\n  click dock · double-click open · right-click / long-press = a",
+        "DO THIS\n  type in the dock   talk to Glass\n  :                  open actions and search\n  a outside Agent    this surface's actions\n  Enter              do the highlighted thing\n  Esc                back\n  ?                  close help\n\n{surface_lines}\n\nMORE\n  Agent · Code · App · Terminal · Tasks · Git · Debug · More\n\nKEYS\n{}\n  click dock · double-click open · right-click / long-press context actions",
         documented_shortcut_help()
     )
 }
 
 pub fn dock_placeholder(surface: DevSurface, mode: crate::AgentTurnMode) -> String {
     let command_hint = if surface == DevSurface::Agent {
-        ": search · / agent commands · a actions"
+        ": actions/search · / agent commands"
     } else {
-        ": search · a actions"
+        ": actions/search"
     };
     format!(
         "{}  Ask Glass about {}…    {command_hint}",

@@ -1976,7 +1976,7 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         vec![
             Line::from(Span::styled(
                 compact_line(
-                    "Tab surfaces · 1-5 jump · a actions · ? help",
+                    "Tab surfaces · 1-5 jump · : actions · ? help",
                     geometry.footer.width.saturating_sub(2),
                 ),
                 Style::default().fg(MUTED),
@@ -2547,9 +2547,9 @@ fn agent_landing(state: &DevTuiState) -> String {
         return "START HERE\nDescribe a coding task.\nEnter to chat or type a message.\n: actions open Glass tools and settings.\nGlass can inspect, edit, run, and verify.\nOpen the browser for UI work.".into();
     }
     if crate::ResidentHarnessKind::from_env() == crate::ResidentHarnessKind::GlassCore {
-        return "SETUP\nConfigure glass-core with a provider and credentials.\nUse :actions to inspect available agent setup options.\nThen Enter or type to chat.".into();
+        return "SETUP\nConfigure glass-core with a provider and credentials.\nUse :actions to inspect available agent setup options.\nAfter ✓ Ready, use : → Compose message · i to open a draft.\nSending needs a ready engine.".into();
     }
-    "SETUP\nPress :actions.\nChoose Setup Pi runtime · Enter to install.\nChoose Authenticate if installed.\nThen Enter or type to chat.".into()
+    "SETUP\nPress :actions.\nChoose Setup Pi runtime · Enter to install.\nChoose Authenticate if installed.\nAfter ✓ Ready, use : → Compose message · i to open a draft.".into()
 }
 
 fn agent_conversation_panel_rect(state: &DevTuiState) -> Rect {
@@ -5524,7 +5524,9 @@ mod tests {
         assert!(output.contains("SETUP"));
         assert!(output.contains("Configure glass-core with a provider and credentials"));
         assert!(output.contains(":actions"));
-        assert!(output.contains("Then Enter or type to chat"));
+        assert!(output.contains("After ✓ Ready"));
+        assert!(output.contains("Compose message · i"));
+        assert!(output.contains("Sending needs a ready engine"));
     }
 
     #[test]

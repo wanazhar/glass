@@ -812,8 +812,7 @@ pub(crate) fn run_with_browser_policy(
                                     state.composer_cursor,
                                     key,
                                 );
-                                state.composer_input = text;
-                                state.composer_cursor = cursor;
+                                state.set_composer_edit(text, cursor);
                                 if matches!(outcome, glass_tui::Edit::Submit(_)) {
                                     state.submit_composer(&mut worker);
                                 }
@@ -853,8 +852,7 @@ pub(crate) fn run_with_browser_policy(
                                     state.composer_cursor,
                                     key,
                                 );
-                                state.composer_input = text;
-                                state.composer_cursor = cursor;
+                                state.set_composer_edit(text, cursor);
                                 if matches!(outcome, glass_tui::Edit::Submit(_)) {
                                     state.submit_composer(&mut worker);
                                 }

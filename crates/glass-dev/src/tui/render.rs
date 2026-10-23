@@ -2199,8 +2199,21 @@ fn agent_progress(state: &DevTuiState) -> String {
         "Glass tool running"
     } else if state.composer_mode {
         "drafting prompt"
+    } else if let Some(status) = state.selected_agent_status() {
+        match status {
+            crate::AgentStatus::Queued => "agent queued",
+            crate::AgentStatus::Starting => "agent starting",
+            crate::AgentStatus::RecoveryPending => "agent recovery pending",
+            crate::AgentStatus::Unavailable => "agent unavailable",
+            crate::AgentStatus::Idle => "agent ready for a prompt",
+            crate::AgentStatus::Working => "agent working",
+            crate::AgentStatus::Waiting => "agent waiting",
+            crate::AgentStatus::Completed => "agent completed",
+            crate::AgentStatus::Failed => "agent failed",
+            crate::AgentStatus::Cancelled => "agent cancelled",
+        }
     } else if state.agent_readiness.starts_with("✓ Ready") {
-        "ready for a prompt"
+        "Core available"
     } else {
         "setup required"
     };
@@ -2249,10 +2262,20 @@ fn compact_agent_header(state: &DevTuiState, width: u16) -> String {
         .lines()
         .next()
         .unwrap_or("Glass Core unavailable");
-    let runtime_state = readiness
+    let core_state = readiness
         .split(" · ")
         .next()
         .unwrap_or("Glass Core unavailable");
+    let runtime_state = state.selected_agent_status().map_or_else(
+        || {
+            if core_state == "✓ Ready" {
+                "✓ Core available".to_string()
+            } else {
+                core_state.to_string()
+            }
+        },
+        |status| format!("Agent {}", status.label()),
+    );
     let app_summary = state
         .browser_chat_header()
         .split(" · ")
@@ -2272,7 +2295,7 @@ fn compact_agent_header(state: &DevTuiState, width: u16) -> String {
     };
     format!(
         "{}\n{}",
-        compact_line(runtime_state, width),
+        compact_line(&runtime_state, width),
         compact_line(&second, width)
     )
 }

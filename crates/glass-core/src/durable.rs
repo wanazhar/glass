@@ -974,6 +974,14 @@ impl Store {
     pub fn poison(&mut self) {
         self.poisoned = true;
     }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn fail_writes_for_test(&mut self) -> Result<(), String> {
+        self.file = OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
     pub fn task_graph(&self) -> Value {
         json!({"sequence":self.state.sequence,"tasks":self.state.tasks.values().filter(|t|!t.terminal()).collect::<Vec<_>>()})
     }

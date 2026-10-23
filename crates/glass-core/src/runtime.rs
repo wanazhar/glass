@@ -9,10 +9,12 @@ use crate::{
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
+use std::fs::OpenOptions;
 use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
+use std::time::Instant;
 
 #[path = "durable_runtime.rs"]
 mod durable_host;
@@ -22,6 +24,62 @@ mod support;
 const MAX_FRAME: usize = 1024 * 1024;
 const MAX_PENDING: usize = 32;
 type Schemas = Vec<(String, String, String)>;
+
+/// Optional privacy-safe timing trace for diagnosing a stalled host runtime.
+/// Records only fixed frame classes, byte counts, and write durations.
+fn trace_runtime_frame(
+    component: &str,
+    phase: &str,
+    class: &str,
+    bytes: usize,
+    elapsed_us: Option<u128>,
+) {
+    let Some(path) = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path).with_extension(format!("{component}.jsonl"));
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = file.metadata() {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o600);
+            let _ = file.set_permissions(permissions);
+        }
+    }
+    let record = json!({
+        "component": component,
+        "phase": phase,
+        "class": class,
+        "bytes": bytes,
+        "elapsed_us": elapsed_us,
+    });
+    let _ = writeln!(file, "{record}");
+}
+
+fn runtime_frame_class(value: &Value) -> &'static str {
+    match value.get("method").and_then(Value::as_str) {
+        Some("runtime/event") => match value.pointer("/params/type").and_then(Value::as_str) {
+            Some("usage") => "event:usage",
+            Some("settled") => "event:settled",
+            Some("text") => "event:text",
+            Some("reasoning") => "event:reasoning",
+            Some("tool_start") => "event:tool_start",
+            Some("tool_end") => "event:tool_end",
+            Some("tool_progress") => "event:tool_progress",
+            Some("turn_start") => "event:turn_start",
+            _ => "event:other",
+        },
+        Some("tool/execute") => "host_tool_request",
+        Some(_) => "rpc_request",
+        None if value.get("id").is_some() && value.get("error").is_some() => "rpc_error",
+        None if value.get("id").is_some() => "rpc_response",
+        _ => "other",
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolMode {
     Host,
@@ -59,7 +117,10 @@ fn send(value: Value) -> bool {
     if encoded.len() + 1 > MAX_FRAME {
         return false;
     }
+    let class = runtime_frame_class(&value);
+    trace_runtime_frame("core_stdout", "write_begin", class, encoded.len() + 1, None);
     let stdout = std::io::stdout();
+    let write_started = Instant::now();
     let mut out = stdout.lock();
     // Blocking writes propagate backpressure rather than accumulating events.
     if writeln!(out, "{encoded}")
@@ -68,6 +129,13 @@ fn send(value: Value) -> bool {
     {
         std::process::exit(0);
     }
+    trace_runtime_frame(
+        "core_stdout",
+        "write_complete",
+        class,
+        encoded.len() + 1,
+        Some(write_started.elapsed().as_micros()),
+    );
     true
 }
 fn reply(id: &Value, result: Value) {

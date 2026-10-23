@@ -2553,7 +2553,12 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     // after that bounded request timeout can produce its correlated runtime
     // response; the former 90-second cutoff killed a still-running child and
     // could not distinguish a slow provider stream from a missing reply.
-    let deadline = Instant::now() + Duration::from_secs(610);
+    let timeout_secs = std::env::var("GLASS_LIVE_PROVIDER_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (15..=610).contains(value))
+        .unwrap_or(610);
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     while Instant::now() < deadline {
         session.settle(Duration::from_millis(200));
         let terminal_output = session.output().to_ascii_lowercase();
@@ -2754,10 +2759,22 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         "Core did not settle the turn before its matching response: {trace_summary}"
     );
     assert_eq!(std::fs::read(&file_path).unwrap(), expected);
+    assert!(
+        session.wait_for("GLASS AGENT", Duration::from_secs(5)),
+        "settled assistant message was not rendered in the shared transcript"
+    );
     let transcript = session.visible_output();
+    let rendered_roles = ["YOU", "GLASS AGENT", "SYSTEM", "ERROR"]
+        .into_iter()
+        .filter(|role| transcript.contains(role))
+        .collect::<Vec<_>>();
     assert!(
         transcript.contains("GLASS AGENT"),
-        "live Core turn did not render its assistant role in the shared transcript"
+        "live Core turn did not render its assistant role in the current transcript frame; observed role labels: {rendered_roles:?}"
+    );
+    assert!(
+        transcript.contains("YOU"),
+        "live composer prompt did not render with the human role in the current transcript frame; observed role labels: {rendered_roles:?}"
     );
     assert!(
         !transcript.contains("Agent playbook: inspect, write session todos"),

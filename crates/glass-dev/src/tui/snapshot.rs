@@ -77,6 +77,8 @@ pub struct AgentChrome {
 #[derive(Debug, Clone, Default)]
 pub struct DisplaySnapshot {
     pub version: u64,
+    /// Highest agent event sequence folded into the conversation projection.
+    pub conversation_cursor: u64,
     pub agents: String,
     /// Typed lifecycle state for each resident agent; the TUI uses this to
     /// replace optimistic "thinking" copy when a turn actually settles.
@@ -131,6 +133,8 @@ pub struct DisplaySnapshot {
 pub struct AgentConversation {
     pub text: String,
     pub items: Vec<super::projection::ConversationEntry>,
+    /// Private provider reasoning shown only in the explicit reasoning view.
+    pub reasoning: String,
 }
 
 fn agent_conversations(
@@ -147,12 +151,20 @@ fn agent_conversations(
         .into_iter()
         .map(|(id, events)| {
             let items = crate::tui::projection::conversation_entries(&events);
+            let reasoning = crate::tui::projection::conversation_reasoning(&events);
             let text = if items.is_empty() {
                 String::new()
             } else {
                 crate::tui::projection::conversation(&events)
             };
-            (id, AgentConversation { text, items })
+            (
+                id,
+                AgentConversation {
+                    text,
+                    items,
+                    reasoning,
+                },
+            )
         })
         .collect()
 }
@@ -436,6 +448,7 @@ fn worker_loop(
                     {
                         snapshot.conversation_items = items;
                         snapshot.agent_conversations = by_agent;
+                        snapshot.conversation_cursor = highest;
                     }
                 }
                 if let Ok(mut slot) = snapshots.lock()
@@ -511,12 +524,14 @@ fn worker_loop(
                     };
                     snapshot.conversation_items = items;
                     snapshot.agent_conversations = by_agent;
-                    if let Some(highest) =
-                        conversation_events.iter().map(|event| event.sequence).max()
-                    {
-                        conversation_cursor.store(highest, Ordering::Release);
-                    }
+                    let highest = conversation_events
+                        .iter()
+                        .map(|event| event.sequence)
+                        .max()
+                        .unwrap_or_default();
+                    conversation_cursor.store(highest, Ordering::Release);
                 }
+                snapshot.conversation_cursor = conversation_cursor.load(Ordering::Acquire);
                 snapshot.agent_conversation = conversation_tail.clone();
                 if let Ok(mut slot) = snapshots.lock() {
                     *slot = Some(snapshot);

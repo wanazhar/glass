@@ -1,21 +1,8 @@
-//! Per-surface instructions injected into Pi context on every send.
+//! Legacy per-surface instructions retained for display cleanup of old events.
 
 use super::state::DevSurface;
 
-pub fn playbook_name(surface: DevSurface) -> &'static str {
-    match surface {
-        DevSurface::Code => "editor",
-        DevSurface::App => "browser",
-        DevSurface::Git => "git",
-        DevSurface::Debug => "debug",
-        DevSurface::Terminal => "process",
-        DevSurface::Tasks => "todo",
-        DevSurface::More => "workspace",
-        DevSurface::Trust => "trust",
-        DevSurface::Agent => "agent",
-    }
-}
-
+/// Former prompt prefix used by older Glass builds.
 pub fn playbook(surface: DevSurface) -> &'static str {
     match surface {
         DevSurface::Code => {

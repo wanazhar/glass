@@ -83,6 +83,25 @@ impl Layout {
         true
     }
 
+    /// Return one cached entry's presentation rows for an inline host.
+    /// Surrounding transcript boundaries are omitted so the host can keep its
+    /// own message separators and role framing.
+    pub fn entry_lines(&mut self, entry: usize) -> Vec<Line<'static>> {
+        if self.dirty {
+            self.rebuild_index();
+        }
+        if entry >= self.entries.len() {
+            return Vec::new();
+        }
+        let width = self.last_width.unwrap_or(80);
+        let mut rows = self.lay_out(entry, width).lines;
+        self.touch(entry);
+        if entry > 0 && rows.first().is_some_and(|line| line.spans.is_empty()) {
+            rows.remove(0);
+        }
+        rows
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -449,6 +468,22 @@ fn role_style(role: Role) -> ratatui::style::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_entry_lines_reuse_width_aware_cached_presentation() {
+        let mut layout = Layout::new(vec![(
+            "First paragraph.\n\nSecond paragraph with **bold**.".into(),
+            Role::Assistant,
+            0,
+        )]);
+        layout.set_width(24);
+        let first = layout.entry_lines(0);
+        assert!(first.iter().any(|line| line.to_string().contains("First")));
+        assert!(first.iter().any(|line| line.to_string().trim().is_empty()));
+        assert!(first.iter().any(|line| line.to_string().contains("Second")));
+        assert_eq!(layout.entry_lines(0), first);
+        assert!(layout.entry_lines(4).is_empty());
+    }
 
     #[test]
     fn detailed_tool_output_keeps_preview_colors_and_bounds_running_titles() {

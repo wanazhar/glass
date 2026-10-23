@@ -10,6 +10,7 @@
 
 mod bindings;
 mod command;
+mod core_conversation;
 mod editor;
 mod file_view;
 mod overlay;
@@ -602,6 +603,35 @@ pub(crate) fn run_with_browser_policy(
                             _ => {}
                         }
                     } else if state.surface == DevSurface::Agent
+                        && state.reasoning_view_open
+                        && matches!(
+                            active_overlay,
+                            None | Some(overlay::ActiveOverlay::Composer)
+                        )
+                    {
+                        match key.code {
+                            KeyCode::Esc => state.toggle_reasoning_view(),
+                            KeyCode::Char('t' | 'T')
+                                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.toggle_reasoning_view()
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => state.scroll_surface(-1),
+                            KeyCode::Down | KeyCode::Char('j') => state.scroll_surface(1),
+                            KeyCode::PageUp => state.scroll_surface(-10),
+                            KeyCode::PageDown => state.scroll_surface(10),
+                            _ => {}
+                        }
+                    } else if state.surface == DevSurface::Agent
+                        && matches!(
+                            active_overlay,
+                            None | Some(overlay::ActiveOverlay::Composer)
+                        )
+                        && key.code == KeyCode::Char('t')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        state.toggle_reasoning_view();
+                    } else if state.surface == DevSurface::Agent
                         && matches!(
                             active_overlay,
                             None | Some(overlay::ActiveOverlay::Composer)
@@ -845,12 +875,24 @@ pub(crate) fn run_with_browser_policy(
                     } else if active_overlay == Some(overlay::ActiveOverlay::Composer) {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.close_composer(),
-                            (KeyCode::Enter, value) if value.contains(KeyModifiers::SHIFT) => {
-                                state.insert_composer_newline();
+                            (KeyCode::Enter, value)
+                                if value.intersects(
+                                    KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT,
+                                ) =>
+                            {
+                                let (outcome, text, cursor) = core_conversation::edit_draft(
+                                    &state.composer_input,
+                                    state.composer_cursor,
+                                    key,
+                                );
+                                state.composer_input = text;
+                                state.composer_cursor = cursor;
+                                if matches!(outcome, glass_tui::Edit::Submit(_)) {
+                                    state.submit_composer(&mut worker);
+                                }
                             }
                             (KeyCode::Enter, _) => state.submit_composer(&mut worker),
                             (KeyCode::Tab, _) => state.complete_composer_mention(),
-                            (KeyCode::Backspace, _) => state.composer_backspace(),
                             (KeyCode::Up, _) => state.navigate_composer_history(true),
                             (KeyCode::Down, _) => state.navigate_composer_history(false),
                             (KeyCode::Char('p'), value)
@@ -862,27 +904,6 @@ pub(crate) fn run_with_browser_policy(
                                 if value.contains(KeyModifiers::CONTROL) =>
                             {
                                 state.navigate_composer_history(false);
-                            }
-                            (KeyCode::Char('u'), value)
-                                if value.contains(KeyModifiers::CONTROL) =>
-                            {
-                                state.composer_input.clear();
-                                state.composer_cursor = 0;
-                            }
-                            (KeyCode::Char('a'), value)
-                                if value.contains(KeyModifiers::CONTROL) =>
-                            {
-                                state.composer_cursor = 0;
-                            }
-                            (KeyCode::Char('e'), value)
-                                if value.contains(KeyModifiers::CONTROL) =>
-                            {
-                                state.composer_cursor = state.composer_input.len();
-                            }
-                            (KeyCode::Char('w'), value)
-                                if value.contains(KeyModifiers::CONTROL) =>
-                            {
-                                state.delete_composer_word();
                             }
                             (KeyCode::Char('x'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
@@ -908,16 +929,18 @@ pub(crate) fn run_with_browser_policy(
                             (KeyCode::Char('/'), _) => {
                                 route_composer_slash_key(&mut state, key.code);
                             }
-                            (KeyCode::Left, _) => state.move_composer_cursor(false),
-                            (KeyCode::Right, _) => state.move_composer_cursor(true),
-                            (KeyCode::Home, _) => state.composer_cursor = 0,
-                            (KeyCode::End, _) => {
-                                state.composer_cursor = state.composer_input.len();
+                            _ => {
+                                let (outcome, text, cursor) = core_conversation::edit_draft(
+                                    &state.composer_input,
+                                    state.composer_cursor,
+                                    key,
+                                );
+                                state.composer_input = text;
+                                state.composer_cursor = cursor;
+                                if matches!(outcome, glass_tui::Edit::Submit(_)) {
+                                    state.submit_composer(&mut worker);
+                                }
                             }
-                            (KeyCode::Char(character), _) => {
-                                state.insert_composer_text(&character.to_string());
-                            }
-                            _ => {}
                         }
                     } else if active_overlay == Some(overlay::ActiveOverlay::CommandPalette) {
                         match (key.code, key.modifiers) {

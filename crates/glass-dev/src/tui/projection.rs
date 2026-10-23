@@ -439,7 +439,7 @@ pub struct ConversationEntry {
 }
 
 impl ConversationEntry {
-    fn user(
+    pub(super) fn user(
         text: impl Into<String>,
         entry_id: Option<String>,
         client_message_id: Option<String>,
@@ -454,7 +454,11 @@ impl ConversationEntry {
         }
     }
 
-    fn assistant(text: impl Into<String>, streaming: bool, entry_id: Option<String>) -> Self {
+    pub(super) fn assistant(
+        text: impl Into<String>,
+        streaming: bool,
+        entry_id: Option<String>,
+    ) -> Self {
         Self {
             kind: ConversationKind::Assistant,
             text: text.into(),
@@ -465,7 +469,7 @@ impl ConversationEntry {
         }
     }
 
-    fn system(text: impl Into<String>, tool_name: Option<String>) -> Self {
+    pub(super) fn system(text: impl Into<String>, tool_name: Option<String>) -> Self {
         Self {
             kind: ConversationKind::System,
             text: text.into(),
@@ -476,7 +480,7 @@ impl ConversationEntry {
         }
     }
 
-    fn alert(text: impl Into<String>, tool_name: Option<String>) -> Self {
+    pub(super) fn alert(text: impl Into<String>, tool_name: Option<String>) -> Self {
         Self {
             kind: ConversationKind::Alert,
             text: text.into(),
@@ -487,7 +491,7 @@ impl ConversationEntry {
         }
     }
 
-    fn error(text: impl Into<String>, tool_name: Option<String>) -> Self {
+    pub(super) fn error(text: impl Into<String>, tool_name: Option<String>) -> Self {
         Self {
             kind: ConversationKind::Error,
             text: text.into(),
@@ -532,41 +536,220 @@ impl ConversationEntry {
     }
 }
 
+#[derive(Default)]
+struct SharedConversationProjection {
+    timeline: glass_tui::Conversation,
+    local_indices: Vec<usize>,
+    latest_local: Option<usize>,
+}
+
+impl SharedConversationProjection {
+    fn apply(
+        &mut self,
+        event: glass_tui::ConversationEvent,
+        items: &mut Vec<ConversationEntry>,
+        entry_id: Option<String>,
+    ) -> Option<usize> {
+        let shared_index = self.timeline.apply(event)?;
+        while self.local_indices.len() <= shared_index {
+            let item = &self.timeline.items()[self.local_indices.len()];
+            let local_index = items.len();
+            items.push(Self::local_entry(item, None));
+            self.local_indices.push(local_index);
+        }
+        let local_index = self.local_indices[shared_index];
+        let existing = items.get(local_index).cloned();
+        items[local_index] =
+            Self::local_entry(&self.timeline.items()[shared_index], existing.as_ref());
+        if items[local_index].entry_id.is_none() {
+            items[local_index].entry_id = entry_id;
+        }
+        self.latest_local = Some(local_index);
+        Some(local_index)
+    }
+
+    fn finish_streaming(&mut self, items: &mut [ConversationEntry]) {
+        self.timeline.apply(glass_tui::ConversationEvent::Finish);
+        for (shared_index, local_index) in self.local_indices.iter().copied().enumerate() {
+            if let Some(local) = items.get_mut(local_index)
+                && let Some(shared) = self.timeline.items().get(shared_index)
+                && local.kind == ConversationKind::Assistant
+            {
+                local.text.clone_from(&shared.entry.text);
+                local.streaming = shared.streaming;
+            }
+        }
+    }
+
+    fn latest_local_index(&self) -> Option<usize> {
+        self.latest_local
+    }
+
+    fn has_tool_call(&self, call_id: &str) -> bool {
+        self.timeline.items().iter().any(|item| {
+            item.entry
+                .tool_card
+                .as_ref()
+                .is_some_and(|card| card.call_id == call_id)
+        })
+    }
+
+    fn local_entry(
+        shared: &glass_tui::ConversationItem,
+        previous: Option<&ConversationEntry>,
+    ) -> ConversationEntry {
+        let entry_id = previous.and_then(|entry| entry.entry_id.clone());
+        let client_message_id = previous.and_then(|entry| entry.client_message_id.clone());
+        if let Some(card) = &shared.entry.tool_card {
+            let name = shared
+                .entry
+                .text
+                .lines()
+                .next()
+                .unwrap_or(&card.command)
+                .to_string();
+            let failed = card.status == "error"
+                || card.status.starts_with("exit ") && card.status != "exit 0";
+            let summary = if card.status == "running" {
+                format!("→ {name} · running")
+            } else if failed {
+                format!("× {name}")
+            } else {
+                format!("✓ {name} · done")
+            };
+            let body = if card.output.is_empty() {
+                summary
+            } else {
+                format!("{summary}\n{}", card.output)
+            };
+            let mut entry = if failed {
+                ConversationEntry::error(body, Some(name))
+            } else {
+                ConversationEntry::system(body, Some(name))
+            };
+            entry.entry_id = entry_id;
+            entry.client_message_id = client_message_id;
+            entry
+        } else {
+            match shared.entry.role {
+                glass_tui::Role::User => {
+                    let mut entry = ConversationEntry::user(
+                        shared.entry.text.clone(),
+                        entry_id,
+                        client_message_id,
+                    );
+                    entry.streaming = shared.streaming;
+                    entry
+                }
+                glass_tui::Role::Assistant => ConversationEntry::assistant(
+                    shared.entry.text.clone(),
+                    shared.streaming,
+                    entry_id,
+                ),
+                glass_tui::Role::System | glass_tui::Role::Meta => {
+                    let mut entry = ConversationEntry::system(shared.entry.text.clone(), None);
+                    entry.entry_id = entry_id;
+                    entry.client_message_id = client_message_id;
+                    entry
+                }
+                glass_tui::Role::Bash | glass_tui::Role::Tool => {
+                    let mut entry = ConversationEntry::system(shared.entry.text.clone(), None);
+                    entry.entry_id = entry_id;
+                    entry.client_message_id = client_message_id;
+                    entry
+                }
+            }
+        }
+    }
+}
+
 /// Project agent events into structured transcript bubbles.
 pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEntry> {
     let mut items = Vec::new();
+    let mut shared = SharedConversationProjection::default();
+    let mut turn = 0_usize;
     for event in events {
         if pi_user_message(event) {
             continue;
         }
         let entry_id = event_entry_id(event);
         match event.kind.as_str() {
-            "starting" | "ready" | "turn_start" | "turn_end" | "message_start"
-            | "agent_settled" => {}
-            "agent_end" => finish_streaming(&mut items),
-            "requestStarted" | "agent_start" => {
-                push_thinking(&mut items, entry_id);
+            "starting" | "ready" | "turn_end" | "message_start" | "agent_settled" => {}
+            "turn_start" => {
+                turn = turn.saturating_add(1);
+                shared.finish_streaming(&mut items);
+                shared.apply(
+                    glass_tui::ConversationEvent::TurnStart { turn },
+                    &mut items,
+                    None,
+                );
+            }
+            "agent_end" => shared.finish_streaming(&mut items),
+            // The composer already shows the active turn state. Keep the
+            // transcript reserved for messages and actionable tool results.
+            "requestStarted" | "agent_start" | "waiting" => {}
+            "reasoning" => {
+                if let Some(text) = event_text(event) {
+                    shared.apply(
+                        glass_tui::ConversationEvent::ReasoningDelta(text),
+                        &mut items,
+                        None,
+                    );
+                }
+            }
+            "notice" | "status" => {
+                if let Some(text) = event_text(event)
+                    .or_else(|| event.payload.as_str().map(str::to_string))
+                    .or_else(|| {
+                        event
+                            .payload
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                {
+                    shared.finish_streaming(&mut items);
+                    items.push(ConversationEntry::system(text, None));
+                }
+            }
+            "error" => {
+                if let Some(text) =
+                    event_text(event).or_else(|| event.payload.get("message").and_then(text_value))
+                {
+                    shared.finish_streaming(&mut items);
+                    items.push(ConversationEntry::error(text, None));
+                }
             }
             "message_update" => {
                 if let Some(delta) = message_delta(&event.payload) {
-                    push_assistant_delta(&mut items, delta, entry_id);
+                    shared.apply(
+                        glass_tui::ConversationEvent::AssistantDelta(delta),
+                        &mut items,
+                        entry_id,
+                    );
                 }
             }
             "message_end" if hidden_custom_message(&event.payload) => {}
             "message_end" => {
                 if let Some(text) = event_text(event) {
-                    push_assistant_final(&mut items, text, entry_id);
+                    shared.apply(
+                        glass_tui::ConversationEvent::AssistantFinal(text),
+                        &mut items,
+                        entry_id,
+                    );
                 } else {
-                    finish_streaming(&mut items);
+                    shared.finish_streaming(&mut items);
                 }
             }
             "glass_browser_evidence" => {
+                shared.finish_streaming(&mut items);
                 items.push(ConversationEntry::system(
                     browser_evidence(&event.payload),
                     Some("glass.browser".into()),
                 ));
             }
             "glass_tool_evidence" => {
+                shared.finish_streaming(&mut items);
                 let name = tool_name(&event.payload);
                 if event
                     .payload
@@ -593,6 +776,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                 }
             }
             "glass_tool_rejected" => {
+                shared.finish_streaming(&mut items);
                 let recoverable = event
                     .payload
                     .get("recoverable")
@@ -618,6 +802,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                 ));
             }
             "glass_tool_approval_request" => {
+                shared.finish_streaming(&mut items);
                 let name = tool_name(&event.payload);
                 let summary = approval_argument_summary(event.payload.get("arguments"));
                 items.push(ConversationEntry::alert(
@@ -628,6 +813,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                 ));
             }
             "glass_tool_approval_resolved" => {
+                shared.finish_streaming(&mut items);
                 let approved = event
                     .payload
                     .get("approved")
@@ -649,6 +835,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                 ));
             }
             "glass_pi_command_result" => {
+                shared.finish_streaming(&mut items);
                 let command = event
                     .payload
                     .get("command")
@@ -674,50 +861,137 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
             }
             "tool_execution_start" => {
                 let name = tool_name(&event.payload);
-                items.push(ConversationEntry::system(
-                    format!("→ {name} · running"),
-                    Some(name),
-                ));
+                let call_id = event
+                    .payload
+                    .get("callId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("legacy-{}", event.sequence));
+                shared.apply(
+                    glass_tui::ConversationEvent::ToolStart {
+                        call_id,
+                        name,
+                        command: event
+                            .payload
+                            .get("command")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                    },
+                    &mut items,
+                    None,
+                );
+            }
+            "tool_progress" => {
+                if let Some(call_id) = event
+                    .payload
+                    .get("callId")
+                    .or_else(|| event.payload.pointer("/text/callId"))
+                    .and_then(Value::as_str)
+                {
+                    let text = event_text(event).unwrap_or_default();
+                    shared.apply(
+                        glass_tui::ConversationEvent::ToolProgress {
+                            call_id: call_id.to_string(),
+                            text,
+                        },
+                        &mut items,
+                        None,
+                    );
+                }
             }
             "tool_execution_end" => {
-                let name = tool_name(&event.payload);
-                items.push(ConversationEntry::system(
-                    format!("✓ {name} · done"),
-                    Some(name),
-                ));
+                let call_id = event
+                    .payload
+                    .get("callId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("legacy-{}", event.sequence));
+                let output = event_text(event).unwrap_or_default();
+                // Core reports completion of its provider-side tool call, while
+                // Glass separately reports the governed host execution as
+                // glass_tool_evidence. If no matching start was projected,
+                // suppress the empty completion row and let host evidence be
+                // the visible result.
+                if output.is_empty() && !shared.has_tool_call(&call_id) {
+                    continue;
+                }
+                let status = if event.payload.get("isError").and_then(Value::as_bool) == Some(true)
+                {
+                    "error"
+                } else {
+                    "completed"
+                };
+                shared.apply(
+                    glass_tui::ConversationEvent::ToolEnd {
+                        call_id,
+                        output,
+                        status: status.into(),
+                        elapsed_ms: None,
+                    },
+                    &mut items,
+                    None,
+                );
             }
             "completed" => {
                 if let Some(text) = event_text(event) {
-                    push_assistant_final(&mut items, text, entry_id);
+                    shared.apply(
+                        glass_tui::ConversationEvent::AssistantFinal(text),
+                        &mut items,
+                        entry_id,
+                    );
                 } else {
+                    shared.finish_streaming(&mut items);
                     items.push(ConversationEntry::system("✓ done", None));
                 }
             }
-            "failed" | "workerPanicked" | "budgetExceeded" => items.push(ConversationEntry::error(
-                event_text(event)
-                    .or_else(|| {
-                        event
-                            .payload
-                            .get("error")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string)
-                    })
-                    .unwrap_or_else(|| "failed".into()),
-                None,
-            )),
-            "cancelled" => items.push(ConversationEntry::error("cancelled", None)),
+            "failed" | "workerPanicked" | "budgetExceeded" => {
+                shared.finish_streaming(&mut items);
+                items.push(ConversationEntry::error(
+                    event_text(event)
+                        .or_else(|| {
+                            event
+                                .payload
+                                .get("error")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string)
+                        })
+                        .unwrap_or_else(|| "failed".into()),
+                    None,
+                ));
+            }
+            "cancelled" => {
+                shared.finish_streaming(&mut items);
+                items.push(ConversationEntry::error("cancelled", None));
+            }
             "user" => {
                 if let Some(text) = event_text(event) {
-                    items.push(ConversationEntry::user(
-                        text,
-                        entry_id,
-                        event_client_message_id(event),
-                    ));
+                    shared.apply(
+                        glass_tui::ConversationEvent::User(
+                            if event
+                                .payload
+                                .get("contextAttached")
+                                .and_then(Value::as_bool)
+                                == Some(true)
+                            {
+                                strip_legacy_composer_prefix(&text)
+                            } else {
+                                text
+                            },
+                        ),
+                        &mut items,
+                        entry_id.clone(),
+                    );
+                    if let Some(local) = shared.latest_local_index() {
+                        items[local].entry_id = entry_id;
+                        items[local].client_message_id = event_client_message_id(event);
+                    }
                 }
             }
             "response" => {
                 if event.payload.get("operation").and_then(Value::as_str) == Some("models") {
                     if event.payload.get("ok").and_then(Value::as_bool) == Some(false) {
+                        shared.finish_streaming(&mut items);
                         let error = event
                             .payload
                             .pointer("/error/message")
@@ -731,6 +1005,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     } else if let Some(text) =
                         event.payload.get("result").and_then(model_catalog_text)
                     {
+                        shared.finish_streaming(&mut items);
                         items.push(ConversationEntry::system(text, Some("models/list".into())));
                     }
                 } else if event.payload.get("ok").and_then(Value::as_bool) == Some(false)
@@ -739,6 +1014,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                         Some("prompt" | "followUp")
                     )
                 {
+                    shared.finish_streaming(&mut items);
                     let error = &event.payload["error"];
                     let kind = error
                         .pointer("/data/kind")
@@ -781,19 +1057,41 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                         None,
                     ));
                 } else if let Some(text) = event_text(event) {
-                    push_assistant_final(&mut items, text, entry_id);
+                    shared.apply(
+                        glass_tui::ConversationEvent::AssistantFinal(text),
+                        &mut items,
+                        entry_id,
+                    );
                 }
             }
-            _ => {
-                if let Some(text) = event_text(event) {
-                    push_assistant_final(&mut items, text, entry_id);
-                } else if !event.payload.is_null() {
-                    items.push(ConversationEntry::system(format!("· {}", event.kind), None));
-                }
-            }
+            // Unknown and private event kinds are protocol details, not
+            // transcript messages. Only explicitly handled public event kinds
+            // above may create visible rows.
+            _ => {}
         }
     }
     items
+}
+
+/// Accumulated provider reasoning for the explicit reasoning-only view.
+/// Reasoning is never folded into normal conversation entries.
+pub fn conversation_reasoning(events: &[crate::AgentEvent]) -> String {
+    let mut reasoning = String::new();
+    let mut segment_open = false;
+    for event in events {
+        if event.kind == "reasoning" {
+            if let Some(text) = event_text(event) {
+                if !segment_open && !reasoning.is_empty() {
+                    reasoning.push_str("\n\n");
+                }
+                reasoning.push_str(&text);
+                segment_open = true;
+            }
+        } else {
+            segment_open = false;
+        }
+    }
+    reasoning
 }
 
 fn model_catalog_text(result: &Value) -> Option<String> {
@@ -882,82 +1180,27 @@ fn event_client_message_id(event: &crate::AgentEvent) -> Option<String> {
         .map(str::to_string)
 }
 
-fn push_thinking(items: &mut Vec<ConversationEntry>, entry_id: Option<String>) {
-    if !matches!(
-        items.last(),
-        Some(ConversationEntry {
-            kind: ConversationKind::Assistant,
-            streaming: true,
-            ..
-        })
-    ) {
-        items.push(ConversationEntry::assistant(String::new(), true, entry_id));
-    }
-}
-
-fn push_assistant_delta(
-    items: &mut Vec<ConversationEntry>,
-    delta: String,
-    entry_id: Option<String>,
-) {
-    if delta.is_empty() {
-        return;
-    }
-    if let Some(ConversationEntry {
-        kind: ConversationKind::Assistant,
-        text,
-        streaming,
-        entry_id: current_id,
-        ..
-    }) = items.last_mut()
-        && *streaming
+/// Older Glass builds put mode and surface playbooks into the user message.
+/// Remove only those exact generated prefixes when projecting legacy events;
+/// new sends keep the human text as the complete user message.
+fn strip_legacy_composer_prefix(text: &str) -> String {
+    let mut prefixes = Vec::new();
+    for surface in super::state::DevSurface::ALL
+        .into_iter()
+        .chain([super::state::DevSurface::Trust])
     {
-        text.push_str(&delta);
-        if current_id.is_none() {
-            *current_id = entry_id;
+        let playbook = super::playbooks::playbook(surface);
+        prefixes.push(format!("{playbook}\n\n"));
+        for mode in [crate::AgentTurnMode::Ask, crate::AgentTurnMode::Plan] {
+            prefixes.push(format!("{}\n\n{playbook}\n\n", mode.instruction()));
         }
-        return;
     }
-    items.push(ConversationEntry::assistant(delta, true, entry_id));
+    prefixes
+        .into_iter()
+        .find_map(|prefix| text.strip_prefix(&prefix).map(str::to_string))
+        .unwrap_or_else(|| text.to_string())
 }
 
-fn push_assistant_final(
-    items: &mut Vec<ConversationEntry>,
-    text: String,
-    entry_id: Option<String>,
-) {
-    if text.is_empty() {
-        return;
-    }
-    if let Some(ConversationEntry {
-        kind: ConversationKind::Assistant,
-        text: current,
-        streaming,
-        entry_id: current_id,
-        ..
-    }) = items.last_mut()
-        && (*streaming || current.is_empty() || current == &text)
-    {
-        current.clone_from(&text);
-        *streaming = false;
-        if current_id.is_none() {
-            *current_id = entry_id;
-        }
-        return;
-    }
-    items.push(ConversationEntry::assistant(text, false, entry_id));
-}
-
-fn finish_streaming(items: &mut [ConversationEntry]) {
-    if let Some(ConversationEntry {
-        kind: ConversationKind::Assistant,
-        streaming,
-        ..
-    }) = items.last_mut()
-    {
-        *streaming = false;
-    }
-}
 fn pi_user_message(event: &crate::AgentEvent) -> bool {
     event
         .payload
@@ -1292,6 +1535,275 @@ mod tests {
         assert!(!projected.contains("request-1"));
         assert!(!projected.contains("agent_end"));
         assert!(!projected.contains("… streaming"));
+    }
+
+    #[test]
+    fn conversation_projects_safe_notices_and_errors_but_suppresses_unknown_text() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let event = |sequence: u64, kind: &str, payload: serde_json::Value| crate::AgentEvent {
+            sequence,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: kind.into(),
+            payload,
+        };
+        let entries = conversation_entries(&[
+            event(
+                1,
+                "notice",
+                serde_json::json!({"text": "Core session ready"}),
+            ),
+            event(
+                2,
+                "status",
+                serde_json::json!({"status": "Waiting for input"}),
+            ),
+            event(
+                3,
+                "error",
+                serde_json::json!({"message": "Provider unavailable"}),
+            ),
+            event(
+                4,
+                "private_extension_payload",
+                serde_json::json!({"text": "private extension data"}),
+            ),
+        ]);
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].kind, ConversationKind::System);
+        assert!(entries[0].text.contains("Core session ready"));
+        assert_eq!(entries[1].kind, ConversationKind::System);
+        assert!(entries[1].text.contains("Waiting for input"));
+        assert_eq!(entries[2].kind, ConversationKind::Error);
+        assert!(entries[2].text.contains("Provider unavailable"));
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry.text.contains("private extension data"))
+        );
+    }
+
+    #[test]
+    fn reasoning_is_accumulated_for_explicit_view_and_hidden_from_normal_transcript() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let event = |sequence: u64, kind: &str, payload: serde_json::Value| crate::AgentEvent {
+            sequence,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: kind.into(),
+            payload,
+        };
+        let events = [
+            event(1, "reasoning", serde_json::json!({"text": "First thought"})),
+            event(
+                2,
+                "message_update",
+                serde_json::json!({"assistantMessageEvent": {"type": "text_delta", "delta": "Visible answer"}}),
+            ),
+            event(
+                3,
+                "reasoning",
+                serde_json::json!({"text": "Second thought"}),
+            ),
+        ];
+
+        assert_eq!(
+            conversation_reasoning(&events),
+            "First thought\n\nSecond thought"
+        );
+        assert!(conversation(&events).contains("Visible answer"));
+        assert!(!conversation(&events).contains("First thought"));
+        assert!(!conversation(&events).contains("Second thought"));
+    }
+
+    #[test]
+    fn core_host_tool_evidence_between_deltas_does_not_break_assistant_projection() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let event = |sequence: u64, kind: &str, payload: serde_json::Value| crate::AgentEvent {
+            sequence,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: kind.into(),
+            payload,
+        };
+        let entries = conversation_entries(&[
+            event(
+                1,
+                "user",
+                serde_json::json!({"text": "offline prompt round trip"}),
+            ),
+            event(
+                2,
+                "tool_execution_end",
+                serde_json::json!({"callId": "call-read", "isError": false}),
+            ),
+            event(
+                3,
+                "glass_tool_evidence",
+                serde_json::json!({"toolName": "glass.workspace.list", "ok": true}),
+            ),
+            event(
+                4,
+                "message_update",
+                serde_json::json!({
+                    "assistantMessageEvent": {"type": "text_delta", "delta": "handled "}
+                }),
+            ),
+            event(
+                5,
+                "message_update",
+                serde_json::json!({
+                    "assistantMessageEvent": {
+                        "type": "text_delta",
+                        "delta": "offline prompt round trip"
+                    }
+                }),
+            ),
+            event(6, "agent_end", serde_json::json!({})),
+        ]);
+
+        let rendered = entries
+            .iter()
+            .map(ConversationEntry::render)
+            .collect::<Vec<_>>();
+        assert!(
+            rendered
+                .iter()
+                .any(|entry| entry == "YOU\noffline prompt round trip")
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|entry| entry == "GLASS AGENT\nhandled offline prompt round trip")
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|entry| entry.contains("glass.workspace.list"))
+        );
+        assert!(!rendered.iter().any(|entry| entry == "SYSTEM\n"));
+    }
+
+    #[test]
+    fn next_turn_closes_the_previous_streaming_bubble() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let event = |sequence: u64, kind: &str, payload: serde_json::Value| crate::AgentEvent {
+            sequence,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: kind.into(),
+            payload,
+        };
+        let entries = conversation_entries(&[
+            event(1, "turn_start", serde_json::json!({})),
+            event(
+                2,
+                "message_update",
+                serde_json::json!({
+                    "assistantMessageEvent": {
+                        "type": "text_delta",
+                        "delta": "partial response"
+                    }
+                }),
+            ),
+            event(3, "turn_start", serde_json::json!({})),
+        ]);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].text, "partial response");
+        assert!(!entries[0].streaming);
+    }
+
+    #[test]
+    fn tool_progress_survives_glass_end_event_without_final_output() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let event = |sequence: u64, kind: &str, payload: serde_json::Value| crate::AgentEvent {
+            sequence,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: kind.into(),
+            payload,
+        };
+        let entries = conversation_entries(&[
+            event(
+                1,
+                "tool_execution_start",
+                serde_json::json!({
+                    "callId": "call-1",
+                    "toolName": "glass.file.read",
+                    "command": "src/main.rs"
+                }),
+            ),
+            event(
+                2,
+                "tool_progress",
+                serde_json::json!({
+                    "text": {
+                        "callId": "call-1",
+                        "text": "streamed output"
+                    }
+                }),
+            ),
+            event(
+                3,
+                "tool_execution_end",
+                serde_json::json!({
+                    "callId": "call-1",
+                    "isError": false
+                }),
+            ),
+        ]);
+
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].text.contains("streamed output"));
+        assert!(entries[0].text.contains("done"));
+    }
+
+    #[test]
+    fn conversation_removes_only_exact_legacy_playbook_prefixes() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let playbook = super::super::playbooks::playbook(super::super::state::DevSurface::Code);
+        let make_event = |sequence, payload| crate::AgentEvent {
+            sequence,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: "user".into(),
+            payload,
+        };
+        let events = vec![
+            make_event(
+                1,
+                serde_json::json!({
+                    "text": format!("{playbook}\n\nkeep this request"),
+                    "contextAttached": true
+                }),
+            ),
+            make_event(
+                2,
+                serde_json::json!({
+                    "text": format!("{playbook}\n\nkeep this literal"),
+                    "contextAttached": false
+                }),
+            ),
+            make_event(
+                3,
+                serde_json::json!({
+                    "text": format!("{}\n\nkeep this literal", crate::AgentTurnMode::Ask.instruction()),
+                    "contextAttached": true
+                }),
+            ),
+        ];
+        let entries = conversation_entries(&events);
+        assert_eq!(entries[0].text, "keep this request");
+        assert_eq!(entries[1].text, format!("{playbook}\n\nkeep this literal"));
+        assert_eq!(
+            entries[2].text,
+            format!(
+                "{}\n\nkeep this literal",
+                crate::AgentTurnMode::Ask.instruction()
+            )
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Live alternate-screen views driven by the same pump as provider/tool work.
 use crate::{agent::Progress, surface};
 use glass_tui::{
-    Entry, Role,
+    Conversation, ConversationEvent, Entry, Role,
     crossterm::{
         event::{Event, KeyCode, KeyModifiers},
         execute,
@@ -14,8 +14,7 @@ use std::collections::HashMap;
 use std::io;
 use std::time::Instant;
 pub struct Live {
-    entries: Vec<Entry>,
-    reasoning: String,
+    conversation: Conversation,
     phase: &'static str,
     provider_detail: Option<String>,
     view: Option<(crate::reader::Reader, bool)>,
@@ -28,8 +27,7 @@ pub struct Live {
 impl Live {
     pub fn new() -> Self {
         Self {
-            entries: vec![],
-            reasoning: String::new(),
+            conversation: Conversation::new(),
             phase: "Waiting for provider",
             provider_detail: None,
             view: None,
@@ -42,21 +40,24 @@ impl Live {
     }
     pub fn seed(&mut self, entries: Vec<Entry>) {
         self.turn = entries.last().map(|e| e.turn).unwrap_or(0);
-        self.entries = entries;
-        self.reasoning.clear();
+        self.conversation.seed(entries);
+        self.conversation
+            .apply(ConversationEvent::TurnStart { turn: self.turn });
         self.phase = "Waiting for provider";
         self.provider_detail = None;
         self.dirty = true;
         self.content_revision = self.content_revision.wrapping_add(1);
     }
     pub fn seed_reasoning(&mut self, reasoning: String) {
-        self.reasoning = reasoning;
+        self.conversation.seed_reasoning(reasoning);
         self.dirty = true;
     }
     fn rows(&self) -> Vec<Entry> {
-        self.entries
+        self.conversation
+            .items()
             .iter()
-            .map(|e| {
+            .map(|item| {
+                let e = &item.entry;
                 let mut tool_card = e.tool_card.clone();
                 let text = if let Some(card) = &mut tool_card {
                     if card.status == "running" {
@@ -84,11 +85,9 @@ impl Live {
         self.content_revision
     }
     pub fn append_entry(&mut self, role: Role, text: impl Into<String>) {
-        self.entries.push(Entry {
+        self.conversation.apply(ConversationEvent::Status {
             role,
             text: text.into(),
-            turn: self.turn,
-            tool_card: None,
         });
         self.content_revision = self.content_revision.wrapping_add(1);
         self.dirty = true;
@@ -100,29 +99,15 @@ impl Live {
                 self.provider_detail = None;
             }
             Progress::Reasoning(t) => {
-                if self.phase != "Provider reasoning" && !self.reasoning.is_empty() {
-                    self.reasoning.push_str("\n\n");
-                }
-                self.reasoning.push_str(t);
+                self.conversation
+                    .apply(ConversationEvent::ReasoningDelta((*t).to_string()));
                 self.phase = "Provider reasoning";
             }
             Progress::Text(t) => {
                 self.phase = "Answer streaming";
                 self.provider_detail = None;
-                if let Some(e) = self
-                    .entries
-                    .last_mut()
-                    .filter(|e| e.role == Role::Assistant)
-                {
-                    e.text.push_str(t)
-                } else {
-                    self.entries.push(Entry {
-                        role: Role::Assistant,
-                        text: (*t).into(),
-                        turn: self.turn,
-                        tool_card: None,
-                    })
-                }
+                self.conversation
+                    .apply(ConversationEvent::AssistantDelta((*t).to_string()));
             }
             Progress::ToolStart {
                 call_id,
@@ -133,53 +118,27 @@ impl Live {
                 self.provider_detail = None;
                 self.tool_started
                     .insert((*call_id).to_string(), Instant::now());
-                self.entries.push(Entry {
-                    role: if *name == "bash" {
-                        Role::Bash
-                    } else {
-                        Role::Tool
-                    },
-                    text: format!("{name}\n{}", command.unwrap_or("")),
-                    turn: self.turn,
-                    tool_card: Some(glass_tui::ToolCard {
-                        expanded: false,
-                        call_id: (*call_id).to_string(),
-                        command: command.unwrap_or(name).to_string(),
-                        output: String::new(),
-                        status: "running".into(),
-                        elapsed_ms: None,
-                        spill: None,
-                        truncated: false,
-                    }),
-                })
+                self.conversation.apply(ConversationEvent::ToolStart {
+                    call_id: (*call_id).to_string(),
+                    name: (*name).to_string(),
+                    command: command.unwrap_or("").to_string(),
+                });
             }
             Progress::ToolEnd {
                 call_id,
                 output,
                 summary,
             } => {
-                if let Some(entry) = self.entries.iter_mut().rev().find(|entry| {
-                    entry
-                        .tool_card
-                        .as_ref()
-                        .is_some_and(|card| card.call_id == *call_id)
-                }) {
-                    if let Some(card) = entry.tool_card.as_mut() {
-                        card.output = (*output).to_string();
-                        card.status = glass_tui::tool_output::status(summary);
-                        card.elapsed_ms = self.tool_started.remove(*call_id).map(|started| {
-                            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
-                        });
-                        entry.text = format!("{}\n{}", card.command, output);
-                    }
-                } else {
-                    self.entries.push(Entry {
-                        role: Role::Tool,
-                        text: (*output).into(),
-                        turn: self.turn,
-                        tool_card: None,
-                    });
-                }
+                let elapsed_ms = self
+                    .tool_started
+                    .remove(*call_id)
+                    .map(|started| started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+                self.conversation.apply(ConversationEvent::ToolEnd {
+                    call_id: (*call_id).to_string(),
+                    output: (*output).to_string(),
+                    status: glass_tui::tool_output::status(summary),
+                    elapsed_ms,
+                });
                 self.phase = "Tool finished";
             }
             Progress::Steered(text) => self.append_entry(Role::User, (*text).to_string()),
@@ -250,6 +209,7 @@ impl Live {
         self.provider_detail.as_deref()
     }
     pub fn finish(&mut self) {
+        self.conversation.apply(ConversationEvent::Finish);
         if !matches!(self.phase, "Provider error" | "Provider fallback") {
             self.phase = "Turn finished";
         }
@@ -259,10 +219,10 @@ impl Live {
         if !thinking {
             return self.rows();
         }
-        let body = if self.reasoning.is_empty() {
+        let body = if self.conversation.reasoning().is_empty() {
             "No provider reasoning has been returned. Some providers expose no reasoning text or public summary."
         } else {
-            &self.reasoning
+            self.conversation.reasoning()
         };
         vec![Entry {
             role: Role::Assistant,

@@ -60,8 +60,11 @@ pub(crate) fn dispatch_agent(action: &AgentCommand) -> CliResult<()> {
                 prompt,
                 sandbox,
                 timeout: Duration::from_secs(*timeout_secs),
-                allow_mutation: *allow_mutation,
-                confirmed: *yes,
+                authorization: crate::development::ToolAuthorization::from_user_confirmation(
+                    Actor::local(),
+                    *allow_mutation,
+                    *yes,
+                ),
             })?;
         print_json(&result)?;
         if !result.success {
@@ -588,11 +591,11 @@ fn execute_project_tool(
     use crate::development::{Actor, ToolAuthorization, ToolCall};
     let mut workspace = crate::workspace::DevelopmentWorkspace::open(root)?;
     let context = crate::tools::DevelopmentToolContext {
-        authorization: ToolAuthorization {
-            actor: Actor::local(),
+        authorization: ToolAuthorization::from_user_confirmation(
+            Actor::local(),
             allow_mutation,
             confirmed,
-        },
+        ),
         initiator: None,
         expected_generation: workspace.generation(),
         expected_project_revision: workspace.project().revision(),

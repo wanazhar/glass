@@ -38,7 +38,7 @@ The engine owns exactly four things:
 | Provider selection, credentials, model/session state | `glass-core` |
 | Native coding tools and their execution policy | `glass-core` |
 | Browser, Git, project/workspace integrations and their schemas | Glass |
-| Integration approvals, evidence, workspace revisions and leases | Glass |
+| Integration execution, evidence, workspace revisions and leases | Glass (Core owns call authorization) |
 
 Glass negotiates runtime protocol v2 and requires the `mixedTools`
 capability. The session uses `toolMode: "mixed"`: Core keeps its native
@@ -48,7 +48,8 @@ workspace/project inspection, read-only editor and language-server context,
 non-writing editor proposals, and Glass project-task APIs. Editor writes,
 generic commands, process controls, and Glass agent/model/session controls are
 not exposed in the mixed catalog. Only registered Glass integrations cross
-`tool/execute` and receive Glass-side authorization and evidence. A v1-only or older runtime
+`tool/execute`; Core authorizes the agent call and Glass validates the live
+workspace identity/revision and records evidence. A v1-only or older runtime
 is reported as incompatible; Glass does not silently fall back to a
 host-exclusive catalog. Core's standalone `local` mode and generic `host` mode
 retain their existing behavior.
@@ -135,14 +136,15 @@ commands.
 Sessions are stored under the platform local data directory in
 `glass/core-sessions` unless a caller supplies another absolute directory.
 
-## Tool execution and approvals
+## Tool execution and authority
 
 Every Glass integration call becomes a Glass `ToolCall` and goes through the
-same workspace router the TUI uses. Glass-owned browser, Git, and workspace
-mutations retain actor, revision, path, lease, and operation-specific
-confirmation checks. Glass Core runs its native coding tools under Core's own
-permission policy; these operations do not enter a second Glass coding
-approval flow.
+same workspace router the TUI uses. The `tool/execute` request is Core's
+authorization to perform that integration call; Glass does not park it for a
+second approval. Glass records the Core actor and validates current workspace
+generation, project revision, path/resource identity, leases, and conflicts.
+Human-initiated mutations continue to use their explicit confirmation path.
+Core executes its native coding tools under its own permission policy.
 
 Results are bounded to 512 KiB, and denial returns `isError: true` with the
 reason, so the model can recover instead of stalling. Glass records a
@@ -170,9 +172,9 @@ in Core; Glass forwards no credential material.
 The adapter is covered by unit tests for request mapping, event translation,
 evidence redaction, and tool registration, plus fixture tests that drive a fake
 `glass-core runtime` over the real protocol: session startup, resuming the
-newest stored session for the workspace, a full turn with a host tool call, a
-parked approval that resumes on the human decision, and rejection of an unknown
-approval frame.
+newest stored session for the workspace, and a full turn with an immediately
+executed host tool call. Mutating Core calls retain workspace identity,
+revision, lease, and conflict checks without a Glass-owned approval round trip.
 
 ```sh
 cargo test -p glass-dev --lib core_runtime

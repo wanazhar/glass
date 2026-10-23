@@ -102,18 +102,16 @@ The full-screen editor renders a header, source block, and footer. It preserves 
 
 Editor comments, proposals, checkpoints, and explicit collaboration claims are workspace state. The snapshot worker only projects them. Opening or saving a buffer does not automatically create a collaboration claim. Overlapping write claims are rejected only when a caller explicitly invokes the collaboration claim API. See [Development Runtime](development-runtime.md#native-editor-and-conflict-rules).
 
-## Resident agents and tool approval
+## Resident agents and tool execution
 
-The TUI submits agent commands to the workspace actor. The resident agent
-worker multiplexes engine commands and events; a request acknowledgement is
-not a settled turn. The UI follows `agent_settled` and typed agent status
-before showing completion. Glass Core owns native coding tools and their
-permission decisions. Glass integration calls cross `DevelopmentToolRouter`,
-which checks actor, generation, project revision, path, any required
-integration confirmation, and browser leases. One resident integration
-confirmation is pending at a time. A stale or duplicate confirmation fails
-closed. A one-shot non-interactive adapter denies UI requests rather than
-waiting for an unavailable human.
+The TUI submits human input and controls through the workspace actor. The
+resident worker relays Core commands and events; an RPC acknowledgement is not
+a settled turn. The UI mirrors Core's `agent_settled` and lifecycle events
+before showing completion. Glass Core owns agent work and tool permissions.
+Core-authorized `tool/execute` requests cross `DevelopmentToolRouter`, which
+checks actor, workspace generation, project revision, path/resource identity,
+and browser leases without a second Glass approval prompt. Human-initiated
+workspace mutations keep their explicit confirmation behavior.
 
 A tool failure is rendered as an error/evidence result and does not update the project revision as if the tool succeeded. Browser tools disappear while detached or recovering. The worker keeps receiving input while a tool or agent turn is running; cancellation and workspace shutdown are explicit paths.
 

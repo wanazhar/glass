@@ -4672,8 +4672,8 @@
         },
         {
           "level": "2",
-          "title": "Tool execution and approvals",
-          "anchor": "tool-execution-and-approvals"
+          "title": "Tool execution and authority",
+          "anchor": "tool-execution-and-authority"
         },
         {
           "level": "2",
@@ -4790,8 +4790,8 @@
         },
         {
           "level": "2",
-          "title": "Resident agents and tool approval",
-          "anchor": "resident-agents-and-tool-approval"
+          "title": "Resident agents and tool execution",
+          "anchor": "resident-agents-and-tool-execution"
         },
         {
           "level": "2",

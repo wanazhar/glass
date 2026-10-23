@@ -366,11 +366,11 @@ async fn dispatch_external_tool(
     };
     let mut workspace = DevelopmentWorkspace::open(root)?;
     let context = DevelopmentToolContext {
-        authorization: ToolAuthorization {
-            actor: Actor::external("cli"),
+        authorization: ToolAuthorization::from_user_confirmation(
+            Actor::external("cli"),
             allow_mutation,
             confirmed,
-        },
+        ),
         initiator: None,
         expected_generation: workspace.generation(),
         expected_project_revision: workspace.project().revision(),

@@ -2,7 +2,7 @@
 //!
 //! Glass Dev runs resident agents through the standalone `glass-core` host runtime.
 
-use crate::development::{DevelopmentError, DevelopmentResult, ToolCall};
+use crate::development::{DevelopmentError, DevelopmentResult, ToolAuthorization, ToolCall};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 /// Executes one host tool call against the resident Glass workspace.
 pub type AgentToolExecutor =
-    Arc<dyn Fn(&ToolCall, bool, bool) -> DevelopmentResult<Value> + Send + Sync>;
+    Arc<dyn Fn(&ToolCall, ToolAuthorization) -> DevelopmentResult<Value> + Send + Sync>;
 
 /// Operations available to a resident Glass conversation.
 #[derive(Debug, Clone)]
@@ -249,17 +249,6 @@ impl ResidentHarness {
     ) -> DevelopmentResult<Option<Value>> {
         match self {
             Self::GlassCore(runtime) => runtime.recv_event_timeout(timeout),
-        }
-    }
-
-    /// Answer one parked host tool approval.
-    pub(crate) fn resolve_tool_approval(
-        &mut self,
-        frame_id: &str,
-        approved: bool,
-    ) -> DevelopmentResult<()> {
-        match self {
-            Self::GlassCore(runtime) => runtime.resolve_tool_approval(frame_id, approved),
         }
     }
 }

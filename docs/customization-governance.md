@@ -53,8 +53,10 @@ descriptive and does not sandbox the command. Keep source, actor, and result
 visible for review.
 
 Workspace tools use the shared router so Glass can retain actor attribution,
-path confinement, revision checks, and integration confirmation. Core's native
-coding tool authorization remains Core-owned.
+path confinement, and revision checks. Glass executes integration calls that
+Core has authorized without asking for a second confirmation; direct human and
+external workspace commands keep their own explicit confirmation semantics.
+Core's native coding tool authorization remains Core-owned.
 
 Project commands have a fixed 15-minute upper bound. The TUI help/palette labels
 them `PROJECT:<name>`, and execution results begin with

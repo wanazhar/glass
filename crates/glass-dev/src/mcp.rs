@@ -135,11 +135,11 @@ impl HostMcpToolBackend for DevelopmentMcpBackend {
             (name.to_string(), arguments)
         };
         let context = DevelopmentToolContext {
-            authorization: ToolAuthorization {
-                actor: Actor::external(actor),
+            authorization: ToolAuthorization::from_user_confirmation(
+                Actor::external(actor),
                 allow_mutation,
                 confirmed,
-            },
+            ),
             initiator: None,
             expected_generation: metadata
                 .get("expectedGeneration")

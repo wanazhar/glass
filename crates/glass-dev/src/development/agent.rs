@@ -184,11 +184,37 @@ const MAX_TOOL_NAME_BYTES: usize = 128;
 const MAX_GREP_FILES: usize = 512;
 const MAX_GREP_BYTES: u64 = 32 * 1024 * 1024;
 
+/// Source that authorizes a mutating resident tool call.
+///
+/// A user-confirmed command and a tool execution accepted by Glass Core are
+/// distinct authority sources. Core applies its native permission policy
+/// before issuing `tool/execute`; Glass routes that call without asking again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum MutationAuthority {
+    #[default]
+    None,
+    UserConfirmed,
+    GlassCore,
+}
+
+impl MutationAuthority {
+    pub fn from_user_confirmation(allow_mutation: bool, confirmed: bool) -> Self {
+        if allow_mutation && confirmed {
+            Self::UserConfirmed
+        } else {
+            Self::None
+        }
+    }
+
+    pub fn permits_mutation(self) -> bool {
+        matches!(self, Self::UserConfirmed | Self::GlassCore)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolAuthorization {
     pub actor: Actor,
-    pub allow_mutation: bool,
-    pub confirmed: bool,
+    mutation_authority: MutationAuthority,
 }
 
 impl ToolAuthorization {
@@ -199,14 +225,45 @@ impl ToolAuthorization {
 
     /// Whether this request carries both required mutation authorization factors.
     pub fn permits_mutation(&self) -> bool {
-        Self::factors_permit_mutation(self.allow_mutation, self.confirmed)
+        self.mutation_authority.permits_mutation()
     }
 
     pub fn read_only(actor: Actor) -> Self {
         Self {
             actor,
-            allow_mutation: false,
-            confirmed: false,
+            mutation_authority: MutationAuthority::None,
+        }
+    }
+
+    pub fn from_user_confirmation(actor: Actor, allow_mutation: bool, confirmed: bool) -> Self {
+        Self {
+            actor,
+            mutation_authority: MutationAuthority::from_user_confirmation(
+                allow_mutation,
+                confirmed,
+            ),
+        }
+    }
+
+    pub(crate) fn glass_core() -> Self {
+        Self {
+            actor: Actor::external("glass-core"),
+            mutation_authority: MutationAuthority::GlassCore,
+        }
+    }
+
+    pub(crate) fn is_glass_core(&self) -> bool {
+        self.mutation_authority == MutationAuthority::GlassCore
+    }
+
+    pub(crate) fn for_actor(&self, actor: Actor, allow_mutation: bool) -> Self {
+        Self {
+            actor,
+            mutation_authority: if allow_mutation {
+                self.mutation_authority
+            } else {
+                MutationAuthority::None
+            },
         }
     }
 
@@ -314,9 +371,9 @@ impl AgentToolGateway {
             ));
         }
         let argument_evidence = validate_tool_arguments(descriptor, &call.arguments)?;
-        if descriptor.mutating && (!authorization.allow_mutation || !authorization.confirmed) {
+        if descriptor.mutating && !authorization.permits_mutation() {
             return Err(DevelopmentError::Conflict(format!(
-                "tool {} requires explicit mutation authority and confirmation",
+                "tool {} requires mutation authority",
                 descriptor.name
             )));
         }
@@ -1730,11 +1787,7 @@ mod tests {
                     name: "glass.file.patch".into(),
                     arguments: serde_json::json!({"path":"note.txt","search":"before","replace":"after"}),
                 },
-                &ToolAuthorization {
-                    actor: Actor::embedded(),
-                    allow_mutation: true,
-                    confirmed: true,
-                },
+                &ToolAuthorization::from_user_confirmation(Actor::embedded(), true, true),
             )
             .unwrap();
         assert_eq!(result["replacements"], 1);
@@ -1820,11 +1873,7 @@ mod tests {
         fs::write(root.join("note.txt"), "before\n").unwrap();
         let mut workspace = ProjectWorkspace::open(&root).unwrap();
         let gateway = AgentToolGateway::default();
-        let confirmed = ToolAuthorization {
-            actor: Actor::embedded(),
-            allow_mutation: true,
-            confirmed: true,
-        };
+        let confirmed = ToolAuthorization::from_user_confirmation(Actor::embedded(), true, true);
         let result = gateway
             .execute(
                 &mut workspace,
@@ -1873,11 +1922,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let mut workspace = ProjectWorkspace::open(&root).unwrap();
         let gateway = AgentToolGateway::default();
-        let authority = ToolAuthorization {
-            actor: Actor::external("glass-core"),
-            allow_mutation: true,
-            confirmed: true,
-        };
+        let authority = ToolAuthorization::glass_core();
         gateway
             .execute(
                 &mut workspace,

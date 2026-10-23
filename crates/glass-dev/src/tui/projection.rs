@@ -449,18 +449,6 @@ impl ConversationEntry {
         }
     }
 
-    pub(super) fn alert(text: impl Into<String>, tool_name: Option<String>) -> Self {
-        Self {
-            kind: ConversationKind::Alert,
-            text: text.into(),
-            streaming: false,
-            entry_id: None,
-            client_message_id: None,
-            tool_name,
-            tool_card: None,
-        }
-    }
-
     pub(super) fn error(text: impl Into<String>, tool_name: Option<String>) -> Self {
         Self {
             kind: ConversationKind::Error,
@@ -770,39 +758,6 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     Some(name),
                 ));
             }
-            "glass_tool_approval_request" => {
-                shared.finish_streaming(&mut items);
-                let name = tool_name(&event.payload);
-                let summary = approval_argument_summary(event.payload.get("arguments"));
-                items.push(ConversationEntry::alert(
-                    format!(
-                        "⚠ {name} · approval required · press Y/Enter to allow or N/Esc to deny\n  {summary}"
-                    ),
-                    Some(name),
-                ));
-            }
-            "glass_tool_approval_resolved" => {
-                shared.finish_streaming(&mut items);
-                let approved = event
-                    .payload
-                    .get("approved")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                let name = event
-                    .payload
-                    .get("toolName")
-                    .and_then(Value::as_str)
-                    .unwrap_or("tool")
-                    .to_string();
-                items.push(ConversationEntry::system(
-                    format!(
-                        "{} {name} · approval {}",
-                        if approved { "✓" } else { "×" },
-                        if approved { "granted" } else { "denied" }
-                    ),
-                    Some(name),
-                ));
-            }
             "tool_execution_start" => {
                 let name = tool_name(&event.payload);
                 let call_id = event
@@ -1076,28 +1031,6 @@ pub fn conversation(events: &[crate::AgentEvent]) -> String {
         .map(|item| item.render())
         .collect::<Vec<_>>()
         .join("\n\n")
-}
-
-fn approval_argument_summary(arguments: Option<&Value>) -> String {
-    let Some(Value::Object(map)) = arguments else {
-        return "exact call once".into();
-    };
-    let mut parts = Vec::new();
-    for key in ["path", "name", "command", "url", "goal", "id"] {
-        if let Some(value) = map
-            .get(key)
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-        {
-            let bounded: String = value.chars().take(48).collect();
-            parts.push(format!("{key} {bounded}"));
-        }
-    }
-    if parts.is_empty() {
-        format!("{} field(s)", map.len())
-    } else {
-        parts.join(" · ")
-    }
 }
 
 fn event_entry_id(event: &crate::AgentEvent) -> Option<String> {
@@ -1706,7 +1639,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_entries_keep_core_entry_ids_and_redact_approval_json() {
+    fn conversation_entries_ignore_legacy_glass_approval_events() {
         let agent_id = crate::AgentId::parse("agent-0001").unwrap();
         let events = vec![
             crate::AgentEvent {
@@ -1747,9 +1680,9 @@ mod tests {
         let entries = conversation_entries(&events);
         assert_eq!(entries[0].entry_id.as_deref(), Some("entry-user"));
         assert_eq!(entries[0].client_message_id.as_deref(), Some("chat-17"));
-        assert_eq!(entries[1].tool_name.as_deref(), Some("glass.file.write"));
-        assert!(entries[1].text.contains("path src/lib.rs"));
-        assert!(!entries[1].text.contains("secret-token-value"));
+        assert_eq!(entries.len(), 2);
+        assert!(!conversation(&events).contains("approval"));
+        assert!(!conversation(&events).contains("secret-token-value"));
         assert_eq!(
             entries.last().and_then(|entry| entry.entry_id.as_deref()),
             Some("entry-assistant")
@@ -1796,24 +1729,30 @@ mod tests {
     }
 
     #[test]
-    fn conversation_renders_agent_tool_approval_as_a_decision_card() {
+    fn conversation_ignores_legacy_glass_approval_bridge_events() {
         let agent_id = crate::AgentId::parse("agent-0001").unwrap();
-        let event = crate::AgentEvent {
-            sequence: 1,
-            agent_id,
+        let events = [
+            "glass_tool_approval_request",
+            "glass_tool_approval_resolved",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(sequence, kind)| crate::AgentEvent {
+            sequence: sequence as u64 + 1,
+            agent_id: agent_id.clone(),
             timestamp_ms: 0,
-            kind: "glass_tool_approval_request".into(),
+            kind: kind.into(),
             payload: serde_json::json!({
-                "type": "glass_tool_approval_request",
+                "type": kind,
                 "toolName": "glass.browser.act",
+                "frameId": "frame-1",
+                "approved": true,
                 "arguments": {"action": "click", "target": "e12"}
             }),
-        };
-        let projected = conversation(&[event]);
-        assert!(projected.contains("approval required"));
-        assert!(projected.contains("glass.browser.act"));
-        assert!(projected.contains("ALERT"));
-        assert!(projected.contains("Y/Enter"));
+        })
+        .collect::<Vec<_>>();
+        assert!(conversation_entries(&events).is_empty());
+        assert!(conversation(&events).is_empty());
     }
 
     #[test]

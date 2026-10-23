@@ -77,15 +77,11 @@ impl DevelopmentToolRouter {
         call: &ToolCall,
         context: &DevelopmentToolContext,
     ) -> DevelopmentResult<Value> {
-        let core_integration = context.authorization.actor.id == "external:glass-core"
-            && is_integration_tool(&call.name);
-        let mut effective_context = context.clone();
-        if core_integration {
-            // Core is the authority for its own integration calls. Keep this
-            // exception inside the internal Core bridge and preserve all
-            // service-specific validation below.
-            effective_context.authorization.allow_mutation = true;
-            effective_context.authorization.confirmed = true;
+        if context.authorization.is_glass_core() && !is_integration_tool(&call.name) {
+            return Err(DevelopmentError::NotFound(format!(
+                "Glass integration {}",
+                call.name
+            )));
         }
         if workspace.generation() != context.expected_generation {
             return Err(DevelopmentError::Conflict(format!(
@@ -115,13 +111,12 @@ impl DevelopmentToolRouter {
                     .unwrap_or_else(|| format!("tool {} is unavailable", call.name)),
             ));
         }
-        if descriptor.mutating && !effective_context.authorization.permits_mutation() {
+        if descriptor.mutating && !context.authorization.permits_mutation() {
             return Err(DevelopmentError::Conflict(format!(
-                "tool {} requires mutation authority and confirmation",
+                "tool {} requires mutation authority",
                 call.name
             )));
         }
-        let context = &effective_context;
         let actor_id = context.authorization.actor.id.clone();
         let initiator_id = context
             .initiator
@@ -258,7 +253,7 @@ impl DevelopmentToolRouter {
                     && !context.authorization.permits_mutation()
                 {
                     return Err(DevelopmentError::Conflict(
-                        "workspace-write delegation requires explicit mutation authority and confirmation"
+                        "workspace-write delegation requires mutation authority"
                             .into(),
                     ));
                 }
@@ -274,8 +269,7 @@ impl DevelopmentToolRouter {
                         prompt: string("prompt")?.into(),
                         sandbox,
                         timeout: Duration::from_secs(timeout),
-                        allow_mutation: context.authorization.allow_mutation,
-                        confirmed: context.authorization.confirmed,
+                        authorization: context.authorization.clone(),
                     },
                 )
                 .map_err(DevelopmentError::Process)?;
@@ -1301,15 +1295,6 @@ impl DevelopmentToolRouter {
                 ))?;
                 Ok(serde_json::json!({"queued":true}))
             }
-            "glass.agent.approve" => {
-                let id = agent_id(workspace, string("agentId")?)?;
-                map_service(workspace.agents().approve_tool(
-                    &id,
-                    string("frameId")?,
-                    boolean(call, "approved", false),
-                ))?;
-                Ok(serde_json::json!({"queued":true}))
-            }
             "glass.agent.abort" => {
                 let id = agent_id(workspace, string("agentId")?)?;
                 map_service(workspace.agents().cancel(&id))?;
@@ -1799,7 +1784,6 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.send",
         "glass.agent.steer",
         "glass.agent.follow-up",
-        "glass.agent.approve",
         "glass.agent.abort",
         "glass.agent.compact",
         "glass.agent.model",
@@ -2888,11 +2872,11 @@ mod tests {
 
     fn context(workspace: &DevelopmentWorkspace, mutate: bool) -> DevelopmentToolContext {
         DevelopmentToolContext {
-            authorization: ToolAuthorization {
-                actor: Actor::embedded(),
-                allow_mutation: mutate,
-                confirmed: mutate,
-            },
+            authorization: ToolAuthorization::from_user_confirmation(
+                Actor::embedded(),
+                mutate,
+                mutate,
+            ),
             initiator: None,
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
@@ -2980,7 +2964,6 @@ mod tests {
             .find(|descriptor| descriptor.name == "glass.agent.resume")
             .expect("resume service is advertised");
         assert!(descriptor.mutating);
-        assert!(tool_requires_mutation("glass.agent.resume"));
         assert!(!is_integration_tool("glass.agent.resume"));
         assert_eq!(descriptor.input_schema["required"], json!(["agentId"]));
 
@@ -3045,8 +3028,13 @@ mod tests {
             .expect("glass.git.unstage must be advertised");
         assert!(unstage.mutating);
         assert!(unstage.available);
-        assert!(tool_requires_mutation("glass.git.unstage"));
-        assert!(tool_requires_mutation("glass.lsp.raw"));
+        assert!(
+            DevelopmentToolRouter::default()
+                .descriptors()
+                .iter()
+                .find(|descriptor| descriptor.name == "glass.lsp.raw")
+                .is_some_and(|descriptor| descriptor.mutating)
+        );
     }
 
     #[test]
@@ -3100,7 +3088,7 @@ mod tests {
             }),
         };
         let mut core = context(&project_workspace, false);
-        core.authorization.actor = Actor::external("glass-core");
+        core.authorization = ToolAuthorization::glass_core();
         assert_eq!(core.authorization.actor.id, "external:glass-core");
         let mut stale = core.clone();
         stale.expected_project_revision = stale.expected_project_revision.saturating_add(1);
@@ -3114,8 +3102,25 @@ mod tests {
             .expect("Core review integration should run under Core authority");
         assert!(result["id"].is_string());
 
+        let create_task = ToolCall {
+            id: "core-task-create".into(),
+            name: "glass.task.create".into(),
+            arguments: json!({
+                "title":"Core authorized task",
+                "goal":"Verify the Glass integration route",
+                "prompt":"Inspect the fixture",
+                "worktree":null
+            }),
+        };
+        core.expected_generation = project_workspace.generation();
+        core.expected_project_revision = project_workspace.project().revision();
+        let task = router
+            .execute(&mut project_workspace, &create_task, &core)
+            .expect("Core-authorized task creation must dispatch without a Glass prompt");
+        assert!(task.is_string());
+
         let mut external = context(&project_workspace, false);
-        external.authorization.actor = Actor::external("mcp-client");
+        external.authorization = ToolAuthorization::read_only(Actor::external("glass-core"));
         assert!(
             router
                 .execute(&mut project_workspace, &call, &external)
@@ -3205,11 +3210,11 @@ mod tests {
             };
             for (allow_mutation, confirmed) in [(false, false), (false, true), (true, false)] {
                 let unauthorized = DevelopmentToolContext {
-                    authorization: ToolAuthorization {
-                        actor: Actor::embedded(),
+                    authorization: ToolAuthorization::from_user_confirmation(
+                        Actor::embedded(),
                         allow_mutation,
                         confirmed,
-                    },
+                    ),
                     initiator: None,
                     expected_generation: workspace.generation(),
                     expected_project_revision: workspace.project().revision(),
@@ -3218,9 +3223,7 @@ mod tests {
                     .execute(&mut workspace, &call, &unauthorized)
                     .expect_err("a mutation route must reject an incomplete factor pair");
                 assert!(
-                    error
-                        .to_string()
-                        .contains("requires mutation authority and confirmation"),
+                    error.to_string().contains("requires mutation authority"),
                     "{name} rejected for the wrong reason: {error}"
                 );
             }
@@ -3243,8 +3246,11 @@ mod tests {
         };
         for (allow_mutation, confirmed) in [(false, false), (false, true), (true, false)] {
             let mut unauthorized = context(&workspace, false);
-            unauthorized.authorization.allow_mutation = allow_mutation;
-            unauthorized.authorization.confirmed = confirmed;
+            unauthorized.authorization = ToolAuthorization::from_user_confirmation(
+                Actor::embedded(),
+                allow_mutation,
+                confirmed,
+            );
             assert!(
                 router
                     .execute(&mut workspace, &start, &unauthorized)
@@ -3970,7 +3976,7 @@ mod tests {
     }
 
     #[test]
-    fn external_delegate_is_registered_as_approval_gated_capability() {
+    fn external_delegate_supports_explicit_workspace_write_authority() {
         let descriptor = DevelopmentToolRouter::default()
             .descriptors()
             .into_iter()
@@ -3981,7 +3987,6 @@ mod tests {
             descriptor.input_schema["properties"]["sandbox"]["enum"],
             json!(["read-only", "workspace-write"])
         );
-        assert!(tool_requires_mutation("glass.agent.delegate"));
     }
 
     #[test]

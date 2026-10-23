@@ -197,13 +197,13 @@ log.
 
 The assigned agent receives the task prompt, worktree, model, thinking level,
 and budgets. Glass Core owns the agent session and native coding permissions.
-The scheduler owns task state and does not
-bypass the agent tool gateway. Every tool call records its actor and checks
-the current project or browser revision. File operations stay inside the
-project root. Browser mutations use the current browser lease. Glass
-integrations retain operation-specific confirmations. Task evidence records
-its source. An agent claim cannot
-replace missing or stale evidence.
+The scheduler owns task state and does not bypass the Core-owned agent tool
+decision. Every Core integration call records its actor and checks the current
+project or browser revision. File operations stay inside the project root.
+Browser mutations use the current browser lease. Glass does not request a
+second approval for a Core-authorized call. Human-initiated operations retain
+their explicit confirmation semantics. Task evidence records its source. An
+agent claim cannot replace missing or stale evidence.
 
 Task options and budgets are sent to the assigned Core session. They do not
 replace Core's permission decisions or remove Glass integration path, revision,

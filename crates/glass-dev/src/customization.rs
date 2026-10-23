@@ -684,7 +684,7 @@ fn require_mutation_authorization(authorization: &ToolAuthorization) -> Developm
         Ok(())
     } else {
         Err(DevelopmentError::Conflict(
-            "custom shell execution requires explicit mutation authority and confirmation".into(),
+            "custom shell execution requires mutation authority".into(),
         ))
     }
 }
@@ -1045,11 +1045,11 @@ input_schema = {{ type = "object", required = ["text"] }}
         )
         .unwrap();
         let customization = Customization::load(&root).unwrap();
-        let authorization = crate::development::ToolAuthorization {
-            actor: crate::development::Actor::external("customization-test"),
-            allow_mutation: true,
-            confirmed: true,
-        };
+        let authorization = crate::development::ToolAuthorization::from_user_confirmation(
+            crate::development::Actor::external("customization-test"),
+            true,
+            true,
+        );
         assert!(
             customization
                 .agent_instructions()
@@ -1100,11 +1100,11 @@ input_schema = {{ type = "object", required = ["text"] }}
                     && descriptor.mutating)
         );
         let context = crate::DevelopmentToolContext {
-            authorization: crate::development::ToolAuthorization {
-                actor: crate::development::Actor::external("customization-test"),
-                allow_mutation: true,
-                confirmed: true,
-            },
+            authorization: crate::development::ToolAuthorization::from_user_confirmation(
+                crate::development::Actor::external("customization-test"),
+                true,
+                true,
+            ),
             initiator: None,
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
@@ -1178,18 +1178,18 @@ input_schema = {{ type = "object", required = ["text"] }}
         let customization = Customization::load(&root).unwrap();
 
         for (allow_mutation, confirmed) in [(false, false), (false, true), (true, false)] {
-            let authorization = crate::development::ToolAuthorization {
-                actor: crate::development::Actor::external("customization-auth-test"),
+            let authorization = crate::development::ToolAuthorization::from_user_confirmation(
+                crate::development::Actor::external("customization-auth-test"),
                 allow_mutation,
                 confirmed,
-            };
+            );
             let command_error = customization
                 .execute_command("unsafe", "external:customization-auth-test", &authorization)
                 .unwrap_err();
             assert!(
                 command_error
                     .to_string()
-                    .contains("requires explicit mutation")
+                    .contains("requires mutation authority")
             );
             let tool_error = customization
                 .execute_tool(
@@ -1202,7 +1202,7 @@ input_schema = {{ type = "object", required = ["text"] }}
             assert!(
                 tool_error
                     .to_string()
-                    .contains("requires explicit mutation")
+                    .contains("requires mutation authority")
             );
             assert!(!command_marker.exists());
             assert!(!tool_marker.exists());

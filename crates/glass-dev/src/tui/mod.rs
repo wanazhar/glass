@@ -1,7 +1,7 @@
 //! Decomposed full Glass Dev terminal application.
 //!
 //! The event loop keeps overlays above surface keys: quit, editor exit, help,
-//! menus, pickers, recovery, agent approval, mutation confirmation, the
+//! menus, pickers, recovery, human mutation confirmation, the
 //! full-screen editor, composer dock, then the command palette. Git workbench
 //! keys stay live while a diff is open, but they do not trap confirm or
 //! palette input. `Ctrl-C` opens quit confirmation from editor input; an
@@ -606,7 +606,6 @@ pub(crate) fn run_with_browser_policy(
                     } else if matches!(
                         active_overlay,
                         None | Some(overlay::ActiveOverlay::Composer)
-                            | Some(overlay::ActiveOverlay::AgentApproval)
                     ) && matches!(key.code, KeyCode::Char('a' | 'A'))
                         && key
                             .modifiers
@@ -748,16 +747,6 @@ pub(crate) fn run_with_browser_policy(
                                     .is_some_and(|offer| offer.compatible_endpoint) =>
                             {
                                 state.accept_browser_recovery(2, &mut worker)
-                            }
-                            _ => {}
-                        }
-                    } else if active_overlay == Some(overlay::ActiveOverlay::AgentApproval) {
-                        match key.code {
-                            KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
-                                state.resolve_agent_approval(true, &mut worker);
-                            }
-                            KeyCode::Esc | KeyCode::Char('n' | 'N') => {
-                                state.resolve_agent_approval(false, &mut worker);
                             }
                             _ => {}
                         }

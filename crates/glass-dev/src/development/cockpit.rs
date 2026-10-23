@@ -869,11 +869,11 @@ fn cockpit_command(
         .expected_project_revision
         .unwrap_or_else(|| locked.project().revision());
     let context = crate::tools::DevelopmentToolContext {
-        authorization: ToolAuthorization {
-            actor: Actor::external("cockpit"),
-            allow_mutation: request.allow_mutation && request.confirmed,
-            confirmed: request.confirmed,
-        },
+        authorization: ToolAuthorization::from_user_confirmation(
+            Actor::external("cockpit"),
+            request.allow_mutation,
+            request.confirmed,
+        ),
         initiator: None,
         expected_generation,
         expected_project_revision,

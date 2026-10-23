@@ -33,6 +33,7 @@ fn trace_runtime_frame(
     class: &str,
     bytes: usize,
     elapsed_us: Option<u128>,
+    correlation_hash: Option<String>,
 ) {
     let Some(path) = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE") else {
         return;
@@ -50,14 +51,71 @@ fn trace_runtime_frame(
             let _ = file.set_permissions(permissions);
         }
     }
-    let record = json!({
+    let mut record = json!({
         "component": component,
         "phase": phase,
         "class": class,
         "bytes": bytes,
         "elapsed_us": elapsed_us,
     });
+    if let Some(correlation_hash) = correlation_hash {
+        record["correlation_hash"] = json!(correlation_hash);
+    }
     let _ = writeln!(file, "{record}");
+}
+
+fn runtime_correlation_hash(value: &Value) -> Option<String> {
+    let id = value
+        .get("id")
+        .or_else(|| value.pointer("/params/turnId"))
+        .or_else(|| value.pointer("/params/id"))?;
+    Some(crate::hashing::sha256(id.to_string().as_bytes()))
+}
+
+fn trace_turn_phase(phase: &str, class: &str, turn: &Value, elapsed_us: Option<u128>) {
+    let hash = crate::hashing::sha256(turn.to_string().as_bytes());
+    trace_runtime_frame("core_turn", phase, class, 0, elapsed_us, Some(hash));
+}
+
+fn persist_usage(
+    session: &mut Session,
+    usage: &crate::provider::Usage,
+    turn: &Value,
+) -> Result<(), String> {
+    let started = Instant::now();
+    trace_turn_phase("usage_persist_begin", "provider_usage", turn, None);
+    let record = Record::Custom {
+        kind: "runtime/usage".into(),
+        data: Some(
+            json!({
+                "input": usage.input,
+                "output": usage.output,
+                "cacheRead": usage.cache_read,
+                "cacheWrite": usage.cache_write
+            })
+            .to_string(),
+        ),
+    };
+    match session.append_checked(&[record]) {
+        Ok(()) => {
+            trace_turn_phase(
+                "usage_persist_complete",
+                "provider_usage",
+                turn,
+                Some(started.elapsed().as_micros()),
+            );
+            Ok(())
+        }
+        Err(error) => {
+            trace_turn_phase(
+                "usage_persist_error",
+                "provider_usage",
+                turn,
+                Some(started.elapsed().as_micros()),
+            );
+            Err(error.to_string())
+        }
+    }
 }
 
 fn runtime_frame_class(value: &Value) -> &'static str {
@@ -118,7 +176,15 @@ fn send(value: Value) -> bool {
         return false;
     }
     let class = runtime_frame_class(&value);
-    trace_runtime_frame("core_stdout", "write_begin", class, encoded.len() + 1, None);
+    let correlation_hash = runtime_correlation_hash(&value);
+    trace_runtime_frame(
+        "core_stdout",
+        "write_begin",
+        class,
+        encoded.len() + 1,
+        None,
+        correlation_hash.clone(),
+    );
     let stdout = std::io::stdout();
     let write_started = Instant::now();
     let mut out = stdout.lock();
@@ -127,6 +193,14 @@ fn send(value: Value) -> bool {
         .and_then(|_| out.flush())
         .is_err()
     {
+        trace_runtime_frame(
+            "core_stdout",
+            "write_error",
+            class,
+            encoded.len() + 1,
+            Some(write_started.elapsed().as_micros()),
+            correlation_hash,
+        );
         std::process::exit(0);
     }
     trace_runtime_frame(
@@ -135,6 +209,7 @@ fn send(value: Value) -> bool {
         class,
         encoded.len() + 1,
         Some(write_started.elapsed().as_micros()),
+        correlation_hash,
     );
     true
 }
@@ -283,6 +358,14 @@ impl Wire {
     }
     fn active(&mut self, m: Value, session: &str, turn: &Value) {
         let id = m.get("id").cloned().unwrap_or(Value::Null);
+        trace_runtime_frame(
+            "core_stdin",
+            "frame_received",
+            runtime_frame_class(&m),
+            m.to_string().len(),
+            None,
+            runtime_correlation_hash(&m),
+        );
         let p = &m["params"];
         if self.completing
             && !matches!(
@@ -829,6 +912,14 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
             );
             continue;
         }
+        trace_runtime_frame(
+            "core_stdin",
+            "frame_received",
+            runtime_frame_class(&m),
+            m.to_string().len(),
+            None,
+            runtime_correlation_hash(&m),
+        );
         let method = m["method"].as_str().unwrap_or("");
         let p = &m["params"];
         if method == "initialize" {
@@ -1348,7 +1439,22 @@ fn run(
     // A steer interrupts the current request, preserves its transcript, and
     // immediately continues the same turn using the appended correction.
     loop {
+        let started = Instant::now();
+        trace_turn_phase("run_turn_begin", "provider_turn", turn, None);
         let outcome = agent.run_turn(|slot| wire.borrow_mut().pump(slot, &sid, turn));
+        let outcome_class = match &outcome {
+            Ok((_, Stop::Finished)) => "stop_finished",
+            Ok((_, Stop::Steered)) => "stop_steered",
+            Ok((_, Stop::Cancelled)) => "stop_cancelled",
+            Ok((_, Stop::ToolBudget)) => "stop_tool_budget",
+            Err(_) => "provider_or_tool_error",
+        };
+        trace_turn_phase(
+            "run_turn_return",
+            outcome_class,
+            turn,
+            Some(started.elapsed().as_micros()),
+        );
         match outcome {
             Ok((out, Stop::Steered)) => {
                 let records = std::mem::take(&mut wire.borrow_mut().steer_records);
@@ -1360,9 +1466,7 @@ fn run(
                     break;
                 }
                 if let Some(usage) = out.usage {
-                    agent.session.append_checked(&[Record::Custom{kind:"runtime/usage".into(),data:Some(json!({
-                        "input":usage.input,"output":usage.output,"cacheRead":usage.cache_read,"cacheWrite":usage.cache_write
-                    }).to_string())}]).map_err(|e|e.to_string())?;
+                    persist_usage(agent.session, &usage, turn)?;
                     event(
                         &sid,
                         turn,
@@ -1374,9 +1478,7 @@ fn run(
             }
             Ok((out, stop)) => {
                 if let Some(usage) = out.usage {
-                    agent.session.append_checked(&[Record::Custom{kind:"runtime/usage".into(),data:Some(json!({
-                        "input":usage.input,"output":usage.output,"cacheRead":usage.cache_read,"cacheWrite":usage.cache_write
-                    }).to_string())}]).map_err(|e|e.to_string())?;
+                    persist_usage(agent.session, &usage, turn)?;
                     event(
                         &sid,
                         turn,
@@ -1388,19 +1490,23 @@ fn run(
                 if let Some(context) = durable {
                     context.finish(reason, None, turn)?;
                 }
+                trace_turn_phase("settled_event_begin", reason, turn, None);
                 event(&sid, turn, "settled", json!({"reason":reason}));
+                trace_turn_phase("settled_event_complete", reason, turn, None);
                 break;
             }
             Err(e) => {
                 if let Some(context) = durable {
                     context.finish("failed", Some(&e.to_string()), turn)?;
                 }
+                trace_turn_phase("settled_event_begin", "failed", turn, None);
                 event(
                     &sid,
                     turn,
                     "settled",
                     json!({"reason":"failed","message":e.to_string()}),
                 );
+                trace_turn_phase("settled_event_complete", "failed", turn, None);
                 return Err(e.to_string());
             }
         }
@@ -1825,5 +1931,15 @@ mod tests {
             settlement_reason(false, crate::agent::Stop::Finished),
             "completed"
         );
+    }
+
+    #[test]
+    fn diagnostic_correlation_matches_request_and_event_without_raw_id() {
+        let request = json!({"id":"prompt-private-value"});
+        let event = json!({"params":{"turnId":"prompt-private-value"}});
+        let request_hash = runtime_correlation_hash(&request).unwrap();
+        let event_hash = runtime_correlation_hash(&event).unwrap();
+        assert_eq!(request_hash, event_hash);
+        assert!(!request_hash.contains("prompt-private-value"));
     }
 }

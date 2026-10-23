@@ -13,13 +13,16 @@ use crate::thread_store::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const COMMAND_CAPACITY: usize = 32;
 const EVENT_CAPACITY: usize = 256;
@@ -2053,7 +2056,7 @@ fn run_worker(
             }
         }
         match harness.recv_event_timeout(Duration::from_millis(25)) {
-            Ok(Some(value)) => send_lossy_worker_event(
+            Ok(Some(value)) => send_engine_worker_event(
                 &events,
                 WorkerEvent::Engine(id.clone(), value),
                 &dropped_events,
@@ -2082,18 +2085,87 @@ fn announce_worker_ready(
     Ok(())
 }
 
-fn send_lossy_worker_event(
+fn send_engine_worker_event(
     events: &SyncSender<WorkerEvent>,
     event: WorkerEvent,
     dropped_events: &AtomicU64,
 ) {
-    if matches!(events.try_send(event), Err(TrySendError::Full(_))) {
+    let (id, event_type) = match &event {
+        WorkerEvent::Engine(id, value) => (
+            id.clone(),
+            value
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("other")
+                .to_string(),
+        ),
+        _ => {
+            send_critical_worker_event(events, event);
+            return;
+        }
+    };
+    let lossy = matches!(event_type.as_str(), "reasoning" | "tool_progress");
+    if !lossy {
+        // A full channel may delay lifecycle events, but dropping settlement or
+        // the request response can leave a completed turn looking active. Text
+        // deltas and semantic tool events are also lossless; only ephemeral
+        // reasoning and tool-progress updates may be dropped under pressure.
+        let started = Instant::now();
+        trace_worker_handoff("send_begin", &id, &event_type, None);
+        let delivered = send_critical_worker_event(events, event);
+        trace_worker_handoff(
+            if delivered {
+                "send_complete"
+            } else {
+                "receiver_closed"
+            },
+            &id,
+            &event_type,
+            Some(started.elapsed().as_micros()),
+        );
+    } else if let Err(TrySendError::Full(event)) = events.try_send(event) {
         dropped_events.fetch_add(1, Ordering::Relaxed);
+        if let WorkerEvent::Engine(id, value) = &event {
+            trace_worker_handoff(
+                "queue_drop",
+                id,
+                value.get("type").and_then(Value::as_str).unwrap_or("other"),
+                None,
+            );
+        }
     }
 }
 
-fn send_critical_worker_event(events: &SyncSender<WorkerEvent>, event: WorkerEvent) {
-    let _ = events.send(event);
+fn trace_worker_handoff(phase: &str, id: &AgentId, event_type: &str, elapsed_us: Option<u128>) {
+    let Some(path) = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path).with_extension("glass_worker.jsonl");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = file.metadata() {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o600);
+            let _ = file.set_permissions(permissions);
+        }
+    }
+    let agent_hash = format!("{:x}", sha2::Sha256::digest(id.as_str().as_bytes()));
+    let record = serde_json::json!({
+        "component": "glass_worker",
+        "phase": phase,
+        "event_type": event_type,
+        "agent_hash": agent_hash,
+        "elapsed_us": elapsed_us,
+    });
+    let _ = writeln!(file, "{record}");
+}
+
+fn send_critical_worker_event(events: &SyncSender<WorkerEvent>, event: WorkerEvent) -> bool {
+    events.send(event).is_ok()
 }
 
 fn agent_request_blocked(id: &AgentId, status: AgentStatus) -> DevelopmentError {
@@ -2365,12 +2437,58 @@ mod tests {
         let id = AgentId::parse("agent-overflow").unwrap();
         sender.send(WorkerEvent::Ready(id.clone())).unwrap();
         let dropped = AtomicU64::new(0);
-        send_lossy_worker_event(
+        send_engine_worker_event(
             &sender,
-            WorkerEvent::Engine(id, serde_json::json!({"type":"delta"})),
+            WorkerEvent::Engine(id, serde_json::json!({"type":"tool_progress"})),
             &dropped,
         );
         assert_eq!(dropped.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn full_worker_queue_backpressures_settlement_and_prompt_response() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let id = AgentId::parse("agent-overflow").unwrap();
+        let dropped = Arc::new(AtomicU64::new(0));
+        sender
+            .send(WorkerEvent::Engine(
+                id.clone(),
+                serde_json::json!({"type":"message_update"}),
+            ))
+            .unwrap();
+        receiver.recv().unwrap();
+        send_engine_worker_event(
+            &sender,
+            WorkerEvent::Engine(id.clone(), serde_json::json!({"type":"usage"})),
+            &dropped,
+        );
+
+        let worker_dropped = Arc::clone(&dropped);
+        let worker_id = id.clone();
+        let worker = thread::spawn(move || {
+            for kind in ["agent_end", "agent_settled", "response"] {
+                send_engine_worker_event(
+                    &sender,
+                    WorkerEvent::Engine(worker_id.clone(), serde_json::json!({"type":kind})),
+                    &worker_dropped,
+                );
+            }
+        });
+
+        let mut received = Vec::new();
+        for _ in 0..4 {
+            let event = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+            if let WorkerEvent::Engine(_, value) = event {
+                received.push(value["type"].as_str().unwrap().to_string());
+            }
+        }
+        worker.join().unwrap();
+
+        assert_eq!(
+            received,
+            ["usage", "agent_end", "agent_settled", "response"]
+        );
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
     }
 
     #[cfg(unix)]

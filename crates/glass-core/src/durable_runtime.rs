@@ -985,12 +985,14 @@ impl Context {
         drop(partial);
 
         let started = Instant::now();
+        let correlation_hash = crate::hashing::sha256(turn.to_string().as_bytes());
         trace_runtime_frame(
             "durable_finish",
             "journal_commit_begin",
             "task_settlement",
             0,
             None,
+            Some(correlation_hash.clone()),
         );
         if let Err(error) = commit(&self.store, ops) {
             self.store.borrow_mut().poison();
@@ -1000,6 +1002,7 @@ impl Context {
                 "task_settlement",
                 0,
                 Some(started.elapsed().as_micros()),
+                Some(correlation_hash.clone()),
             );
             return Err(error);
         }
@@ -1009,6 +1012,7 @@ impl Context {
             "task_settlement",
             0,
             Some(started.elapsed().as_micros()),
+            Some(correlation_hash),
         );
         self.buffer.borrow_mut().clear();
         {

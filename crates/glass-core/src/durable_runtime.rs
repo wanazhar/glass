@@ -3,6 +3,7 @@ use super::*;
 use crate::durable::{Op, Store, Task};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 type Shared = Rc<RefCell<Store>>;
+const MAX_BUFFERED_REASONING_RECORDS: usize = 256;
 pub struct Host {
     pub store: Shared,
     definitions: BTreeMap<String, (u32, String)>,
@@ -37,6 +38,33 @@ fn commit(store: &Shared, ops: Vec<Op>) -> Result<u64, String> {
     let mut store = store.borrow_mut();
     let seq = store.state.sequence;
     store.commit(seq, ops)
+}
+fn finish_unsettled_after_runtime(
+    store: &Shared,
+    task_id: &str,
+    context: Option<&Context>,
+    disconnected: bool,
+    result: &Result<(), String>,
+    turn: &Value,
+) -> Result<(), String> {
+    let still_running = store
+        .borrow()
+        .state
+        .tasks
+        .get(task_id)
+        .is_some_and(|task| task.status == "running");
+    if still_running && let Some(context) = context {
+        context.finish(
+            if disconnected {
+                "interrupted"
+            } else {
+                "failed"
+            },
+            result.as_ref().err().map(String::as_str),
+            turn,
+        )?;
+    }
+    Ok(())
 }
 impl Host {
     pub fn open(dir: &std::path::Path, fsync: bool) -> Result<Self, String> {
@@ -670,19 +698,14 @@ impl Host {
         let result = run(&mut conversation, wire, request, Vec::new());
         wire.borrow_mut().durable = None;
         wire.borrow_mut().durable_task = None;
-        if self.store.borrow().state.tasks[&task.id].status == "running"
-            && let Some(context) = &conversation.durable
-        {
-            context.finish(
-                if wire.borrow().disconnected {
-                    "interrupted"
-                } else {
-                    "failed"
-                },
-                result.as_ref().err().map(String::as_str),
-                request,
-            )?;
-        }
+        finish_unsettled_after_runtime(
+            &self.store,
+            &task.id,
+            conversation.durable.as_ref(),
+            wire.borrow().disconnected,
+            &result,
+            request,
+        )?;
         result
     }
 }
@@ -747,18 +770,18 @@ impl Context {
                     }
                 }
                 drop(pending);
-                if buffer
-                    .borrow()
+                let pending = buffer.borrow();
+                let pending_bytes = pending
                     .iter()
                     .map(|record| match record {
                         Record::Reasoning(text) => text.len(),
                         _ => 0,
                     })
-                    .sum::<usize>()
-                    < 64 * 1024
-                {
+                    .sum::<usize>();
+                if pending.len() < MAX_BUFFERED_REASONING_RECORDS && pending_bytes < 64 * 1024 {
                     return Ok(());
                 }
+                drop(pending);
             }
             let mut owned = std::mem::take(&mut *buffer.borrow_mut());
             if !records
@@ -882,7 +905,6 @@ impl Context {
         !matches!(kind, "text" | "reasoning")
     }
     pub fn finish(&self, reason: &str, message: Option<&str>, turn: &Value) -> Result<(), String> {
-        self.publish("settling", json!({"reason":reason}), turn);
         let task = self
             .store
             .borrow()
@@ -901,31 +923,115 @@ impl Context {
                 _ => "failed",
             }
         };
-        let mut ops = vec![update(
+        // Finalize the task, its live projection, and any buffered transcript
+        // records in one journal commit. Previously `publish("settling")`
+        // committed the live document separately before this terminal write;
+        // a slow or failed second append left an ambiguous `settling` record
+        // after usage had already been reported.
+        let buffered = self.buffer.borrow().clone();
+        let mut ops = buffered
+            .iter()
+            .map(|record| Op::Entry {
+                conversation: self.conversation.clone(),
+                record: record.to_json(),
+            })
+            .collect::<Vec<_>>();
+        ops.push(update(
             &task,
             status,
             Some(json!({"status":status,"message":message})),
-        )];
-        if status != "pending" {
-            let revision = self
-                .store
-                .borrow()
-                .state
-                .documents
-                .get(&format!("{}:gc.live", self.conversation))
-                .map_or(0, |d| d.revision);
-            ops.push(Op::Document {
-                conversation: self.conversation.clone(),
-                kind: "gc.live".into(),
-                version: 1,
-                expected_revision: revision,
-                value: json!({"taskId":self.task,"kind":"settled","reason":reason}),
-                history: false,
-                fork: "initial".into(),
-                initial: Value::Null,
-            });
+        ));
+        let revision = self
+            .store
+            .borrow()
+            .state
+            .documents
+            .get(&format!("{}:gc.live", self.conversation))
+            .map_or(0, |d| d.revision);
+        let partial = self.partial.borrow();
+        let live_kind = if status == "pending" {
+            "interrupted"
+        } else {
+            "settled"
+        };
+        let recovery_text = if status == "pending" {
+            partial.text.as_str()
+        } else {
+            ""
+        };
+        let recovery_reasoning = if status == "pending" {
+            partial.reasoning.as_str()
+        } else {
+            ""
+        };
+        ops.push(Op::Document {
+            conversation: self.conversation.clone(),
+            kind: "gc.live".into(),
+            version: 1,
+            expected_revision: revision,
+            value: json!({
+                "taskId": self.task,
+                "kind": live_kind,
+                "reason": reason,
+                "text": recovery_text,
+                "reasoning": recovery_reasoning,
+            }),
+            history: false,
+            fork: "initial".into(),
+            initial: Value::Null,
+        });
+        let pending_text = partial.pending_text.clone();
+        let pending_reasoning = partial.pending_reasoning.clone();
+        drop(partial);
+
+        let started = Instant::now();
+        trace_runtime_frame(
+            "durable_finish",
+            "journal_commit_begin",
+            "task_settlement",
+            0,
+            None,
+        );
+        if let Err(error) = commit(&self.store, ops) {
+            self.store.borrow_mut().poison();
+            trace_runtime_frame(
+                "durable_finish",
+                "journal_commit_error",
+                "task_settlement",
+                0,
+                Some(started.elapsed().as_micros()),
+            );
+            return Err(error);
         }
-        commit(&self.store, ops)?;
+        trace_runtime_frame(
+            "durable_finish",
+            "journal_commit_complete",
+            "task_settlement",
+            0,
+            Some(started.elapsed().as_micros()),
+        );
+        self.buffer.borrow_mut().clear();
+        {
+            let mut partial = self.partial.borrow_mut();
+            partial.pending_text.clear();
+            partial.pending_reasoning.clear();
+        }
+        if !pending_text.is_empty() {
+            event(
+                &self.conversation,
+                turn,
+                "text",
+                json!({"text":pending_text}),
+            );
+        }
+        if !pending_reasoning.is_empty() {
+            event(
+                &self.conversation,
+                turn,
+                "reasoning",
+                json!({"text":pending_reasoning}),
+            );
+        }
         Ok(())
     }
 }
@@ -1012,6 +1118,151 @@ mod tests {
         host.definitions
             .insert("app.step".into(), (1, "safe".into()));
         assert_eq!(host.ready(None).unwrap().id, "custom");
+        drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn running_task(host: &Host, id: &str) {
+        commit(
+            &host.store,
+            vec![
+                Op::TaskCreate {
+                    id: id.into(),
+                    conversation: "root".into(),
+                    kind: "gc.generation".into(),
+                    version: 1,
+                    owner: None,
+                    background: false,
+                    replay: "safe".into(),
+                    input: json!({"text":"answer"}),
+                    checkpoint: json!({"phase":"executing"}),
+                },
+                Op::TaskUpdate {
+                    id: id.into(),
+                    expected_revision: 1,
+                    status: "running".into(),
+                    checkpoint: json!({"phase":"executing"}),
+                    on: Vec::new(),
+                    policy: "all_settled".into(),
+                    due_at_ms: 0,
+                    outcome: None,
+                },
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn finish_atomically_settles_and_flushes_buffered_stream_state() {
+        let (dir, host) = setup();
+        running_task(&host, "generation");
+        let context = Context::new(host.store.clone(), "generation".into(), "root".into());
+        context
+            .buffer
+            .borrow_mut()
+            .push(Record::Reasoning("buffered reasoning".into()));
+        {
+            let mut partial = context.partial.borrow_mut();
+            partial.text = "final answer".into();
+            partial.pending_text = " answer".into();
+            partial.reasoning = "private reasoning".into();
+            partial.pending_reasoning = " reasoning".into();
+        }
+        let before = host.store.borrow().state.sequence;
+
+        context.finish("completed", None, &json!("turn-1")).unwrap();
+
+        let store = host.store.borrow();
+        assert_eq!(store.state.sequence, before + 1);
+        assert_eq!(store.state.tasks["generation"].status, "completed");
+        let live = &store.state.documents["root:gc.live"].value;
+        assert_eq!(live["kind"], "settled");
+        assert_eq!(live["reason"], "completed");
+        assert_eq!(
+            store.records("root").unwrap(),
+            vec![Record::Reasoning("buffered reasoning".into())]
+        );
+        drop(store);
+        drop(context);
+        drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn interrupted_finish_keeps_recovery_text_without_stale_settling_state() {
+        let (dir, host) = setup();
+        running_task(&host, "generation");
+        let context = Context::new(host.store.clone(), "generation".into(), "root".into());
+        {
+            let mut partial = context.partial.borrow_mut();
+            partial.text = "unfinished response".into();
+            partial.pending_text = "response".into();
+        }
+
+        context
+            .finish("interrupted", Some("host disconnected"), &json!("turn-1"))
+            .unwrap();
+
+        let store = host.store.borrow();
+        assert_eq!(store.state.tasks["generation"].status, "pending");
+        let live = &store.state.documents["root:gc.live"].value;
+        assert_eq!(live["kind"], "interrupted");
+        assert_eq!(live["text"], "unfinished response");
+        assert_eq!(live["reason"], "interrupted");
+        drop(store);
+        drop(context);
+        drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn poisoned_journal_cannot_claim_terminal_settlement() {
+        let (dir, host) = setup();
+        running_task(&host, "generation");
+        let context = Context::new(host.store.clone(), "generation".into(), "root".into());
+        let before = host.store.borrow().state.sequence;
+        host.store.borrow_mut().poison();
+
+        assert!(context.finish("completed", None, &json!("turn-1")).is_err());
+
+        let store = host.store.borrow();
+        assert_eq!(store.state.sequence, before);
+        assert_eq!(store.state.tasks["generation"].status, "running");
+        assert!(!store.state.documents.contains_key("root:gc.live"));
+        drop(store);
+        drop(context);
+        drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn early_disconnected_runtime_exit_is_checkpointed_as_interrupted() {
+        let (dir, host) = setup();
+        running_task(&host, "generation");
+        let context = Context::new(host.store.clone(), "generation".into(), "root".into());
+        {
+            let mut partial = context.partial.borrow_mut();
+            partial.text = "before disconnect".into();
+        }
+        let result = Ok(());
+
+        finish_unsettled_after_runtime(
+            &host.store,
+            "generation",
+            Some(&context),
+            true,
+            &result,
+            &json!("turn-1"),
+        )
+        .unwrap();
+
+        let store = host.store.borrow();
+        assert_eq!(store.state.tasks["generation"].status, "pending");
+        let live = &store.state.documents["root:gc.live"].value;
+        assert_eq!(live["kind"], "interrupted");
+        assert_eq!(live["text"], "before disconnect");
+        drop(store);
+        drop(context);
         drop(host);
         std::fs::remove_dir_all(dir).unwrap();
     }

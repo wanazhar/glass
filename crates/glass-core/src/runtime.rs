@@ -1384,25 +1384,11 @@ fn run(
                         json!({"input":usage.input,"cacheRead":usage.cache_read,"cacheWrite":usage.cache_write,"output":usage.output}),
                     );
                 }
+                let reason = settlement_reason(wire.borrow().disconnected, stop);
                 if let Some(context) = durable {
-                    context.finish(
-                        if wire.borrow().disconnected {
-                            "interrupted"
-                        } else if stop == Stop::Cancelled {
-                            "cancelled"
-                        } else {
-                            "completed"
-                        },
-                        None,
-                        turn,
-                    )?;
+                    context.finish(reason, None, turn)?;
                 }
-                event(
-                    &sid,
-                    turn,
-                    "settled",
-                    json!({"reason":if stop==Stop::Cancelled{"cancelled"}else{"completed"}}),
-                );
+                event(&sid, turn, "settled", json!({"reason":reason}));
                 break;
             }
             Err(e) => {
@@ -1420,6 +1406,16 @@ fn run(
         }
     }
     Ok(())
+}
+
+fn settlement_reason(disconnected: bool, stop: crate::agent::Stop) -> &'static str {
+    if disconnected {
+        "interrupted"
+    } else if stop == crate::agent::Stop::Cancelled {
+        "cancelled"
+    } else {
+        "completed"
+    }
 }
 
 fn error_kind(code: i32, message: &str) -> &'static str {
@@ -1809,5 +1805,25 @@ mod tests {
         }
         assert!(valid_id("session-01_abc"));
         assert!(valid_id("glass.file.read"));
+    }
+
+    #[test]
+    fn disconnected_turn_does_not_report_a_completed_or_cancelled_settlement() {
+        assert_eq!(
+            settlement_reason(true, crate::agent::Stop::Finished),
+            "interrupted"
+        );
+        assert_eq!(
+            settlement_reason(true, crate::agent::Stop::Cancelled),
+            "interrupted"
+        );
+        assert_eq!(
+            settlement_reason(false, crate::agent::Stop::Cancelled),
+            "cancelled"
+        );
+        assert_eq!(
+            settlement_reason(false, crate::agent::Stop::Finished),
+            "completed"
+        );
     }
 }

@@ -423,7 +423,13 @@ failed and restores its draft for edit-and-retry. Each live resident AgentId
 has its own transcript, draft, and UTF-8 byte cursor; switching threads restores
 the matching context, and late send results remain attached to their submitting
 thread without changing the selected thread's focus or draft. AgentId remains
-process-local; on Unix Glass saves each selected thread's bounded composer text
+process-local. Aborting a running Core turn sends `turn/cancel` and keeps the
+runtime alive until Core emits a cancelled settlement and the original prompt's
+correlated response. That response settles the send attempt before Glass stops
+the worker. If the runtime cannot confirm cancellation within ten seconds,
+Glass stops it and records unresolved attempts as uncertain; it does not claim
+those attempts settled or replay them. On Unix Glass saves each selected
+thread's bounded composer text
 and UTF-8 byte cursor with its durable ThreadId in the private
 `.glass/threads/registry.json` ledger, restoring them after restart even when
 AgentId changes. The aggregate draft data is bounded with the registry. On

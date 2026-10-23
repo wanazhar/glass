@@ -91,6 +91,38 @@ def run_turn(identifier, params: dict) -> None:
     text = str(params.get("text", ""))
     turn = "turn-1"
     event("turn_start", {}, turn)
+    if MODE in ("cancel-gated", "cancel-unconfirmed") and "cancel-gated-turn" in text:
+        gate_root = os.path.join(os.getcwd(), ".glass")
+        with open(
+            os.path.join(gate_root, "e2e-core-cancel-gated-started"), "w", encoding="utf-8"
+        ) as marker:
+            marker.write("started")
+        with open(
+            os.path.join(gate_root, "e2e-core-cancel-gated-pid"), "w", encoding="utf-8"
+        ) as marker:
+            marker.write(str(os.getpid()))
+        while True:
+            line = sys.stdin.readline()
+            if not line:
+                raise SystemExit(0)
+            try:
+                incoming = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if incoming.get("method") != "turn/cancel":
+                continue
+            cancel_id = incoming.get("id")
+            cancel_params = incoming.get("params", {})
+            log_request("turn/cancel", cancel_params)
+            if cancel_params.get("sessionId") != SESSION_ID:
+                send({"jsonrpc": "2.0", "id": cancel_id, "error": {"code": -32602, "message": "wrong session"}})
+                continue
+            if MODE == "cancel-unconfirmed":
+                continue
+            reply(cancel_id, {"accepted": True, "applies": "before_next_request_or_tool"})
+            event("settled", {"reason": "cancelled"}, turn)
+            reply(identifier, {"sessionId": SESSION_ID, "settled": True})
+            return
     exercise_conversation_projection = "offline prompt round trip" in text
     if exercise_conversation_projection:
         event("reasoning", {"text": "fixture reasoning must remain internal"}, turn)

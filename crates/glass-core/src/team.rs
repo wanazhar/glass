@@ -30,16 +30,20 @@ static REQUESTS: AtomicUsize = AtomicUsize::new(0);
 struct TransportLease;
 impl TransportLease {
     fn acquire() -> Result<Self, provider::Error> {
-        REQUESTS
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < 8).then_some(n + 1)
-            })
-            .map(|_| Self)
-            .map_err(|_| {
-                provider::Error::Config(
+        loop {
+            let current = REQUESTS.load(Ordering::Acquire);
+            if current >= 8 {
+                return Err(provider::Error::Config(
                     "teammate transports are draining; wait before retrying".into(),
-                )
-            })
+                ));
+            }
+            if REQUESTS
+                .compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(Self);
+            }
+        }
     }
 }
 impl Drop for TransportLease {
@@ -1404,7 +1408,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
             if args.len() < 4 || !args.len().is_multiple_of(2) {
                 return Err("limits ID --output N | --reasoning N | --rounds N".into());
             }
-            for pair in args[2..].chunks_exact(2) {
+            for pair in args[2..].as_chunks::<2>().0 {
                 let key = pair[0]
                     .strip_prefix("--")
                     .filter(|k| matches!(*k, "output" | "reasoning" | "rounds"))

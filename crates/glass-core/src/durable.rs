@@ -1212,10 +1212,21 @@ mod tests {
         std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn one_writer_and_uncertain_append_poisoning() {
+    fn one_writer_excludes_a_second_store() {
+        let path = dir();
+        let store = Store::open(&path, false).unwrap();
+        assert!(Store::open(&path, false).is_err());
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn uncertain_append_poisoning_on_full_device() {
         let path = dir();
         let mut store = Store::open(&path, false).unwrap();
-        assert!(Store::open(&path, false).is_err());
+        // `/dev/full` is a Linux fault-injection device, not a portable Unix
+        // path. Keep this write-failure assertion on platforms that provide it.
         store.file = OpenOptions::new().write(true).open("/dev/full").unwrap();
         assert!(store.commit(0, vec![create("root")]).is_err());
         assert!(store.is_poisoned());

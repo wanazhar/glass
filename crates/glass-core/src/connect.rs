@@ -2151,9 +2151,10 @@ mod tests {
         assert_eq!(usage["entries"], 303);
         assert!(preview_path(&s.workspace, "link/secret").is_err());
         s.security = json!({"profile":"unrestricted","sandbox":"off"});
+        let canonical_outside = root.join("outside").canonicalize().unwrap();
         assert_eq!(
             browse_path(&s, &root.join("outside").to_string_lossy()).unwrap(),
-            root.join("outside")
+            canonical_outside
         );
         std::fs::remove_dir_all(root).unwrap();
     }

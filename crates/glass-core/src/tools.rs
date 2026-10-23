@@ -1249,10 +1249,12 @@ mod tests {
         let marker = dir.join("ready");
         let _ = std::fs::remove_file(&marker);
         let quoted = format!("'{}'", marker.to_string_lossy().replace('\'', "'\\''"));
-        // Wait for setsid to finish before the parent exits; otherwise the
-        // process-group cleanup may legitimately kill the child before escape.
+        // The helper calls the POSIX setsid system call directly because the
+        // `setsid` command-line utility is not installed on every Unix host.
+        // Wait for it to detach before the parent exits; otherwise normal
+        // process-group cleanup may legitimately kill it before escape.
         let command = format!(
-            "setsid sh -c 'echo $$ > \"$1\"; sleep 30' sh {quoted} & while [ ! -s {quoted} ]; do sleep 0.01; done; echo done"
+            "python3 -c 'import os,sys,time; child=os.fork() if os.getpid()==os.getpgrp() else 0; os._exit(0) if child else None; os.setsid(); open(sys.argv[1],\"w\").write(str(os.getpid())); time.sleep(30)' {quoted} & while [ ! -s {quoted} ]; do sleep 0.01; done; echo done"
         );
         let start = std::time::Instant::now();
         let mut approvals = crate::sandbox::SessionApprovals::default();

@@ -493,9 +493,7 @@ fn quadrant(lines: &[&str], w: usize) -> Option<Vec<String>> {
         for row in &mut grid {
             row[columns / 2] = '│';
         }
-        for cell in &mut grid[rows / 2] {
-            *cell = '─';
-        }
+        grid[rows / 2].fill('─');
         grid[rows / 2][columns / 2] = '┼';
         for (_, x, y) in &points {
             let col = (x * (columns - 1) as f64).round() as usize;

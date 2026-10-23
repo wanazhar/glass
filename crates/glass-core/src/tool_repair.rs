@@ -142,10 +142,10 @@ fn check(schema: &Value, value: &Value, path: &str, depth: usize) -> Result<(), 
             "null" => value.is_null(),
             _ => true,
         };
-        let valid = types.as_str().map(&matches).unwrap_or_else(|| {
+        let valid = types.as_str().map(matches).unwrap_or_else(|| {
             types
                 .as_array()
-                .is_some_and(|ts| ts.iter().filter_map(Value::as_str).any(&matches))
+                .is_some_and(|ts| ts.iter().filter_map(Value::as_str).any(matches))
         });
         if !valid {
             return Err(format!("{path}: expected {types}"));

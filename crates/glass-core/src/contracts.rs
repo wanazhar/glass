@@ -141,9 +141,9 @@ pub fn validate(schema: &Value, value: &Value) -> Result<(), String> {
                 "string" => value.is_string(),
                 _ => false,
             };
-            if !kind.as_str().map(&matches).unwrap_or_else(|| {
+            if !kind.as_str().map(matches).unwrap_or_else(|| {
                 kind.as_array()
-                    .is_some_and(|a| a.iter().any(|v| v.as_str().is_some_and(&matches)))
+                    .is_some_and(|a| a.iter().any(|v| v.as_str().is_some_and(matches)))
             }) {
                 return fail("type mismatch");
             }

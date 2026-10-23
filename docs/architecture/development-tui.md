@@ -46,11 +46,22 @@ dispatch carries that expected RunId, which the tool router checks against the
 live agent before sending.
 
 For opt-in diagnosis of a stalled Core runtime, `GLASS_RUNTIME_DIAGNOSTIC_TRACE`
-is a base path for separate Core-writer, Glass-reader, and Glass-consumer trace
-files. They record fixed frame classes, byte counts, and elapsed write/read/
-queue phases. They never record frame payloads, IDs, text, provider names, or
-tool arguments. Put the base path inside a private directory; omit the variable
-during normal use. The live-provider PTY test accepts
+is a base path for separate Core stdin/stdout, durable-finish, Glass stdin,
+Glass reader, Glass consumer, and Glass worker trace files. They record fixed
+phase and event classes, byte counts, and elapsed provider-turn, journal,
+write, read, queue, and handoff times. Request and agent correlation keys are
+SHA-256 hashes so the same request can be followed across Core and Glass
+without writing the raw IDs. Traces never record frame payloads, messages,
+provider names, credentials, or tool arguments; files are created with private
+permissions on Unix. Put the base path inside a private directory and omit the
+variable during normal use. Usage is emitted only after Core's provider turn
+returns and usage is persisted. Core then commits durable settlement, writes
+the settled event, and responds to the prompt RPC in order. Glass records each
+frame read, queue handoff, and consumer dequeue; the agent worker applies
+backpressure for transcript deltas, semantic tool events, usage, waiting,
+errors, settlement, and RPC responses. Only ephemeral reasoning and
+tool-progress events may be dropped when its bounded queue is full. The
+live-provider PTY test accepts
 `GLASS_LIVE_PROVIDER_TIMEOUT_SECS` (15–610, default 610) to bound one diagnostic
 run without changing Core's provider request deadline.
 

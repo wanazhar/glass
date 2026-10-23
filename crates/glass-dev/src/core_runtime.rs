@@ -11,6 +11,7 @@ use crate::agents::ResidentAgentBroker;
 use crate::development::{DevelopmentError, DevelopmentResult, ToolCall};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -44,6 +45,7 @@ fn trace_runtime_frame(
     class: &str,
     bytes: usize,
     elapsed_us: Option<u128>,
+    correlation_hash: Option<String>,
 ) {
     let Some(path) = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE") else {
         return;
@@ -61,14 +63,25 @@ fn trace_runtime_frame(
             let _ = file.set_permissions(permissions);
         }
     }
-    let record = json!({
+    let mut record = json!({
         "component": component,
         "phase": phase,
         "class": class,
         "bytes": bytes,
         "elapsed_us": elapsed_us,
     });
+    if let Some(correlation_hash) = correlation_hash {
+        record["correlation_hash"] = json!(correlation_hash);
+    }
     let _ = writeln!(file, "{record}");
+}
+
+fn runtime_correlation_hash(value: &Value) -> Option<String> {
+    let id = value
+        .get("id")
+        .or_else(|| value.pointer("/params/turnId"))
+        .or_else(|| value.pointer("/params/id"))?;
+    Some(format!("{:x}", Sha256::digest(id.to_string().as_bytes())))
 }
 
 fn core_frame_class(value: &Value) -> &'static str {
@@ -875,12 +888,44 @@ impl GlassCoreRuntime {
             )));
         }
         encoded.push(b'\n');
-        self.input
+        let class = core_frame_class(value);
+        let correlation_hash = runtime_correlation_hash(value);
+        trace_runtime_frame(
+            "glass_stdin",
+            "write_begin",
+            class,
+            encoded.len(),
+            None,
+            correlation_hash.clone(),
+        );
+        let started = Instant::now();
+        let result = self
+            .input
             .write_all(&encoded)
             .and_then(|()| self.input.flush())
-            .map_err(|error| {
-                DevelopmentError::Process(format!("Glass Core runtime write failed: {error}"))
-            })
+            .map_err(|error| error.to_string());
+        if let Err(error) = result {
+            trace_runtime_frame(
+                "glass_stdin",
+                "write_error",
+                class,
+                encoded.len(),
+                Some(started.elapsed().as_micros()),
+                correlation_hash,
+            );
+            return Err(DevelopmentError::Process(format!(
+                "Glass Core runtime write failed: {error}"
+            )));
+        }
+        trace_runtime_frame(
+            "glass_stdin",
+            "write_complete",
+            class,
+            encoded.len(),
+            Some(started.elapsed().as_micros()),
+            correlation_hash,
+        );
+        Ok(())
     }
 
     fn recv_frame(&mut self, timeout: Duration) -> DevelopmentResult<Option<Value>> {
@@ -892,6 +937,7 @@ impl GlassCoreRuntime {
                     core_frame_class(&value),
                     value.to_string().len(),
                     None,
+                    runtime_correlation_hash(&value),
                 );
                 Ok(Some(value))
             }
@@ -1397,9 +1443,18 @@ fn read_frames(mut stream: impl std::io::Read, sender: mpsc::SyncSender<Result<V
             class,
             bytes,
             Some(read_started.elapsed().as_micros()),
+            value.as_ref().ok().and_then(runtime_correlation_hash),
         );
         let queue_started = Instant::now();
-        trace_runtime_frame("glass_reader", "queue_send_begin", class, bytes, None);
+        let correlation_hash = value.as_ref().ok().and_then(runtime_correlation_hash);
+        trace_runtime_frame(
+            "glass_reader",
+            "queue_send_begin",
+            class,
+            bytes,
+            None,
+            correlation_hash.clone(),
+        );
         if sender.send(value).is_err() {
             return;
         }
@@ -1409,6 +1464,7 @@ fn read_frames(mut stream: impl std::io::Read, sender: mpsc::SyncSender<Result<V
             class,
             bytes,
             Some(queue_started.elapsed().as_micros()),
+            correlation_hash,
         );
     }
 }
@@ -2025,6 +2081,17 @@ mod tests {
             .filter_map(|event| event.get("type").and_then(Value::as_str))
             .collect::<Vec<_>>();
         assert_eq!(kinds, vec!["agent_end", "agent_settled"]);
+    }
+
+    #[test]
+    fn diagnostics_correlate_prompt_responses_without_recording_raw_id() {
+        let request = json!({"id":"prompt-private-value"});
+        let response = json!({"id":"prompt-private-value","result":{}});
+        let event = json!({"params":{"turnId":"prompt-private-value"}});
+        let request_hash = runtime_correlation_hash(&request).unwrap();
+        assert_eq!(request_hash, runtime_correlation_hash(&response).unwrap());
+        assert_eq!(request_hash, runtime_correlation_hash(&event).unwrap());
+        assert!(!request_hash.contains("prompt-private-value"));
     }
 
     #[test]

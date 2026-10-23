@@ -39,12 +39,6 @@ glass_client_versions = {
     "clients/typescript/package-lock.json": json.loads(
         (root / "clients/typescript/package-lock.json").read_text()
     )["version"],
-    "packages/pi-runtime/package.json": json.loads(
-        (root / "packages/pi-runtime/package.json").read_text()
-    )["version"],
-    "packages/pi-runtime/package-lock.json": json.loads(
-        (root / "packages/pi-runtime/package-lock.json").read_text()
-    )["version"],
 }
 for path, client_version in glass_client_versions.items():
     if client_version != version:

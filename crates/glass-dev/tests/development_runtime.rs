@@ -128,20 +128,6 @@ fn temp_project() -> std::path::PathBuf {
     root
 }
 
-fn trusted_store(root: &std::path::Path) -> std::path::PathBuf {
-    let path = root.with_extension("trust.json");
-    let identity = glass_dev::WorkspaceIdentity::inspect(root).unwrap();
-    let document = serde_json::json!({
-        "version": 1,
-        "records": [{
-            "identity": identity,
-            "trustedAtUnixMs": 1
-        }]
-    });
-    std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
-    path
-}
-
 #[test]
 fn both_cli_help_paths_exit_successfully() {
     for binary in [glass_binary(), glass_browser_binary()] {
@@ -162,7 +148,6 @@ fn both_cli_help_paths_exit_successfully() {
 fn cli_project_and_agent_paths_are_browser_free() {
     let root = temp_project();
     let binary = glass_binary();
-    let trust_store = trusted_store(&root);
 
     let run = Command::new(&binary)
         .args([
@@ -177,7 +162,6 @@ fn cli_project_and_agent_paths_are_browser_free() {
             "--root",
             root.to_str().unwrap(),
         ])
-        .env("GLASS_TRUST_STORE_PATH", &trust_store)
         .output()
         .expect("project run should start");
     assert!(run.status.success(), "project run failed: {:?}", run.stderr);
@@ -194,7 +178,6 @@ fn cli_project_and_agent_paths_are_browser_free() {
             "--root",
             root.to_str().unwrap(),
         ])
-        .env("GLASS_TRUST_STORE_PATH", &trust_store)
         .output()
         .expect("agent prompt should start");
     assert!(
@@ -211,63 +194,21 @@ fn cli_project_and_agent_paths_are_browser_free() {
 }
 
 #[test]
-fn yolo_bypasses_workspace_trust_and_normal_mode_stays_gated() {
-    let root = temp_project();
-    let binary = glass_binary();
-    let trust_store = root.with_extension("trust.json");
-    let call = r#"{"id":"write","name":"glass.file.write","arguments":{"path":"yolo.txt","content":"approval-free\n"}}"#;
-
-    let denied = Command::new(&binary)
-        .args(["agent", "tool", call, "--root", root.to_str().unwrap()])
-        .env("GLASS_TRUST_STORE_PATH", &trust_store)
+fn glass_has_no_global_yolo_switch() {
+    let output = Command::new(glass_binary())
+        .arg("--help")
         .output()
-        .expect("normal agent tool should run");
-    assert!(!denied.status.success());
-    assert!(!root.join("yolo.txt").exists());
-    assert!(String::from_utf8_lossy(&denied.stderr).contains("trust"));
-
-    let yolo = Command::new(&binary)
-        .args([
-            "--yolo",
-            "agent",
-            "tool",
-            call,
-            "--root",
-            root.to_str().unwrap(),
-        ])
-        .env("GLASS_TRUST_STORE_PATH", &trust_store)
-        .output()
-        .expect("YOLO agent tool should run");
-    assert!(
-        yolo.status.success(),
-        "YOLO agent tool failed: {:?}",
-        yolo.stderr
-    );
-    let report: Value = serde_json::from_slice(&yolo.stdout).unwrap();
-    assert_eq!(report["written"], true);
-    assert_eq!(
-        std::fs::read_to_string(root.join("yolo.txt")).unwrap(),
-        "approval-free\n"
-    );
-    let reopened = glass_dev::DevelopmentWorkspace::open_with_store(
-        &root,
-        glass_dev::WorkspaceTrustStore::at(&trust_store),
-    )
-    .unwrap();
-    assert_eq!(reopened.trust(), glass_dev::WorkspaceTrust::Untrusted);
-
-    std::fs::remove_dir_all(root).expect("temporary project should be removed");
-    let _ = std::fs::remove_file(trust_store);
+        .expect("CLI help should start");
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("--yolo"));
 }
 
 #[test]
 fn mcp_combines_browser_and_resident_dev_tools_on_clean_json_rpc_stdout() {
     let root = temp_project();
-    let trust_store = trusted_store(&root);
     let mut child = Command::new(glass_binary())
         .arg("--mcp")
         .current_dir(&root)
-        .env("GLASS_TRUST_STORE_PATH", &trust_store)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -394,5 +335,4 @@ fn mcp_combines_browser_and_resident_dev_tools_on_clean_json_rpc_stdout() {
     );
 
     std::fs::remove_dir_all(root).expect("temporary project should be removed");
-    let _ = std::fs::remove_file(trust_store);
 }

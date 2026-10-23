@@ -26,7 +26,6 @@ pub fn playbook(surface: DevSurface) -> &'static str {
         DevSurface::More => {
             "Workspace playbook: glass.daemon.doctor and cockpit tools for host health. Kernels and experiments stay named glass.eval.* / glass.experiment.*."
         }
-        DevSurface::Trust => "Trust playbook: do not mutate until the human trusts the workspace.",
         DevSurface::Agent => {
             "Agent playbook: inspect, write session todos, edit via proposals, test, then glass.browser.verify when UI is in scope. Use the surface playbook from context.surface when the human is on Code, App, Git, Debug, or Terminal."
         }

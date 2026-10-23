@@ -3,8 +3,8 @@
 //! Local identifier/LSP/`TODO` fallbacks stay available. A `stub://` endpoint
 //! is for tests and never starts an agent. Otherwise Glass sends a bounded
 //! completion request to the selected resident agent engine. Glass Core is the
-//! default engine; the legacy Pi adapter handles the same request through its
-//! `AgentSession`. Glass does not start a second model client for editor ghosts.
+//! default engine. Resident completions are queued through that agent session;
+//! Glass does not start a second model client for editor ghosts.
 
 use crate::customization::EditorConfig;
 use serde_json::Value;
@@ -20,9 +20,7 @@ pub enum FimBackend {
     Stub,
     /// Request completion from the selected resident agent engine.
     ///
-    /// The historical variant name is retained for serialized/API
-    /// compatibility; Glass Core is the default engine.
-    Pi,
+    Resident,
 }
 
 /// Editor completion provider resolved from project and process settings.
@@ -58,7 +56,7 @@ impl FimProvider {
             });
         }
         Some(Self {
-            backend: FimBackend::Pi,
+            backend: FimBackend::Resident,
             model: editor
                 .fim
                 .model
@@ -76,7 +74,7 @@ impl FimProvider {
         match self.backend {
             FimBackend::Stub => validate_ghost_text(&stub_complete(prefix, suffix))?
                 .ok_or_else(|| "completion provider returned empty text".into()),
-            FimBackend::Pi => {
+            FimBackend::Resident => {
                 Err("resident-agent FIM must use the agent complete operation".into())
             }
         }
@@ -183,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_fim_text_reads_pi_complete_and_legacy_shapes() {
+    fn parse_fim_text_reads_resident_completion_shapes() {
         assert_eq!(
             parse_fim_text(&json!({"result":{"text":" hello"}})).as_deref(),
             Some(" hello")
@@ -230,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn from_editor_uses_stub_or_resident_pi() {
+    fn from_editor_uses_stub_or_resident_agent() {
         let stub = EditorConfig {
             fim: FimConfig {
                 endpoint: Some("stub://unit".into()),
@@ -243,10 +241,10 @@ mod tests {
             FimProvider::from_editor(&stub).map(|provider| provider.backend),
             Some(FimBackend::Stub)
         );
-        let pi = EditorConfig::default();
+        let resident = EditorConfig::default();
         assert_eq!(
-            FimProvider::from_editor(&pi).map(|provider| provider.backend),
-            Some(FimBackend::Pi)
+            FimProvider::from_editor(&resident).map(|provider| provider.backend),
+            Some(FimBackend::Resident)
         );
         let off = EditorConfig {
             fim: FimConfig {

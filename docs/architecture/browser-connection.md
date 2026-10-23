@@ -22,7 +22,7 @@ owns the session:
 | Standalone `glass-browser` TUI | native `BrowserRuntimeSession`; explicit `CdpBrowserSession` for Chromium | Native owns its Glass context; CDP owned launch owns Chrome and attach never owns the external browser. |
 | Glass Dev embedded App | `BrowserService` → one `BrowserWorker` → native runtime session by default | Explicit Chromium selection uses `CdpBrowserSession`; the resident worker serializes commands. |
 
-Project files, editor buffers, PTYs, tasks, Pi conversations, and development
+Project files, editor buffers, PTYs, tasks, resident conversations, and development
 revisions outlive a browser session. The native session owns its Glass
 context, observation state, and native resources. `CdpBrowserSession` owns the
 target/frame route, CDP state, observation caches, policy, browser revision,

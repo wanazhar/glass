@@ -113,7 +113,7 @@ version claims.
 | Editor source/diff rendering, soft-wrap, cursor synchronization, and review state | 0.3.14; [Development TUI](../architecture/development-tui.md) and [Development Runtime](../development-runtime.md) |
 | Actor-attributed editor collaboration | 0.3.14; [Development Runtime](../development-runtime.md) and [MCP tool catalog](../mcp-tools.md) |
 | Kitty/live browser presentation | 0.3.14; [Mobile and remote](../mobile-remote.md) and [browser connection](../architecture/browser-connection.md) |
-| Pi runtime and external harness workflow | Current checkout with Pi SDK 0.84.4; [Native Pi SDK runtime](../pi-sdk-runtime.md), [Development Runtime](../development-runtime.md), and [CLI](../cli.md) |
+| Pi runtime and external harness workflow | Historical implementation evidence; [retired runtime note](../migration/pi-sdk-runtime.md), [Development Runtime](../development-runtime.md), and [CLI](../cli.md) |
 
 ## Active plan: Consolidated cross-surface bugs (issue #60)
 

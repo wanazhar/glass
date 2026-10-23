@@ -34,8 +34,9 @@ tcp_address = "127.0.0.1:38697"
 connect_timeout_ms = 10000
 ```
 
-Only a trusted workspace may activate this executable configuration. MCP, Pi,
-daemon, and TUI calls share the `glass.debug.*` router. The TUI exposes named
+The configured adapter runs as the launching OS user; project configuration
+does not sandbox it. MCP, the resident engine, daemon, and TUI calls share the
+`glass.debug.*` router. The TUI exposes named
 sessions, launch/attach, breakpoint and execution controls, threads, stack,
 scopes, variables, watches, console evaluation, events, supervised processes,
 and a complete session snapshot. Browser/runtime causal links are recorded by

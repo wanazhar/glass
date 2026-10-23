@@ -27,11 +27,6 @@ use crate::results::ResponseMode;
     after_help = "Start here:\n  glass doctor                         Check browser and local runtime support\n  glass                                Open the interactive terminal workspace\n  glass navigate https://example.com   Open a page in one bounded operation\n  glass observe --level interactive    Inspect current semantic understanding\n  glass task compile task.json ir.json Compile a deterministic browser-free task\n\nUse `glass <command> --help` for command-specific options and examples."
 )]
 pub struct Cli {
-    /// Run trusted local automation without interactive capability or tool approvals.
-    /// Glass Dev also enables unrestricted Pi resources and tools in this mode.
-    #[arg(long, global = true)]
-    pub yolo: bool,
-
     /// Browser safety preset. Hardened mode fails closed for privileged operations.
     #[arg(long, global = true, value_enum, default_value_t = PolicyPreset::Development)]
     pub policy: PolicyPreset,
@@ -256,9 +251,6 @@ impl Cli {
         push_enum_flag(&mut args, "--tui-live-backend", self.tui_live_backend);
         push_enum_flag(&mut args, "--tui-live-quality", self.tui_live_quality);
         push_enum_flag(&mut args, "--tui-live-fit", self.tui_live_fit);
-        if self.yolo {
-            args.push("--yolo".into());
-        }
         if self.incognito {
             args.push("--incognito".into());
         }
@@ -2027,7 +2019,6 @@ mod tests {
             "work",
             "--port",
             "9333",
-            "--yolo",
             "--incognito",
             "--policy-allow-host",
             "example.test",
@@ -2040,7 +2031,6 @@ mod tests {
         assert!(flag_pair(&flags, "--policy", "hardened"));
         assert!(flag_pair(&flags, "--profile", "work"));
         assert!(flag_pair(&flags, "--port", "9333"));
-        assert!(flags.iter().any(|flag| flag == "--yolo"));
         assert!(flags.iter().any(|flag| flag == "--incognito"));
         assert!(flag_pair(&flags, "--policy-allow-host", "example.test"));
 
@@ -2049,7 +2039,6 @@ mod tests {
         assert_eq!(mcp.policy, PolicyPreset::Hardened);
         assert_eq!(mcp.profile, "work");
         assert_eq!(mcp.port, 9333);
-        assert!(mcp.yolo);
         assert!(mcp.incognito);
         assert_eq!(mcp.policy_allow_host, vec!["example.test"]);
     }
@@ -2158,7 +2147,6 @@ mod tests {
     #[test]
     fn tui_layout_defaults_to_auto_and_accepts_mobile_override() {
         let default = try_parse_cli(["glass", "tui"]).unwrap();
-        assert!(!default.yolo);
         assert_eq!(default.tui_layout, TuiLayout::Auto);
         assert_eq!(default.tui_live, TuiLiveMode::Off);
         assert_eq!(default.tui_live_backend, TuiLiveBackend::Auto);
@@ -2188,13 +2176,9 @@ mod tests {
     }
 
     #[test]
-    fn yolo_is_an_explicit_global_opt_in() {
-        assert!(try_parse_cli(["glass", "--yolo", "tui"]).unwrap().yolo);
-        assert!(
-            try_parse_cli(["glass", "agent", "hello", "--yolo"])
-                .unwrap()
-                .yolo
-        );
+    fn removed_global_yolo_flag_is_rejected() {
+        assert!(try_parse_cli(["glass", "--yolo", "tui"]).is_err());
+        assert!(try_parse_cli(["glass", "agent", "hello", "--yolo"]).is_err());
     }
 
     #[test]
@@ -2212,10 +2196,12 @@ mod tests {
                         action: AgentCommand::Doctor
                     })
                 ));
-                assert!(try_parse_cli(["glass", "agent", "setup"])
-                    .unwrap_err()
-                    .to_string()
-                    .contains("unrecognized subcommand"));
+                assert!(
+                    try_parse_cli(["glass", "agent", "setup"])
+                        .unwrap_err()
+                        .to_string()
+                        .contains("unrecognized subcommand")
+                );
             })
             .expect("CLI parser thread must spawn")
             .join()

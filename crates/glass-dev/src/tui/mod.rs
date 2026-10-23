@@ -15,7 +15,6 @@ mod editor;
 mod file_view;
 mod overlay;
 mod parse;
-mod pi_commands;
 mod playbooks;
 mod pointer;
 mod projection;
@@ -435,14 +434,12 @@ pub(crate) fn run_with_browser_policy(
     layout: TuiLayout,
     visual_options: TuiVisualOptions,
     browser_start_defaults: crate::BrowserStartConfig,
-    yolo_mode: bool,
     browser_policy: BrowserPolicy,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("Glass Dev TUI requires an interactive terminal; use a CLI subcommand or --mcp for non-interactive use".into());
     }
-    let mut state =
-        DevTuiState::open_for_tui_with_browser_policy(root, layout, yolo_mode, browser_policy)?;
+    let mut state = DevTuiState::open_for_tui_with_browser_policy(root, layout, browser_policy)?;
     state.set_browser_start_defaults(browser_start_defaults);
     let mut visual = VisualRuntime::new(visual_options)?;
     visual.sync_state(&mut state);
@@ -789,40 +786,6 @@ pub(crate) fn run_with_browser_policy(
                             (KeyCode::Esc, _) => state.handle_editor_escape(),
                             _ => state.edit_code_key(key.code, key.modifiers),
                         }
-                    } else if active_overlay == Some(overlay::ActiveOverlay::PiSlashCommand) {
-                        match (key.code, key.modifiers) {
-                            (KeyCode::Esc, _) | (KeyCode::Enter, _) => {
-                                route_pi_command_commit_key(&mut state, key.code, &mut worker);
-                            }
-                            (KeyCode::Backspace, _) => state.pi_command_backspace(),
-                            (KeyCode::Char('u'), value)
-                                if value.contains(KeyModifiers::CONTROL) =>
-                            {
-                                state.pi_command_input.clear();
-                                state.pi_command_cursor = 0;
-                                state.pi_command_selection = 0;
-                                state.pi_command_scroll = 0;
-                            }
-                            (KeyCode::Left, _) => state.move_pi_command_cursor(false),
-                            (KeyCode::Right, _) => state.move_pi_command_cursor(true),
-                            (KeyCode::Home, _) => state.pi_command_cursor = 0,
-                            (KeyCode::End, _) => {
-                                state.pi_command_cursor = state.pi_command_input.len();
-                            }
-                            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                                state.move_pi_command_selection(-1)
-                            }
-                            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                                state.move_pi_command_selection(1)
-                            }
-                            (KeyCode::PageUp, _) => state.move_pi_command_selection(-8),
-                            (KeyCode::PageDown, _) => state.move_pi_command_selection(8),
-                            (KeyCode::Tab, _) => state.complete_pi_command(),
-                            (KeyCode::Char(character), _) => {
-                                state.insert_pi_command_char(character)
-                            }
-                            _ => {}
-                        }
                     } else if dispatch_file_picker_key(&mut state, key.code, key.modifiers) {
                     } else if active_overlay == Some(overlay::ActiveOverlay::SessionPicker) {
                         match (key.code, key.modifiers) {
@@ -879,19 +842,10 @@ pub(crate) fn run_with_browser_policy(
                             {
                                 state.toggle_composer_steer();
                             }
-                            (KeyCode::Char('a'), value)
-                                if value.contains(KeyModifiers::CONTROL)
-                                    && value.contains(KeyModifiers::SHIFT) =>
-                            {
-                                state.cycle_composer_run_mode();
-                            }
                             (KeyCode::Char('g'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
                             {
                                 state.jump_to_app_keep_dock();
-                            }
-                            (KeyCode::Char('/'), _) => {
-                                route_composer_slash_key(&mut state, key.code);
                             }
                             _ => {
                                 let (outcome, text, cursor) = core_conversation::edit_draft(
@@ -953,12 +907,6 @@ pub(crate) fn run_with_browser_policy(
                                 if value.contains(KeyModifiers::CONTROL) =>
                             {
                                 state.focus_composer_dock();
-                            }
-                            (KeyCode::Char('a'), value)
-                                if value.contains(KeyModifiers::CONTROL)
-                                    && value.contains(KeyModifiers::SHIFT) =>
-                            {
-                                state.cycle_composer_run_mode();
                             }
                             (KeyCode::Char('g'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
@@ -1306,7 +1254,7 @@ pub(crate) fn run_with_browser_policy(
         render_requested |= menu_was_open != state.menu_open;
         if state.agent_login_requested {
             state.agent_login_requested = false;
-            run_agent_login(&mut state, &mut guard);
+            run_core_login(&mut state, &mut guard);
             worker.request_refresh();
         }
         if let Some(name) = state.harness_launch_requested.take() {
@@ -1329,7 +1277,6 @@ pub(crate) fn run_with_browser_policy(
             render_requested |= state.tick_editor_reconcile();
             last_editor_reconcile = Instant::now();
         }
-        state.flush_pending_trust();
         state.flush_pending_open_file();
         if state.git_diff_requested {
             state.git_diff_requested = false;
@@ -1497,7 +1444,6 @@ pub(crate) fn run_with_browser_policy(
             state.apply_snapshot(&snapshot);
             render_requested = true;
         }
-        state.flush_pending_trust();
         state.flush_pending_open_file();
     }
 
@@ -1553,47 +1499,11 @@ fn route_paste(state: &mut DevTuiState, text: &str) {
                 state.insert_file_picker_char(character);
             }
         }
-        Some(overlay::ActiveOverlay::PiSlashCommand) => {
-            state.insert_pi_command_text(text);
-        }
-        Some(overlay::ActiveOverlay::Composer) => {
-            if text.trim_start().starts_with('/') {
-                state.open_pi_command_palette();
-                state.insert_pi_command_text(text.trim());
-            } else {
-                state.insert_composer_text(text);
-            }
-        }
+        Some(overlay::ActiveOverlay::Composer) => state.insert_composer_text(text),
         Some(overlay::ActiveOverlay::CommandPalette) => state.insert_palette_text(text),
         Some(overlay::ActiveOverlay::FullscreenEditor) => state.paste_editor_text(text),
         _ => {}
     }
-}
-
-fn route_composer_slash_key(state: &mut DevTuiState, code: KeyCode) -> bool {
-    if code != KeyCode::Char('/')
-        || overlay::active_overlay(state) != Some(overlay::ActiveOverlay::Composer)
-    {
-        return false;
-    }
-    state.open_pi_command_palette();
-    true
-}
-
-fn route_pi_command_commit_key(
-    state: &mut DevTuiState,
-    code: KeyCode,
-    worker: &mut snapshot::SnapshotWorker,
-) -> bool {
-    if overlay::active_overlay(state) != Some(overlay::ActiveOverlay::PiSlashCommand) {
-        return false;
-    }
-    match code {
-        KeyCode::Esc => state.close_pi_command_palette(),
-        KeyCode::Enter => state.submit_pi_command(worker),
-        _ => return false,
-    }
-    true
 }
 
 fn handle_file_picker_key(state: &mut DevTuiState, code: KeyCode, modifiers: KeyModifiers) {
@@ -1686,52 +1596,6 @@ fn handle_herdr_event(state: &mut DevTuiState, visual: &mut VisualRuntime, event
             preserve_browser_recovery_status(state);
         }
         HerdrEvent::Connected => {}
-    }
-}
-
-fn run_agent_login(state: &mut DevTuiState, guard: &mut TerminalGuard) {
-    if crate::resident_harness::ResidentHarnessKind::from_env()
-        == crate::resident_harness::ResidentHarnessKind::GlassCore
-    {
-        run_core_login(state, guard);
-        return;
-    }
-    if let Err(error) = guard.suspend() {
-        state.status = format!("Could not hand the terminal to Pi: {error}");
-        return;
-    }
-    let provider = state.agent_login_provider.take();
-    let result = crate::pi_runtime::setup_pi_runtime_with_provider(
-        None,
-        None,
-        false,
-        true,
-        provider.as_deref(),
-    );
-    let resume = guard.resume();
-    match (result, resume) {
-        (Ok(_), Ok(())) => match state.refresh_agent_readiness() {
-            Ok(true) => {
-                state.status = "Pi is ready · press Enter or start typing to chat".into();
-            }
-            Ok(false) => {
-                state.status =
-                    "Pi needs setup · use :agent setup or :agent setup login, then Enter to chat"
-                        .into();
-            }
-            Err(error) => state.status = format!("Pi readiness check failed: {error}"),
-        },
-        (Err(error), Ok(())) => {
-            state.status = format!("Pi login failed: {error}");
-        }
-        (Ok(_), Err(error)) => {
-            state.status = format!("Pi login finished, but TUI could not resume: {error}");
-            state.quit = true;
-        }
-        (Err(error), Err(resume_error)) => {
-            state.status = format!("Pi login failed: {error}; TUI resume failed: {resume_error}");
-            state.quit = true;
-        }
     }
 }
 
@@ -1952,46 +1816,6 @@ mod tests {
         std::fs::create_dir_all(&root).expect("create test workspace");
         let state = DevTuiState::open(&root, TuiLayout::Desktop).expect("open TUI state");
         (state, root)
-    }
-
-    #[test]
-    fn typed_slash_key_routes_multiline_draft_through_modal_escape_and_enter() {
-        let (mut state, root) = overlay_test_state();
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-        state.composer_input = "review this\nkeep the draft".into();
-        state.composer_cursor = 9;
-
-        assert!(route_composer_slash_key(&mut state, KeyCode::Char('/')));
-        assert!(state.pi_command_mode);
-        assert_eq!(state.composer_input, "review this\nkeep the draft");
-        assert_eq!(state.composer_cursor, 9);
-
-        let mut worker = snapshot::SnapshotWorker::spawn(&state);
-        assert!(route_pi_command_commit_key(
-            &mut state,
-            KeyCode::Esc,
-            &mut worker
-        ));
-        assert!(state.composer_mode);
-        assert_eq!(state.composer_input, "review this\nkeep the draft");
-        assert_eq!(state.composer_cursor, 9);
-
-        assert!(route_composer_slash_key(&mut state, KeyCode::Char('/')));
-        state.pi_command_input = "/ask".into();
-        assert!(route_pi_command_commit_key(
-            &mut state,
-            KeyCode::Enter,
-            &mut worker
-        ));
-        assert_eq!(state.composer_run_mode, crate::AgentTurnMode::Ask);
-        assert!(state.composer_mode);
-        assert_eq!(state.composer_input, "review this\nkeep the draft");
-        assert_eq!(state.composer_cursor, 9);
-
-        drop(worker);
-        drop(state);
-        std::fs::remove_dir_all(root).expect("remove test workspace");
     }
 
     fn test_visual_runtime(path: VisualPath) -> VisualRuntime {
@@ -2593,45 +2417,10 @@ mod tests {
     }
 
     #[test]
-    fn file_picker_receives_keys_and_paste_above_editor_pi_and_palette() {
-        let (mut state, root) = overlay_test_state();
-        state.file_picker_open = true;
-        state.session_picker_open = true;
-        state.code_edit_mode = true;
-        state.pi_command_mode = true;
-        state.command_mode = true;
-        state.pi_command_input = "pi".into();
-        state.command_input = "palette".into();
-
-        assert!(dispatch_file_picker_key(
-            &mut state,
-            KeyCode::Char('r'),
-            KeyModifiers::empty()
-        ));
-        route_paste(&mut state, "eadme");
-
-        assert_eq!(state.file_picker_query, "readme");
-        assert_eq!(state.pi_command_input, "pi");
-        assert_eq!(state.command_input, "palette");
-        assert!(state.code_edit_mode);
-        assert_eq!(
-            overlay::active_overlay(&state),
-            Some(overlay::ActiveOverlay::FilePicker)
-        );
-        drop(state);
-        std::fs::remove_dir_all(root).expect("remove test workspace");
-    }
-
-    #[test]
     fn full_screen_editor_receives_bracketed_paste() {
         let (mut state, root) = overlay_test_state();
         std::fs::create_dir_all(root.join("src")).expect("create source directory");
         std::fs::write(root.join("src/main.rs"), "main\n").expect("write source");
-        state
-            .ws_mut()
-            .expect("workspace lock")
-            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
-            .expect("trust test workspace");
         state
             .ws_mut()
             .expect("workspace lock")
@@ -2652,36 +2441,6 @@ mod tests {
             state.focused_buffer().expect("updated buffer").content,
             "// pasted from terminal\nmain\n"
         );
-        drop(state);
-        std::fs::remove_dir_all(root).expect("remove test workspace");
-    }
-
-    #[test]
-    fn redraw_mask_tracks_the_resolved_picker_and_keeps_git_diff_bit() {
-        let (mut state, root) = overlay_test_state();
-        state.code_edit_mode = true;
-        state.pi_command_mode = true;
-        state.file_picker_open = true;
-        state.git_diff_open = true;
-        let file_mask = terminal_overlay_mask(&state);
-        assert_ne!(
-            file_mask & (1_u32 << (16 + overlay::ActiveOverlay::FilePicker as u32)),
-            0
-        );
-        assert_ne!(file_mask & (1_u32 << 7), 0);
-        assert_eq!(
-            file_mask & (1_u32 << (16 + overlay::ActiveOverlay::PiSlashCommand as u32)),
-            0
-        );
-
-        state.file_picker_open = false;
-        state.session_picker_open = true;
-        let session_mask = terminal_overlay_mask(&state);
-        assert_ne!(
-            session_mask & (1_u32 << (16 + overlay::ActiveOverlay::SessionPicker as u32)),
-            0
-        );
-        assert_ne!(file_mask, session_mask);
         drop(state);
         std::fs::remove_dir_all(root).expect("remove test workspace");
     }
@@ -2770,7 +2529,7 @@ mod tests {
         state.layout = TuiLayout::Desktop;
         state.terminal_width = 140;
         state.terminal_height = 40;
-        state.surface = DevSurface::Trust;
+        state.surface = DevSurface::Git;
         let navigation = render::screen_geometry(
             &state,
             Rect::new(0, 0, state.terminal_width, state.terminal_height),
@@ -2780,20 +2539,19 @@ mod tests {
         let content = render::panel_content_area(navigation);
         assert_eq!(
             pointer::hit_test(&state, content.x, content.y),
-            pointer::HitRegion::Surface(DevSurface::Trust)
+            pointer::HitRegion::Surface(DevSurface::Agent)
         );
         assert_eq!(
             pointer::hit_test(&state, content.x, content.y + 1),
-            pointer::HitRegion::Surface(DevSurface::Agent)
+            pointer::HitRegion::Surface(DevSurface::Code)
         );
         drop(state);
         std::fs::remove_dir_all(root).expect("remove test workspace");
     }
 
     #[test]
-    fn untrusted_project_does_not_block_app_navigation_or_file_editing() {
-        let root =
-            std::env::temp_dir().join(format!("glass-trust-key-routing-{}", std::process::id()));
+    fn fresh_project_allows_app_navigation_and_file_editing() {
+        let root = std::env::temp_dir().join(format!("glass-key-routing-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create temporary workspace");
         std::fs::write(
             root.join("glass.toml"),
@@ -2802,8 +2560,7 @@ mod tests {
         .expect("write executable project configuration");
         std::fs::write(root.join("README.md"), "review only\n").expect("write test file");
 
-        let mut state =
-            DevTuiState::open(&root, TuiLayout::Desktop).expect("open untrusted TUI workspace");
+        let mut state = DevTuiState::open(&root, TuiLayout::Desktop).expect("open TUI workspace");
         assert_eq!(state.surface, DevSurface::Agent);
         state.files.push("README.md".into());
 

@@ -17,13 +17,11 @@ Focused unit tests live beside the module under test; use `tests/` for end-to-en
 
 Resident agents run on the `glass-core` engine. The wiring is:
 
-- `crates/glass-dev/src/resident_harness.rs` selects the engine
-  (`GLASS_AGENT_HARNESS`, default `glass-core`) and adapts options for it.
+- `crates/glass-dev/src/resident_harness.rs` adapts resident options for the
+  sole supported engine, Glass Core.
 - `crates/glass-dev/src/core_runtime.rs` drives `glass-core runtime` over its
   documented JSON-RPC 2.0 host protocol and executes every `tool/execute` call
   through the governed router.
-- `crates/glass-dev/src/pi_runtime.rs` is the legacy Pi SDK backend, selected
-  only by `GLASS_AGENT_HARNESS=pi`.
 - `crates/glass-dev/tests/fixtures/fake_glass_core_runtime.py` is an offline
   stand-in for the engine. Adapter tests use it, so they need no provider
   account; they skip when `python3` is unavailable.

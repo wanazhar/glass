@@ -20,8 +20,8 @@ per-kernel grant. Set it to `true` when the allowlist includes mutating tools:
 }
 ```
 
-Bindings use the same `DevelopmentToolRouter` as MCP, Pi, the daemon, and TUI.
-The router rechecks workspace generation and current project revision, trust,
+Bindings use the same `DevelopmentToolRouter` as MCP, the resident engine, the daemon, and TUI.
+The router rechecks workspace generation and current project revision,
 tool availability, mutation authority, confirmation, result size, hooks, graph
 links, and replay events. Kernel code cannot grant itself a capability or
 mutation authority. `mutationAuthority: true` grants the kernel permission to
@@ -83,6 +83,6 @@ Kernels are not operating-system sandboxes. Python executes arbitrary Python
 under the current user. JavaScript `vm` provides a persistent language context,
 not a security boundary. Shell code executes as the current user. SQL is
 in-memory but a Glass binding can exercise only its explicitly granted router
-capabilities. Workspace trust and Glass authority govern access; they do not
-isolate hostile code at the OS level. Use a container, VM, or restricted OS
+capabilities. Glass's workspace routing and capability grants do not isolate
+hostile code at the OS level. Use a container, VM, or restricted OS
 account when stronger isolation is required.

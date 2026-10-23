@@ -1,9 +1,9 @@
 # Measured experiments
 
 Glass experiments compare isolated Git worktrees using recorded results.
-Experiment creation requires a trusted workspace. A child worktree receives
-trust only for the lifetime of its experiment; Glass does not save a new trust
-record for it.
+Experiments are workspace-scoped and record task evidence and outcomes. Glass
+Core owns resident coding tools and their permissions; Glass does not add a
+separate coding-permission gate for experiments.
 
 Use the TUI command palette:
 
@@ -46,8 +46,8 @@ manual numbers as resident measurements.
 Ranking is deterministic. Tests, workflow verification, semantic regressions,
 diagnostics, change size, process crashes, build/startup health, visual
 difference, and LCP contribute fixed default weights. Custom weights have a
-bounded magnitude and can be applied only after an explicit trust decision.
-Agents cannot change weights through the experiment evidence payload.
+bounded magnitude and are configured through workspace controls. Agents
+cannot change weights through the experiment evidence payload.
 
 The More TUI surface shows the current snapshot summary and evidence-derived
 recommendation; use `:experiment list` for an explicit refresh. Selection

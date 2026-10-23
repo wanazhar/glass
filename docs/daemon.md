@@ -176,7 +176,7 @@ and is never presented as success. Daemon shutdown cancels queued/running
 operations and waits for the owned worker before acknowledging shutdown.
 
 If an operation worker panics, Glass marks that operation `indeterminate` and
-reopens the workspace actor from its durable root and trust store, restoring
+reopens the workspace actor from its durable root, restoring
 the resident-agent broker settings. A poisoned operation registry is recovered
 under its mutex; active records become `indeterminate` before the poison flag is
 cleared, so inspection and later operations can continue.

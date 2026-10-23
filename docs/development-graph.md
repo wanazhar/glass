@@ -67,7 +67,7 @@ older evidence stale rather than silently presenting it as current.
 
 ## Interfaces and verification
 
-Pi, MCP, daemon clients, kernels, and the TUI all use the same graph tools. The
+MCP, daemon clients, kernels, and the TUI all use the same graph tools. The
 Graph and Replay TUI surfaces show the same node/edge/event JSON, including on
 compact and phone layouts. The deterministic projection test covers every
 issue-35 resource kind and proves a typed source-to-regression path whose events

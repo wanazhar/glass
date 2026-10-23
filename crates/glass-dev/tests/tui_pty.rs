@@ -312,7 +312,7 @@ impl Drop for FixtureChildGuard {
 
 impl Session {
     fn start(binary: &str, root: &std::path::Path, cols: u16, rows: u16) -> Self {
-        Self::start_with_options(binary, root, cols, rows, "glass-core", None)
+        Self::start_with_options(binary, root, cols, rows, None)
     }
 
     fn start_with_core_binary(
@@ -322,7 +322,7 @@ impl Session {
         rows: u16,
         core_binary: Option<&std::path::Path>,
     ) -> Self {
-        Self::start_with_options(binary, root, cols, rows, "glass-core", core_binary)
+        Self::start_with_options(binary, root, cols, rows, core_binary)
     }
 
     fn start_with_options(
@@ -330,10 +330,9 @@ impl Session {
         root: &std::path::Path,
         cols: u16,
         rows: u16,
-        harness: &str,
         core_binary: Option<&std::path::Path>,
     ) -> Self {
-        Self::start_with_data_home_options(binary, root, cols, rows, harness, core_binary, None)
+        Self::start_with_data_home_options(binary, root, cols, rows, core_binary, None)
     }
 
     fn start_with_data_home_options(
@@ -341,7 +340,6 @@ impl Session {
         root: &std::path::Path,
         cols: u16,
         rows: u16,
-        harness: &str,
         core_binary: Option<&std::path::Path>,
         data_home: Option<&std::path::Path>,
     ) -> Self {
@@ -370,10 +368,7 @@ impl Session {
         };
         assert_eq!(result, 0, "openpty failed");
         let mut command = Command::new(binary);
-        command
-            .current_dir(root)
-            .env("GLASS_AGENT_HARNESS", harness)
-            .env("GLASS_TRUST_STORE_PATH", root.join(".glass/pty-trust.json"));
+        command.current_dir(root);
         if let Some(data_home) = data_home {
             command.env("XDG_DATA_HOME", data_home);
         }
@@ -555,25 +550,16 @@ impl Session {
         self.buffer.clear();
     }
 
-    fn trust_project(&mut self) {
-        self.trust_project_with_probe("trusted project · guarded");
-    }
-
-    fn trust_project_with_probe(&mut self, probe: &str) {
-        if !self.wait_for_visible("I inspect", Duration::from_millis(300)) {
-            self.send(b":trust inspect\r");
-            assert!(
-                self.wait_for_visible("I inspect", Duration::from_secs(5)),
-                "trust inspection surface did not render\n{}",
-                self.output_tail()
-            );
-        }
-        self.send(b"T");
+    fn wait_for_agent_surface(&mut self) {
         assert!(
-            self.wait_for_raw(probe, Duration::from_secs(5)),
-            "project trust did not complete\n{}",
+            self.wait_for("CODING AGENT", Duration::from_secs(5)),
+            "Agent surface did not open\n{}",
             self.output_tail()
         );
+    }
+
+    fn wait_for_agent_surface_with_probe(&mut self, _probe: &str) {
+        self.wait_for_agent_surface();
     }
 
     fn output_tail(&self) -> String {
@@ -992,9 +978,9 @@ fn ctrl_c_requires_confirmation_from_every_input_mode() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "composer navigation frame never rendered"
     );
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(
-        session.wait_for_raw("trusted project · guarded", Duration::from_secs(5)),
+        session.wait_for_raw("CONVERSATION", Duration::from_secs(5)),
         "agent surface never rendered after trust"
     );
     session.send(b"i");
@@ -1058,9 +1044,9 @@ fn app_target_picker_failure_keeps_tui_recoverable() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(
-        session.wait_for("trusted project · guarded", Duration::from_secs(5)),
+        session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust"
     );
     session.send(b"3");
@@ -1094,7 +1080,7 @@ fn agent_enter_and_typing_open_composer_with_offline_core_fixture() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust"
@@ -1125,6 +1111,175 @@ fn agent_enter_and_typing_open_composer_with_offline_core_fixture() {
 }
 
 #[test]
+fn fresh_start_first_composer_send_works_without_implicit_file_context() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let active_file = "active-context-fixture.txt";
+    std::fs::write(
+        root.join(active_file),
+        "fixture content that must never be sent implicitly\n",
+    )
+    .expect("write harmless active-file fixture");
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_core_binary(&binary(), &root, 100, 28, Some(&fake_core));
+
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    // Make a project file the active editor buffer before the first message.
+    // The filename and contents are deliberately harmless; this exercises the
+    // implicit-context regression without touching host credential files.
+    session.send(b"2");
+    assert!(
+        session.wait_for("FILES", Duration::from_secs(5)),
+        "Code surface did not render\n{}",
+        session.output_tail()
+    );
+    session.send(b":open active-context-fixture.txt\r");
+    assert!(
+        session.wait_for("EDITOR", Duration::from_secs(5)),
+        "fixture file did not become the active editor buffer\n{}",
+        session.output_tail()
+    );
+    session.send(b"i");
+    assert!(session.wait_for("INSERT", Duration::from_secs(3)));
+    session.send(b"\x1b");
+    session.settle(Duration::from_millis(150));
+    session.send(b"\x1b");
+    assert!(
+        session.wait_for("FILES", Duration::from_secs(5)),
+        "editor did not return to Code navigation\n{}",
+        session.output_tail()
+    );
+
+    session.clear_output();
+    session.send(b"1");
+    assert!(
+        session.wait_for("CODING AGENT", Duration::from_secs(5)),
+        "Agent surface did not render on return\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for("✓ Ready", Duration::from_secs(5)),
+        "Core readiness was not rendered after returning to Agent\n{}",
+        session.output_tail()
+    );
+    session.send(b"\r");
+    assert!(
+        session.wait_for("Message on Agent", Duration::from_secs(5)),
+        "composer did not open for the first fresh-workspace message\n{}",
+        session.output_tail()
+    );
+    session.send_slowly(b"fresh startup first send", Duration::from_millis(35));
+    session.send(b"\r");
+    assert!(
+        session.wait_for("handled fresh startup first send", Duration::from_secs(12)),
+        "fresh first message did not settle through Core\n{}",
+        session.output_tail()
+    );
+
+    let requests = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+        .expect("fake Core request log is present");
+    let prompt_request = requests
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|request| request["method"] == "turn/prompt")
+        .expect("fake Core received the first turn/prompt");
+    let params = &prompt_request["params"];
+    assert_eq!(params["text"], "fresh startup first send");
+    assert!(
+        params.get("context").is_none(),
+        "ordinary first messages must not receive implicit active-file/project context: {params}"
+    );
+    let serialized_request = serde_json::to_string(params).unwrap();
+    assert!(!serialized_request.contains(active_file));
+    assert!(!serialized_request.contains("fixture content that must never be sent implicitly"));
+
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn first_message_queues_while_core_is_starting() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    let fake_core = fake_core_binary_with_mode("slow-start");
+    let mut session = Session::start_with_core_binary(&binary(), &root, 100, 28, Some(&fake_core));
+
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    assert!(
+        session.wait_for("START HERE", Duration::from_secs(5)),
+        "fresh Agent did not render its initial screen\n{}",
+        session.output_tail()
+    );
+    session.send(b"\r");
+    assert!(
+        session.wait_for("Message on Agent", Duration::from_secs(3)),
+        "composer could not open while Core was starting\n{}",
+        session.output_tail()
+    );
+    let prompt = "first message while core starts";
+    session.send_slowly(prompt.as_bytes(), Duration::from_millis(25));
+    assert!(
+        session.wait_for_composer_text(prompt, Duration::from_secs(3)),
+        "first prompt was not retained while Core was starting\n{}",
+        session.output_tail()
+    );
+    session.send(b"\r");
+    let handshake_deadline = Instant::now() + Duration::from_secs(5);
+    while !fixture_state.join("e2e-core-handshake-started").exists()
+        && Instant::now() < handshake_deadline
+    {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        fixture_state.join("e2e-core-handshake-started").exists(),
+        "fake Core did not enter its delayed initialization after the first send"
+    );
+    let registry_path = fixture_state.join("threads/registry.json");
+    let settlement_deadline = Instant::now() + Duration::from_secs(30);
+    let mut settled = false;
+    while Instant::now() < settlement_deadline {
+        if let Ok(registry) = std::fs::read(&registry_path).and_then(|bytes| {
+            serde_json::from_slice::<serde_json::Value>(&bytes).map_err(std::io::Error::other)
+        }) {
+            settled = registry["threads"][0]["sendAttempts"][0]["status"] == "settled";
+            if settled {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        settled,
+        "queued first prompt did not settle after Core became ready\n{}",
+        session.output_tail()
+    );
+
+    let requests = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+        .expect("fake Core request log is present");
+    let prompt_request = requests
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|request| request["method"] == "turn/prompt")
+        .expect("fake Core received the first turn/prompt");
+    assert_eq!(prompt_request["params"]["text"], prompt);
+
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;
@@ -1136,7 +1291,7 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
     let fake_core = fake_core_binary(&root);
     let mut session = Session::start_with_core_binary(&binary(), &root, 80, 24, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
 
     session.send(b":agent spawn assistant offline task\r");
@@ -1268,7 +1423,7 @@ fn three_fake_core_tasks_complete_without_stealing_selected_thread() {
     let fake_core = fake_core_binary(&root);
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
 
     for (role, task, expected_id) in [
@@ -1652,7 +1807,7 @@ fn task_scheduler_threads_keep_task_identity_drafts_and_background_focus() {
     let fake_core = fake_core_binary(&root);
     let mut session = Session::start_with_core_binary(&binary(), &root, 120, 50, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
 
     for (title, tag) in [
@@ -1983,7 +2138,7 @@ fn follow_up_queue_edits_persist_without_automatic_dispatch() {
     let fake_core = fake_core_binary(&root);
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
     session.send(b":agent spawn queue-owner queue persistence\r");
     assert!(
@@ -2120,12 +2275,11 @@ fn task_thread_queue_restart_requires_explicit_core_recovery() {
         &root,
         100,
         30,
-        "glass-core",
         Some(&fake_core),
         Some(&data_home),
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
 
     let task_spec = serde_json::json!({
@@ -2224,7 +2378,6 @@ fn task_thread_queue_restart_requires_explicit_core_recovery() {
         &root,
         100,
         30,
-        "glass-core",
         Some(&fake_core),
         Some(&data_home),
     );
@@ -2503,12 +2656,11 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         &root,
         100,
         30,
-        "glass-core",
         Some(&wrapper),
         Some(&data_home),
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
     session.send(b":agent spawn assistant live provider smoke\r");
     assert!(
@@ -2803,7 +2955,7 @@ fn active_run_queue_steer_reaches_its_run_and_settles_truthfully() {
     let fixture_guard = FixtureChildGuard::new(fixture_state.join("e2e-core-active-steer-pid"));
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
     session.send(b":agent spawn queue-owner active-run-queue-target\r");
     assert!(
@@ -3065,7 +3217,7 @@ fn ctrl_x_waits_for_core_cancel_settlement_and_keeps_exact_attempt_terminal() {
     let fixture_guard = FixtureChildGuard::new(fixture_state.join("e2e-core-cancel-gated-pid"));
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
     session.send(b":agent spawn cancel-owner cancel-gated-target\r");
     assert!(
@@ -3155,7 +3307,7 @@ fn follow_up_queue_old_run_retarget_and_review_retry_are_explicit() {
     let fake_core = fake_core_binary(&root);
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
     session.send(b":agent spawn queue-owner retarget-and-review\r");
     assert!(
@@ -3438,28 +3590,6 @@ fn follow_up_queue_old_run_retarget_and_review_retry_are_explicit() {
 }
 
 #[test]
-fn agent_update_route_requires_confirmation_in_tui() {
-    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
-        return;
-    }
-    let root = workspace_root();
-    let mut session = Session::start_with_options(&binary(), &root, 118, 32, "pi", None);
-    assert!(
-        session.wait_for("GLASS", Duration::from_secs(8)),
-        "first frame never rendered"
-    );
-    session.send(b":agent update\r");
-    assert!(
-        session.wait_for("CONFIRMATION", Duration::from_secs(5)),
-        "Pi update route did not open confirmation\n{}",
-        session.output_tail()
-    );
-    session.send(b"\x1b");
-    session.settle(Duration::from_millis(300));
-    session.kill();
-}
-
-#[test]
 fn external_harness_routes_stay_inside_tui_until_confirmed() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;
@@ -3470,7 +3600,7 @@ fn external_harness_routes_stay_inside_tui_until_confirmed() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust\n{}",
@@ -3513,15 +3643,14 @@ fn attention_inbox_keyboard_journey_keeps_composer_and_opens_proposal_context() 
             &root,
             cols,
             rows,
-            "glass-core",
             Some(&fake_core),
             Some(&data_home),
         );
         assert!(session.wait_for("GLASS", Duration::from_secs(8)));
         if cols <= 50 {
-            session.trust_project_with_probe("trusted project");
+            session.wait_for_agent_surface_with_probe("trusted project");
         } else {
-            session.trust_project();
+            session.wait_for_agent_surface();
         }
         assert!(
             session.wait_for("✓ Ready", Duration::from_secs(8)),
@@ -3609,15 +3738,14 @@ fn attention_review_keyboard_journey_preserves_uncertain_send_and_exits_cleanly(
             &root,
             cols,
             rows,
-            "glass-core",
             Some(&fake_core),
             Some(&data_home),
         );
         assert!(session.wait_for("GLASS", Duration::from_secs(8)));
         if cols <= 50 {
-            session.trust_project_with_probe("trusted project");
+            session.wait_for_agent_surface_with_probe("trusted project");
         } else {
-            session.trust_project();
+            session.wait_for_agent_surface();
         }
         assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
 
@@ -3714,9 +3842,9 @@ fn project_thread_picker_is_discoverable_at_desktop_and_compact_sizes() {
             Session::start_with_core_binary(&binary(), &root, cols, rows, Some(&fake_core));
         assert!(session.wait_for("GLASS", Duration::from_secs(8)));
         if cols <= 50 {
-            session.trust_project_with_probe("trusted project");
+            session.wait_for_agent_surface_with_probe("trusted project");
         } else {
-            session.trust_project();
+            session.wait_for_agent_surface();
         }
         assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
 
@@ -3776,7 +3904,7 @@ fn live_core_response_crash_reopens_as_uncertain_without_replay() {
     let prompt = "live-response-crash-window";
     let mut session = Session::start_with_core_binary(&binary(), &root, 80, 24, Some(&fake_core));
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
     session.send(b":agent spawn crash-owner recovery check\r");
     assert!(
@@ -3830,7 +3958,7 @@ fn live_core_response_crash_reopens_as_uncertain_without_replay() {
 
     let mut reopened = Session::start_with_core_binary(&binary(), &root, 80, 24, Some(&fake_core));
     assert!(reopened.wait_for("GLASS", Duration::from_secs(8)));
-    reopened.trust_project();
+    reopened.wait_for_agent_surface();
     assert!(reopened.wait_for("✓ Ready", Duration::from_secs(8)));
     send_ctrl_shift_a(&mut reopened);
     assert!(reopened.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
@@ -3896,15 +4024,14 @@ fn uncertain_send_opens_attention_without_replaying_after_restart() {
             &root,
             cols,
             rows,
-            "glass-core",
             Some(&fake_core),
             Some(&data_home),
         );
         assert!(session.wait_for("GLASS", Duration::from_secs(8)));
         if cols <= 50 {
-            session.trust_project_with_probe("trusted project");
+            session.wait_for_agent_surface_with_probe("trusted project");
         } else {
-            session.trust_project();
+            session.wait_for_agent_surface();
         }
         assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
         send_ctrl_shift_a(&mut session);
@@ -3987,12 +4114,11 @@ fn uncertain_send_retry_requires_confirmation_and_reuses_client_message_id() {
         &root,
         80,
         24,
-        "glass-core",
         Some(&fake_core),
         Some(&data_home),
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
     send_ctrl_shift_a(&mut session);
     assert!(session.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
@@ -4127,12 +4253,11 @@ fn failed_core_turn_is_reviewable_and_retry_requires_confirmation() {
         &root,
         80,
         24,
-        "glass-core",
         Some(&fake_core),
         Some(&data_home),
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
     send_ctrl_shift_a(&mut session);
     assert!(session.wait_for("ATTENTION INBOX", Duration::from_secs(5)));
@@ -4244,12 +4369,11 @@ fn failed_core_response_is_visible_and_can_be_retried_explicitly() {
         &root,
         100,
         30,
-        "glass-core",
         Some(&fake_core),
         Some(&data_home),
     );
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
     session.send(b":agent spawn assistant report a safe test failure\r");
     assert!(session.wait_for("Spawned agent-0001", Duration::from_secs(8)));
@@ -4314,10 +4438,10 @@ fn palette_and_help_survive_real_key_sequences() {
     }
     let root = workspace_root();
     let mut session = Session::start(&binary(), &root, 118, 32);
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(
-        session.wait_for_raw("trusted project · guarded", Duration::from_secs(5)),
-        "workspace trust did not complete"
+        session.wait_for_raw("CONVERSATION", Duration::from_secs(5)),
+        "Agent surface did not open"
     );
     session.send(b":");
     assert!(
@@ -4407,7 +4531,7 @@ fn desktop_surface_tabs_render_every_workbench() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust"
@@ -4449,7 +4573,7 @@ fn phone_surface_tabs_keep_the_compact_workbench_reachable() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first phone frame never rendered"
     );
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after phone trust"
@@ -4488,7 +4612,7 @@ fn arrow_keys_cycle_surfaces_without_numeric_shortcuts() {
         "first frame never rendered"
     );
     session.settle(Duration::from_millis(600));
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust"
@@ -4526,7 +4650,7 @@ fn compact_surface_tabs_keep_primary_workbenches_reachable() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first compact frame never rendered"
     );
-    session.trust_project();
+    session.wait_for_agent_surface();
     for (key, marker) in [
         (b'2', "FILES"),
         (b'3', "VISUAL PLANE"),
@@ -4563,7 +4687,7 @@ fn launcher_routes_and_surface_actions_remain_interactive() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(
         session.wait_for("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust"
@@ -4634,9 +4758,9 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(
-        session.wait_for_raw("trusted project · guarded", Duration::from_secs(5)),
+        session.wait_for_raw("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust"
     );
     session.send(b"i");
@@ -4764,7 +4888,7 @@ fn git_file_selection_opens_the_focused_diff_in_place() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.trust_project();
+    session.wait_for_agent_surface();
     assert!(
         session.wait_for_visible("CONVERSATION", Duration::from_secs(5)),
         "Agent surface never rendered after trust\n{}",
@@ -4810,7 +4934,7 @@ fn code_editor_accepts_and_saves_typed_text_through_pty() {
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.trust_project();
+    session.wait_for_agent_surface();
     session.send(b"2");
     assert!(
         session.wait_for_visible("FILES", Duration::from_secs(5)),
@@ -4851,13 +4975,13 @@ fn git_stage_and_commit_work_in_an_isolated_local_repository() {
     }
     let root = git_workspace_root();
     std::fs::write(root.join(".git/info/exclude"), ".glass/\n")
-        .expect("exclude the fixture trust store from Git changes");
+        .expect("exclude Glass runtime state from Git changes");
     let mut session = Session::start(&binary(), &root, 110, 30);
     assert!(
         session.wait_for("GLASS", Duration::from_secs(8)),
         "first frame never rendered"
     );
-    session.trust_project();
+    session.wait_for_agent_surface();
     session.send(b"6");
     assert!(
         session.wait_for_visible("a-first.txt", Duration::from_secs(8)),

@@ -18,13 +18,12 @@ pub(super) enum ActiveOverlay {
     AgentApproval = 9,
     MutationConfirmation = 10,
     FullscreenEditor = 11,
-    PiSlashCommand = 12,
-    Composer = 13,
-    CommandPalette = 14,
-    BrowserRecovery = 15,
-    AttentionInbox = 16,
-    ThreadPicker = 17,
-    SendAttemptRetryConfirmation = 18,
+    Composer = 12,
+    CommandPalette = 13,
+    BrowserRecovery = 14,
+    AttentionInbox = 15,
+    ThreadPicker = 16,
+    SendAttemptRetryConfirmation = 17,
 }
 
 impl ActiveOverlay {
@@ -69,8 +68,6 @@ pub(super) fn active_overlay(state: &DevTuiState) -> Option<ActiveOverlay> {
         Some(ActiveOverlay::MutationConfirmation)
     } else if state.code_edit_mode && !state.composer_mode {
         Some(ActiveOverlay::FullscreenEditor)
-    } else if state.pi_command_mode {
-        Some(ActiveOverlay::PiSlashCommand)
     } else if state.composer_mode {
         Some(ActiveOverlay::Composer)
     } else if state.command_mode {
@@ -104,33 +101,6 @@ mod tests {
     }
 
     #[test]
-    fn overlay_resolver_uses_documented_priority_for_conflicting_flags() {
-        let (mut state, root) = state();
-        state.code_edit_mode = true;
-        state.pi_command_mode = true;
-        state.file_picker_open = true;
-        state.session_picker_open = true;
-        state.command_mode = true;
-        assert_eq!(active_overlay(&state), Some(ActiveOverlay::FilePicker));
-
-        state.file_picker_open = false;
-        assert_eq!(active_overlay(&state), Some(ActiveOverlay::SessionPicker));
-
-        state.session_picker_open = false;
-        state.help_open = true;
-        state.menu_open = true;
-        assert_eq!(active_overlay(&state), Some(ActiveOverlay::Help));
-
-        state.quit_confirmation = true;
-        assert_eq!(
-            active_overlay(&state),
-            Some(ActiveOverlay::QuitConfirmation)
-        );
-        drop(state);
-        std::fs::remove_dir_all(root).expect("remove test workspace");
-    }
-
-    #[test]
     fn composer_owns_input_over_the_editor_while_editor_exit_prompt_stays_topmost() {
         let (mut state, root) = state();
         state.code_edit_mode = true;
@@ -161,9 +131,6 @@ mod tests {
         state.composer_mode = true;
         assert_eq!(active_overlay(&state), Some(ActiveOverlay::Composer));
         state.composer_mode = false;
-        state.pi_command_mode = true;
-        assert_eq!(active_overlay(&state), Some(ActiveOverlay::PiSlashCommand));
-        state.pi_command_mode = false;
         state.code_edit_mode = true;
         assert_eq!(
             active_overlay(&state),

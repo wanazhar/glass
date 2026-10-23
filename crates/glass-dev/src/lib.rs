@@ -3,9 +3,9 @@
 //! This crate owns the resident software-development workspace used by the
 //! `glass` product. Browser intelligence remains provided by the one-way
 //! `glass-browser` dependency.
-//! Resident agents use the standalone `glass-core` engine by default. The
-//! workspace and governed tool router remain owned by Glass Dev; the legacy
-//! Pi SDK backend is available when `GLASS_AGENT_HARNESS=pi` is set.
+//! Resident agents use the standalone `glass-core` engine. Glass owns the
+//! workspace interface and its browser, Git, and review integrations; Core
+//! owns provider connections and native coding tools.
 //!
 //! The interactive TUI separates terminal rendering from workspace work. A
 //! snapshot worker hydrates resident projections and executes governed browser,
@@ -14,25 +14,21 @@
 //! terminal without waiting for an active bounded job.
 //!
 //! Desktop destinations are Agent, Code, App, Terminal, Tasks, Git, Debug, and
-//! More. The shared composer dock is available on every surface. Per-turn
-//! [`AgentTurnMode`] is Ask, Plan, or Agent (default Agent). Ask and Plan are
-//! fail-closed for mutations. [`SessionTodoList`] is the workspace-local Agent
-//! checklist persisted at `.glass/todos/session.json`; it is not the overnight
-//! task DAG.
+//! More. The shared composer dock is available on every surface.
+//! [`SessionTodoList`] is the workspace-local Agent checklist persisted at
+//! `.glass/todos/session.json`; it is not the overnight task DAG.
 //!
 //! ## Public API
 //!
-//! [`DevelopmentWorkspace`] owns the resident project runtime and its trust
-//! boundary. [`SharedDevelopmentWorkspace`] is the thread-safe handle used by
+//! [`DevelopmentWorkspace`] owns the Glass integration workspace and its
+//! project-configuration boundary. [`SharedDevelopmentWorkspace`] is the thread-safe handle used by
 //! the TUI, daemon, MCP, and agent services. [`CoreReadiness`] and
-//! [`CoreRuntimeOptions`] describe the default Glass Core runtime. The
-//! [`pi_runtime`] module documents the optional legacy Pi backend.
+//! [`CoreRuntimeOptions`] describe the resident Glass Core runtime.
 //!
 //! Raw process and resident-service controls are implementation details. The
-//! supported public mutation route is [`DevelopmentWorkspace::execute_tool`]
-//! with a [`tools::DevelopmentToolContext`] carrying the authority and confirmation
-//! factors. Workspace-local UI dispatchers also remain internal so callers
-//! cannot mint unrestricted execution contexts through a convenience API.
+//! supported public integration mutation route is [`DevelopmentWorkspace::execute_tool`]
+//! with a [`tools::DevelopmentToolContext`] carrying operation-specific
+//! confirmation. Glass Core owns native coding tools and their permissions.
 //!
 //! ```compile_fail
 //! let _ = glass_dev::agents::AgentRegistry::new(".");
@@ -116,13 +112,12 @@
 //!
 //! ## Modules
 //!
-//! [`resident_harness`] selects the resident agent engine and defaults to
-//! [`core_runtime`], the `glass-core` host runtime. [`agents`] owns resident
+//! [`resident_harness`] adapts the sole resident engine, [`core_runtime`], the
+//! `glass-core` host runtime. [`agents`] owns resident
 //! agent scheduling and evidence. [`browser`] provides the development browser
 //! service. [`development`] contains files, editors, processes, language
-//! services, and project execution. [`tools`] and [`trust`] route governed
-//! operations, while [`tui`] and [`workspace`] connect those services to the
-//! interactive product.
+//! services, and project execution. [`tools`] route Glass integrations, while
+//! [`tui`] and [`workspace`] connect those services to the interactive product.
 
 /// Resident agent scheduling, evidence, and lifecycle control.
 pub mod agents;
@@ -160,11 +155,6 @@ pub mod kernels;
 pub mod lsp;
 /// MCP server and tool integration.
 pub mod mcp;
-/// Managed Pi runtime readiness and sessions.
-///
-/// Pi is the legacy resident backend. New sessions run on [`core_runtime`]
-/// through [`resident_harness`] unless `GLASS_AGENT_HARNESS` selects Pi.
-pub mod pi_runtime;
 /// Resident agent engine selection, options, and readiness.
 pub mod resident_harness;
 /// Task scheduling, evidence, and verification requirements.
@@ -177,8 +167,6 @@ pub(crate) mod thread_store;
 pub mod todos;
 /// Governed development-tool routing.
 pub mod tools;
-/// Workspace trust decisions and persistence.
-pub mod trust;
 /// Interactive Glass Dev terminal application.
 pub mod tui;
 /// Workspace ownership and shared handles.
@@ -200,7 +188,7 @@ pub use customization::{Customization, GlassConfig, Skill};
 /// Experiment management and comparison types.
 pub use experiments::{
     ExperimentComparison, ExperimentEvidence, ExperimentRanking, ExperimentSnapshot,
-    ExperimentState, ExperimentTrustPolicy, ExperimentWeights,
+    ExperimentState, ExperimentWeights,
 };
 /// Development intelligence graph and replay types.
 pub use intelligence::{
@@ -209,14 +197,10 @@ pub use intelligence::{
 };
 /// Language-service configuration and event types.
 pub use lsp::{LanguageServerConfig, LanguageServiceEvent};
-/// Legacy Pi readiness and managed-session request types.
-pub use pi_runtime::{
-    PINNED_PI_SDK_VERSION, PiReadiness, PiReadinessComponent, PiReadinessState, PiSessionRequest,
-};
 /// Resident harness identity, options, and readiness.
 pub use resident_harness::{
-    AgentToolExecutor, HARNESS_ENV, ResidentHarnessKind, ResidentHarnessOptions, ResidentReadiness,
-    harness_kind_from_id, resident_readiness,
+    AgentToolExecutor, ResidentHarnessKind, ResidentHarnessOptions, ResidentReadiness,
+    ResidentSessionRequest, harness_kind_from_id, resident_readiness,
 };
 /// Task scheduling, retry, evidence, and verification types.
 pub use tasks::{
@@ -227,10 +211,8 @@ pub use tasks::{
 pub use todos::{SessionTodo, SessionTodoList, TodoStatus};
 /// Context carrying host-granted authority and confirmation for tool execution.
 pub use tools::DevelopmentToolContext;
-/// Workspace trust identities, decisions, and persistence.
-pub use trust::{LocalTrustDecision, WorkspaceIdentity, WorkspaceTrust, WorkspaceTrustStore};
-/// Shared workspace handle and per-turn Ask, Plan, or Agent composer mode.
-pub use workspace::{AgentTurnMode, DevelopmentWorkspace, SharedDevelopmentWorkspace};
+/// Shared workspace handle.
+pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};
 
 /// Dispatch the full Glass Development Environment.
 ///
@@ -241,7 +223,6 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         let policy = glass_browser::cli::runner::policy_from_cli(&cli)?;
         let backend = std::sync::Arc::new(mcp::DevelopmentMcpBackend::open_with_browser_policy(
             std::env::current_dir()?,
-            cli.yolo,
             policy,
         )?);
         return glass_browser::mcp::server::run_mcp_server_with_backend(&cli, backend).await;
@@ -253,20 +234,18 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 | glass_browser::cli::args::AgentCommand::ToolFile { .. }
         )
     {
-        let result = dispatch_external_tool(action, cli.yolo).await?;
+        let result = dispatch_external_tool(action).await?;
         println!("{}", serde_json::to_string_pretty(&result)?);
         return Ok(());
     }
     if let Some(glass_browser::cli::args::Commands::Agent { action }) = &cli.command {
-        enforce_legacy_development_trust(&cli)?;
-        return cli::dispatch_agent(action, cli.yolo);
+        return cli::dispatch_agent(action);
     }
     if let Some(glass_browser::cli::args::Commands::Harness { action }) = &cli.command {
-        enforce_legacy_development_trust(&cli)?;
         return cli::dispatch_harness(action);
     }
     if let Some(glass_browser::cli::args::Commands::Daemon { action }) = &cli.command {
-        return daemon::dispatch(action, cli.yolo).await;
+        return daemon::dispatch(action).await;
     }
     if let Some(glass_browser::cli::args::Commands::Project {
         action,
@@ -274,8 +253,7 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         yes,
     }) = &cli.command
     {
-        enforce_legacy_development_trust(&cli)?;
-        return cli::dispatch_project(action, *allow_mutation || cli.yolo, *yes || cli.yolo);
+        return cli::dispatch_project(action, *allow_mutation, *yes);
     }
     if cli.prompt.is_none()
         && matches!(
@@ -293,7 +271,6 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     {
         return glass_browser::cli::runner::dispatch(cli).await;
     }
-    enforce_legacy_development_trust(&cli)?;
     glass_browser::cli::runner::dispatch(cli).await
 }
 
@@ -311,7 +288,6 @@ fn run_development_tui(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         cli.tui_layout,
         visual_options,
         browser_start_defaults,
-        cli.yolo,
         policy,
     )
 }
@@ -349,121 +325,8 @@ fn parse_tui_viewport(value: &str) -> Result<(u32, u32), Box<dyn std::error::Err
     Ok((width, height))
 }
 
-fn enforce_legacy_development_trust(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    use glass_browser::cli::args::{
-        AgentCommand, AgentHarness, Commands, HarnessCommand, ProjectCommand,
-    };
-
-    if cli.yolo {
-        return Ok(());
-    }
-
-    let (root, safe_static) = match cli.command.as_ref() {
-        Some(Commands::Project { action, .. }) => {
-            let root = match action {
-                ProjectCommand::Inspect { root }
-                | ProjectCommand::Files { root }
-                | ProjectCommand::Search { root, .. }
-                | ProjectCommand::Read { root, .. }
-                | ProjectCommand::Edit { root, .. }
-                | ProjectCommand::Mkdir { root, .. }
-                | ProjectCommand::Rename { root, .. }
-                | ProjectCommand::Delete { root, .. }
-                | ProjectCommand::Diagnostics { root, .. }
-                | ProjectCommand::Run { root, .. }
-                | ProjectCommand::Test { root }
-                | ProjectCommand::Lint { root }
-                | ProjectCommand::Process { root, .. }
-                | ProjectCommand::Diff { root }
-                | ProjectCommand::Link { root, .. }
-                | ProjectCommand::Graph { root, .. }
-                | ProjectCommand::Breakpoint { root, .. }
-                | ProjectCommand::Timeline { root }
-                | ProjectCommand::Replay { root, .. }
-                | ProjectCommand::Neovim { root, .. }
-                | ProjectCommand::Experiment { root, .. }
-                | ProjectCommand::Attach { root, .. }
-                | ProjectCommand::Git { root, .. }
-                | ProjectCommand::Github { root, .. } => root,
-            };
-            let safe = matches!(
-                action,
-                ProjectCommand::Inspect { .. }
-                    | ProjectCommand::Files { .. }
-                    | ProjectCommand::Search { .. }
-                    | ProjectCommand::Read { .. }
-                    | ProjectCommand::Diff { .. }
-                    | ProjectCommand::Graph {
-                        action: glass_browser::cli::args::ProjectGraphCommand::Entity { .. }
-                            | glass_browser::cli::args::ProjectGraphCommand::Source { .. },
-                        ..
-                    }
-                    | ProjectCommand::Timeline { .. }
-                    | ProjectCommand::Replay { .. }
-                    | ProjectCommand::Git {
-                        action: glass_browser::cli::args::ProjectGitCommand::Status
-                            | glass_browser::cli::args::ProjectGitCommand::Diff { .. }
-                            | glass_browser::cli::args::ProjectGitCommand::Branches
-                            | glass_browser::cli::args::ProjectGitCommand::StashList
-                            | glass_browser::cli::args::ProjectGitCommand::WorktreeList,
-                        ..
-                    }
-                    | ProjectCommand::Github {
-                        action: glass_browser::cli::args::ProjectGithubCommand::Review,
-                        ..
-                    }
-            );
-            (root, safe)
-        }
-        Some(Commands::Harness { action }) => match action {
-            HarnessCommand::List => return Ok(()),
-            HarnessCommand::Start { root, .. } => (root, false),
-        },
-        Some(Commands::Agent { action }) => {
-            let (root, safe) = match action {
-                AgentCommand::Doctor | AgentCommand::Setup { .. } | AgentCommand::Status => {
-                    return Ok(());
-                }
-                AgentCommand::Hello { root, harness } => {
-                    (root, matches!(harness, AgentHarness::Local))
-                }
-                AgentCommand::Prompt { root, harness, .. } => {
-                    (root, matches!(harness, AgentHarness::Local))
-                }
-                AgentCommand::Delegate { root, sandbox, .. } => (
-                    root,
-                    matches!(
-                        sandbox,
-                        glass_browser::cli::args::ExternalAgentSandbox::ReadOnly
-                    ),
-                ),
-                AgentCommand::Tool { .. } | AgentCommand::ToolFile { .. } => return Ok(()),
-                AgentCommand::Steer { root, .. }
-                | AgentCommand::FollowUp { root, .. }
-                | AgentCommand::Models { root }
-                | AgentCommand::SetModel { root, .. }
-                | AgentCommand::Thinking { root, .. }
-                | AgentCommand::Abort { root }
-                | AgentCommand::NewSession { root } => (root, false),
-            };
-            (root, safe)
-        }
-        _ => return Ok(()),
-    };
-    let workspace = DevelopmentWorkspace::open(root)?;
-    if workspace.trust() == WorkspaceTrust::Untrusted && !safe_static {
-        return Err(format!(
-            "repository-controlled development execution is blocked for {}; open the TUI to inspect and trust this workspace",
-            workspace.root().display()
-        )
-        .into());
-    }
-    Ok(())
-}
-
 async fn dispatch_external_tool(
     action: &glass_browser::cli::args::AgentCommand,
-    unrestricted: bool,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     use crate::development::{Actor, ToolAuthorization, ToolCall};
     use glass_browser::cli::args::AgentCommand;
@@ -477,8 +340,8 @@ async fn dispatch_external_tool(
         } => (
             serde_json::from_str::<ToolCall>(call)?,
             root,
-            *allow_mutation || unrestricted,
-            *yes || unrestricted,
+            *allow_mutation,
+            *yes,
         ),
         AgentCommand::ToolFile {
             path,
@@ -486,13 +349,7 @@ async fn dispatch_external_tool(
             allow_mutation,
             yes,
         } if std::env::var_os("GLASS_DEV_DAEMON_SOCKET").is_some() => {
-            return daemon::forward_resident_tool_file(
-                path,
-                root,
-                *allow_mutation || unrestricted,
-                *yes || unrestricted,
-            )
-            .await;
+            return daemon::forward_resident_tool_file(path, root, *allow_mutation, *yes).await;
         }
         AgentCommand::ToolFile {
             path,
@@ -502,21 +359,17 @@ async fn dispatch_external_tool(
         } => (
             daemon::read_private_tool_call(path)?,
             root,
-            *allow_mutation || unrestricted,
-            *yes || unrestricted,
+            *allow_mutation,
+            *yes,
         ),
         _ => return Err("expected an external agent tool action".into()),
     };
     let mut workspace = DevelopmentWorkspace::open(root)?;
-    if unrestricted {
-        workspace.enable_unrestricted_execution()?;
-    }
     let context = DevelopmentToolContext {
         authorization: ToolAuthorization {
             actor: Actor::external("cli"),
             allow_mutation,
             confirmed,
-            unrestricted: allow_mutation && confirmed,
         },
         initiator: None,
         expected_generation: workspace.generation(),
@@ -574,7 +427,7 @@ mod authorization_boundary_tests {
     }
 
     #[test]
-    fn cli_agent_tool_uses_workspace_router_trust_gate() {
+    fn cli_agent_tool_writes_after_explicit_authorization() {
         let root = std::env::temp_dir().join(format!(
             "glass-cli-agent-tool-{}-{}",
             std::process::id(),
@@ -611,15 +464,13 @@ mod authorization_boundary_tests {
                     .enable_all()
                     .build()
                     .unwrap();
-                let error = runtime.block_on(dispatch(cli)).expect_err(
-                    "CLI tools must pass through the shared workspace authorization route",
+                runtime
+                    .block_on(dispatch(cli))
+                    .expect("unfamiliar workspaces do not block Glass tool execution");
+                assert_eq!(
+                    std::fs::read_to_string(root.join("blocked.txt")).unwrap(),
+                    "blocked"
                 );
-                assert!(
-                    error
-                        .to_string()
-                        .contains("blocked until the workspace is trusted")
-                );
-                assert!(!root.join("blocked.txt").exists());
                 std::fs::remove_dir_all(root).unwrap();
             })
             .unwrap()

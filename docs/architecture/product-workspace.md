@@ -6,7 +6,7 @@ Status: Current 0.3.14 source behavior
 
 Glass Dev is the development product; `glass-browser` is an independently
 installable browser product. Glass Dev's `DevelopmentWorkspace` is the sole
-authority for project identity, trust, files, editor buffers, processes, Git,
+authority for project identity, files, editor buffers, processes, Git,
 LSP/DAP, tasks, event history, agent sessions, and the resident browser service.
 `DevTuiState` caches projections for rendering but does not become a second
 owner.
@@ -20,10 +20,10 @@ DevelopmentWorkspace (resident authority)
 │  ├─ Git, source/runtime graph, timeline, LSP
 │  └─ ProcessManager / PTYs
 ├─ agent workers
-│  └─ Glass Core by default; Pi is an explicit legacy backend
+│  └─ Glass Core resident runtime and native coding tools
 ├─ BrowserService → one BrowserWorker → optional browser runtime session
 ├─ task/workflow, kernel, debugger, experiment, replay state
-└─ trust, policy, customization, GitHub configuration
+└─ policy, customization, GitHub configuration
              │
              v
        DevTuiState / DisplaySnapshot
@@ -40,7 +40,7 @@ contracts.
 ## Product destinations
 
 Desktop exposes eight destinations; phone exposes five. Advanced runtime,
-workspace, replay, kernel, experiment, customization, and trust details remain
+workspace, replay, kernel, experiment, and customization details remain
 in More or the contextual command palette.
 
 ```text
@@ -48,7 +48,7 @@ Desktop: Agent · Code · App · Terminal · Tasks · Git · Debug · More
 Phone:   Agent · Code · App · Tasks · More
 
 Desktop
-┌ GLASS · project · branch · trust/authority ────────────────────────────────┐
+┌ GLASS · project · branch ──────────────────────────────────────────────────┐
 │ FILES / TASKS       PRIMARY SURFACE                 CONTEXT / EVIDENCE      │
 │ project tree        Agent / Code / App / Terminal   selected symbol, event, │
 │ and changes        Tasks / Git / Debug / More       browser entity, action │
@@ -67,17 +67,15 @@ Phone
 ```
 
 The phone mode is a geometry-responsive single-pane TUI, not a separate touch
-authority model. Every destination retains independent scroll state. Trust and
-confirmation/recovery overlays own focus until accepted, denied, or dismissed.
+authority model. Every destination retains independent scroll state.
+Confirmation and recovery overlays own focus until accepted, denied, or dismissed.
 
 ## Startup and resident lifecycle
 
-Opening a project detects project metadata without executing a detected command.
-The workspace starts untrusted unless its filesystem identity matches the local
-trust store. Static inspection, Git metadata, configuration review, and manual
-browser use remain possible. Project hooks, configured tools and tests,
-language-server overrides, kernels, and experiments wait for a trust decision.
-Resident agents use Glass Core and follow the workspace authority rules.
+Opening a project detects metadata without executing a detected command and
+enters the workspace directly. Glass Core owns native coding tools and their
+permissions. Glass owns workspace, Git, browser, and other integrations, which
+retain their revision, path, lease, and operation-specific confirmation checks.
 
 Glass renders an initial cockpit before the full refresh. `SnapshotWorker` then
 refreshes resident projections, agent conversation, browser screenshots, and
@@ -154,7 +152,7 @@ comments/proposals; it does not substitute an on-disk read for the human's
 buffer. This editor context and browser context can coexist in one prompt, but
 their revisions and authorities are independent.
 
-## Agent, trust, and mutation authority
+## Agent and integration authority
 
 The Agent composer sends messages to the current resident conversation without
 requiring an agent ID. `glass agent doctor` and `glass agent status` report
@@ -166,14 +164,14 @@ available through explicit inspection and export commands; it is not the
 default interface.
 
 ```text
-untrusted / engine not ready ──> inspect or configure ──> trusted + ready
-                                                       │
-                         ┌─────────────────────────────┴───────────────────────┐
-                         │ human Code edits       Agent proposes browser/editor │
-                         │ actor + confirmation   actor + revision + lease      │
-                         └─────────────────────────────┬───────────────────────┘
-                                                       v
-                                             accepted / rejected / stale
+workspace opens ──> Core readiness and project views load
+                               │
+              ┌────────────────┴─────────────────┐
+              │ Core owns coding permissions    │
+              │ Glass owns integrations        │
+              └────────────────┬─────────────────┘
+                               v
+                  actor + revision + confirmation
 ```
 
 A browser selected entity may make the browser owner `Agent`; `H`/`browser
@@ -194,7 +192,7 @@ replaying against a new page.
 
 ## Tests and limits
 
-Source tests exercise destination and responsive rendering, trust/onboarding,
+Source tests exercise destination and responsive rendering, workspace startup,
 Agent context, shared editor selection and collaboration, stale proposals,
 checkpoint restore, App semantic selection, browser revision guards, recovery,
 and bounded asynchronous refresh. Tests also cover PTY cleanup, focus/mouse/

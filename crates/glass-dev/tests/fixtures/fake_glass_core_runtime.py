@@ -320,6 +320,11 @@ def main() -> None:
                 },
             )
         elif method == "session/new":
+            if mode == "slow-start":
+                gate_root = os.path.join(os.getcwd(), ".glass")
+                with open(os.path.join(gate_root, "e2e-core-handshake-started"), "w", encoding="utf-8") as marker:
+                    marker.write("started")
+                time.sleep(8)
             assert params.get("toolMode") == "mixed"
             assert params.get("tools") and all(
                 tool.get("name", "").startswith("glass.") for tool in params["tools"]

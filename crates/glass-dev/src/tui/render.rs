@@ -2,7 +2,6 @@ use super::command;
 use super::editor::EditorMode;
 use super::file_view;
 use super::overlay::{self, ActiveOverlay};
-use super::pi_commands;
 use super::state::{DevSurface, DevTuiState, EditorExitPrompt, ResponsiveClass, safe_browser_url};
 use glass_browser::browser::{NATIVE_BEFOREUNLOAD_MESSAGE, NATIVE_DIALOG_TEXT_LIMIT_BYTES};
 use ratatui::Frame;
@@ -14,7 +13,7 @@ use ratatui::widgets::{
 };
 
 // GitHub/Druk-inspired neutrals keep the data readable while the accent colors
-// reserve meaning for focus, progress, trust, and failure.
+// reserve meaning for focus, progress, confirmation, and failure.
 const ACCENT: Color = Color::Rgb(88, 166, 255);
 const ACCENT_BRIGHT: Color = Color::Rgb(121, 192, 255);
 const PANEL_BORDER: Color = Color::Rgb(48, 54, 61);
@@ -90,8 +89,7 @@ fn status_glyph(state: &DevTuiState) -> (&'static str, Color) {
         || status.contains("cancelled")
     {
         ("×", ERROR)
-    } else if status.contains("trust")
-        || status.contains("confirm")
+    } else if status.contains("confirm")
         || status.contains("approval")
         || status.contains("required")
     {
@@ -210,13 +208,8 @@ fn surface_area(state: &DevTuiState, area: Rect) -> Rect {
 }
 
 fn navigation_surfaces(state: &DevTuiState) -> Vec<DevSurface> {
-    if state.surface == DevSurface::Trust {
-        std::iter::once(DevSurface::Trust)
-            .chain(DevSurface::PRIMARY)
-            .collect()
-    } else {
-        DevSurface::PRIMARY.to_vec()
-    }
+    let _ = state;
+    DevSurface::PRIMARY.to_vec()
 }
 
 fn navigation_block() -> Block<'static> {
@@ -624,7 +617,6 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
     }
     match active {
         Some(ActiveOverlay::CommandPalette) => render_command_palette(frame, state, area),
-        Some(ActiveOverlay::PiSlashCommand) => render_pi_command_palette(frame, state, area),
         Some(ActiveOverlay::FilePicker) => render_file_picker(frame, state, area),
         Some(ActiveOverlay::SessionPicker) => render_session_picker(frame, state, area),
         Some(ActiveOverlay::ThreadPicker) => render_thread_picker(frame, state, area),
@@ -1404,7 +1396,7 @@ fn render_session_picker(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect)
         height,
     };
     let block = Block::default()
-        .title(" PI SESSIONS · Enter switch · Esc close ")
+        .title(" CONVERSATIONS · Enter switch · Esc close ")
         .title_style(
             Style::default()
                 .fg(ACCENT_BRIGHT)
@@ -1424,14 +1416,8 @@ fn render_session_picker(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect)
             .add_modifier(Modifier::BOLD),
     )];
     if state.session_picker_items.is_empty() {
-        let empty_label =
-            if crate::ResidentHarnessKind::from_env() == crate::ResidentHarnessKind::GlassCore {
-                "No persisted conversations"
-            } else {
-                "No persisted Pi sessions"
-            };
         lines.push(palette_fixed_line(
-            empty_label,
+            "No persisted conversations",
             inner.width,
             Style::default().fg(MUTED),
         ));
@@ -1582,106 +1568,6 @@ fn render_command_palette(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
     let selected_line = action_offset.saturating_add(state.palette_selection);
     let selected_scroll = selected_line.saturating_sub(visible_lines.saturating_sub(1));
     let scroll = usize::from(state.palette_scroll)
-        .max(selected_scroll)
-        .min(max_scroll) as u16;
-    frame.render_widget(Clear, modal);
-    frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .scroll((scroll, 0))
-            .block(block),
-        modal,
-    );
-}
-
-fn render_pi_command_palette(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let width = area.width.saturating_sub(4).min(112);
-    let height = area.height.saturating_sub(6).max(5).min(area.height);
-    let modal = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + 1,
-        width,
-        height,
-    };
-    let block = Block::default()
-        .title(" PI COMMANDS · resident AgentSession · Esc close ")
-        .title_style(Style::default().fg(PURPLE).add_modifier(Modifier::BOLD))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(PURPLE))
-        .bg(PANEL_BACKGROUND)
-        .padding(Padding::horizontal(1));
-    let inner = block.inner(modal);
-    let mut lines = vec![
-        palette_fixed_line(
-            "NATIVE PI SLASH COMMANDS",
-            inner.width,
-            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
-        ),
-        palette_fixed_line(
-            "Official SDK commands · extension commands can also be typed directly",
-            inner.width,
-            Style::default().fg(MUTED),
-        ),
-    ];
-    if !state.pi_command_input.is_empty() {
-        lines.push(palette_fixed_line(
-            format!(
-                "Command: /{}",
-                state.pi_command_input.trim_start_matches('/')
-            ),
-            inner.width,
-            Style::default().fg(TEXT),
-        ));
-    }
-    lines.push(palette_fixed_line(
-        "",
-        inner.width,
-        Style::default().bg(PANEL_BACKGROUND),
-    ));
-    let command_offset = lines.len();
-    let indices = state.pi_command_indices();
-    if indices.is_empty() {
-        lines.push(palette_fixed_line(
-            "No built-in match · Enter still sends a typed extension command",
-            inner.width,
-            Style::default().fg(MUTED),
-        ));
-    } else {
-        for (visible_index, command_index) in indices.into_iter().enumerate() {
-            let command = &pi_commands::BUILTIN_PI_COMMANDS[command_index];
-            let hint = command.argument_hint.unwrap_or("");
-            let invocation = if hint.is_empty() {
-                format!("/{}", command.name)
-            } else {
-                format!("/{} {}", command.name, hint)
-            };
-            let content = format!(
-                "{}{:<28} · {}",
-                if visible_index == state.pi_command_selection {
-                    "▸ "
-                } else {
-                    "  "
-                },
-                invocation,
-                command.description
-            );
-            let style = if visible_index == state.pi_command_selection {
-                Style::default()
-                    .fg(ACCENT_BRIGHT)
-                    .bg(ACTIVE_BACKGROUND)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(TEXT).bg(PANEL_BACKGROUND)
-            };
-            lines.push(palette_fixed_line(content, inner.width, style));
-        }
-    }
-    let line_count = lines.len();
-    let visible_lines = usize::from(inner.height);
-    let max_scroll = line_count.saturating_sub(visible_lines);
-    let selected_line = command_offset.saturating_add(state.pi_command_selection);
-    let selected_scroll = selected_line.saturating_sub(visible_lines.saturating_sub(1));
-    let scroll = usize::from(state.pi_command_scroll)
         .max(selected_scroll)
         .min(max_scroll) as u16;
     frame.render_widget(Clear, modal);
@@ -1859,7 +1745,7 @@ fn render_factory_home(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         render_agent_conversation_panel(
             frame,
             state,
-            "Ask from Code · Ctrl-L dock · comments stay on this buffer",
+            "Agent dock · Ctrl-L dock · comments stay on this buffer",
             columns[0],
         );
     } else {
@@ -1940,21 +1826,6 @@ fn render_phone(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             )),
             status_line(state, geometry.footer.width.saturating_sub(2)),
         ]
-    } else if active == Some(ActiveOverlay::PiSlashCommand) {
-        let mut spans = input_spans(
-            "/ ",
-            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
-            &state.pi_command_input,
-            state.pi_command_cursor,
-            geometry.footer.width.saturating_sub(8),
-        );
-        let hint = if state.pi_command_input.trim().is_empty() {
-            "  ↑↓ select · Tab complete · Enter run · Esc cancel"
-        } else {
-            "  Enter runs native command · Esc cancel"
-        };
-        spans.push(Span::styled(hint, Style::default().fg(MUTED)));
-        vec![Line::from(spans)]
     } else if active == Some(ActiveOverlay::CommandPalette) {
         let (prefix, input, cursor) = match navigation_value(state) {
             Some(address) => (" URL: ", address, navigation_cursor(state, address)),
@@ -2018,7 +1889,6 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, _mode: 
             .add_modifier(Modifier::BOLD),
     );
     let git = git_header_label(state);
-    let trust = Span::styled("Core owns agent permissions ", Style::default().fg(MUTED));
     let path = Span::styled(
         compact_path(&state.snapshot_root, area.width.saturating_sub(32)),
         Style::default().fg(MUTED),
@@ -2034,8 +1904,6 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, _mode: 
         meta.push(git_span);
     }
     meta.push(path.clone());
-    meta.push(Span::styled(" · ", Style::default().fg(PANEL_BORDER)));
-    meta.push(trust.clone());
     let lines = if area.width < 104 {
         vec![Line::from(vec![brand.clone(), surface]), Line::from(meta)]
     } else {
@@ -2045,8 +1913,6 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, _mode: 
             line.push(git_span);
         }
         line.push(path);
-        line.push(Span::styled(" · ", Style::default().fg(PANEL_BORDER)));
-        line.push(trust);
         vec![Line::from(line)]
     };
 
@@ -2377,43 +2243,16 @@ fn browser_progress(
     )
 }
 
-fn render_trust_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(5), Constraint::Min(4)])
-        .split(area);
-    let pending = state
-        .snapshot_trust_inspection
-        .iter()
-        .filter(|item| item.trust_required)
-        .count();
-    render_panel(
-        frame,
-        rows[0],
-        " TRUST ",
-        format!(
-            "{} pending review · {}\nI inspect · O open\n1 trust once · T trust project",
-            pending, state.snapshot_trust_label
-        ),
-        WARNING,
-    );
-    let inspection = super::projection::trust_items(&state.snapshot_trust_inspection);
-    render_panel(
-        frame,
-        rows[1],
-        " CONFIG ",
-        format!("{}\nInspect before trust.", inspection),
-        ACCENT_BRIGHT,
-    );
-}
-
 fn compact_agent_header(state: &DevTuiState, width: u16) -> String {
     let readiness = state
         .agent_readiness
         .lines()
         .next()
-        .unwrap_or("Pi unavailable");
-    let runtime_state = readiness.split(" · ").next().unwrap_or("Pi unavailable");
+        .unwrap_or("Glass Core unavailable");
+    let runtime_state = readiness
+        .split(" · ")
+        .next()
+        .unwrap_or("Glass Core unavailable");
     let app_summary = state
         .browser_chat_header()
         .split(" · ")
@@ -2426,11 +2265,10 @@ fn compact_agent_header(state: &DevTuiState, width: u16) -> String {
             format!("APP (optional) · {summary}")
         });
     let chrome = state.agent_chrome_line();
-    let mode = state.composer_run_mode.label();
     let second = if chrome.is_empty() {
-        format!("{mode} · Ctrl-L · {app_summary}")
+        format!("Ctrl-L · {app_summary}")
     } else {
-        format!("{mode} · {chrome} · {app_summary}")
+        format!("{chrome} · {app_summary}")
     };
     format!(
         "{}\n{}",
@@ -2532,10 +2370,7 @@ fn agent_landing(state: &DevTuiState) -> String {
     if state.agent_readiness.starts_with("✓ Ready") {
         return "START HERE\nDescribe a coding task.\nEnter to chat or type a message.\n: actions open Glass tools and settings.\nGlass can inspect, edit, run, and verify.\nOpen the browser for UI work.".into();
     }
-    if crate::ResidentHarnessKind::from_env() == crate::ResidentHarnessKind::GlassCore {
-        return "SETUP\nConfigure glass-core with a provider and credentials.\nUse :actions to inspect available agent setup options.\nAfter ✓ Ready, use : → Compose message · i to open a draft.\nSending needs a ready engine.".into();
-    }
-    "SETUP\nPress :actions.\nChoose Setup Pi runtime · Enter to install.\nChoose Authenticate if installed.\nAfter ✓ Ready, use : → Compose message · i to open a draft.".into()
+    "SETUP\nConfigure glass-core with a provider and credentials.\nUse :actions to inspect available agent setup options.\nAfter ✓ Ready, use : → Compose message · i to open a draft.\nSending needs a ready engine.".into()
 }
 
 fn agent_conversation_panel_rect(state: &DevTuiState) -> Rect {
@@ -4150,7 +3985,7 @@ struct MoreSurfaceGeometry {
     phone: bool,
     narrow: bool,
     summary: Rect,
-    pi: Rect,
+    core: Rect,
     experiments: Option<Rect>,
     routes: Rect,
 }
@@ -4173,7 +4008,7 @@ fn more_surface_geometry(state: &DevTuiState, area: Rect) -> MoreSurfaceGeometry
             phone,
             narrow: true,
             summary: rows[0],
-            pi: columns[0],
+            core: columns[0],
             experiments: None,
             routes: columns[1],
         }
@@ -4202,7 +4037,7 @@ fn more_surface_geometry(state: &DevTuiState, area: Rect) -> MoreSurfaceGeometry
             phone,
             narrow,
             summary: rows[0],
-            pi: columns[0],
+            core: columns[0],
             experiments: Some(columns[1]),
             routes: columns[2],
         }
@@ -4301,7 +4136,7 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         ACCENT_BRIGHT,
     );
     if phone {
-        let pi_content = compact_multiline(
+        let core_content = compact_multiline(
             &if state.snapshot_ready {
                 format!(
                     "{}\n{}\n{}\n{}",
@@ -4309,7 +4144,7 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                         .agent_readiness
                         .lines()
                         .next()
-                        .unwrap_or("Pi unavailable"),
+                        .unwrap_or("Glass Core unavailable"),
                     agent_progress(state),
                     state.experiments.lines().next().unwrap_or("No experiments"),
                     state.replay.lines().next().unwrap_or("No replay"),
@@ -4317,9 +4152,15 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             } else {
                 "Loading workspace snapshot…".to_string()
             },
-            geometry.pi.width.saturating_sub(4),
+            geometry.core.width.saturating_sub(4),
         );
-        render_panel(frame, geometry.pi, " PI · WORKSPACE ", pi_content, PURPLE);
+        render_panel(
+            frame,
+            geometry.core,
+            " CORE · WORKSPACE ",
+            core_content,
+            PURPLE,
+        );
         let route_content = compact_multiline(
             &more_route_lines(state).join("\n"),
             route_geometry.content.width,
@@ -4339,7 +4180,7 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         );
         return;
     }
-    let pi_content = compact_multiline(
+    let core_content = compact_multiline(
         &if state.snapshot_ready {
             format!(
                 "{}\n{}\n{kernel_count} kernels",
@@ -4347,15 +4188,15 @@ fn render_more_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
                     .agent_readiness
                     .lines()
                     .next()
-                    .unwrap_or("Pi unavailable"),
+                    .unwrap_or("Glass Core unavailable"),
                 agent_progress(state),
             )
         } else {
             "Loading workspace snapshot…".to_string()
         },
-        geometry.pi.width.saturating_sub(4),
+        geometry.core.width.saturating_sub(4),
     );
-    render_panel(frame, geometry.pi, " PI ", pi_content, PURPLE);
+    render_panel(frame, geometry.core, " CORE ", core_content, PURPLE);
     let experiments_content = compact_multiline(
         &more_experiment_content(state),
         geometry
@@ -4694,7 +4535,6 @@ fn render_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         return;
     }
     match state.surface {
-        DevSurface::Trust => render_trust_surface(frame, state, area),
         DevSurface::Agent => render_agent_surface(frame, state, area),
         DevSurface::Code => render_code_surface(frame, state, area),
         DevSurface::App => render_app_surface(frame, state, area),
@@ -4772,20 +4612,6 @@ fn render_context(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         return;
     }
     let (label, content) = match state.surface {
-        DevSurface::Trust => {
-            let pending = state
-                .snapshot_trust_inspection
-                .iter()
-                .filter(|item| item.trust_required)
-                .count();
-            (
-                "TRUST",
-                format!(
-                    "{pending} pending\n{} · rev {}",
-                    state.snapshot_trust_label, state.snapshot_project_revision
-                ),
-            )
-        }
         DevSurface::Agent => ("WORKSPACE", "Use the workspace".into()),
         DevSurface::Code => {
             let chat = if state.composer_mode {
@@ -4954,17 +4780,14 @@ fn status_style(state: &DevTuiState) -> Style {
         || status.contains("cancelled")
     {
         Style::default().fg(ERROR)
-    } else if status.contains("trust")
-        || status.contains("confirm")
+    } else if status.contains("confirm")
         || status.contains("approval")
         || status.contains("required")
     {
         Style::default().fg(WARNING)
     } else if matches!(
         overlay::active_overlay(state),
-        Some(
-            ActiveOverlay::Composer | ActiveOverlay::PiSlashCommand | ActiveOverlay::CommandPalette
-        )
+        Some(ActiveOverlay::Composer | ActiveOverlay::CommandPalette)
     ) {
         Style::default().fg(ACCENT_BRIGHT)
     } else {
@@ -5002,15 +4825,7 @@ fn composer_input_lines(state: &DevTuiState, width: u16) -> Vec<Line<'static>> {
         .skip(window_start)
         .take(visible)
         .map(|(index, part)| {
-            let prefix = if index == window_start {
-                match state.composer_run_mode {
-                    crate::AgentTurnMode::Ask => "? ",
-                    crate::AgentTurnMode::Plan => "P ",
-                    crate::AgentTurnMode::Agent => "> ",
-                }
-            } else {
-                "  "
-            };
+            let prefix = if index == window_start { "> " } else { "  " };
             if index == cursor_line {
                 Line::from(input_spans(
                     prefix,
@@ -5057,21 +4872,6 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
             )),
             status_line(state, area.width.saturating_sub(2)),
         ]
-    } else if active == Some(ActiveOverlay::PiSlashCommand) {
-        let mut spans = input_spans(
-            "/ ",
-            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
-            &state.pi_command_input,
-            state.pi_command_cursor,
-            area.width.saturating_sub(8),
-        );
-        let hint = if state.pi_command_input.trim().is_empty() {
-            "  ↑↓ select · Tab complete · Enter run · Esc cancel"
-        } else {
-            "  Enter runs native command · Esc cancel"
-        };
-        spans.push(Span::styled(hint, Style::default().fg(MUTED)));
-        vec![Line::from(spans)]
     } else if active == Some(ActiveOverlay::CommandPalette) {
         let (prefix, input, cursor, hint) = match navigation_value(state) {
             Some(address) => (
@@ -5126,7 +4926,7 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         vec![
             Line::from(Span::styled(
                 compact_line(
-                    &super::bindings::dock_placeholder(state.surface, state.composer_run_mode),
+                    &super::bindings::dock_placeholder(state.surface),
                     area.width.saturating_sub(2),
                 ),
                 Style::default().fg(MUTED),
@@ -5152,7 +4952,6 @@ fn render_status(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
 mod tests {
     use super::*;
     use crate::tui::state::BrowserDialogPrompt;
-    use glass_browser::browser_workspace::BrowserWorkspaceIntent;
     use glass_browser::cli::args::TuiLayout;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -5171,7 +4970,7 @@ mod tests {
         )
         .unwrap();
         let mut state = DevTuiState::open(root, layout).unwrap();
-        // Render tests must not depend on whether the host has Pi installed.
+        // Render tests use a deterministic resident runtime status.
         state.agent_readiness = "✓ Ready · test runtime".into();
         state.status = "Ready · describe a coding task".into();
         state
@@ -5186,14 +4985,6 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let state = DevTuiState::open(&root, TuiLayout::Desktop).unwrap();
         (state, root)
-    }
-
-    fn trust_workspace_once(state: &mut DevTuiState) {
-        state
-            .ws_mut()
-            .expect("workspace lock")
-            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
-            .expect("trust temporary workspace");
     }
 
     fn rendered(state: &DevTuiState, width: u16, height: u16) -> String {
@@ -5213,38 +5004,6 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| render(frame, state)).unwrap();
         terminal.backend().buffer().clone()
-    }
-
-    #[test]
-    fn file_picker_is_rendered_above_editor_and_pi_and_suppresses_lower_overlays() {
-        let (mut state, root) = overlay_state();
-        state.code_edit_mode = true;
-        state.pi_command_mode = true;
-        state.command_mode = true;
-        state.file_picker_open = true;
-        state.session_picker_open = true;
-
-        let output = rendered(&state, 100, 30);
-        assert!(output.contains("OPEN FILE"));
-        assert!(!output.contains("PI COMMANDS"));
-        assert!(!output.contains("PI SESSIONS"));
-        assert!(!output.contains("COMMAND PALETTE"));
-        drop(state);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn session_picker_is_rendered_above_editor_and_pi() {
-        let (mut state, root) = overlay_state();
-        state.code_edit_mode = true;
-        state.pi_command_mode = true;
-        state.session_picker_open = true;
-
-        let output = rendered(&state, 100, 30);
-        assert!(output.contains("PI SESSIONS"));
-        assert!(!output.contains("PI COMMANDS"));
-        drop(state);
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -5533,7 +5292,6 @@ mod tests {
         assert!(help.contains("Ctrl-L"));
         assert!(help.contains("KEYS"));
         assert!(help.contains("Tab surfaces"));
-        assert!(help.contains("/todo"));
         assert!(help.contains("Agent · Code"));
         assert!(help.contains("Ctrl-O symbols"));
         assert!(!help.contains("Ctrl-O back"));
@@ -5753,7 +5511,7 @@ mod tests {
         state.surface = DevSurface::More;
         let output = rendered(&state, 48, 18);
         assert!(output.contains("0 kernels"));
-        assert!(output.contains("PI"));
+        assert!(output.contains("CORE"));
         assert!(output.contains("ROUTES"));
     }
 
@@ -5796,7 +5554,7 @@ mod tests {
         assert!(!tasks.contains("0 running · 0 queued · 0"));
 
         state.surface = DevSurface::More;
-        state.harnesses = "● claude    Claude Code\n● pi        Pi".into();
+        state.harnesses = "● claude    Claude Code".into();
         let more = rendered(&state, 220, 40);
         assert!(more.contains("Harness catalog"));
         assert!(!more.contains("HARNESS CATALOG"));
@@ -5853,17 +5611,6 @@ mod tests {
     }
 
     #[test]
-    fn trust_prompt_is_highlighted_in_desktop_and_compact_navigation() {
-        let mut desktop = state(TuiLayout::Desktop);
-        desktop.surface = DevSurface::Trust;
-        assert!(rendered(&desktop, 140, 40).contains("›  Trust"));
-
-        let mut compact = state(TuiLayout::Compact);
-        compact.surface = DevSurface::Trust;
-        assert!(rendered(&compact, 64, 24).contains("›  Trust"));
-    }
-
-    #[test]
     fn progress_overlays_and_visual_fallback_diagnostics_are_visible() {
         let mut state = state(TuiLayout::Desktop);
         state.surface = DevSurface::Agent;
@@ -5886,7 +5633,6 @@ mod tests {
         let mut state = state(TuiLayout::Desktop);
 
         for (surface, markers) in [
-            (DevSurface::Trust, ["TRUST", "CONFIG"]),
             (DevSurface::Agent, ["CONVERSATION", "START HERE"]),
             (DevSurface::Code, ["FILES", "EDITOR"]),
             (DevSurface::App, ["VISUAL PLANE", "INSPECTOR"]),
@@ -5894,7 +5640,7 @@ mod tests {
             (DevSurface::Tasks, ["TASKS", "SUMMARY"]),
             (DevSurface::Git, ["CHANGES", "DIFF"]),
             (DevSurface::Debug, ["DEBUG", "TESTS"]),
-            (DevSurface::More, ["PI", "ROUTES"]),
+            (DevSurface::More, ["CORE", "ROUTES"]),
         ] {
             state.surface = surface;
             let output = rendered(&state, 220, 40);
@@ -6093,6 +5839,7 @@ mod tests {
         assert_eq!(state.command_input, "agent");
 
         state.close_palette();
+        state.surface = DevSurface::Code;
         let surface = state.surface;
         state.scroll_surface(3);
         assert_eq!(state.surface, surface);
@@ -6109,7 +5856,7 @@ mod tests {
             "SELECT AN ACTION",
             "↑↓ select",
             "Compose message",
-            "agent setup",
+            "Glass Core setup guidance",
         ] {
             assert!(
                 first_page.contains(marker),
@@ -6130,63 +5877,6 @@ mod tests {
         assert!(rendered(&palette_state, 120, 32).contains("▸"));
         palette_state.scroll_palette(-1);
         assert_eq!(palette_state.palette_selection, 0);
-    }
-
-    #[test]
-    fn surface_action_menu_is_discoverable_and_runs_or_prefills() {
-        let mut state = state(TuiLayout::Desktop);
-        state.surface = DevSurface::Agent;
-        state.open_menu();
-        assert!(!state.surface_actions().is_empty());
-        state.menu_selection = state
-            .surface_actions()
-            .iter()
-            .position(|action| action.command == "agent setup login")
-            .expect("agent login action is listed");
-        state.run_menu_action();
-        assert!(!state.command_mode);
-        match crate::ResidentHarnessKind::from_env() {
-            crate::ResidentHarnessKind::GlassCore => {
-                assert!(
-                    state
-                        .status
-                        .contains("Glass Core login will open in this terminal")
-                );
-                assert!(state.agent_login_requested);
-            }
-            crate::ResidentHarnessKind::Pi => assert!(state.agent_login_requested),
-        }
-
-        state.surface = DevSurface::App;
-        state.open_menu();
-        state.run_menu_action();
-        // Mutating no-input actions go directly to their confirmation guard.
-        assert!(!state.command_mode);
-        assert!(state.pending_confirmation.is_some());
-        state.deny_confirmation();
-        state.open_menu();
-        state.menu_selection = 2;
-        state.run_menu_action();
-        assert_eq!(state.command_input, "browser navigate ");
-
-        state.surface = DevSurface::Terminal;
-        state.open_menu();
-        state.menu_selection = 0;
-        state.run_menu_action();
-        assert!(state.menu_open);
-        assert!(state.status.contains("unavailable"));
-        state.close_menu();
-        state.open_menu();
-        state.menu_selection = 1;
-        state.run_menu_action();
-        assert_eq!(state.command_input, "process start dev ");
-
-        state.surface = DevSurface::More;
-        state.open_menu();
-        state.menu_selection = 0;
-        state.run_menu_action();
-        assert!(state.menu_open);
-        assert!(state.status.contains("unavailable"));
     }
 
     #[test]
@@ -6215,7 +5905,7 @@ mod tests {
         let mut state = state(TuiLayout::Mobile);
         state.surface = DevSurface::More;
         let more = rendered(&state, 160, 24);
-        let readiness = more.find("PI").expect("readiness panel");
+        let readiness = more.find("CORE").expect("readiness panel");
         let experiments = more.find("EXPERIMENTS").expect("experiments panel");
         let routes = more.find("ROUTES").expect("routes panel");
         assert!(readiness < experiments && experiments < routes);
@@ -6279,735 +5969,35 @@ mod tests {
     fn agent_transcript_scroll_follows_surface_navigation() {
         let mut state = state(TuiLayout::Desktop);
         state.surface = DevSurface::Agent;
-        state.agent_conversation = (1..=20)
-            .map(|line| format!("TRANSCRIPT_LINE_{line:02}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let agent = crate::AgentId::parse("agent-0001").unwrap();
+        state.selected_agent = Some(agent.clone());
+        let items = (1..=20)
+            .map(|line| super::super::projection::ConversationEntry {
+                kind: super::super::projection::ConversationKind::User,
+                text: format!("TRANSCRIPT_LINE_{line:02}"),
+                streaming: false,
+                entry_id: None,
+                client_message_id: None,
+                tool_name: None,
+                tool_card: None,
+            })
+            .collect();
+        state.agent_conversations.insert(
+            agent,
+            super::super::snapshot::AgentConversation {
+                text: String::new(),
+                items,
+                reasoning: String::new(),
+            },
+        );
+        let tail = rendered(&state, 118, 20);
+        assert!(tail.contains("TRANSCRIPT_LINE_20"));
+        state.scroll_home();
         let top = rendered(&state, 118, 20);
         assert!(top.contains("TRANSCRIPT_LINE_01"));
         state.scroll_surface(8);
         let scrolled = rendered(&state, 118, 20);
         assert!(!scrolled.contains("TRANSCRIPT_LINE_01"));
-        assert!(scrolled.contains("TRANSCRIPT_LINE_10"));
-    }
-
-    #[test]
-    fn read_only_palette_tools_are_queued_off_the_ui_thread() {
-        let mut state = state(TuiLayout::Desktop);
-        let result = super::super::command::execute(&mut state, "browser state").unwrap();
-        assert!(result.contains("queued"));
-        assert!(!result.contains('{'));
-        assert!(state.queued_tool_request.is_some());
-    }
-
-    #[test]
-    fn browser_semantic_actions_are_confirmed_before_cdp_execution() {
-        let mut state = state(TuiLayout::Desktop);
-        state
-            .browser_workspace
-            .connected(true, Some("127.0.0.1:9222".into()), Some(4));
-        state.queue_browser_intent(BrowserWorkspaceIntent::Back);
-        assert!(state.pending_confirmation.is_some());
-        assert!(state.status.contains("Enter approves once"));
-    }
-
-    #[test]
-    fn mutating_palette_action_requires_frozen_one_use_confirmation() {
-        let mut state = state(TuiLayout::Desktop);
-        super::super::command::execute(&mut state, "browser start").unwrap();
-        let pending = state.pending_confirmation.as_ref().unwrap();
-        assert_eq!(pending.call.name, "glass.browser.start");
-        assert!(rendered(&state, 120, 32).contains("CONFIRM"));
-        state.deny_confirmation();
-        assert!(state.pending_confirmation.is_none());
-        assert!(state.status.contains("Denied"));
-    }
-
-    #[test]
-    fn code_surface_opens_edits_navigates_undoes_redoes_and_saves() {
-        let mut state = state(TuiLayout::Desktop);
-        trust_workspace_once(&mut state);
-        state.surface = DevSurface::Code;
-        state.selected_file = state
-            .files
-            .iter()
-            .position(|path| path == "Cargo.toml")
-            .unwrap();
-        state.open_selected_file();
-        state.enter_code_edit();
-        state.edit_code_key(
-            crossterm::event::KeyCode::Char('#'),
-            crossterm::event::KeyModifiers::NONE,
-        );
-        assert!(
-            state
-                .workspace
-                .lock()
-                .unwrap()
-                .project()
-                .buffer("Cargo.toml")
-                .unwrap()
-                .dirty
-        );
-        state.edit_code_key(
-            crossterm::event::KeyCode::Char('z'),
-            crossterm::event::KeyModifiers::CONTROL,
-        );
-        assert!(
-            !state
-                .workspace
-                .lock()
-                .unwrap()
-                .project()
-                .buffer("Cargo.toml")
-                .unwrap()
-                .content
-                .starts_with('#')
-        );
-        state.edit_code_key(
-            crossterm::event::KeyCode::Char('y'),
-            crossterm::event::KeyModifiers::CONTROL,
-        );
-        state.edit_code_key(
-            crossterm::event::KeyCode::Char('s'),
-            crossterm::event::KeyModifiers::CONTROL,
-        );
-        assert!(
-            std::fs::read_to_string(state.workspace.lock().unwrap().root().join("Cargo.toml"),)
-                .unwrap()
-                .starts_with('#')
-        );
-    }
-
-    #[test]
-    fn selected_file_opens_as_full_screen_editor_with_cursor_and_exit_help() {
-        let mut state = state(TuiLayout::Desktop);
-        trust_workspace_once(&mut state);
-        state.surface = DevSurface::Code;
-        state.selected_file = state
-            .files
-            .iter()
-            .position(|path| path == "Cargo.toml")
-            .unwrap();
-        state.open_selected_file_for_edit();
-        assert!(state.code_edit_mode);
-        assert_eq!(state.editor_engine.mode, EditorMode::Normal);
-        let output = rendered(&state, 100, 30);
-        assert!(output.contains("GLASS DEV · EDITOR"));
-        assert!(output.contains("SOURCE"));
-        assert!(output.contains("NORMAL"), "rendered output: {output:?}");
-        assert!(output.contains("Esc back"), "rendered output: {output:?}");
-        assert!(output.contains("Ctrl-S"));
-
-        let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render(frame, &state)).unwrap();
-        let cursor = terminal.backend().cursor_position();
-        assert!(cursor.x > 0);
-        assert!(cursor.y > 0);
-
-        state.edit_code_key(
-            crossterm::event::KeyCode::Char('i'),
-            crossterm::event::KeyModifiers::NONE,
-        );
-        state.edit_code_key(
-            crossterm::event::KeyCode::Char('#'),
-            crossterm::event::KeyModifiers::NONE,
-        );
-        state.request_editor_exit();
-        let prompt = rendered(&state, 100, 30);
-        assert!(prompt.contains("UNSAVED CHANGES"));
-        assert!(prompt.contains("discard changes and quit Glass"));
-    }
-
-    #[test]
-    fn fullscreen_editor_keeps_projected_content_when_workspace_is_busy() {
-        let mut state = state(TuiLayout::Desktop);
-        trust_workspace_once(&mut state);
-        state.surface = DevSurface::Code;
-        state.selected_file = state
-            .files
-            .iter()
-            .position(|path| path == "Cargo.toml")
-            .unwrap();
-        state.open_selected_file_for_edit();
-        let expected = state.focused_editor_content.clone();
-        let workspace = state.workspace.clone();
-        let _workspace_guard = workspace.lock().expect("workspace lock");
-
-        let output = rendered(&state, 100, 30);
-        assert!(expected.contains("name='x'"));
-        assert!(output.contains("name='x'"));
-    }
-
-    #[test]
-    fn fullscreen_editor_cursor_tracks_active_line_without_wrapping() {
-        let mut state = state(TuiLayout::Desktop);
-        state.code_edit_mode = true;
-        state.focused_editor_path = "CHANGELOG.md".into();
-        state.focused_editor_content = "one\nthis is a deliberately long source line that should remain horizontally scrollable instead of wrapping across the editor viewport\nactive line".into();
-        state.focused_editor_line = 3;
-        state.focused_editor_column = 1;
-        state.status = "EDITING".into();
-
-        let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render(frame, &state)).unwrap();
-        let active_row = (0..30)
-            .find(|row| {
-                (0..100)
-                    .map(|column| {
-                        terminal
-                            .backend()
-                            .buffer()
-                            .cell((column, *row))
-                            .expect("cell in editor buffer")
-                            .symbol()
-                    })
-                    .collect::<String>()
-                    .contains("active line")
-            })
-            .expect("active source line rendered");
-        assert_eq!(
-            terminal.backend().cursor_position().y,
-            active_row,
-            "terminal cursor must stay on the rendered active source line"
-        );
-    }
-
-    #[test]
-    fn fullscreen_editor_soft_wrap_keeps_cursor_on_wrapped_cell() {
-        let mut state = state(TuiLayout::Mobile);
-        state.code_edit_mode = true;
-        state.editor_soft_wrap = true;
-        state.focused_editor_path = "src/main.rs".into();
-        state.focused_editor_content = format!("{}\n", "word ".repeat(80));
-        state.focused_editor_line = 1;
-        state.focused_editor_column = 180;
-        state.status = "EDITING".into();
-        state.set_terminal_size(32, 16);
-        let narrow_output = rendered(&state, 32, 16);
-        assert!(
-            narrow_output.contains("Esc"),
-            "narrow editor footer should keep Esc: {narrow_output:?}"
-        );
-
-        let backend = TestBackend::new(32, 16);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render(frame, &state)).unwrap();
-        let cursor = terminal.backend().cursor_position();
-        let cell = terminal
-            .backend()
-            .buffer()
-            .cell((cursor.x, cursor.y))
-            .expect("cursor cell in editor buffer");
-        assert_eq!(cell.fg, Color::Black);
-        assert_eq!(cell.bg, ACCENT_BRIGHT);
-        assert!(state.editor_scroll_line > 0);
-    }
-
-    #[test]
-    fn soft_wrapped_editor_renders_and_accepts_only_current_ghost_text() {
-        let mut state = state(TuiLayout::Desktop);
-        trust_workspace_once(&mut state);
-        let root = std::path::PathBuf::from(&state.snapshot_root);
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(
-            root.join("src/main.rs"),
-            "fn main() { let first = 1; let second = 2; let third = 3; }\n",
-        )
-        .unwrap();
-        state
-            .ws_mut()
-            .unwrap()
-            .project_mut()
-            .open_buffer("src/main.rs", crate::development::Actor::local())
-            .unwrap();
-        state.refresh_editor_projection();
-        state
-            .ws_mut()
-            .unwrap()
-            .project_mut()
-            .set_buffer_cursor("src/main.rs", 1, 18)
-            .unwrap();
-        state.refresh_editor_projection();
-        state.enter_code_edit();
-        let offset = crate::development::editor::text_position_offset(
-            &state.focused_editor_content,
-            crate::development::TextPosition {
-                line: state.focused_editor_line,
-                column: state.focused_editor_column,
-            },
-        )
-        .unwrap();
-        let revision = state.ws().unwrap().project().revision();
-        state.editor_engine.ghost = Some(crate::tui::editor::GhostText {
-            text: "visible-completion".into(),
-            path: state.focused_editor_path.clone(),
-            offset,
-            revision,
-        });
-        state.editor_soft_wrap = true;
-
-        let output = rendered(&state, 48, 24);
-        assert!(output.contains("visible-completion"), "{output:?}");
-        state.edit_code_key(
-            crossterm::event::KeyCode::Tab,
-            crossterm::event::KeyModifiers::NONE,
-        );
-        assert!(state.focused_editor_content.contains("visible-completion"));
-    }
-
-    #[test]
-    fn mobile_code_view_wraps_long_preview_lines() {
-        let mut state = state(TuiLayout::Mobile);
-        state.surface = DevSurface::Code;
-        state.focused_editor_path = "src/main.rs".into();
-        state.editor = "a long preview line that should wrap on a phone terminal and keep its final marker visible".into();
-
-        let output = rendered(&state, 48, 24);
-        assert!(output.contains("final marker"));
-    }
-
-    #[test]
-    fn desktop_compact_and_phone_can_drill_into_every_required_surface() {
-        for (width, height, layout) in [
-            (140, 40, TuiLayout::Desktop),
-            (90, 28, TuiLayout::Compact),
-            (64, 24, TuiLayout::Mobile),
-        ] {
-            let mut state = state(layout);
-            for surface in DevSurface::ALL {
-                state.surface = surface;
-                let output = rendered(&state, width, height);
-                assert!(
-                    output.contains(surface.label()),
-                    "{} layout did not expose {}",
-                    match layout {
-                        TuiLayout::Desktop => "desktop",
-                        TuiLayout::Compact => "compact",
-                        TuiLayout::Mobile => "phone",
-                        TuiLayout::Auto => "auto",
-                    },
-                    surface.label()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn desktop_flow_opens_actions_menu_composes_and_pages_without_clipping() {
-        let mut state = state(TuiLayout::Desktop);
-
-        // Discoverability: the action menu opens from navigation mode and
-        // renders its entries inside the surface pane at desktop size.
-        state.surface = DevSurface::Agent;
-        trust_workspace_once(&mut state);
-        state.selected_agent = Some(crate::AgentId::parse("agent-e2e").expect("agent id"));
-        state.open_menu();
-        let output = rendered(&state, 118, 32);
-        assert!(output.contains("ACTIONS · Agent"));
-        assert!(output.contains("Compose message"));
-        state.menu_selection = state
-            .surface_actions()
-            .iter()
-            .position(|action| action.command == "agent new")
-            .expect("new conversation action is listed");
-        state.run_menu_action();
-        assert!(!state.command_mode);
-        assert!(state.pending_confirmation.is_some());
-        state.deny_confirmation();
-
-        state.open_menu();
-        state.menu_selection = state.surface_actions().len();
-        let launcher_output = rendered(&state, 118, 32);
-        assert!(launcher_output.contains("Search commands"));
-        state.run_menu_action();
-        assert!(state.command_mode);
-        assert!(state.command_input.is_empty());
-        state.close_palette();
-
-        state.open_menu();
-        state.menu_selection = state.quit_menu_index();
-        let quit_output = rendered(&state, 118, 32);
-        assert!(quit_output.contains("Quit"));
-        state.run_menu_action();
-        assert!(state.quit_confirmation);
-        assert!(!state.quit);
-
-        // Composer editing keys behave like a real input line.
-        state.surface = DevSurface::Agent;
-        state.open_composer();
-        state.insert_composer_text("fix the login bug");
-        // Ctrl-W deletes the word before the cursor (at end: drops "bug").
-        state.delete_composer_word();
-        assert_eq!(state.composer_input, "fix the login");
-        state.move_composer_cursor(false);
-        state.composer_backspace();
-        assert_eq!(state.composer_input, "fix the logn");
-        state.close_composer();
-
-        // Long content pages with PageDown/Home/End instead of being clipped.
-        state.surface = DevSurface::More;
-        state.scroll_surface(40);
-        assert_eq!(state.current_scroll(), 40);
-        state.scroll_home();
-        assert_eq!(state.current_scroll(), 0);
-        state.scroll_surface(-5);
-        assert_eq!(state.current_scroll(), 0, "scroll is bounded at zero");
-    }
-
-    #[test]
-    fn app_recovery_sheet_offers_choices_after_collision() {
-        let mut state = state(TuiLayout::Desktop);
-        state.surface = DevSurface::App;
-        state.note_browser_failure(
-            "glass.browser.start",
-            "CDP port 9222 is already occupied; use --attach to connect to that Chrome endpoint or choose another --port",
-        );
-        let output = rendered(&state, 118, 32);
-        assert!(output.contains("RECOVER"));
-        assert!(output.contains("automatic free port"));
-        // Actions are reachable without leaving the TUI and launch off-thread.
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-        state.accept_browser_recovery(1, &mut worker);
-        assert!(state.browser_recovery.is_none());
-        assert!(state.running_tool_job.is_some());
-        drop(worker);
-    }
-
-    #[test]
-    fn executable_project_configuration_does_not_gate_core_coding_surface() {
-        let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "glass-dev-tui-trust-{}-{sequence}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(
-            root.join("glass.toml"),
-            "[tools.probe]\ndescription='probe'\ncommand='echo unsafe'\n",
-        )
-        .unwrap();
-        let mut state = DevTuiState::open(&root, TuiLayout::Mobile).unwrap();
-        assert_eq!(state.surface, DevSurface::Agent);
-        let frame = rendered(&state, 64, 24);
-        assert!(frame.contains("Core owns agent permissions"));
-        assert!(!frame.contains("guarded"));
-        state.show_surface(DevSurface::Trust);
-        assert!(rendered(&state, 64, 24).contains("TRUST"));
-        assert_eq!(
-            state.workspace.lock().unwrap().trust(),
-            crate::WorkspaceTrust::Untrusted
-        );
-        assert_eq!(state.surface, DevSurface::Trust);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn agent_onboarding_actions_are_available_without_leaving_the_tui() {
-        let mut state = state(TuiLayout::Desktop);
-        state.surface = DevSurface::Agent;
-        state.request_agent_setup_mode(crate::ResidentHarnessKind::Pi, false);
-        assert_eq!(state.surface, DevSurface::Agent);
-        assert_eq!(
-            state
-                .pending_confirmation
-                .as_ref()
-                .map(|pending| pending.call.name.as_str()),
-            Some("glass.agent.setup")
-        );
-        assert_eq!(
-            state
-                .pending_confirmation
-                .as_ref()
-                .and_then(|pending| pending.call.arguments.get("login"))
-                .and_then(|value| value.as_bool()),
-            Some(false)
-        );
-        state.deny_confirmation();
-        state.request_agent_setup_mode(crate::ResidentHarnessKind::Pi, true);
-        assert_eq!(
-            state
-                .pending_confirmation
-                .as_ref()
-                .and_then(|pending| pending.call.arguments.get("update"))
-                .and_then(|value| value.as_bool()),
-            Some(true)
-        );
-        assert!(
-            state
-                .pending_confirmation
-                .as_ref()
-                .is_some_and(|pending| pending.summary.contains("Refresh"))
-        );
-        state.deny_confirmation();
-        state
-            .request_agent_login_for_harness(crate::ResidentHarnessKind::Pi, None)
-            .expect("queue Pi login");
-        assert!(state.agent_login_requested);
-        assert!(state.status.contains("exit Pi to return"));
-    }
-
-    #[test]
-    fn glass_core_setup_reports_engine_repair_instead_of_installing_pi() {
-        let mut state = state(TuiLayout::Desktop);
-        state.surface = DevSurface::Agent;
-        state.request_agent_setup_mode(crate::ResidentHarnessKind::GlassCore, false);
-        assert_eq!(state.surface, DevSurface::Agent);
-        assert!(
-            state.pending_confirmation.is_none(),
-            "Glass Core is an executable, so no managed runtime install is queued"
-        );
-        assert!(
-            state.status.contains("Glass Core is the resident engine"),
-            "{}",
-            state.status
-        );
-        assert!(
-            state.status.contains("GLASS_AGENT_HARNESS=pi"),
-            "{}",
-            state.status
-        );
-    }
-
-    #[test]
-    fn composer_keeps_message_without_trust_redirect_when_workspace_is_untrusted() {
-        let mut state = state(TuiLayout::Desktop);
-        state.surface = DevSurface::Agent;
-        state.snapshot_trust_label = "untrusted".into();
-        state.open_composer();
-        state.insert_composer_text("inspect this workspace");
-        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
-        state.submit_composer(&mut worker);
-        assert_eq!(state.surface, DevSurface::Agent);
-        assert!(state.composer_mode);
-        assert_eq!(state.composer_input, "inspect this workspace");
-        drop(worker);
-    }
-    #[test]
-    fn agent_chat_keeps_optimistic_message_and_composer_visible() {
-        let mut state = state(TuiLayout::Desktop);
-        state.surface = DevSurface::Agent;
-        state.agent_conversation = "GLASS AGENT\nprevious answer".into();
-        state
-            .pending_chat_messages
-            .push(super::super::state::PendingChatMessage {
-                agent_id: None,
-                message_id: "chat-follow-up-7".into(),
-                text: "follow up while you work".into(),
-                state: super::super::state::ChatMessageState::Sending,
-                job_id: Some(7),
-                error: None,
-            });
-        state.composer_mode = true;
-        let output = rendered(&state, 120, 32);
-        assert!(output.contains("GLASS AGENT"));
-        assert!(output.contains("YOU"));
-        assert!(output.contains("follow up while you work"));
-        assert!(output.contains("sending"));
-        assert!(!output.contains("Enter send"));
-    }
-
-    #[test]
-    fn reasoning_reader_is_explicit_and_selected_thread_scoped() {
-        let mut state = state(TuiLayout::Desktop);
-        state.surface = DevSurface::Agent;
-        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
-        state.selected_agent = Some(agent_id.clone());
-        state.agent_conversation = "GLASS AGENT\nvisible answer".into();
-        state.agent_conversations.insert(
-            agent_id,
-            super::super::snapshot::AgentConversation {
-                text: state.agent_conversation.clone(),
-                items: Vec::new(),
-                reasoning: "provider reasoning detail".into(),
-            },
-        );
-
-        let normal = agent_conversation_text(&state, "", 80, 20)
-            .lines
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(normal.contains("visible answer"));
-        assert!(!normal.contains("provider reasoning detail"));
-
-        state.toggle_reasoning_view();
-        let reasoning = agent_conversation_text(&state, "", 80, 20)
-            .lines
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(reasoning.contains("provider reasoning detail"));
-        assert!(!reasoning.contains("visible answer"));
-    }
-
-    #[test]
-    fn agent_chat_send_result_has_success_and_retry_states() {
-        let mut state = state(TuiLayout::Desktop);
-        state.surface = DevSurface::Agent;
-        state.composer_mode = true;
-        state.agent_send_job = Some(7);
-        state
-            .pending_chat_messages
-            .push(super::super::state::PendingChatMessage {
-                agent_id: None,
-                message_id: "chat-send-7".into(),
-                text: "inspect the failing test".into(),
-                state: super::super::state::ChatMessageState::Sending,
-                job_id: Some(7),
-                error: None,
-            });
-        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
-            id: 7,
-            tool: "glass.agent.send".into(),
-            result: Ok(serde_json::json!({"queued": true, "agentId": "agent-0001"})),
-        });
-        assert!(state.agent_send_job.is_none());
-        assert_eq!(
-            state.pending_chat_messages[0].state,
-            super::super::state::ChatMessageState::Sent
-        );
-        assert!(state.status.contains("Sent to agent-0001"));
-        state.agent_send_job = Some(9);
-        state
-            .pending_chat_messages
-            .push(super::super::state::PendingChatMessage {
-                agent_id: Some(crate::AgentId::parse("agent-0001").unwrap()),
-                message_id: "chat-send-9".into(),
-                text: "retry after the agent stopped".into(),
-                state: super::super::state::ChatMessageState::Sending,
-                job_id: Some(9),
-                error: None,
-            });
-        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
-            id: 9,
-            tool: "glass.agent.send".into(),
-            result: Ok(serde_json::json!({
-                "queued": true,
-                "agentId": "agent-0001",
-                "restarted": true
-            })),
-        });
-        assert!(state.status.contains("Restarted agent-0001"));
-
-        state.agent_send_job = Some(8);
-        state
-            .pending_chat_messages
-            .push(super::super::state::PendingChatMessage {
-                agent_id: Some(crate::AgentId::parse("agent-0001").unwrap()),
-                message_id: "chat-send-8".into(),
-                text: "retry this request".into(),
-                state: super::super::state::ChatMessageState::Sending,
-                job_id: Some(8),
-                error: None,
-            });
-        state.composer_input.clear();
-        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
-            id: 8,
-            tool: "glass.agent.send".into(),
-            result: Err("Pi session stopped".into()),
-        });
-        assert!(state.composer_mode);
-        assert_eq!(state.composer_input, "retry this request");
-        assert_eq!(
-            state.pending_chat_messages[2].state,
-            super::super::state::ChatMessageState::Failed
-        );
-        assert!(state.status.contains("edit and retry"));
-    }
-
-    #[test]
-    fn agent_chat_status_clears_thinking_after_idle_snapshot() {
-        let mut state = state(TuiLayout::Desktop);
-        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
-        state.surface = DevSurface::Agent;
-        state.selected_agent = Some(agent_id.clone());
-        state.status = "Sent to agent-0001 · Glass Agent is thinking…".into();
-        state.agent_conversation = "YOU\nhello hello\n\nGLASS AGENT\nhello hello".into();
-        state
-            .pending_chat_messages
-            .push(super::super::state::PendingChatMessage {
-                agent_id: Some(agent_id.clone()),
-                message_id: "chat-hello-1".into(),
-                text: "hello hello".into(),
-                state: super::super::state::ChatMessageState::Sent,
-                job_id: None,
-                error: None,
-            });
-
-        state.apply_snapshot(&super::super::snapshot::DisplaySnapshot {
-            agent_states: vec![(agent_id.clone(), crate::AgentStatus::Idle)],
-            agent_conversation: state.agent_conversation.clone(),
-            conversation_items: vec![super::super::projection::ConversationEntry {
-                kind: super::super::projection::ConversationKind::User,
-                text: "hello hello".into(),
-                streaming: false,
-                entry_id: Some("entry-hello-1".into()),
-                client_message_id: Some("chat-hello-1".into()),
-                tool_name: None,
-                tool_card: None,
-            }],
-            agent_conversations: std::collections::BTreeMap::from([(
-                agent_id,
-                super::super::snapshot::AgentConversation {
-                    text: state.agent_conversation.clone(),
-                    items: vec![super::super::projection::ConversationEntry {
-                        kind: super::super::projection::ConversationKind::User,
-                        text: "hello hello".into(),
-                        streaming: false,
-                        entry_id: Some("entry-hello-1".into()),
-                        client_message_id: Some("chat-hello-1".into()),
-                        tool_name: None,
-                        tool_card: None,
-                    }],
-                    reasoning: "provider-only thought".into(),
-                },
-            )]),
-            ..Default::default()
-        });
-
-        assert!(state.pending_chat_messages.is_empty());
-        assert_eq!(state.status, "Glass Agent ready · response received");
-    }
-    #[test]
-    fn code_surface_renders_source_content_instead_of_flat_panel_text() {
-        let mut state = state(TuiLayout::Desktop);
-        state.surface = DevSurface::Code;
-        state.focused_editor_path = "src/main.rs".into();
-        state.editor =
-            "○ src/main.rs · cursor 1:1 · actor local · 1 lines\n▶  1 │ fn main() { return 42; }"
-                .into();
-        let output = rendered(&state, 120, 32);
-        assert!(output.contains("src/main.rs"));
-        assert!(output.contains("fn main()"));
-        assert!(output.contains("return 42"));
-    }
-
-    #[test]
-    fn code_surface_renders_mermaid_preview_for_raw_diagram_output() {
-        let mut state = state(TuiLayout::Desktop);
-        state.surface = DevSurface::Code;
-        state.focused_editor_path = "docs/flow.mmd".into();
-        state.editor = "flowchart LR\nstart[Start] --> done{Done}".into();
-        let output = rendered(&state, 120, 32);
-        assert!(output.contains("DIAGRAM LR"));
-        assert!(output.contains("[Start]"));
-        assert!(output.contains("──▶"));
-    }
-
-    #[test]
-    fn git_surface_renders_syntax_aware_diff_content() {
-        let mut state = state(TuiLayout::Desktop);
-        state.surface = DevSurface::Git;
-        state.git_diff_open = true;
-        state.git_diff_path = Some("src/lib.rs".into());
-        state.git_diff = "@@ -1 +1 @@\n-fn old() {}\n+fn new() {}".into();
-        let output = rendered(&state, 120, 32);
-        assert!(output.contains("fn old()"));
-        assert!(output.contains("fn new()"));
-        assert!(output.contains("DIFF"));
+        assert!(scrolled.contains("TRANSCRIPT_LINE_04"));
     }
 }

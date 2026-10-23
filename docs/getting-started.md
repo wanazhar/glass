@@ -157,23 +157,22 @@ cd /path/to/project
 glass
 ```
 
-The complete first-run path is:
+The first-run path is:
 
 ```text
-glass → Trust (if required) → Agent → engine readiness → composer
-       └─ I inspect · O open · 1 trust once · T trust project
+glass → Agent → engine readiness → composer
 ```
 
-An untrusted repository opens `Trust`; choose `I`, `O`, `1`, or `T` as shown
-in the footer. Until a local choice, repository-controlled execution remains
-blocked. On `Agent`, type a prompt or press `Enter`. If the engine is not
+On `Agent`, type a prompt or press `Enter`. If the engine is not
 ready, Glass reports the exact repair step: install `glass-core`, set
 `GLASS_CORE_BINARY`, or connect a provider for the engine. `:agent doctor` and
 `:agent status` report readiness at any time.
 
-Talk from any surface with `Ctrl-L`. Default composer mode is Agent.
-`Ctrl-Shift-A` cycles Ask, Plan, and Agent; Ask and Plan do not mutate. When
-ready, `Enter` sends the draft and leaves the dock open for the next prompt;
+Talk from any surface with `Ctrl-L`. Glass Core owns coding tools and their
+permissions. Glass handles browser, Git, and workspace actions, with reviewable
+confirmations for its own mutations. A normal message does not attach the
+focused file or selection; ask Glass to inspect a file when you want to share
+it. When ready, `Enter` sends the draft and leaves the dock open for the next prompt;
 `Esc` closes it. `Ctrl-D` toggles steer mode; default follow-up mode queues the
 next message. Sent prompts stay as `YOU`, and `GLASS AGENT` streams the reply
 and tool activity. A local or pre-dispatch failure restores the draft for
@@ -202,13 +201,13 @@ Use these first routes:
 ```
 
 On Code, select a file and press `Enter` (or `i`) to enter the full-screen
-editor. The read-only preview wraps long lines on narrow terminals while
+editor. The preview wraps long lines on narrow terminals while
 preserving syntax highlighting. In the editor, `Alt-W` toggles soft wrap
 (off by default); on, lines wrap at whitespace where possible with continuation
 gutters and synchronized cursor/selection/highlighting. Off horizontally
-scrolls source columns. `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y` undo/redo, and
-`Alt-A` asks the resident agent with focused path/cursor/selection and unsaved content attached,
-with an explicit do-not-edit request. The editor starts in INSERT. `Esc`
+scrolls source columns. `Ctrl-S` saves, `Ctrl-Z`/`Ctrl-Y` undo/redo. The
+composer never attaches the focused file or selection implicitly. The editor
+starts in INSERT. `Esc`
 returns to NORMAL. `Esc` from NORMAL on a clean buffer leaves the editor.
 Unsaved buffers still ask: `S` save, `D` discard, `Q` discard-and-quit, or
 `Esc`/`N` stay. `Ctrl-C` opens Glass quit confirmation from editor input; if

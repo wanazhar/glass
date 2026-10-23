@@ -708,8 +708,7 @@
         "docs/daemon.md",
         "docs/installation.md",
         "docs/mobile-remote.md",
-        "docs/release-evidence.md",
-        "docs/workspace-trust.md"
+        "docs/release-evidence.md"
       ],
       "topicRoute": "docs/INDEX.md#glass-documentation",
       "route": "SECURITY.md#security-policy",
@@ -1646,6 +1645,8 @@
         "docs/migration/0.3.8.md",
         "docs/migration/0.3.9.md",
         "docs/migration/glass-core-monorepo.md",
+        "docs/migration/pi-sdk-runtime.md",
+        "docs/migration/workspace-trust.md",
         "docs/mobile-remote.md",
         "docs/ownership.md",
         "docs/plan/README.md",
@@ -1679,7 +1680,6 @@
         "docs/task-dag.md",
         "docs/workflow-authoring.md",
         "docs/workflows.md",
-        "docs/workspace-trust.md",
         "products/glass-core/README.md",
         "products/glass-core/THIRD_PARTY.md",
         "products/glass-core/docs/INDEX.md",
@@ -2442,8 +2442,8 @@
         },
         {
           "level": "3",
-          "title": "Slash-command modal",
-          "anchor": "slash-command-modal"
+          "title": "Glass action palette",
+          "anchor": "glass-action-palette"
         },
         {
           "level": "2",
@@ -3041,8 +3041,8 @@
         },
         {
           "level": "2",
-          "title": "Agent, trust, and mutation authority",
-          "anchor": "agent-trust-and-mutation-authority"
+          "title": "Agent and integration authority",
+          "anchor": "agent-and-integration-authority"
         },
         {
           "level": "2",
@@ -3633,7 +3633,6 @@
         "docs/INDEX.md"
       ],
       "dependencies": [
-        "docs/pi-sdk-runtime.md",
         "products/glass-core/THIRD_PARTY.md",
         "products/glass-core/docs/plan/output-polish.md",
         "products/glass-core/research/harness-features-2026.md",
@@ -3667,7 +3666,10 @@
       "canonicalSuccessor": null,
       "consumers": [
         "crates/glass-mod-api/README.md",
-        "docs/INDEX.md"
+        "docs/INDEX.md",
+        "docs/development-runtime.md",
+        "docs/harness-architecture.md",
+        "docs/mobile-remote.md"
       ],
       "dependencies": [],
       "topicRoute": "docs/INDEX.md#glass-documentation",
@@ -4034,14 +4036,14 @@
         "docs/architecture/README.md",
         "docs/architecture/development-tui.md",
         "docs/cli.md",
+        "docs/customization-governance.md",
         "docs/daemon.md",
         "docs/glass-core-harness.md",
         "docs/harness-architecture.md",
         "docs/installation.md",
         "docs/mcp.md",
         "docs/plan/analysis/issue63-core-session-resume.md",
-        "docs/task-dag.md",
-        "docs/workspace-trust.md"
+        "docs/task-dag.md"
       ],
       "topicRoute": "docs/INDEX.md#interface-references",
       "route": "docs/development-runtime.md#development-runtime",
@@ -4638,7 +4640,7 @@
         "docs/glass-core-product.md",
         "docs/harness-architecture.md",
         "docs/installation.md",
-        "docs/pi-sdk-runtime.md",
+        "docs/migration/pi-sdk-runtime.md",
         "docs/task-dag.md"
       ],
       "dependencies": [
@@ -4751,12 +4753,12 @@
       "dependencies": [
         "docs/architecture/development-tui.md",
         "docs/architecture/tui.md",
+        "docs/customization-governance.md",
         "docs/daemon.md",
         "docs/development-runtime.md",
         "docs/glass-core-harness.md",
         "docs/mcp.md",
-        "docs/task-dag.md",
-        "docs/workspace-trust.md"
+        "docs/task-dag.md"
       ],
       "topicRoute": "docs/INDEX.md#glass-documentation",
       "route": "docs/harness-architecture.md#glass-coding-harness-architecture",
@@ -5938,6 +5940,57 @@
       ]
     },
     {
+      "path": "docs/migration/pi-sdk-runtime.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "historical-or-release-evidence",
+      "status": "historical-record",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md",
+        "docs/plan/README.md"
+      ],
+      "dependencies": [
+        "docs/glass-core-harness.md",
+        "docs/release-evidence.md",
+        "docs/releases/0.3.12.md"
+      ],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "docs/migration/pi-sdk-runtime.md#native-pi-sdk-runtime-retired",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Native Pi SDK runtime (retired)",
+          "anchor": "native-pi-sdk-runtime-retired"
+        }
+      ]
+    },
+    {
+      "path": "docs/migration/workspace-trust.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "historical-or-release-evidence",
+      "status": "historical-record",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "docs/migration/workspace-trust.md#workspace-trust-controls-retired",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Workspace trust controls (retired)",
+          "anchor": "workspace-trust-controls-retired"
+        }
+      ]
+    },
+    {
       "path": "docs/mobile-remote.md",
       "class": "current",
       "topic": "reference",
@@ -5959,9 +6012,9 @@
         "docs/architecture/development-tui.md",
         "docs/architecture/mobile-cockpit.md",
         "docs/cli.md",
+        "docs/customization-governance.md",
         "docs/development-runtime.md",
-        "docs/harness-architecture.md",
-        "docs/workspace-trust.md"
+        "docs/harness-architecture.md"
       ],
       "topicRoute": "docs/INDEX.md#glass-documentation",
       "route": "docs/mobile-remote.md#mobile-and-remote-development",
@@ -6063,34 +6116,6 @@
       ]
     },
     {
-      "path": "docs/pi-sdk-runtime.md",
-      "class": "current",
-      "topic": "api",
-      "audience": "glass-user",
-      "status": "current-source-guidance",
-      "recommendation": "KEEP_PUBLIC",
-      "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
-      "canonicalSuccessor": null,
-      "consumers": [
-        "docs/credits-and-inspiration.md",
-        "docs/plan/README.md"
-      ],
-      "dependencies": [
-        "docs/glass-core-harness.md",
-        "docs/release-evidence.md",
-        "docs/releases/0.3.12.md"
-      ],
-      "topicRoute": "docs/INDEX.md#interface-references",
-      "route": "docs/pi-sdk-runtime.md#native-pi-sdk-runtime-retired",
-      "sections": [
-        {
-          "level": "1",
-          "title": "Native Pi SDK runtime (retired)",
-          "anchor": "native-pi-sdk-runtime-retired"
-        }
-      ]
-    },
-    {
       "path": "docs/plan/README.md",
       "class": "historical",
       "topic": "history",
@@ -6118,8 +6143,8 @@
         "docs/mcp-tools.md",
         "docs/migration/0.3.13.md",
         "docs/migration/0.3.14.md",
+        "docs/migration/pi-sdk-runtime.md",
         "docs/mobile-remote.md",
-        "docs/pi-sdk-runtime.md",
         "docs/plan/analysis/best-in-class-browser.md",
         "docs/plan/analysis/core-provider-controls.md",
         "docs/plan/analysis/documentation-depth-035.md",
@@ -81406,7 +81431,7 @@
         "docs/maintainers/README.md",
         "docs/migration/0.3.13.md",
         "docs/migration/0.3.14.md",
-        "docs/pi-sdk-runtime.md",
+        "docs/migration/pi-sdk-runtime.md",
         "docs/plan/README.md",
         "docs/plan/analysis/release-036.md",
         "docs/plan/tasks/documentation-depth-035-001.md",
@@ -81694,7 +81719,7 @@
       "canonicalSuccessor": null,
       "consumers": [
         "docs/INDEX.md",
-        "docs/pi-sdk-runtime.md"
+        "docs/migration/pi-sdk-runtime.md"
       ],
       "dependencies": [
         "CHANGELOG.md",
@@ -82376,6 +82401,11 @@
           "anchor": "development-runtime"
         },
         {
+          "level": "2",
+          "title": "Public module map",
+          "anchor": "public-module-map"
+        },
+        {
           "level": "3",
           "title": "`glass-browser` (`glass_browser`)",
           "anchor": "glass-browser-glassbrowser"
@@ -82700,8 +82730,8 @@
         },
         {
           "level": "2",
-          "title": "Entry points and trust",
-          "anchor": "entry-points-and-trust"
+          "title": "Entry points",
+          "anchor": "entry-points"
         },
         {
           "level": "2",
@@ -82859,53 +82889,6 @@
           "level": "2",
           "title": "Redacted session snapshots",
           "anchor": "redacted-session-snapshots"
-        }
-      ]
-    },
-    {
-      "path": "docs/workspace-trust.md",
-      "class": "current",
-      "topic": "reference",
-      "audience": "glass-user",
-      "status": "current-source-guidance",
-      "recommendation": "KEEP_PUBLIC",
-      "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
-      "canonicalSuccessor": null,
-      "consumers": [
-        "SECURITY.md",
-        "docs/INDEX.md",
-        "docs/development-runtime.md",
-        "docs/harness-architecture.md",
-        "docs/mobile-remote.md"
-      ],
-      "dependencies": [],
-      "topicRoute": "docs/INDEX.md#glass-documentation",
-      "route": "docs/workspace-trust.md#workspace-trust",
-      "sections": [
-        {
-          "level": "1",
-          "title": "Workspace trust",
-          "anchor": "workspace-trust"
-        },
-        {
-          "level": "2",
-          "title": "States",
-          "anchor": "states"
-        },
-        {
-          "level": "2",
-          "title": "Before trust",
-          "anchor": "before-trust"
-        },
-        {
-          "level": "2",
-          "title": "TUI decision",
-          "anchor": "tui-decision"
-        },
-        {
-          "level": "2",
-          "title": "Skills and experiments",
-          "anchor": "skills-and-experiments"
         }
       ]
     },

@@ -116,8 +116,6 @@ pub struct DisplaySnapshot {
     pub experiments: String,
     pub files: Vec<String>,
     pub browser: String,
-    pub trust_label: String,
-    pub trust_inspection: Vec<crate::customization::CustomizationInspectionItem>,
     pub root: String,
     pub project_revision: u64,
     pub generation: u64,
@@ -904,8 +902,6 @@ fn compute_snapshot(
     snapshot.git_behind = git.behind;
     snapshot.git_conflicts = git.conflicts;
     snapshot.workspace_status = workspace_status_projection(&mut locked);
-    snapshot.trust_label = locked.trust().label().into();
-    snapshot.trust_inspection = locked.trust_inspection();
     let root = locked.root().to_path_buf();
     snapshot.root = root.display().to_string();
     snapshot.project_revision = locked.project().revision();
@@ -1026,16 +1022,14 @@ fn workspace_status_projection(workspace: &mut crate::DevelopmentWorkspace) -> S
         .map(|url| format!("● open App {url}"))
         .unwrap_or_else(|| "○ start App after a URL is detected".into());
     format!(
-        "WELCOME · {}\n{}\n\n✓ workspace {}\n\nNEXT ACTIONS\n◆ :actions guided launchers · per-surface flows\n◆ :agent doctor · check the resident engine and provider setup\n◆ :process start dev · start detected dev suite\n◆ Enter · open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {} · trust {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
+        "WELCOME · {}\n{}\n\n✓ workspace ready\n\nNEXT ACTIONS\n◆ :actions guided launchers · per-surface flows\n◆ :agent doctor · check the resident engine and provider setup\n◆ :process start dev · start detected dev suite\n◆ Enter · open the selected file\n{}\n{}\n\nSTATE\nroot {}\ngeneration {} · project revision {}\nresident: {} agents · {} tasks · {} kernels · {} debuggers",
         detection.git_branch.as_deref().unwrap_or("no branch"),
         project_line,
-        workspace.trust().label(),
         dev_hint,
         app_hint,
         workspace.root().display(),
         workspace.generation(),
         workspace.project().revision(),
-        workspace.trust().label(),
         agent_count,
         task_count,
         kernel_count,

@@ -27,9 +27,8 @@ the exact serialized call.
 | Boundary | Authority it carries | Safe default | Primary risk |
 |---|---|---|---|
 | Project root | read and bounded mutation below one canonical directory | canonicalize every path; reject escapes and conflicting edits | source or secret disclosure, unintended writes |
-| Workspace trust | activate repository-supplied commands and agent context | untrusted static inspection; local explicit decision; external identity-bound store | code execution while opening an unfamiliar repository |
 | PTY/process manager | execute commands with the current OS user's privileges | bounded resident sessions and explicit stop/detach | arbitrary local command execution |
-| Agent gateway | request schema-validated project and browser tools | engine built-in tools disabled; Glass executes every call and records the revision it ran against | prompt-driven local or browser mutation |
+| Agent gateway | native coding tools and workspace integrations | Glass Core owns native coding tools and their permissions; Glass validates its integration calls and records their revisions | prompt-driven local or browser mutation |
 | Browser/CDP | inspect and control the selected Chrome profile | locally owned endpoint, dedicated profile, structured observation | cookies, authenticated pages, downloads, arbitrary page script |
 | MCP stdio/socket | invoke the negotiated CLI-equivalent tool surface | local transport, initialization, capability checks, daemon mutation leases | confused-deputy calls from an untrusted client |
 | Remote View/application server | display current local state and accept bounded control | loopback-only listener, short-lived token, SSH forwarding | session observation or control by another network peer |
@@ -86,27 +85,18 @@ replacement, while revision checks and edit claims reject stale or conflicting
 writers. These checks do not replace filesystem permissions: a command running
 inside a project can still access anything allowed to the OS user.
 
-Every project command is real code execution. Glass opens unmatched projects
-as `Untrusted`, does not run `workspace.opened`, and does not inject project
-skills into privileged Pi instructions. Inspect exact `glass.toml`,
-`.glass.toml`, skill, hook, tool, test, LSP, and DAP sources before choosing
-trust-once or identity-bound project trust. A shell tool cannot bypass this
-boundary with `mutating = false`. The explicit Glass Dev `--yolo` mode can
-activate repository-controlled execution for the current process, but it does
-not persist trust; a later process still requires the normal decision. See
-[`docs/workspace-trust.md`](docs/workspace-trust.md).
-
-After trust, review command arguments, environment variables, compiler/build
-scripts, and language-server configuration before starting them. Stop or
-detach resident PTYs deliberately;
+Every project command is real code execution. Project commands, skills, hooks,
+tools, tests, language servers, and debugger adapters run with the launching
+OS user's permissions; Glass does not sandbox them. Review their source,
+arguments, and environment before launching them. Stop or detach resident PTYs deliberately;
 closing a client does not imply that a daemon-owned process should be killed.
 
-Pi starts with its built-in tools disabled. Glass exposes only its validated
-tool gateway and keeps one-use broker material private. Browser tools remain
-unavailable until a Browser Workspace is attached. Mutating tools require an
-actor with authority plus explicit confirmation. Do not grant authority merely
-because a request originated from an agent, repository file, browser page, or
-MCP client.
+Glass Core runs native coding tools under Core's permission policy. Glass
+workspace, Git, and browser integrations use the Glass tool router for actor
+attribution, path and revision checks, leases, and operation-specific
+confirmation. Browser integration tools are unavailable until a Browser
+Workspace is attached. Do not treat a request from an agent, repository file,
+browser page, or MCP client as confirmation for a Glass integration mutation.
 
 Prompt text, authored task values, and tool arguments are excluded from raw
 audit events, but invoked tools can still read sensitive project or browser

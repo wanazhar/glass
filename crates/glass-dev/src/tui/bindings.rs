@@ -47,9 +47,8 @@ fn documented_shortcut_help() -> &'static str {
 
 pub fn curriculum_help(surface: DevSurface) -> String {
     let surface_lines = match surface {
-        DevSurface::Trust => "TRUST\n  I inspect · 1/t once · T project · O untrusted",
         DevSurface::Agent => {
-            "AGENT\n  type in the dock to talk · Enter sends\n  Ctrl-Shift-T project threads · / agent commands · : Glass actions\n  :plan accept after a Plan turn"
+            "AGENT\n  type in the dock to talk · Enter sends\n  Ctrl-Shift-T project threads · : Glass actions"
         }
         DevSurface::Code => "CODE\n  Enter opens · i inserts · gc comments",
         DevSurface::App => "APP\n  Enter activates · g source · C comment",
@@ -71,15 +70,7 @@ pub fn curriculum_help(surface: DevSurface) -> String {
     )
 }
 
-pub fn dock_placeholder(surface: DevSurface, mode: crate::AgentTurnMode) -> String {
-    let command_hint = if surface == DevSurface::Agent {
-        ": actions/search · / agent commands"
-    } else {
-        ": actions/search"
-    };
-    format!(
-        "{}  Ask Glass about {}…    {command_hint}",
-        mode.label().to_ascii_uppercase(),
-        surface.label()
-    )
+pub fn dock_placeholder(surface: DevSurface) -> String {
+    let command_hint = ": actions/search";
+    format!("Message Glass about {}…    {command_hint}", surface.label())
 }

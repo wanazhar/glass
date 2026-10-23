@@ -21,7 +21,7 @@ Glass Dev TUI / local browser client / SSH-forwarded browser
                               |
                               v
                  SharedDevelopmentWorkspace
-       trust · generation/revision · agents · tasks · Git · GitHub
+       generation/revision · agents · tasks · Git · GitHub
 ```
 
 `LocalCockpit` binds only to IPv4 loopback on an OS-selected ephemeral port,
@@ -53,7 +53,7 @@ Auto Glass Dev layout
 
 Phone TUI
 ┌──────────────────────────────┐
-│ header · trust/mode · status │ 2 rows
+│ header · mode · status       │ 2 rows
 ├──────────────────────────────┤
 │ one active Agent/Code/App/   │ min 5 rows
 │ Tasks/More surface           │
@@ -78,7 +78,6 @@ GitHub review action. Its state schema contains:
 | `schemaVersion` | development cockpit schema identifier |
 | `root` | canonical project root display |
 | `generation` / `projectRevision` | workspace and project optimistic-concurrency guards |
-| `trust` | current workspace trust label |
 | `agents` | bounded resident-agent snapshot or an embedded error |
 | `tasks` | bounded task snapshots or an embedded error |
 | `git` | Git status, `null` outside a repository, or an embedded error |
@@ -114,7 +113,7 @@ permission is `allowMutation && confirmed`; the request actor is the external
 `cockpit` actor. Omitted expected generation/revision values are filled from
 the current workspace, while supplied stale values fail closed through the
 normal development tool contract. The browser client must not treat a `200`
-response as permission to bypass trust or revision checks.
+response as permission to bypass revision checks.
 
 ```text
 GET state  ──> read shared workspace ──> bounded JSON
@@ -142,8 +141,8 @@ shared workspace when a browser disconnects or the cockpit is stopped.
 - A browser failure does not destroy workspace state. Browser recovery and
   semantic-only operation belong to the embedded Browser workspace in the App
   surface; visual pixels remain optional and bounded.
-- Trust, confirmation, and actor policy remain enforced by the development
-  tool executor even when a command originates from the cockpit.
+- Confirmation and actor policy remain enforced by the development tool
+  executor even when a command originates from the cockpit.
 
 ## Historical design evidence (not current behavior)
 

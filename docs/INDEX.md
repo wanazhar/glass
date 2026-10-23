@@ -47,12 +47,12 @@ page, section, anchor, and body-only changes against a base commit.
 | Building or installing the standalone coding harness | [Standalone Glass Core](glass-core-product.md) | [Glass Core resident harness](glass-core-harness.md) |
 | Reviewing the repository migration evidence | [Glass Core monorepo migration](migration/glass-core-monorepo.md) | [Maintainer handbook](maintainers/README.md) |
 | Automating a repair DAG | [Autonomous task DAGs](task-dag.md) | [Glass Core resident harness](glass-core-harness.md), [daemon](daemon.md) |
-| Running persistent analysis code | [Persistent kernels](kernels.md) | [Workspace trust](workspace-trust.md), [MCP tool catalog](mcp-tools.md) |
+| Running persistent analysis code | [Persistent kernels](kernels.md) | [MCP tool catalog](mcp-tools.md), [Security](../SECURITY.md) |
 | Debugging a resident process | [Resident debugger](debugger.md) | [Development Runtime](development-runtime.md), [Persistent kernels](kernels.md) |
 | Explaining a regression path | [Development Graph and replay](development-graph.md) | [Measured experiments](experiments.md), [Autonomous task DAGs](task-dag.md) |
 | Comparing implementation approaches | [Measured experiments](experiments.md) | [Autonomous task DAGs](task-dag.md), [Development Runtime](development-runtime.md) |
-| Safely opening an unfamiliar repository | [Workspace trust](workspace-trust.md) | [Security](../SECURITY.md), [Development Runtime](development-runtime.md) |
-| Auditing skills, hooks, and tools | [Customization governance](customization-governance.md) | [Workspace trust](workspace-trust.md), [Security](../SECURITY.md) |
+| Understanding workspace integration authority | [Development Runtime](development-runtime.md) | [Customization governance](customization-governance.md), [Security](../SECURITY.md) |
+| Auditing skills, hooks, and tools | [Customization governance](customization-governance.md) | [Development Runtime](development-runtime.md), [Security](../SECURITY.md) |
 | Using Glass over SSH, Mosh, or an iPhone | [Mobile and remote](mobile-remote.md) | [Development Runtime](development-runtime.md) |
 | Connecting an AI/MCP client | [MCP integration](mcp.md) | [Complete MCP tool catalog](mcp-tools.md), [policy](policy.md) |
 | Embedding Glass in Rust | [Rust SDK](rust-sdk.md) | [Examples](examples.md), [glass-browser docs.rs](https://docs.rs/glass-browser), [glass-dev docs.rs](https://docs.rs/glass-dev) |
@@ -124,9 +124,8 @@ page, section, anchor, and body-only changes against a base commit.
   checkpoints, resume, validation, and bounded execution.
 - [Actions and revisions](actions.md) — guarded changes, receipts, review,
   failure, and recovery.
-- [Workspace trust](workspace-trust.md) and
-  [customization governance](customization-governance.md) — trust states,
-  skills, hooks, tool evidence, and mutation policy.
+- [Customization governance](customization-governance.md) — skills, hooks,
+  tool evidence, and integration policy.
 
 The [complete feature reference](features.md) maps every implemented domain to
 its CLI, TUI, MCP, and Rust entry points. It is the fastest way to answer “is
@@ -153,8 +152,6 @@ current user instructions.
   Mosh, terminal-native pixels, semantic tap, and private Safari forwarding.
 - [Development Runtime](development-runtime.md) — bounded files, editing, PTYs,
   diagnostics, graph, replay, experiments, collaboration, agents, and Neovim.
-- [Workspace trust](workspace-trust.md) — explicit trust states, identity-bound
-  persistence, configuration inspection, project-skill authority, and TUI UX.
 - [Customization governance](customization-governance.md) — authority classes,
   skill provenance, hook/tool evidence, effective mutation policy, and labels.
 - [Glass Core resident harness](glass-core-harness.md) — the default resident
@@ -300,7 +297,7 @@ current user instructions.
 ## Credits and project references
 
 - [Project inspiration and attribution](credits-and-inspiration.md) — product
-  research references for Pi, OpenAI Codex, and T3 Code, distinct from runtime
+  research references for coding assistants and related systems, distinct from runtime
   dependencies and third-party license notices.
 - [Glass Core third-party notices](../products/glass-core/THIRD_PARTY.md) —
   applicable adapted-code and bundled web-asset notices.
@@ -342,7 +339,7 @@ current user instructions.
 - [Changelog](../CHANGELOG.md) — current `Unreleased` changes followed by the
   0.3.14 release entries and immutable historical release entries.
 - [Migrate from 0.3.13 to 0.3.14](migration/0.3.14.md) — current upgrade
-  contract for package ownership, Pi 0.84.4, TUI, editor, crew, Git, and
+  contract for package ownership, TUI, editor, crew, Git, and
   browser changes.
 - [Migrate from 0.3.12 to 0.3.13](migration/0.3.13.md) — previous published
   release migration.
@@ -373,7 +370,12 @@ current user instructions.
   and [research index](../products/glass-core/research/README.md) — Core-owned
   proposal, implementation, and dated research records.
 - [Migration records](migration/0.3.14.md) — current upgrade contract and
-  links to the previous versioned migrations.
+  links to the previous versioned migrations. The [retired Pi runtime note](migration/pi-sdk-runtime.md)
+  is historical and describes removed implementation history, not a supported
+  backend or compatibility route.
+- [Retired workspace trust controls](migration/workspace-trust.md) — historical
+  account of the former project gate; follow current guides for present
+  workspace behavior.
 - [Release notes](releases/0.3.14.md) and
   [release evidence](release-evidence.md) — source records and publication
   evidence with version boundaries intact.

@@ -1,29 +1,29 @@
 # Customization governance
 
-Glass loads optional user and trusted-project customization while preserving
-where every instruction or executable came from. Workspace trust decides when
-project-controlled content may become active; a project file cannot mark itself
-trusted.
+Glass records the source of user and project customization, tool declarations,
+and execution evidence. Glass Core owns native coding tools and their
+permissions. Glass does not mirror Core's coding permission policy in its
+workspace UI. Glass-owned integrations retain actor attribution, revision and
+path checks, and per-call confirmation for operations that require it.
 
 ## Authority classes
 
 | Class | Examples | Effective boundary |
 |---|---|---|
-| `glassBuiltIn` | runtime rules and built-in tools | shipped Glass code and policy |
+| `glassBuiltIn` | runtime rules and built-in tools | shipped Glass behavior |
 | `userGlobal` | files under the user Glass skill directory | local user configuration |
-| `trustedOnce` | project content activated for one process | explicit process-local trust; not persisted |
-| `trustedProject` | trusted `glass.toml` and `.glass/skills` | repository content explicitly trusted by a local human |
-| `untrustedProject` | the same project content before trust | visible for inspection; agent context and execution blocked |
-| `externalClient` | CLI, MCP, daemon, or other connected actor | caller identity and negotiated authority; never a customization source |
+| `project` | `glass.toml` and `.glass/skills` | project configuration, labeled with its exact source |
+| `externalClient` | CLI, MCP, daemon, or other connected actor | caller identity and actor attribution |
 
-The Trust TUI serializes inspection items with source, authority, risk, command,
-declared mutation behavior, effective policy, and latest evidence. External
-clients remain a visible authority boundary even when no client is connected.
+Workspace inspection reports retain source, declared behavior, and latest
+evidence. These records explain what configuration was loaded and what ran;
+they do not control whether the workspace opens or duplicate Core's native
+coding permissions.
 
 ## Skill provenance
 
-Agent context labels each active skill by authority and exact source. The TUI
-also shows the built-in Glass runtime rules:
+Agent context labels each active skill by its exact source. The TUI also shows
+the built-in Glass runtime rules:
 
 ```text
 SYSTEM   glass-runtime-rules        <glass-built-in>
@@ -31,49 +31,41 @@ USER     reviewer                   ~/.config/glass/skills/reviewer.md
 PROJECT  project-style              .glass/skills/project-style.md
 ```
 
-Project skills are visible as `untrustedProject` before trust but are omitted
-from the privileged agent instructions in normal mode. A process-local
-`glass --yolo` run reports them as `trustedOnce` execution context without
-persisting a trust decision. Availability, trust inspection, and execution all
-use this same effective trust. User-global skills remain independent of
-project trust.
+Project and user skills remain distinct in the context record. Glass Core
+applies its own permissions to its native coding tools; Glass passes workspace
+context and does not add an Ask/Plan/Agent mode or a second coding permission
+layer.
 
 ## Hook evidence
 
 Every configured hook inspection record includes its event, exact command,
-source config, timeout, authority, trust requirement, failure policy (`fail` or
-`continue`), and latest execution evidence. Evidence contains the actor,
-authority, start time, duration, success, ignored-failure status, bounded result
-size, and error when present. Hooks run only after a normal trust decision or
-explicit `--yolo` activation and are never hidden;
-`tool.before`, `tool.after`, and `workspace.opened` results update the same
-inspection surface.
+source config, timeout, failure policy (`fail` or `continue`), and latest
+execution evidence. Evidence contains the actor, start time, duration, success,
+ignored-failure status, bounded result size, and error when present. The
+inspection surface keeps these records available for review.
 
 ## Custom tools and project commands
 
 A custom tool displays its source, executable command, declared `mutating`
-value, effective mutation policy, input schema, timeout, trust requirement, and
-latest execution evidence. All shell-backed custom tools are effectively
-mutating because a command declared read-only can still modify the filesystem
-or external state. Consequently every custom tool requires mutation authority
-and confirmation; `mutating = false` is retained only as an auditable project
-declaration, never as a policy bypass.
+value, input schema, timeout, and latest execution evidence. Shell-backed
+commands run with the launching user's OS permissions, so the declaration is
+descriptive and does not sandbox the command. Keep source, actor, and result
+visible for review.
 
-The public `Customization::execute_tool` and `execute_command` methods also
-require a `ToolAuthorization` carrying both mutation authority and confirmation.
-Hook dispatch and raw project, Git, and kernel mutators remain crate-private;
-external callers use the governed workspace tool route for those operations.
+Workspace tools use the shared router so Glass can retain actor attribution,
+path confinement, revision checks, and integration confirmation. Core's native
+coding tool authorization remains Core-owned.
 
-Project commands use the same rule and a fixed 15-minute upper bound. The TUI
-help/palette labels them `PROJECT:<name>`, and execution results begin with
+Project commands have a fixed 15-minute upper bound. The TUI help/palette labels
+them `PROJECT:<name>`, and execution results begin with
 `PROJECT command <name>` so repository-provided actions are not confused with
 Glass built-ins.
 
 ## Failure and security
 
 Configuration size, names, commands, schemas, hook counts, timeouts, output,
-and execution duration are bounded. Project execution is denied while
-untrusted. Commands run as the current OS user and are not sandboxed; use a VM,
-container, or restricted account for hostile repositories. Inspection records
-never imply that a successful hook or command is safe—only what ran, under
-which authority, and what observable result it returned.
+and execution duration are bounded. Commands run as the current OS user and are
+not sandboxed; use a VM, container, or restricted account for hostile
+repositories. Inspection records never imply that a successful hook or command
+is safe—only what ran, under which actor, and what observable result it
+returned.

@@ -712,7 +712,6 @@ mod tests {
         state.surface_scroll.insert(DevSurface::Git, 5);
         state.file_picker_open = true;
         state.command_mode = true;
-        state.pi_command_mode = true;
         state.code_edit_mode = true;
         assert_eq!(hit_test(&state, 50, 10), HitRegion::Other);
 
@@ -758,7 +757,6 @@ mod tests {
 
         state.file_picker_open = false;
         state.command_mode = false;
-        state.pi_command_mode = false;
         state.code_edit_mode = false;
         state.help_open = true;
         state.terminal_height = 10;
@@ -872,11 +870,6 @@ mod tests {
         state.surface = DevSurface::App;
         state.terminal_width = 120;
         state.terminal_height = 40;
-        state
-            .ws_mut()
-            .expect("workspace lock")
-            .apply_local_trust_decision(crate::LocalTrustDecision::TrustProject)
-            .expect("trust project");
         state.open_menu();
         let action_index = state
             .surface_actions()
@@ -1067,43 +1060,6 @@ mod tests {
     }
 
     #[test]
-    fn trust_sidebar_row_matches_the_highlighted_prompt() {
-        let root = std::env::temp_dir().join(format!("glass-trust-hit-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(
-            root.join("glass.toml"),
-            "[tools.probe]\ndescription='probe'\ncommand='echo unsafe'\n",
-        )
-        .unwrap();
-        let mut state = DevTuiState::open(&root, TuiLayout::Desktop).unwrap();
-        state.terminal_width = 140;
-        state.terminal_height = 40;
-        assert_eq!(state.surface, DevSurface::Trust);
-
-        assert_eq!(
-            hit_test(&state, 2, 3),
-            HitRegion::Surface(DevSurface::Trust)
-        );
-        assert_eq!(
-            hit_test(&state, 2, 4),
-            HitRegion::Surface(DevSurface::Agent)
-        );
-        let mut pointer = PointerState::default();
-        pointer.handle(
-            &mut state,
-            MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: 2,
-                row: 4,
-                modifiers: crossterm::event::KeyModifiers::empty(),
-            },
-            Instant::now(),
-        );
-        assert_eq!(state.surface, DevSurface::Trust);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn one_line_composer_over_fullscreen_code_editor_hits_the_first_dock_row() {
         let (mut state, root) = overlay_state();
         set_viewport(&mut state, TuiLayout::Desktop, 140, 40);
@@ -1128,48 +1084,6 @@ mod tests {
         );
 
         drop(state);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn footer_click_is_the_chat_dock() {
-        let root = std::env::temp_dir().join(format!("glass-hit-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let mut state = DevTuiState::open_for_tui(&root, TuiLayout::Desktop).unwrap();
-        state.terminal_width = 140;
-        state.terminal_height = 40;
-        state
-            .ws_mut()
-            .unwrap()
-            .apply_local_trust_decision(crate::LocalTrustDecision::TrustOnce)
-            .unwrap();
-        state.agent_readiness = format!(
-            "✓ Ready · Node ✓ · SDK {} · auth ✓",
-            crate::pi_runtime::PINNED_PI_SDK_VERSION
-        );
-        assert_eq!(hit_test(&state, 10, 39), HitRegion::Dock);
-        assert!(matches!(
-            hit_test(&state, 2, 3),
-            HitRegion::Surface(DevSurface::Agent)
-        ));
-        let mut pointer = PointerState::default();
-        let mouse = MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 10,
-            row: 39,
-            modifiers: crossterm::event::KeyModifiers::empty(),
-        };
-        pointer.handle(&mut state, mouse, Instant::now());
-        pointer.handle(
-            &mut state,
-            MouseEvent {
-                kind: MouseEventKind::Up(MouseButton::Left),
-                ..mouse
-            },
-            Instant::now(),
-        );
-        assert!(state.composer_mode);
-        assert_eq!(state.surface, DevSurface::Agent);
         std::fs::remove_dir_all(root).unwrap();
     }
 

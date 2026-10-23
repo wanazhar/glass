@@ -22,10 +22,10 @@ and intends to use [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Glass Core is the default resident harness; the Pi SDK runtime is now the
-  explicit legacy backend, selected with `GLASS_AGENT_HARNESS=pi`. Both engines
-  share the Glass-owned tool executor, approval surface, and evidence rules, so
-  switching engines does not change who owns a tool call.
+- Glass Core is the sole resident engine. Glass no longer includes the Pi
+  runtime, selector, setup flow, or Pi-specific command surface. Glass retains
+  ownership of browser, Git, review, and workspace integrations while Core
+  owns provider connections and native coding tools.
 - Product positioning is collaboration-first. The README, security policy,
   positioning guide, and getting-started guide now describe a resident agent as
   a teammate with the same tools as the human, and describe the remaining

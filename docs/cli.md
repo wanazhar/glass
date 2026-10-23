@@ -14,7 +14,6 @@ remains the authority for installed flags, defaults, and positional arguments.
 
 | Option | Default | Function |
 |---|---|---|
-| `--yolo` | off | Run Glass Dev and browser operations without process-level mutation confirmation; Glass Dev also bypasses the workspace-trust execution gate for this process without persisting trust. It does not change persistent workspace trust. |
 | `--policy development\|ci\|polite\|hardened\|untrusted-mcp` | `development` | Select the browser safety preset. |
 | `--policy-allow CAPABILITY` | none | Explicitly allow a privileged capability; repeatable. |
 | `--policy-confirm CAPABILITY` | none | Require a typed confirmation result; repeatable. |
@@ -290,7 +289,7 @@ confirmation flags, and output schemas.
 | `certify` | `run`, `plan`, `release`, `replay`, `replay-diff` |
 | `workspace` | `list`, `inspect`, `suspend`, `resume`, `delete` |
 | `project` | `inspect`, `files`, `search`, `read`, `edit`, `mkdir`, `rename`, `delete`, `diagnostics`, `run`, `test`, `lint`, `process`, `diff`, `link`, `graph`, `breakpoint`, `timeline`, `replay`, `neovim`, `experiment`, `attach`, `git`, `github` |
-| `agent` | `doctor`, `setup`, `status`, `delegate`, `hello`, `prompt`, `steer`, `follow-up`, `models`, `set-model`, `thinking`, `abort`, `new-session` |
+| `agent` | `doctor`, `status`, `delegate`, `hello`, `prompt`, `steer` |
 | `harness` | `list`, `start` |
 | `memory` | `status`, `inspect`, `explain`, `forget`, `export`, `prune`, `reindex` |
 | `browser` | `tui` (or omit the subcommand to launch the browser workspace) |
@@ -337,7 +336,7 @@ The following forms are the public Clap routes. `FILE`, `PATH`, `ID`, and
 | `project process` | `list`; `start NAME COMMAND [--wait]`; `stop|restart|remove NAME`; `input NAME INPUT`; `resize NAME COLS ROWS`; `output NAME` |
 | `project graph` | `discover`; `entity ENTITY`; `source PATH [--line N]` |
 | `replay` | `inspect SCENARIO INPUT`; `diff SCENARIO BEFORE AFTER`; `attach SCENARIO INPUT` |
-| `agent` | `doctor`; `setup [--sdk-entry FILE] [--agent-dir DIR] [--update] [--login]` (`--agent-dir` requires `--sdk-entry`); `status`; `delegate HARNESS PROMPT [--root .] [--sandbox read-only\|workspace-write] [--timeout-secs 600] [--allow-mutation] [--yes]`; `hello [--root .] [--harness local\|pi]`; `prompt TEXT [--root .] [--harness local\|pi]`; `steer TEXT [--root .] [--harness pi]`; `follow-up TEXT [--root .]`; `models [--root .]`; `set-model PROVIDER MODEL_ID [--root .]`; `thinking LEVEL [--root .]`; `abort|new-session [--root .]` |
+| `agent` | `doctor`; `status`; `delegate HARNESS PROMPT [--root .] [--sandbox read-only\|workspace-write] [--timeout-secs 600] [--allow-mutation] [--yes]`; `hello [--root .]`; `prompt TEXT [--root .]`; `steer TEXT [--root .]` |
 | `harness` | `list`; `start NAME [--root .]` |
 | `memory` | `status`; `inspect|explain|forget RECORD_ID`; `export [PATH]`; `prune`; `reindex` |
 | `surfaces` | `inspect|coverage FILE` |
@@ -633,7 +632,7 @@ glass project github review --root .
 
 Git and GitHub CLI operations route through the same development tool contracts
 as the MCP surface. Read-only actions need no mutation flags. Git writes and
-`github ship` require both `--allow-mutation` and `--yes` (or `--yolo`), for
+`github ship` require both `--allow-mutation` and `--yes`, for
 example `glass project --allow-mutation --yes git stage src/main.rs --root .`.
 The Git subcommands cover status/diff, stage/unstage/discard, branch and stash
 operations, push/pull/fetch/merge/rebase/commit, and worktree management.
@@ -665,13 +664,11 @@ printing credential values. Provider setup stays in Core. The resident TUI's
 slash-command modal contains Glass-level aliases; `:` opens Glass workspace
 actions. See [Glass Core resident harness](glass-core-harness.md).
 
-With the default Core backend, `:agent setup login` suspends Glass and opens
-the resolved `glass-core` interactive UI in the current workspace. Use Core's
-`/login`, then exit to return; Glass never prompts for or stores provider
-secrets. Glass refreshes readiness but leaves existing resident processes and
-conversations intact. `:agent spawn ROLE TASK` starts a separate resident
-runtime that reads the updated Core settings; `:agent new` reuses the current
-runtime. `:agent models [AGENT_ID]` lists models for the selected session, or
+With `:agent setup login`, Glass hands the terminal to Core's interactive
+provider login; Glass does not prompt for or store provider secrets. `:agent
+spawn ROLE TASK` starts a separate resident runtime that reads the current Core
+settings; `:agent new` reuses the current runtime. `:agent models [AGENT_ID]`
+lists models for the selected session, or
 the workspace's first active session when none is selected. `:agent model
 [AGENT_ID] PROVIDER MODEL` configures that session through Core's negotiated
 runtime methods. Model catalog responses appear in the Agent conversation.
@@ -747,7 +744,7 @@ The TUI equivalent is `:harness delegate NAME PROMPT`, with optional
 prompt can be `-` to read it from stdin in the CLI. `NAME` must be `codex`,
 `claude`, or `opencode`; each installed executable is resolved from `PATH`.
 The default sandbox is `read-only`; `--sandbox workspace-write` requires both
-`--allow-mutation` and `--yes` (or the process-scoped `--yolo` flag). Timeout
+`--allow-mutation` and `--yes`. Timeout
 defaults to 600 seconds and must be 1..3600 seconds. Prompts are limited to
 64 KiB; captured stdout is limited to 256 KiB and stderr to 64 KiB, with
 truncation flags in the JSON result. Glass passes the canonical workspace

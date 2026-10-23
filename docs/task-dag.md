@@ -29,7 +29,7 @@ the checkpoint does not claim that an interrupted engine turn has been
 recovered. Glass Core is the sole resident engine. See [Development Runtime](development-runtime.md),
 [Glass Core resident harness](glass-core-harness.md), and [Local daemon](daemon.md).
 
-## Entry points and trust
+## Entry points
 
 The TUI exposes `:task` commands. MCP and resident agents use these tool names:
 
@@ -49,8 +49,8 @@ glass.task.create          glass.task.list
 pair(s), reviewer, and browser-verification DAG. The workspace records a
 `before-crew:<goal>` editor checkpoint and prepares paths below
 `.glass/worktrees`; Git worktrees are used when available and confined
-directories are used as the fallback. The crew is project-execution and
-confirmation gated.
+directories are used as the fallback. The crew is workspace-scoped and
+retains task-level verification and evidence records.
 
 The scheduler's task records checkpoint under `.glass/tasks/scheduler.json`;
 the agent-event cursor belongs to the live registry and restarts with it. The
@@ -66,7 +66,7 @@ Crew wakes are distinct from `glass.todo.*`: the workspace-local Agent
 checklist is persisted at `.glass/todos/session.json`, while a crew is an
 overnight factory orchestration record.
 
-There is no standalone `glass task ...` scheduling CLI family in the current command parser. `glass task validate/compile` is a separate browser-free Task Protocol feature and does not create scheduler records. Use the TUI or a trusted router client:
+There is no standalone `glass task ...` scheduling CLI family in the current command parser. `glass task validate/compile` is a separate browser-free Task Protocol feature and does not create scheduler records. Use the TUI or a workspace router client:
 
 ```text
 :task create TITLE PROMPT
@@ -82,7 +82,11 @@ There is no standalone `glass task ...` scheduling CLI family in the current com
 :task evidence TASK-ID KIND true|false [JSON]
 ```
 
-Task creation, control, and evidence require a workspace trust state that permits project execution. An untrusted workspace may inspect existing task state through the allowed read path, but cannot create, control, or submit evidence. Every router call also checks the current workspace generation and project revision.
+Task creation, control, and evidence use the shared workspace router. Calls
+retain actor attribution, workspace-generation and project-revision checks,
+and the task's declared verification requirements. Glass Core owns resident
+coding tools and their permissions; task scheduling records work and evidence
+without adding a second coding permission policy.
 
 ## Lifecycle and dependency wakeup
 
@@ -105,7 +109,7 @@ blocked ── override-blocked ──► queued (explicit human override)
 Terminal task states are `succeeded`, `failed`, and `cancelled`. `paused` and `blocked` retain their reason. A failed or cancelled prerequisite never becomes success by inference. `override-blocked` deliberately allows the task to queue without requiring its failed dependency to succeed; record why this exception is safe before continuing.
 
 The task snapshot includes ID, title, goal, full prompt, role, dependencies,
-assigned agent, worktree, model, thinking, unrestricted flag, budget,
+assigned agent, worktree, model, thinking, budget,
 verification requirement, retry policy, state, attempt, observed tokens,
 timestamps, last error, bounded evidence, override flag, and
 `recoveryPending` and `evidenceTruncated`. IDs use the `task-` prefix and are
@@ -191,21 +195,19 @@ log.
 
 ## State ownership and security
 
-The assigned `AgentSpec` receives the task prompt, worktree, authority policy,
-model, thinking level, unrestricted flag, and budgets. The selected resident
-engine owns the agent session. The scheduler owns task state and does not
+The assigned agent receives the task prompt, worktree, model, thinking level,
+and budgets. Glass Core owns the agent session and native coding permissions.
+The scheduler owns task state and does not
 bypass the agent tool gateway. Every tool call records its actor and checks
 the current project or browser revision. File operations stay inside the
-project root. Browser mutations use the current browser lease. Workspace trust
-and confirmation depend on the task's authority settings. An explicit
-process-local `--yolo` run can enable repository configuration without saving a
-trust decision. Task evidence records its source. An agent claim cannot
+project root. Browser mutations use the current browser lease. Glass
+integrations retain operation-specific confirmations. Task evidence records
+its source. An agent claim cannot
 replace missing or stale evidence.
 
-`unrestricted` is explicit task policy and reaches the assigned agent. It does
-not remove path checks, revision checks, protocol bounds, process limits, or
-browser host denial. Use it only in a trusted workspace or an explicitly
-`--yolo` process, and label the resulting evidence.
+Task options and budgets are sent to the assigned Core session. They do not
+replace Core's permission decisions or remove Glass integration path, revision,
+protocol, process, or browser policy checks.
 
 ## Verification and evidence
 

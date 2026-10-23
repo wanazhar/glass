@@ -1,11 +1,9 @@
 //! Isolated competing implementations ranked from observable evidence.
 
+use crate::DevelopmentWorkspace;
 use crate::agents::AgentId;
-#[cfg(test)]
-use crate::agents::{AgentRegistry, AgentSpec};
 use crate::development::{DevelopmentError, DevelopmentResult, ProcessHealth};
 use crate::git::{GitError, GitService};
-use crate::{DevelopmentWorkspace, LocalTrustDecision, WorkspaceTrust};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -39,15 +37,6 @@ impl ExperimentState {
             Self::Selected => "selected",
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ExperimentTrustPolicy {
-    /// Child worktrees start untrusted and cannot execute project code.
-    Reevaluate,
-    /// A trusted parent grants process-lifetime trust to child worktrees only.
-    InheritOnce,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -149,7 +138,6 @@ pub(crate) struct ExperimentManager {
     worktree_root: PathBuf,
     experiments: BTreeMap<String, Experiment>,
     ports: BTreeSet<u16>,
-    trust_policy: ExperimentTrustPolicy,
     weights: ExperimentWeights,
 }
 
@@ -157,13 +145,7 @@ impl ExperimentManager {
     pub(crate) fn new_governed(
         repository_root: impl AsRef<Path>,
         worktree_root: impl AsRef<Path>,
-        parent_trust: WorkspaceTrust,
     ) -> DevelopmentResult<Self> {
-        if !parent_trust.permits_project_execution() {
-            return Err(DevelopmentError::Conflict(
-                "experiments cannot create executable worktrees before workspace trust".into(),
-            ));
-        }
         let repository = GitService::open(repository_root)
             .map_err(|error| DevelopmentError::Process(error.to_string()))?;
         let worktree_root = absolutize(worktree_root.as_ref())?;
@@ -179,7 +161,6 @@ impl ExperimentManager {
             worktree_root,
             experiments: BTreeMap::new(),
             ports: BTreeSet::new(),
-            trust_policy: ExperimentTrustPolicy::InheritOnce,
             weights: ExperimentWeights::default(),
         })
     }
@@ -226,20 +207,7 @@ impl ExperimentManager {
             return Err(DevelopmentError::Process(error.to_string()));
         }
         let workspace = match DevelopmentWorkspace::open(&worktree) {
-            Ok(mut workspace) => {
-                if self.trust_policy == ExperimentTrustPolicy::InheritOnce
-                    && let Err(error) =
-                        workspace.apply_local_trust_decision(LocalTrustDecision::TrustOnce)
-                {
-                    drop(workspace);
-                    let _ = self.repository.remove_worktree(&worktree, true);
-                    if let Some(port) = port {
-                        self.ports.remove(&port);
-                    }
-                    return Err(error);
-                }
-                workspace
-            }
+            Ok(workspace) => workspace,
             Err(error) => {
                 let _ = self.repository.remove_worktree(&worktree, true);
                 if let Some(port) = port {
@@ -265,26 +233,6 @@ impl ExperimentManager {
             },
         );
         Ok(snapshot)
-    }
-
-    #[cfg(test)]
-    pub fn assign_agent(
-        &mut self,
-        id: &str,
-        agents: &mut AgentRegistry,
-        mut spec: AgentSpec,
-    ) -> DevelopmentResult<AgentId> {
-        let experiment = self.experiment_mut(id)?;
-        if experiment.snapshot.agent_id.is_some() {
-            return Err(DevelopmentError::Conflict(format!(
-                "experiment {id} already has an agent"
-            )));
-        }
-        spec.worktree = Some(experiment.snapshot.worktree.clone());
-        let agent = agents.create(spec)?;
-        experiment.snapshot.agent_id = Some(agent.clone());
-        experiment.snapshot.state = ExperimentState::Running;
-        Ok(agent)
     }
 
     /// Collect every currently available evidence family from resident or
@@ -655,16 +603,7 @@ impl ExperimentManager {
     }
 
     #[cfg(test)]
-    pub fn set_weights(
-        &mut self,
-        weights: ExperimentWeights,
-        trust: WorkspaceTrust,
-    ) -> DevelopmentResult<()> {
-        if !trust.permits_project_execution() {
-            return Err(DevelopmentError::Conflict(
-                "experiment ranking weights require a trusted workspace".into(),
-            ));
-        }
+    pub fn set_weights(&mut self, weights: ExperimentWeights) -> DevelopmentResult<()> {
         if [
             weights.test_passed,
             weights.test_failed,
@@ -928,7 +867,6 @@ impl From<GitError> for DevelopmentError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AgentStatus;
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -975,12 +913,7 @@ mod tests {
     fn isolated_worktrees_are_ranked_and_selected_from_evidence() {
         let (base, root) = repository();
         let worktrees = base.join("worktrees");
-        assert!(
-            ExperimentManager::new_governed(&root, &worktrees, WorkspaceTrust::Untrusted).is_err()
-        );
-        let mut manager =
-            ExperimentManager::new_governed(&root, &worktrees, WorkspaceTrust::TrustedOnce)
-                .unwrap();
+        let mut manager = ExperimentManager::new_governed(&root, &worktrees).unwrap();
         let first = manager
             .create("approach-a", "experiment-a", Some(3101))
             .unwrap();
@@ -993,68 +926,13 @@ mod tests {
         assert!(first.worktree.exists());
         assert!(second.worktree.exists());
         assert!(third.worktree.exists());
-        // Launching Pi may contact a provider or depend on the caller's
-        // installed Pi protocol version. Keep the unit test deterministic and
-        // offline unless the caller explicitly opts into that integration.
-        let pi_available = std::env::var_os("GLASS_PI_EXPERIMENT_E2E").is_some()
-            && Command::new("pi")
-                .arg("--version")
-                .output()
-                .is_ok_and(|output| output.status.success());
-        let mut agents = AgentRegistry::new(&root).unwrap();
-        let mut assigned = Vec::new();
-        if pi_available {
-            for id in ["approach-a", "approach-b", "approach-c"] {
-                assigned.push(
-                    manager
-                        .assign_agent(
-                            id,
-                            &mut agents,
-                            AgentSpec::new("experiment-implementer", format!("evaluate {id}")),
-                        )
-                        .unwrap(),
-                );
-            }
-            for agent in &assigned {
-                let deadline = Instant::now() + Duration::from_secs(20);
-                loop {
-                    let snapshot = agents.snapshot(agent).unwrap();
-                    if snapshot.status == AgentStatus::Idle {
-                        break;
-                    }
-                    assert_ne!(
-                        snapshot.status,
-                        AgentStatus::Failed,
-                        "native Pi experiment worker failed: {:?}",
-                        snapshot.last_error
-                    );
-                    if Instant::now() >= deadline {
-                        panic!(
-                            "native Pi experiment worker did not become idle: {:?}",
-                            snapshot
-                        );
-                    }
-                    thread::sleep(Duration::from_millis(25));
-                }
-            }
-            assert!(manager.snapshots().iter().all(|snapshot| {
-                snapshot
-                    .agent_id
-                    .as_ref()
-                    .is_some_and(|agent| assigned.contains(agent))
-            }));
-        }
         std::fs::write(first.worktree.join("a.rs"), "fn a() {}\n").unwrap();
         std::fs::write(second.worktree.join("b.rs"), "fn b() {}\n").unwrap();
         std::fs::write(second.worktree.join("b-extra.rs"), "fn b_extra() {}\n").unwrap();
         std::fs::write(third.worktree.join("c.rs"), "fn c() {}\n").unwrap();
         std::fs::write(third.worktree.join("c-extra-1.rs"), "fn c1() {}\n").unwrap();
         std::fs::write(third.worktree.join("c-extra-2.rs"), "fn c2() {}\n").unwrap();
-        assert!(
-            manager
-                .set_weights(ExperimentWeights::default(), WorkspaceTrust::Untrusted)
-                .is_err()
-        );
+        manager.set_weights(ExperimentWeights::default()).unwrap();
         for (id, changed_files) in [
             ("approach-a", 1_u64),
             ("approach-b", 2_u64),
@@ -1094,7 +972,6 @@ mod tests {
             "manual-external"
         );
         assert!(!manual.evidence.provenance["tests"].measured);
-        drop(agents);
         manager.remove("approach-a", true).unwrap();
         manager.remove("approach-b", true).unwrap();
         manager.remove("approach-c", true).unwrap();

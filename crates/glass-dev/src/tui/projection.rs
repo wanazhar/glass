@@ -6,42 +6,6 @@
 
 use serde_json::Value;
 
-/// Render workspace-trust configuration as an authority/risk table.
-pub fn trust_items(items: &[crate::customization::CustomizationInspectionItem]) -> String {
-    if items.is_empty() {
-        return "No executable Glass settings found in this repository.".into();
-    }
-    let mut lines = Vec::new();
-    for item in items {
-        let risk = match item.risk {
-            crate::customization::CustomizationRisk::Executable => "! executable",
-            crate::customization::CustomizationRisk::AgentContext => "? agent context",
-            crate::customization::CustomizationRisk::Static => "✓ static",
-        };
-        lines.push(format!(
-            "{} {} · {} · authority {} · source {}{}",
-            risk,
-            item.name,
-            item.kind,
-            match item.authority {
-                crate::customization::CustomizationAuthority::GlassBuiltIn => "built-in",
-                crate::customization::CustomizationAuthority::UserGlobal => "user-global",
-                crate::customization::CustomizationAuthority::TrustedOnce => "trusted-once",
-                crate::customization::CustomizationAuthority::TrustedProject => "trusted-project",
-                crate::customization::CustomizationAuthority::UntrustedProject =>
-                    "untrusted-project",
-                crate::customization::CustomizationAuthority::ExternalClient => "external-client",
-            },
-            item.source.display(),
-            item.command
-                .as_ref()
-                .map(|command| format!("\n    runs `{command}`"))
-                .unwrap_or_default(),
-        ));
-    }
-    lines.join("\n")
-}
-
 /// Project the resident browser workflow state.
 pub fn workflow(value: Option<&Value>) -> String {
     let Some(value) = value else {
@@ -427,7 +391,7 @@ pub enum ConversationKind {
     Error,
 }
 
-/// One rendered transcript bubble, optionally pinned to a Pi session entry.
+/// One rendered transcript bubble, optionally pinned to a Core session entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationEntry {
     pub kind: ConversationKind,
@@ -677,9 +641,6 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
     let mut shared = SharedConversationProjection::default();
     let mut turn = 0_usize;
     for event in events {
-        if pi_user_message(event) {
-            continue;
-        }
         let entry_id = event_entry_id(event);
         match event.kind.as_str() {
             "starting" | "ready" | "turn_end" | "message_start" | "agent_settled" => {}
@@ -841,31 +802,6 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     ),
                     Some(name),
                 ));
-            }
-            "glass_pi_command_result" => {
-                shared.finish_streaming(&mut items);
-                let command = event
-                    .payload
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .unwrap_or("command");
-                let text = event
-                    .payload
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Pi command completed");
-                let label = format!("pi /{command}");
-                if event.payload.get("ok").and_then(Value::as_bool) == Some(false) {
-                    items.push(ConversationEntry::error(
-                        format!("/{command}\n{text}"),
-                        Some(label),
-                    ));
-                } else {
-                    items.push(ConversationEntry::system(
-                        format!("/{command}\n{text}"),
-                        Some(label),
-                    ));
-                }
             }
             "tool_execution_start" => {
                 let name = tool_name(&event.payload);
@@ -1188,38 +1124,18 @@ fn event_client_message_id(event: &crate::AgentEvent) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Older Glass builds put mode and surface playbooks into the user message.
-/// Remove only those exact generated prefixes when projecting legacy events;
-/// new sends keep the human text as the complete user message.
+/// Older Glass builds put surface playbooks into the user message. Remove only
+/// those exact generated prefixes when projecting stored events.
 fn strip_legacy_composer_prefix(text: &str) -> String {
     let mut prefixes = Vec::new();
-    for surface in super::state::DevSurface::ALL
-        .into_iter()
-        .chain([super::state::DevSurface::Trust])
-    {
+    for surface in super::state::DevSurface::ALL {
         let playbook = super::playbooks::playbook(surface);
         prefixes.push(format!("{playbook}\n\n"));
-        for mode in [crate::AgentTurnMode::Ask, crate::AgentTurnMode::Plan] {
-            prefixes.push(format!("{}\n\n{playbook}\n\n", mode.instruction()));
-        }
     }
     prefixes
         .into_iter()
         .find_map(|prefix| text.strip_prefix(&prefix).map(str::to_string))
         .unwrap_or_else(|| text.to_string())
-}
-
-fn pi_user_message(event: &crate::AgentEvent) -> bool {
-    event
-        .payload
-        .pointer("/message/role")
-        .and_then(serde_json::Value::as_str)
-        == Some("user")
-        || event
-            .payload
-            .get("role")
-            .and_then(serde_json::Value::as_str)
-            == Some("user")
 }
 
 fn hidden_custom_message(payload: &serde_json::Value) -> bool {
@@ -1379,25 +1295,6 @@ mod tests {
         assert!(rendered.contains("Core prompt failed: request · -32000"));
         assert!(!rendered.contains("unrecognized-sensitive-class"));
         assert!(!rendered.contains("untrusted detail"));
-    }
-
-    #[test]
-    fn trust_items_project_authority_and_risk() {
-        let items = vec![crate::customization::CustomizationInspectionItem {
-            kind: "tool".into(),
-            name: "probe".into(),
-            source: "glass.toml".into(),
-            authority: crate::customization::CustomizationAuthority::TrustedProject,
-            risk: crate::customization::CustomizationRisk::Executable,
-            command: Some("echo unsafe".into()),
-            declared_mutating: None,
-            trust_required: true,
-            governance: None,
-        }];
-        let projected = trust_items(&items);
-        assert!(projected.contains("! executable"));
-        assert!(projected.contains("authority trusted-project"));
-        assert!(projected.contains("runs `echo unsafe`"));
     }
 
     #[test]
@@ -1797,7 +1694,7 @@ mod tests {
             make_event(
                 3,
                 serde_json::json!({
-                    "text": format!("{}\n\nkeep this literal", crate::AgentTurnMode::Ask.instruction()),
+                    "text": "previous mode header\n\nkeep this literal",
                     "contextAttached": true
                 }),
             ),
@@ -1805,38 +1702,11 @@ mod tests {
         let entries = conversation_entries(&events);
         assert_eq!(entries[0].text, "keep this request");
         assert_eq!(entries[1].text, format!("{playbook}\n\nkeep this literal"));
-        assert_eq!(
-            entries[2].text,
-            format!(
-                "{}\n\nkeep this literal",
-                crate::AgentTurnMode::Ask.instruction()
-            )
-        );
+        assert_eq!(entries[2].text, "previous mode header\n\nkeep this literal");
     }
 
     #[test]
-    fn conversation_renders_native_pi_slash_results() {
-        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
-        let events = vec![crate::AgentEvent {
-            sequence: 1,
-            agent_id,
-            timestamp_ms: 0,
-            kind: "glass_pi_command_result".into(),
-            payload: serde_json::json!({
-                "command": "settings",
-                "text": "{\"projectTrusted\":true}"
-            }),
-        }];
-        let entries = conversation_entries(&events);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].kind, ConversationKind::System);
-        assert!(entries[0].text.contains("/settings"));
-        assert!(entries[0].text.contains("projectTrusted"));
-        assert_eq!(entries[0].tool_name.as_deref(), Some("pi /settings"));
-    }
-
-    #[test]
-    fn conversation_entries_keep_pi_entry_ids_and_redact_approval_json() {
+    fn conversation_entries_keep_core_entry_ids_and_redact_approval_json() {
         let agent_id = crate::AgentId::parse("agent-0001").unwrap();
         let events = vec![
             crate::AgentEvent {
@@ -1883,51 +1753,6 @@ mod tests {
         assert_eq!(
             entries.last().and_then(|entry| entry.entry_id.as_deref()),
             Some("entry-assistant")
-        );
-    }
-
-    #[test]
-    fn conversation_ignores_pi_user_message_echo() {
-        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
-        let events = vec![
-            crate::AgentEvent {
-                sequence: 1,
-                agent_id: agent_id.clone(),
-                timestamp_ms: 0,
-                kind: "user".into(),
-                payload: serde_json::json!({"text": "hello"}),
-            },
-            crate::AgentEvent {
-                sequence: 2,
-                agent_id: agent_id.clone(),
-                timestamp_ms: 0,
-                kind: "message_end".into(),
-                payload: serde_json::json!({
-                    "message": {
-                        "role": "user",
-                        "content": [{"type": "text", "text": "hello"}]
-                    }
-                }),
-            },
-            crate::AgentEvent {
-                sequence: 3,
-                agent_id,
-                timestamp_ms: 0,
-                kind: "message_end".into(),
-                payload: serde_json::json!({
-                    "message": {
-                        "role": "assistant",
-                        "content": [{
-                            "type": "text",
-                            "text": "Hello! How can I help you today?"
-                        }]
-                    }
-                }),
-            },
-        ];
-        assert_eq!(
-            conversation(&events),
-            "YOU\nhello\n\nGLASS AGENT\nHello! How can I help you today?"
         );
     }
 

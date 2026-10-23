@@ -1663,7 +1663,7 @@ mod tests {
             }),
             serde_json::json!({
                 "runId": random_id("run").unwrap(),
-                "engine": "pi",
+                "engine": "unsupported",
                 "coreSessionId": "not-a-core-session",
                 "classification": "completed"
             }),

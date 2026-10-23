@@ -2347,9 +2347,6 @@ fn policy_forward_args(cli: &Cli) -> Vec<String> {
             .map(|value| value.get_name().to_string())
             .unwrap_or_else(|| "development".into()),
     ];
-    if cli.yolo {
-        args.push("--yolo".into());
-    }
     for (flag, values) in [
         ("--policy-allow", &cli.policy_allow),
         ("--policy-confirm", &cli.policy_confirm),
@@ -4452,52 +4449,17 @@ fn read_extraction_request(path: Option<&std::path::PathBuf>) -> BrowserResult<E
 }
 
 pub fn policy_from_cli(cli: &Cli) -> BrowserResult<BrowserPolicy> {
-    let unrestricted_capabilities = [
-        PolicyCapability::Attach,
-        PolicyCapability::PersistentProfile,
-        PolicyCapability::Evaluate,
-        PolicyCapability::Upload,
-        PolicyCapability::Download,
-        PolicyCapability::Screenshot,
-        PolicyCapability::RawCdp,
-        PolicyCapability::ReadFormValues,
-        PolicyCapability::ReadSensitiveFormValues,
-        PolicyCapability::ReadSensitiveExtraction,
-        PolicyCapability::CoordinateClick,
-        PolicyCapability::ConsentDismissal,
-        PolicyCapability::DeclaredAgentIdentity,
-    ];
     Ok(BrowserPolicy::new(
         cli.policy,
         std::env::current_dir()?,
-        if cli.yolo {
-            unrestricted_capabilities.as_slice()
-        } else {
-            cli.policy_allow.as_slice()
-        }
-        .iter()
-        .copied(),
-        if cli.yolo {
-            &[]
-        } else {
-            cli.policy_confirm.as_slice()
-        }
-        .iter()
-        .copied(),
+        cli.policy_allow.iter().copied(),
+        cli.policy_confirm.iter().copied(),
     )?
     .with_host_rules(
         cli.policy_allow_host.iter().cloned(),
         cli.policy_deny_host.iter().cloned(),
     )?
-    .with_confirmation_tokens(
-        if cli.yolo {
-            &[]
-        } else {
-            cli.policy_confirm_once.as_slice()
-        }
-        .iter()
-        .copied(),
-    )?)
+    .with_confirmation_tokens(cli.policy_confirm_once.iter().copied())?)
 }
 
 async fn run_prompt(
@@ -5114,13 +5076,12 @@ mod tests {
     }
 
     #[test]
-    fn yolo_allows_capabilities_without_confirmation() {
+    fn explicit_policy_flags_control_capabilities_without_global_bypass() {
         let cli = Cli::try_parse_from_on_dedicated_stack([
             "glass",
-            "--yolo",
             "--policy",
             "hardened",
-            "--policy-confirm",
+            "--policy-allow",
             "evaluate",
             "doctor",
         ])
@@ -5132,7 +5093,7 @@ mod tests {
         ));
         assert!(matches!(
             policy.decide(PolicyCapability::RawCdp),
-            crate::browser::policy::PolicyDecision::Allow
+            crate::browser::policy::PolicyDecision::Deny { .. }
         ));
     }
 

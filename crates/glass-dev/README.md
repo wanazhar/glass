@@ -55,7 +55,7 @@ glass
 Desktop mode opens the Development coding workspace by default. Its eight
 destinations are Agent, Code, App, Terminal, Tasks, Git, Debug, and More. The
 workspace owns a bounded file tree, native editor, PTY processes, diagnostics,
-actors, timeline, source/runtime graph, diff, replay, and optional Pi/Neovim
+actors, timeline, source/runtime graph, diff, replay, and optional Neovim
 adapters.
 
 ```text
@@ -83,19 +83,17 @@ glass project diff --root .
 glass agent prompt "read README.md" --root .
 ```
 
-On first run, an untrusted project opens the Trust surface: `I` inspects, `O`
-opens untrusted, `1` trusts once, and `T` trusts the project. Repository
-execution remains blocked until a local decision. On Agent, type a prompt or
+Glass opens directly on Agent; type a prompt or
 press `Enter`; when the resident engine is not ready, Glass reports the exact
 repair step — install `glass-core`, set `GLASS_CORE_BINARY`, or connect a
 provider. `:agent doctor` and `:agent status` report readiness at any time. Provider setup stays in Glass
 Core, and Glass reports readiness without printing credentials.
 
 Talk from any surface. `Ctrl-L` opens the shared composer dock (not a redraw).
-`Alt-A` docks from the editor. Default mode is Agent. `Ctrl-Shift-A` cycles
-Ask, Plan, and Agent; `Ctrl-Shift-T` opens the project conversation picker.
-`/ask`, `/plan`, `/agent`, and `/todo` also set the mode.
-Ask and Plan are fail-closed for mutations. `Enter` sends and keeps the dock
+`Ctrl-Shift-T` opens the project conversation picker. Glass Core owns provider
+connections and native coding-tool permissions. Glass owns workspace, browser,
+Git, and review integrations and confirms their mutations. Ordinary messages
+do not attach the focused file or selection. `Enter` sends and keeps the dock
 open; `Esc` closes it. `Ctrl-D` toggles steer mode; follow-up mode queues a
 message. Sent prompts remain as `YOU`, and `GLASS AGENT` streams replies and
 tool activity. A local or pre-dispatch send failure restores the draft for
@@ -111,7 +109,7 @@ to open actions and search commands, and press `a` on non-Agent surfaces for
 their actions. `:process start dev`
 starts the detected suite, Tasks owns the workspace-local Agent checklist
 (`.glass/todos/session.json`) plus the overnight DAG. More is the
-workspace-services dashboard: Services, PI, and Experiments are live
+workspace-services dashboard: Services and Experiments are live
 projections, while Routes can be selected with `j/k` or a click and run with
 `Enter` or a double-click. Its `doctor`, cockpit, kernel, experiment, and
 harness routes keep the result on More; `:cockpit start` starts a tokenized
@@ -230,13 +228,9 @@ managed by Glass Core; readiness output never prints credential values.
 Prompt text, authored task values, and tool arguments are not stored in raw
 audit events. Mutating tools require authority and explicit confirmation.
 
-In the standard Glass Dev TUI, a human-controlled resident agent can use the
-workspace tools without stopping for a second approval prompt. Glass still
-records tool activity and applies the workspace's authority and revision
-rules. Trust is a separate project-state decision. `glass --yolo` is a
-process-local option for direct Glass and browser operations. In Glass Dev it
-also allows repository configuration for that process without saving trust.
-The TUI displays a `YOLO` marker when this option is active.
+Glass Core owns native coding permissions. Glass records workspace activity
+and applies revision and confirmation rules to browser, Git, and other Glass
+integrations.
 
 The standard names keep useful coding semantics: line-paged reads; bounded,
 path-filtered listings; literal UTF-8 grep with glob/case/context controls;

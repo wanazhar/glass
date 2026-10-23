@@ -27,6 +27,10 @@ const HISTORY_CAPACITY: usize = 512;
 const AGENT_EVIDENCE_CAPACITY: usize = 64;
 const MAX_AGENTS: usize = 32;
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
+#[cfg(test)]
+const CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_millis(200);
+#[cfg(not(test))]
+const CANCEL_SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Connection metadata for an optional resident-agent broker.
 #[derive(Debug, Clone)]
@@ -935,6 +939,11 @@ impl AgentRegistry {
     }
 
     /// Cancel a non-terminal agent and stop its worker.
+    ///
+    /// For an active Core turn, keep the runtime attached until it confirms a
+    /// cancelled settlement and returns the correlated prompt response. If it
+    /// cannot confirm within the bounded grace period, unresolved attempts are
+    /// left uncertain so they cannot be replayed as though they never ran.
     pub(crate) fn cancel(&mut self, id: &AgentId) -> DevelopmentResult<()> {
         self.refresh()?;
         if self.record_mut(id)?.snapshot.status == AgentStatus::RecoveryPending {
@@ -945,19 +954,146 @@ impl AgentRegistry {
         if self.record_mut(id)?.snapshot.status.terminal() {
             return Ok(());
         }
-        if let Some(sender) = &self.record_mut(id)?.command {
-            let _ = sender.try_send(WorkerCommand::Request {
-                attempt_id: None,
-                request: PiSessionRequest::Abort,
-                started: None,
-            });
-            let _ = sender.try_send(WorkerCommand::Shutdown);
+
+        let (thread_id, run_id, active_turn, sender) = {
+            let record = self.record_mut(id)?;
+            (
+                record.thread_id.clone(),
+                record.run_id.clone(),
+                record.awaiting_agent_settle
+                    || matches!(
+                        record.snapshot.status,
+                        AgentStatus::Working | AgentStatus::Waiting
+                    ),
+                record.command.clone(),
+            )
+        };
+        let (active_attempts, mut cancel_error) = match self.thread_store.send_attempts(&thread_id)
+        {
+            Ok(attempts) => (
+                attempts
+                    .into_iter()
+                    .filter(|attempt| {
+                        attempt.target_run_id == run_id
+                            && matches!(
+                                attempt.status,
+                                SendAttemptStatus::Dispatching
+                                    | SendAttemptStatus::Accepted
+                                    | SendAttemptStatus::Working
+                                    | SendAttemptStatus::Waiting
+                            )
+                    })
+                    .map(|attempt| attempt.attempt_id)
+                    .collect::<Vec<_>>(),
+                None,
+            ),
+            Err(error) => (Vec::new(), Some(error)),
+        };
+
+        let mut cancel_confirmed = false;
+        if active_turn {
+            if let Some(sender) = &sender {
+                let (started_tx, started_rx) = mpsc::sync_channel(1);
+                let request = WorkerCommand::Request {
+                    attempt_id: None,
+                    request: PiSessionRequest::Abort,
+                    started: Some(started_tx),
+                };
+                let sent = match sender.send(request) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        if cancel_error.is_none() {
+                            cancel_error = Some(DevelopmentError::Process(format!(
+                                "agent {} worker stopped before receiving cancellation: {error}",
+                                id.as_str()
+                            )));
+                        }
+                        false
+                    }
+                };
+                let started =
+                    sent && matches!(started_rx.recv_timeout(Duration::from_secs(2)), Ok(Ok(_)));
+                if started {
+                    let first_sequence = self.next_event;
+                    let deadline = std::time::Instant::now() + CANCEL_SETTLE_TIMEOUT;
+                    while std::time::Instant::now() < deadline {
+                        if let Err(error) = self.refresh() {
+                            if cancel_error.is_none() {
+                                cancel_error = Some(error);
+                            }
+                            break;
+                        }
+                        let settled_cancelled = self.history.iter().any(|event| {
+                            event.sequence >= first_sequence
+                                && event.agent_id == *id
+                                && event.kind == "agent_settled"
+                                && event.payload["detail"]["reason"] == "cancelled"
+                        });
+                        let attempts_terminal = match self.thread_store.send_attempts(&thread_id) {
+                            Ok(attempts) => attempts
+                                .into_iter()
+                                .filter(|attempt| active_attempts.contains(&attempt.attempt_id))
+                                .all(|attempt| {
+                                    matches!(
+                                        attempt.status,
+                                        SendAttemptStatus::Settled | SendAttemptStatus::Failed
+                                    )
+                                }),
+                            Err(error) => {
+                                if cancel_error.is_none() {
+                                    cancel_error = Some(error);
+                                }
+                                break;
+                            }
+                        };
+                        if settled_cancelled && attempts_terminal {
+                            cancel_confirmed = true;
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                }
+            }
+            if !cancel_confirmed {
+                // A cancelled request is not replayed when the engine cannot
+                // confirm its terminal response. Preserve that uncertainty.
+                if let Err(error) = self.mark_inflight_attempts_uncertain(id)
+                    && cancel_error.is_none()
+                {
+                    cancel_error = Some(error);
+                }
+            }
+        }
+        if let Some(sender) = sender
+            && let Err(error) = sender.send(WorkerCommand::Shutdown)
+            && cancel_error.is_none()
+        {
+            cancel_error = Some(DevelopmentError::Process(format!(
+                "agent {} worker stopped before shutdown: {error}",
+                id.as_str()
+            )));
         }
         self.record_mut(id)?.command = None;
         self.join_worker(id, AgentStatus::Cancelled)?;
-        self.record_event(id, "cancelled", Value::Null);
+        if !cancel_confirmed && active_turn {
+            self.record_mut(id)?.snapshot.last_error = Some(
+                "Core did not confirm cancellation settlement before the timeout; inspect the run before retrying.".into(),
+            );
+        }
+        self.record_event(
+            id,
+            if cancel_confirmed || !active_turn {
+                "cancelled"
+            } else {
+                "cancelUnconfirmed"
+            },
+            Value::Null,
+        );
         self.fail_blocked_dependents()?;
-        Ok(())
+        match cancel_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
     /// Restart a failed or cancelled session under the same agent identity.
     ///
@@ -2088,6 +2224,117 @@ mod tests {
                 .to_string(),
             mode.into(),
         ];
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn active_cancel_waits_for_core_settlement_and_correlated_attempt_response() {
+        let root = test_root();
+        let fixture_state = root.join(".glass");
+        std::fs::create_dir_all(&fixture_state).unwrap();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        configure_fake_core(&mut registry, "cancel-gated");
+        let id = registry
+            .create(AgentSpec::new("cancel-owner", "hold until cancelled"))
+            .unwrap();
+        wait_for_agent(&mut registry, &id, AgentStatus::Idle);
+        registry.prompt(&id, "cancel-gated-turn").unwrap();
+
+        let started = fixture_state.join("e2e-core-cancel-gated-started");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !started.exists() && std::time::Instant::now() < deadline {
+            registry.refresh().unwrap();
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(started.exists(), "fake Core did not start the held turn");
+        let before_cancel = loop {
+            registry.refresh().unwrap();
+            let thread = registry.thread_store.list().unwrap().remove(0);
+            if thread.send_attempts[0].status == SendAttemptStatus::Working
+                || std::time::Instant::now() >= deadline
+            {
+                break thread;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(
+            before_cancel.send_attempts[0].status,
+            SendAttemptStatus::Working
+        );
+
+        registry.cancel(&id).unwrap();
+
+        let snapshot = registry.snapshot(&id).unwrap();
+        assert_eq!(snapshot.status, AgentStatus::Cancelled);
+        let thread = registry.thread_store.list().unwrap().remove(0);
+        assert_eq!(
+            thread.runs.last().unwrap().classification,
+            RunClassification::Cancelled
+        );
+        assert_eq!(thread.send_attempts[0].status, SendAttemptStatus::Settled);
+        assert!(registry.history(0).unwrap().iter().any(|event| {
+            event.agent_id == id
+                && event.kind == "agent_settled"
+                && event.payload["detail"]["reason"] == "cancelled"
+        }));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn active_cancel_timeout_marks_attempt_uncertain_without_claiming_settlement() {
+        let root = test_root();
+        let fixture_state = root.join(".glass");
+        std::fs::create_dir_all(&fixture_state).unwrap();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        configure_fake_core(&mut registry, "cancel-unconfirmed");
+        let id = registry
+            .create(AgentSpec::new("cancel-owner", "hold without cancellation"))
+            .unwrap();
+        wait_for_agent(&mut registry, &id, AgentStatus::Idle);
+        registry.prompt(&id, "cancel-gated-turn").unwrap();
+
+        let started = fixture_state.join("e2e-core-cancel-gated-started");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !started.exists() && std::time::Instant::now() < deadline {
+            registry.refresh().unwrap();
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(started.exists(), "fake Core did not start the held turn");
+        let before_cancel = loop {
+            registry.refresh().unwrap();
+            let thread = registry.thread_store.list().unwrap().remove(0);
+            if thread.send_attempts[0].status == SendAttemptStatus::Working
+                || std::time::Instant::now() >= deadline
+            {
+                break thread;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(
+            before_cancel.send_attempts[0].status,
+            SendAttemptStatus::Working
+        );
+
+        registry.cancel(&id).unwrap();
+
+        let snapshot = registry.snapshot(&id).unwrap();
+        assert_eq!(snapshot.status, AgentStatus::Cancelled);
+        assert!(
+            snapshot
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("did not confirm cancellation settlement"))
+        );
+        let thread = registry.thread_store.list().unwrap().remove(0);
+        assert_eq!(
+            thread.runs.last().unwrap().classification,
+            RunClassification::Cancelled
+        );
+        assert_eq!(thread.send_attempts[0].status, SendAttemptStatus::Uncertain);
+        drop(registry);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn wait_for_agent(

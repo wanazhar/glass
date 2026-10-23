@@ -3052,6 +3052,97 @@ fn active_run_queue_steer_reaches_its_run_and_settles_truthfully() {
 }
 
 #[test]
+fn ctrl_x_waits_for_core_cancel_settlement_and_keeps_exact_attempt_terminal() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+
+    let root = workspace_root();
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    let fake_core = fake_core_binary_with_mode("cancel-gated");
+    let fixture_guard = FixtureChildGuard::new(fixture_state.join("e2e-core-cancel-gated-pid"));
+    let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.trust_project();
+    assert!(session.wait_for("✓ Ready", Duration::from_secs(8)));
+    session.send(b":agent spawn cancel-owner cancel-gated-target\r");
+    assert!(
+        session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
+        "cancel target did not spawn\n{}",
+        session.output_tail()
+    );
+    send_ctrl_shift_t(&mut session);
+    assert!(session.wait_for("PROJECT THREADS", Duration::from_secs(5)));
+    assert!(session.wait_for("idle", Duration::from_secs(12)));
+    session.send(b"\r\r");
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    session.send(b"cancel-gated-turn");
+    session.send(b"\r");
+
+    let started = fixture_state.join("e2e-core-cancel-gated-started");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !started.exists() && Instant::now() < deadline {
+        session.settle(Duration::from_millis(100));
+    }
+    assert!(started.exists(), "fake Core did not hold the active turn");
+    let registry_path = fixture_state.join("threads/registry.json");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        if registry["threads"][0]["sendAttempts"][0]["status"] == "working" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "active attempt did not start: {registry}"
+        );
+        session.settle(Duration::from_millis(100));
+    }
+
+    session.send(b"\x18");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let registry = loop {
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        if registry["threads"][0]["runs"][0]["classification"] == "cancelled"
+            && registry["threads"][0]["sendAttempts"][0]["status"] == "settled"
+        {
+            break registry;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Ctrl-X did not wait for the exact Core cancellation settlement: {registry}\n{}",
+            session.output_tail()
+        );
+        session.settle(Duration::from_millis(100));
+    };
+    assert_eq!(
+        registry["threads"][0]["sendAttempts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let requests = std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+        .expect("fake Core request log is present");
+    assert!(
+        requests.lines().any(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .is_some_and(|request| request["method"] == "turn/cancel")
+        }),
+        "Ctrl-X must send a Core cancellation request"
+    );
+    session.kill();
+    drop(fixture_guard);
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn follow_up_queue_old_run_retarget_and_review_retry_are_explicit() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;

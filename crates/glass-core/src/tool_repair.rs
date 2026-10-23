@@ -40,6 +40,34 @@ pub fn validate(call: &ToolCall, tools: &[(String, Value)]) -> Result<(), String
     check(&schema.1, &args, "$", 0)
 }
 
+/// Bounded, value-free diagnostic for the visible transcript when a batch is
+/// rejected before execution. This identifies the invalid call and schema
+/// path without displaying model-supplied argument values.
+pub fn rejection_summary(calls: &[ToolCall], errors: &[Option<String>]) -> String {
+    calls
+        .iter()
+        .zip(errors)
+        .filter_map(|(call, error)| {
+            error.as_deref().map(|error| {
+                let name = call
+                    .name
+                    .chars()
+                    .filter(|character| !character.is_control())
+                    .take(80)
+                    .collect::<String>();
+                let reason = error
+                    .chars()
+                    .filter(|character| !character.is_control())
+                    .take(240)
+                    .collect::<String>();
+                format!("{name}: {reason}")
+            })
+        })
+        .take(3)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 // Validate the shape of supported schema keywords; unsupported extension
 // constraints remain explicitly outside this lightweight validator.
 pub(crate) fn schema_shape(schema: &Value, depth: usize) -> Result<(), String> {
@@ -264,7 +292,7 @@ fn check(schema: &Value, value: &Value, path: &str, depth: usize) -> Result<(), 
 pub fn feedback(error: &str, attempt: usize) -> String {
     let error: String = error.chars().take(800).collect();
     format!(
-        "error: tool call validation failed: {error}. No calls in this batch executed. Malformed arguments may be represented as {{}} in history; that is a rejected placeholder. Repair {attempt}/{MAX_REPAIRS}: issue corrected calls using the advertised schemas and original task context. Do not repeat previously completed actions or bypass permissions."
+        "error: tool call validation failed: {error}. No calls in this batch executed. Malformed arguments may be represented as {{}} in history; that is a rejected placeholder. Repair {attempt}/{MAX_REPAIRS}: issue corrected calls using the advertised schemas and original task context. Do not repeat previously completed actions; follow GC's permission decisions."
     )
 }
 
@@ -290,6 +318,20 @@ mod tests {
             let tools = vec![("custom".into(), serde_json::from_str(raw).unwrap())];
             assert!(validate(&call("custom", "{}"), &tools).is_err(), "{raw}");
         }
+    }
+
+    #[test]
+    fn rejected_batch_summary_is_actionable_without_echoing_argument_values() {
+        let calls = vec![call("glass.browser.navigate", r#"{"url":"private-value"}"#)];
+        let summary = rejection_summary(
+            &calls,
+            &[Some("$.browserRevision: expected integer".into())],
+        );
+        assert_eq!(
+            summary,
+            "glass.browser.navigate: $.browserRevision: expected integer"
+        );
+        assert!(!summary.contains("private-value"));
     }
 
     #[test]

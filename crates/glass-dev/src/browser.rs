@@ -20,6 +20,7 @@ use glass_browser::protocol::WebIrInspectionResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -47,6 +48,10 @@ pub struct BrowserStartConfig {
     pub backend: BrowserStartBackend,
     /// Chrome DevTools port.
     pub port: u16,
+    /// Whether `port` was explicitly selected. The host can choose an
+    /// ephemeral port only when the default was implicit.
+    #[serde(skip)]
+    pub port_explicit: bool,
     /// Attach to an existing browser rather than launching one.
     pub attach: bool,
     /// Use an isolated incognito context.
@@ -72,6 +77,7 @@ impl Default for BrowserStartConfig {
         Self {
             backend: BrowserStartBackend::Native,
             port: default_port(),
+            port_explicit: false,
             attach: false,
             incognito: true,
             headed: false,
@@ -87,6 +93,34 @@ impl Default for BrowserStartConfig {
 
 fn default_port() -> u16 {
     9222
+}
+
+/// Keep the familiar CDP port when it is available, but do not try to take
+/// over an unrelated browser that already owns it. An implicit default can
+/// move to an OS-selected loopback port; an explicit non-default port remains
+/// the caller's choice and reports the normal occupied-port error.
+fn managed_chromium_port(
+    requested: u16,
+    implicit_default: u16,
+    port_explicit: bool,
+    attach: bool,
+) -> DevelopmentResult<u16> {
+    if attach || port_explicit || requested != implicit_default {
+        return Ok(requested);
+    }
+
+    if TcpListener::bind(("127.0.0.1", requested)).is_ok() {
+        return Ok(requested);
+    }
+
+    TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|listener| listener.local_addr())
+        .map(|address| address.port())
+        .map_err(|error| {
+            DevelopmentError::Process(format!(
+                "CDP port {requested} is occupied and no managed Chromium port could be allocated: {error}"
+            ))
+        })
 }
 
 fn default_profile() -> String {
@@ -672,9 +706,15 @@ impl BrowserWorker {
                     "viewport dimensions must be width 320..10000 and height 240..10000".into(),
                 ));
             }
+            let port = managed_chromium_port(
+                config.port,
+                default_port(),
+                config.port_explicit,
+                config.attach,
+            )?;
             let policy = self.policy.clone();
             let mut builder = SessionOptions::builder()
-                .port(config.port)
+                .port(port)
                 .attach(config.attach)
                 .incognito(config.incognito)
                 .headed(config.headed)
@@ -1531,6 +1571,27 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn managed_chromium_uses_ephemeral_port_when_implicit_default_is_occupied() {
+        let occupied = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = occupied.local_addr().unwrap().port();
+
+        let selected = managed_chromium_port(port, port, false, false).unwrap();
+        assert_ne!(selected, port);
+        assert!(TcpListener::bind(("127.0.0.1", selected)).is_ok());
+
+        // Explicit ports and attach requests keep their requested endpoint;
+        // they never get redirected to a different browser.
+        assert_eq!(
+            managed_chromium_port(port, port, true, false).unwrap(),
+            port
+        );
+        assert_eq!(
+            managed_chromium_port(port, port, false, true).unwrap(),
+            port
+        );
+    }
 
     #[test]
     fn disconnected_service_reports_authoritative_state() {

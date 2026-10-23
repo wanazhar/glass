@@ -1483,13 +1483,19 @@ impl<'a> Agent<'a> {
             if errors.iter().any(Option::is_some) {
                 repairs += 1;
                 let exhausted = repairs > crate::tool_repair::MAX_REPAIRS;
-                let notice = if exhausted {
+                let outcome = if exhausted {
                     "Tool repair exhausted; rejected batch did not execute".to_string()
                 } else {
                     format!(
                         "Tool repair {repairs}/{} · rejected batch did not execute",
                         crate::tool_repair::MAX_REPAIRS
                     )
+                };
+                let detail = crate::tool_repair::rejection_summary(&out.tool_calls, &errors);
+                let notice = if detail.is_empty() {
+                    outcome
+                } else {
+                    format!("{outcome} · {detail}")
                 };
                 self.emit(Progress::ProviderNotice(&notice));
                 for (call, error) in out.tool_calls.iter().zip(errors) {

@@ -1,5 +1,73 @@
 use super::*;
 
+fn decode_content_process_error_response(
+    response: &Value,
+    operation: &str,
+    fallback_reason: &str,
+) -> NativeEngineError {
+    if response.get("error_type").and_then(Value::as_str) == Some("resource_limit")
+        && let (Some(resource), Some(limit), Some(actual)) = (
+            response.get("resource").and_then(Value::as_str),
+            response
+                .get("limit")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok()),
+            response
+                .get("actual")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok()),
+        )
+    {
+        return NativeEngineError::limit(resource, limit, actual);
+    }
+    NativeEngineError::Worker {
+        operation: operation.into(),
+        reason: response
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or(fallback_reason)
+            .into(),
+    }
+}
+
+#[cfg(test)]
+mod content_error_response_tests {
+    use super::*;
+
+    #[test]
+    fn resource_limit_errors_keep_their_typed_identity_across_content_ipc() {
+        let response = json!({
+            "kind": "error",
+            "error_type": "resource_limit",
+            "resource": "CSS style rules",
+            "limit": 4_096,
+            "actual": 4_097,
+            "reason": "CSS style rules exceeds limit 4096 (actual 4097)",
+        });
+
+        assert_eq!(
+            decode_content_process_error_response(&response, "content process load", "fallback",),
+            NativeEngineError::limit("CSS style rules", 4_096, 4_097)
+        );
+    }
+
+    #[test]
+    fn malformed_or_untyped_content_errors_remain_worker_errors() {
+        let response = json!({
+            "kind": "error",
+            "reason": "content process rejected the document load",
+        });
+
+        assert_eq!(
+            decode_content_process_error_response(&response, "content process load", "fallback",),
+            NativeEngineError::Worker {
+                operation: "content process load".into(),
+                reason: "content process rejected the document load".into(),
+            }
+        );
+    }
+}
+
 #[path = "process/exchange.rs"]
 mod exchange;
 #[path = "process/parent_streams.rs"]
@@ -236,7 +304,13 @@ impl NativeContentProcess {
         );
         if result.is_err() {
             self.mark_failed(NativeWorkerFailureKind::InvalidTransfer);
-            let _ = self.child.start_kill();
+            // A timed-out load can leave the worker consuming CPU in parsing or
+            // script execution. Do not leave it behind for browser.stop to
+            // discover later: stopping must not wait on a worker whose request
+            // deadline already expired.
+            let _ = self
+                .terminate_and_reap("stop failed content process load")
+                .await;
         }
         result
     }
@@ -594,7 +668,12 @@ impl NativeContentProcess {
             )
         };
         let response = match response_result {
-            Some(response) => response?,
+            Some(Ok(response)) => response,
+            Some(Err(error)) => {
+                self.terminate_and_reap("stop failed content process load")
+                    .await?;
+                return Err(error);
+            }
             None => {
                 self.terminate_and_reap("cancel content process load")
                     .await?;
@@ -602,14 +681,11 @@ impl NativeContentProcess {
             }
         };
         if response.get("kind").and_then(Value::as_str) == Some("error") {
-            return Err(NativeEngineError::Worker {
-                operation: "content process load".into(),
-                reason: response
-                    .get("reason")
-                    .and_then(Value::as_str)
-                    .unwrap_or("content process rejected the document load")
-                    .into(),
-            });
+            return Err(decode_content_process_error_response(
+                &response,
+                "content process load",
+                "content process rejected the document load",
+            ));
         }
         let result = decode_load_response(&response, id);
         if cancellation.is_some_and(NativeNavigationCancellation::is_cancelled) {
@@ -670,14 +746,11 @@ impl NativeContentProcess {
             }
         };
         if response.get("kind").and_then(Value::as_str) == Some("error") {
-            return Err(NativeEngineError::Worker {
-                operation: "content process service worker fetch resume".into(),
-                reason: response
-                    .get("reason")
-                    .and_then(Value::as_str)
-                    .unwrap_or("content process rejected the service worker fetch resume")
-                    .into(),
-            });
+            return Err(decode_content_process_error_response(
+                &response,
+                "content process service worker fetch resume",
+                "content process rejected the service worker fetch resume",
+            ));
         }
         let result = decode_load_response(&response, id);
         if let Ok(NativeContentLoadResult::Loaded(content)) = &result {
@@ -1740,13 +1813,28 @@ impl NativeContentProcess {
             return Ok(());
         }
         let id = self.next_id();
-        let response = self
-            .exchange(json!({
+        let response = match timeout(
+            Duration::from_secs(2),
+            self.exchange(json!({
                 "kind": "close",
                 "id": id,
                 "protocol": CONTENT_WORKER_PROTOCOL_VERSION,
-            }))
-            .await?;
+            })),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                self.terminate_and_reap("content process close").await?;
+                return Err(error);
+            }
+            Err(_) => {
+                self.terminate_and_reap("content process close").await?;
+                self.parent_event_source_streams.clear();
+                self.parent_websocket_streams.clear();
+                return Ok(());
+            }
+        };
         require_response_kind(&response, "closed", id, "content process close")?;
         self.parent_event_source_streams.clear();
         self.parent_websocket_streams.clear();

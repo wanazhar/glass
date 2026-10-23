@@ -495,12 +495,15 @@ impl DevelopmentToolRouter {
                 }))
             }
             "glass.browser.start" => {
-                let config: BrowserStartConfig = serde_json::from_value(call.arguments.clone())?;
+                let mut config: BrowserStartConfig =
+                    serde_json::from_value(call.arguments.clone())?;
+                config.port_explicit = call.arguments.get("port").is_some();
                 workspace.browser().start(config)
             }
             "glass.browser.stop" => workspace.browser().stop(),
             "glass.browser.attach" => {
                 let mut config: BrowserStartConfig = serde_json::from_value(call.arguments.clone())?;
+                config.port_explicit = call.arguments.get("port").is_some();
                 config.attach = true;
                 workspace.browser().start(config)
             }
@@ -2261,7 +2264,7 @@ fn browser_tool_details(name: &str) -> Option<(&'static str, serde_json::Value)>
     let object = json!({"type":"object","additionalProperties":false});
     Some(match name {
         "glass.browser.start" => (
-            "Start Glass Dev's native browser engine by default. Set backend=chromium only for a task that needs the supported Chromium/CDP backend; selection is explicit and failures never switch backends. If a different backend is already connected, call glass.browser.stop first; the conflict response explains the required transition. Use glass.browser.state to confirm backend provenance.",
+            "Start Glass Dev's native browser engine by default. Set backend=chromium only for a task that needs the supported Chromium/CDP backend; selection is explicit and failures never switch backends. Managed Chromium defaults to port 9222 and selects a loopback ephemeral port only if that default is occupied and port is omitted. Explicit port and attach requests stay exact. If a different backend is already connected, call glass.browser.stop first; the conflict response explains the required transition. Use glass.browser.state to confirm backend provenance.",
             json!({
                 "type":"object",
                 "properties":{

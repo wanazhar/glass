@@ -40,7 +40,10 @@ jobs:
             ${{ runner.os }}-cargo-fuzz-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}-${{ matrix.target }}-
             ${{ runner.os }}-cargo-fuzz-
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --version 0.13.2 --locked
+        run: |
+          if ! cargo fuzz --version 2>/dev/null | grep -q '^cargo-fuzz 0.13.2$'; then
+            cargo install cargo-fuzz --version 0.13.2 --locked --force
+          fi
       - name: Run bounded fuzz target
         shell: bash
         run: |

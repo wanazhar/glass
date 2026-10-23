@@ -88,3 +88,30 @@ Independent review initially found that a picker-frame snapshot was being
 reused to claim conversation isolation. The remediation waits for the alpha
 ledger settlement and captures gamma's conversation after closing the picker.
 Re-review passed at commit `785212a6` with no remaining findings.
+
+## TUI responsiveness baseline
+
+On 2026-10-23, a small Linux baseline used the existing `target/debug/glass`
+binary, the offline mixed-mode fake Core fixture, an isolated temporary project
+and data directory, and an allocated 80×24 PTY. Three launches measured from
+process start until the initial `Workspace is untrusted` frame reached the PTY:
+388 ms, 384 ms, and 386 ms. With the TUI settled, pressing `?` produced the
+help overlay in 2 ms in each of three samples. During a five-second idle window
+after startup, sampled process-tree CPU averaged 2.8%, 2.8%, and 3.0%; peak
+aggregate resident memory was 44.8, 45.6, and 45.6 MiB. The process-tree totals
+include the fake Core fixture and its Python runtime. Measurements were read
+from `/proc` and the PTY; the first-frame marker is a terminal write, not a
+physical display or compositor measurement. This is a local debug-build
+baseline, not a release-build, cross-platform, or statistically stable
+benchmark.
+
+For subsequent Linux debug-build comparisons on the same fixture and terminal,
+use provisional regression budgets of 1,000 ms to the initial trust frame,
+100 ms from the help key to visible overlay output, 5% average process-tree CPU
+over a settled five-second idle window, and 64 MiB peak process-tree RSS. These
+are deliberately rounded above this small sample and are not product-wide
+performance claims. The three-thread PTY journey above provides a separate
+background-update behavior check: alpha settles while gamma remains selected,
+and gamma's focus, draft, and cursor stay unchanged. That test verifies the
+observable behavior, not the latency of background updates under a sustained
+event load.

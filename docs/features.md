@@ -669,11 +669,8 @@ First-run Agent onboarding is in the TUI. Trust-required projects first show
 `I` inspect, `O` open untrusted, `1` trust once, and `T` trust project. `T` may
 queue while a snapshot refresh holds the workspace lock. Agent typing or
 `Enter` opens the composer when the resident engine is ready; otherwise Glass
-reports the exact repair step for the selected engine (install `glass-core`,
-set `GLASS_CORE_BINARY`, or connect a provider). Set `GLASS_AGENT_HARNESS=pi`
-to keep the legacy Pi backend, where `:agent setup` installs/repairs the pinned
-runtime, `:agent setup login` opens Pi `/login`, and `:agent update` refreshes
-it. `Ctrl-L` opens the shared composer dock on
+reports the exact repair step for Glass Core (install `glass-core`, set
+`GLASS_CORE_BINARY`, or connect a provider). Provider setup stays in Core. `Ctrl-L` opens the shared composer dock on
 every surface. Default mode is Agent; `Ctrl-Shift-A` cycles Ask, Plan, and
 Agent. Composer `Enter` sends and stays open; `Esc` closes. Local or
 pre-dispatch failures keep the draft for retry. A Core error for an accepted

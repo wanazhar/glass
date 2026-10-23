@@ -26,10 +26,8 @@ daemon checks the scheduler every 50 ms, even when no client is connected.
 The scheduler atomically checkpoints task records below the project root.
 Agent session files and timeline evidence have separate persistence rules;
 the checkpoint does not claim that an interrupted engine turn has been
-recovered. Glass Core is the default resident engine; the legacy Pi backend is
-optional. See [Development Runtime](development-runtime.md),
-[Glass Core resident harness](glass-core-harness.md), [Native Pi SDK runtime](pi-sdk-runtime.md),
-and [Local daemon](daemon.md).
+recovered. Glass Core is the sole resident engine. See [Development Runtime](development-runtime.md),
+[Glass Core resident harness](glass-core-harness.md), and [Local daemon](daemon.md).
 
 ## Entry points and trust
 
@@ -231,7 +229,6 @@ The daemon workspace actor test `daemon::tests::workspace_actors_do_not_serializ
 
 - [Development Runtime](development-runtime.md)
 - [Glass Core resident harness](glass-core-harness.md)
-- [Native Pi SDK runtime](pi-sdk-runtime.md) (legacy backend)
 - [Coding harness architecture](harness-architecture.md)
 - [Development Graph and replay](development-graph.md)
 - [Experiments](experiments.md)

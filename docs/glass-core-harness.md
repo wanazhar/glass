@@ -19,17 +19,15 @@ AgentRegistry
                                          └─ browser · Git · project authority
 ```
 
-The Pi SDK runtime remains available only through the explicit legacy setting.
-Changing the engine does not move project ownership: Core owns provider
-configuration, credentials, model/session state, and its native coding tools;
-Glass owns browser, Git, project, workspace, and collaboration integrations.
+Core owns provider configuration, credentials, model/session state, and its
+native coding tools; Glass owns browser, Git, project, workspace, and
+collaboration integrations.
 
 ## Why the engine changed
 
-Glass previously ran the resident model loop through Pi's `AgentSession` SDK in
-a Node child process. That added a Node runtime beside the Rust workspace.
-The default `glass-core` runtime removes Node from the resident path. It also
-uses one session-record format and accepts Glass's tool catalog directly.
+Glass previously ran the resident model loop through a third-party SDK in a Node child process. The standalone
+`glass-core` runtime uses one session-record format and accepts Glass's tool
+catalog directly.
 
 The engine owns exactly four things:
 
@@ -72,9 +70,7 @@ grant additional tools.
 
 | Setting | Effect |
 |---|---|
-| *(unset)* | Glass Core. The default for every resident agent. |
-| `GLASS_AGENT_HARNESS=glass-core` | Same as unset; explicit. |
-| `GLASS_AGENT_HARNESS=pi` | Legacy Pi SDK backend. |
+| Resident engine | Glass Core. The sole engine for every resident agent. |
 | `GLASS_CORE_BINARY=/path/to/glass-core` | Use a specific engine executable. |
 
 Glass does not install the engine when it starts. Without an explicit path, it
@@ -96,16 +92,14 @@ their current in-memory settings; a newly spawned resident agent starts a new
 Core runtime and reads the updated configuration. `:agent new` reuses the
 existing runtime and therefore does not reload provider settings.
 
-The Agent palette labels the Core login and model controls explicitly. `:agent
-models [AGENT_ID]` and `:agent model [AGENT_ID] PROVIDER MODEL` operate on the
-selected resident session (or the workspace's first active session when none
-is selected) using the negotiated `models/list` and `session/configure`
+The Agent palette labels the Core login and model controls explicitly.
+`:agent models [AGENT_ID]` and `:agent model [AGENT_ID] PROVIDER MODEL` operate
+on the selected resident session (or the workspace's first active session when
+none is selected) using the negotiated `models/list` and `session/configure`
 methods. Model catalog responses appear in the Agent conversation with the
 provider, model IDs, and labels when Core supplies them. Without a selected or
 active resident session, these controls report that a session must be started
-first. With `GLASS_AGENT_HARNESS=pi`, the palette and
-readiness panel instead describe the legacy Pi runtime and preserve its managed
-setup and interactive login behavior.
+first.
 
 The standalone source product is maintained in this repository at
 [`products/glass-core`](../products/glass-core/README.md). To install its

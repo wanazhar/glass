@@ -88,10 +88,8 @@ opens untrusted, `1` trusts once, and `T` trusts the project. Repository
 execution remains blocked until a local decision. On Agent, type a prompt or
 press `Enter`; when the resident engine is not ready, Glass reports the exact
 repair step — install `glass-core`, set `GLASS_CORE_BINARY`, or connect a
-provider. `:agent doctor` and `:agent status` report readiness at any time, and
-`:agent setup` installs the pinned runtime for the legacy Pi backend
-(`GLASS_AGENT_HARNESS=pi`), with `:agent setup login` for Pi `/login`. A
-setup/login failure leaves the workspace available for retry.
+provider. `:agent doctor` and `:agent status` report readiness at any time. Provider setup stays in Glass
+Core, and Glass reports readiness without printing credentials.
 
 Talk from any surface. `Ctrl-L` opens the shared composer dock (not a redraw).
 `Alt-A` docks from the editor. Default mode is Agent. `Ctrl-Shift-A` cycles
@@ -211,9 +209,8 @@ tool calls. Resident agents use Glass Core by default. Glass starts
 `glass-core runtime`, registers the session's tool catalog, and executes each
 tool call in the workspace. Glass Core provides model selection, thinking
 levels, follow-up messages, abort, persistent sessions, resume, fork, compact,
-and event streaming. It starts without built-in tools. Set
-`GLASS_AGENT_HARNESS=pi` to choose the legacy Pi backend. Both engines use
-Glass's workspace tools, but their session and command features differ.
+and event streaming. It starts without built-in tools and is the sole resident
+agent engine.
 
 The same workspace exposes the fixed external-harness catalog to both clients:
 `glass harness list` and `:harness list` report PATH availability, while
@@ -226,13 +223,9 @@ the TUI's `:harness delegate NAME PROMPT` route. Delegation is read-only by
 default, returns bounded structured output, and requires explicit mutation
 authority plus confirmation for a `workspace-write` sandbox.
 
-Run `glass agent doctor` or `glass agent status` to check the default engine.
-Glass does not download an engine when it starts. If you select the legacy Pi
-backend, `glass agent setup` installs or repairs the SDK version pinned by this
-checkout. `glass agent setup --update` reinstalls that version, and
-`--sdk-entry` selects an existing SDK. `glass agent setup --login` opens Pi's
-provider login. Glass reports whether credentials are present without
-printing their values.
+Run `glass agent doctor` or `glass agent status` to check Glass Core. Glass
+does not download an engine when it starts. Provider setup and credentials are
+managed by Glass Core; readiness output never prints credential values.
 
 Prompt text, authored task values, and tool arguments are not stored in raw
 audit events. Mutating tools require authority and explicit confirmation.
@@ -245,34 +238,12 @@ process-local option for direct Glass and browser operations. In Glass Dev it
 also allows repository configuration for that process without saving trust.
 The TUI displays a `YOLO` marker when this option is active.
 
-The legacy Pi backend uses a Glass-specific system prompt and routes project,
-runtime, diagnostics, Web IR, task, browser, and workflow tools through the
-Glass workspace. It streams completed messages and tool events to the Agent
-view. It drops token-level redraw events so the UI can stay responsive.
-Steering and abort remain available during a turn. If a turn is cancelled or
-the worker fails, resubmitting from the composer can restart the selected
-session. Unknown tool names stop the current turn.
-
-In legacy Pi mode, press `/` to open Pi's command modal and `:` to open Glass
-workspace actions. The modal includes the pinned SDK's 23 built-in commands.
-It also accepts extension, prompt-template, and skill commands after Pi loads
-those resources. Results appear in the Agent transcript and on More. `/login`
-hands the terminal to Pi for provider login. The one-shot Pi command adapter is
-separate from the resident session. Glass still checks project paths, actor
-identity, revisions, and browser leases for tool calls.
-
 The standard names keep useful coding semantics: line-paged reads; bounded,
 path-filtered listings; literal UTF-8 grep with glob/case/context controls;
 `*`/`?` path finding; atomic exact-match edits; and commands with an explicit
 300-second ceiling. Files that are non-UTF-8 or over the project-file bound are
 skipped by grep rather than copied into the model context.
 
-The legacy Pi backend supports Pi providers and models from `models.json`. In
-that mode, the TUI can load configured Pi context files, extensions, skills,
-prompt templates, and themes. Pi's built-in filesystem and shell tools remain
-disabled; Glass provides workspace tools instead. Non-TUI Pi sessions select
-resources through runtime options. `GLASS_PI_TRUSTED_RESOURCES` is an internal
-runtime setting, not a user control for changing an active session.
 
 ## Browser usage
 

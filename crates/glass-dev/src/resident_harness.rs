@@ -1,18 +1,8 @@
 //! Resident agent harness selection.
 //!
-//! Glass Dev runs its resident agents on one of two engines:
-//!
-//! - [`ResidentHarnessKind::GlassCore`] drives the `glass-core` engine over its
-//!   host runtime protocol. This is the default and the supported path.
-//! - [`ResidentHarnessKind::Pi`] drives the Pi SDK runtime. It stays available
-//!   as a legacy backend for existing installations and is not the default.
-//!
-//! Glass keeps the workspace, the governed tool router, and the approval
-//! surface for both engines, so switching engines never changes who owns the
-//! effects of a tool call.
+//! Glass Dev runs resident agents through the standalone `glass-core` host runtime.
 
 use crate::development::{DevelopmentError, DevelopmentResult, ToolCall};
-use crate::pi_runtime::PiSessionRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
@@ -23,17 +13,41 @@ use std::time::Duration;
 pub type AgentToolExecutor =
     Arc<dyn Fn(&ToolCall, bool, bool) -> DevelopmentResult<Value> + Send + Sync>;
 
-/// Environment override for the resident harness.
-pub const HARNESS_ENV: &str = "GLASS_AGENT_HARNESS";
+/// Operations available to a resident Glass conversation.
+#[derive(Debug, Clone)]
+pub enum ResidentSessionRequest {
+    Hello,
+    Prompt { text: String, context: Option<Value> },
+    Steer { text: String, context: Option<Value> },
+    FollowUp { text: String, context: Option<Value> },
+    Complete { prefix: String, suffix: String },
+    Abort,
+    State,
+    Models,
+    SetModel { provider: String, model_id: String },
+    SetThinking { level: String },
+    NewSession,
+    Compact { instructions: Option<String> },
+    CloneSession,
+    Rewind { entry_id: String },
+    Fork { entry_id: String },
+    SwitchSession { path: String },
+    ListSessions,
+    Entries { since: Option<String> },
+    Tree,
+    Messages,
+    SessionStats,
+    SetSessionName { name: String },
+    SlashCommands,
+    SlashCommand { name: String, args: String },
+}
 
-/// Supported resident agent engines.
+/// Resident agent engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ResidentHarnessKind {
     /// The `glass-core` engine over its host runtime protocol.
     GlassCore,
-    /// The Pi SDK runtime, retained as a legacy backend.
-    Pi,
 }
 
 impl ResidentHarnessKind {
@@ -42,29 +56,18 @@ impl ResidentHarnessKind {
         Self::GlassCore
     }
 
-    /// Parse a harness id, accepting the historical spellings.
+    /// Parse a resident engine id.
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "glass-core" | "glasscore" | "core" | "gc" => Some(Self::GlassCore),
-            "pi" | "pi-sdk" | "legacy-pi" => Some(Self::Pi),
             _ => None,
         }
-    }
-
-    /// Select the harness from `GLASS_AGENT_HARNESS`, falling back to the
-    /// default when the variable is unset or unrecognised.
-    pub fn from_env() -> Self {
-        std::env::var(HARNESS_ENV)
-            .ok()
-            .and_then(|value| Self::parse(&value))
-            .unwrap_or_else(Self::default_kind)
     }
 
     /// Stable machine-readable id.
     pub const fn id(self) -> &'static str {
         match self {
             Self::GlassCore => "glass-core",
-            Self::Pi => "pi",
         }
     }
 
@@ -72,7 +75,6 @@ impl ResidentHarnessKind {
     pub const fn label(self) -> &'static str {
         match self {
             Self::GlassCore => "Glass Core",
-            Self::Pi => "Pi SDK (legacy)",
         }
     }
 
@@ -80,7 +82,6 @@ impl ResidentHarnessKind {
     pub const fn description(self) -> &'static str {
         match self {
             Self::GlassCore => "resident engine with Glass-owned tools and sessions",
-            Self::Pi => "legacy Pi AgentSession runtime, kept for existing installs",
         }
     }
 
@@ -146,21 +147,6 @@ impl std::fmt::Debug for ResidentHarnessOptions {
 }
 
 impl ResidentHarnessOptions {
-    fn into_pi(self) -> crate::pi_runtime::PiRuntimeOptions {
-        crate::pi_runtime::PiRuntimeOptions {
-            unrestricted: self.unrestricted,
-            session_dir: self.session_dir,
-            name: self.name,
-            model: self.model,
-            thinking: self.thinking,
-            broker: self.broker,
-            local_tool_executor: self.local_tool_executor,
-            additional_system_prompt: self.additional_system_prompt,
-            resume: self.resume,
-            fork_from: self.fork_from,
-        }
-    }
-
     fn into_core(self) -> crate::core_runtime::CoreRuntimeOptions {
         crate::core_runtime::CoreRuntimeOptions {
             unrestricted: self.unrestricted,
@@ -184,15 +170,12 @@ impl ResidentHarnessOptions {
 pub(crate) enum ResidentHarness {
     /// `glass-core` host runtime process.
     GlassCore(crate::core_runtime::GlassCoreRuntime),
-    /// Pi SDK runtime process.
-    Pi(crate::pi_runtime::GlassPiRuntime),
 }
 
 impl std::fmt::Debug for ResidentHarness {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::GlassCore(runtime) => formatter.debug_tuple("GlassCore").field(runtime).finish(),
-            Self::Pi(runtime) => formatter.debug_tuple("Pi").field(runtime).finish(),
         }
     }
 }
@@ -209,30 +192,23 @@ impl ResidentHarness {
                 crate::core_runtime::GlassCoreRuntime::spawn(root, options.into_core())
                     .map(Self::GlassCore)
             }
-            ResidentHarnessKind::Pi if options.resume_session_id.is_some() => {
-                Err(DevelopmentError::Conflict(
-                    "durable recovery requires the stored Glass Core runtime session".into(),
-                ))
-            }
-            ResidentHarnessKind::Pi => {
-                crate::pi_runtime::GlassPiRuntime::spawn(root, options.into_pi()).map(Self::Pi)
-            }
         }
     }
 
     /// Queue one operation and return the engine request id.
-    pub(crate) fn start_request(&mut self, request: PiSessionRequest) -> DevelopmentResult<String> {
+    pub(crate) fn start_request(
+        &mut self,
+        request: ResidentSessionRequest,
+    ) -> DevelopmentResult<String> {
         match self {
             Self::GlassCore(runtime) => runtime.start_request(request),
-            Self::Pi(runtime) => runtime.start_request(request),
         }
     }
 
-    /// Return the actual initialized Core session ID; legacy Pi has no compatible reference.
+    /// Return the actual initialized Core session ID.
     pub(crate) fn core_session_id(&self) -> Option<&str> {
         match self {
             Self::GlassCore(runtime) => Some(runtime.session_id()),
-            Self::Pi(_) => None,
         }
     }
 
@@ -240,7 +216,6 @@ impl ResidentHarness {
     pub(crate) fn take_startup_events(&mut self) -> Vec<Value> {
         match self {
             Self::GlassCore(runtime) => runtime.take_startup_events(),
-            Self::Pi(_) => Vec::new(),
         }
     }
 
@@ -251,7 +226,6 @@ impl ResidentHarness {
     ) -> DevelopmentResult<Option<Value>> {
         match self {
             Self::GlassCore(runtime) => runtime.recv_event_timeout(timeout),
-            Self::Pi(runtime) => runtime.recv_event_timeout(timeout),
         }
     }
 
@@ -263,12 +237,11 @@ impl ResidentHarness {
     ) -> DevelopmentResult<()> {
         match self {
             Self::GlassCore(runtime) => runtime.resolve_tool_approval(frame_id, approved),
-            Self::Pi(runtime) => runtime.resolve_tool_approval(frame_id, approved),
         }
     }
 }
 
-/// Combined readiness for the resident harness selection.
+/// Readiness for the resident engine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResidentReadiness {
@@ -280,23 +253,17 @@ pub struct ResidentReadiness {
     pub detail: String,
     /// Glass Core engine probe.
     pub glass_core: crate::core_runtime::CoreReadiness,
-    /// Pi SDK probe, retained for legacy installs.
-    pub pi: Option<crate::pi_runtime::PiReadiness>,
     /// Ordered repair steps for the selected engine.
     pub remediation: Vec<String>,
 }
 
-/// Probe the selected resident harness and report the alternatives.
+/// Probe the Glass Core resident engine.
 pub fn resident_readiness() -> DevelopmentResult<ResidentReadiness> {
-    let selected = ResidentHarnessKind::from_env();
+    let selected = ResidentHarnessKind::default_kind();
     let glass_core = crate::core_runtime::core_readiness()?;
-    let pi = crate::pi_runtime::pi_readiness().ok();
-    let ready = match selected {
-        ResidentHarnessKind::GlassCore => glass_core.ready,
-        ResidentHarnessKind::Pi => pi.as_ref().is_some_and(|readiness| readiness.ready),
-    };
-    let detail = match selected {
-        ResidentHarnessKind::GlassCore if glass_core.ready => format!(
+    let ready = glass_core.ready;
+    let detail = if ready {
+        format!(
             "{} ready · {}",
             selected.label(),
             glass_core
@@ -305,29 +272,20 @@ pub fn resident_readiness() -> DevelopmentResult<ResidentReadiness> {
                 .as_deref()
                 .map(|version| format!("glass-core {version}"))
                 .unwrap_or_else(|| "engine available".into())
-        ),
-        ResidentHarnessKind::GlassCore => format!(
+        )
+    } else {
+        format!(
             "{} unavailable · {}",
             selected.label(),
             glass_core.binary.detail
-        ),
-        ResidentHarnessKind::Pi if ready => format!("{} ready", selected.label()),
-        ResidentHarnessKind::Pi => format!("{} unavailable", selected.label()),
-    };
-    let remediation = match selected {
-        ResidentHarnessKind::GlassCore => glass_core.remediation.clone(),
-        ResidentHarnessKind::Pi => pi
-            .as_ref()
-            .map(|readiness| readiness.remediation.clone())
-            .unwrap_or_default(),
+        )
     };
     Ok(ResidentReadiness {
         selected,
         ready,
         detail,
         glass_core,
-        pi,
-        remediation,
+        remediation: glass_core.remediation.clone(),
     })
 }
 
@@ -335,7 +293,7 @@ pub fn resident_readiness() -> DevelopmentResult<ResidentReadiness> {
 pub fn harness_kind_from_id(id: &str) -> DevelopmentResult<ResidentHarnessKind> {
     ResidentHarnessKind::parse(id).ok_or_else(|| {
         DevelopmentError::InvalidInput(format!(
-            "unknown resident harness {id}; expected glass-core or pi"
+            "unknown resident harness {id}; expected glass-core"
         ))
     })
 }
@@ -351,11 +309,11 @@ mod tests {
             ResidentHarnessKind::GlassCore
         );
         assert!(ResidentHarnessKind::GlassCore.is_default());
-        assert!(!ResidentHarnessKind::Pi.is_default());
+        assert!(ResidentHarnessKind::GlassCore.is_default());
     }
 
     #[test]
-    fn harness_ids_accept_historical_spellings() {
+    fn harness_ids_accept_core_spellings_only() {
         assert_eq!(
             ResidentHarnessKind::parse("GLASS-CORE"),
             Some(ResidentHarnessKind::GlassCore)
@@ -364,15 +322,12 @@ mod tests {
             ResidentHarnessKind::parse("gc"),
             Some(ResidentHarnessKind::GlassCore)
         );
-        assert_eq!(
-            ResidentHarnessKind::parse("pi"),
-            Some(ResidentHarnessKind::Pi)
-        );
+        assert_eq!(ResidentHarnessKind::parse("pi"), None);
         assert_eq!(ResidentHarnessKind::parse("unknown"), None);
     }
 
     #[test]
-    fn options_survive_conversion_to_each_engine() {
+    fn options_survive_conversion_to_core() {
         let options = ResidentHarnessOptions {
             unrestricted: true,
             name: Some("reviewer".into()),
@@ -382,8 +337,6 @@ mod tests {
         let core = options.clone().into_core();
         assert_eq!(core.name.as_deref(), Some("reviewer"));
         assert_eq!(core.model.as_deref(), Some("model-a"));
-        let pi = options.into_pi();
-        assert_eq!(pi.name.as_deref(), Some("reviewer"));
-        assert!(pi.unrestricted);
+        assert!(core.unrestricted);
     }
 }

@@ -1337,21 +1337,6 @@
       ]
     },
     {
-      "path": "crates/glass-browser/assets/pi-glass-system.md",
-      "class": "generated",
-      "topic": "history",
-      "audience": "generated-or-fixture",
-      "status": "generated-or-fixture-input",
-      "recommendation": "KEEP_PUBLIC",
-      "recommendationReason": "Preserve generated or fixture inputs until their owning generator and consumers are verified.",
-      "canonicalSuccessor": null,
-      "consumers": [],
-      "dependencies": [],
-      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
-      "route": "crates/glass-browser/assets/pi-glass-system.md",
-      "sections": []
-    },
-    {
       "path": "crates/glass-core/README.md",
       "class": "current",
       "topic": "products",
@@ -1473,21 +1458,6 @@
           "anchor": "collaboration"
         }
       ]
-    },
-    {
-      "path": "crates/glass-dev/assets/pi-glass-system.md",
-      "class": "generated",
-      "topic": "history",
-      "audience": "generated-or-fixture",
-      "status": "generated-or-fixture-input",
-      "recommendation": "KEEP_PUBLIC",
-      "recommendationReason": "Preserve generated or fixture inputs until their owning generator and consumers are verified.",
-      "canonicalSuccessor": null,
-      "consumers": [],
-      "dependencies": [],
-      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
-      "route": "crates/glass-dev/assets/pi-glass-system.md",
-      "sections": []
     },
     {
       "path": "crates/glass-mod-api/README.md",
@@ -1678,7 +1648,6 @@
         "docs/migration/glass-core-monorepo.md",
         "docs/mobile-remote.md",
         "docs/ownership.md",
-        "docs/pi-sdk-runtime.md",
         "docs/plan/README.md",
         "docs/plan/native-engine-browser-profile.md",
         "docs/policy.md",
@@ -2435,7 +2404,6 @@
         "docs/architecture/mobile-cockpit.md",
         "docs/architecture/tui.md",
         "docs/glass-core-harness.md",
-        "docs/pi-sdk-runtime.md",
         "docs/plan/tasks/issue63-durable-followup-queue-001.md",
         "docs/plan/tasks/issue64-send-attempt-recovery-001.md"
       ],
@@ -3480,12 +3448,10 @@
         "docs/architecture/browser-connection.md",
         "docs/architecture/development-tui.md",
         "docs/daemon.md",
-        "docs/development-runtime.md",
         "docs/glass-core-harness.md",
         "docs/installation.md",
         "docs/intent-resolution.md",
         "docs/knowledge.md",
-        "docs/pi-sdk-runtime.md",
         "docs/plan/native-engine-browser-profile.md",
         "docs/semantic-observation.md",
         "docs/site-smoke.md",
@@ -3584,11 +3550,6 @@
           "level": "3",
           "title": "Temporary external agents",
           "anchor": "temporary-external-agents"
-        },
-        {
-          "level": "3",
-          "title": "Unrestricted Pi mode",
-          "anchor": "unrestricted-pi-mode"
         },
         {
           "level": "2",
@@ -3760,7 +3721,6 @@
         "docs/development-runtime.md",
         "docs/features.md",
         "docs/harness-architecture.md",
-        "docs/pi-sdk-runtime.md",
         "docs/task-dag.md"
       ],
       "dependencies": [],
@@ -4058,13 +4018,11 @@
         "docs/architecture/browser-workspace.md",
         "docs/architecture/connection-presentation.md",
         "docs/architecture/product-workspace.md",
-        "docs/cli.md",
         "docs/cli/experience.md",
         "docs/features.md",
         "docs/getting-started.md",
         "docs/harness-architecture.md",
         "docs/mobile-remote.md",
-        "docs/pi-sdk-runtime.md",
         "docs/plan/README.md",
         "docs/plan/tasks/issue64-live-run-queue-targeting-001.md",
         "docs/plan/tasks/issue64-send-attempt-recovery-001.md",
@@ -4081,7 +4039,6 @@
         "docs/harness-architecture.md",
         "docs/installation.md",
         "docs/mcp.md",
-        "docs/pi-sdk-runtime.md",
         "docs/plan/analysis/issue63-core-session-resume.md",
         "docs/task-dag.md",
         "docs/workspace-trust.md"
@@ -4789,7 +4746,6 @@
         "docs/INDEX.md",
         "docs/development-runtime.md",
         "docs/mobile-remote.md",
-        "docs/pi-sdk-runtime.md",
         "docs/task-dag.md"
       ],
       "dependencies": [
@@ -4799,7 +4755,6 @@
         "docs/development-runtime.md",
         "docs/glass-core-harness.md",
         "docs/mcp.md",
-        "docs/pi-sdk-runtime.md",
         "docs/task-dag.md",
         "docs/workspace-trust.md"
       ],
@@ -5399,7 +5354,6 @@
         "docs/getting-started.md",
         "docs/harness-architecture.md",
         "docs/mcp-tools.md",
-        "docs/pi-sdk-runtime.md",
         "docs/task-dag.md"
       ],
       "dependencies": [
@@ -6118,83 +6072,21 @@
       "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
       "canonicalSuccessor": null,
       "consumers": [
-        "docs/INDEX.md",
-        "docs/architecture/development-tui.md",
-        "docs/cli.md",
         "docs/credits-and-inspiration.md",
-        "docs/development-runtime.md",
-        "docs/harness-architecture.md",
-        "docs/plan/README.md",
-        "docs/task-dag.md"
+        "docs/plan/README.md"
       ],
       "dependencies": [
-        "docs/daemon.md",
-        "docs/development-runtime.md",
         "docs/glass-core-harness.md",
-        "docs/harness-architecture.md",
-        "docs/mcp.md",
         "docs/release-evidence.md",
-        "docs/releases/0.3.12.md",
-        "docs/task-dag.md",
-        "docs/workspace-trust.md"
+        "docs/releases/0.3.12.md"
       ],
       "topicRoute": "docs/INDEX.md#interface-references",
-      "route": "docs/pi-sdk-runtime.md#native-pi-sdk-runtime-legacy-backend",
+      "route": "docs/pi-sdk-runtime.md#native-pi-sdk-runtime-retired",
       "sections": [
         {
           "level": "1",
-          "title": "Native Pi SDK runtime (legacy backend)",
-          "anchor": "native-pi-sdk-runtime-legacy-backend"
-        },
-        {
-          "level": "2",
-          "title": "Readiness, setup, and version status",
-          "anchor": "readiness-setup-and-version-status"
-        },
-        {
-          "level": "2",
-          "title": "Agent and session lifecycle",
-          "anchor": "agent-and-session-lifecycle"
-        },
-        {
-          "level": "2",
-          "title": "Protocol and SDK surface",
-          "anchor": "protocol-and-sdk-surface"
-        },
-        {
-          "level": "3",
-          "title": "Native slash commands in Glass Dev",
-          "anchor": "native-slash-commands-in-glass-dev"
-        },
-        {
-          "level": "2",
-          "title": "Tool, approval, and queue limits",
-          "anchor": "tool-approval-and-queue-limits"
-        },
-        {
-          "level": "2",
-          "title": "Persistent sessions and migration failures",
-          "anchor": "persistent-sessions-and-migration-failures"
-        },
-        {
-          "level": "2",
-          "title": "CLI and adapter distinction",
-          "anchor": "cli-and-adapter-distinction"
-        },
-        {
-          "level": "2",
-          "title": "Failure and recovery",
-          "anchor": "failure-and-recovery"
-        },
-        {
-          "level": "2",
-          "title": "Verification and evidence",
-          "anchor": "verification-and-evidence"
-        },
-        {
-          "level": "2",
-          "title": "Related guides",
-          "anchor": "related-guides"
+          "title": "Native Pi SDK runtime (retired)",
+          "anchor": "native-pi-sdk-runtime-retired"
         }
       ]
     },
@@ -82485,26 +82377,6 @@
         },
         {
           "level": "3",
-          "title": "Legacy Pi runtime boundary",
-          "anchor": "legacy-pi-runtime-boundary"
-        },
-        {
-          "level": "2",
-          "title": "Backends, surfaces, and presentation",
-          "anchor": "backends-surfaces-and-presentation"
-        },
-        {
-          "level": "2",
-          "title": "Protocol, MCP, daemon, and results",
-          "anchor": "protocol-mcp-daemon-and-results"
-        },
-        {
-          "level": "2",
-          "title": "Public module map",
-          "anchor": "public-module-map"
-        },
-        {
-          "level": "3",
           "title": "`glass-browser` (`glass_browser`)",
           "anchor": "glass-browser-glassbrowser"
         },
@@ -82805,7 +82677,6 @@
         "docs/INDEX.md",
         "docs/development-runtime.md",
         "docs/harness-architecture.md",
-        "docs/pi-sdk-runtime.md",
         "docs/plan/tasks/issue64-task-scheduler-recovery-001.md",
         "docs/plan/tasks/issue64-task-thread-queue-restart-001.md"
       ],
@@ -82817,7 +82688,6 @@
         "docs/glass-core-harness.md",
         "docs/harness-architecture.md",
         "docs/mcp.md",
-        "docs/pi-sdk-runtime.md",
         "docs/release-evidence.md"
       ],
       "topicRoute": "docs/INDEX.md#orchestration-recovery-and-review",
@@ -83006,8 +82876,7 @@
         "docs/INDEX.md",
         "docs/development-runtime.md",
         "docs/harness-architecture.md",
-        "docs/mobile-remote.md",
-        "docs/pi-sdk-runtime.md"
+        "docs/mobile-remote.md"
       ],
       "dependencies": [],
       "topicRoute": "docs/INDEX.md#glass-documentation",
@@ -83058,27 +82927,6 @@
           "level": "1",
           "title": "Parser fuzzing",
           "anchor": "parser-fuzzing"
-        }
-      ]
-    },
-    {
-      "path": "packages/pi-runtime/README.md",
-      "class": "current",
-      "topic": "api",
-      "audience": "repository-reference",
-      "status": "current-source-guidance",
-      "recommendation": "KEEP_PUBLIC",
-      "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
-      "canonicalSuccessor": null,
-      "consumers": [],
-      "dependencies": [],
-      "topicRoute": "docs/INDEX.md#interface-references",
-      "route": "packages/pi-runtime/README.md#glass-pi-runtime",
-      "sections": [
-        {
-          "level": "1",
-          "title": "Glass Pi runtime",
-          "anchor": "glass-pi-runtime"
         }
       ]
     },

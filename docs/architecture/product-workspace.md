@@ -77,8 +77,7 @@ The workspace starts untrusted unless its filesystem identity matches the local
 trust store. Static inspection, Git metadata, configuration review, and manual
 browser use remain possible. Project hooks, configured tools and tests,
 language-server overrides, kernels, and experiments wait for a trust decision.
-Resident agents use Glass Core by default; the legacy Pi backend follows the
-same workspace authority rules.
+Resident agents use Glass Core and follow the workspace authority rules.
 
 Glass renders an initial cockpit before the full refresh. `SnapshotWorker` then
 refreshes resident projections, agent conversation, browser screenshots, and
@@ -159,8 +158,7 @@ their revisions and authorities are independent.
 
 The Agent composer sends messages to the current resident conversation without
 requiring an agent ID. `glass agent doctor` and `glass agent status` report
-Glass Core readiness. Pi setup applies only when the legacy Pi backend is
-selected. If another background action is active, Glass keeps new text in the
+Glass Core readiness. If another background action is active, Glass keeps new text in the
 composer. If sending fails, Glass restores the draft for editing and retry.
 Browser, editor, Git, process, workflow, and agent changes use the shared
 workspace router and retain actor and revision information. Raw JSON is

@@ -7,7 +7,7 @@ language services, event history, agents, tasks, and optional browser session.
 The TUI, MCP server, daemon, and Rust API use the same services. They do not
 keep separate copies of project state.
 
-See [Architecture overview](architecture/README.md) for module ownership. See [CLI reference](cli.md) for installed syntax and [Native Pi SDK runtime](pi-sdk-runtime.md) for agent lifecycle.
+See [Architecture overview](architecture/README.md) for module ownership and [CLI reference](cli.md) for installed syntax. Resident agents use the standalone [Glass Core](glass-core-harness.md) runtime.
 
 ## Boundary and startup
 
@@ -30,9 +30,8 @@ A project with a new or changed filesystem identity opens as `Untrusted`.
 Inspection, static reads, search, Git metadata, and manual browser actions are
 available. Project hooks, configured tools and tests, language-server
 overrides, kernels, experiments, and task execution need a local trust
-decision. The default Glass Core agent uses the same workspace tool router.
-The legacy Pi backend follows the same workspace authority rules. Glass does
-not trust a project because its configuration requests trust.
+decision. The Glass Core agent uses the same workspace tool router. Glass does not trust
+a project because its configuration requests trust.
 
 `--yolo` is a process-local Glass Dev option. It enables repository
 configuration and bypasses the workspace-trust execution gate for that
@@ -53,7 +52,7 @@ DevelopmentWorkspace (generation + trust)
  ├─ ProcessManager (owned PTY trees)
  ├─ LanguageService / TestService / Debugger sessions
  ├─ AgentRegistry ── one worker per resident agent
- │                   └─ Glass Core by default; Pi is an explicit legacy backend
+ │                   └─ Glass Core runtime
  ├─ TaskScheduler ── task records above AgentRegistry
  ├─ DevelopmentToolRouter (revision, trust, actor, confirmation)
  └─ BrowserService (optional attached browser context)
@@ -65,8 +64,7 @@ DevelopmentWorkspace (generation + trust)
 registries. `ProjectWorkspace` owns files, in-memory buffers, editor revisions,
 actor attribution, comments, proposals, checkpoints, event history, and graph
 data. `AgentRegistry` owns resident agent workers and the selected engine
-runtime. Glass Core is the default. Set `GLASS_AGENT_HARNESS=pi` to use the
-legacy Pi runtime. The task scheduler keeps task records in memory while the
+runtime. Glass Core is the sole resident engine. The task scheduler keeps task records in memory while the
 daemon workspace actor is alive. Agent session files, timeline events, and
 editor checkpoints have separate storage. A worker, TUI snapshot, or external
 harness does not own the project.
@@ -86,9 +84,8 @@ runtime. `:agent new` creates a conversation in the existing runtime and does
 not reload its configuration. `:agent models [AGENT_ID]` and
 `:agent model [AGENT_ID] PROVIDER MODEL` use the selected session, or the
 workspace's first active session when none is selected, through negotiated
-model APIs. Model catalog responses are shown in the Agent conversation. Setting
-`GLASS_AGENT_HARNESS=pi` retains the Pi-specific setup, login, and model path;
-see the [resident harness guide](glass-core-harness.md).
+model APIs. Model catalog responses are shown in the Agent conversation. Provider setup and model configuration remain in Glass Core; see the
+[resident harness guide](glass-core-harness.md).
 
 Live resident agents have separate Agent TUI transcripts and composer drafts;
 switching agents restores that thread's text and cursor. A send result stays
@@ -240,15 +237,11 @@ Glass has four distinct agent paths:
 
 | Path | Ownership and behavior | Entry point |
 |---|---|---|
-| Deterministic local harness | Synchronous, browser-independent `glass.harness.v1` reducer. It resolves bounded references and scripted prompts such as `read PATH`, `files`, `process list`, and `diff`; it has no model provider or persistent session. | `glass agent hello/prompt --harness local --root .` |
+| Deterministic local harness | Synchronous, browser-independent `glass.harness.v1` reducer. It resolves bounded references and scripted prompts such as `read PATH`, `files`, `process list`, and `diff`; it has no model provider or persistent session. | `glass agent hello/prompt --root .` |
 | Resident agent (default) | `AgentRegistry` worker with a persistent Glass Core session, Glass-owned tools, and optional browser context. | TUI Agent surface; `glass.agent.*`; see [Glass Core resident harness](glass-core-harness.md) |
-| Resident agent (legacy Pi) | The same registry worker uses the Pi `AgentSession` when `GLASS_AGENT_HARNESS=pi`. | TUI Agent surface; [Native Pi SDK runtime](pi-sdk-runtime.md) |
 | External harness handoff | Fixed executable names discovered on `PATH`; Glass hands the terminal to the selected interactive program and resumes after exit. It does not emulate or register that program. | `glass harness list`; `glass harness start NAME --root .` |
 | One-shot delegation | Temporary Codex, Claude, or OpenCode child. Read-only is default; output and errors are bounded; no resident identity or session is created. | `glass agent delegate HARNESS PROMPT --root .` |
 
-`glass agent prompt --harness pi` is a one-shot compatibility command. It is
-not the resident agent. Use the TUI or daemon-backed agent for steering,
-follow-up messages, and a persistent session.
 
 The trusted resident tool gateway provides read, list, search, edit, write, process, test, LSP, Git, browser, workflow, debugger, and task capabilities according to availability. The resident engine receives this catalog once, when its session opens, and Glass executes every call; a mutation is checked again at execution time, where stale revisions, leases, path confinement, and confirmation still apply. See [MCP integration](mcp.md) for transport semantics.
 
@@ -282,7 +275,6 @@ Run the targeted tests from the repository when validating a change. Do not trea
 ## Related guides
 
 - [Glass Core resident harness](glass-core-harness.md)
-- [Native Pi SDK runtime](pi-sdk-runtime.md)
 - [Autonomous task DAGs](task-dag.md)
 - [Coding harness architecture](harness-architecture.md)
 - [Development TUI architecture](architecture/development-tui.md)

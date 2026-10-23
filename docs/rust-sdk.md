@@ -57,8 +57,7 @@ glass-dev = "0.3"
 
 Use `glass_dev::…` for project, editor, process, LSP, resident-agent, harness,
 collaboration, workspace-local Agent todos, Ask/Plan/Agent turn mode, and TUI
-APIs. Glass Core is the default resident engine. The Pi SDK remains an
-explicit legacy backend.
+APIs. Glass Core is the sole resident engine.
 `glass-dev` depends on `glass-browser`; the browser crate does not depend on
 `glass-dev`, so browser-only embeddings do not acquire the development runtime.
 
@@ -900,65 +899,6 @@ The internal `AgentToolGateway` validates its descriptor catalog, call
 envelope, JSON schema, authorization, and confirmation. Audit events store
 argument byte count/digest and result metadata, not argument values.
 
-### Legacy Pi runtime boundary
-
-`glass_dev::pi_runtime` exposes `PiReadiness`, `PiReadinessComponent`,
-`PiReadinessState`, `PiSessionRequest`, and `PINNED_PI_SDK_VERSION`
-(`0.84.4`). `PiReadiness` checks Node (currently 22.19.0 or newer), the
-managed SDK, authentication, provider, and session state. `PiSessionRequest`
-describes the legacy Pi resident session. It is distinct from the default
-Glass Core runtime protocol and from the CLI's one-shot `PiHarness` adapter.
-
-`AgentTurnMode` is the per-turn composer personality: Ask, Plan, or Agent
-(default Agent). Ask and Plan are fail-closed for mutations. `SessionTodo`,
-`SessionTodoList`, and `TodoStatus` are the workspace-local Agent checklist
-persisted at `.glass/todos/session.json`. They are not the overnight task DAG.
-
-## Backends, surfaces, and presentation
-
-- `browser_backend` defines semantic requests, responses, profiles,
-  capabilities, errors, and `BrowserBackendDispatcher`. Call through the
-  dispatcher; it validates capability dependency closure and results.
-- `BackendFactory` selects an explicit or best certified backend without
-  iteration-order dependence. An explicit unusable backend fails; it does not
-  silently fall back.
-- `surfaces` models nested browser-hosted boundaries, evidence, coverage,
-  provenance, bridge grants, and action requirements. Detection is never an
-  input grant.
-- `presentation` owns frame metadata, geometry/revision mapping, latest-frame
-  mailbox, payload ownership events, and metrics. It does not own browser or
-  terminal transports.
-- `terminal_graphics` provides Herdr-owned pane, Kitty protocol, ANSI canvas,
-  and semantic render adapters. The development TUI's live policy selects
-  `Herdr`, explicit `Kitty`, or bounded `Ansi`; `Auto` may remain
-  semantic-only when no native backend is detected.
-- Live quality is bounded to data (~3 FPS), balanced (~6 FPS), or smooth (~12
-  FPS). ANSI fit supports `contain`, `cover`, and `actual`; native image paths
-  use `contain`. These are CLI/TUI policy inputs, not browser-session
-  ownership.
-
-
-## Protocol, MCP, daemon, and results
-
-`protocol` contains canonical Glass request/response envelopes. MCP adds
-JSON-RPC framing but maps tools into those payloads. `mcp::serve` owns stdio;
-stdout must contain only protocol frames.
-
-`daemon` provides local Unix-socket lifecycle, isolated MCP children,
-mutation leases, bounded status/logs, and explicit interrupted-run recovery.
-It is not a network service.
-
-`ExperienceResult` and `OperationResult` project bounded minimal, normal, or
-diagnostic output. Large diagnostic detail belongs in `ResultStore`; callers
-receive a local result ID rather than an unbounded transport payload.
-
-## Public module map
-
-Module paths are package-qualified below because both packages expose a
-`browser` and a `tui` module. This is the checked-in public Rust surface; the
-generated rustdoc pages and source exports are the authority for individual
-items.
-
 ### `glass-browser` (`glass_browser`)
 
 | Module | Contract |
@@ -988,7 +928,7 @@ items.
 
 `update` is an implementation module and is not public. The browser crate does
 not export the Development Runtime; project files, native editors, PTYs, LSP,
-Pi, Neovim, Git, and collaboration belong to `glass-dev`.
+Neovim, Git, and collaboration belong to `glass-dev`.
 
 ### `glass-dev` (`glass_dev`)
 
@@ -1010,7 +950,7 @@ Pi, Neovim, Git, and collaboration belong to `glass-dev`.
 | `kernels` | Kernel process and runtime integration |
 | `lsp` | LSP-facing language-service integration |
 | `mcp` | Development MCP server and tool integration |
-| `pi_runtime` | Managed Pi runtime readiness and sessions |
+| `resident_harness` | Glass Core resident session requests and readiness |
 | `tasks` | Task scheduling, retry, evidence, and verification requirements |
 | `testing` | Test execution and result collection |
 | `todos` | Workspace-local Agent checklist persisted at `.glass/todos/session.json` (`glass.todo.*`); not the overnight DAG |

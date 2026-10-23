@@ -49,7 +49,6 @@ pub mod replay;
 pub mod search;
 
 pub(crate) use agent::AgentToolGateway;
-pub(crate) use agent::PiHarness;
 /// Agent authority, harness handoff, and tool registry contracts.
 pub use agent::{
     AgentAuthorityContext, AgentContextPacket, BrowserAgentContext, HarnessEvent, HarnessRequest,

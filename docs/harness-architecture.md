@@ -1,6 +1,6 @@
 # Glass Coding Harness Architecture
 
-**Status: Current 0.3.14 source behavior.** This guide defines worker boundaries and display-state flow in `glass-dev`. It does not make an external coding program part of Glass and does not change immutable release history. See [Development Runtime](development-runtime.md) for project semantics, [Glass Core resident harness](glass-core-harness.md) for the default resident engine, and [Native Pi SDK runtime](pi-sdk-runtime.md) for the legacy Pi backend.
+**Status: Current 0.3.14 source behavior.** This guide defines worker boundaries and display-state flow in `glass-dev`. It does not make an external coding program part of Glass and does not change immutable release history. See [Development Runtime](development-runtime.md) for project semantics and [Glass Core resident harness](glass-core-harness.md) for the resident engine.
 
 ## Runtime planes
 
@@ -26,7 +26,7 @@ keyboard / resize / mouse
                      ▼
                   TUI panes
 
-resident agent worker ── Pi SDK IPC ──► DevelopmentToolRouter
+resident agent worker ── Core host protocol ──► DevelopmentToolRouter
 external harness ─────── terminal handoff (not a Glass worker)
 ```
 
@@ -38,7 +38,6 @@ The four agent paths are intentionally different:
 |---|---|---|
 | Deterministic local harness | One synchronous `LocalHarness` request | No model provider, no engine process, no persistent conversation; bounded references and scripted read/list/process/diff prompts |
 | Resident agent (Glass Core) | One `AgentRegistry` record, worker thread, `ResidentHarness`, and one `GlassCoreRuntime` speaking the engine host protocol | Glass-registered tools through the resident router; persistent session and event evidence |
-| Resident agent (legacy Pi) | The same registry record and worker with `GLASS_AGENT_HARNESS=pi`, a `GlassPiRuntime`, and a Pi `AgentSession` | Same Glass-registered tools and evidence; the engine differs, the authority does not |
 | External harness handoff | One installed interactive executable receives the terminal | Fixed catalog and PATH lookup; Glass does not emulate its protocol or own its session |
 | One-shot delegation | One bounded Codex, Claude, or OpenCode child | Read-only default, bounded output, no resident identity or session |
 
@@ -74,7 +73,7 @@ The worker's internal `ActorRequest` channel is an ordinary multi-producer chann
 
 Screenshot requests use a separate visual-request flag. While one screenshot request is pending, additional screenshot requests are ignored. Results contain request ID, requested columns/rows, and a typed result. The worker does not retain an unbounded frame history. Visual capture is explicit and does not make browser pixels authoritative over semantic revisions.
 
-Resident agent worker channels have separate bounds: command capacity 32, engine event capacity 256, agent history capacity 512, and per-agent evidence capacity 64. Lossy engine events may be dropped and the agent snapshot reports `droppedEventCount`; critical ready, failure, stop, and request-start events use the critical path. The Glass Core adapter adds one protocol bound of its own: it rejects any engine frame above 1 MiB and bounds each host tool result to 512 KiB. See [Glass Core resident harness](glass-core-harness.md) and the [legacy Pi backend](pi-sdk-runtime.md).
+Resident agent worker channels have separate bounds: command capacity 32, engine event capacity 256, agent history capacity 512, and per-agent evidence capacity 64. Lossy engine events may be dropped and the agent snapshot reports `droppedEventCount`; critical ready, failure, stop, and request-start events use the critical path. The Glass Core adapter adds one protocol bound of its own: it rejects any engine frame above 1 MiB and bounds each host tool result to 512 KiB. See the [Glass Core resident harness](glass-core-harness.md).
 
 Workspace and transport limits remain authoritative: daemon requests and responses are each at most 1 MiB, daemon event batches at most 256, tool result routing at most 512 KiB, project buffers at most 1 MiB, PTY output tails 32 KiB, and managed PTY processes 32 per project. The snapshot worker does not enlarge any of these limits.
 
@@ -155,7 +154,6 @@ Source-level evidence includes:
 
 - `tui::snapshot::tests::snapshot_worker_publishes_and_applies_without_blocking_ui`, which checks a published complete projection and conversation cursor handling;
 - `tui::state` tests for `editor_soft_wrap_toggle_scrolls_visual_rows_and_resets_horizontal_scroll`, Shift selection, editor exit prompts, and responsive input;
-- `pi_runtime` tests for native SDK operation mapping, governed tools, unknown-tool recovery, and bounded browser evidence;
 - `agents::tests::lossy_worker_queue_reports_dropped_events`, worker panic attribution, cancellation joining, and independent session lifecycle;
 - `harness::tests::catalog_covers_requested_harness_families`, case-insensitive resolution, and executable-only discovery; and
 - `external_agents::tests` for fixed invocation arguments, read-only OpenCode planning, stream limits, timeout bounds, and workspace-write authority.
@@ -165,7 +163,6 @@ These tests prove worker and projection contracts. They do not prove that an ins
 ## Related guides
 
 - [Development Runtime](development-runtime.md)
-- [Native Pi SDK runtime](pi-sdk-runtime.md)
 - [Autonomous task DAGs](task-dag.md)
 - [Development TUI architecture](architecture/development-tui.md)
 - [Terminal UI architecture](architecture/tui.md)

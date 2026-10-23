@@ -459,6 +459,16 @@ resends the stored text with the original client message ID and records a new
 attempt ID against the current run. Cancel leaves the uncertain attempt intact;
 neither inbox navigation nor opening the retry prompt sends anything. See the
 [send-attempt recovery task](../plan/tasks/issue64-send-attempt-recovery-001.md).
+
+For Core durable tasks, finalization writes buffered transcript records, the
+terminal task state, and the live-task projection in one journal commit. A
+successful finish then flushes any delayed transcript deltas to the runtime
+event stream. An interrupted finish leaves the task pending and preserves its
+partial response as recovery data; it does not leave a stale `settling` state.
+If the journal commit fails, Core returns an error and does not claim a terminal
+task state. Glass keeps the send attempt unresolved until the correlated runtime
+response or its recovery policy resolves it.
+
 Workspace-local todos
 (`glass.todo.*`) persist at `.glass/todos/session.json` and form the Agent
 checklist shown on Agent and Tasks; they are not the overnight task DAG.

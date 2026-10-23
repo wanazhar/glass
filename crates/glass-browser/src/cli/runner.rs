@@ -2383,7 +2383,7 @@ fn print_grouped_help(topic: Option<&str>) {
             "SESSION\n\n  glass session start [NAME]    launch a persistent local browser\n  glass session status [NAME]   inspect owner and browser health\n  glass session open [NAME]     print attach commands\n  glass session stop [NAME]     close the owned browser\n"
         ),
         "skills" => println!(
-            "SKILLS\n\n  browser-observe               semantic observation and stable refs\n  browser-actions               guarded navigation, click, type, and scroll\n  workflow                      bounded workflows with checkpoints\n  evidence                      redacted revisions and replayable results\n\nPi receives the complete embedded contract from assets/pi-glass-system.md.\n"
+            "SKILLS\n\n  browser-observe               semantic observation and stable refs\n  browser-actions               guarded navigation, click, type, and scroll\n  workflow                      bounded workflows with checkpoints\n  evidence                      redacted revisions and replayable results\n\nResident development agents run on the standalone Glass Core engine.\n"
         ),
         _ => println!(
             "GLASS START HERE\n\n  glass browser                 start the browser-first terminal\n  glass session start           keep one browser alive between commands\n  glass help browser            browser commands\n  glass help session            persistent session commands\n  glass help skills             embedded agent workflow skills\n  glass doctor                  check local browser/runtime support\n\nStructured observation is the default. Use `glass <command> --help` for exact flags.\n"

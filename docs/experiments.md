@@ -17,8 +17,7 @@ Use the TUI command palette:
 
 The shared router exposes `glass.experiment.create`, `collect`, `list`,
 `compare`, `select`, and `remove` to MCP, daemon, and resident-agent clients.
-Resident agents use Glass Core by default. The legacy Pi backend uses the same
-router.
+Resident agents use Glass Core and the same router.
 
 ## Automatic providers
 

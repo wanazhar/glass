@@ -113,8 +113,7 @@ current trust state so a stale TUI snapshot cannot grant project authority.
 ## Skills and experiments
 
 User-global skills are labelled `userGlobal`. Project skills remain visible as
-`untrustedProject` instructions. The default Glass Core agent and the optional
-legacy Pi agent can read configured user resources. Project resources remain
+`untrustedProject` instructions. The Glass Core agent can read configured user resources. Project resources remain
 labelled `untrustedProject` until the workspace is trusted. Project hooks and
 other project execution still require a trust decision. After trust, project
 resources are labelled `trustedProject` and keep their source paths.
@@ -129,6 +128,6 @@ operation that upgrades trust. A new daemon open re-evaluates the external
 identity-bound store.
 
 Workspace trust governs Glass capabilities but is not an operating-system
-sandbox. Trusted project commands, language servers, debuggers, Pi, Python,
+sandbox. Trusted project commands, language servers, debuggers, Python,
 JavaScript `vm`, shell kernels, and kernel-issued Glass bindings execute with the launching user's OS
 permissions. Use a container, VM, or restricted OS account for hostile code.

@@ -46,7 +46,6 @@ page, section, anchor, and body-only changes against a base commit.
 | Running resident agents | [Glass Core resident harness](glass-core-harness.md) | [Development Runtime](development-runtime.md), [daemon](daemon.md) |
 | Building or installing the standalone coding harness | [Standalone Glass Core](glass-core-product.md) | [Glass Core resident harness](glass-core-harness.md) |
 | Reviewing the repository migration evidence | [Glass Core monorepo migration](migration/glass-core-monorepo.md) | [Maintainer handbook](maintainers/README.md) |
-| Keeping an existing Pi installation | [Native Pi SDK runtime](pi-sdk-runtime.md) | [Glass Core resident harness](glass-core-harness.md) |
 | Automating a repair DAG | [Autonomous task DAGs](task-dag.md) | [Glass Core resident harness](glass-core-harness.md), [daemon](daemon.md) |
 | Running persistent analysis code | [Persistent kernels](kernels.md) | [Workspace trust](workspace-trust.md), [MCP tool catalog](mcp-tools.md) |
 | Debugging a resident process | [Resident debugger](debugger.md) | [Development Runtime](development-runtime.md), [Persistent kernels](kernels.md) |
@@ -166,9 +165,6 @@ current user instructions.
   and version source.
 - [Glass Core monorepo migration](migration/glass-core-monorepo.md) — source
   refs, history preservation, security and license audit, and migration checks.
-- [Native Pi SDK runtime](pi-sdk-runtime.md) — the legacy resident backend:
-  direct AgentSession integration, bounded IPC, governed tools, lifecycle,
-  persistence, and migration failures.
 - [Autonomous task DAGs](task-dag.md) — automatic dispatch, verification,
   dependency wakeup, retries, budgets, controls, and durable scheduling.
 - [Measured experiments](experiments.md) — isolated approaches, automatic

@@ -1,11 +1,11 @@
 //! Glass Dev-owned project CLI dispatch.
 
 use crate::development::{
-    Actor, ExperimentManager, HarnessRequest, LinkProvenance, LocalHarness, PiHarness,
+    Actor, ExperimentManager, HarnessRequest, LinkProvenance, LocalHarness,
     ProcessSnapshot, ProjectWorkspace, SemanticBreakpoint, SemanticSnapshot,
 };
 use glass_browser::cli::args::{
-    AgentCommand, AgentHarness, ExperimentCommand, ExternalAgentSandbox, HarnessCommand,
+    AgentCommand, ExperimentCommand, ExternalAgentSandbox, HarnessCommand,
     NeovimCommand, ProjectCommand, ProjectGitCommand, ProjectGithubCommand, ProjectGraphCommand,
     ProjectProcessCommand,
 };
@@ -19,19 +19,6 @@ pub(crate) fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliRe
     match action {
         AgentCommand::Doctor | AgentCommand::Status => {
             return print_json(&crate::resident_harness::resident_readiness()?);
-        }
-        AgentCommand::Setup {
-            sdk_entry,
-            agent_dir,
-            update,
-            login,
-        } => {
-            return print_json(&crate::pi_runtime::setup_pi_runtime(
-                sdk_entry.as_deref(),
-                agent_dir.as_deref(),
-                *update,
-                *login,
-            )?);
         }
         _ => {}
     }
@@ -92,68 +79,27 @@ pub(crate) fn dispatch_agent(action: &AgentCommand, unrestricted: bool) -> CliRe
         }
         return Ok(());
     }
-    let (root, request, adapter) = match action {
+    let (root, request) = match action {
         AgentCommand::Tool { .. } | AgentCommand::ToolFile { .. } => {
             return Err("agent tool calls use the resident broker path".into());
         }
-        AgentCommand::Hello { root, harness } => (root, HarnessRequest::Hello, *harness),
+        AgentCommand::Hello { root } => (root, HarnessRequest::Hello),
         AgentCommand::Prompt {
             root,
             text,
-            harness,
-        } => (
-            root,
-            HarnessRequest::Prompt { text: text.clone() },
-            *harness,
-        ),
+        } => (root, HarnessRequest::Prompt { text: text.clone() }),
         AgentCommand::Steer {
             root,
             text,
-            harness,
-        } => (root, HarnessRequest::Steer { text: text.clone() }, *harness),
-        AgentCommand::FollowUp { root, text } => (
-            root,
-            HarnessRequest::FollowUp { text: text.clone() },
-            AgentHarness::Pi,
-        ),
-        AgentCommand::Models { root } => (root, HarnessRequest::Models, AgentHarness::Pi),
-        AgentCommand::SetModel {
-            root,
-            provider,
-            model_id,
-        } => (
-            root,
-            HarnessRequest::SetModel {
-                provider: provider.clone(),
-                model_id: model_id.clone(),
-            },
-            AgentHarness::Pi,
-        ),
-        AgentCommand::Thinking { root, level } => (
-            root,
-            HarnessRequest::SetThinking {
-                level: level.clone(),
-            },
-            AgentHarness::Pi,
-        ),
-        AgentCommand::Abort { root } => (root, HarnessRequest::Abort, AgentHarness::Pi),
-        AgentCommand::NewSession { root } => (root, HarnessRequest::NewSession, AgentHarness::Pi),
-        AgentCommand::Doctor | AgentCommand::Setup { .. } | AgentCommand::Status => {
+        } => (root, HarnessRequest::Steer { text: text.clone() }),
+        AgentCommand::Doctor | AgentCommand::Status => {
             unreachable!("readiness commands return before harness dispatch")
         }
         AgentCommand::Delegate { .. } => unreachable!("delegation returns before harness dispatch"),
     };
     let mut workspace = ProjectWorkspace::open(root)?;
-    match adapter {
-        AgentHarness::Local => {
-            let mut harness = LocalHarness::default();
-            print_json(&harness.handle(&mut workspace, request)?)?;
-        }
-        AgentHarness::Pi => {
-            let mut harness = PiHarness::spawn_with_unrestricted(workspace.root(), unrestricted)?;
-            print_json(&harness.request(request)?)?;
-        }
-    }
+    let mut harness = LocalHarness::default();
+    print_json(&harness.handle(&mut workspace, request)?)?;
     Ok(())
 }
 

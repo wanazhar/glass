@@ -76,12 +76,8 @@ provider readiness, session storage, and ordered repair steps without printing
 secrets. `GLASS_CORE_BINARY` selects a specific engine executable. Install the
 current monorepo checkout with `products/glass-core/scripts/install.sh`; the
 [standalone product guide](glass-core-product.md) covers its independent
-workspace and install options. An existing
-Pi installation keeps working with `GLASS_AGENT_HARNESS=pi`, where
-`glass agent setup` installs or repairs the pinned managed SDK, `--login` opens
-Pi's provider login flow in the terminal, and `--update` forces a reinstall of
-that pinned version. Nothing is downloaded merely by starting Glass. The focused
-`glass-browser` package has no agent or development routes.
+workspace and install options. Nothing is downloaded merely by starting Glass.
+The focused `glass-browser` package has no agent or development routes.
 
 The two packages intentionally compete for the `glass-browser` command in one
 Cargo root. Use the [package transition](installation.md#install-from-source)
@@ -360,8 +356,7 @@ errors, and optional development-runtime APIs.
 |---|---|---|
 | `doctor` cannot find Chrome | No supported executable was discovered | Install system Chrome/Chromium, run `install-chromium` where supported, or pass `--chrome-path`. |
 | Chrome exits with profile status 21 | A confined browser cannot access a host profile path | Upgrade to 0.3.4 or newer; Glass automatically selects Snap Chromium's accessible persistent profile root. |
-| Agent engine not ready | `glass-core` is missing, incompatible, or has no provider | Run `glass agent doctor` and apply the reported step: install `glass-core`, set `GLASS_CORE_BINARY`, or connect a provider. Set `GLASS_AGENT_HARNESS=pi` to use the legacy Pi runtime instead. |
-| Legacy Pi not ready or setup/login fails | `GLASS_AGENT_HARNESS=pi` is set and Node, the pinned SDK, or provider auth is unavailable | Run `glass agent doctor`, retry `glass agent setup`/`glass agent setup --login`, or update with `glass agent setup --update`; the TUI remains available. |
+| Agent engine not ready | `glass-core` is missing, incompatible, or has no provider | Run `glass agent doctor` and apply the reported step: install `glass-core`, set `GLASS_CORE_BINARY`, or connect a provider. |
 | Live backend unavailable or capture fails | Requested native graphics path or screenshot was not usable | Use `:browser view` with semantic-only state, choose explicit ANSI, or turn live mode off; semantic observation remains available. |
 | Port `9222` is occupied | Another process owns the preferred CDP port | In the TUI run `browser start`; the recovery sheet can attach to a verified endpoint, launch an isolated browser on a free local port, or retry `9222`. Project and agent state remain alive. |
 | Multiple targets found | More than one page is eligible | Run `browser targets` (optionally followed by a query), then select the intended target from the App surface. |

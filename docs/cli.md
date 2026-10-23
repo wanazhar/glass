@@ -397,7 +397,7 @@ authority; live `--help` wins if an installed binary differs.
 | `certify` | scenario, manifest, or replay evidence | bounded certification evidence | missing observations and forbidden outcomes block release status |
 | `workspace` | workspace ID and expected lifecycle revision | persisted identity, ownership, attachments, and lease state | stale revision or active ownership fails closed |
 | `project` | canonical root, relative paths, commands, actor | files, buffers, PTYs, diagnostics, graph, timeline | path escape, edit conflict, process degradation, and missing LSP are explicit |
-| `agent` | bounded text/control request and harness | attributed local/Pi harness result | unavailable adapter, stale context, absent browser, and authority denial are distinct |
+| `agent` | bounded text/control request and harness | attributed local harness result | stale context, absent browser, and authority denial are distinct |
 | `memory` | memory selector or snapshot operation | advisory memory projection | stale/quarantined evidence cannot authorize an action |
 | `surfaces` | versioned surface evidence | capability and coverage result | unknown/weak evidence fails closed for input authority |
 | `backend` | backend profile/evidence | status, capabilities, proof test | an unregistered or incompatible backend cannot become active |
@@ -651,40 +651,19 @@ infer framework source maps or confirm live updates without browser revision
 evidence.
 
 The deterministic local harness is available through `agent hello` and
-`agent prompt`. `--harness local` uses Glass's local deterministic adapter.
-`--harness pi` selects the one-shot legacy `PiHarness` RPC adapter; it starts
-Pi with `--mode rpc --no-approve --no-builtin-tools` for this request. These
-commands are not the resident engine. The resident
-`AgentRegistry` session runs on Glass Core by default and is controlled
-with its agent routes; see [the runtime guide](development-runtime.md) and the
-[Glass Core resident harness](glass-core-harness.md).
+`agent prompt`. It uses Glass's local adapter and is separate from the resident
+agent, which runs on Glass Core.
 
 ```console
-glass agent hello --harness local --root .
-glass agent prompt "read README.md" --harness local --root .
-glass agent hello --harness pi --root .
-glass agent prompt "Explain @diagnostic" --harness pi --root .
+glass agent hello --root .
+glass agent prompt "read README.md" --root .
 ```
 
-`glass agent doctor` and `glass agent status` report the selected resident
-engine, its runtime protocol version, provider readiness, session storage, and
-ordered remediation. They never print credential values. When the selected
-engine is the legacy Pi backend, the same report includes Node, the pinned
-managed SDK, provider/authentication, and session readiness. `glass agent setup`
-installs the managed `@earendil-works/pi-coding-agent` SDK at the exact pinned version
-`0.84.4` for that backend; `glass agent setup --update` reinstalls it. Use `--sdk-entry FILE`
-to select an existing SDK entry and `--agent-dir DIR` with it to select an
-existing credential/model directory. `--login` opens Pi's provider login flow
-after setup. One-shot Pi requests wait for `agent_settled`; extension UI
-requests are denied because a one-shot caller has no interactive UI host.
-
-The resident Glass Dev TUI uses the engine selected by `GLASS_AGENT_HARNESS`,
-which defaults to Glass Core. For legacy Pi sessions, `/` opens Pi's
-slash-command modal and `:` opens Glass's command
-palette. The modal covers all 23 official commands in the pinned SDK and
-accepts loaded extension, prompt-template, and skill commands by name. Slash
-results are emitted into the Agent transcript and More; `/login` hands the
-terminal to Pi for interactive authentication. See [Glass Core resident harness](glass-core-harness.md) and [Native Pi SDK runtime](pi-sdk-runtime.md).
+`glass agent doctor` and `glass agent status` report Glass Core's runtime
+protocol, provider readiness, session storage, and ordered remediation without
+printing credential values. Provider setup stays in Core. The resident TUI's
+slash-command modal contains Glass-level aliases; `:` opens Glass workspace
+actions. See [Glass Core resident harness](glass-core-harness.md).
 
 With the default Core backend, `:agent setup login` suspends Glass and opens
 the resolved `glass-core` interactive UI in the current workspace. Use Core's
@@ -782,41 +761,7 @@ registered as a resident Glass Agent.
 
 The resident Glass Agent exposes a separate governed `delegate` tool /
 `glass.agent.delegate` route. It remains approval-gated, bounded, and
-ephemeral; it is not the legacy one-shot Pi adapter or an external harness
-process.
-
-### Unrestricted Pi mode
-
-```console
-glass --yolo
-glass --yolo agent prompt "Implement and verify the requested change" --harness pi --root .
-```
-
-This is a process-scoped unrestricted setting for Glass Dev, direct
-Glass/browser work, and non-TUI callers. Glass skips its mutation approval
-sheet, bypasses the workspace-trust execution gate, the Pi extension does not
-request approval, and any confirmation RPC from another loaded Pi extension is
-accepted automatically. Ambient context, extensions, skills, templates,
-themes, and registered extension tools are enabled. Browser policy
-capabilities are treated as explicitly allowed, even if a confirmation
-capability was also supplied on the command line. The trust record itself is
-not changed, so a later process without `--yolo` still opens the workspace as
-untrusted.
-
-`--yolo` does not turn correctness guards into best effort: project file tools
-remain root-confined, browser revisions remain guarded, workspace/daemon
-mutation leases still apply, explicit host denials still deny, and request and
-result bounds remain active. The unrestricted `bash` tool and loaded extensions
-can execute arbitrary commands as the current OS user, so those components can
-operate outside the project root.
-
-Pi's configured providers and `models.json` models are available through
-`agent models` and `agent set-model PROVIDER MODEL_ID`; `agent thinking LEVEL`
-sets the thinking level. The legacy one-shot compatibility adapter keeps its
-existing environment-controlled catalog/session behavior. The resident Glass
-Dev TUI loads its configured context files, extensions, skills, templates, and
-themes by default, while Pi's raw built-in filesystem and shell tools remain
-disabled because their names are replaced by Glass-owned overrides.
+ephemeral; it is separate from an external harness process.
 
 ## Profiles and files
 

@@ -52,8 +52,6 @@ pub struct BrowserConfig {
 pub struct AgentConfig {
     pub model: Option<String>,
     pub reasoning: Option<String>,
-    /// Retained only to reject non-Pi embedded runtimes explicitly.
-    pub harness: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -755,17 +753,6 @@ fn executable_item(
 }
 
 fn validate_config(config: &GlassConfig) -> DevelopmentResult<()> {
-    if config
-        .agent
-        .harness
-        .as_deref()
-        .is_some_and(|harness| harness != "pi")
-    {
-        return Err(DevelopmentError::Config(
-            "Pi is the sole embedded Glass Agent runtime; agent.harness must be 'pi' or omitted"
-                .into(),
-        ));
-    }
     for (name, command) in &config.commands {
         validate_name(name)?;
         validate_command(command)?;
@@ -1075,7 +1062,6 @@ mod tests {
             format!(
                 r#"
 [agent]
-harness = "pi"
 model = "provider/model"
 reasoning = "high"
 [commands]
@@ -1284,9 +1270,7 @@ input_schema = {{ type = "object", required = ["text"] }}
     }
 
     #[test]
-    fn customization_rejects_alternate_embedded_harnesses() {
-        let mut config = GlassConfig::default();
-        config.agent.harness = Some("omp".into());
-        assert!(validate_config(&config).is_err());
+    fn customization_rejects_removed_agent_harness_setting() {
+        assert!(toml::from_str::<GlassConfig>("[agent]\nharness = 'pi'\n").is_err());
     }
 }

@@ -22,7 +22,7 @@ workflow generator, cross-browser test framework, or remote browser fleet.
 |---|---|---|
 | Work on a project over a local or SSH terminal | `glass` TUI and Development Runtime | bounded project root; commands retain the user's OS authority |
 | Inspect and control Chrome/Chromium | browser workspace, CLI, MCP, Rust SDK | local browser; structured-first state; explicit privileged capture |
-| Connect an agent to project/browser tools | resident agent on the Glass Core engine (legacy Pi backend available) | the engine gets no built-in tools; Glass executes every call and records the revision it ran against |
+| Connect an agent to project/browser tools | resident agent on the Glass Core engine | the engine gets no built-in tools; Glass executes every call and records the revision it ran against |
 | Automate from another local process | MCP plus repository TypeScript/Python clients | local stdio/socket transport; clients do not contain a browser runtime |
 | Resume or observe from an iPhone | mobile TUI, terminal graphics, SSH-forwarded Remote View | loopback-only services; no public hosted relay |
 | Build repeatable browser tasks | Task Protocol, workflows, checkpoints, replay | callers author intent and policy; Glass does not invent an unbounded workflow |

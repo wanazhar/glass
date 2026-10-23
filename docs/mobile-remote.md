@@ -82,10 +82,8 @@ browser entities when the terminal forwards mouse events. A mobile SSH client
 that does not forward mouse events still has complete printable-key access.
 On first run, if Trust is required, choose the footer action before repository
 execution. On Agent, type or press `Enter`; when the resident engine is not
-ready, Glass reports the exact repair step for the selected harness. The legacy
-Pi backend (`GLASS_AGENT_HARNESS=pi`) keeps `:agent setup` to install/repair the
-pinned Pi runtime, `:agent setup login` for Pi `/login`, and `:agent update` to
-refresh it. Setup mutations use the one-use confirmation card.
+ready, Glass reports the exact repair step for Glass Core. Provider setup stays
+in Core, and readiness checks do not print credentials.
 Composer `Enter` sends and stays open; `Esc` closes. A local or pre-dispatch
 failure keeps the draft for retry, and background work does not silently
 discard typed text. If Core returns an error after accepting a prompt, Glass
@@ -101,7 +99,7 @@ projection. `SnapshotWorker` then hydrates files, conversation, tasks, Git,
 processes, browser state, and other resident surfaces. Refresh requests and
 conversation requests are coalesced, and the latest versioned snapshot wins.
 
-Git diffs, legacy Pi runtime setup, browser recovery, agent composer operations,
+Git diffs, browser recovery, agent composer operations,
 embedded screenshots, and governed tool calls do not run on the terminal input
 loop. TUI workspace callbacks use non-blocking lock attempts. When the actor is
 busy, Glass reports a wait state rather than freezing input. Active bounded

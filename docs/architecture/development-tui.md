@@ -174,7 +174,7 @@ One active-overlay resolver owns keyboard, mouse, and terminal-overlay
 precedence. From highest priority to lowest it selects quit confirmation,
 editor exit prompt, native browser JavaScript dialog, help, command-center menu,
 browser target picker, file picker, session picker, agent approval, mutation
-confirmation, full-screen editor, legacy Pi slash-command modal, composer dock, Glass
+confirmation, full-screen editor, slash-command modal, composer dock, Glass
 command palette, and browser recovery. Recovery is the lowest-priority overlay
 so it cannot replace an already active modal or editor. If no modal is active,
 ordinary surface input owns the event, including Git workbench keys. Ctrl-C
@@ -217,7 +217,7 @@ mouse, paste, or surface input while a higher-priority overlay is active.
 | Up/Down, `j`/`k` | focused list movement; otherwise the current surface scrolls |
 | PageUp/PageDown, Home/End | surface scroll/page or bounds |
 | `a` outside Agent | open the current surface command center; `:` opens the filtered palette |
-| `/` on Agent | open the slash-command modal; Glass aliases work with either engine, while Pi built-ins require the legacy Pi engine; `:` opens Glass commands |
+| `/` on Agent | open the Glass slash-command modal; `:` opens Glass workspace actions |
 | `Ctrl-L` | open the shared composer dock on the current surface |
 | `Ctrl-P` | open the file picker; in the composer or palette, it keeps its local history behavior |
 | `Ctrl-K` / `Ctrl-Shift-P` | open the command palette from the normal surface view |
@@ -323,17 +323,11 @@ resize or focus-loss event does not silently dismiss the page dialog.
 
 ### Slash-command modal
 
-The Agent surface has two command namespaces. `/` opens the slash-command
-modal; `:` opens Glass workspace actions. Glass Core does not provide native
-slash commands. Glass-level aliases such as `/ask`, `/plan`, `/agent`,
-`/todo`, `/stats`, `/sessions`, and `/think` work with the default engine.
-Pi built-ins and extension commands require the legacy Pi engine. Its modal
-contains these 23 built-ins from the pinned Pi SDK: `/settings`, `/model`,
-`/tree`, `/thinking`, `/scoped-models`, `/export`, `/import`, `/share`,
-`/copy`, `/name`, `/session`, `/changelog`, `/hotkeys`, `/fork`, `/clone`,
-`/trust`, `/login`, `/logout`, `/new`, `/compact`, `/resume`, `/reload`, and
-`/quit`. Arrow keys or `j`/`k` select, `Tab` completes, `Ctrl-U` clears, and
-`Enter` dispatches the command with its typed arguments.
+The Agent surface keeps Glass slash aliases such as `/ask`, `/plan`, `/agent`,
+`/todo`, `/stats`, `/sessions`, and `/think`. `:` opens the full Glass workspace
+action palette. Glass Core owns provider login, model configuration, and coding
+sessions; the modal does not expose a second agent runtime or extension command
+surface.
 
 When the Agent composer is focused, typing `/` opens the modal regardless of
 whether the draft is empty. The modal keeps the composer text and cursor; Esc
@@ -344,20 +338,8 @@ the composer.
 A paste into the focused composer that starts with `/` is extracted as the
 complete modal command input, including any newline arguments; the current
 composer draft remains unchanged. Ordinary pasted text still inserts into the
-composer. Pasting into an already-open slash modal inserts into its command
-input. Typed modal input, slash-command paste, and slash text submitted from an
-existing composer draft share one resolver and dispatch path. A command that
-closes the modal returns to the composer when it opened there. Mutation
-confirmation temporarily owns input; denying the confirmation returns to the
-same composer draft and cursor. Typed and pasted modal input is capped at 4 KiB;
-the UI reports when additional input exceeds that limit.
-
-For Pi commands, the TUI sends the request to the legacy Pi worker. Pi returns
-a structured result. Glass shows a short status in the Agent transcript and
-keeps details on More. The modal accepts extension, prompt-template, and
-enabled skill commands after Pi loads those resources. `/login` gives the
-terminal to Pi for provider login. `/quit` uses the normal Glass quit path.
-See the [legacy Pi runtime guide](../pi-sdk-runtime.md) for command details.
+composer. Typed and pasted modal input is capped at 4 KiB; the UI reports when
+additional input exceeds that limit.
 
 ## First launch and agent composer
 
@@ -367,11 +349,8 @@ Trust. Otherwise Agent is selected: a ready engine shows `Ready · describe a
 coding task`, while an unconfigured engine shows setup guidance. The resident
 engine defaults to Glass Core. Its `:actions` include `agent doctor`, setup and
 provider-login guidance, conversation management, and task routes. Setup and
-login guidance point to Glass Core configuration; they do not run the legacy
-Pi installer. Set `GLASS_AGENT_HARNESS=pi` to select Pi, whose action catalog
-includes Pi runtime installation, update, and authentication routes. See the
-[Glass Core resident harness guide](../glass-core-harness.md) and the
-[legacy Pi runtime guide](../pi-sdk-runtime.md) for engine-specific setup.
+login guidance point to Glass Core configuration. See the [Glass Core resident
+harness guide](../glass-core-harness.md) for provider setup and readiness.
 
 The shared composer dock is a local draft with a character cursor. `Ctrl-L`
 opens it on any surface. `i`, Enter on the Agent surface, or typing a

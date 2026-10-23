@@ -1411,23 +1411,8 @@ pub enum ProjectProcessCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AgentCommand {
-    /// Inspect Node, Pi SDK, authentication, model, and session readiness.
+    /// Inspect the Glass Core resident engine readiness.
     Doctor,
-    /// Install or select the Glass-managed native Pi SDK runtime.
-    Setup {
-        /// Select an existing Pi SDK dist/index.js instead of installing one.
-        #[arg(long)]
-        sdk_entry: Option<PathBuf>,
-        /// Use this existing Pi agent directory for credentials and models.
-        #[arg(long, requires = "sdk_entry")]
-        agent_dir: Option<PathBuf>,
-        /// Reinstall the pinned managed SDK even when it is already ready.
-        #[arg(long)]
-        update: bool,
-        /// Open the managed Pi CLI after setup so `/login` can configure auth.
-        #[arg(long)]
-        login: bool,
-    },
     /// Print the concise current Glass Agent readiness state.
     Status,
     /// Delegate one bounded prompt to an installed temporary external agent.
@@ -1471,60 +1456,20 @@ pub enum AgentCommand {
         #[arg(long)]
         yes: bool,
     },
-    /// Negotiate the Glass-owned harness protocol.
+    /// Negotiate the local Glass harness protocol.
     Hello {
         #[arg(long, default_value = ".")]
         root: PathBuf,
-        #[arg(long, value_enum, default_value_t = AgentHarness::Local)]
-        harness: AgentHarness,
     },
-    /// Run one bounded local prompt through the harness.
+    /// Run one bounded prompt through the local Glass harness.
     Prompt {
         text: String,
         #[arg(long, default_value = ".")]
         root: PathBuf,
-        #[arg(long, value_enum, default_value_t = AgentHarness::Local)]
-        harness: AgentHarness,
     },
     /// Steer the active local harness request.
     Steer {
         text: String,
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-        #[arg(long, value_enum, default_value_t = AgentHarness::Pi)]
-        harness: AgentHarness,
-    },
-    /// Queue a follow-up through the native Pi SDK runtime.
-    FollowUp {
-        text: String,
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// List models exposed by the native Pi SDK runtime.
-    Models {
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// Select a Pi provider/model pair.
-    SetModel {
-        provider: String,
-        model_id: String,
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// Set the Pi thinking level.
-    Thinking {
-        level: String,
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// Abort the active Pi request.
-    Abort {
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
-    /// Start a fresh Pi session.
-    NewSession {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
@@ -1540,12 +1485,6 @@ pub enum HarnessCommand {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum AgentHarness {
-    Local,
-    Pi,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -2273,28 +2212,10 @@ mod tests {
                         action: AgentCommand::Doctor
                     })
                 ));
-                assert!(matches!(
-                    try_parse_cli([
-                        "glass",
-                        "agent",
-                        "setup",
-                        "--sdk-entry",
-                        "/opt/pi/dist/index.js",
-                        "--agent-dir",
-                        "/opt/pi/config",
-                        "--update"
-                    ])
-                    .unwrap()
-                    .command,
-                    Some(Commands::Agent {
-                        action: AgentCommand::Setup {
-                            sdk_entry: Some(_),
-                            agent_dir: Some(_),
-                            update: true,
-                            login: false,
-                        }
-                    })
-                ));
+                assert!(try_parse_cli(["glass", "agent", "setup"])
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unrecognized subcommand"));
             })
             .expect("CLI parser thread must spawn")
             .join()

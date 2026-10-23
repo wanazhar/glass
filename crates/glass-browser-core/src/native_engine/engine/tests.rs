@@ -101,8 +101,18 @@ async fn failed_first_content_load_restarts_owner_before_next_navigation() {
         for (body, expected_path) in [
             (
                 format!(
-                    "<!doctype html><style>{}</style><main>bad</main>",
+                    "<!doctype html><style>{}</style><main>513 rules loaded</main>",
                     (0..513)
+                        .map(|index| format!(".r{index}{{color:red}}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+                "/513-rules",
+            ),
+            (
+                format!(
+                    "<!doctype html><style>{}</style><main>bad</main>",
+                    (0..=crate::native_engine::css::MAX_NATIVE_STYLE_RULES)
                         .map(|index| format!(".r{index}{{color:red}}"))
                         .collect::<Vec<_>>()
                         .join("\n")
@@ -140,6 +150,14 @@ async fn failed_first_content_load_restarts_owner_before_next_navigation() {
     engine.initialize_async().await.unwrap();
     let committed_revision = engine.revision();
 
+    let supported = engine
+        .navigate_async(format!("http://{address}/513-rules"))
+        .await
+        .expect("a 513-rule sheet must fit the bounded native stylesheet budget");
+    assert!(supported.visible_text.contains("513 rules loaded"));
+    assert!(engine.revision() > committed_revision);
+    let committed_revision = engine.revision();
+
     let error = engine
         .navigate_async(format!("http://{address}/too-many-rules"))
         .await
@@ -147,7 +165,7 @@ async fn failed_first_content_load_restarts_owner_before_next_navigation() {
     assert!(
         error
             .to_string()
-            .contains("CSS style rules exceeds limit 512 (actual 513)")
+            .contains("CSS style rules exceeds limit 4096 (actual 4097)")
     );
     assert_eq!(
         engine.revision(),

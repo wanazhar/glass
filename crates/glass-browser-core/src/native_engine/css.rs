@@ -18,10 +18,11 @@ pub(super) use background_values::{absolutize_stylesheet_urls, static_css_import
 mod border_parser;
 use border_parser::*;
 
-// Bound selector matching work as well as the retained stylesheet AST. The
-// native engine reports this limit as a typed capability/resource error so
-// the host can offer its explicit managed Chromium backend for larger pages.
-pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
+// Bound selector matching work as well as the retained stylesheet AST. With
+// the native document's 4,096-node ceiling this limits a full selector pass
+// to 16,777,216 rule/node pairs. The content-process protocol already uses
+// 4,096 for this typed resource limit; keep parser and worker budgets aligned.
+pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 4_096;
 pub(crate) const MAX_NATIVE_FONT_FACE_RULES: usize = 16;
 pub(crate) const MAX_NATIVE_FONT_PALETTE_RULES: usize = 16;
 pub(crate) const MAX_NATIVE_FONT_PALETTE_OVERRIDES: usize = 32;
@@ -2494,6 +2495,7 @@ mod computed_style;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct NativeStylesheet {
     rules: Vec<NativeStyleRule>,
+    rule_index: NativeStyleRuleIndex,
     background_image_sources: BTreeMap<u32, String>,
     font_face_rules: Vec<NativeFontFaceRule>,
     font_palette_values: Vec<NativeFontPaletteValuesRule>,
@@ -3909,6 +3911,72 @@ struct NativeStyleRule {
     media: Option<String>,
     supports: Option<String>,
     order: usize,
+}
+
+/// A bounded index over each selector's rightmost simple selector. Most page
+/// styles use class/id/tag selectors, so unrelated rules can be skipped while
+/// retaining the full selector checks for candidates. Universal and complex
+/// selectors remain in the fallback list.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct NativeStyleRuleIndex {
+    by_id: BTreeMap<String, Vec<usize>>,
+    by_class: BTreeMap<String, Vec<usize>>,
+    by_tag: BTreeMap<String, Vec<usize>>,
+    fallback: Vec<usize>,
+}
+
+impl NativeStyleRuleIndex {
+    fn build(rules: &[NativeStyleRule]) -> Self {
+        let mut index = Self::default();
+        for (rule_index, rule) in rules.iter().enumerate() {
+            let Some(target) = rule.selector.compounds.last() else {
+                index.fallback.push(rule_index);
+                continue;
+            };
+            if let Some(id) = target.id.as_ref() {
+                index.by_id.entry(id.clone()).or_default().push(rule_index);
+            } else if let Some(class) = target.classes.first() {
+                index
+                    .by_class
+                    .entry(class.clone())
+                    .or_default()
+                    .push(rule_index);
+            } else if let Some(tag) = target.tag.as_ref() {
+                index
+                    .by_tag
+                    .entry(tag.clone())
+                    .or_default()
+                    .push(rule_index);
+            } else {
+                index.fallback.push(rule_index);
+            }
+        }
+        index
+    }
+
+    fn candidates(&self, node: &NativeNode) -> Vec<usize> {
+        let mut candidates = self.fallback.clone();
+        if let Some(id) = node.attribute("id")
+            && let Some(indices) = self.by_id.get(id)
+        {
+            candidates.extend_from_slice(indices);
+        }
+        if let Some(classes) = node.attribute("class") {
+            for class in classes.split_ascii_whitespace() {
+                if let Some(indices) = self.by_class.get(class) {
+                    candidates.extend_from_slice(indices);
+                }
+            }
+        }
+        if let Some(tag) = node.element_name()
+            && let Some(indices) = self.by_tag.get(tag)
+        {
+            candidates.extend_from_slice(indices);
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+        candidates
+    }
 }
 
 pub(in crate::native_engine) fn strip_important_suffix(value: &str) -> (&str, bool) {

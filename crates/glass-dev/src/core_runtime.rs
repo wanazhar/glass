@@ -16,6 +16,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -29,6 +31,7 @@ const TOOL_RESULT_BYTES: usize = 512 * 1024;
 const EVENT_CAPACITY: usize = 256;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
+const BROWSER_TOOL_SETTLEMENT_GRACE: Duration = Duration::from_secs(10);
 /// Environment override for the `glass-core` executable.
 pub const GLASS_CORE_BINARY_ENV: &str = "GLASS_CORE_BINARY";
 /// Executable basenames searched on `PATH`, in order.
@@ -222,6 +225,7 @@ pub(crate) struct GlassCoreRuntime {
     session_id: String,
     broker: Option<ResidentAgentBroker>,
     local_tool_executor: Option<crate::resident_harness::AgentToolExecutor>,
+    browser_tool_in_flight: Arc<AtomicBool>,
     next_id: u64,
     host_events: VecDeque<Value>,
     startup_events: Vec<Value>,
@@ -237,6 +241,112 @@ impl std::fmt::Debug for GlassCoreRuntime {
             .field("root", &self.root)
             .field("session", &self.session_id)
             .finish_non_exhaustive()
+    }
+}
+
+fn browser_host_tool_timeout(call: &ToolCall) -> Option<Duration> {
+    let seconds = match call.name.as_str() {
+        "glass.browser.navigate" => call
+            .arguments
+            .get("timeoutSeconds")
+            .and_then(Value::as_u64)
+            .unwrap_or(30)
+            .clamp(1, 180)
+            .saturating_add(BROWSER_TOOL_SETTLEMENT_GRACE.as_secs()),
+        "glass.browser.start" | "glass.browser.reconnect" => 120,
+        "glass.browser.stop" => 30,
+        "glass.browser.state" | "glass.browser.targets" => 15,
+        name if name.starts_with("glass.browser.") => 60,
+        _ => return None,
+    };
+    Some(Duration::from_secs(seconds))
+}
+
+fn execute_host_tool(
+    executor: Option<crate::resident_harness::AgentToolExecutor>,
+    broker: Option<ResidentAgentBroker>,
+    call: &ToolCall,
+    root: &Path,
+    authorization: ToolAuthorization,
+) -> DevelopmentResult<Value> {
+    if let Some(executor) = executor {
+        return executor(call, authorization);
+    }
+    match broker {
+        Some(broker) => {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .build()
+                .map_err(DevelopmentError::Io)?;
+            runtime
+                .block_on(crate::daemon::forward_resident_tool_call_with_context(
+                    &broker,
+                    call,
+                    root,
+                    &authorization,
+                ))
+                .map_err(|error| DevelopmentError::Process(error.to_string()))
+        }
+        None => Err(DevelopmentError::Process(
+            "resident Glass Core has no authoritative Glass daemon broker".into(),
+        )),
+    }
+}
+
+fn execute_host_tool_bounded(
+    executor: Option<crate::resident_harness::AgentToolExecutor>,
+    broker: Option<ResidentAgentBroker>,
+    call: &ToolCall,
+    root: &Path,
+    authorization: ToolAuthorization,
+    timeout: Duration,
+    in_flight: Arc<AtomicBool>,
+) -> DevelopmentResult<Value> {
+    if in_flight
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(DevelopmentError::Process(
+            "a previous Glass browser tool is still running with an unconfirmed result; inspect the browser state before retrying".into(),
+        ));
+    }
+    let call = call.clone();
+    let call_name = call.name.clone();
+    let root = root.to_path_buf();
+    let worker_in_flight = Arc::clone(&in_flight);
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let spawn_result = thread::Builder::new()
+        .name("glass-core-browser-tool".into())
+        .spawn(move || {
+            let reset = BrowserHostToolInFlight(worker_in_flight);
+            let result = execute_host_tool(executor, broker, &call, &root, authorization);
+            drop(reset);
+            let _ = sender.send(result);
+        });
+    if let Err(error) = spawn_result {
+        in_flight.store(false, Ordering::Release);
+        return Err(DevelopmentError::Process(error.to_string()));
+    }
+
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => Err(DevelopmentError::Process(format!(
+            "Glass browser tool {} did not settle within {}s; completion is unconfirmed. Inspect the browser state before retrying.",
+            call_name,
+            timeout.as_secs()
+        ))),
+        Err(RecvTimeoutError::Disconnected) => Err(DevelopmentError::Process(format!(
+            "Glass browser tool {} ended without returning a result",
+            call_name
+        ))),
+    }
+}
+
+struct BrowserHostToolInFlight(Arc<AtomicBool>);
+
+impl Drop for BrowserHostToolInFlight {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -285,6 +395,7 @@ impl GlassCoreRuntime {
             session_id: String::new(),
             broker: options.broker.clone(),
             local_tool_executor: options.local_tool_executor.clone(),
+            browser_tool_in_flight: Arc::new(AtomicBool::new(false)),
             next_id: 1,
             host_events: VecDeque::new(),
             startup_events: Vec::new(),
@@ -756,28 +867,30 @@ impl GlassCoreRuntime {
         call: &ToolCall,
         authorization: ToolAuthorization,
     ) -> DevelopmentResult<Value> {
+        let Some(timeout) = browser_host_tool_timeout(call) else {
+            return self.execute_tool_call_direct(call, authorization);
+        };
+
+        execute_host_tool_bounded(
+            self.local_tool_executor.clone(),
+            self.broker.clone(),
+            call,
+            &self.root,
+            authorization,
+            timeout,
+            Arc::clone(&self.browser_tool_in_flight),
+        )
+    }
+
+    fn execute_tool_call_direct(
+        &self,
+        call: &ToolCall,
+        authorization: ToolAuthorization,
+    ) -> DevelopmentResult<Value> {
         if let Some(executor) = &self.local_tool_executor {
             return executor(call, authorization);
         }
-        match &self.broker {
-            Some(broker) => {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_io()
-                    .build()
-                    .map_err(DevelopmentError::Io)?;
-                runtime
-                    .block_on(crate::daemon::forward_resident_tool_call_with_context(
-                        broker,
-                        call,
-                        &self.root,
-                        &authorization,
-                    ))
-                    .map_err(|error| DevelopmentError::Process(error.to_string()))
-            }
-            None => Err(DevelopmentError::Process(
-                "resident Glass Core has no authoritative Glass daemon broker".into(),
-            )),
-        }
+        execute_host_tool(None, self.broker.clone(), call, &self.root, authorization)
     }
 
     fn respond_tool_result(
@@ -1710,6 +1823,88 @@ mod tests {
     use super::*;
     use crate::resident_harness::ResidentSessionRequest;
     use std::sync::Arc;
+
+    #[test]
+    fn browser_host_tool_timeout_respects_core_timeout_without_retrying() {
+        let call = |name: &str, arguments: Value| ToolCall {
+            id: "browser-call".into(),
+            name: name.into(),
+            arguments,
+        };
+        assert_eq!(
+            browser_host_tool_timeout(&call(
+                "glass.browser.navigate",
+                json!({"timeoutSeconds": 2}),
+            )),
+            Some(Duration::from_secs(12))
+        );
+        assert_eq!(
+            browser_host_tool_timeout(&call("glass.browser.state", Value::Null)),
+            Some(Duration::from_secs(15))
+        );
+        assert_eq!(
+            browser_host_tool_timeout(&call("glass.browser.navigate", json!({}))),
+            Some(Duration::from_secs(40))
+        );
+        assert_eq!(
+            browser_host_tool_timeout(&call("glass.file.read", Value::Null)),
+            None
+        );
+    }
+
+    #[test]
+    fn bounded_browser_host_wait_reports_uncertain_completion_without_retry() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::clone(&finished);
+        let executor: crate::resident_harness::AgentToolExecutor = Arc::new(move |_, _| {
+            std::thread::sleep(Duration::from_millis(500));
+            worker_finished.store(true, Ordering::SeqCst);
+            Ok(json!({"connected": true}))
+        });
+        let call = ToolCall {
+            id: "bounded-browser-call".into(),
+            name: "glass.browser.state".into(),
+            arguments: Value::Null,
+        };
+        let in_flight = Arc::new(AtomicBool::new(false));
+        let started = Instant::now();
+        let error = execute_host_tool_bounded(
+            Some(executor),
+            None,
+            &call,
+            Path::new("."),
+            ToolAuthorization::glass_core(),
+            Duration::from_millis(10),
+            Arc::clone(&in_flight),
+        )
+        .unwrap_err();
+
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert!(error.to_string().contains("completion is unconfirmed"));
+        assert!(error.to_string().contains("Inspect the browser state"));
+        assert!(!finished.load(Ordering::SeqCst));
+        assert!(in_flight.load(Ordering::Acquire));
+        let duplicate = execute_host_tool_bounded(
+            None,
+            None,
+            &call,
+            Path::new("."),
+            ToolAuthorization::glass_core(),
+            Duration::from_millis(10),
+            Arc::clone(&in_flight),
+        )
+        .unwrap_err();
+        assert!(
+            duplicate
+                .to_string()
+                .contains("previous Glass browser tool")
+        );
+        std::thread::sleep(Duration::from_millis(550));
+        assert!(finished.load(Ordering::SeqCst));
+        assert!(!in_flight.load(Ordering::Acquire));
+    }
 
     #[test]
     fn auth_status_uses_core_credential_ready_field_and_keeps_legacy_fallbacks() {

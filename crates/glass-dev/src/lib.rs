@@ -308,6 +308,9 @@ fn browser_start_defaults_from_cli(
             }
         },
         port: cli.port,
+        // CLI port defaults remain explicit to preserve the existing CLI
+        // contract; the runtime tool can distinguish an omitted port.
+        port_explicit: true,
         attach: cli.attach,
         incognito: cli.incognito,
         headed: cli.headed,

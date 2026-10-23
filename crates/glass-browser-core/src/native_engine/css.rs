@@ -18,6 +18,9 @@ pub(super) use background_values::{absolutize_stylesheet_urls, static_css_import
 mod border_parser;
 use border_parser::*;
 
+// Bound selector matching work as well as the retained stylesheet AST. The
+// native engine reports this limit as a typed capability/resource error so
+// the host can offer its explicit managed Chromium backend for larger pages.
 pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 512;
 pub(crate) const MAX_NATIVE_FONT_FACE_RULES: usize = 16;
 pub(crate) const MAX_NATIVE_FONT_PALETTE_RULES: usize = 16;

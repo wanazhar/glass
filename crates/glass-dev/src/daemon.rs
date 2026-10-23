@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 const PROTOCOL_VERSION: u32 = 1;
@@ -25,6 +25,7 @@ const DAEMON_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
 const OPERATION_CAPACITY: usize = 128;
 const OPERATION_EVENT_CAPACITY: usize = 512;
+const BROWSER_OPERATION_SETTLEMENT_GRACE: Duration = Duration::from_secs(10);
 
 type WorkspaceRegistry = Rc<RefCell<BTreeMap<String, WorkspaceActorHandle>>>;
 type QueuedOperation = (String, ToolCall, Box<DevelopmentToolContext>);
@@ -1863,19 +1864,25 @@ async fn forward_resident_tool_call(
         .and_then(Value::as_str)
         .ok_or("daemon operation submission returned no operation ID")?
         .to_string();
+    let settlement_timeout = browser_tool_settlement_timeout(call);
+    let settlement_deadline = settlement_timeout.map(|timeout| Instant::now() + timeout);
     loop {
         let state = response
             .result
             .pointer("/operation/state")
-            .and_then(Value::as_str);
-        if state == Some("succeeded") {
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if state.as_deref() == Some("succeeded") {
             return response
                 .result
                 .pointer("/operation/result")
                 .cloned()
                 .ok_or_else(|| "successful daemon operation returned no result".into());
         }
-        if matches!(state, Some("failed" | "cancelled" | "indeterminate")) {
+        if matches!(
+            state.as_deref(),
+            Some("failed" | "cancelled" | "indeterminate")
+        ) {
             let reason = response
                 .result
                 .pointer("/operation/failureReason")
@@ -1883,28 +1890,49 @@ async fn forward_resident_tool_call(
                 .unwrap_or("resident operation did not succeed");
             return Err(reason.into());
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        response = request(
-            socket,
-            &DevelopmentDaemonRequest {
-                id: format!("inspect-operation-{}", call.id),
-                token: token.to_string(),
-                operation: "operation.inspect".into(),
-                workspace_id: Some(workspace_id.to_string()),
-                root: None,
-                call: None,
-                expected_generation: None,
-                expected_project_revision: None,
-                allow_mutation: false,
-                confirmed: false,
-                core_runtime_authorized: false,
-                actor: Some("glass-core".into()),
-                since: None,
-                limit: None,
-                operation_id: Some(operation_id.clone()),
-            },
-        )
-        .await?;
+        let inspect_request = DevelopmentDaemonRequest {
+            id: format!("inspect-operation-{}", call.id),
+            token: token.to_string(),
+            operation: "operation.inspect".into(),
+            workspace_id: Some(workspace_id.to_string()),
+            root: None,
+            call: None,
+            expected_generation: None,
+            expected_project_revision: None,
+            allow_mutation: false,
+            confirmed: false,
+            core_runtime_authorized: false,
+            actor: Some("glass-core".into()),
+            since: None,
+            limit: None,
+            operation_id: Some(operation_id.clone()),
+        };
+        let remaining =
+            settlement_deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        if remaining.is_some_and(|remaining| remaining.is_zero()) {
+            return Err(browser_operation_timeout(
+                &operation_id,
+                state.as_deref(),
+                settlement_timeout,
+            )
+            .into());
+        }
+        let inspect = request(socket, &inspect_request);
+        response = if let Some(remaining) = remaining {
+            match tokio::time::timeout(remaining, inspect).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    return Err(browser_operation_timeout(
+                        &operation_id,
+                        state.as_deref(),
+                        settlement_timeout,
+                    )
+                    .into());
+                }
+            }
+        } else {
+            inspect.await?
+        };
         if !response.ok {
             return Err(response
                 .error
@@ -1912,6 +1940,36 @@ async fn forward_resident_tool_call(
                 .into());
         }
     }
+}
+
+fn browser_tool_settlement_timeout(call: &ToolCall) -> Option<Duration> {
+    let seconds = match call.name.as_str() {
+        "glass.browser.navigate" => call
+            .arguments
+            .get("timeoutSeconds")
+            .and_then(Value::as_u64)
+            .unwrap_or(30)
+            .clamp(1, 180)
+            .saturating_add(BROWSER_OPERATION_SETTLEMENT_GRACE.as_secs()),
+        "glass.browser.start" | "glass.browser.reconnect" => 120,
+        "glass.browser.stop" => 30,
+        "glass.browser.state" | "glass.browser.targets" => 15,
+        name if name.starts_with("glass.browser.") => 60,
+        _ => return None,
+    };
+    Some(Duration::from_secs(seconds))
+}
+
+fn browser_operation_timeout(
+    operation_id: &str,
+    state: Option<&str>,
+    timeout: Option<Duration>,
+) -> String {
+    let timeout_seconds = timeout.map_or(0, |duration| duration.as_secs());
+    format!(
+        "browser operation {operation_id} did not settle within {timeout_seconds}s (last state: {}); its outcome is still in progress, so inspect this operation before retrying",
+        state.unwrap_or("unknown")
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2271,6 +2329,45 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn browser_tool_forwarding_has_bounded_operation_settlement() {
+        let call = |name: &str, arguments: Value| ToolCall {
+            id: "browser-call".into(),
+            name: name.into(),
+            arguments,
+        };
+
+        assert_eq!(
+            browser_tool_settlement_timeout(&call(
+                "glass.browser.navigate",
+                serde_json::json!({"timeoutSeconds": 2}),
+            )),
+            Some(Duration::from_secs(12))
+        );
+        assert_eq!(
+            browser_tool_settlement_timeout(&call("glass.browser.navigate", Value::Null,)),
+            Some(Duration::from_secs(40))
+        );
+        assert_eq!(
+            browser_tool_settlement_timeout(&call("glass.browser.state", Value::Null)),
+            Some(Duration::from_secs(15))
+        );
+        assert_eq!(
+            browser_tool_settlement_timeout(&call("glass.file.read", Value::Null)),
+            None
+        );
+
+        let timeout = browser_operation_timeout(
+            "workspace-op-1",
+            Some("running"),
+            Some(Duration::from_secs(12)),
+        );
+        assert!(timeout.contains("workspace-op-1"));
+        assert!(timeout.contains("last state: running"));
+        assert!(timeout.contains("outcome is still in progress"));
+        assert!(timeout.contains("inspect this operation before retrying"));
+    }
 
     #[test]
     fn windows_pipe_names_are_local_and_glass_owned() {

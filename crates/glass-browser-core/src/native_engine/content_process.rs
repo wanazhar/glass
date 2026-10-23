@@ -3186,11 +3186,23 @@ async fn write_value_frame(
 }
 
 fn content_error_response(id: Value, error: NativeEngineError) -> Value {
-    json!({
+    let mut response = json!({
         "kind": "error",
         "id": id,
         "reason": error.to_string(),
-    })
+    });
+    if let NativeEngineError::LimitExceeded {
+        resource,
+        limit,
+        actual,
+    } = error
+    {
+        response["error_type"] = Value::String("resource_limit".into());
+        response["resource"] = Value::String(resource);
+        response["limit"] = Value::from(limit as u64);
+        response["actual"] = Value::from(actual as u64);
+    }
+    response
 }
 
 fn protocol_matches(request: &Value) -> bool {

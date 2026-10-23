@@ -116,6 +116,15 @@ def trace(direction, frame):
             "tool_cancel", "tool_progress", "usage", "waiting", "compacted",
             "steered", "queued", "notice", "error", "settled"
         } else "unknown"
+        data = frame.get("params", {}).get("data", {})
+        if event_type == "tool_start" and isinstance(data, dict):
+            name = data.get("name")
+            if isinstance(name, str):
+                record["tool_name"] = "".join(ch for ch in name if ch.isprintable())[:120]
+        if event_type == "tool_end" and isinstance(data, dict):
+            is_error = data.get("isError")
+            if isinstance(is_error, bool):
+                record["tool_error"] = is_error
     if "error" in frame:
         error = frame["error"]
         data = error.get("data", {}) if isinstance(error, dict) else {}
@@ -2799,6 +2808,7 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
     {
         return;
     }
+    let browser_smoke = std::env::var("GLASS_LIVE_BROWSER").ok().as_deref() == Some("1");
 
     let core_binary = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/debug/glass-core")
@@ -2832,50 +2842,58 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
 
     // The existing global XDG_CONFIG_HOME and environment are inherited for
     // provider selection and auth. Only Core's writable data home is isolated.
-    let probe = Command::new(&core_binary)
-        .args(["doctor", "--probe", "--json"])
-        .current_dir(&root)
-        .env("XDG_DATA_HOME", &data_home)
-        .output()
-        .expect("run configured Core doctor probe");
-    let probe_text = String::from_utf8_lossy(&probe.stdout);
-    let probe_json = serde_json::from_str::<serde_json::Value>(&probe_text).unwrap_or_default();
-    let diagnostic = format!(
-        "{}\n{}\n{}",
-        probe_text,
-        probe_json["error"].as_str().unwrap_or_default(),
-        String::from_utf8_lossy(&probe.stderr)
-    );
-    let diagnostic_lower = diagnostic.to_ascii_lowercase();
-    assert!(
-        !diagnostic_lower.contains("429") && !diagnostic_lower.contains("too many requests"),
-        "configured Core doctor probe returned HTTP 429; stopping without retry or provider switch"
-    );
-    assert!(
-        probe.status.success() && probe_json["status"] == "ok",
-        "configured Core doctor probe failed; details are intentionally suppressed"
-    );
-    let diagnostic_text = probe_json["text"].as_str().unwrap_or_default();
-    let value_for = |prefix: &str| {
-        diagnostic_text
-            .lines()
-            .find_map(|line| line.strip_prefix(prefix))
-            .map(str::trim)
+    let (provider, model) = if browser_smoke {
+        (
+            "configured provider".to_owned(),
+            "configured model".to_owned(),
+        )
+    } else {
+        let probe = Command::new(&core_binary)
+            .args(["doctor", "--probe", "--json"])
+            .current_dir(&root)
+            .env("XDG_DATA_HOME", &data_home)
+            .output()
+            .expect("run configured Core doctor probe");
+        let probe_text = String::from_utf8_lossy(&probe.stdout);
+        let probe_json = serde_json::from_str::<serde_json::Value>(&probe_text).unwrap_or_default();
+        let diagnostic = format!(
+            "{}\n{}\n{}",
+            probe_text,
+            probe_json["error"].as_str().unwrap_or_default(),
+            String::from_utf8_lossy(&probe.stderr)
+        );
+        let diagnostic_lower = diagnostic.to_ascii_lowercase();
+        assert!(
+            !diagnostic_lower.contains("429") && !diagnostic_lower.contains("too many requests"),
+            "configured Core doctor probe returned HTTP 429; stopping without retry or provider switch"
+        );
+        assert!(
+            probe.status.success() && probe_json["status"] == "ok",
+            "configured Core doctor probe failed; details are intentionally suppressed"
+        );
+        let diagnostic_text = probe_json["text"].as_str().unwrap_or_default();
+        let value_for = |prefix: &str| {
+            diagnostic_text
+                .lines()
+                .find_map(|line| line.strip_prefix(prefix))
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let provider = value_for("Connection:")
+            .split(" · ")
+            .next()
             .unwrap_or_default()
-            .to_owned()
+            .to_owned();
+        let model = value_for("Model:");
+        assert!(
+            !provider.is_empty()
+                && !model.is_empty()
+                && diagnostic_text.contains("Streaming: completed"),
+            "configured Core doctor probe did not report provider, model, and completed streaming"
+        );
+        (provider, model)
     };
-    let provider = value_for("Connection:")
-        .split(" · ")
-        .next()
-        .unwrap_or_default()
-        .to_owned();
-    let model = value_for("Model:");
-    assert!(
-        !provider.is_empty()
-            && !model.is_empty()
-            && diagnostic_text.contains("Streaming: completed"),
-        "configured Core doctor probe did not report provider, model, and completed streaming"
-    );
 
     let mut session = Session::start_with_data_home_options(
         &binary(),
@@ -2912,9 +2930,18 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         "composer did not open on the selected resident-agent conversation"
     );
 
-    let prompt = "Use the bash tool to create exactly one file named provider-smoke.txt in this project. Its exact content must be `glass live provider smoke` followed by one newline. Then use the bash tool to read the file back and verify its bytes match exactly. Do not change any other files. After verification, respond briefly.";
+    let prompt = if browser_smoke {
+        "Use Glass browser tools to open https://www.amazon.com and read the page title. Start with the native browser. If it returns a specific unsupported-page, resource-limit, or content-operation timeout error, stop that session and explicitly start managed Chromium with no port argument; never attach to an existing browser. Do not sign in, click, submit forms, or change any page state. Do not retry a navigation on the same backend after it has returned an error. Call glass.browser.stop before your final answer. Report whether the page loaded and the exact non-sensitive error if it did not."
+    } else {
+        "Use the bash tool to create exactly one file named provider-smoke.txt in this project. Its exact content must be `glass live provider smoke` followed by one newline. Then use the bash tool to read the file back and verify its bytes match exactly. Do not change any other files. After verification, respond briefly."
+    };
     session.send_slowly(prompt.as_bytes(), Duration::from_millis(2));
-    assert!(session.wait_for_composer_text("respond briefly.", Duration::from_secs(5)));
+    let composer_marker = if browser_smoke {
+        "if it did not."
+    } else {
+        "respond briefly."
+    };
+    assert!(session.wait_for_composer_text(composer_marker, Duration::from_secs(5)));
     session.send(b"\r");
 
     let file_path = root.join("provider-smoke.txt");
@@ -3007,7 +3034,12 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
             failed_status_observed_at = None;
         }
 
-        if run_classification == "idle"
+        if browser_smoke && run_classification == "idle" && send_status == "settled" {
+            completed = true;
+            break;
+        }
+        if !browser_smoke
+            && run_classification == "idle"
             && send_status == "settled"
             && std::fs::read(&file_path).is_ok_and(|content| content == expected)
         {
@@ -3099,7 +3131,7 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         .iter()
         .map(|record| {
             format!(
-                "pid{}:{}ms:{}:{}:{}",
+                "pid{}:{}ms:{}:{}:tool={}:{}:{}",
                 record["process_id"].as_u64().unwrap_or_default(),
                 record["elapsed_ms"].as_u64().unwrap_or_default(),
                 record["direction"].as_str().unwrap_or("unknown"),
@@ -3107,6 +3139,10 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
                     .as_str()
                     .or_else(|| record["event_type"].as_str())
                     .unwrap_or("frame"),
+                record["tool_name"].as_str().unwrap_or("-"),
+                record["tool_error"]
+                    .as_bool()
+                    .map_or("-", |value| if value { "error" } else { "ok" }),
                 record["error_kind"].as_str().unwrap_or("-")
             )
         })
@@ -3119,6 +3155,14 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         safe_error_frames,
         ordered_trace
     );
+    if browser_smoke {
+        session.send(b"q");
+        let _ = session.wait_for("QUIT", Duration::from_secs(3));
+        session.send(b"\r");
+        if !session.wait_for_exit(Duration::from_secs(5)) {
+            session.kill();
+        }
+    }
     preserve_live_core_trace(&trace_path);
     assert!(
         completed,
@@ -3136,7 +3180,9 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         settled_precedes_correlated_response,
         "Core did not settle the turn before its matching response: {trace_summary}"
     );
-    assert_eq!(std::fs::read(&file_path).unwrap(), expected);
+    if !browser_smoke {
+        assert_eq!(std::fs::read(&file_path).unwrap(), expected);
+    }
     assert!(
         session.wait_for("GLASS AGENT", Duration::from_secs(5)),
         "settled assistant message was not rendered in the shared transcript"
@@ -3159,7 +3205,20 @@ fn live_provider_composer_writes_and_verifies_workspace_file() {
         "internal Glass playbook appeared in the live transcript"
     );
 
-    session.kill();
+    if browser_smoke {
+        assert!(
+            transcript.contains("glass.browser.navigate"),
+            "the configured Core provider did not route a navigation through Glass browser tools"
+        );
+        assert!(
+            !transcript.contains("Tool repair exhausted"),
+            "browser outcome was followed by invalid tool-call exhaustion; inspect the visible schema-path diagnostic"
+        );
+    }
+
+    if !browser_smoke {
+        session.kill();
+    }
     core_guard.terminate();
     println!(
         "live provider composer smoke passed: provider={provider}; model={model}; Core={core_version}; request_to_first_text_ms={request_to_first_text_ms:?}; request_to_settled_ms={request_to_settled_ms:?}; file content and shared transcript roles verified"
@@ -3504,9 +3563,27 @@ fn live_core_browser_task_uses_native_glass_host_integration_on_local_fixture() 
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
+    let safe_trace = std::fs::read_to_string(&trace_path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .map(|record| {
+            format!(
+                "{}:{}:{}:{}",
+                record["event_type"].as_str().unwrap_or("frame"),
+                record["tool_name"].as_str().unwrap_or("-"),
+                record["tool_error"]
+                    .as_bool()
+                    .map_or("-", |value| if value { "error" } else { "ok" }),
+                record["error_kind"].as_str().unwrap_or("-")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    session.kill();
     assert!(
         settled,
-        "configured Core browser task did not settle; no automatic retry was attempted"
+        "configured Core browser task did not settle; no automatic retry was attempted; sanitized trace: {safe_trace}"
     );
     assert!(
         normalized.contains("glass.browser.start")
@@ -3521,7 +3598,6 @@ fn live_core_browser_task_uses_native_glass_host_integration_on_local_fixture() 
         "Core did not report the expected local page/backend result"
     );
 
-    session.kill();
     core_guard.terminate();
     drop(fixture);
 }

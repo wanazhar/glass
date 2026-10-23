@@ -1771,3 +1771,24 @@ fn descendant_selector_matches_owned_ancestors_before_cascade() {
     assert!(!other_style.hidden());
     assert_eq!(other_style.background_color(), None);
 }
+
+#[test]
+fn native_rule_limit_returns_a_typed_error_for_larger_stylesheets() {
+    let source_for = |count: usize| {
+        (0..count)
+            .map(|index| format!(".rule-{index} {{ color: red; }}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let stylesheet = NativeStylesheet::from_sources(vec![source_for(512)]).unwrap();
+    assert_eq!(stylesheet.rules.len(), 512);
+
+    let error = NativeStylesheet::from_sources(vec![source_for(513)])
+        .expect_err("the native selector matcher must keep its bounded work budget");
+    assert!(
+        error
+            .to_string()
+            .contains("CSS style rules exceeds limit 512 (actual 513)")
+    );
+}

@@ -172,7 +172,9 @@ pub(super) fn transcript_entry(
     match entry.kind {
         ConversationKind::User => text = format!("YOU\n{text}"),
         ConversationKind::Assistant => text = format!("GLASS AGENT\n{text}"),
-        ConversationKind::System => text = format!("SYSTEM\n{text}"),
+        // The shared transcript already labels system rows; repeating the
+        // label in the body produced `system SYSTEM` in Glass.
+        ConversationKind::System => {}
         ConversationKind::Alert | ConversationKind::Error => {}
     }
     let role = if entry.tool_card.is_some() {
@@ -197,7 +199,10 @@ pub(super) fn transcript_entry(
     if entry.kind == ConversationKind::Alert {
         text = format!("⚠ ALERT\n{text}");
     } else if entry.kind == ConversationKind::Error && entry.tool_card.is_none() {
-        text = format!("ERROR\n× {text}");
+        // Browser evidence already starts with its failure marker. Keep one
+        // marker while retaining the explicit error heading.
+        let marker = if text.starts_with("× ") { "" } else { "× " };
+        text = format!("ERROR\n{marker}{text}");
     }
     let tool_card = entry.tool_card.as_ref().map(|card| {
         let mut card = card.clone();
@@ -384,6 +389,29 @@ mod tests {
         let error = transcript_entry(&entry(ConversationKind::Error, "tool failed"), 1, false);
         assert!(alert.text.starts_with("⚠ ALERT\napproval required"));
         assert!(error.text.starts_with("ERROR\n× tool failed"));
+    }
+
+    #[test]
+    fn system_and_browser_error_rows_do_not_repeat_transcript_labels() {
+        let system = transcript_entry(
+            &entry(ConversationKind::System, "Tool repair 1/2"),
+            0,
+            false,
+        );
+        assert_eq!(system.text, "Tool repair 1/2");
+
+        let error = transcript_entry(
+            &entry(
+                ConversationKind::Error,
+                "× glass.browser.navigate · browser evidence",
+            ),
+            1,
+            false,
+        );
+        assert_eq!(
+            error.text,
+            "ERROR\n× glass.browser.navigate · browser evidence"
+        );
     }
 
     #[test]

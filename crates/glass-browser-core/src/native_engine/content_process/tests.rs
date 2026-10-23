@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn content_process_error_response_preserves_resource_limit_fields() {
+    let response = content_error_response(
+        Value::from(17),
+        NativeEngineError::limit("CSS style rules", 4_096, 4_097),
+    );
+    assert_eq!(response["kind"], "error");
+    assert_eq!(response["id"], 17);
+    assert_eq!(response["error_type"], "resource_limit");
+    assert_eq!(response["resource"], "CSS style rules");
+    assert_eq!(response["limit"], 4_096);
+    assert_eq!(response["actual"], 4_097);
+    assert_eq!(
+        response["reason"],
+        "CSS style rules exceeds limit 4096 (actual 4097)"
+    );
+}
+
+#[test]
 fn parent_cookie_authority_is_selected_by_network_target() {
     for document_url in [
         "https://app.test/page",
@@ -457,6 +475,96 @@ async fn refresh_health_detects_an_exited_content_worker() {
         process.failure_kind(),
         Some(NativeWorkerFailureKind::Exited)
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn timed_out_content_load_terminates_and_reaps_the_busy_worker() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let fixture = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut reader = tokio::io::BufReader::new(stream);
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).await.unwrap() == 0 || line == "\r\n" {
+                break;
+            }
+        }
+        let mut stream = reader.into_inner();
+        let body = b"<!doctype html><script>while (true) {}</script>";
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(headers.as_bytes()).await.unwrap();
+        stream.write_all(body).await.unwrap();
+    });
+
+    let mut process = NativeContentProcess::spawn(
+        None,
+        &[],
+        NativeDialogControlPlane::default(),
+        Arc::new(Mutex::new(Vec::new())),
+    )
+    .await
+    .unwrap();
+    process
+        .start(
+            None,
+            &[],
+            super::super::browsing_context::NATIVE_CONTEXT_ID,
+            super::super::browsing_context::NATIVE_CONTEXT_ID,
+            "",
+            None,
+            "",
+            "",
+            None,
+            &NativeEnvironmentOverrides::default(),
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+    let navigation = NativeNavigationRequest::get(format!("http://{address}/busy"));
+    let mut parent_loader =
+        NativeResourceLoader::new(&super::super::config::NativeEngineConfig::default()).unwrap();
+    let started = tokio::time::Instant::now();
+    let result = process
+        .load_with_deadline(
+            &navigation,
+            &NativeEngineLimits::default(),
+            Viewport::default(),
+            None,
+            super::super::resource_loader::NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
+            super::super::browsing_context::NATIVE_CONTEXT_ID,
+            &[],
+            None,
+            &mut parent_loader,
+            Duration::from_millis(250),
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "busy script must exceed the navigation deadline"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(
+        !process.refresh_health(),
+        "timed-out worker must be unhealthy"
+    );
+    assert_eq!(
+        process.failure_kind(),
+        Some(NativeWorkerFailureKind::Exited),
+        "timed-out worker must be killed and reaped before browser.stop"
+    );
+    tokio::time::timeout(Duration::from_secs(2), fixture)
+        .await
+        .expect("local HTTP fixture did not finish")
+        .unwrap();
 }
 
 #[cfg(unix)]

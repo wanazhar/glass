@@ -31,6 +31,7 @@ impl NativeStylesheet {
                 },
             )?;
         }
+        stylesheet.rule_index = NativeStyleRuleIndex::build(&stylesheet.rules);
         Ok(stylesheet)
     }
 
@@ -85,7 +86,8 @@ impl NativeStylesheet {
         matches: impl Fn(&NativeSelector) -> bool,
     ) -> BTreeMap<u64, String> {
         let mut candidates = BTreeMap::new();
-        for rule in &self.rules {
+        for rule_index in self.rule_index.candidates(node) {
+            let rule = &self.rules[rule_index];
             if rule
                 .media
                 .as_deref()
@@ -331,7 +333,8 @@ impl NativeStylesheet {
         let mut color = &mut scratch.color;
         let mut overflow_x = &mut scratch.overflow_x;
         let mut overflow_y = &mut scratch.overflow_y;
-        for rule in &self.rules {
+        for rule_index in self.rule_index.candidates(node) {
+            let rule = &self.rules[rule_index];
             if rule
                 .media
                 .as_deref()

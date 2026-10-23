@@ -1781,14 +1781,50 @@ fn native_rule_limit_returns_a_typed_error_for_larger_stylesheets() {
             .join("\n")
     };
 
-    let stylesheet = NativeStylesheet::from_sources(vec![source_for(512)]).unwrap();
-    assert_eq!(stylesheet.rules.len(), 512);
+    let stylesheet =
+        NativeStylesheet::from_sources(vec![source_for(MAX_NATIVE_STYLE_RULES)]).unwrap();
+    assert_eq!(stylesheet.rules.len(), MAX_NATIVE_STYLE_RULES);
 
-    let error = NativeStylesheet::from_sources(vec![source_for(513)])
+    let error = NativeStylesheet::from_sources(vec![source_for(MAX_NATIVE_STYLE_RULES + 1)])
         .expect_err("the native selector matcher must keep its bounded work budget");
     assert!(
         error
             .to_string()
-            .contains("CSS style rules exceeds limit 512 (actual 513)")
+            .contains("CSS style rules exceeds limit 4096 (actual 4097)")
+    );
+}
+
+#[test]
+fn native_four_thousand_rule_sheet_remains_bounded_and_computable() {
+    let parse_started = std::time::Instant::now();
+    let source = (0..MAX_NATIVE_STYLE_RULES)
+        .map(|index| format!(".never-match-{index} {{ color: red; }}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let stylesheet = NativeStylesheet::from_sources(vec![source]).unwrap();
+    let parse_elapsed = parse_started.elapsed();
+    let html = format!("<main>{}</main>", "<div>fixture</div>".repeat(128));
+    let document = NativeDocument::parse(&html, &NativeEngineLimits::default()).unwrap();
+    let elements = document.element_node_ids().collect::<Vec<_>>();
+    assert_eq!(elements.len(), 132);
+    assert!(
+        stylesheet
+            .rule_index
+            .candidates(document.node(elements[0]).unwrap())
+            .is_empty()
+    );
+    let baseline = NativeStylesheet::default();
+    let style_started = std::time::Instant::now();
+    for node in elements {
+        let actual = stylesheet.computed_for_in_document(&document, node, None);
+        let expected = baseline.computed_for_in_document(&document, node, None);
+        assert!(
+            actual == expected,
+            "unmatched class rules changed the computed style"
+        );
+    }
+    eprintln!(
+        "native CSS benchmark: 4096 rules parse/index={parse_elapsed:?}, 132 node styles={:?}",
+        style_started.elapsed()
     );
 }

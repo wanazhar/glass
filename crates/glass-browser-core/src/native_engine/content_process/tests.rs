@@ -1,6 +1,20 @@
 use super::*;
 
 #[test]
+fn content_process_navigation_budget_matches_bounded_browser_callers() {
+    assert_eq!(
+        CONTENT_PROCESS_LOAD_TIMEOUT,
+        Duration::from_secs(60),
+        "the content owner must not time out before a caller's explicit 60s navigation budget"
+    );
+    assert_eq!(
+        CONTENT_PROCESS_ASYNC_EFFECT_TIMEOUT,
+        Duration::from_secs(30),
+        "increasing document navigation time must not expand independent async network effects"
+    );
+}
+
+#[test]
 fn content_process_error_response_preserves_resource_limit_fields() {
     let response = content_error_response(
         Value::from(17),

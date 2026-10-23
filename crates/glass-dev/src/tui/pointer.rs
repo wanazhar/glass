@@ -73,6 +73,14 @@ impl PointerState {
                     mouse.kind,
                     MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                 ) {
+                    if state.surface == DevSurface::Agent {
+                        let delta = if mouse.kind == MouseEventKind::ScrollUp {
+                            -3
+                        } else {
+                            3
+                        };
+                        state.scroll_surface(delta);
+                    }
                     return true;
                 }
             }
@@ -653,6 +661,97 @@ mod tests {
         let phone = super::super::render::screen_geometry(&state, screen(&state));
         assert!(super::super::render::browser_inspector_area(&state, phone.surface).is_none());
         assert_eq!(hit_test(&state, 10, phone.surface.y), HitRegion::Other);
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn transcript_mouse_wheel_changes_agent_scroll_position() {
+        let (mut state, root) = overlay_state();
+        set_viewport(&mut state, TuiLayout::Compact, 80, 24);
+        state.surface = DevSurface::Agent;
+        state.conversation_items = (0..24)
+            .map(|index| super::super::projection::ConversationEntry {
+                kind: super::super::projection::ConversationKind::Assistant,
+                text: format!(
+                    "response line {index} with enough content to wrap in the transcript"
+                ),
+                streaming: false,
+                entry_id: Some(format!("entry-{index}")),
+                client_message_id: None,
+                tool_name: None,
+                tool_card: None,
+            })
+            .collect();
+        let _ = super::super::render::agent_conversation_text(&state, "", 72, 18);
+        state.scroll_end();
+        let tail = state.current_scroll();
+        assert!(tail > 3, "fixture should overflow the compact viewport");
+
+        let mut pointer = PointerState::default();
+        pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 20,
+                row: 8,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            },
+            Instant::now(),
+        );
+        assert!(
+            state.current_scroll() < tail,
+            "wheel-up should leave the tail"
+        );
+        let scrolled = state.current_scroll();
+        assert!(!state.core_transcript.borrow().is_following());
+
+        state.scroll_end();
+        assert!(state.current_scroll() >= scrolled);
+        assert!(state.core_transcript.borrow().is_following());
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn transcript_mouse_wheel_scrolls_while_composer_is_open() {
+        let (mut state, root) = overlay_state();
+        set_viewport(&mut state, TuiLayout::Compact, 80, 24);
+        state.surface = DevSurface::Agent;
+        state.conversation_items = (0..24)
+            .map(|index| super::super::projection::ConversationEntry {
+                kind: super::super::projection::ConversationKind::Assistant,
+                text: format!(
+                    "response line {index} with enough content to wrap in the transcript"
+                ),
+                streaming: false,
+                entry_id: Some(format!("entry-{index}")),
+                client_message_id: None,
+                tool_name: None,
+                tool_card: None,
+            })
+            .collect();
+        let _ = super::super::render::agent_conversation_text(&state, "", 72, 18);
+        state.scroll_end();
+        state.open_composer();
+        let tail = state.current_scroll();
+        assert!(tail > 3, "fixture should overflow the compact viewport");
+
+        let mut pointer = PointerState::default();
+        pointer.handle(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 20,
+                row: 8,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            },
+            Instant::now(),
+        );
+        assert!(state.current_scroll() < tail);
+        assert!(!state.core_transcript.borrow().is_following());
+        assert!(state.composer_mode, "wheel keeps the composer open");
 
         drop(state);
         std::fs::remove_dir_all(root).expect("remove test workspace");

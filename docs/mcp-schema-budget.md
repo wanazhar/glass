@@ -14,8 +14,8 @@ reports:
 | Metric | Measured value |
 |---|---:|
 | Negotiated tools | 337 |
-| Serialized `tools` array | 178,493 UTF-8 bytes |
-| Four-bytes-per-token estimate | 44,624 tokens (rounded up) |
+| Serialized `tools` array | 181,596 UTF-8 bytes |
+| Four-bytes-per-token estimate | 45,399 tokens (rounded up) |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,
@@ -61,13 +61,15 @@ workspace catalog. This is a regression alarm, not permission to consume the
 remaining space. Any increase must include the before/after scoreboard and
 explain why a new public tool is preferable to an existing typed verb or a
 namespaced resource.
-The measured full-product catalog is 14,653 bytes above the 160 KiB ceiling on this checkout. Treat that as an active budget exception: release documentation must not call the catalog within budget until the catalog is reduced or the ceiling is deliberately changed with compatibility and release evidence.
+The measured full-product catalog is 17,756 bytes above the 160 KiB ceiling on this checkout. Treat that as an active budget exception: release documentation must not call the catalog within budget until the catalog is reduced or the ceiling is deliberately changed with compatibility and release evidence.
 
 The increase from the published 0.3.4 measurement of 129,444 bytes to the
-current 178,493-byte development inventory covers explicit trust, autonomous
-task, measured experiment, debugger inspection, governed-kernel operations,
-the governed Agent composer/runtime setup routes, workspace-local Agent todos, and Git
-fetch/pull/merge/rebase.
+current 181,596-byte development inventory covers autonomous tasks, measured
+experiments, debugger inspection, governed-kernel operations, Core-owned Agent
+runtime setup, workspace-local Agent todos, Git fetch/pull/merge/rebase, and
+the explicit native/Chromium browser backend options and tool descriptions.
+Glass no longer exposes a separate resident-agent trust or coding-permission
+gate; Core owns resident tool decisions and permissions.
 `glass` exposes the same typed resident services used by Glass Core, the TUI, CLI, and
 daemon, while `glass-browser` remains the compact browser-only product. A future
 capability-scoped discovery protocol can reduce per-client context without
@@ -96,11 +98,16 @@ The current measurement identifies these larger input schemas:
 | `extractStructured` | 1,576 | typed extraction fields, sources, and bounds |
 | `resolveIntentWithKnowledge` | 1,133 | intent plus scoped knowledge controls |
 | `glass.eval.start` | 1,076 | kernel kind, bounded capability allowlist, and explicit mutation grant |
-| `glass.agent.send` | 867 | bounded agent message and execution controls |
+| `glass.lsp.code_actions` | 1,019 | path, range, bounded action identifiers, and workspace revision |
+| `glass.browser.start` | 991 | explicit native or Chromium backend and browser startup options |
+| `glass.lsp.range_formatting` | 962 | path, range, formatting options, and workspace revision |
+| `glass.agent.send` | 930 | bounded agent message and Core execution controls |
+| `glass.browser.attach` | 850 | existing Chromium/CDP attach options |
 | `executeIntent` | 826 | revision-bound executable intent |
+| `glass.debug.start` | 779 | debugger adapter and bounded launch configuration |
 | `executeTask` | 767 | validated Task Protocol execution controls |
 | `glass.agent.delegate` | 760 | external agent selection, bounded prompt, and sandbox policy |
-| `resolveIntent` | 695 | structured intent resolution |
+| `glass.browser.act` | 743 | revision-bound browser action parameters |
 
 These sizes are diagnostic priorities, not automatic defects. Simplification
 must preserve validation, bounds, authority, and compatibility; moving required

@@ -32,6 +32,26 @@ Every tool call is executed by Glass, not by you:
 - Read before you write. Inspect the current file, then make the smallest edit
   that accomplishes the task.
 
+## Browser work
+
+- Use the `glass.browser.*` host integration for browser tasks inside Glass Dev.
+  Start with `glass.browser.state`; if disconnected, call `glass.browser.start`
+  to start Glass's native engine, then observe the page and act through the
+  current browser revision.
+- Use the connected backend reported by `glass.browser.state` and the backend
+  provenance returned with browser results. If a native operation is
+  unsupported, report that result. When the requested capability is supported
+  by Chromium, explicitly start the Chromium backend and retry only if the
+  failed operation is known not to have taken effect; Glass does not silently
+  switch engines.
+- `glass.browser.attach` is an explicit Chromium/CDP option for a human-requested
+  existing Chromium session. For a task that requires a supported Chromium-only
+  capability, choose `backend: "chromium"` explicitly in `glass.browser.start`;
+  this launches managed Chromium and is never an error-triggered fallback. Do
+  not launch the standalone Glass Browser CLI as the default route for a task
+  in this workspace. Core bash remains available for legitimate project
+  commands and scripts.
+
 ## Collaboration
 
 - Keep a short plan for multi-step work and keep it current.

@@ -22,12 +22,12 @@ per-kernel grant. Set it to `true` when the allowlist includes mutating tools:
 
 Bindings use the same `DevelopmentToolRouter` as MCP, the resident engine, the daemon, and TUI.
 The router rechecks workspace generation and current project revision,
-tool availability, mutation authority, confirmation, result size, hooks, graph
-links, and replay events. Kernel code cannot grant itself a capability or
-mutation authority. `mutationAuthority: true` grants the kernel permission to
-request its mutating capabilities; it does not supply the separate workspace
-mutation-authority and per-call confirmation factors. The router checks those
-factors for `glass.eval.start` and again for each nested mutating call.
+tool availability, the kernel's declared capabilities, result size, hooks,
+graph links, and replay events. Kernel code cannot grant itself a capability
+or mutation authority. `mutationAuthority: true` is the explicit per-kernel
+grant to request mutating Glass capabilities. For a resident Core call, Core
+owns agent authorization; Glass applies the declared kernel grant and current
+workspace/resource checks without asking for another human approval.
 `glass.eval.*` is never a valid nested capability, and one execution is limited
 to 32 nested calls, preventing recursive kernel dispatch.
 

@@ -177,7 +177,7 @@ use glass_browser::cli::args::Cli;
 /// Resident agent event and identity types.
 pub use agents::{AgentEvent, AgentId, AgentSnapshot, AgentSpec, AgentStatus, ResidentAgentBroker};
 /// Development browser configuration, state, and service handle.
-pub use browser::{BrowserRuntimeState, BrowserStartConfig};
+pub use browser::{BrowserRuntimeState, BrowserStartBackend, BrowserStartConfig};
 /// Resident Glass Core readiness, options, and harness selection.
 pub use core_runtime::{
     CoreReadiness, CoreReadinessComponent, CoreReadinessState, CoreRuntimeOptions,
@@ -296,6 +296,17 @@ fn browser_start_defaults_from_cli(
     cli: &Cli,
 ) -> Result<BrowserStartConfig, Box<dyn std::error::Error>> {
     Ok(BrowserStartConfig {
+        backend: match cli.browser_runtime {
+            glass_browser::BrowserRuntime::Chromium => {
+                crate::browser::BrowserStartBackend::Chromium
+            }
+            browser if browser.is_native() => crate::browser::BrowserStartBackend::Native,
+            _ => {
+                return Err(
+                    "Glass Dev supports the native and explicit Chromium browser backends".into(),
+                );
+            }
+        },
         port: cli.port,
         attach: cli.attach,
         incognito: cli.incognito,

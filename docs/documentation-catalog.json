@@ -1453,6 +1453,11 @@
         },
         {
           "level": "2",
+          "title": "Browser work",
+          "anchor": "browser-work"
+        },
+        {
+          "level": "2",
           "title": "Collaboration",
           "anchor": "collaboration"
         }

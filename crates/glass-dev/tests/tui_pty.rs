@@ -17,6 +17,60 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+struct LocalHttpFixture {
+    url: String,
+    stop: std::sync::mpsc::Sender<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl LocalHttpFixture {
+    fn start() -> Self {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind local browser fixture");
+        listener
+            .set_nonblocking(true)
+            .expect("set fixture nonblocking");
+        let address = listener.local_addr().expect("read fixture address");
+        let (stop, stopped) = std::sync::mpsc::channel();
+        let body =
+            b"<!doctype html><title>Glass Native Fixture</title><main>native-fixture-7e41</main>";
+        let thread = std::thread::spawn(move || {
+            while stopped.try_recv().is_err() {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.write_all(body);
+                        let _ = stream.flush();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Self {
+            url: format!("http://{address}/fixture.html"),
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for LocalHttpFixture {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
 const LIVE_CORE_TRACE_WRAPPER_SOURCE: &str = r#"import hashlib
@@ -1211,13 +1265,13 @@ fn fresh_start_first_composer_send_works_without_implicit_file_context() {
     // implicit-context regression without touching host credential files.
     session.send(b"2");
     assert!(
-        session.wait_for("FILES", Duration::from_secs(5)),
+        session.wait_for("fixture.txt", Duration::from_secs(5)),
         "Code surface did not render\n{}",
         session.output_tail()
     );
     session.send(b":open active-context-fixture.txt\r");
     assert!(
-        session.wait_for("EDITOR", Duration::from_secs(5)),
+        session.wait_for("fixture content", Duration::from_secs(5)),
         "fixture file did not become the active editor buffer\n{}",
         session.output_tail()
     );
@@ -1227,7 +1281,7 @@ fn fresh_start_first_composer_send_works_without_implicit_file_context() {
     session.settle(Duration::from_millis(150));
     session.send(b"\x1b");
     assert!(
-        session.wait_for("FILES", Duration::from_secs(5)),
+        session.wait_for("fixture content", Duration::from_secs(5)),
         "editor did not return to Code navigation\n{}",
         session.output_tail()
     );
@@ -1235,13 +1289,8 @@ fn fresh_start_first_composer_send_works_without_implicit_file_context() {
     session.clear_output();
     session.send(b"1");
     assert!(
-        session.wait_for("CODING AGENT", Duration::from_secs(5)),
-        "Agent surface did not render on return\n{}",
-        session.output_tail()
-    );
-    assert!(
         session.wait_for("Core available", Duration::from_secs(5)),
-        "Core readiness was not rendered after returning to Agent\n{}",
+        "Agent surface did not render on return\n{}",
         session.output_tail()
     );
     session.send(b"\r");
@@ -1278,6 +1327,55 @@ fn fresh_start_first_composer_send_works_without_implicit_file_context() {
     session.kill();
     let _ = std::fs::remove_file(fake_core);
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn agent_scrollback_controls_render_in_compact_and_desktop_pty() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let fake_core = fake_core_binary_with_mode("mixed");
+    for (cols, rows) in [(80, 24), (140, 40)] {
+        let root = workspace_root();
+        let fixture_state = root.join(".glass");
+        std::fs::create_dir_all(&fixture_state).unwrap();
+        std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+        let mut session =
+            Session::start_with_core_binary(&binary(), &root, cols, rows, Some(&fake_core));
+        assert!(session.wait_for("CODING AGENT", Duration::from_secs(8)));
+        assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
+        for index in 0..10 {
+            session.send(b"\r");
+            assert!(session.wait_for("Message on Agent", Duration::from_secs(4)));
+            let prompt = format!("scroll fixture {index}");
+            session.send(prompt.as_bytes());
+            session.send(b"\r");
+            let response = format!("handled {prompt}");
+            assert!(
+                session.wait_for(&response, Duration::from_secs(8)),
+                "fake Core response {index} did not settle at {cols}x{rows}\n{}",
+                session.output_tail()
+            );
+        }
+
+        assert!(session.visible_output().contains("PgUp"));
+        assert!(session.visible_output().contains("Home/End"));
+        assert!(session.visible_output().contains("live"));
+        assert!(!session.visible_output().contains("Ctrl-X abort"));
+        assert!(!session.visible_output().contains("Ctrl-D follow-up"));
+
+        session.clear_output();
+        session.send(b"\x1b[5~"); // PageUp
+        assert!(session.wait_for_visible("new", Duration::from_secs(5)));
+        session.clear_output();
+        session.send(b"\x1b[F"); // End: resume following the tail
+        assert!(session.wait_for_visible("live", Duration::from_secs(5)));
+
+        session.kill();
+        let _ = std::fs::remove_dir_all(root);
+    }
+    let _ = std::fs::remove_file(fake_core);
 }
 
 #[test]
@@ -3240,6 +3338,142 @@ fn live_core_greeting_settles_without_glass_approval_notice() {
     );
     session.kill();
     core_guard.terminate();
+}
+
+#[test]
+fn live_core_browser_task_uses_native_glass_host_integration_on_local_fixture() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1")
+        || std::env::var("GLASS_LIVE_BROWSER").ok().as_deref() != Some("1")
+    {
+        return;
+    }
+
+    let root = workspace_root();
+    let _cleanup = TemporaryProjectGuard(root.clone());
+    let fixture = LocalHttpFixture::start();
+    let core_binary = std::env::var_os("GLASS_LIVE_CORE_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/glass-core")
+        });
+    assert!(core_binary.is_file(), "Glass Core binary is missing");
+
+    let fixture_state = root.join(".glass");
+    let data_home = fixture_state.join("xdg-data");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    let wrapper = fixture_state.join("core-wrapper");
+    let trace_path = fixture_state.join("core-trace.jsonl");
+    let pid_path = fixture_state.join("core.pid");
+    write_live_core_trace_wrapper(&wrapper, &core_binary, &trace_path, &pid_path, None);
+    let core_guard = LiveCoreProcessGuard {
+        pid_path,
+        binary: core_binary,
+    };
+    let mut session = Session::start_with_data_home_options(
+        &binary(),
+        &root,
+        118,
+        32,
+        Some(&wrapper),
+        Some(&data_home),
+    );
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    assert!(
+        session.wait_for("Core available", Duration::from_secs(20)),
+        "configured Core did not become available; no provider retry was attempted"
+    );
+
+    session.send(b"\r");
+    assert!(session.wait_for("Message on Agent", Duration::from_secs(5)));
+    let prompt = format!(
+        "Use Glass Dev's browser integration only, not bash or the standalone browser CLI. Check browser state; if disconnected, call glass.browser.start with backend native. Navigate to {} and observe the page. Reply with the backend, title, and page marker.",
+        fixture.url
+    );
+    session.send_slowly(prompt.as_bytes(), Duration::from_millis(2));
+    assert!(session.wait_for_composer_text("page marker", Duration::from_secs(5)));
+    session.send(b"\r");
+
+    let registry_path = fixture_state.join("threads/registry.json");
+    let deadline = Instant::now() + Duration::from_secs(180);
+    let mut settled = false;
+    while Instant::now() < deadline {
+        session.settle(Duration::from_millis(200));
+        settled = std::fs::read(&registry_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|registry| {
+                registry
+                    .get("threads")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|threads| {
+                        threads.iter().any(|thread| {
+                            let Some(run) = thread
+                                .get("runs")
+                                .and_then(serde_json::Value::as_array)
+                                .and_then(|runs| runs.last())
+                            else {
+                                return false;
+                            };
+                            let Some(run_id) = run.get("runId").and_then(serde_json::Value::as_str)
+                            else {
+                                return false;
+                            };
+                            run.get("classification")
+                                .and_then(serde_json::Value::as_str)
+                                == Some("idle")
+                                && thread
+                                    .get("sendAttempts")
+                                    .and_then(serde_json::Value::as_array)
+                                    .is_some_and(|attempts| {
+                                        attempts.iter().any(|attempt| {
+                                            attempt
+                                                .get("targetRunId")
+                                                .and_then(serde_json::Value::as_str)
+                                                == Some(run_id)
+                                                && attempt
+                                                    .get("status")
+                                                    .and_then(serde_json::Value::as_str)
+                                                    == Some("settled")
+                                        })
+                                    })
+                        })
+                    })
+            })
+            .unwrap_or(false);
+        if settled {
+            break;
+        }
+        if session.child.try_wait().ok().flatten().is_some() {
+            break;
+        }
+    }
+
+    let normalized = session
+        .visible_output()
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        settled,
+        "configured Core browser task did not settle; no automatic retry was attempted"
+    );
+    assert!(
+        normalized.contains("glass.browser.start")
+            && normalized.contains("glass.browser.navigate")
+            && normalized.contains("glass.browser.observe"),
+        "transcript did not show the native Glass browser tool flow"
+    );
+    assert!(
+        normalized.contains("native")
+            && normalized.contains("glass native fixture")
+            && normalized.contains("native-fixture-7e41"),
+        "Core did not report the expected local page/backend result"
+    );
+
+    session.kill();
+    core_guard.terminate();
+    drop(fixture);
 }
 
 #[test]

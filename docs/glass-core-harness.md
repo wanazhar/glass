@@ -54,6 +54,19 @@ is reported as incompatible; Glass does not silently fall back to a
 host-exclusive catalog. Core's standalone `local` mode and generic `host` mode
 retain their existing behavior.
 
+For browser work inside Glass Dev, Core should use the `glass.browser.*`
+integration. `glass.browser.start` starts the Glass native browser engine by
+default. For a task that needs a supported Chromium-only capability, pass
+`backend: "chromium"` explicitly to launch a managed Chromium/CDP session;
+`glass.browser.attach` explicitly connects to an existing Chromium/CDP
+session. The resident browser state and successful browser results report the
+backend actually in use. Native capabilities are bounded and differ from the
+full Chromium session, so an unsupported operation returns its error without
+silently switching engines. The standalone `glass-browser` CLI remains a
+valid separate product, but it is not the default browser route for a Glass
+Dev workspace. Core's bash tool remains available for normal project commands
+and scripts.
+
 Core adapts namespaced integration identifiers to provider-compatible function
 names on model requests and restores the original `glass.*` name before
 validating or executing a returned call. This preserves the host protocol's
@@ -192,4 +205,19 @@ End-to-end verification against the real engine additionally needs a built
 
 ```sh
 GLASS_CORE_BINARY=/path/to/glass-core glass agent doctor
+```
+
+An optional provider-backed browser PTY journey uses the configured Core
+provider once against a loopback HTML fixture. It isolates the project and
+Core data directory, does not retry a prompt that fails to settle, and waits
+up to 180 seconds for the turn to finish:
+
+```sh
+GLASS_E2E=1 \
+GLASS_LIVE_BROWSER=1 \
+GLASS_E2E_BINARY=target/debug/glass \
+GLASS_LIVE_CORE_BINARY=target/debug/glass-core \
+cargo test -p glass-dev --test tui_pty \
+  live_core_browser_task_uses_native_glass_host_integration_on_local_fixture \
+  --locked -- --nocapture
 ```

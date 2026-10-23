@@ -167,6 +167,16 @@ a second keybinding or state owner.
 | Debug | debugger sessions and test evidence | no sessions is one start panel (`:debug start NAME COMMAND`) |
 | More | Core readiness, kernels, experiments/replay, harnesses and routes | `j/k` or click selects a route; Enter/double-click runs it; results stay on More |
 
+The Agent pane keeps a compact Glass-only presentation around Core's
+authoritative transcript and execution events. Tool rows identify Core tools
+separately from Glass integrations, expand to show the actual command or
+meaningful output, and omit fabricated timing and empty-output placeholders.
+The shared transcript component keeps its standalone Core presentation by
+default; only Glass opts into the compact host presentation. In the Agent
+transcript, PageUp/PageDown, Home/End, and the mouse wheel move the transcript
+viewport. New output follows when the viewport is at the tail; a manually
+scrolled position is preserved and indicates when newer output is below.
+
 ## Navigation and modal routing
 
 One active-overlay resolver owns keyboard, mouse, and terminal-overlay
@@ -214,7 +224,7 @@ mouse, paste, or surface input while a higher-priority overlay is active.
 | `Tab` / `Shift-Tab` | next/previous primary surface |
 | Left/Right | previous/next surface (unless Alt-modified browser history) |
 | Up/Down, `j`/`k` | focused list movement; otherwise the current surface scrolls |
-| PageUp/PageDown, Home/End | surface scroll/page or bounds |
+| PageUp/PageDown, Home/End | Agent transcript viewport when Agent is active; otherwise surface scroll/page or bounds |
 | `a` outside Agent | open the current surface command center; `:` opens the filtered palette |
 | `:` | open Glass workspace actions |
 | `Ctrl-L` | open the shared composer dock on the current surface |
@@ -222,6 +232,7 @@ mouse, paste, or surface input while a higher-priority overlay is active.
 | `Ctrl-K` / `Ctrl-Shift-P` | open the command palette from the normal surface view |
 | `Ctrl-G` | jump to App while keeping the composer dock open |
 | `Ctrl-Shift-T` on Agent | open the project conversation picker; Enter selects a thread without dispatching a prompt, Esc returns to the current conversation |
+| `Ctrl-Shift-A` | open Attention Inbox for reviewable Core failures and other actionable events |
 | `?` | help; `j`/`k`, PageUp/PageDown and Home/End scroll; `?`/Esc closes |
 | `Enter` on Agent | start/continue the agent interaction; with text focus, submit composer |
 | `Enter` on Code | open the selected file for full-screen edit; preview queues if the workspace is busy |

@@ -91,22 +91,23 @@ Core, and Glass reports readiness without printing credentials.
 
 Talk from any surface. `Ctrl-L` opens the shared composer dock (not a redraw).
 `Ctrl-Shift-T` opens the project conversation picker. Glass Core owns provider
-connections and native coding-tool permissions. Glass owns workspace, browser,
-Git, and review integrations and confirms their mutations. Ordinary messages
-do not attach the focused file or selection. `Enter` sends and keeps the dock
-open; `Esc` closes it. `Ctrl-D` toggles steer mode; follow-up mode queues a
-message. Sent prompts remain as `YOU`, and `GLASS AGENT` streams replies and
-tool activity. A local or pre-dispatch send failure restores the draft for
+connections, agent execution, and native coding-tool permissions. Glass owns
+workspace, browser, Git, and review integrations. It executes Core-authorized
+tool calls after checking the current workspace and resource revisions; it
+does not ask for a second approval. Direct human actions retain their explicit
+UI behavior. Ordinary messages do not attach the focused file or selection.
+`Enter` sends and keeps the dock open; `Esc` closes it. `Ctrl-D` toggles steer
+mode; follow-up mode queues a message. `Ctrl-Shift-A` opens Attention Inbox.
+Sent prompts remain as `YOU`, and `GLASS AGENT` streams replies and tool
+activity. A local or pre-dispatch send failure restores the draft for
 edit-and-retry; busy background work retains new text. If Core returns an error
 for a correlated `turn/prompt` or `turn/followUp`, Glass marks the attempt
 failed and returns its agent phase to idle. The failure is summarized with a
 safe error class and code, then listed in Attention Inbox. Inspect the owning
-conversation and use `:agent retry` to request an explicit confirmation; Glass
-never replays the attempt automatically, and Core may have partly processed it.
-Mutations pause on a Glass approval card
-(`Enter`/`Y` approve once, `Esc`/`N` deny). Type in the dock to talk, use `:`
-to open actions and search commands, and press `a` on non-Agent surfaces for
-their actions. `:process start dev`
+conversation and use `:agent retry` to request explicit confirmation before a
+possibly uncertain prompt is sent again; Glass never replays the attempt
+automatically. Type in the dock to talk, use `:` to open actions and search
+commands, and press `a` on non-Agent surfaces for their actions. `:process start dev`
 starts the detected suite, Tasks owns the workspace-local Agent checklist
 (`.glass/todos/session.json`) plus the overnight DAG. More is the
 workspace-services dashboard: Services and Experiments are live

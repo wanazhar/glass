@@ -788,6 +788,20 @@ pub(crate) fn run_with_browser_policy(
                             }
                             _ => {}
                         }
+                    } else if active_overlay == Some(overlay::ActiveOverlay::Composer)
+                        && state.surface == DevSurface::Agent
+                        && matches!(
+                            key.code,
+                            KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
+                        )
+                    {
+                        match key.code {
+                            KeyCode::PageUp => state.scroll_surface(-10),
+                            KeyCode::PageDown => state.scroll_surface(10),
+                            KeyCode::Home => state.scroll_home(),
+                            KeyCode::End => state.scroll_end(),
+                            _ => unreachable!("matched transcript scroll key"),
+                        }
                     } else if active_overlay == Some(overlay::ActiveOverlay::Composer) {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.close_composer(),

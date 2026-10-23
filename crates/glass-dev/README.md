@@ -108,8 +108,9 @@ safe error class and code, then listed in Attention Inbox. Inspect the owning
 conversation and use `:agent retry` to request an explicit confirmation; Glass
 never replays the attempt automatically, and Core may have partly processed it.
 Mutations pause on a Glass approval card
-(`Enter`/`Y` approve once, `Esc`/`N` deny). Type in the dock to talk, `:` to
-search commands, and `a` to open this surface's actions. `:process start dev`
+(`Enter`/`Y` approve once, `Esc`/`N` deny). Type in the dock to talk, use `:`
+to open actions and search commands, and press `a` on non-Agent surfaces for
+their actions. `:process start dev`
 starts the detected suite, Tasks owns the workspace-local Agent checklist
 (`.glass/todos/session.json`) plus the overnight DAG. More is the
 workspace-services dashboard: Services, PI, and Experiments are live

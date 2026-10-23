@@ -2017,22 +2017,8 @@ fn render_header(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect, _mode: 
             .fg(ACCENT_BRIGHT)
             .add_modifier(Modifier::BOLD),
     );
-    let mode_label = if state.yolo_mode {
-        "YOLO · confirmations off"
-    } else {
-        "guarded"
-    };
     let git = git_header_label(state);
-    let trust = Span::styled(
-        format!("{} · {mode_label} ", state.snapshot_trust_label),
-        Style::default().fg(
-            if state.snapshot_trust_label == "untrusted" || state.yolo_mode {
-                WARNING
-            } else {
-                MUTED
-            },
-        ),
-    );
+    let trust = Span::styled("Core owns agent permissions ", Style::default().fg(MUTED));
     let path = Span::styled(
         compact_path(&state.snapshot_root, area.width.saturating_sub(32)),
         Style::default().fg(MUTED),
@@ -6691,7 +6677,7 @@ mod tests {
     }
 
     #[test]
-    fn executable_project_configuration_prompts_on_phone_before_activation() {
+    fn executable_project_configuration_does_not_gate_core_coding_surface() {
         let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
             "glass-dev-tui-trust-{}-{sequence}",
@@ -6704,16 +6690,17 @@ mod tests {
         )
         .unwrap();
         let mut state = DevTuiState::open(&root, TuiLayout::Mobile).unwrap();
-        assert_eq!(state.surface, DevSurface::Trust);
-        let rendered = rendered(&state, 64, 24);
-        assert!(rendered.contains("TRUST"));
-        assert!(rendered.contains("O open"));
-        state.handle_printable('O');
+        assert_eq!(state.surface, DevSurface::Agent);
+        let frame = rendered(&state, 64, 24);
+        assert!(frame.contains("Core owns agent permissions"));
+        assert!(!frame.contains("guarded"));
+        state.show_surface(DevSurface::Trust);
+        assert!(rendered(&state, 64, 24).contains("TRUST"));
         assert_eq!(
             state.workspace.lock().unwrap().trust(),
             crate::WorkspaceTrust::Untrusted
         );
-        assert_eq!(state.surface, DevSurface::Agent);
+        assert_eq!(state.surface, DevSurface::Trust);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -6784,7 +6771,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_keeps_message_and_routes_to_trust_when_workspace_is_untrusted() {
+    fn composer_keeps_message_without_trust_redirect_when_workspace_is_untrusted() {
         let mut state = state(TuiLayout::Desktop);
         state.surface = DevSurface::Agent;
         state.snapshot_trust_label = "untrusted".into();
@@ -6792,8 +6779,8 @@ mod tests {
         state.insert_composer_text("inspect this workspace");
         let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
         state.submit_composer(&mut worker);
-        assert_eq!(state.surface, DevSurface::Trust);
-        assert!(!state.composer_mode);
+        assert_eq!(state.surface, DevSurface::Agent);
+        assert!(state.composer_mode);
         assert_eq!(state.composer_input, "inspect this workspace");
         drop(worker);
     }

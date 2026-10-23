@@ -110,6 +110,16 @@ impl DevelopmentToolRouter {
         call: &ToolCall,
         context: &DevelopmentToolContext,
     ) -> DevelopmentResult<Value> {
+        let core_integration = context.authorization.actor.id == "external:glass-core"
+            && is_integration_tool(&call.name);
+        let mut effective_context = context.clone();
+        if core_integration {
+            // Core is the authority for its own integration calls. Keep this
+            // exception inside the internal Core bridge and preserve all
+            // service-specific validation below.
+            effective_context.authorization.allow_mutation = true;
+            effective_context.authorization.confirmed = true;
+        }
         if workspace.generation() != context.expected_generation {
             return Err(DevelopmentError::Conflict(format!(
                 "stale workspace generation {}; current generation is {}",
@@ -124,11 +134,14 @@ impl DevelopmentToolRouter {
                 workspace.project().revision()
             )));
         }
-        let descriptor = self
-            .descriptors_for(workspace.trust(), workspace.unrestricted_execution())
-            .into_iter()
-            .find(|descriptor| descriptor.name == call.name)
-            .ok_or_else(|| DevelopmentError::NotFound(format!("tool {}", call.name)))?;
+        let descriptor = (if core_integration {
+            self.descriptors.clone()
+        } else {
+            self.descriptors_for(workspace.trust(), workspace.unrestricted_execution())
+        })
+        .into_iter()
+        .find(|descriptor| descriptor.name == call.name)
+        .ok_or_else(|| DevelopmentError::NotFound(format!("tool {}", call.name)))?;
         if !descriptor.available {
             return Err(DevelopmentError::Conflict(
                 descriptor
@@ -137,12 +150,13 @@ impl DevelopmentToolRouter {
                     .unwrap_or_else(|| format!("tool {} is unavailable", call.name)),
             ));
         }
-        if descriptor.mutating && !context.authorization.permits_mutation() {
+        if descriptor.mutating && !effective_context.authorization.permits_mutation() {
             return Err(DevelopmentError::Conflict(format!(
                 "tool {} requires mutation authority and confirmation",
                 call.name
             )));
         }
+        let context = &effective_context;
         let actor_id = context.authorization.actor.id.clone();
         let initiator_id = context
             .initiator
@@ -3235,6 +3249,66 @@ mod tests {
                 .label,
             "list-root"
         );
+    }
+
+    #[test]
+    fn core_integration_bypasses_workspace_trust_and_duplicate_confirmation_only() {
+        let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "glass-core-integration-untrusted-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='core-integration-test'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        let mut untrusted_workspace = DevelopmentWorkspace::open(&root).unwrap();
+        assert_eq!(untrusted_workspace.trust(), WorkspaceTrust::Untrusted);
+        let router = DevelopmentToolRouter::default();
+        let call = ToolCall {
+            id: "core-review-comment".into(),
+            name: "glass.editor.comment.add".into(),
+            arguments: json!({
+                "path":"src/main.rs",
+                "startLine":1,
+                "endLine":1,
+                "text":"Review this line"
+            }),
+        };
+        let mut core = context(&untrusted_workspace, false);
+        core.authorization.actor = Actor::external("glass-core");
+        assert_eq!(core.authorization.actor.id, "external:glass-core");
+        let mut stale = core.clone();
+        stale.expected_project_revision = stale.expected_project_revision.saturating_add(1);
+        assert!(
+            router
+                .execute(&mut untrusted_workspace, &call, &stale)
+                .is_err()
+        );
+        let result = router
+            .execute(&mut untrusted_workspace, &call, &core)
+            .expect("Core review integration should run under Core authority");
+        assert!(result["id"].is_string());
+
+        let mut external = context(&untrusted_workspace, false);
+        external.authorization.actor = Actor::external("mcp-client");
+        assert!(
+            router
+                .execute(&mut untrusted_workspace, &call, &external)
+                .is_err()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+
+        let mut trusted = workspace();
+        std::fs::create_dir_all(trusted.root().join("src")).unwrap();
+        std::fs::write(trusted.root().join("src/main.rs"), "fn main() {}\n").unwrap();
+        let mut external = context(&trusted, false);
+        external.authorization.actor = Actor::external("mcp-client");
+        assert!(router.execute(&mut trusted, &call, &external).is_err());
+        std::fs::remove_dir_all(trusted.root()).unwrap();
     }
 
     #[test]

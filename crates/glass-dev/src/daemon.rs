@@ -1891,7 +1891,7 @@ async fn forward_resident_tool_call(
             expected_project_revision: None,
             allow_mutation: false,
             confirmed: false,
-            actor: Some("pi".into()),
+            actor: Some("glass-core".into()),
             since: None,
             limit: None,
             operation_id: None,

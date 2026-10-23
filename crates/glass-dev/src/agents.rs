@@ -1313,7 +1313,7 @@ impl AgentRegistry {
             if record.snapshot.status.terminal()
                 || matches!(
                     record.snapshot.status,
-                    AgentStatus::Queued | AgentStatus::Starting | AgentStatus::RecoveryPending
+                    AgentStatus::Queued | AgentStatus::RecoveryPending
                 )
             {
                 return Err(agent_request_blocked(id, record.snapshot.status));
@@ -3250,6 +3250,44 @@ mod tests {
         assert_eq!(run(&registry).classification, RunClassification::Idle);
 
         registry.cancel(&id).unwrap();
+        drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn first_prompt_can_queue_while_core_session_is_starting() {
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let id = AgentId::parse("agent-first-send-starting").unwrap();
+        let (command, commands) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            while let Ok(command) = commands.recv() {
+                if matches!(
+                    command,
+                    WorkerCommand::Request {
+                        request: PiSessionRequest::Prompt { .. },
+                        ..
+                    }
+                ) {
+                    let _ = ready_tx.send(());
+                }
+                if matches!(command, WorkerCommand::Shutdown) {
+                    break;
+                }
+            }
+        });
+        insert_test_worker(&mut registry, id.clone(), command, worker);
+        registry.records.get_mut(&id).unwrap().snapshot.status = AgentStatus::Starting;
+
+        registry
+            .prompt(&id, "first message without waiting for a UI refresh")
+            .expect("the initialized command queue accepts the first prompt");
+        ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the worker receives the prompt while Core initializes");
+
         drop(registry);
         std::fs::remove_dir_all(root).unwrap();
     }

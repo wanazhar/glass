@@ -71,42 +71,6 @@ pub struct TuiVisualOptions {
     pub fit: TuiLiveFit,
 }
 
-fn handle_untrusted_trust_shortcut(
-    state: &mut DevTuiState,
-    code: KeyCode,
-    modifiers: KeyModifiers,
-) -> bool {
-    if state.surface != DevSurface::Trust || state.trust_allows_execution() {
-        return false;
-    }
-
-    match (code, modifiers) {
-        (KeyCode::Char('g'), value) if value.contains(KeyModifiers::CONTROL) => {
-            state.jump_to_app_keep_dock();
-            true
-        }
-        (KeyCode::Char('p'), value)
-            if value.contains(KeyModifiers::CONTROL) && value.contains(KeyModifiers::SHIFT) =>
-        {
-            state.open_palette();
-            true
-        }
-        (KeyCode::Char('p'), value) if value.contains(KeyModifiers::CONTROL) => {
-            state.open_file_picker();
-            true
-        }
-        (KeyCode::Char('k'), value) if value.contains(KeyModifiers::CONTROL) => {
-            state.open_palette();
-            true
-        }
-        (KeyCode::Char('l'), value) if value.contains(KeyModifiers::CONTROL) => {
-            state.focus_composer_dock();
-            true
-        }
-        _ => false,
-    }
-}
-
 const KITTY_CLEAR: &[u8] = b"\x1b_Ga=d,d=A\x1b\\";
 
 struct VisualRuntime {
@@ -985,11 +949,6 @@ pub(crate) fn run_with_browser_policy(
                         }
                     } else {
                         match (key.code, key.modifiers) {
-                            _ if handle_untrusted_trust_shortcut(
-                                &mut state,
-                                key.code,
-                                key.modifiers,
-                            ) => {}
                             (KeyCode::Char('l'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
                             {
@@ -2832,7 +2791,7 @@ mod tests {
     }
 
     #[test]
-    fn initial_trust_shortcuts_block_app_jump_and_file_picker_submission() {
+    fn untrusted_project_does_not_block_app_navigation_or_file_editing() {
         let root =
             std::env::temp_dir().join(format!("glass-trust-key-routing-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create temporary workspace");
@@ -2845,31 +2804,18 @@ mod tests {
 
         let mut state =
             DevTuiState::open(&root, TuiLayout::Desktop).expect("open untrusted TUI workspace");
-        assert_eq!(state.surface, DevSurface::Trust);
+        assert_eq!(state.surface, DevSurface::Agent);
         state.files.push("README.md".into());
 
-        assert!(handle_untrusted_trust_shortcut(
-            &mut state,
-            KeyCode::Char('p'),
-            KeyModifiers::CONTROL,
-        ));
-        assert!(!state.file_picker_open);
-        assert_eq!(state.surface, DevSurface::Trust);
+        state.open_file_picker();
+        assert!(state.file_picker_open);
 
-        // Even if a picker state survives a trust transition, submit cannot
-        // open a project file or replace the Trust surface.
-        state.file_picker_open = true;
         state.submit_file_picker();
         assert!(!state.file_picker_open);
-        assert!(state.focused_editor_path.is_empty());
-        assert_eq!(state.surface, DevSurface::Trust);
+        assert_eq!(state.focused_editor_path, "README.md");
+        assert_eq!(state.surface, DevSurface::Code);
 
-        assert!(handle_untrusted_trust_shortcut(
-            &mut state,
-            KeyCode::Char('g'),
-            KeyModifiers::CONTROL,
-        ));
-        assert_eq!(state.surface, DevSurface::Trust);
+        assert_eq!(state.surface, DevSurface::Code);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 }

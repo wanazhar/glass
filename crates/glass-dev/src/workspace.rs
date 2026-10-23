@@ -1155,7 +1155,7 @@ impl SharedDevelopmentWorkspace {
             let unrestricted = workspace.agents().default_unrestricted();
             let context = DevelopmentToolContext {
                 authorization: ToolAuthorization {
-                    actor: Actor::embedded(),
+                    actor: Actor::external("glass-core"),
                     allow_mutation,
                     confirmed,
                     unrestricted,

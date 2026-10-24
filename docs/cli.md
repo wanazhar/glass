@@ -692,6 +692,13 @@ replace the `ROLE TASK` placeholder, and submit to create another Core-backed
 conversation. Model discovery stays in palette state and is not appended to
 chat. See [Glass Core resident harness](glass-core-harness.md).
 
+`/glass agent settings` opens an in-Glass Core session settings panel. It reads
+the active session with Core's `session/describe`, displays only provider/model,
+token budget, image-input, tool-mode, and reasoning-budget fields, and lets the
+user choose a model through the same Core model picker. Private endpoint,
+workspace path, credential-environment name, and custom instructions are not
+shown.
+
 Choose Glass Core provider login to hand the terminal to Core's interactive
 provider login; Glass does not prompt for or store provider secrets. New
 conversation creates another Core-backed runtime; `agent new` reuses the

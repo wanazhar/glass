@@ -6299,6 +6299,65 @@ fn slash_workspace_action_runs_and_renders_a_named_terminal_process() {
 }
 
 #[test]
+fn core_settings_palette_stays_in_glass_and_reads_session_details() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let state_dir = root.join(".glass");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(state_dir.join("e2e-core-request-log"), "enabled").unwrap();
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.wait_for_agent_surface();
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    start_core_conversation(&mut session, "assistant", "settings panel fixture");
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
+    let palette_offset = session.buffer.len();
+    session.send(b"/");
+    assert!(session.wait_for_output_after(palette_offset, "COMMANDS", Duration::from_secs(5)));
+    session.send_slowly(b"agent settings", Duration::from_millis(20));
+    assert!(session.wait_for("Core settings · provider and model", Duration::from_secs(5)));
+    let completion_offset = session.buffer.len();
+    session.send(b"\t");
+    assert!(session.wait_for_output_after(
+        completion_offset,
+        "/glass agent settings",
+        Duration::from_secs(5)
+    ));
+    session.send(b"\r");
+    assert!(
+        session.wait_for("CORE settings", Duration::from_secs(8)),
+        "settings action did not open in Glass\n{}",
+        session.output_tail()
+    );
+    assert!(session.wait_for("tool mode: mixed", Duration::from_secs(5)));
+    assert!(session.visible_output().contains("claude-opus-4"));
+    assert!(
+        !session.visible_output().contains("FIXTURE_SECRET_ENV"),
+        "the safe settings panel must not reveal credential environment names"
+    );
+
+    let request_log =
+        std::fs::read_to_string(state_dir.join("e2e-core-requests.jsonl")).unwrap_or_default();
+    assert!(request_log.contains("session/describe"), "{request_log}");
+    assert!(request_log.contains("models/list"), "{request_log}");
+    assert!(
+        !request_log.contains("turn/prompt"),
+        "settings discovery must not send a provider prompt"
+    );
+    assert!(
+        session.child.try_wait().unwrap().is_none(),
+        "Glass must remain active"
+    );
+
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+}
+
+#[test]
 fn git_file_selection_opens_the_focused_diff_in_place() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;

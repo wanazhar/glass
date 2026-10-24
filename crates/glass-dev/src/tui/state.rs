@@ -1606,6 +1606,8 @@ pub struct DevTuiState {
     pub gc_model_provider: Option<String>,
     pub gc_model_current: Option<String>,
     pub gc_model_error: Option<String>,
+    pub gc_session_settings: Option<super::snapshot::CoreSessionSettings>,
+    pub gc_settings_view: bool,
     pub gc_command_loading: bool,
     pub gc_command_discovery_requested: bool,
     gc_command_discovery_pending: bool,
@@ -1613,6 +1615,7 @@ pub struct DevTuiState {
     /// palette. Late results remain cache updates after the menu closes.
     gc_command_discovery_jobs: std::collections::HashSet<u64>,
     gc_model_discovery_jobs: std::collections::HashSet<u64>,
+    gc_settings_jobs: std::collections::HashSet<u64>,
     composer_gc_command_completion: bool,
     composer_glass_action_completion: Option<String>,
     /// Set by a palette action; the event loop hands the terminal to the
@@ -1972,11 +1975,14 @@ impl DevTuiState {
             gc_model_provider: None,
             gc_model_current: None,
             gc_model_error: None,
+            gc_session_settings: None,
+            gc_settings_view: false,
             gc_command_loading: false,
             gc_command_discovery_requested: false,
             gc_command_discovery_pending: false,
             gc_command_discovery_jobs: std::collections::HashSet::new(),
             gc_model_discovery_jobs: std::collections::HashSet::new(),
+            gc_settings_jobs: std::collections::HashSet::new(),
             composer_gc_command_completion: false,
             composer_glass_action_completion: None,
             harness_launch_requested: None,
@@ -5178,6 +5184,8 @@ impl DevTuiState {
         self.gc_model_provider = None;
         self.gc_model_current = None;
         self.gc_model_error = None;
+        self.gc_session_settings = None;
+        self.gc_settings_view = false;
         self.gc_model_menu_open = false;
         self.gc_command_discovery_pending = false;
         if self.gc_command_menu_open {
@@ -6102,6 +6110,7 @@ impl DevTuiState {
                         "view Browser",
                         "view Git",
                         "agent status",
+                        "agent settings",
                         "agent models [AGENT_ID]",
                         "agent sessions",
                         "agent new",
@@ -6226,6 +6235,7 @@ impl DevTuiState {
     pub fn cancel_gc_command_menu(&mut self) {
         if self.gc_model_menu_open {
             self.gc_model_menu_open = false;
+            self.gc_settings_view = false;
             self.gc_command_selected = 0;
             self.gc_command_loading = false;
             self.status = "Glass Core commands · choose a control or Esc to close".into();
@@ -6281,6 +6291,7 @@ impl DevTuiState {
             };
             self.gc_model_menu_open = false;
             self.gc_command_menu_open = false;
+            self.gc_settings_view = false;
             self.gc_command_query.clear();
             self.composer_gc_command_completion = false;
             self.queue_gc_command_tool(worker, "glass.agent.model", serde_json::json!({"agentId":agent.as_str(),"provider":provider,"modelId":model_id}), false);
@@ -6297,6 +6308,10 @@ impl DevTuiState {
             self.gc_command_menu_open = false;
             self.gc_command_query.clear();
             self.composer_gc_command_completion = false;
+            if action.command == "agent settings" {
+                self.open_gc_model_settings(worker);
+                return;
+            }
             self.composer_mode = false;
             self.status = match command::execute(self, action.command) {
                 Ok(message) => message,
@@ -6329,6 +6344,7 @@ impl DevTuiState {
         if interactive {
             if name == "model" {
                 self.gc_model_menu_open = true;
+                self.gc_settings_view = false;
                 self.gc_command_menu_open = true;
                 self.gc_command_selected = 0;
                 self.gc_model_error = None;
@@ -6366,6 +6382,43 @@ impl DevTuiState {
             false,
         );
         self.gc_command_query.clear();
+    }
+
+    fn open_gc_model_settings(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
+        self.gc_model_menu_open = true;
+        self.gc_command_menu_open = true;
+        self.gc_settings_view = true;
+        self.gc_command_selected = 0;
+        self.gc_model_error = None;
+        self.gc_command_query.clear();
+        if let Some(agent) = self.selected_agent.as_ref() {
+            match self.tool_request(
+                "glass.agent.hello",
+                serde_json::json!({"agentId":agent.as_str()}),
+                false,
+            ) {
+                Ok((call, context)) => match worker.submit_tool(call, context) {
+                    Ok(job) => {
+                        self.gc_settings_jobs.insert(job);
+                        self.running_tool_job = Some(job);
+                    }
+                    Err(error) => self.status = format!("Could not request Core settings: {error}"),
+                },
+                Err(error) => self.status = format!("Could not request Core settings: {error}"),
+            }
+        }
+        if self.gc_model_items.is_empty() {
+            self.gc_command_loading = true;
+            self.status = "Loading provider settings from Glass Core…".into();
+            let mut args = serde_json::json!({});
+            if let Some(agent) = self.selected_agent.as_ref() {
+                args["agentId"] = serde_json::Value::String(agent.as_str().into());
+            }
+            self.queue_gc_command_tool(worker, "glass.agent.models", args, true);
+        } else {
+            self.gc_command_loading = false;
+            self.status = "Core provider settings · Enter applies a selected model".into();
+        }
     }
 
     pub fn close_composer(&mut self) {
@@ -6688,6 +6741,12 @@ impl DevTuiState {
                 .filter(|value| !value.is_empty())
                 .unwrap_or(default_command.as_str())
                 .to_string();
+            if command == "agent settings" {
+                self.composer_input.clear();
+                self.composer_cursor = 0;
+                self.open_gc_model_settings(worker);
+                return;
+            }
             self.composer_mode = false;
             self.status = match command::execute(self, &command) {
                 Ok(message) => message,
@@ -7171,6 +7230,15 @@ impl DevTuiState {
     }
 
     pub fn apply_tool_job_result(&mut self, result: super::snapshot::ToolJobResult) {
+        if self.gc_settings_jobs.remove(&result.id) {
+            if self.running_tool_job == Some(result.id) {
+                self.running_tool_job = None;
+            }
+            if let Err(error) = result.result {
+                self.status = format!("Could not read Core session settings: {error}");
+            }
+            return;
+        }
         if result.tool == "glass.agent.send"
             && let Some((agent_id, entry_id)) =
                 self.follow_up_queue_dispatch_jobs.remove(&result.id)
@@ -11507,6 +11575,14 @@ impl DevTuiState {
         }
     }
 
+    fn update_gc_session_settings(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
+        self.gc_session_settings = self
+            .selected_agent
+            .as_ref()
+            .and_then(|agent_id| snapshot.core_session_settings.get(agent_id))
+            .cloned();
+    }
+
     pub fn apply_snapshot(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
         self.remember_row_selection_identity();
         let was_waiting_for_snapshot = !self.snapshot_ready;
@@ -11611,6 +11687,7 @@ impl DevTuiState {
         }
         self.update_gc_command_catalogue(snapshot);
         self.update_gc_model_catalogue(snapshot);
+        self.update_gc_session_settings(snapshot);
         let entry_count = self.conversation_entries_view().len();
         if entry_count == 0 {
             self.transcript_selection = 0;
@@ -14358,6 +14435,46 @@ mod tests {
         let searched = state.gc_palette_core_commands();
         assert_eq!(searched.len(), 1);
         assert_eq!(searched[0]["name"], "reconcile");
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn slash_palette_exposes_core_settings_without_leaving_glass() {
+        let (state, root) = routed_state("slash-core-settings");
+        let actions = state.gc_command_glass_actions();
+        let settings = actions
+            .iter()
+            .find(|action| action.command == "agent settings")
+            .expect("in-Glass Core settings action");
+        assert!(settings.label.contains("provider and model"));
+        assert!(settings.description.contains("selected Core session"));
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn core_settings_opens_in_glass_and_model_selection_uses_core_configure() {
+        let (mut state, root) = routed_state("core-settings-route");
+        let agent = crate::AgentId::parse("agent-0001").unwrap();
+        state.selected_agent = Some(agent);
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+
+        state.composer_input = "/glass agent settings".into();
+        state.composer_glass_action_completion = Some("agent settings".into());
+        state.submit_composer(&mut worker);
+        assert!(state.gc_settings_view);
+        assert!(state.gc_model_menu_open);
+        assert!(state.gc_command_menu_open);
+        assert!(!state.gc_settings_jobs.is_empty());
+
+        state.gc_model_items = vec![serde_json::json!({
+            "provider":"openai", "id":"gpt-next", "label":"Next"
+        })];
+        state.gc_command_loading = false;
+        state.submit_gc_command_selection(&mut worker);
+        assert!(!state.gc_settings_view);
+        assert!(!state.gc_model_menu_open);
+        assert!(state.status.contains("openai/gpt-next"));
+        drop(worker);
         std::fs::remove_dir_all(root).expect("remove test workspace");
     }
 

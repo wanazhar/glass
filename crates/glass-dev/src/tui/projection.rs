@@ -918,7 +918,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
             "response" => {
                 if matches!(
                     event.payload.get("operation").and_then(Value::as_str),
-                    Some("coreCommands" | "models")
+                    Some("coreCommands" | "models" | "hello")
                 ) {
                     // `commands/list` is UI discovery for the slash palette.
                     // Its complete catalogue is cached separately in the
@@ -926,6 +926,8 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     // currently streaming assistant message. Model discovery is
                     // also palette UI data; the user selects from its in-Glass
                     // picker instead of receiving a catalogue dump in chat.
+                    // `session/describe` is rendered through the safe settings
+                    // projection and never serialized into transcript text.
                 } else if matches!(
                     event.payload.get("operation").and_then(Value::as_str),
                     Some("coreCommand" | "coreTaskGraph" | "coreTaskAbort")
@@ -964,7 +966,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                             == Some(true)
                         {
                             format!(
-                                "{}\nGlass has no in-workspace control for this Core command, so Core did not run it. The separate Core interface is available only through the explicit GLASS → Open GC native command menu action.",
+                                "{}\nGlass has no in-workspace control for this Core command, so Core did not run it. Use `glass core …` at the shell for the standalone Core interface.",
                                 text
                             )
                         } else {
@@ -1286,25 +1288,39 @@ mod tests {
                 sequence: 3,
                 agent_id: agent_id.clone(),
                 timestamp_ms: 0,
-                kind: "message_update".into(),
-                payload: serde_json::json!({"delta":"after discovery"}),
+                kind: "response".into(),
+                payload: serde_json::json!({
+                    "operation":"hello", "ok":true,
+                    "result":{
+                        "provider":"openai", "model":"gpt-test", "maxTokens":8192,
+                        "imageInput":true, "toolMode":"mixed", "reasoningBudget":2048,
+                        "instructions":"private instructions", "baseUrl":"private endpoint"
+                    }
+                }),
             },
             crate::AgentEvent {
                 sequence: 4,
                 agent_id: agent_id.clone(),
                 timestamp_ms: 0,
-                kind: "response".into(),
-                payload: serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"help","text":"Core help output"}}),
+                kind: "message_update".into(),
+                payload: serde_json::json!({"delta":"after discovery"}),
             },
             crate::AgentEvent {
                 sequence: 5,
                 agent_id: agent_id.clone(),
                 timestamp_ms: 0,
                 kind: "response".into(),
-                payload: serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"model","requiresInteractive":true,"message":"Select a model"}}),
+                payload: serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"help","text":"Core help output"}}),
             },
             crate::AgentEvent {
                 sequence: 6,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "response".into(),
+                payload: serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"model","requiresInteractive":true,"message":"Select a model"}}),
+            },
+            crate::AgentEvent {
+                sequence: 7,
                 agent_id,
                 timestamp_ms: 0,
                 kind: "response".into(),
@@ -1321,10 +1337,16 @@ mod tests {
             "{rendered}"
         );
         assert!(!rendered.contains("/model · Select model"), "{rendered}");
+        assert!(!rendered.contains("private instructions"), "{rendered}");
+        assert!(!rendered.contains("private endpoint"), "{rendered}");
+        assert!(
+            !rendered.contains("gpt-test"),
+            "settings metadata is panel-only"
+        );
         assert!(rendered.contains("Core help output"), "{rendered}");
         assert!(rendered.contains("Core did not run it"), "{rendered}");
         assert!(
-            rendered.contains("explicit GLASS → Open GC native command menu action"),
+            rendered.contains("Use `glass core …` at the shell"),
             "{rendered}"
         );
         assert!(

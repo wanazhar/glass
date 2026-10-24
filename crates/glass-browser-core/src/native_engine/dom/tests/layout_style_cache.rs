@@ -74,6 +74,43 @@ fn script_style_mutation_invalidates_cached_cascade() {
 }
 
 #[test]
+fn script_class_attribute_mutations_match_a_fresh_cascade() {
+    let limits = NativeEngineLimits::default();
+    let source = "<style>.active{color:#abcdef}</style><button id=target>go</button>";
+    let mut document = NativeDocument::parse(source, &limits).unwrap();
+    let target = document.find_element_by_id("target").unwrap();
+    let base = document.computed_style_for_layout(target);
+    assert!(!document.layout_style_cache.0.lock().unwrap().is_empty());
+
+    document
+        .apply_script_attribute(target.index(), "class", "active", None, &BTreeMap::new())
+        .unwrap();
+    assert!(document.layout_style_cache.0.lock().unwrap().is_empty());
+    let active = document.computed_style_for_layout(target);
+    let active_fresh = NativeDocument::parse(
+        "<style>.active{color:#abcdef}</style><button id=target class=active>go</button>",
+        &limits,
+    )
+    .unwrap();
+    assert_eq!(
+        active,
+        active_fresh.computed_style_for_layout(active_fresh.find_element_by_id("target").unwrap())
+    );
+    assert_ne!(base, active);
+
+    document
+        .remove_script_attribute(target.index(), "class", None, &BTreeMap::new())
+        .unwrap();
+    let reset = document.computed_style_for_layout(target);
+    let base_fresh = NativeDocument::parse(source, &limits).unwrap();
+    assert_eq!(
+        reset,
+        base_fresh.computed_style_for_layout(base_fresh.find_element_by_id("target").unwrap())
+    );
+    assert_eq!(base, reset);
+}
+
+#[test]
 fn background_image_candidates_match_full_computed_style_scan() {
     let source = r#"<style>
         .hero { background-image: url('/hero.png') }

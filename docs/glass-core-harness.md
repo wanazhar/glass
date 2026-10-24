@@ -105,7 +105,8 @@ grant additional tools.
 | `GLASS_CORE_BINARY=/path/to/glass-core` | Use a specific engine executable. |
 
 Glass does not install the engine when it starts. Without an explicit path, it
-looks for `glass-core` on `PATH`, then `gc`, and reads its version. Run
+looks for the monorepo `glass-core` executable on `PATH` and reads its version.
+It does not resolve the independent GCN `gcn` executable. Run
 `glass agent doctor` or `glass agent status` to see the selected engine,
 protocol version, provider readiness, session directory, and repair steps.
 These commands do not print credentials. The runtime readiness probe reads
@@ -124,14 +125,15 @@ their current in-memory settings; Start Core conversation creates a new Core
 runtime and reads the updated configuration. New conversation reuses the
 existing runtime and therefore does not reload provider settings.
 
-The `/` action catalogue labels Core login and model controls explicitly.
-List Core models and Select Core model operate
-on the selected resident session (or the workspace's first active session when
-none is selected) using the negotiated `models/list` and `session/configure`
-methods. Model catalog responses appear in the Agent conversation with the
-provider, model IDs, and labels when Core supplies them. Without a selected or
-active resident session, these controls report that a session must be started
-first.
+The `/` palette groups live Core commands and Glass workspace actions with
+explicit CORE and GLASS labels. It shows a compact set of common controls by
+default; typing searches Core's full discovered command catalogue. `/model`
+opens an in-Glass picker backed by Core's `models/list` and
+`session/configure` methods and applies the selected model to the same resident
+session. Discovery is palette state, not conversation text. A Core command with
+no in-Glass control is reported as unavailable in Glass and is not handed to a
+second UI. This keeps Core authoritative for provider/model/session state while
+Glass presents the workspace and routes explicit human controls.
 
 The standalone source product is maintained in this repository at
 [`products/glass-core`](../products/glass-core/README.md). To install its

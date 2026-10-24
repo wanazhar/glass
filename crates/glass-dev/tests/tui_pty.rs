@@ -920,7 +920,10 @@ fn send_alt_digit(session: &mut Session, digit: u8) {
 fn start_core_conversation(session: &mut Session, role: &str, task: &str) {
     session.send(b"/");
     assert!(
-        session.wait_for("CORE COMMANDS", Duration::from_secs(5)),
+        session.wait_for(
+            "CORE · agent commands and session controls",
+            Duration::from_secs(5),
+        ),
         "Core slash menu did not open\n{}",
         session.output_tail()
     );
@@ -1378,12 +1381,12 @@ fn workspace_navigation_keeps_agent_focus_and_opens_gc_slash_commands() {
     // without switching surfaces, opening a colon palette, or sending a turn.
     session.send(b"/");
     assert!(
-        session.wait_for("status", Duration::from_secs(8)),
+        session.wait_for("/status", Duration::from_secs(8)),
         "fresh-launch slash menu did not discover Core commands\n{}",
         session.output_tail()
     );
     assert!(
-        session.wait_for("model", Duration::from_secs(2)),
+        session.wait_for("/model", Duration::from_secs(2)),
         "Core catalogue omitted its interactive model command\n{}",
         session.output_tail()
     );
@@ -1393,12 +1396,25 @@ fn workspace_navigation_keeps_agent_focus_and_opens_gc_slash_commands() {
         "runtime-safe /status did not reach GC\n{}",
         session.output_tail()
     );
-    session.send(b"/model\r");
+    session.send(b"/");
+    assert!(session.wait_for("/model", Duration::from_secs(5)));
+    session.send(b"model");
+    assert!(session.wait_for("Select Core model", Duration::from_secs(5)));
+    session.send(b"\r");
     assert!(
-        session.wait_for("Glass Core command UI exited", Duration::from_secs(8)),
-        "interactive /model did not hand off to Core's native UI\n{}",
+        session.wait_for("claude-opus-4", Duration::from_secs(20)),
+        "/model should open its in-Glass provider model picker\n{}",
         session.output_tail()
     );
+    assert!(
+        !session
+            .visible_output()
+            .contains("FAKE GLASS CORE NATIVE UI"),
+        "the command palette must stay inside Glass"
+    );
+    session.send(b"\x1b");
+    assert!(session.wait_for("/ COMMANDS", Duration::from_secs(4)));
+    session.send(b"\x1b");
 
     // Code navigation must update the focused preview as the selection moves.
     // Returning to Agent must not expose the old buffer as composer context.
@@ -3620,6 +3636,8 @@ fn gc_commands_are_discoverable_and_forwarded_from_the_launcher_terminal() {
     }
     let root = workspace_root();
     let fake_core = fake_core_binary(&root);
+    std::fs::create_dir_all(root.join(".glass")).unwrap();
+    std::fs::write(root.join(".glass/e2e-core-request-log"), "enabled").unwrap();
     let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
     session.wait_for_agent_surface();
 
@@ -3637,11 +3655,49 @@ fn gc_commands_are_discoverable_and_forwarded_from_the_launcher_terminal() {
         "slash-selected /status was not forwarded to the Core runtime\n{}",
         session.output_tail()
     );
-    session.send(b"/model\r");
+    session.send(b"/");
+    assert!(session.wait_for("/model", Duration::from_secs(5)));
+    session.send(b"model");
+    assert!(session.wait_for("Select Core model", Duration::from_secs(5)));
+    session.send(b"\r");
     assert!(
-        session.wait_for("command-ui", Duration::from_secs(8)),
-        "interactive Core command did not explain the native UI handoff\n{}",
+        session.wait_for("claude-opus-4", Duration::from_secs(20)),
+        "/model should open its in-Glass provider model picker\n{}",
         session.output_tail()
+    );
+    session.send(b"\r");
+    assert!(
+        session.wait_for(
+            "Asking Glass Core to use anthropic/claude-opus-4",
+            Duration::from_secs(5)
+        ),
+        "selected model was not routed to the current Core session\n{}",
+        session.output_tail()
+    );
+    assert!(
+        !session
+            .visible_output()
+            .contains("FAKE GLASS CORE NATIVE UI"),
+        "normal slash selection must not launch the standalone Core TUI"
+    );
+    let requests = root.join(".glass/e2e-core-requests.jsonl");
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let mut request_log = String::new();
+    while std::time::Instant::now() < deadline {
+        request_log = std::fs::read_to_string(&requests).unwrap_or_default();
+        if request_log.contains("session/configure") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        request_log.contains("session/configure"),
+        "model choice did not reach Core\n{request_log}\n{}",
+        session.output_tail()
+    );
+    assert!(
+        request_log.contains("claude-opus-4"),
+        "wrong Core model selected\n{request_log}"
     );
 
     session.kill();
@@ -3665,10 +3721,11 @@ fn gc_slash_palette_scroll_and_dismissal_stay_out_of_chat() {
         session.wait_for_agent_surface();
 
         // Fresh launch '/' initializes the idle GC session and discovers its
-        // dynamic catalogue without a provider turn.
+        // dynamic catalogue without a provider turn. Typing a Core-specific
+        // query filters the complete catalogue, including non-primary rows.
         session.send(b"/");
         assert!(
-            session.wait_for("/command-00", Duration::from_secs(8)),
+            session.wait_for("COMMANDS", Duration::from_secs(8)),
             "catalogue did not load at {width}x{height}\n{}",
             session.output_tail()
         );
@@ -3680,10 +3737,37 @@ fn gc_slash_palette_scroll_and_dismissal_stay_out_of_chat() {
                 .filter(|line| line.contains("\"method\":\"commands/list\""))
                 .count()
         };
+        session.clear_output();
+        session.send(b"\x7f");
+        assert!(
+            session.wait_for("Command menu closed", Duration::from_secs(5)),
+            "Backspace did not close the empty slash menu at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        let closed_frame = session.visible_output();
+        assert!(
+            !closed_frame.contains("/command-00") && !closed_frame.contains("/command-23"),
+            "palette discovery leaked into the transcript at {width}x{height}\n{closed_frame}"
+        );
+
+        session.clear_output();
+        session.send(b"/");
+        assert!(
+            session.wait_for("COMMANDS", Duration::from_secs(5)),
+            "cached catalogue did not reopen at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        assert_eq!(request_count(), 1, "reopening duplicated commands/list");
+        session.send(b"command");
+        assert!(
+            session.wait_for("/command-00", Duration::from_secs(5)),
+            "search did not expose the full Core catalogue at {width}x{height}\n{}",
+            session.output_tail()
+        );
         assert_eq!(
             request_count(),
             1,
-            "one palette open should issue one catalogue request"
+            "opening and reopening the palette should issue one catalogue request"
         );
 
         // Move eight rows on a compact phone-like terminal. Render tests also
@@ -3709,42 +3793,24 @@ fn gc_slash_palette_scroll_and_dismissal_stay_out_of_chat() {
         session.clear_output();
         session.send(b"\x1b[F");
         assert!(
-            session.wait_for_output_after(0, "GLASS ", Duration::from_secs(5)),
-            "End did not select the last visible workspace action at {width}x{height}\n{}",
+            session.wait_for_output_after(0, "Start debug session", Duration::from_secs(5)),
+            "End did not select the final filtered Glass action at {width}x{height}\n{}",
             session.output_tail()
         );
 
-        // Backspace on an empty query removes the opening slash. The close
-        // frame must not put the palette catalogue into the transcript.
+        // Escape restores the query as an unsent composer draft.
         session.clear_output();
-        session.send(b"\x7f");
+        session.send(b"-08");
         assert!(
-            session.wait_for_output_after(0, "Command menu closed", Duration::from_secs(5)),
-            "Backspace did not close the empty slash menu at {width}x{height}\n{}",
+            session.wait_for("/command-08", Duration::from_secs(5)),
+            "query did not narrow to the selected Core command at {width}x{height}\n{}",
             session.output_tail()
         );
-        let closed_frame = session.visible_output();
-        assert!(
-            !closed_frame.contains("/command-00") && !closed_frame.contains("/command-23"),
-            "palette discovery leaked into the transcript at {width}x{height}\n{closed_frame}"
-        );
-
-        // Reopening uses the cached catalogue. Escape keeps a query as an
-        // unsent composer draft; it neither duplicates requests nor chat rows.
-        session.clear_output();
-        session.send(b"/");
-        assert!(
-            session.wait_for_output_after(0, "/command-00", Duration::from_secs(5)),
-            "cached catalogue did not reopen at {width}x{height}\n{}",
-            session.output_tail()
-        );
-        assert_eq!(request_count(), 1, "reopening duplicated commands/list");
-        session.send(b"command-08");
         session.clear_output();
         session.send(b"\x1b");
         assert!(
             session.wait_for_output_after(0, "/command-08", Duration::from_secs(5)),
-            "Escape did not preserve the typed query as a draft at {width}x{height}\n{}",
+            "Escape did not restore the slash query at {width}x{height}\n{}",
             session.output_tail()
         );
         let closed_with_draft = session.visible_output();
@@ -6356,14 +6422,33 @@ fn git_stage_and_commit_work_in_an_isolated_local_repository() {
         session.settle(Duration::from_millis(100));
     }
 
-    let commit_confirmation_offset = session.buffer.len();
-    session.send_slowly(b":git commit PTY local commit\r", Duration::from_millis(30));
-    assert!(
-        session.wait_for_output_after(
+    let mut commit_confirmation_visible = false;
+    for _ in 0..8 {
+        let commit_confirmation_offset = session.buffer.len();
+        session.send_slowly(b":git commit PTY local commit\r", Duration::from_millis(30));
+        if session.wait_for_output_after(
             commit_confirmation_offset,
             "one-use confirmation required",
             Duration::from_secs(5),
-        ),
+        ) {
+            commit_confirmation_visible = true;
+            break;
+        }
+        assert!(
+            session.wait_for_output_after(
+                commit_confirmation_offset,
+                "workspace busy with a background operation",
+                Duration::from_secs(1),
+            ),
+            "commit did not reach its confirmation or report transient workspace contention\n{}",
+            session.output_tail()
+        );
+        // The exact contention error is returned before the tool is queued,
+        // so retrying this human command cannot duplicate a commit.
+        session.settle(Duration::from_millis(200));
+    }
+    assert!(
+        commit_confirmation_visible,
         "commit did not request confirmation\n{}",
         session.output_tail()
     );

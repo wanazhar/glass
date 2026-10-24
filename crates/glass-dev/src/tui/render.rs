@@ -664,7 +664,7 @@ fn render_gc_command_menu(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
 
 fn gc_command_menu_block() -> Block<'static> {
     Block::default()
-        .title(" CORE COMMANDS · type to filter · ↑↓ move · Tab complete · Enter run · Esc close ")
+        .title(" / COMMANDS · ↑↓ select · Tab complete · Enter open/run · Esc close ")
         .title_style(Style::default().fg(PURPLE).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -674,9 +674,16 @@ fn gc_command_menu_block() -> Block<'static> {
 }
 
 fn gc_command_menu_content(state: &DevTuiState) -> GcCommandMenuContent {
-    let glass_actions = state.gc_command_glass_actions();
-    let core_commands =
-        command::filter_gc_commands(&state.gc_command_items, &state.gc_command_query);
+    let glass_actions = if state.gc_model_menu_open {
+        Vec::new()
+    } else {
+        state.gc_command_glass_actions()
+    };
+    let core_commands = if state.gc_model_menu_open {
+        Vec::new()
+    } else {
+        state.gc_palette_core_commands()
+    };
     let mut lines = vec![Line::from(vec![
         Span::styled(
             "/",
@@ -687,22 +694,84 @@ fn gc_command_menu_content(state: &DevTuiState) -> GcCommandMenuContent {
     ])];
     lines.push(Line::from(vec![
         Span::styled(
-            format!("CORE {} ", core_commands.len()),
+            "CORE ",
             Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("· ", Style::default().fg(MUTED)),
         Span::styled(
-            format!("GLASS {} ", glass_actions.len()),
+            format!(
+                "{} shown · {} total",
+                core_commands.len(),
+                state.gc_command_items.len()
+            ),
+            Style::default().fg(MUTED),
+        ),
+        Span::styled(
+            "   GLASS ",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "· type glass to filter host actions",
+            format!("{} actions", glass_actions.len()),
             Style::default().fg(MUTED),
         ),
     ]));
     let mut command_for_line = vec![None, None];
     let mut selected_line = 0usize;
-    if glass_actions.is_empty() && core_commands.is_empty() && !state.gc_command_loading {
+    if state.gc_model_menu_open {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "CORE · provider models · {} · current {}",
+                state.gc_model_provider.as_deref().unwrap_or("provider"),
+                state.gc_model_current.as_deref().unwrap_or("unknown")
+            ),
+            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
+        )));
+        command_for_line.push(None);
+        if state.gc_command_loading {
+            lines.push(Line::from(Span::styled(
+                "Loading models from Glass Core…",
+                Style::default().fg(MUTED),
+            )));
+            command_for_line.push(None);
+        } else if let Some(error) = state.gc_model_error.as_deref() {
+            lines.push(Line::from(Span::styled(
+                format!("Could not load models: {error}"),
+                Style::default().fg(ERROR),
+            )));
+            command_for_line.push(None);
+        }
+        for (index, item) in state.gc_model_items.iter().enumerate() {
+            let id = item
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?");
+            let label = item
+                .get("label")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(id);
+            let selected = index == state.gc_command_selected;
+            let style = if selected {
+                Style::default().fg(TEXT).bg(ACTIVE_BACKGROUND)
+            } else {
+                Style::default().fg(TEXT)
+            };
+            let current = state.gc_model_current.as_deref() == Some(id);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{label} · {id}"),
+                    style.add_modifier(Modifier::BOLD),
+                ),
+                if current {
+                    Span::styled("  current", Style::default().fg(ACCENT))
+                } else {
+                    Span::raw("")
+                },
+            ]));
+            command_for_line.push(Some(index));
+            if selected {
+                selected_line = lines.len() - 1;
+            }
+        }
+    } else if glass_actions.is_empty() && core_commands.is_empty() && !state.gc_command_loading {
         lines.push(Line::from(Span::styled(
             "No matching commands or Glass actions",
             Style::default().fg(MUTED),
@@ -711,7 +780,7 @@ fn gc_command_menu_content(state: &DevTuiState) -> GcCommandMenuContent {
     } else if !glass_actions.is_empty() || !core_commands.is_empty() {
         if !core_commands.is_empty() || state.gc_command_loading {
             lines.push(Line::from(Span::styled(
-                "CORE COMMANDS · owned by Glass Core",
+                "CORE · agent commands and session controls",
                 Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
             )));
             command_for_line.push(None);
@@ -732,30 +801,14 @@ fn gc_command_menu_content(state: &DevTuiState) -> GcCommandMenuContent {
                 .get("description")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("");
-            let runtime = item
-                .get("runtimeMode")
-                .and_then(serde_json::Value::as_str)
-                .map(|mode| {
-                    if mode == "interactive" {
-                        "native GC UI"
-                    } else {
-                        "Core runtime"
-                    }
-                })
-                .unwrap_or("Core runtime");
             let style = if index == state.gc_command_selected {
                 Style::default().fg(TEXT).bg(ACTIVE_BACKGROUND)
             } else {
                 Style::default().fg(TEXT)
             };
             lines.push(Line::from(vec![
-                Span::styled(
-                    " CORE ",
-                    Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
-                ),
                 Span::styled(format!("/{name:<16} "), style.add_modifier(Modifier::BOLD)),
                 Span::styled(description.to_string(), style),
-                Span::styled(format!("  [{runtime}]"), Style::default().fg(MUTED)),
             ]));
             command_for_line.push(Some(index));
             if index == state.gc_command_selected {
@@ -764,7 +817,7 @@ fn gc_command_menu_content(state: &DevTuiState) -> GcCommandMenuContent {
         }
         if !glass_actions.is_empty() {
             lines.push(Line::from(Span::styled(
-                "GLASS WORKSPACE · host actions",
+                "GLASS · workspace and host actions",
                 Style::default()
                     .fg(ACCENT_BRIGHT)
                     .add_modifier(Modifier::BOLD),
@@ -778,13 +831,10 @@ fn gc_command_menu_content(state: &DevTuiState) -> GcCommandMenuContent {
             } else {
                 Style::default().fg(TEXT)
             };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    " GLASS ",
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!("{} · {}", action.label, action.command), style),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                format!("{} · {}", action.label, action.command),
+                style,
+            )]));
             command_for_line.push(Some(selected_index));
             if selected_index == state.gc_command_selected {
                 selected_line = lines.len() - 1;
@@ -798,7 +848,11 @@ fn gc_command_menu_content(state: &DevTuiState) -> GcCommandMenuContent {
         command_for_line.push(None);
     }
     lines.push(Line::from(Span::styled(
-        "Tab completes in the composer · Enter runs the selected Core or Glass action",
+        if state.gc_model_menu_open {
+            "Enter applies the selected model to this Core session · Esc returns to commands"
+        } else {
+            "Search the full Core catalogue · unsupported controls stay in this workspace"
+        },
         Style::default().fg(MUTED),
     )));
     command_for_line.push(None);
@@ -5588,7 +5642,7 @@ mod tests {
     }
 
     #[test]
-    fn gc_slash_menu_renders_the_discovered_catalogue_and_runtime_mode() {
+    fn gc_slash_menu_renders_compact_owner_groups_without_runtime_handoff_claims() {
         let (mut state, root) = overlay_state();
         state.composer_mode = true;
         state.gc_command_menu_open = true;
@@ -5600,18 +5654,54 @@ mod tests {
         })];
 
         let output = rendered(&state, 100, 30);
-        assert!(output.contains("CORE COMMANDS"));
-        assert!(output.contains("CORE 1"));
-        assert!(output.contains("GLASS "));
+        assert!(output.contains("/ COMMANDS"));
+        assert!(output.contains("CORE 1 shown · 1 total"));
+        assert!(output.contains("GLASS"));
         assert!(output.contains("/status"));
         assert!(output.contains("View session status"));
-        assert!(output.contains("[Core runtime]"));
-        assert!(output.contains("GLASS WORKSPACE"));
+        assert!(!output.contains("native GC UI"));
+        assert!(output.contains("GLASS · workspace and host actions"));
         assert!(output.contains("Glass session status"));
         let host_actions = state.gc_command_glass_actions();
-        for command in ["view Tasks", "view Debug", "view More"] {
-            assert!(host_actions.iter().any(|action| action.command == command));
-        }
+        assert!(
+            host_actions
+                .iter()
+                .any(|action| action.command == "view Agent")
+        );
+        assert!(
+            !host_actions
+                .iter()
+                .any(|action| action.command == "view More")
+        );
+        state.gc_command_query = "view More".into();
+        assert!(
+            state
+                .gc_command_glass_actions()
+                .iter()
+                .any(|action| action.command == "view More")
+        );
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn gc_model_picker_is_in_glass_and_shows_core_selected_model() {
+        let (mut state, root) = overlay_state();
+        state.composer_mode = true;
+        state.gc_command_menu_open = true;
+        state.gc_model_menu_open = true;
+        state.gc_model_provider = Some("openai".into());
+        state.gc_model_current = Some("gpt-current".into());
+        state.gc_model_items = vec![
+            serde_json::json!({"id":"gpt-current","label":"Current"}),
+            serde_json::json!({"id":"gpt-next","label":"Next"}),
+        ];
+        let output = rendered(&state, 80, 24);
+        assert!(output.contains("provider models"));
+        assert!(output.contains("openai"));
+        assert!(output.contains("gpt-current"));
+        assert!(output.contains("current"));
+        assert!(!output.contains("native GC UI"));
         drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -5632,6 +5722,7 @@ mod tests {
                 })
             })
             .collect();
+        state.gc_command_query = "cmd".into();
         state.gc_command_selected = 20;
 
         for (width, height) in [(48, 16), (80, 24), (120, 40)] {

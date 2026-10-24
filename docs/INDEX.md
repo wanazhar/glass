@@ -78,6 +78,11 @@ matrix.
 - [Glass Core product](glass-core-product.md) and
   [Glass Core source product](../products/glass-core/README.md) — standalone
   harness role, source/workspace relationship, build, install, and licensing.
+  The Glass CLI forwards unambiguous `glass <core-command>` names and the full
+  `glass core ...` namespace to the monorepo Core binary; this does not resolve
+  the independent GCN product. In the workspace, the slash palette's Core
+  model picker uses the resident runtime, and unsupported interactive commands
+  do not open a second TUI.
 - [Glass Core documentation index](../products/glass-core/docs/INDEX.md) —
   product setup, terminal workflow, provider configuration, permissions,
   integrations, runtime, and development records.

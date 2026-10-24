@@ -916,30 +916,16 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                 }
             }
             "response" => {
-                if event.payload.get("operation").and_then(Value::as_str) == Some("coreCommands") {
+                if matches!(
+                    event.payload.get("operation").and_then(Value::as_str),
+                    Some("coreCommands" | "models")
+                ) {
                     // `commands/list` is UI discovery for the slash palette.
                     // Its complete catalogue is cached separately in the
                     // snapshot and must not become transcript text or split a
-                    // currently streaming assistant message.
-                } else if event.payload.get("operation").and_then(Value::as_str) == Some("models") {
-                    if event.payload.get("ok").and_then(Value::as_bool) == Some(false) {
-                        shared.finish_streaming(&mut items);
-                        let error = event
-                            .payload
-                            .pointer("/error/message")
-                            .and_then(Value::as_str)
-                            .or_else(|| event.payload.get("error").and_then(Value::as_str))
-                            .unwrap_or("model catalog request failed");
-                        items.push(ConversationEntry::error(
-                            format!("Core model list · {error}"),
-                            Some("models/list".into()),
-                        ));
-                    } else if let Some(text) =
-                        event.payload.get("result").and_then(model_catalog_text)
-                    {
-                        shared.finish_streaming(&mut items);
-                        items.push(ConversationEntry::system(text, Some("models/list".into())));
-                    }
+                    // currently streaming assistant message. Model discovery is
+                    // also palette UI data; the user selects from its in-Glass
+                    // picker instead of receiving a catalogue dump in chat.
                 } else if matches!(
                     event.payload.get("operation").and_then(Value::as_str),
                     Some("coreCommand" | "coreTaskGraph" | "coreTaskAbort")
@@ -978,7 +964,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                             == Some(true)
                         {
                             format!(
-                                "{}\nThis command needs GC's native interface. Open /, choose GLASS → Open GC native command menu, then use GC's native command controls.",
+                                "{}\nGlass has no in-workspace control for this Core command, so Core did not run it. The separate Core interface is available only through the explicit GLASS → Open GC native command menu action.",
                                 text
                             )
                         } else {
@@ -1113,38 +1099,6 @@ pub fn conversation_reasoning(events: &[crate::AgentEvent]) -> String {
     reasoning
 }
 
-fn model_catalog_text(result: &Value) -> Option<String> {
-    let models = result.get("models")?.as_array()?;
-    let provider = result.get("provider").and_then(Value::as_str);
-    let mut lines = vec![match provider {
-        Some(provider) => format!("Models · {provider} · {} available", models.len()),
-        None => format!("Models · {} available", models.len()),
-    }];
-    for model in models.iter().take(100) {
-        let id = model
-            .get("id")
-            .or_else(|| model.get("slug"))
-            .and_then(Value::as_str)
-            .unwrap_or("unknown model");
-        let label = model.get("label").and_then(Value::as_str);
-        let model_provider = model.get("provider").and_then(Value::as_str).or(provider);
-        let name =
-            model_provider.map_or_else(|| id.to_string(), |provider| format!("{provider}/{id}"));
-        lines.push(match label.filter(|label| *label != id) {
-            Some(label) => format!("  {name} · {label}"),
-            None => format!("  {name}"),
-        });
-    }
-    if models.len() > 100
-        || result
-            .get("nextCursor")
-            .is_some_and(|cursor| !cursor.is_null())
-    {
-        lines.push("  more models available".into());
-    }
-    Some(lines.join("\n"))
-}
-
 pub fn conversation(events: &[crate::AgentEvent]) -> String {
     conversation_entries(events)
         .into_iter()
@@ -1277,7 +1231,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn core_model_response_surfaces_provider_and_model_labels() {
+    fn core_model_discovery_stays_in_palette_instead_of_flooding_chat() {
         let event = crate::AgentEvent {
             sequence: 1,
             agent_id: crate::AgentId::parse("agent-0002").unwrap(),
@@ -1298,11 +1252,9 @@ mod tests {
         };
         let rendered = conversation(&[event]);
         assert!(
-            rendered.contains("Models · anthropic · 2 available"),
-            "{rendered}"
+            rendered.is_empty(),
+            "model discovery belongs to palette state"
         );
-        assert!(rendered.contains("anthropic/claude-opus-4 · Claude Opus 4"));
-        assert!(rendered.contains("anthropic/claude-sonnet-4"));
     }
 
     #[test]
@@ -1346,6 +1298,13 @@ mod tests {
             },
             crate::AgentEvent {
                 sequence: 5,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "response".into(),
+                payload: serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"model","requiresInteractive":true,"message":"Select a model"}}),
+            },
+            crate::AgentEvent {
+                sequence: 6,
                 agent_id,
                 timestamp_ms: 0,
                 kind: "response".into(),
@@ -1363,6 +1322,15 @@ mod tests {
         );
         assert!(!rendered.contains("/model · Select model"), "{rendered}");
         assert!(rendered.contains("Core help output"), "{rendered}");
+        assert!(rendered.contains("Core did not run it"), "{rendered}");
+        assert!(
+            rendered.contains("explicit GLASS → Open GC native command menu action"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("Opening the native Glass Core command UI"),
+            "{rendered}"
+        );
         assert!(rendered.contains("Core command failed"), "{rendered}");
         assert_eq!(
             conversation_entries(&events)

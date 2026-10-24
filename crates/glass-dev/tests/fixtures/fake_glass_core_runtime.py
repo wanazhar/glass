@@ -416,6 +416,9 @@ def main() -> None:
             reply(identifier, {"sessionId": resumed})
         elif method == "session/name":
             reply(identifier, {})
+        elif method == "session/configure":
+            assert params.get("sessionId") == SESSION_ID
+            reply(identifier, {})
         elif method == "session/list":
             # Mirrors the real shape: ascending page plus an optional cursor.
             reply(
@@ -477,6 +480,7 @@ def main() -> None:
                 identifier,
                 {
                     "provider": "anthropic",
+                    "currentModel": "claude-opus-4",
                     "models": [
                         {"id": "claude-opus-4", "label": "Claude Opus 4"},
                         {"id": "claude-sonnet-4", "label": "claude-sonnet-4"},
@@ -514,7 +518,7 @@ def main() -> None:
             if name == "status":
                 reply(identifier, {"name": "status", "text": "Glass Core · fixture · fixture-model · session fixture-session"})
             elif name == "model":
-                reply(identifier, {"name": "model", "requiresInteractive": True, "message": "/model needs the native GC UI"})
+                reply(identifier, {"name": "model", "requiresInteractive": True, "message": "/model has no in-Glass runtime command"})
             else:
                 send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "unknown Glass Core command"}})
         elif method == "durable/taskGraph":

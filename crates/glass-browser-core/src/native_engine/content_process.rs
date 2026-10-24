@@ -790,6 +790,7 @@ pub(crate) struct NativeContentProcess {
     next_async_event_sequence: u64,
     pending_async_effect_notifications: VecDeque<NativeContentAsyncEffectNotification>,
     healthy: bool,
+    ipc_aborted: Arc<AtomicBool>,
     failure_kind: Option<NativeWorkerFailureKind>,
     scroll_offset: NativePoint,
     nested_scroll_offsets: BTreeMap<u32, NativePoint>,

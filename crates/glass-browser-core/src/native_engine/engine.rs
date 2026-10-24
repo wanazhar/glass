@@ -821,6 +821,16 @@ impl NativeEngine {
         self.content_process_event_notify.clone()
     }
 
+    /// Refresh the worker liveness before parent-owned integrations publish
+    /// state to it. A caller-aborted IPC exchange retires its worker, while
+    /// the committed document snapshot remains available for read-only
+    /// inspection until a later operation starts a replacement worker.
+    pub fn content_process_healthy(&mut self) -> bool {
+        self.content_process
+            .as_mut()
+            .is_none_or(NativeContentProcess::refresh_health)
+    }
+
     pub fn take_async_effect_notifications(
         &mut self,
     ) -> Result<Vec<NativeContentAsyncEffectNotification>, NativeEngineError> {

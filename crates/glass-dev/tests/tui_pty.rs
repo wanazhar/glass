@@ -568,7 +568,11 @@ impl Session {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             self.settle(Duration::from_millis(200));
-            if self.visible_output().replace('▌', "").contains(probe) {
+            if self
+                .visible_output()
+                .lines()
+                .any(|line| line.contains(probe) && line.contains('▌'))
+            {
                 return true;
             }
         }
@@ -1582,11 +1586,18 @@ fn tasks_palette_route_and_slash_refresh_use_selected_core_session() {
         session.output_tail()
     );
 
-    // On Tasks, bare `/` is the advertised refresh action. Assert against
-    // fresh output and the fake Core's request log so a stale Tasks frame
-    // cannot make this pass.
+    // `/` opens the same owner-labeled palette on Tasks as on Agent. Refresh
+    // the durable Core graph by selecting its explicit Glass host action.
     let refresh_offset = session.buffer.len();
     session.send(b"/");
+    assert!(session.wait_for_output_after(
+        refresh_offset,
+        "CORE · agent commands and session controls",
+        Duration::from_secs(5)
+    ));
+    session.send_slowly(b"Refresh GC durable task graph", Duration::from_millis(10));
+    session.settle(Duration::from_millis(400));
+    session.send(b"\r");
     let deadline = Instant::now() + Duration::from_secs(8);
     let mut saw_task_graph = false;
     while Instant::now() < deadline {
@@ -6194,6 +6205,92 @@ fn agent_browser_code_terminal_tasks_git_and_debug_paths_respond() {
         session.wait_for("CORE CONVERSATIONS", Duration::from_secs(5))
             || session.wait_for("No Core conversations yet", Duration::from_secs(1)),
         "Tasks view omitted the Core conversation lifecycle panel\n{}",
+        session.output_tail()
+    );
+
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+}
+
+#[test]
+fn slash_workspace_action_runs_and_renders_a_named_terminal_process() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_core_binary(&binary(), &root, 110, 30, Some(&fake_core));
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.wait_for_agent_surface();
+    assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
+    assert!(session.wait_for("▌", Duration::from_secs(5)));
+
+    // Start from the always-ready Agent composer, discover the Glass action
+    // through `/`, complete its documented argument template, and run a short
+    // harmless process only inside this disposable PTY project.
+    let start_menu_offset = session.output().len();
+    session.send(b"/");
+    assert!(session.wait_for_output_after(
+        start_menu_offset,
+        "CORE · agent commands and session controls",
+        Duration::from_secs(5)
+    ));
+    session.send_slowly(b"start dev server", Duration::from_millis(20));
+    session.settle(Duration::from_millis(400));
+    let completion_offset = session.output().len();
+    session.send(b"\t");
+    assert!(
+        session.wait_for_output_after(
+            completion_offset,
+            "/glass process start dev COMMAND",
+            Duration::from_secs(5)
+        ),
+        "Tab did not complete the filtered Glass action"
+    );
+    session.send(&[0x7f; "dev COMMAND".len()]);
+    session.send_slowly(
+        b"e2e printf GLASS_PROCESS_OK; sleep 1; printf GLASS_PROCESS_DONE",
+        Duration::from_millis(20),
+    );
+    session.send(b"\r");
+    assert!(
+        session.wait_for("Enter/Y approve", Duration::from_secs(5)),
+        "human-initiated project process did not show its explicit run confirmation\n{}",
+        session.visible_output()
+    );
+    session.send(b"\r");
+    assert!(
+        session.wait_for("exited", Duration::from_secs(10)),
+        "the named process did not settle to an exited state\n{}",
+        session.output_tail()
+    );
+    assert!(session.visible_output().contains("e2e"));
+
+    // Retrieve the captured PTY output through the same slash-discovered Glass
+    // action a user can use later; this also proves the named process and its
+    // output remain addressable after exit.
+    send_alt_digit(&mut session, b'1');
+    let logs_menu_offset = session.output().len();
+    session.send(b"/");
+    assert!(session.wait_for_output_after(
+        logs_menu_offset,
+        "CORE · agent commands and session controls",
+        Duration::from_secs(5)
+    ));
+    session.send_slowly(b"View logs", Duration::from_millis(20));
+    session.settle(Duration::from_millis(400));
+    let logs_completion_offset = session.output().len();
+    session.send(b"\t");
+    assert!(session.wait_for_output_after(
+        logs_completion_offset,
+        "/glass process logs NAME",
+        Duration::from_secs(5)
+    ));
+    session.send(&[0x7f; "NAME".len()]);
+    session.send(b"e2e\r");
+    assert!(
+        session.wait_for("GLASS_PROCESS_DONE", Duration::from_secs(8)),
+        "captured output was not available through the process logs action\n{}",
         session.output_tail()
     );
 

@@ -5,12 +5,17 @@ use super::*;
 /// IPC request cannot safely share that protocol exchange.
 struct KillContentChildOnDrop {
     pid: Option<u32>,
+    aborted: Arc<AtomicBool>,
     armed: bool,
 }
 
 impl KillContentChildOnDrop {
-    fn new(pid: Option<u32>) -> Self {
-        Self { pid, armed: true }
+    fn new(pid: Option<u32>, aborted: Arc<AtomicBool>) -> Self {
+        Self {
+            pid,
+            aborted,
+            armed: true,
+        }
     }
 
     fn disarm(&mut self) {
@@ -23,6 +28,7 @@ impl Drop for KillContentChildOnDrop {
         if !self.armed {
             return;
         }
+        self.aborted.store(true, Ordering::Release);
         #[cfg(unix)]
         if let Some(pid) = self.pid.and_then(|pid| libc::pid_t::try_from(pid).ok()) {
             // SAFETY: this is the unreaped child owned by this content process;
@@ -196,6 +202,7 @@ impl NativeContentProcess {
             next_async_event_sequence: 1,
             pending_async_effect_notifications: VecDeque::new(),
             healthy: true,
+            ipc_aborted: Arc::new(AtomicBool::new(false)),
             failure_kind: None,
             scroll_offset: NativePoint { x: 0, y: 0 },
             nested_scroll_offsets: BTreeMap::new(),
@@ -1811,6 +1818,10 @@ impl NativeContentProcess {
         if !self.healthy {
             return false;
         }
+        if self.ipc_aborted.load(Ordering::Acquire) {
+            self.mark_failed(NativeWorkerFailureKind::Exited);
+            return false;
+        }
         match self.child.try_wait() {
             Ok(Some(_)) => {
                 self.mark_failed(NativeWorkerFailureKind::Exited);
@@ -1902,7 +1913,8 @@ impl NativeContentProcess {
         request: Value,
         parent_loader: Option<&mut NativeResourceLoader>,
     ) -> Result<Value, NativeEngineError> {
-        let mut abort_child_on_drop = KillContentChildOnDrop::new(self.child.id());
+        let mut abort_child_on_drop =
+            KillContentChildOnDrop::new(self.child.id(), Arc::clone(&self.ipc_aborted));
         let result = self.exchange_inner(request, parent_loader).await;
         abort_child_on_drop.disarm();
         match result {

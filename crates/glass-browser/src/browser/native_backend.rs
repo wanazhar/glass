@@ -8146,6 +8146,16 @@ impl NativeEngineBackend {
                     }
                     continue;
                 }
+                if !engine.content_process_healthy() {
+                    // An aborted navigation can retire the content worker
+                    // while leaving its last committed document snapshot
+                    // intact. Inspection remains available from that snapshot;
+                    // the next mutating operation will start a fresh worker.
+                    if owner.active {
+                        break;
+                    }
+                    continue;
+                }
                 engine
                     .synchronize_service_worker_registrations()
                     .await

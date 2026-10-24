@@ -76,3 +76,34 @@ fn glass_help_points_to_core_command_discovery_without_starting_core() {
     assert!(help.contains("glass <core-command>"), "{help}");
     assert!(help.contains("glass core <args...>"), "{help}");
 }
+
+#[test]
+fn core_namespace_forwards_colliding_and_unlisted_commands_verbatim() {
+    let root = fixture_root();
+    let binary = root.join("fake-glass-core");
+    let arguments = root.join("arguments.txt");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf 'core help\\n'\n",
+        arguments.display()
+    );
+    fs::write(&binary, script).expect("write fake Core executable");
+    let mut permissions = fs::metadata(&binary)
+        .expect("stat fake Core executable")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&binary, permissions).expect("make fake Core executable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_glass"))
+        .args(["core", "browser", "status", "--future-core-option"])
+        .env("GLASS_CORE_BINARY", &binary)
+        .output()
+        .expect("run exact Core namespace");
+
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "core help\n");
+    assert_eq!(
+        fs::read_to_string(&arguments).expect("read forwarded arguments"),
+        "browser\nstatus\n--future-core-option\n"
+    );
+    fs::remove_dir_all(root).expect("remove fixture root");
+}

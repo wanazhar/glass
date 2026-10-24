@@ -656,21 +656,12 @@ pub(crate) fn run_with_browser_policy(
                     } else if active_overlay.is_none() && key.code == KeyCode::Char('?') {
                         state.toggle_help();
                     } else if active_overlay.is_none()
-                        && state.surface == DevSurface::Agent
                         && key.code == KeyCode::Char('/')
                         && !key.modifiers.intersects(
                             KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
                         )
                     {
                         state.open_gc_command_menu(&mut worker);
-                    } else if active_overlay.is_none()
-                        && state.surface == DevSurface::Tasks
-                        && key.code == KeyCode::Char('/')
-                        && !key.modifiers.intersects(
-                            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
-                        )
-                    {
-                        state.run_surface_key_action("/", &mut worker);
                     } else if active_overlay == Some(overlay::ActiveOverlay::CommandCenterMenu) {
                         match key.code {
                             KeyCode::Esc => state.close_menu(),
@@ -935,8 +926,7 @@ pub(crate) fn run_with_browser_policy(
                             }
                             (KeyCode::Enter, _) => state.submit_composer(&mut worker),
                             (KeyCode::Char('/'), modifiers)
-                                if state.surface == DevSurface::Agent
-                                    && state.composer_input.is_empty()
+                                if state.composer_input.is_empty()
                                     && state.composer_cursor == 0
                                     && !modifiers.intersects(
                                         KeyModifiers::CONTROL

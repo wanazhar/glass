@@ -678,9 +678,10 @@ executable. Arguments, standard streams, exit status, and Unix signals are
 passed through to Core. See [Glass Core resident harness](glass-core-harness.md)
 for runtime ownership and binary selection.
 
-From the always-ready
-Agent composer, `/` opens a compact palette with common Glass Core controls and
-Glass workspace actions. Type to search the full live Core command catalogue;
+From any workspace surface, `/` opens a compact palette with common Glass Core
+controls and Glass workspace actions. If a full-screen Code editor or another
+explicit input surface has focus, `/` remains text for that surface. Type to
+search the full live Core command catalogue;
 CORE and GLASS groups stay distinct. `/model` opens an in-Glass model picker
 backed by Core's `models/list` and `session/configure` methods. Runtime-safe
 Core commands run on the selected Core session. A discovered Core command that

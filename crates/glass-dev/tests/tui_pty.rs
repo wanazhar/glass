@@ -1503,6 +1503,113 @@ fn workspace_navigation_keeps_agent_focus_and_opens_gc_slash_commands() {
 }
 
 #[test]
+fn tasks_palette_route_and_slash_refresh_use_selected_core_session() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    let fake_core = fake_core_binary(&root);
+    let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
+    assert!(session.wait_for("GLASS", Duration::from_secs(8)));
+    session.wait_for_agent_surface();
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+
+    start_core_conversation(&mut session, "assistant", "task graph route fixture");
+    let requests_path = fixture_state.join("e2e-core-requests.jsonl");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut saw_session_name = false;
+    while Instant::now() < deadline {
+        session.settle(Duration::from_millis(100));
+        if std::fs::read_to_string(&requests_path)
+            .unwrap_or_default()
+            .contains("session/name")
+        {
+            saw_session_name = true;
+            break;
+        }
+    }
+    assert!(
+        saw_session_name,
+        "Core conversation was not created\n{}",
+        session.output_tail()
+    );
+
+    // Ctrl-K must open the Glass action palette while the always-ready
+    // composer owns focus. Typing the matching action label and pressing
+    // Enter must select the action, not send that text as a Core prompt.
+    let palette_offset = session.buffer.len();
+    session.send(b"\x0b");
+    assert!(
+        session.wait_for_output_after(palette_offset, "COMMAND PALETTE", Duration::from_secs(5)),
+        "Ctrl-K did not open the Glass action palette\n{}",
+        session.output_tail()
+    );
+    session.send_slowly(b"open task tracking", Duration::from_millis(10));
+    assert!(
+        session.wait_for_output_after(palette_offset, "Open task tracking", Duration::from_secs(5)),
+        "Tasks action did not appear for its exact label\n{}",
+        session.output_tail()
+    );
+    let tasks_offset = session.buffer.len();
+    session.send(b"\r");
+    assert!(
+        session.wait_for_output_after(tasks_offset, "TASKS", Duration::from_secs(5)),
+        "Enter did not activate the selected Tasks route\n{}",
+        session.output_tail()
+    );
+    assert!(
+        !session.visible_output().contains("YOU  open task tracking"),
+        "palette action text was incorrectly sent as a user prompt\n{}",
+        session.output_tail()
+    );
+
+    // On Tasks, bare `/` is the advertised refresh action. Assert against
+    // fresh output and the fake Core's request log so a stale Tasks frame
+    // cannot make this pass.
+    let refresh_offset = session.buffer.len();
+    session.send(b"/");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut saw_task_graph = false;
+    while Instant::now() < deadline {
+        session.settle(Duration::from_millis(100));
+        let requests = std::fs::read_to_string(&requests_path).unwrap_or_default();
+        if requests.contains("durable/taskGraph") {
+            saw_task_graph = true;
+            break;
+        }
+    }
+    assert!(
+        saw_task_graph,
+        "Tasks `/` did not request the selected Core durable task graph\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for_output_after(
+            refresh_offset,
+            "generation-fixture-1",
+            Duration::from_secs(5)
+        ),
+        "fresh Core task-graph result was not rendered in Tasks\n{}",
+        session.output_tail()
+    );
+    let visible = session.visible_output();
+    assert!(
+        visible.contains("gc.generation") && visible.contains("running"),
+        "Tasks did not render the Core task's kind and state\n{}",
+        session.output_tail()
+    );
+    assert!(!visible.contains("fixture prompt must not appear in the TUI"));
+    assert!(!visible.contains("fixture checkpoint"));
+
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn fresh_start_first_composer_send_works_without_implicit_file_context() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;

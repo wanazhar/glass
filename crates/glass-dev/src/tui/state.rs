@@ -2645,6 +2645,29 @@ impl DevTuiState {
         }
     }
 
+    /// Run the first contextual action bound to a surface key. This is used
+    /// for explicit, visible one-key actions such as `/` refreshing the Core
+    /// task graph while the Tasks surface is active.
+    pub fn run_surface_key_action(
+        &mut self,
+        key: &str,
+        worker: &mut super::snapshot::SnapshotWorker,
+    ) {
+        let Some(action) = self
+            .surface_actions()
+            .iter()
+            .find(|action| action.key == key)
+            .copied()
+        else {
+            return;
+        };
+        if let Some(input) = self.resolve_surface_action(action) {
+            self.dispatch_command(&input);
+            self.submit_queued_tool(worker);
+            worker.request_refresh();
+        }
+    }
+
     pub fn move_menu_selection(&mut self, delta: i32) {
         let count = self.surface_actions().len() + 2;
         if count == 0 {
@@ -2786,6 +2809,29 @@ impl DevTuiState {
         self.palette_selection = 0;
     }
 
+    fn select_palette_label_match(&mut self) {
+        let query = self.command_input.trim().to_ascii_lowercase();
+        if query.is_empty() {
+            return;
+        }
+        let Some(position) = self
+            .palette_action_indices()
+            .iter()
+            .position(|action_index| {
+                let label = self.surface_actions()[*action_index]
+                    .label
+                    .to_ascii_lowercase();
+                label == query
+                    || label
+                        .strip_prefix(&query)
+                        .is_some_and(|rest| rest.starts_with(' '))
+            })
+        else {
+            return;
+        };
+        self.palette_selection = position;
+    }
+
     fn dispatch_command(&mut self, input: &str) {
         match command::execute(self, input) {
             Ok(message) => {
@@ -2925,6 +2971,7 @@ impl DevTuiState {
         self.command_history_index = None;
         self.palette_scroll = 0;
         self.palette_selection = 0;
+        self.select_palette_label_match();
     }
 
     pub fn insert_palette_text(&mut self, text: &str) {
@@ -2961,6 +3008,7 @@ impl DevTuiState {
         self.command_history_index = None;
         self.palette_scroll = 0;
         self.palette_selection = 0;
+        self.select_palette_label_match();
     }
 
     fn palette_history_indices(&self) -> Vec<usize> {
@@ -16165,6 +16213,20 @@ mod tests {
             "typed :open must open the file picker, not a fuzzy action"
         );
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn palette_selects_label_match_after_query_narrows_fuzzy_results() {
+        let (mut state, root) = routed_state("palette-label-selection");
+        state.surface = DevSurface::Agent;
+        state.open_palette();
+        state.insert_palette_text("open task tracking");
+        assert_eq!(
+            state.selected_palette_action().map(|action| action.label),
+            Some("Open task tracking")
+        );
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove palette workspace");
     }
 
     #[test]

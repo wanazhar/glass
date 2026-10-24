@@ -93,6 +93,17 @@ pub fn resolve_palette_submission(
         return PaletteResolution::TypedCommand(normalized);
     }
 
+    // A query that spells a Glass action label is an intentional selection,
+    // even when it begins with a shortcut root such as `open`. Keep the
+    // single-word `open` command available for the file picker, and leave
+    // other complete commands to the typed-command path below.
+    if normalized.split_whitespace().count() > 1
+        && let Some(action) = selected
+        && palette_label_resolves_to_action(&normalized, action)
+    {
+        return PaletteResolution::SelectedAction(action);
+    }
+
     if !one_word_root
         && let Some(action) = selected
         && palette_prefix_resolves_to_action(&normalized, action)
@@ -107,6 +118,15 @@ pub fn resolve_palette_submission(
     } else {
         PaletteResolution::TypedCommand(normalized)
     }
+}
+
+fn palette_label_resolves_to_action(input: &str, action: SurfaceAction) -> bool {
+    let input = input.to_ascii_lowercase();
+    let label = action.label.to_ascii_lowercase();
+    label == input
+        || label
+            .strip_prefix(&input)
+            .is_some_and(|rest| rest.starts_with(' '))
 }
 
 fn palette_prefix_resolves_to_action(input: &str, action: SurfaceAction) -> bool {
@@ -3462,6 +3482,11 @@ mod tests {
             .find(|action| action.label == "View selected file diff")
             .copied()
             .expect("selected diff action");
+        let task_tracking = CORE_AGENT_ACTIONS
+            .iter()
+            .find(|action| action.label == "Open task tracking")
+            .copied()
+            .expect("Tasks surface action");
 
         assert_eq!(
             resolve_palette_submission("browser view", Some(live_view)),
@@ -3486,6 +3511,22 @@ mod tests {
         assert_eq!(
             resolve_palette_submission("Live browser", Some(live_view)),
             PaletteResolution::SelectedAction(live_view)
+        );
+        assert_eq!(
+            resolve_palette_submission("open task tracking", Some(task_tracking)),
+            PaletteResolution::SelectedAction(task_tracking)
+        );
+        assert_eq!(
+            resolve_palette_submission("open task", Some(task_tracking)),
+            PaletteResolution::SelectedAction(task_tracking)
+        );
+        assert_eq!(
+            resolve_palette_submission("open", Some(task_tracking)),
+            PaletteResolution::TypedCommand("open".into())
+        );
+        assert_eq!(
+            resolve_palette_submission("open report.txt", Some(task_tracking)),
+            PaletteResolution::TypedCommand("open report.txt".into())
         );
         assert_eq!(
             resolve_palette_submission("git diff", Some(selected_diff)),

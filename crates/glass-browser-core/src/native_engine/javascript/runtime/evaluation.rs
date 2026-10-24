@@ -163,7 +163,7 @@ impl NativeJavaScriptRuntime {
             &self.environment(),
         )?;
         if let Some(stage) = bootstrap_stage {
-            stage.finish(None);
+            stage.finish(Some(bootstrap.len()));
         }
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
@@ -209,9 +209,15 @@ impl NativeJavaScriptRuntime {
                     "javascript_host_view_eval",
                 )
             });
+            if let Ok(mut current) = self.deadline.lock() {
+                *current = Some(Instant::now() + NATIVE_HOST_VIEW_TIMEOUT);
+            }
             let host_view_result = ctx.eval::<(), _>(bootstrap.as_str());
             if let Some(stage) = host_view_stage {
                 stage.finish(Some(host_view_bytes));
+            }
+            if let Ok(mut current) = self.deadline.lock() {
+                *current = Some(Instant::now() + NATIVE_SCRIPT_TIMEOUT);
             }
             host_view_result
                 .map_err(|error| NativeEngineError::Worker {
@@ -457,6 +463,14 @@ impl NativeJavaScriptRuntime {
                 worker_script_error: None,
             })
         });
+        if std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").is_some() {
+            let memory_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+                0,
+                "javascript_heap_usage_bytes",
+            );
+            let used_bytes = self.runtime.memory_usage().memory_used_size;
+            memory_stage.finish(Some(usize::try_from(used_bytes).unwrap_or(usize::MAX)));
+        }
         if let Some(stage) = evaluation_stage {
             stage.finish(None);
         }

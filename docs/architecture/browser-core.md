@@ -62,6 +62,16 @@ the same bridge on large pages. An opt-in `GLASS_RUNTIME_DIAGNOSTIC_TRACE`
 records fixed stage names, elapsed time, and counts in a private profile-local
 file; it never records page URLs, bodies, cookies, or script text. It includes
 native CLI connect/command/close phases and the parent-brokered document fetch.
+
+Each page script realm has a 256 MiB QuickJS memory cap. Host-view installation
+has a separate 15-second execution budget; page script execution retains its
+5-second budget. The native snapshot interns equal computed styles and passes
+the serialized host state as JSON text, avoiding a large JavaScript object
+literal parse tree. A deterministic 2,586-element fixture verifies DOM and
+computed-style access within those bounds. It is a local capacity regression,
+not evidence of broad public-site compatibility; larger or more dynamic pages
+can still exceed the bounded load deadline.
+
 On bounded read-only public Amazon navigations, the CLI completed natively at
 revision 2 in about 30 seconds. The top-level document fetch took 96
 milliseconds. A process-tagged incognito trace attributed 7.59 seconds to the

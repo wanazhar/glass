@@ -161,7 +161,24 @@ async fn native_load_trace_times_bounded_resource_stages_without_page_data() {
             pair[1]
         );
     }
+    let ordered_wire_stages = [
+        "document_wire_computed_styles",
+        "document_wire_nodes",
+        "document_wire_resources",
+    ];
+    for stage in ordered_wire_stages {
+        stage_complete(stage);
+    }
+    for pair in ordered_wire_stages.windows(2) {
+        assert!(
+            stage_end_index(pair[0]) < stage_start_index(pair[1]),
+            "wire stage order mismatch: {} before {} in {records:?}",
+            pair[0],
+            pair[1]
+        );
+    }
     for stage in [
+        "javascript_host_view_eval",
         "page_script_execution",
         "content_process_mutation",
         "lifecycle_listener_lookup",

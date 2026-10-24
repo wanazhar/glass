@@ -820,11 +820,52 @@ struct NativeFontFace {
     size_adjust: u16,
     metric_overrides: NativeFontMetricOverrides,
     font_display: NativeFontDisplay,
-    font: Arc<fontdue::Font>,
+    font: Arc<OnceLock<Option<Arc<fontdue::Font>>>>,
     font_data: Arc<[u8]>,
     collection_index: u32,
-    shaper_data: Option<Arc<harfrust::ShaperData>>,
+    shaper_data: Arc<OnceLock<Option<Arc<harfrust::ShaperData>>>>,
     unicode_ranges: Arc<[NativeUnicodeRange]>,
+}
+
+impl NativeFontFace {
+    fn font(&self) -> Option<&Arc<fontdue::Font>> {
+        self.font
+            .get_or_init(|| {
+                let stage = crate::native_engine::content_process::ContentLoadStage::begin(
+                    0,
+                    "system_font_face_parse",
+                );
+                let font = fontdue::Font::from_bytes(
+                    self.font_data.to_vec(),
+                    fontdue::FontSettings {
+                        collection_index: self.collection_index,
+                        scale: FONT_PARSE_SCALE,
+                        load_substitutions: true,
+                    },
+                )
+                .ok()
+                .map(Arc::new);
+                stage.finish(None);
+                font
+            })
+            .as_ref()
+    }
+
+    fn shaper_data(&self) -> Option<&Arc<harfrust::ShaperData>> {
+        self.shaper_data
+            .get_or_init(|| {
+                let stage = crate::native_engine::content_process::ContentLoadStage::begin(
+                    0,
+                    "system_font_face_shaper_init",
+                );
+                let shaper_data = harfrust::FontRef::new(self.font_data.as_ref())
+                    .ok()
+                    .map(|font| Arc::new(harfrust::ShaperData::new(&font)));
+                stage.finish(None);
+                shaper_data
+            })
+            .as_ref()
+    }
 }
 
 impl PartialEq for NativeFontFace {
@@ -1217,9 +1258,9 @@ impl NativeTextMetrics {
                 },
             );
         };
-        let line_metrics = face
-            .font
-            .horizontal_line_metrics(adjusted_font_size(font_size, face.size_adjust) as f32);
+        let line_metrics = face.font().and_then(|font| {
+            font.horizontal_line_metrics(adjusted_font_size(font_size, face.size_adjust) as f32)
+        });
         let (ascent, line_height) = match line_metrics {
             Some(metrics) if face.metric_overrides == NativeFontMetricOverrides::default() => (
                 ceil_positive(metrics.ascent),
@@ -1314,11 +1355,13 @@ impl NativeTextMetrics {
                 |face| {
                     let (_, nominal) = self.stretch_factor(face);
                     let font_size = adjusted_font_size(self.font_size, face.size_adjust);
-                    ceil_stretched(
-                        face.font.metrics(character, font_size as f32).advance_width,
-                        self.stretch,
-                        nominal,
-                    )
+                    face.font().map_or(FALLBACK_GLYPH_ADVANCE, |font| {
+                        ceil_stretched(
+                            font.metrics(character, font_size as f32).advance_width,
+                            self.stretch,
+                            nominal,
+                        )
+                    })
                 },
             );
         base.saturating_add(letter_spacing)
@@ -1382,8 +1425,8 @@ impl NativeTextMetrics {
             {
                 let font_size = adjusted_font_size(self.font_size, face.size_adjust);
                 let kerning = face
-                    .font
-                    .horizontal_kern(previous, character, font_size as f32)
+                    .font()
+                    .and_then(|font| font.horizontal_kern(previous, character, font_size as f32))
                     .map_or(0, round_signed);
                 if kerning.is_negative() {
                     width = width.saturating_sub(kerning.unsigned_abs());
@@ -1435,7 +1478,7 @@ impl NativeTextMetrics {
         letter_spacing: u32,
         word_spacing: u32,
     ) -> Option<NativeShapedRun> {
-        let shaper_data = face.shaper_data.as_ref()?;
+        let shaper_data = face.shaper_data()?;
         let font = harfrust::FontRef::new(face.font_data.as_ref()).ok()?;
         let mut buffer = harfrust::UnicodeBuffer::new();
         buffer.push_str(value);
@@ -1679,7 +1722,10 @@ impl NativeTextMetrics {
                 0
             };
             let glyph_id = u16::try_from(shaped_glyph.glyph_id).ok()?;
-            if glyph_id >= face.font.glyph_count() {
+            if face
+                .font()
+                .is_none_or(|font| glyph_id >= font.glyph_count())
+            {
                 return None;
             }
             let advance_fixed = i64::from(shaped_glyph.x_advance)
@@ -1833,7 +1879,7 @@ impl NativeTextMetrics {
         ) {
             return Some(vec![rasterized]);
         }
-        let (metrics, coverage) = face.font.rasterize_indexed(glyph_id, font_size as f32);
+        let (metrics, coverage) = face.font()?.rasterize_indexed(glyph_id, font_size as f32);
         Some(vec![NativeRasterizedGlyph {
             xmin: metrics.xmin,
             ymin: metrics.ymin,
@@ -1869,8 +1915,8 @@ impl NativeTextMetrics {
             {
                 let font_size = adjusted_font_size(self.font_size, face.size_adjust);
                 let kerning = face
-                    .font
-                    .horizontal_kern(previous, character, font_size as f32)
+                    .font()
+                    .and_then(|font| font.horizontal_kern(previous, character, font_size as f32))
                     .map_or(0, |value| {
                         round_stretched(value, requested_stretch, nominal_stretch)
                     });
@@ -1888,7 +1934,7 @@ impl NativeTextMetrics {
             }
             for rasterized in self.rasterize_glyph_layers(
                 face,
-                face.font.lookup_glyph_index(character),
+                face.font()?.lookup_glyph_index(character),
                 self.effective_variation_settings(face),
             )? {
                 if rasterized.width == 0 || rasterized.height == 0 || rasterized.coverage.is_empty()
@@ -2744,20 +2790,10 @@ impl NativeFontBook {
             let Some(font_data) = normalize_font_bytes(resource.bytes.as_ref()) else {
                 continue;
             };
-            let Ok(font) = fontdue::Font::from_bytes(
-                font_data.clone(),
-                fontdue::FontSettings {
-                    collection_index: 0,
-                    scale: FONT_PARSE_SCALE,
-                    load_substitutions: true,
-                },
-            ) else {
+            if ttf_parser::Face::parse(&font_data, 0).is_err() {
                 continue;
-            };
+            }
             let font_data: Arc<[u8]> = Arc::from(font_data);
-            let shaper_data = harfrust::FontRef::new(font_data.as_ref())
-                .ok()
-                .map(|font| Arc::new(harfrust::ShaperData::new(&font)));
             book.faces.push(NativeFontFace {
                 family: resource.family.clone(),
                 family_key: resource.family_key,
@@ -2770,10 +2806,10 @@ impl NativeFontBook {
                 size_adjust: resource.size_adjust,
                 metric_overrides: resource.metric_overrides,
                 font_display: resource.font_display,
-                font: Arc::new(font),
+                font: Arc::new(OnceLock::new()),
                 font_data,
                 collection_index: 0,
-                shaper_data,
+                shaper_data: Arc::new(OnceLock::new()),
                 unicode_ranges: Arc::from(resource.unicode_ranges.clone()),
             });
         }

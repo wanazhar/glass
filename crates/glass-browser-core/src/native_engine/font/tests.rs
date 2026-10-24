@@ -1423,6 +1423,46 @@ fn local_font_lookup_rejects_unknown_family() {
 }
 
 #[test]
+fn font_book_parses_only_faces_used_by_text_metrics() {
+    let bytes = include_bytes!("../../../tests/fixtures/colr-v0.ttf");
+    let mut book = NativeFontBook::default();
+    for family in ["Glass First Fixture", "Glass Unused Fixture"] {
+        assert!(insert_font_face(
+            &mut book,
+            family.into(),
+            None,
+            FontWeightValue::Normal,
+            FontStyleValue::Normal,
+            bytes.to_vec(),
+            0,
+        ));
+    }
+    assert!(book.faces.iter().all(|face| face.font.get().is_none()));
+    assert!(
+        book.faces
+            .iter()
+            .all(|face| face.shaper_data.get().is_none())
+    );
+
+    let metrics = NativeTextMetrics::for_style_with_book(
+        NativeFontFamilyList::single(NativeFontFamilyValue::Named(font_family_hash(
+            "Glass First Fixture",
+        ))),
+        16,
+        FontWeightValue::Normal,
+        FontStyleValue::Normal,
+        DirectionValue::Ltr,
+        &book,
+    );
+    assert!(book.faces[0].font.get().is_some());
+    assert!(book.faces[0].shaper_data.get().is_none());
+    assert!(metrics.measure_text("A", 0, 0) > 0);
+    assert!(book.faces[0].shaper_data.get().is_some());
+    assert!(book.faces[1].font.get().is_none());
+    assert!(book.faces[1].shaper_data.get().is_none());
+}
+
+#[test]
 fn system_font_book_discovers_a_non_static_installed_face() {
     let static_paths = system_font_candidates()
         .iter()
@@ -2442,7 +2482,7 @@ fn shaped_ltr_runs_keep_clusters_and_justified_spaces() {
     let Some(face) = metrics.faces.first() else {
         return;
     };
-    if face.shaper_data.is_none() {
+    if face.shaper_data().is_none() {
         return;
     }
     let Some(shaped) = metrics.shape("A B", 1, 2) else {
@@ -2485,7 +2525,7 @@ fn shaped_rtl_runs_reverse_clusters_and_visual_coordinates() {
     let Some(face) = metrics.faces.first() else {
         return;
     };
-    if face.shaper_data.is_none() {
+    if face.shaper_data().is_none() {
         return;
     }
     let Some(shaped) = metrics.shape("ABC", 0, 0) else {

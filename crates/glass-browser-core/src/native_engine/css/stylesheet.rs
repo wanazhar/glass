@@ -163,6 +163,7 @@ impl NativeStylesheet {
             .collect()
     }
 
+    #[cfg(test)]
     fn custom_properties_for_document(
         &self,
         document: &NativeDocument,
@@ -187,6 +188,20 @@ impl NativeStylesheet {
             ));
         }
         values
+    }
+
+    pub(crate) fn custom_properties_for_node_in_document(
+        &self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+        viewport: Viewport,
+    ) -> BTreeMap<u64, String> {
+        let Some(node) = document.node(node_id) else {
+            return BTreeMap::new();
+        };
+        self.custom_properties_for_node_with_matcher(node, viewport, |selector| {
+            selector.matches_in_document(document, node_id)
+        })
     }
 
     #[cfg(test)]
@@ -231,6 +246,7 @@ impl NativeStylesheet {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn computed_for_in_document_with_inheritance(
         &self,
         document: &NativeDocument,
@@ -238,14 +254,31 @@ impl NativeStylesheet {
         inherited: NativeInheritedStyle,
         viewport: Viewport,
     ) -> NativeComputedStyle {
+        let custom_properties = self.custom_properties_for_document(document, node_id, viewport);
+        self.computed_for_in_document_with_inheritance_and_custom_properties(
+            document,
+            node_id,
+            inherited,
+            &custom_properties,
+            viewport,
+        )
+    }
+
+    pub(crate) fn computed_for_in_document_with_inheritance_and_custom_properties(
+        &self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+        inherited: NativeInheritedStyle,
+        custom_properties: &BTreeMap<u64, String>,
+        viewport: Viewport,
+    ) -> NativeComputedStyle {
         let Some(node) = document.node(node_id) else {
             return NativeComputedStyle::default();
         };
-        let custom_properties = self.custom_properties_for_document(document, node_id, viewport);
         self.computed_for_with_matcher_and_custom_properties(
             node,
             inherited,
-            &custom_properties,
+            custom_properties,
             viewport,
             |selector| selector.matches_in_document(document, node_id),
         )

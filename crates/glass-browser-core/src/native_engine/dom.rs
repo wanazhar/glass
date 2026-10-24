@@ -1048,7 +1048,10 @@ pub struct NativeDocument {
 /// Per-document memo of cascade results for layout queries. It is derived
 /// state: clones get an independent copy, while document equality ignores it.
 #[derive(Debug, Default)]
-struct NativeLayoutStyleCache(Mutex<HashMap<NativeNodeId, NativeComputedStyle>>);
+struct NativeLayoutStyleCache(
+    Mutex<HashMap<NativeNodeId, NativeComputedStyle>>,
+    Mutex<HashMap<NativeNodeId, Arc<BTreeMap<u64, String>>>>,
+);
 
 impl Clone for NativeLayoutStyleCache {
     fn clone(&self) -> Self {
@@ -1057,7 +1060,12 @@ impl Clone for NativeLayoutStyleCache {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        Self(Mutex::new(styles))
+        let custom_properties = self
+            .1
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        Self(Mutex::new(styles), Mutex::new(custom_properties))
     }
 }
 
@@ -1072,6 +1080,10 @@ impl Eq for NativeLayoutStyleCache {}
 impl NativeLayoutStyleCache {
     fn clear(&self) {
         self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        self.1
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();

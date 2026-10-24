@@ -9,7 +9,9 @@ pub(super) fn has_glyph(face: &NativeFontFace, character: char) -> bool {
             .iter()
             .copied()
             .any(|range| range.contains(character)))
-        && face.font.lookup_glyph_index(character) != 0
+        && face
+            .font()
+            .is_some_and(|font| font.lookup_glyph_index(character) != 0)
 }
 
 pub(super) fn system_font_book() -> &'static NativeFontBook {
@@ -120,19 +122,9 @@ pub(super) fn insert_font_face(
     {
         return false;
     }
-    let font_parse_stage =
-        crate::native_engine::content_process::ContentLoadStage::begin(0, "system_font_face_parse");
-    let Ok(font) = fontdue::Font::from_bytes(
-        bytes.clone(),
-        fontdue::FontSettings {
-            collection_index,
-            scale: FONT_PARSE_SCALE,
-            load_substitutions: true,
-        },
-    ) else {
+    if ttf_parser::Face::parse(&bytes, collection_index).is_err() {
         return false;
-    };
-    font_parse_stage.finish(None);
+    }
     let font_data: Arc<[u8]> = Arc::from(bytes);
     if book.faces.iter().any(|face| {
         face.family.eq_ignore_ascii_case(&family)
@@ -142,14 +134,6 @@ pub(super) fn insert_font_face(
     }) {
         return false;
     }
-    let shaper_stage = crate::native_engine::content_process::ContentLoadStage::begin(
-        0,
-        "system_font_face_shaper_init",
-    );
-    let shaper_data = harfrust::FontRef::new(font_data.as_ref())
-        .ok()
-        .map(|font| Arc::new(harfrust::ShaperData::new(&font)));
-    shaper_stage.finish(None);
     book.faces.push(NativeFontFace {
         family: family.clone(),
         family_key: font_family_hash(&family),
@@ -162,10 +146,10 @@ pub(super) fn insert_font_face(
         size_adjust: super::super::css::DEFAULT_NATIVE_FONT_SIZE_ADJUST,
         metric_overrides: NativeFontMetricOverrides::default(),
         font_display: NativeFontDisplay::Auto,
-        font: Arc::new(font),
+        font: Arc::new(OnceLock::new()),
         font_data,
         collection_index,
-        shaper_data,
+        shaper_data: Arc::new(OnceLock::new()),
         unicode_ranges: Arc::from(Vec::<NativeUnicodeRange>::new()),
     });
     true

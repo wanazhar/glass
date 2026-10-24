@@ -1217,11 +1217,14 @@ pub(super) async fn load_external_images(
     trace_request_id: Option<u64>,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
     let mut image_events = Vec::new();
-    for (ordinal, (node_index, source)) in document
-        .external_image_links(viewport)
-        .into_iter()
-        .take(MAX_CONTENT_IMAGES)
-        .enumerate()
+    let image_discovery_stage =
+        trace_request_id.map(|request_id| ContentLoadStage::begin(request_id, "image_discovery"));
+    let image_links = document.external_image_links(viewport);
+    if let Some(stage) = image_discovery_stage {
+        stage.finish(Some(image_links.len()));
+    }
+    for (ordinal, (node_index, source)) in
+        image_links.into_iter().take(MAX_CONTENT_IMAGES).enumerate()
     {
         let node_id = NativeNodeId::from_parts(document.generation(), node_index);
         if document.image_load_attempted_for_node(node_id, viewport) {
@@ -1271,12 +1274,13 @@ pub(super) async fn load_external_images(
         };
         image_events.push((node_index, event_kind));
     }
-    for (ordinal, (node_index, source)) in document
-        .external_background_image_links()
-        .into_iter()
-        .take(MAX_CONTENT_IMAGES)
-        .enumerate()
-    {
+    let background_discovery_stage = trace_request_id
+        .map(|request_id| ContentLoadStage::begin(request_id, "background_image_discovery"));
+    let background_image_links = document.external_background_image_links(MAX_CONTENT_IMAGES);
+    if let Some(stage) = background_discovery_stage {
+        stage.finish(Some(background_image_links.len()));
+    }
+    for (ordinal, (node_index, source)) in background_image_links.into_iter().enumerate() {
         let node_id = NativeNodeId::from_parts(document.generation(), node_index);
         if document
             .background_image_resource_for_node(node_id)

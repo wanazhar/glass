@@ -56,8 +56,9 @@ use super::{
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
+use std::sync::Mutex;
 use url::Url;
 
 use super::font::{
@@ -1019,6 +1020,7 @@ pub struct NativeDocument {
     external_image_preload_states: BTreeMap<u32, String>,
     preloaded_image_resources: BTreeMap<String, NativeImage>,
     computed_styles: Option<Vec<NativeComputedStyle>>,
+    layout_style_cache: NativeLayoutStyleCache,
     css_target_fragment: Option<String>,
     viewport: Viewport,
     diagnostics: Vec<NativeDiagnostic>,
@@ -1041,6 +1043,39 @@ pub struct NativeDocument {
     canvas_resources: BTreeMap<u32, NativeCanvasResource>,
     inline_style_element_reports: BTreeMap<u32, (String, Option<String>)>,
     inline_style_attribute_reports: BTreeMap<u32, String>,
+}
+
+/// Per-document memo of cascade results for layout queries. It is derived
+/// state: clones get an independent copy, while document equality ignores it.
+#[derive(Debug, Default)]
+struct NativeLayoutStyleCache(Mutex<HashMap<NativeNodeId, NativeComputedStyle>>);
+
+impl Clone for NativeLayoutStyleCache {
+    fn clone(&self) -> Self {
+        let styles = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        Self(Mutex::new(styles))
+    }
+}
+
+impl PartialEq for NativeLayoutStyleCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for NativeLayoutStyleCache {}
+
+impl NativeLayoutStyleCache {
+    fn clear(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

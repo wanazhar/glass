@@ -147,7 +147,7 @@ impl NativeDocument {
         self.background_image_sources = background_image_sources;
         self.diagnostics = diagnostics;
         self.diagnostics_truncated = diagnostics_truncated;
-        self.computed_styles = None;
+        self.invalidate_layout_styles();
         Ok(())
     }
 
@@ -743,12 +743,30 @@ impl NativeDocument {
             .map(String::as_str)
     }
 
-    pub(crate) fn external_background_image_links(&self) -> Vec<(u32, String)> {
-        self.nodes
-            .iter()
-            .filter_map(|node| {
+    /// Return at most `limit` eligible background image candidates in document
+    /// order. The eager resource loader uses its existing per-document cap,
+    /// so do not cascade candidates that it would immediately discard.
+    pub(crate) fn external_background_image_links(&self, limit: usize) -> Vec<(u32, String)> {
+        let mut links = Vec::with_capacity(limit.min(self.nodes.len()));
+        for node in &self.nodes {
+            if links.len() >= limit {
+                break;
+            }
+            let Some((node_index, source)) = (|| {
+                node.element_name()?;
                 let node_id = node.id();
                 self.node(node_id)?;
+                let has_inline_style =
+                    node.inline_style_allowed() && node.attribute("style").is_some();
+                if !has_inline_style
+                    && !self.stylesheet.has_background_image_rule_for_node(
+                        self,
+                        node_id,
+                        self.viewport,
+                    )
+                {
+                    return None;
+                }
                 let source = self.background_image_source_for_node(node_id)?;
                 if source.is_empty()
                     || source
@@ -758,8 +776,12 @@ impl NativeDocument {
                     return None;
                 }
                 Some((node_id.index(), source.to_owned()))
-            })
-            .collect()
+            })() else {
+                continue;
+            };
+            links.push((node_index, source));
+        }
+        links
     }
 
     pub(crate) fn image_resource_for_node(&self, node_id: NativeNodeId) -> Option<&NativeImage> {

@@ -179,6 +179,7 @@ impl NativeDocument {
             node.state.hovered = true;
             current = node.parent();
         }
+        self.invalidate_layout_styles();
         Ok(vec![
             (id, NativeEventKind::MouseOver),
             (id, NativeEventKind::MouseEnter),

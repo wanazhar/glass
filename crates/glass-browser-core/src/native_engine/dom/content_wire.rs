@@ -1349,6 +1349,7 @@ impl NativeDocument {
             preloaded_image_resources: BTreeMap::new(),
             viewport,
             computed_styles: Some(wire.computed_styles),
+            layout_style_cache: NativeLayoutStyleCache::default(),
             css_target_fragment: None,
             diagnostics,
             diagnostics_truncated,

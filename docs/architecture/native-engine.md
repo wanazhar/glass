@@ -10646,8 +10646,8 @@ The default limits are intentionally bounded:
 
 | Resource | Default limit | Behavior at the limit |
 |---|---:|---|
-| source document | 256 KiB | navigation fails before state commit |
-| DOM nodes | 4,096 | parse fails before state commit |
+| source document | 1 MiB | navigation fails before state commit |
+| DOM nodes | 16,384 | parsing stops and navigation fails before state commit |
 | open DOM depth | 128 | parse fails before state commit |
 | visible text | 16 KiB | evidence is marked incomplete |
 | history entries | 64 | oldest entry is evicted deterministically; each entry retains one root point and its bounded non-zero nested scroll map |

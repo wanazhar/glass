@@ -275,6 +275,7 @@ impl NativeDocument {
                 }
             }
         }
+        self.invalidate_layout_styles();
         Ok(Some(NativeCheckablePreActivation {
             node_id: id,
             kind,
@@ -324,6 +325,7 @@ impl NativeDocument {
                     .checked = false;
             }
         }
+        self.invalidate_layout_styles();
         Ok(())
     }
 
@@ -508,6 +510,7 @@ impl NativeDocument {
                 node.state.checked = false;
             }
         }
+        self.invalidate_layout_styles();
         Ok(())
     }
 

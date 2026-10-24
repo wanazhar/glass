@@ -179,6 +179,9 @@ impl TokenSink for NativeHtmlTokenSink {
     type Handle = Handle;
 
     fn process_token(&self, token: Token, line_number: u64) -> TokenSinkResult<Self::Handle> {
+        if self.tree_builder.sink.sink_failure.get().is_some() {
+            return TokenSinkResult::Continue;
+        }
         self.tree_builder.sink.begin_token(&token);
         let result = self.tree_builder.process_token(token, line_number);
         self.tree_builder.sink.end_token();
@@ -186,7 +189,9 @@ impl TokenSink for NativeHtmlTokenSink {
     }
 
     fn end(&self) {
-        self.tree_builder.end();
+        if self.tree_builder.sink.sink_failure.get().is_none() {
+            self.tree_builder.end();
+        }
     }
 
     fn adjusted_current_node_present_but_not_in_html_namespace(&self) -> bool {
@@ -883,9 +888,33 @@ pub(crate) fn parse_document_with_limits_and_scripting(
     let tokenizer = Tokenizer::new(token_sink, TokenizerOpts::default());
     let input = BufferQueue::default();
     input.push_back(StrTendril::from(source));
-    while !matches!(tokenizer.feed(&input), TokenizerResult::Done) {}
-    debug_assert!(input.is_empty());
-    tokenizer.end();
+    loop {
+        let done = matches!(tokenizer.feed(&input), TokenizerResult::Done);
+        if tokenizer
+            .sink
+            .tree_builder
+            .sink
+            .sink_failure
+            .get()
+            .is_some()
+        {
+            break;
+        }
+        if done {
+            break;
+        }
+    }
+    if tokenizer
+        .sink
+        .tree_builder
+        .sink
+        .sink_failure
+        .get()
+        .is_none()
+    {
+        debug_assert!(input.is_empty());
+        tokenizer.end();
+    }
     tokenizer.sink.tree_builder.sink.finish()
 }
 
@@ -1014,7 +1043,14 @@ pub(crate) fn parse_fragment_with_limits(
     );
     let input = BufferQueue::default();
     input.push_back(StrTendril::from(source));
-    while !matches!(tokenizer.feed(&input), TokenizerResult::Done) {}
+    loop {
+        if let Some(failure) = tokenizer.sink.tree_builder.sink.sink_failure.get() {
+            return Err(failure);
+        }
+        if matches!(tokenizer.feed(&input), TokenizerResult::Done) {
+            break;
+        }
+    }
     debug_assert!(input.is_empty());
     tokenizer.end();
 
@@ -1430,5 +1466,16 @@ mod tests {
             panic!("p must be an element");
         };
         assert_eq!(namespace, HTML_NAMESPACE);
+    }
+
+    #[test]
+    fn document_parser_stops_at_node_budget_before_processing_more_tokens() {
+        let source = "<b><div>text</div></b>".repeat(256);
+        let parsed = parse_document_with_limits(&source, 12, 128);
+        assert!(matches!(
+            parsed.sink_failure,
+            Some(HtmlTreeSinkFailure::NodeLimitExceeded { .. })
+        ));
+        assert!(parsed.nodes.len() <= 12);
     }
 }

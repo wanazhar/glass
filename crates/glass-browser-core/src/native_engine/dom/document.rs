@@ -14,7 +14,7 @@ impl NativeDocument {
         viewport.validate()?;
         if self.viewport != viewport {
             self.viewport = viewport;
-            self.computed_styles = None;
+            self.invalidate_layout_styles();
         }
         Ok(())
     }
@@ -22,6 +22,7 @@ impl NativeDocument {
     pub(crate) fn set_css_target_fragment(&mut self, fragment: Option<String>) {
         if self.css_target_fragment != fragment {
             self.css_target_fragment = fragment;
+            self.invalidate_layout_styles();
         }
     }
 
@@ -234,7 +235,7 @@ impl NativeDocument {
                 node.state.inline_style_allowed = allowed_nodes.contains(&node.id().index());
             }
         }
-        self.computed_styles = None;
+        self.invalidate_layout_styles();
     }
 
     pub(crate) fn set_external_stylesheet_states(
@@ -692,6 +693,7 @@ impl NativeDocument {
             external_image_preload_states: BTreeMap::new(),
             preloaded_image_resources: BTreeMap::new(),
             computed_styles: None,
+            layout_style_cache: NativeLayoutStyleCache::default(),
             css_target_fragment: None,
             viewport: Viewport::default(),
             diagnostics: Vec::new(),
@@ -1254,8 +1256,8 @@ impl NativeDocument {
         }
         self.revision = source_revision;
         destination.revision = target_revision;
-        self.computed_styles = None;
-        destination.computed_styles = None;
+        self.invalidate_layout_styles();
+        destination.invalidate_layout_styles();
         Ok(())
     }
 
@@ -1849,6 +1851,7 @@ impl NativeDocument {
             node.children.clear();
             node.state.focused = false;
         }
+        self.invalidate_layout_styles();
         Ok(())
     }
 
@@ -1988,6 +1991,7 @@ impl NativeDocument {
             .and_then(|before| parent_node.children.iter().position(|id| *id == before))
             .unwrap_or(parent_node.children.len());
         parent_node.children.insert(insertion_index, child);
+        self.invalidate_layout_styles();
         self.capture_attached_content_security_policy_meta();
         self.apply_meta_referrer_policy_subtree(child);
         Ok(())
@@ -2109,6 +2113,7 @@ impl NativeDocument {
             .ok_or(NativeEngineError::DetachedTarget)?
             .state
             .user_interacted = true;
+        self.invalidate_layout_styles();
         Ok(())
     }
     pub(super) fn focus_element(
@@ -2130,6 +2135,11 @@ impl NativeDocument {
             .filter(|node| node.state.focused && node.id() != id)
             .map(NativeNode::id)
             .collect::<Vec<_>>();
+        let focus_changes = !focused_ids.is_empty()
+            || self.node(id).is_some_and(|node| {
+                !node.state.focused
+                    || node.state.focus_anchor_node_index != focus_anchor.map(NativeNodeId::index)
+            });
         let mut events = Vec::new();
         for focused_id in focused_ids {
             if let Some(node) = self.node_mut(focused_id) {
@@ -2150,6 +2160,9 @@ impl NativeDocument {
             }
         }
         self.initialize_selection_if_needed(id);
+        if focus_changes {
+            self.invalidate_layout_styles();
+        }
         events
     }
 

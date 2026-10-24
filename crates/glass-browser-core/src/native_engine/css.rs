@@ -2496,6 +2496,7 @@ mod computed_style;
 pub(crate) struct NativeStylesheet {
     rules: Vec<NativeStyleRule>,
     rule_index: NativeStyleRuleIndex,
+    background_image_rule_index: NativeStyleRuleIndex,
     background_image_sources: BTreeMap<u32, String>,
     font_face_rules: Vec<NativeFontFaceRule>,
     font_palette_values: Vec<NativeFontPaletteValuesRule>,
@@ -3927,8 +3928,16 @@ struct NativeStyleRuleIndex {
 
 impl NativeStyleRuleIndex {
     fn build(rules: &[NativeStyleRule]) -> Self {
+        Self::build_selected(rules, 0..rules.len())
+    }
+
+    fn build_selected(
+        rules: &[NativeStyleRule],
+        selected: impl IntoIterator<Item = usize>,
+    ) -> Self {
         let mut index = Self::default();
-        for (rule_index, rule) in rules.iter().enumerate() {
+        for rule_index in selected {
+            let rule = &rules[rule_index];
             let Some(target) = rule.selector.compounds.last() else {
                 index.fallback.push(rule_index);
                 continue;

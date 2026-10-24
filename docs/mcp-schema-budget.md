@@ -13,9 +13,9 @@ reports:
 
 | Metric | Measured value |
 |---|---:|
-| Negotiated tools | 339 |
-| Serialized `tools` array | 185,839 UTF-8 bytes |
-| Four-bytes-per-token estimate | 46,460 tokens (rounded up) |
+| Negotiated tools | 341 |
+| Serialized `tools` array | 187,288 UTF-8 bytes |
+| Four-bytes-per-token estimate | 46,822 tokens (rounded up) |
 | JSON-RPC framing | excluded |
 
 This is a reproducible local measurement, not a guarantee for another commit,

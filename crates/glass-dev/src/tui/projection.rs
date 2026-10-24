@@ -937,7 +937,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     }
                 } else if matches!(
                     event.payload.get("operation").and_then(Value::as_str),
-                    Some("coreCommands" | "coreCommand")
+                    Some("coreCommands" | "coreCommand" | "coreTaskGraph" | "coreTaskAbort")
                 ) {
                     shared.finish_streaming(&mut items);
                     let operation = event.payload["operation"].as_str().unwrap_or("coreCommand");
@@ -955,6 +955,14 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     } else if let Some(result) = event.payload.get("result") {
                         let text = if operation == "coreCommands" {
                             core_command_catalog_text(result)
+                        } else if operation == "coreTaskGraph" {
+                            core_task_graph_text(result)
+                        } else if operation == "coreTaskAbort" {
+                            if result.get("accepted").and_then(Value::as_bool) == Some(true) {
+                                "Glass Core accepted the durable task abort request".into()
+                            } else {
+                                result.to_string()
+                            }
                         } else {
                             result
                                 .get("message")
@@ -1038,6 +1046,47 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
         }
     }
     items
+}
+
+fn core_task_graph_text(result: &Value) -> String {
+    let sequence = result.get("sequence").and_then(Value::as_u64).unwrap_or(0);
+    let Some(tasks) = result.get("tasks").and_then(Value::as_array) else {
+        return format!("Glass Core durable task graph · sequence {sequence} · invalid response");
+    };
+    if tasks.is_empty() {
+        return format!("Glass Core durable task graph · sequence {sequence} · no live tasks");
+    }
+    let mut lines = vec![format!(
+        "Glass Core durable task graph · sequence {sequence} · {} live tasks",
+        tasks.len()
+    )];
+    for task in tasks.iter().take(40) {
+        let id = task.get("id").and_then(Value::as_str).unwrap_or("?");
+        let kind = task.get("kind").and_then(Value::as_str).unwrap_or("?");
+        let status = task.get("status").and_then(Value::as_str).unwrap_or("?");
+        let owner = task.get("owner").and_then(Value::as_str);
+        let background = task
+            .get("background")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let waiting = task
+            .get("dependencyCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let ownership = owner.map_or_else(String::new, |owner| format!(" · parent {owner}"));
+        let state = if background {
+            " · background".to_string()
+        } else if waiting > 0 {
+            format!(" · waiting on {waiting}")
+        } else {
+            String::new()
+        };
+        lines.push(format!("{id} · {kind} · {status}{ownership}{state}"));
+    }
+    if tasks.len() > 40 {
+        lines.push(format!("… and {} more", tasks.len() - 40));
+    }
+    lines.join("\n")
 }
 
 fn core_command_catalog_text(result: &Value) -> String {
@@ -1304,6 +1353,45 @@ mod tests {
             rendered.contains("Open GC native command menu"),
             "{rendered}"
         );
+    }
+
+    #[test]
+    fn core_durable_task_graph_projects_bounded_safe_task_fields() {
+        let text = core_task_graph_text(&serde_json::json!({
+            "sequence": 9,
+            "tasks": [{
+                "id":"generation-1", "kind":"gc.generation", "status":"running",
+                "owner":null, "background":false, "on":[],
+                "input":{"text":"private prompt"}, "checkpoint":{"text":"private checkpoint"}
+            }, {
+                "id":"worker-2", "kind":"app.worker", "status":"waiting",
+                "owner":"generation-1", "background":true, "dependencyCount":1
+            }]
+        }));
+        assert!(text.contains("sequence 9 · 2 live tasks"));
+        assert!(text.contains("generation-1 · gc.generation · running"));
+        assert!(
+            text.contains("worker-2 · app.worker · waiting · parent generation-1 · background")
+        );
+        assert!(!text.contains("private prompt"));
+        assert!(!text.contains("private checkpoint"));
+    }
+
+    #[test]
+    fn core_task_graph_rpc_response_is_visible_in_agent_transcript() {
+        let event = crate::AgentEvent {
+            sequence: 1,
+            agent_id: crate::AgentId::parse("agent-0002").unwrap(),
+            timestamp_ms: 0,
+            kind: "response".into(),
+            payload: serde_json::json!({
+                "operation":"coreTaskGraph", "ok":true,
+                "result":{"sequence":3,"tasks":[{"id":"generation-3","kind":"gc.generation","status":"running","background":false,"on":[]}]}
+            }),
+        };
+        let rendered = conversation(&[event]);
+        assert!(rendered.contains("Glass Core durable task graph · sequence 3 · 1 live tasks"));
+        assert!(rendered.contains("generation-3 · gc.generation · running"));
     }
 
     #[test]

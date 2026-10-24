@@ -50,7 +50,7 @@ matrix.
 | Developing a project in the terminal | [Development Runtime](development-runtime.md) | [Development TUI](architecture/development-tui.md), [daemon](daemon.md) |
 | Editing, reviewing, or collaborating on source | [Development Runtime](development-runtime.md) | [Development TUI](architecture/development-tui.md), [MCP tool catalog](mcp-tools.md) |
 | Launching or delegating to coding harnesses | [Development Runtime](development-runtime.md) | [CLI](cli.md), [Glass Core resident harness](glass-core-harness.md) |
-| Running resident agents | [Glass Core resident harness](glass-core-harness.md) | [Development Runtime](development-runtime.md), [daemon](daemon.md) |
+| Running resident agents and inspecting GC durable tasks | [Glass Core resident harness](glass-core-harness.md) | [CLI](cli.md), [Development Runtime](development-runtime.md), [daemon](daemon.md) |
 | Searching the web or reading an online source | [Glass Core web tools](../products/glass-core/docs/web-tools.md) | [Glass Core resident harness](glass-core-harness.md) |
 | Understanding Core and Glass ownership | [Glass Core resident harness](glass-core-harness.md) | [Development TUI](architecture/development-tui.md), [Development Runtime](development-runtime.md) |
 | Building or installing the standalone coding harness | [Standalone Glass Core](glass-core-product.md) | [Glass Core resident harness](glass-core-harness.md) |

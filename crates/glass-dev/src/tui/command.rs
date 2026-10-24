@@ -504,6 +504,18 @@ const TERMINAL_ACTIONS: &[SurfaceAction] = &[
 
 const TASK_ACTIONS: &[SurfaceAction] = &[
     SurfaceAction {
+        label: "Refresh GC durable task graph",
+        command: "task core graph",
+        key: "/",
+        description: "read the selected Core runtime's live durable tasks",
+    },
+    SurfaceAction {
+        label: "Abort GC durable task",
+        command: "task core abort TASK_ID",
+        key: "/",
+        description: "ask Core to cancel one task and refresh its graph",
+    },
+    SurfaceAction {
         label: "Create task",
         command: "task create TITLE PROMPT",
         key: ":",
@@ -2178,6 +2190,36 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
         return Ok("Opened autonomous task DAG".into());
     };
     match action {
+        "core" => {
+            let (agent_id, offset) = explicit_or_active_agent(state, &parts)?;
+            let agent_id = agent_id.ok_or("select a Core session before refreshing GC tasks")?;
+            let command = parts.get(offset + 1).copied().unwrap_or("graph");
+            let mut arguments = json!({"agentId":agent_id});
+            match command {
+                "graph" | "refresh" => {
+                    if parts.len() > offset + 2 {
+                        return Err("task core graph syntax: [AGENT_ID]".into());
+                    }
+                    run_tool(state, "glass.agent.task-graph", arguments, false)?;
+                    state.surface = DevSurface::Tasks;
+                    Ok("Requested GC durable task graph refresh".into())
+                }
+                "abort" => {
+                    let task_id = parts.get(offset + 2).ok_or("task core abort requires TASK_ID")?;
+                    if parts.len() > offset + 4 || parts.get(offset + 3).is_some_and(|arg| *arg != "--background") {
+                        return Err("task core abort syntax: [AGENT_ID] TASK_ID [--background]".into());
+                    }
+                    arguments["taskId"] = Value::String((*task_id).into());
+                    arguments["includeBackground"] = Value::Bool(parts.get(offset + 3) == Some(&"--background"));
+                    run_tool(state, "glass.agent.task-abort", arguments, true)?;
+                    let mut refresh = json!({"agentId":agent_id});
+                    run_tool(state, "glass.agent.task-graph", std::mem::take(&mut refresh), false)?;
+                    state.surface = DevSurface::Tasks;
+                    Ok(format!("Requested GC task abort · {task_id} · graph refresh queued"))
+                }
+                _ => Err("task core actions: graph, abort TASK_ID [--background]".into()),
+            }
+        }
         "list" => execute_named_tool(
             state,
             "glass.task.list",
@@ -2293,7 +2335,7 @@ fn execute_task(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Str
                 DevSurface::Tasks,
             )
         }
-        _ => Err("task actions: list, get, inspect, create, create-after, crew, wake, pause, resume, cancel, retry, reassign, override, evidence, verify".into()),
+        _ => Err("task actions: core graph|abort, list, get, inspect, create, create-after, crew, wake, pause, resume, cancel, retry, reassign, override, evidence, verify".into()),
     }
 }
 
@@ -3620,6 +3662,17 @@ mod tests {
         assert_eq!(palette_order(DevSurface::Terminal)[0], "process");
         assert_eq!(palette_order(DevSurface::Code)[0], "editor");
         assert_eq!(palette_order(DevSurface::Tasks)[0], "task");
+        let actions = surface_actions(DevSurface::Tasks);
+        assert!(
+            actions
+                .iter()
+                .any(|action| { action.key == "/" && action.command == "task core graph" })
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| { action.key == "/" && action.command == "task core abort TASK_ID" })
+        );
     }
 
     #[test]

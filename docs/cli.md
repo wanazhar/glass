@@ -676,6 +676,11 @@ provider login; Glass does not prompt for or store provider secrets. New
 conversation creates another Core-backed runtime; `agent new` reuses the
 current runtime. List Core models and Select Core model use Core's negotiated
 runtime methods. Model catalog responses appear in the Agent conversation.
+On the Tasks surface, `/` offers Refresh GC durable task graph and Abort GC
+durable task. The same controls are `:task core graph` and
+`:task core abort TASK_ID`; append `--background` to include owned background
+tasks. The selected Core graph appears in its own CORE · GC TASKS panel. This
+is GC's durable task store and is separate from Glass project tasks and todos.
 Select a recovery-pending project thread in the Agent picker to reattach its
 stored Core session; the picker remains the navigation
 surface. Recovery verifies the exact session ID, mixed ownership mode, and

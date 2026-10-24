@@ -504,6 +504,35 @@ def main() -> None:
                 reply(identifier, {"name": "model", "requiresInteractive": True, "message": "/model needs the native GC UI"})
             else:
                 send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "unknown Glass Core command"}})
+        elif method == "durable/taskGraph":
+            assert params == {}
+            reply(identifier, {
+                "sequence": 17,
+                "tasks": [{
+                    "id": "generation-fixture-1",
+                    "conversation": "durable-fixture-session",
+                    "kind": "gc.generation",
+                    "version": 1,
+                    "owner": None,
+                    "background": False,
+                    "createdSequence": 12,
+                    "replay": "unsafe",
+                    "input": {"text": "fixture prompt must not appear in the TUI"},
+                    "inputDigest": "digest",
+                    "checkpoint": {"private": "fixture checkpoint"},
+                    "status": "running",
+                    "revision": 2,
+                    "on": [],
+                    "policy": "all_settled",
+                    "dueAtMs": 0,
+                    "outcome": None,
+                    "abortRequested": False,
+                }],
+            })
+        elif method == "durable/abort":
+            assert params.get("taskId") == "generation-fixture-1"
+            assert params.get("includeBackground") is True
+            reply(identifier, {"accepted": True})
         elif method in ("turn/prompt", "turn/followUp"):
             if mode == "prompt-error":
                 send(

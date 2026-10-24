@@ -67,6 +67,8 @@
     "glass.agent.stats",
     "glass.agent.steer",
     "glass.agent.switch-session",
+    "glass.agent.task-abort",
+    "glass.agent.task-graph",
     "glass.agent.thinking",
     "glass.agent.tree",
     "glass.browser.act",

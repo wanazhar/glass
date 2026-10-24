@@ -807,11 +807,15 @@ impl GlassCoreRuntime {
                     "id": id,
                     "ok": value.get("error").is_none(),
                 });
-                if let Some(operation) = operation {
-                    event["operation"] = Value::String(operation);
+                if let Some(operation) = operation.as_ref() {
+                    event["operation"] = Value::String(operation.clone());
                 }
                 if let Some(result) = value.get("result") {
-                    event["result"] = result.clone();
+                    event["result"] = if operation.as_deref() == Some("coreTaskGraph") {
+                        sanitize_core_task_graph(result)
+                    } else {
+                        result.clone()
+                    };
                 }
                 if let Some(error) = value.get("error") {
                     event["error"] = error.clone();
@@ -1036,6 +1040,42 @@ impl GlassCoreRuntime {
     }
 }
 
+fn sanitize_core_task_graph(result: &Value) -> Value {
+    let tasks = result
+        .get("tasks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(128)
+        .map(|task| {
+            let bounded = |key: &str| {
+                task.get(key)
+                    .and_then(Value::as_str)
+                    .map(|value| {
+                        value
+                            .chars()
+                            .filter(|character| !character.is_control())
+                            .take(128)
+                            .collect::<String>()
+                    })
+                    .unwrap_or_default()
+            };
+            json!({
+                "id":bounded("id"),
+                "kind":bounded("kind"),
+                "status":bounded("status"),
+                "owner":if task.get("owner").and_then(Value::as_str).is_some() { json!(bounded("owner")) } else { Value::Null },
+                "background":task.get("background").and_then(Value::as_bool).unwrap_or(false),
+                "dependencyCount":task.get("on").and_then(Value::as_array).map_or(0, Vec::len),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "sequence":result.get("sequence").and_then(Value::as_u64).unwrap_or(0),
+        "tasks":tasks,
+    })
+}
+
 impl Drop for GlassCoreRuntime {
     fn drop(&mut self) {
         self.cancel_active_turn();
@@ -1089,6 +1129,14 @@ fn request_parts(
         Request::CoreCommand { name, arguments } => (
             "commands/execute",
             json!({"sessionId":session,"name":name,"arguments":arguments}),
+        ),
+        Request::CoreTaskGraph => ("durable/taskGraph", json!({})),
+        Request::CoreTaskAbort {
+            task_id,
+            include_background,
+        } => (
+            "durable/abort",
+            json!({"taskId":task_id,"includeBackground":include_background}),
         ),
         Request::SetModel { provider, model_id } => {
             let mut params = json!({"sessionId": session, "model": model_id});
@@ -1157,6 +1205,8 @@ fn request_operation(request: &crate::resident_harness::ResidentSessionRequest) 
         Request::Models => "models",
         Request::CoreCommands => "coreCommands",
         Request::CoreCommand { .. } => "coreCommand",
+        Request::CoreTaskGraph => "coreTaskGraph",
+        Request::CoreTaskAbort { .. } => "coreTaskAbort",
         Request::SetModel { .. } => "setModel",
         Request::SetThinking { .. } => "setThinking",
         Request::NewSession => "newSession",
@@ -2132,6 +2182,66 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn durable_task_graph_and_abort_round_trip_over_runtime_protocol() {
+        if python3().is_none() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "glass-core-durable-task-graph-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut runtime = harness(&root, None);
+        runtime
+            .start_request(ResidentSessionRequest::CoreTaskGraph)
+            .unwrap();
+        let graph = runtime
+            .recv_event_timeout(Duration::from_secs(2))
+            .unwrap()
+            .expect("durable task graph response");
+        assert_eq!(graph["operation"], "coreTaskGraph");
+        assert_eq!(graph["ok"], true);
+        assert_eq!(graph["result"]["sequence"], 17);
+        assert_eq!(graph["result"]["tasks"][0]["id"], "generation-fixture-1");
+        assert_eq!(graph["result"]["tasks"][0]["dependencyCount"], 0);
+        assert!(graph["result"]["tasks"][0].get("input").is_none());
+        assert!(graph["result"]["tasks"][0].get("checkpoint").is_none());
+        assert!(graph["result"]["tasks"][0].get("outcome").is_none());
+
+        runtime
+            .start_request(ResidentSessionRequest::CoreTaskAbort {
+                task_id: "generation-fixture-1".into(),
+                include_background: true,
+            })
+            .unwrap();
+        let abort = runtime
+            .recv_event_timeout(Duration::from_secs(2))
+            .unwrap()
+            .expect("durable task abort response");
+        assert_eq!(abort["operation"], "coreTaskAbort");
+        assert_eq!(abort["ok"], true);
+        assert_eq!(abort["result"]["accepted"], true);
+
+        let requests = fs::read_to_string(root.join("sessions/fixture-requests.jsonl")).unwrap();
+        let requests = requests
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert!(requests.iter().any(|request| {
+            request["method"] == "durable/taskGraph" && request["params"] == json!({})
+        }));
+        assert!(requests.iter().any(|request| {
+            request["method"] == "durable/abort"
+                && request["params"]
+                    == json!({"taskId":"generation-fixture-1","includeBackground":true})
+        }));
+        drop(runtime);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn spawn_mode(
         root: &Path,
         executor: Option<crate::resident_harness::AgentToolExecutor>,
@@ -2251,6 +2361,23 @@ mod tests {
         assert_eq!(params["sessionId"], "selected-session");
         assert_eq!(params["name"], "status");
         assert!(params["arguments"].is_null());
+        let (method, params) =
+            request_parts("selected-session", &ResidentSessionRequest::CoreTaskGraph).unwrap();
+        assert_eq!(method, "durable/taskGraph");
+        assert_eq!(params, json!({}));
+        let (method, params) = request_parts(
+            "selected-session",
+            &ResidentSessionRequest::CoreTaskAbort {
+                task_id: "generation-123".into(),
+                include_background: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(method, "durable/abort");
+        assert_eq!(
+            params,
+            json!({"taskId":"generation-123","includeBackground":true})
+        );
         assert_eq!(
             request_operation(&ResidentSessionRequest::CoreCommands),
             "coreCommands"
@@ -2261,6 +2388,17 @@ mod tests {
                 arguments: None
             }),
             "coreCommand"
+        );
+        assert_eq!(
+            request_operation(&ResidentSessionRequest::CoreTaskGraph),
+            "coreTaskGraph"
+        );
+        assert_eq!(
+            request_operation(&ResidentSessionRequest::CoreTaskAbort {
+                task_id: "generation-123".into(),
+                include_background: false
+            }),
+            "coreTaskAbort"
         );
     }
 

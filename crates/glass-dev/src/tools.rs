@@ -1604,7 +1604,7 @@ impl DevelopmentToolRouter {
                 crate::daemon::log_tail(None)
                     .map_err(|error| DevelopmentError::Process(error.to_string())),
             ),
-            "glass.agent.hello" | "glass.agent.models" | "glass.agent.commands" | "glass.agent.command" => {
+            "glass.agent.hello" | "glass.agent.models" | "glass.agent.commands" | "glass.agent.command" | "glass.agent.task-graph" | "glass.agent.task-abort" => {
                 let selected = optional_string(call, "agentId")
                     .map(|value| agent_id(workspace, value))
                     .transpose()?
@@ -1636,6 +1636,11 @@ impl DevelopmentToolRouter {
                     "glass.agent.hello" => ResidentSessionRequest::Hello,
                     "glass.agent.models" => ResidentSessionRequest::Models,
                     "glass.agent.commands" => ResidentSessionRequest::CoreCommands,
+                    "glass.agent.task-graph" => ResidentSessionRequest::CoreTaskGraph,
+                    "glass.agent.task-abort" => ResidentSessionRequest::CoreTaskAbort {
+                        task_id: required_string(call, "taskId")?.to_string(),
+                        include_background: call.arguments["includeBackground"].as_bool().unwrap_or(false),
+                    },
                     _ => ResidentSessionRequest::CoreCommand {
                         name: required_string(call, "name")?.to_string(),
                         arguments: optional_string(call, "arguments").map(str::to_owned),
@@ -1684,6 +1689,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.agent.models",
         "glass.agent.commands",
         "glass.agent.command",
+        "glass.agent.task-graph",
         "glass.lsp.list",
         "glass.lsp.events",
         "glass.lsp.hover",
@@ -1752,6 +1758,7 @@ fn service_descriptors() -> Vec<ToolDescriptor> {
         "glass.semantic.links",
     ];
     const MUTATE: &[&str] = &[
+        "glass.agent.task-abort",
         "glass.workspace.suspend",
         "glass.workspace.resume",
         "glass.workspace.delete",
@@ -2212,6 +2219,16 @@ fn service_descriptor(name: &str, mutating: bool) -> ToolDescriptor {
         )
     } else if name == "glass.agent.command" {
         ("Dispatch a Glass Core slash command; the Core reports whether it runs in-session or needs its native command UI".into(), serde_json::json!({"type":"object","properties":{"agentId":{"type":"string","minLength":1,"maxLength":64},"name":{"type":"string","minLength":1,"maxLength":128},"arguments":{"type":"string","maxLength":16384}},"required":["name"],"additionalProperties":false}))
+    } else if name == "glass.agent.task-graph" {
+        (
+            "Read Glass Core's durable live-task graph for the configured runtime storage".into(),
+            serde_json::json!({"type":"object","properties":{"agentId":{"type":"string","minLength":1,"maxLength":64}},"additionalProperties":false}),
+        )
+    } else if name == "glass.agent.task-abort" {
+        (
+            "Request cancellation of a Glass Core durable task by task ID".into(),
+            serde_json::json!({"type":"object","properties":{"agentId":{"type":"string","minLength":1,"maxLength":64},"taskId":{"type":"string","minLength":1,"maxLength":128},"includeBackground":{"type":"boolean"}},"required":["taskId"],"additionalProperties":false}),
+        )
     } else if name == "glass.agent.resume" {
         (
             "Explicitly reattach a recovery-pending Glass thread to its stored Core session"
@@ -4414,6 +4431,59 @@ mod tests {
             descriptor.input_schema["properties"]["sandbox"]["enum"],
             json!(["read-only", "workspace-write"])
         );
+    }
+
+    #[test]
+    fn core_durable_task_tools_are_registered_and_dispatch_to_selected_session() {
+        let descriptors = service_descriptors();
+        let graph = descriptors
+            .iter()
+            .find(|descriptor| descriptor.name == "glass.agent.task-graph")
+            .expect("GC durable task graph tool is advertised");
+        assert!(!graph.mutating);
+        assert_eq!(graph.input_schema["additionalProperties"], false);
+        let abort = descriptors
+            .iter()
+            .find(|descriptor| descriptor.name == "glass.agent.task-abort")
+            .expect("GC durable task abort tool is advertised");
+        assert!(abort.mutating);
+        assert_eq!(abort.input_schema["required"], json!(["taskId"]));
+        assert_eq!(
+            abort.input_schema["properties"]["includeBackground"]["type"],
+            "boolean"
+        );
+
+        let mut workspace = workspace();
+        let router = DevelopmentToolRouter::default();
+        let readonly = context(&workspace, false);
+        let graph_error = router
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "core-task-graph-dispatch".into(),
+                    name: "glass.agent.task-graph".into(),
+                    arguments: json!({"agentId":"agent-missing"}),
+                },
+                &readonly,
+            )
+            .expect_err("graph route should reach resident-session lookup");
+        assert!(graph_error.to_string().contains("agent agent-missing"));
+        let authorized = context(&workspace, true);
+        let abort_error = router
+            .execute(
+                &mut workspace,
+                &ToolCall {
+                    id: "core-task-abort-dispatch".into(),
+                    name: "glass.agent.task-abort".into(),
+                    arguments: json!({"agentId":"agent-missing","taskId":"generation-1"}),
+                },
+                &authorized,
+            )
+            .expect_err("abort route should reach resident-session lookup");
+        assert!(abort_error.to_string().contains("agent agent-missing"));
+        let root = workspace.root().to_path_buf();
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

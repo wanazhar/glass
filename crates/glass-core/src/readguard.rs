@@ -180,7 +180,7 @@ impl ReadSet {
             return;
         }
 
-        for path in reader_paths(cmd, workspace) {
+        for path in reader_paths(cmd, output, workspace) {
             self.mark_at(&path, call_index);
         }
 
@@ -295,10 +295,79 @@ fn shell_tokens(command: &str) -> Option<Vec<(String, bool)>> {
     Some(tokens)
 }
 
-fn reader_paths(command: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
+fn reader_paths(command: &str, output: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
     let Some(tokens) = shell_tokens(command) else {
         return Vec::new();
     };
+    let mut paths = Vec::new();
+    let mut segment = Vec::new();
+    let mut output_hidden = false;
+    let mut index = 0;
+    while index < tokens.len() {
+        let (token, operator) = &tokens[index];
+        let next_is_same = tokens
+            .get(index + 1)
+            .is_some_and(|(next, next_operator)| *next_operator && next == token);
+        if *operator && matches!(token.as_str(), ";" | "\n") {
+            if !output_hidden {
+                paths.extend(reader_paths_in_command(&segment, output, workspace));
+            }
+            segment.clear();
+            output_hidden = false;
+        } else if *operator && matches!(token.as_str(), "&" | "|") && next_is_same {
+            if !output_hidden {
+                paths.extend(reader_paths_in_command(&segment, output, workspace));
+            }
+            segment.clear();
+            output_hidden = false;
+            index += 1;
+        } else if *operator && matches!(token.as_str(), "|" | "&") {
+            // Pipeline/background output is not reliably present in the
+            // foreground tool result. Suppress the whole connected segment.
+            output_hidden = true;
+            segment.push((token.clone(), true));
+        } else if *operator && token == ">" {
+            // Redirection hides the reader's standard output from the model.
+            output_hidden = true;
+            segment.push((token.clone(), true));
+        } else {
+            segment.push((token.clone(), *operator));
+        }
+        index += 1;
+    }
+    if !output_hidden {
+        paths.extend(reader_paths_in_command(&segment, output, workspace));
+    }
+    paths
+}
+
+fn reader_paths_in_command(
+    tokens: &[(String, bool)],
+    output: &str,
+    workspace: &Path,
+) -> Vec<std::path::PathBuf> {
+    if let Some(words) = command_words(tokens) {
+        let name = words
+            .first()
+            .and_then(|word| Path::new(word).file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        match name {
+            "git" => {
+                return git_show_read_path(&words, output, workspace)
+                    .into_iter()
+                    .collect();
+            }
+            "sed" => return sed_printed_paths(&words, output, workspace),
+            "awk" => return awk_printed_paths(&words, output, workspace),
+            "perl" => return perl_printed_paths(&words, output, workspace),
+            _ => {}
+        }
+    }
+    reader_paths_from_shell(tokens, workspace)
+}
+
+fn reader_paths_from_shell(tokens: &[(String, bool)], workspace: &Path) -> Vec<std::path::PathBuf> {
     let mut command_word = true;
     let mut reader = String::new();
     let mut redirect = None;
@@ -306,7 +375,7 @@ fn reader_paths(command: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
     let mut option_value = false;
     let mut options = true;
     let mut paths = Vec::new();
-    for (token, operator) in tokens {
+    for (token, operator) in tokens.iter().cloned() {
         if operator {
             if matches!(token.as_str(), ">" | "<") {
                 redirect = if redirect == Some('!') || token == "<" && redirect == Some('<') {
@@ -382,6 +451,187 @@ fn reader_paths(command: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
         }
     }
     paths
+}
+
+fn command_words(tokens: &[(String, bool)]) -> Option<Vec<String>> {
+    tokens
+        .iter()
+        .map(|(token, operator)| (!operator).then(|| token.clone()))
+        .collect()
+}
+
+fn explicit_file_operands(
+    words: &[String],
+    start: usize,
+    workspace: &Path,
+) -> Vec<std::path::PathBuf> {
+    let mut options = true;
+    let mut paths = Vec::new();
+    for word in words.iter().skip(start) {
+        if options && word == "--" {
+            options = false;
+            continue;
+        }
+        if options && word.starts_with('-') {
+            return Vec::new();
+        }
+        if word.contains(['$', '`', '*', '?']) {
+            return Vec::new();
+        }
+        let path = abs(word, workspace);
+        if path.is_file() {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+fn sed_printed_paths(words: &[String], output: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
+    let mut script_index = 1;
+    if !words
+        .get(script_index)
+        .is_some_and(|option| matches!(option.as_str(), "-n" | "--quiet" | "--silent"))
+    {
+        return Vec::new();
+    }
+    script_index += 1;
+    if words.get(script_index).is_some_and(|option| option == "-e") {
+        script_index += 1;
+    }
+    let Some(script) = words.get(script_index) else {
+        return Vec::new();
+    };
+    if !plain_sed_print_script(script) {
+        return Vec::new();
+    }
+    explicit_file_operands(words, script_index + 1, workspace)
+        .into_iter()
+        .filter(|path| output_contains_source_lines(output, path))
+        .collect()
+}
+
+fn plain_sed_print_script(script: &str) -> bool {
+    let Some(address) = script.strip_suffix('p') else {
+        return false;
+    };
+    if address.is_empty() || address == "$" || address.bytes().all(|byte| byte.is_ascii_digit()) {
+        return true;
+    }
+    let mut addresses = address.split(',');
+    let first = addresses.next().unwrap_or_default();
+    let second = addresses.next();
+    second.is_some_and(|last| {
+        matches_plain_sed_address(first)
+            && matches_plain_sed_address(last)
+            && addresses.next().is_none()
+    })
+}
+
+fn matches_plain_sed_address(address: &str) -> bool {
+    address == "$" || (!address.is_empty() && address.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn awk_printed_paths(words: &[String], output: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
+    let Some(script) = words.get(1) else {
+        return Vec::new();
+    };
+    let normalized = script.split_whitespace().collect::<String>();
+    if !matches!(
+        normalized.as_str(),
+        "1" | "print" | "{print}" | "{print$0}" | "1{print}" | "1{print$0}"
+    ) {
+        return Vec::new();
+    }
+    explicit_file_operands(words, 2, workspace)
+        .into_iter()
+        .filter(|path| output_contains_source_lines(output, path))
+        .collect()
+}
+
+fn perl_printed_paths(words: &[String], output: &str, workspace: &Path) -> Vec<std::path::PathBuf> {
+    let (script_index, operands_index) = match words.get(1..3) {
+        Some([option, script]) if matches!(option.as_str(), "-ne" | "-en") => (2, 3),
+        _ if words.get(1).is_some_and(|option| option == "-n")
+            && words.get(2).is_some_and(|option| option == "-e") =>
+        {
+            (3, 4)
+        }
+        _ => return Vec::new(),
+    };
+    let Some(script) = words.get(script_index) else {
+        return Vec::new();
+    };
+    if !matches!(script.trim(), "print" | "print $_" | "print $_;") {
+        return Vec::new();
+    }
+    explicit_file_operands(words, operands_index, workspace)
+        .into_iter()
+        .filter(|path| output_matches_file(output, path))
+        .collect()
+}
+
+fn git_show_read_path(
+    words: &[String],
+    output: &str,
+    workspace: &Path,
+) -> Option<std::path::PathBuf> {
+    if words.len() != 3 || words[1] != "show" || output.len() > 1024 * 1024 {
+        return None;
+    }
+    let (revision, relative) = words[2].split_once(':')?;
+    if revision.is_empty() || relative.is_empty() || relative.starts_with('/') {
+        return None;
+    }
+    let relative = Path::new(relative);
+    if relative.components().any(|component| {
+        !matches!(
+            component,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    }) || relative.to_string_lossy().contains(['$', '`', '*', '?'])
+    {
+        return None;
+    }
+    let root = workspace.canonicalize().ok()?;
+    let path = abs(&relative.to_string_lossy(), workspace)
+        .canonicalize()
+        .ok()?;
+    if !path.starts_with(root) || !output_matches_file(output, &path) {
+        return None;
+    }
+    Some(path)
+}
+
+fn output_contains_source_lines(output: &str, path: &Path) -> bool {
+    if output.is_empty() || output.len() > 1024 * 1024 {
+        return false;
+    }
+    let Some(bytes) = read_file_bounded(path, 4 * 1024 * 1024) else {
+        return false;
+    };
+    let Ok(source) = std::str::from_utf8(&bytes) else {
+        return false;
+    };
+    let source_lines = source.lines().collect::<HashSet<_>>();
+    let output_lines = output.lines().collect::<Vec<_>>();
+    !output_lines.is_empty() && output_lines.iter().all(|line| source_lines.contains(line))
+}
+
+fn output_matches_file(output: &str, path: &Path) -> bool {
+    output.len() <= 1024 * 1024
+        && read_file_bounded(path, 1024 * 1024)
+            .is_some_and(|source| source.as_slice() == output.as_bytes())
+}
+
+fn read_file_bounded(path: &Path, max_bytes: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() <= max_bytes).then_some(bytes)
 }
 
 // Conservative parsing: unsupported shell syntax/options require a native read.
@@ -544,16 +794,66 @@ mod tests {
         for name in ["a.rs", "b.rs"] {
             std::fs::write(dir.join(name), "contents").unwrap();
         }
-        for command in [
-            "echo cat b.rs",
-            "cat a.rs > b.rs",
-            "cat a.rs; echo b.rs",
-            "cat a.rs | echo b.rs",
-            "cat a.rs # b.rs",
-        ] {
+        for command in ["echo cat b.rs", "cat a.rs > b.rs", "cat a.rs | echo b.rs"] {
             let mut reads = ReadSet::new();
             reads.observe(command, "contents", &dir);
-            assert!(!reads.contains(&dir.join("b.rs")), "{command}");
+            assert!(
+                !reads.contains(&dir.join("a.rs")) && !reads.contains(&dir.join("b.rs")),
+                "output not visible to the model must not authorize either path: {command}"
+            );
+        }
+        let mut reads = ReadSet::new();
+        reads.observe("cat a.rs; echo b.rs", "contents", &dir);
+        assert!(reads.contains(&dir.join("a.rs")));
+        assert!(!reads.contains(&dir.join("b.rs")));
+
+        let mut reads = ReadSet::new();
+        reads.observe("cat a.rs # b.rs", "contents", &dir);
+        assert!(reads.contains(&dir.join("a.rs")));
+        assert!(!reads.contains(&dir.join("b.rs")));
+
+        let mut reads = ReadSet::new();
+        reads.observe("cat a.rs; cat b.rs > /dev/null", "contents", &dir);
+        assert!(reads.contains(&dir.join("a.rs")));
+        assert!(!reads.contains(&dir.join("b.rs")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn common_readers_only_earn_credit_when_source_text_is_emitted() {
+        let dir = scratch("extra-readers");
+        let path = dir.join("a.rs");
+        let contents = "line one\nline two\n";
+        std::fs::write(&path, contents).unwrap();
+        let cases = [
+            ("git show HEAD:a.rs", contents, true),
+            ("git show HEAD:a.rs", "old file version\n", false),
+            ("sed -n '1,2p' a.rs", contents, true),
+            ("sed -n '1p' a.rs", "line one\n", true),
+            ("sed -i 's/line/new/' a.rs", contents, false),
+            ("sed -n '1,2p' a.rs > /dev/null", contents, false),
+            ("awk '{print $0}' a.rs", contents, true),
+            (
+                "awk 'BEGIN { print \"line one\" }' a.rs",
+                "line one\n",
+                false,
+            ),
+            ("awk '{print $0}' a.rs | cat", contents, false),
+            ("perl -ne 'print' a.rs", contents, true),
+            (
+                "perl -ne 'system(\"echo unsafe\"); print' a.rs",
+                contents,
+                false,
+            ),
+        ];
+        for (command, output, expected) in cases {
+            let mut reads = ReadSet::new();
+            reads.observe(command, output, &dir);
+            assert_eq!(
+                reads.contains(&path),
+                expected,
+                "unexpected read credit for {command:?} with output {output:?}"
+            );
         }
         std::fs::remove_dir_all(dir).unwrap();
     }

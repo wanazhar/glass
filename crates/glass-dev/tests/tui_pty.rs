@@ -586,6 +586,19 @@ impl Session {
         false
     }
 
+    /// Poll only output emitted after `offset`; stale full-screen redraws from
+    /// earlier commands must not satisfy a later interaction assertion.
+    fn wait_for_output_after(&mut self, offset: usize, probe: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            self.settle(Duration::from_millis(200));
+            if self.visible_output_from(offset).contains(probe) {
+                return true;
+            }
+        }
+        false
+    }
+
     fn wait_for_raw(&mut self, probe: &str, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -598,7 +611,11 @@ impl Session {
     }
 
     fn visible_output(&self) -> String {
-        let raw = String::from_utf8_lossy(&self.buffer);
+        self.visible_output_from(0)
+    }
+
+    fn visible_output_from(&self, offset: usize) -> String {
+        let raw = String::from_utf8_lossy(&self.buffer[offset.min(self.buffer.len())..]);
         let mut visible = String::with_capacity(raw.len());
         let mut characters = raw.chars();
         while let Some(character) = characters.next() {
@@ -6015,15 +6032,25 @@ fn git_stage_and_commit_work_in_an_isolated_local_repository() {
         session.output_tail()
     );
 
+    let stage_confirmation_offset = session.buffer.len();
     session.send_slowly(b":git stage .\r", Duration::from_millis(30));
     assert!(
-        session.wait_for("one-use confirmation required", Duration::from_secs(5)),
+        session.wait_for_output_after(
+            stage_confirmation_offset,
+            "one-use confirmation required",
+            Duration::from_secs(5),
+        ),
         "staging did not request confirmation\n{}",
         session.output_tail()
     );
+    let stage_result_offset = session.buffer.len();
     session.send(b"y");
     assert!(
-        session.wait_for("glass.git.stage", Duration::from_secs(8)),
+        session.wait_for_output_after(
+            stage_result_offset,
+            "glass.git.stage",
+            Duration::from_secs(8)
+        ),
         "staging did not report its result\n{}",
         session.output_tail()
     );
@@ -6039,15 +6066,100 @@ fn git_stage_and_commit_work_in_an_isolated_local_repository() {
         "the TUI stage action should stage both modified fixture files"
     );
 
+    // Verify unstage against the disposable repository before staging again
+    // for the commit path. This catches a UI action that only changes its
+    // status label without updating the real index.
+    let unstage_confirmation_offset = session.buffer.len();
+    session.send_slowly(b":git unstage .\r", Duration::from_millis(30));
+    assert!(
+        session.wait_for_output_after(
+            unstage_confirmation_offset,
+            "one-use confirmation required",
+            Duration::from_secs(5),
+        ),
+        "unstaging did not request confirmation\n{}",
+        session.output_tail()
+    );
+    let unstage_result_offset = session.buffer.len();
+    session.send(b"y");
+    assert!(session.wait_for_output_after(
+        unstage_result_offset,
+        "glass.git.unstage",
+        Duration::from_secs(8)
+    ));
+    let unstage_deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let unstaged = Command::new("git")
+            .current_dir(&root)
+            .args(["diff", "--cached", "--name-only"])
+            .output()
+            .expect("inspect index after unstage");
+        assert!(unstaged.status.success());
+        if unstaged.stdout.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < unstage_deadline,
+            "TUI unstage did not clear the temporary repository index"
+        );
+        session.settle(Duration::from_millis(100));
+    }
+
+    let restage_confirmation_offset = session.buffer.len();
+    session.send_slowly(b":git stage .\r", Duration::from_millis(30));
+    assert!(
+        session.wait_for_output_after(
+            restage_confirmation_offset,
+            "one-use confirmation required",
+            Duration::from_secs(5),
+        ),
+        "restaging did not request confirmation\n{}",
+        session.output_tail()
+    );
+    let restage_result_offset = session.buffer.len();
+    session.send(b"y");
+    assert!(session.wait_for_output_after(
+        restage_result_offset,
+        "glass.git.stage",
+        Duration::from_secs(8)
+    ));
+    let restage_deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let restaged = Command::new("git")
+            .current_dir(&root)
+            .args(["diff", "--cached", "--name-only"])
+            .output()
+            .expect("inspect index after restage");
+        assert!(restaged.status.success());
+        if String::from_utf8_lossy(&restaged.stdout).lines().count() == 2 {
+            break;
+        }
+        assert!(
+            Instant::now() < restage_deadline,
+            "TUI stage did not restore both fixture files to the temporary index"
+        );
+        session.settle(Duration::from_millis(100));
+    }
+
+    let commit_confirmation_offset = session.buffer.len();
     session.send_slowly(b":git commit PTY local commit\r", Duration::from_millis(30));
     assert!(
-        session.wait_for("one-use confirmation required", Duration::from_secs(5)),
+        session.wait_for_output_after(
+            commit_confirmation_offset,
+            "one-use confirmation required",
+            Duration::from_secs(5),
+        ),
         "commit did not request confirmation\n{}",
         session.output_tail()
     );
+    let commit_result_offset = session.buffer.len();
     session.send(b"y");
     assert!(
-        session.wait_for("glass.git.commit", Duration::from_secs(8)),
+        session.wait_for_output_after(
+            commit_result_offset,
+            "glass.git.commit",
+            Duration::from_secs(8)
+        ),
         "commit did not report its result\n{}",
         session.output_tail()
     );

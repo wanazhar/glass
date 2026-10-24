@@ -361,13 +361,19 @@ impl ElicitationRequest {
             if !matches!(kind, "string" | "multi_enum") && format.is_some() {
                 return Err("format applies only to strings".into());
             }
-            let min_length = spec.get("minLength").and_then(Value::as_u64).unwrap_or(0) as usize;
-            let max_length = spec
-                .get("maxLength")
-                .and_then(Value::as_u64)
-                .unwrap_or(4096) as usize;
-            let min_items = spec.get("minItems").and_then(Value::as_u64).unwrap_or(0) as usize;
-            let max_items = spec.get("maxItems").and_then(Value::as_u64).unwrap_or(32) as usize;
+            let schema_bound = |key: &str, default: usize, maximum: usize| {
+                spec.get(key)
+                    .and_then(Value::as_u64)
+                    .map_or(default, |value| {
+                        usize::try_from(value)
+                            .unwrap_or(usize::MAX)
+                            .min(maximum.saturating_add(1))
+                    })
+            };
+            let min_length = schema_bound("minLength", 0, 4096);
+            let max_length = schema_bound("maxLength", 4096, 4096);
+            let min_items = schema_bound("minItems", 0, 32);
+            let max_items = schema_bound("maxItems", 32, 32);
             if min_length > max_length
                 || max_length > 4096
                 || min_items > max_items
@@ -802,6 +808,18 @@ mod tests {
                 .1,
             "Red"
         );
+    }
+
+    #[test]
+    fn elicitation_rejects_bounds_that_do_not_fit_supported_limits() {
+        let oversized = json!({
+            "mode":"form", "message":"Choose settings",
+            "requestedSchema":{"type":"object","properties":{
+                "label":{"type":"string","maxLength":4294967297_u64},
+                "colors":{"type":"array","maxItems":4294967297_u64,"items":{"enum":["red"]}}
+            }}
+        });
+        assert!(ElicitationRequest::parse("fixture", &oversized).is_err());
     }
 
     #[test]

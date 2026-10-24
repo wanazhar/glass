@@ -1186,7 +1186,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                                 )
                             }
                             _ => Ok(
-                                json!({"name":command.name,"requiresInteractive":true,"message":format!("/{0} is available in Glass Core's native command menu. Use :agent command-ui in Glass Dev to open it.", command.name)}),
+                                json!({"name":command.name,"requiresInteractive":true,"message":format!("/{0} is available in the standalone Glass Core interface. Glass Dev does not currently provide this command.", command.name)}),
                             ),
                         }
                     }
@@ -1654,7 +1654,7 @@ fn model_list(cfg: &config::Config, p: &Value) -> Result<Value, String> {
             .iter()
             .find(|(k, at, _)| *k == cache_key && at.elapsed() < std::time::Duration::from_secs(60))
     {
-        return model_page(data, p, true);
+        return model_page(data, p, true, &cfg.provider, &cfg.model);
     }
     let key = crate::auth::resolve(cfg)?;
     let url = format!(
@@ -1702,9 +1702,15 @@ fn model_list(cfg: &config::Config, p: &Value) -> Result<Value, String> {
         }
         cache.push((cache_key, std::time::Instant::now(), catalog.clone()));
     }
-    model_page(&catalog, p, false)
+    model_page(&catalog, p, false, &cfg.provider, &cfg.model)
 }
-fn model_page(catalog: &Value, p: &Value, cached: bool) -> Result<Value, String> {
+fn model_page(
+    catalog: &Value,
+    p: &Value,
+    cached: bool,
+    provider: &str,
+    current_model: &str,
+) -> Result<Value, String> {
     let models = catalog.as_array().ok_or("invalid cached catalog")?;
     let cursor = p.get("cursor").and_then(Value::as_u64).unwrap_or(0) as usize;
     if cursor > models.len() {
@@ -1720,7 +1726,7 @@ fn model_page(catalog: &Value, p: &Value, cached: bool) -> Result<Value, String>
         .min(models.len());
     Ok(
         json!({"models":&models[cursor..end],"nextCursor":if end<models.len(){Some(end)}else{None},
-        "source":"provider","cached":cached,"capabilitiesVerified":false}),
+        "provider":provider,"currentModel":current_model,"source":"provider","cached":cached,"capabilitiesVerified":false}),
     )
 }
 fn completion(

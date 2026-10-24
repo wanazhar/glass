@@ -40,7 +40,7 @@ pub const GLASS_CORE_BINARY_CANDIDATES: [&str; 1] = ["glass-core"];
 const SYSTEM_INSTRUCTIONS: &str = include_str!("../assets/glass-core-system.md");
 
 /// Optional privacy-safe phase trace for a stalled Core runtime. It records
-/// only static frame classes, byte counts, and queue/write durations.
+/// only static frame classes, byte counts, and queue/write/dispatch durations.
 fn trace_runtime_frame(
     component: &str,
     phase: &str,
@@ -780,7 +780,41 @@ impl GlassCoreRuntime {
 
     fn handle_frame(&mut self, value: Value) -> DevelopmentResult<()> {
         match value.get("method").and_then(Value::as_str) {
-            Some("tool/execute") => self.handle_tool_request(&value),
+            Some("tool/execute") => {
+                let class = core_frame_class(&value);
+                let tracing_enabled = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").is_some();
+                let bytes = if tracing_enabled {
+                    value.to_string().len()
+                } else {
+                    0
+                };
+                let correlation_hash = tracing_enabled
+                    .then(|| runtime_correlation_hash(&value))
+                    .flatten();
+                trace_runtime_frame(
+                    "glass_consumer",
+                    "tool_dispatch_begin",
+                    class,
+                    bytes,
+                    None,
+                    correlation_hash.clone(),
+                );
+                let started = Instant::now();
+                let result = self.handle_tool_request(&value);
+                trace_runtime_frame(
+                    "glass_consumer",
+                    if result.is_ok() {
+                        "tool_dispatch_complete"
+                    } else {
+                        "tool_dispatch_error"
+                    },
+                    class,
+                    bytes,
+                    Some(started.elapsed().as_micros()),
+                    correlation_hash,
+                );
+                result
+            }
             Some("runtime/event") => {
                 let params = value.get("params").cloned().unwrap_or(Value::Null);
                 for event in translate_event(&params) {

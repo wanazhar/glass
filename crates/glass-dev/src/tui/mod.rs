@@ -663,6 +663,14 @@ pub(crate) fn run_with_browser_policy(
                         )
                     {
                         state.open_gc_command_menu(&mut worker);
+                    } else if active_overlay.is_none()
+                        && state.surface == DevSurface::Tasks
+                        && key.code == KeyCode::Char('/')
+                        && !key.modifiers.intersects(
+                            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                        )
+                    {
+                        state.run_surface_key_action("/", &mut worker);
                     } else if active_overlay == Some(overlay::ActiveOverlay::CommandCenterMenu) {
                         match key.code {
                             KeyCode::Esc => state.close_menu(),
@@ -863,6 +871,11 @@ pub(crate) fn run_with_browser_policy(
                         }
                     } else if active_overlay == Some(overlay::ActiveOverlay::Composer) {
                         match (key.code, key.modifiers) {
+                            (KeyCode::Char('k'), value)
+                                if value.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.open_palette();
+                            }
                             (KeyCode::Char('f'), modifiers)
                                 if state.surface == DevSurface::Agent
                                     && modifiers.contains(KeyModifiers::CONTROL) =>
@@ -989,12 +1002,8 @@ pub(crate) fn run_with_browser_policy(
                             }
                             (KeyCode::Left, _) => state.move_palette_cursor(false),
                             (KeyCode::Right, _) => state.move_palette_cursor(true),
-                            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                                state.move_palette_selection(-1)
-                            }
-                            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                                state.move_palette_selection(1)
-                            }
+                            (KeyCode::Up, _) => state.move_palette_selection(-1),
+                            (KeyCode::Down, _) => state.move_palette_selection(1),
                             (KeyCode::PageUp, _) => state.scroll_palette(-1),
                             (KeyCode::PageDown, _) => state.scroll_palette(1),
                             (KeyCode::Tab, _) if state.command_input.trim().is_empty() => {

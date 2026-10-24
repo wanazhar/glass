@@ -223,6 +223,93 @@ pub struct AgentConversation {
     pub items: Vec<super::projection::ConversationEntry>,
     /// Private provider reasoning shown only in the explicit reasoning view.
     pub reasoning: String,
+    /// Bounded, display-safe view of Core's latest durable task graph response.
+    pub core_task_graph: Option<CoreTaskGraph>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CoreTaskGraph {
+    pub sequence: Option<u64>,
+    pub tasks: Vec<CoreTaskRow>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreTaskRow {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub parent: Option<String>,
+    pub background: bool,
+    pub dependency_count: usize,
+}
+
+fn bounded_task_label(value: &serde_json::Value, fallback: &str) -> String {
+    value
+        .as_str()
+        .map(|text| {
+            text.chars()
+                .filter(|character| !character.is_control())
+                .take(128)
+                .collect::<String>()
+        })
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn core_task_graph(events: &[crate::AgentEvent]) -> Option<CoreTaskGraph> {
+    let event = events.iter().rev().find(|event| {
+        event.kind == "response"
+            && event
+                .payload
+                .get("operation")
+                .and_then(serde_json::Value::as_str)
+                == Some("coreTaskGraph")
+    })?;
+    if event.payload.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        let message = event
+            .payload
+            .pointer("/error/message")
+            .and_then(serde_json::Value::as_str)
+            .map(|message| {
+                message
+                    .chars()
+                    .filter(|character| !character.is_control())
+                    .take(192)
+                    .collect()
+            });
+        return Some(CoreTaskGraph {
+            error: message.or_else(|| Some("Core task graph request failed".into())),
+            ..CoreTaskGraph::default()
+        });
+    }
+    let result = &event.payload["result"];
+    let rows = result
+        .get("tasks")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(128)
+        .map(|task| CoreTaskRow {
+            id: bounded_task_label(&task["id"], "?"),
+            kind: bounded_task_label(&task["kind"], "?"),
+            status: bounded_task_label(&task["status"], "?"),
+            parent: task["owner"].as_str().map(|parent| {
+                parent
+                    .chars()
+                    .filter(|character| !character.is_control())
+                    .take(128)
+                    .collect()
+            }),
+            background: task["background"].as_bool().unwrap_or(false),
+            dependency_count: task["dependencyCount"].as_u64().unwrap_or(0) as usize,
+        })
+        .collect();
+    Some(CoreTaskGraph {
+        sequence: result.get("sequence").and_then(serde_json::Value::as_u64),
+        tasks: rows,
+        error: None,
+    })
 }
 
 fn agent_conversations(
@@ -251,6 +338,7 @@ fn agent_conversations(
                     text,
                     items,
                     reasoning,
+                    core_task_graph: core_task_graph(&events),
                 },
             )
         })
@@ -1249,6 +1337,37 @@ mod tests {
         assert!(!grouped[&agent_a].text.contains("private to B"));
         assert!(grouped[&agent_b].text.contains("private to B"));
         assert!(!grouped[&agent_b].text.contains("private to A"));
+    }
+
+    #[test]
+    fn durable_task_graph_snapshot_keeps_only_safe_bounded_fields() {
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        let conversation = agent_conversations(&[crate::AgentEvent {
+            sequence: 1,
+            agent_id: agent_id.clone(),
+            timestamp_ms: 0,
+            kind: "response".into(),
+            payload: serde_json::json!({
+                "operation":"coreTaskGraph", "ok":true,
+                "result":{"sequence":4,"tasks":[{
+                    "id":"generation-4", "kind":"gc.generation", "status":"waiting",
+                    "owner":"parent-1", "background":true, "dependencyCount":1,
+                    "input":{"text":"must not be projected"},
+                    "checkpoint":{"private":"must not be projected"},
+                    "outcome":{"private":"must not be projected"}
+                }]}
+            }),
+        }])
+        .remove(&agent_id)
+        .unwrap();
+        let graph = conversation.core_task_graph.unwrap();
+        assert_eq!(graph.sequence, Some(4));
+        assert_eq!(graph.tasks.len(), 1);
+        assert_eq!(graph.tasks[0].id, "generation-4");
+        assert_eq!(graph.tasks[0].parent.as_deref(), Some("parent-1"));
+        assert!(graph.tasks[0].background);
+        assert_eq!(graph.tasks[0].dependency_count, 1);
+        assert!(!format!("{graph:?}").contains("must not be projected"));
     }
 
     #[test]

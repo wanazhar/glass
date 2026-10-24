@@ -43,6 +43,13 @@ pub enum ResidentSessionRequest {
         name: String,
         arguments: Option<String>,
     },
+    /// Read GC's durable task graph for the configured runtime storage.
+    CoreTaskGraph,
+    /// Request cancellation of one GC durable task.
+    CoreTaskAbort {
+        task_id: String,
+        include_background: bool,
+    },
     SetModel {
         provider: String,
         model_id: String,

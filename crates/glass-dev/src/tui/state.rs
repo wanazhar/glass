@@ -15045,6 +15045,7 @@ mod tests {
                     text: transcript.into(),
                     items: Vec::new(),
                     reasoning: String::new(),
+                    ..Default::default()
                 },
             );
         }
@@ -17551,6 +17552,7 @@ mod tests {
                 text: "transcript A".into(),
                 items: vec![entry("a", "message A")],
                 reasoning: String::new(),
+                ..Default::default()
             },
         );
         state.agent_conversations.insert(
@@ -17559,6 +17561,7 @@ mod tests {
                 text: "transcript B".into(),
                 items: vec![entry("b", "message B")],
                 reasoning: String::new(),
+                ..Default::default()
             },
         );
         state.select_agent(Some(agent_a.clone()));
@@ -17622,6 +17625,7 @@ mod tests {
                 text: "transcript A".into(),
                 items: Vec::new(),
                 reasoning: String::new(),
+                ..Default::default()
             },
         );
         state.agent_conversations.insert(
@@ -17630,6 +17634,7 @@ mod tests {
                 text: "transcript B".into(),
                 items: Vec::new(),
                 reasoning: String::new(),
+                ..Default::default()
             },
         );
         state.select_agent(Some(agent_a.clone()));

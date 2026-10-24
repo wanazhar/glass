@@ -3671,10 +3671,12 @@ fn render_tasks_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
         state.responsive_class(area.width, area.height),
         ResponsiveClass::Compact | ResponsiveClass::Phone
     ) {
-        // Keep task state readable at narrow sizes. The contextual todo and
-        // summary panels stay available at desktop widths; stacking three
-        // columns into a 118-column terminal made the actual Core rows vanish.
-        render_task_list(frame, state, area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(64), Constraint::Min(4)])
+            .split(area);
+        render_task_list(frame, state, rows[0]);
+        render_core_task_graph(frame, state, rows[1]);
         return;
     }
     let rows = if stack_for_phone(state, area) {
@@ -3685,7 +3687,7 @@ fn render_tasks_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
     } else {
         Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(70), Constraint::Min(24)])
+            .constraints([Constraint::Percentage(64), Constraint::Min(46)])
             .split(area)
     };
     let split = Layout::default()
@@ -3705,7 +3707,72 @@ fn render_tasks_surface(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
             .unwrap_or("no crew wake");
         format!("{running} running\n{queued} queued\n{failed} failed\n{wake}")
     };
-    render_panel(frame, rows[1], " SUMMARY ", summary, PURPLE);
+    let summary_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(34), Constraint::Min(5)])
+        .split(rows[1]);
+    render_panel(frame, summary_rows[0], " SUMMARY · GLASS ", summary, PURPLE);
+    render_core_task_graph(frame, state, summary_rows[1]);
+}
+
+fn render_core_task_graph(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let graph = state
+        .selected_agent
+        .as_ref()
+        .and_then(|agent| state.agent_conversations.get(agent))
+        .and_then(|conversation| conversation.core_task_graph.as_ref());
+    let (title, body) = match graph {
+        Some(graph) if graph.error.is_some() => (
+            " CORE · GC TASKS ".to_string(),
+            format!(
+                "Refresh failed · {}",
+                graph.error.as_deref().unwrap_or("Core request failed")
+            ),
+        ),
+        Some(graph) => {
+            let sequence = graph
+                .sequence
+                .map_or_else(|| "?".into(), |sequence| sequence.to_string());
+            let title = format!(" CORE · GC TASKS · {} ", graph.tasks.len());
+            let mut lines = vec![format!("sequence {sequence}")];
+            if graph.tasks.is_empty() {
+                lines.push("No live durable tasks · / Refresh GC task graph".into());
+            } else {
+                for task in graph.tasks.iter().take(32) {
+                    let owner = task
+                        .parent
+                        .as_ref()
+                        .map_or_else(String::new, |owner| format!(" · parent {owner}"));
+                    let background = if task.background {
+                        " · background"
+                    } else {
+                        ""
+                    };
+                    let dependencies = if task.dependency_count > 0 {
+                        format!(" · waiting on {}", task.dependency_count)
+                    } else {
+                        String::new()
+                    };
+                    lines.push(format!(
+                        "{} · {} · {}{owner}{background}{dependencies}",
+                        task.id, task.kind, task.status
+                    ));
+                }
+                if graph.tasks.len() > 32 {
+                    lines.push(format!(
+                        "… and {} more · / Refresh GC task graph",
+                        graph.tasks.len() - 32
+                    ));
+                }
+            }
+            (title, lines.join("\n"))
+        }
+        None => (
+            " CORE · GC TASKS ".into(),
+            "Not loaded · / Refresh GC task graph".into(),
+        ),
+    };
+    render_panel(frame, area, title, body, ACCENT_BRIGHT);
 }
 
 fn task_counts(state: &DevTuiState) -> (usize, usize, usize) {
@@ -6202,7 +6269,7 @@ mod tests {
         state.surface = DevSurface::Tasks;
         let output = rendered(&state, 140, 40);
         assert!(output.contains("No Core conversations yet."));
-        assert!(output.contains("Ctrl-K"), "{output}");
+        assert!(output.contains("Type in Agent to start one"), "{output}");
     }
 
     #[test]
@@ -6211,11 +6278,42 @@ mod tests {
         state.surface = DevSurface::Tasks;
         state.snapshot_ready = true;
         state.tasks = "CORE CONVERSATIONS\nCORE · Working · implementer · agent-0001\n\nGLASS WORKSPACE FLOWS\n● task-1  running  build verification".into();
+        let agent_id = crate::AgentId::parse("agent-0001").unwrap();
+        state.selected_agent = Some(agent_id.clone());
+        state.agent_conversations.insert(
+            agent_id,
+            super::super::snapshot::AgentConversation {
+                core_task_graph: Some(super::super::snapshot::CoreTaskGraph {
+                    sequence: Some(11),
+                    tasks: vec![super::super::snapshot::CoreTaskRow {
+                        id: "generation-11".into(),
+                        kind: "gc.generation".into(),
+                        status: "running".into(),
+                        parent: None,
+                        background: false,
+                        dependency_count: 0,
+                    }],
+                    error: None,
+                }),
+                ..Default::default()
+            },
+        );
         let output = rendered(&state, 140, 40);
         assert!(output.contains("CORE CONVERSATIONS"));
         assert!(output.contains("CORE · Working"));
         assert!(output.contains("GLASS WORKSPACE FLOWS"));
         assert!(output.contains("task-1  running"));
+        assert!(output.contains("CORE · GC TASKS · 1"));
+        assert!(
+            output.contains("generation-11 · gc.generation · running"),
+            "{output}"
+        );
+        assert!(output.contains("SUMMARY · GLASS"));
+
+        state.layout = TuiLayout::Mobile;
+        let compact = rendered(&state, 64, 24);
+        assert!(compact.contains("CORE · GC TASKS"));
+        assert!(compact.contains("generation-11"));
     }
 
     #[test]
@@ -6629,6 +6727,7 @@ mod tests {
                 text: String::new(),
                 items,
                 reasoning: String::new(),
+                ..Default::default()
             },
         );
         let tail = rendered(&state, 118, 20);

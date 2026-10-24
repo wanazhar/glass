@@ -54,6 +54,23 @@ is reported as incompatible; Glass does not silently fall back to a
 host-exclusive catalog. Core's standalone `local` mode and generic `host` mode
 retain their existing behavior.
 
+The Tasks surface `/` actions, or `:task core graph`, request Core's
+`durable/taskGraph` method and display bounded task identity/state fields in a
+separate CORE · GC TASKS panel. `:task core abort TASK_ID` forwards an explicit
+`durable/abort` request; `--background` sets `includeBackground: true` and the
+graph is refreshed immediately. The
+wire result is `{sequence, tasks}`; each task follows Core's durable `Task`
+record (`id`, `conversation`, `kind`, `owner`, `background`, `status`, `on`,
+`revision`, and other durable state). Glass displays only ID, kind, status,
+parent/background relationship, and dependency count; it omits task input,
+checkpoints, and outcomes from the Glass event projection and Tasks panel. This is Core's durable task
+store under the runtime storage directory, distinct from Glass's
+project-scoped task DAG. Core's durable task API is optional and distinct from
+ordinary `session/new` turns, so the graph may be empty until Core durable
+tasks have been created. The same controls are available as
+`glass.agent.task-graph` and `glass.agent.task-abort` through the Glass tools
+API.
+
 For browser work inside Glass Dev, Core should use the `glass.browser.*`
 integration. `glass.browser.start` starts the Glass native browser engine by
 default. For a task that needs a supported Chromium-only capability, pass

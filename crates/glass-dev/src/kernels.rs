@@ -659,7 +659,15 @@ impl ShellKernel {
                 .map_err(|error| KernelError::Protocol(error.to_string()))?
                 .as_nanos()
         ));
-        std::fs::create_dir(&response_dir)?;
+        // Tool results pass through this directory before the shell reads them.
+        // Keep them private even when the caller's umask permits group/world reads.
+        let mut response_dir_builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            response_dir_builder.mode(0o700);
+        }
+        response_dir_builder.create(&response_dir)?;
         let mut child = Command::new("/bin/sh")
             .current_dir(root)
             .env("GLASS_SHELL_RESPONSE_DIR", &response_dir)
@@ -1049,9 +1057,23 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn shell_kernel_preserves_environment_and_directory_state() {
+        use std::os::unix::fs::PermissionsExt;
+
         let root = root();
         let mut kernels = KernelManager::new(&root).unwrap();
         kernels.start("shell", KernelKind::Shell, "human").unwrap();
+        let KernelBackend::Shell(shell) = &kernels.sessions.get("shell").unwrap().backend else {
+            panic!("shell session must use the shell backend");
+        };
+        assert_eq!(
+            std::fs::metadata(&shell.response_dir)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o077,
+            0,
+            "shell tool responses must not be readable by other local users"
+        );
         kernels
             .execute("shell", "value=glass", "human", 1, None)
             .unwrap();

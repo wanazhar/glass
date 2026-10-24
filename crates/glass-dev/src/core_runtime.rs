@@ -35,7 +35,7 @@ const BROWSER_TOOL_SETTLEMENT_GRACE: Duration = Duration::from_secs(10);
 /// Environment override for the `glass-core` executable.
 pub const GLASS_CORE_BINARY_ENV: &str = "GLASS_CORE_BINARY";
 /// Executable basenames searched on `PATH`, in order.
-pub const GLASS_CORE_BINARY_CANDIDATES: [&str; 2] = ["glass-core", "gc"];
+pub const GLASS_CORE_BINARY_CANDIDATES: [&str; 1] = ["glass-core"];
 /// Glass-authored collaboration brief handed to every resident session.
 const SYSTEM_INSTRUCTIONS: &str = include_str!("../assets/glass-core-system.md");
 
@@ -2035,7 +2035,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn interactive_handoff_runs_without_arguments_in_workspace() {
+    fn explicitly_selected_core_ui_runs_without_arguments_in_workspace() {
         use std::os::unix::fs::PermissionsExt;
 
         let suffix = std::time::SystemTime::now()

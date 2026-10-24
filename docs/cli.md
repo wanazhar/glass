@@ -661,22 +661,43 @@ glass agent prompt "read README.md" --root .
 
 `glass agent doctor` and `glass agent status` report Glass Core's runtime
 protocol, provider readiness, session storage, and ordered remediation without
-printing credential values. Provider setup stays in Core. From the always-ready
-Agent composer, `/` opens Glass Core's live slash-command catalogue and Glass
-workspace actions. Filter by command name or description, use Tab to complete,
-and Enter to run the selected entry. Core runtime commands are forwarded to
-the selected Core session; interactive entries hand the terminal to Core's
-native UI. Glass actions remain host workspace controls. Choose Start Core
-conversation, replace the `ROLE TASK` placeholder, and submit to create another
-Core-backed conversation. See
-[Glass Core resident harness](glass-core-harness.md).
+printing credential values. Provider setup stays in Core. The Glass CLI also
+forwards Core's own CLI without reimplementing its commands:
+
+```console
+glass connect --help             # direct alias when no Glass command conflicts
+glass core connect --json        # exact Core CLI namespace, including collisions
+glass core --help                # show the installed Core command tree
+```
+
+Existing Glass command names take precedence; use `glass core ...` to reach a
+Core command with the same name. Direct Core aliases and the `core` namespace
+resolve the monorepo `glass-core` executable through `GLASS_CORE_BINARY` or
+`glass-core` on `PATH`. Glass does not fall back to the independent GCN `gcn`
+executable. Arguments, standard streams, exit status, and Unix signals are
+passed through to Core. See [Glass Core resident harness](glass-core-harness.md)
+for runtime ownership and binary selection.
+
+From the always-ready
+Agent composer, `/` opens a compact palette with common Glass Core controls and
+Glass workspace actions. Type to search the full live Core command catalogue;
+CORE and GLASS groups stay distinct. `/model` opens an in-Glass model picker
+backed by Core's `models/list` and `session/configure` methods. Runtime-safe
+Core commands run on the selected Core session. A discovered Core command that
+needs an interactive feature without a Glass control is identified as
+unavailable in Glass; choosing it does not launch another terminal UI. Glass
+workspace actions remain in the host group. Choose Start Core conversation,
+replace the `ROLE TASK` placeholder, and submit to create another Core-backed
+conversation. Model discovery stays in palette state and is not appended to
+chat. See [Glass Core resident harness](glass-core-harness.md).
 
 Choose Glass Core provider login to hand the terminal to Core's interactive
 provider login; Glass does not prompt for or store provider secrets. New
 conversation creates another Core-backed runtime; `agent new` reuses the
 current runtime. List Core models and Select Core model use Core's negotiated
-runtime methods. Model catalog responses appear in the Agent conversation.
-On the Tasks surface, `/` offers Refresh GC durable task graph and Abort GC
+runtime methods. The `/model` picker displays the current selection and applies
+one selected model to the same Core session. Model discovery stays out of the
+conversation transcript. On the Tasks surface, `/` offers Refresh GC durable task graph and Abort GC
 durable task. The same controls are `:task core graph` and
 `:task core abort TASK_ID`; append `--background` to include owned background
 tasks. The selected Core graph appears in its own CORE · GC TASKS panel. This

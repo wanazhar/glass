@@ -92,8 +92,8 @@ pub struct DisplaySnapshot {
     pub agent_conversations: std::collections::BTreeMap<crate::AgentId, AgentConversation>,
     /// Core-owned slash command catalogues returned by each resident session.
     pub core_command_catalogues: std::collections::BTreeMap<crate::AgentId, CoreCommandCatalogue>,
-    /// Core-owned commands that must hand control to the native Core UI.
-    pub core_command_handoffs: std::collections::BTreeMap<crate::AgentId, CoreCommandHandoff>,
+    /// Core-owned provider/model catalogues returned by each resident session.
+    pub core_model_catalogues: std::collections::BTreeMap<crate::AgentId, CoreModelCatalogue>,
     pub agent_chrome: Vec<AgentChrome>,
     pub tasks: String,
     pub editor: String,
@@ -137,49 +137,11 @@ pub struct CoreCommandCatalogue {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct CoreCommandHandoff {
-    pub response_id: String,
-    pub message: Option<String>,
-}
-
-fn core_command_handoffs(
-    events: &[crate::AgentEvent],
-) -> std::collections::BTreeMap<crate::AgentId, CoreCommandHandoff> {
-    let mut handoffs = std::collections::BTreeMap::new();
-    for event in events {
-        if event.kind != "response"
-            || event
-                .payload
-                .get("operation")
-                .and_then(serde_json::Value::as_str)
-                != Some("coreCommand")
-            || event.payload.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
-            || event
-                .payload
-                .pointer("/result/requiresInteractive")
-                .and_then(serde_json::Value::as_bool)
-                != Some(true)
-        {
-            continue;
-        }
-        handoffs.insert(
-            event.agent_id.clone(),
-            CoreCommandHandoff {
-                response_id: event
-                    .payload
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                message: event
-                    .payload
-                    .pointer("/result/message")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned),
-            },
-        );
-    }
-    handoffs
+pub struct CoreModelCatalogue {
+    pub provider: Option<String>,
+    pub current_model: Option<String>,
+    pub models: Vec<serde_json::Value>,
+    pub error: Option<String>,
 }
 
 fn core_command_catalogues(
@@ -212,6 +174,50 @@ fn core_command_catalogues(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
                 .or_else(|| Some("Glass Core did not return its command catalogue".into()));
+        }
+    }
+    catalogues
+}
+
+fn core_model_catalogues(
+    events: &[crate::AgentEvent],
+) -> std::collections::BTreeMap<crate::AgentId, CoreModelCatalogue> {
+    let mut catalogues = std::collections::BTreeMap::<crate::AgentId, CoreModelCatalogue>::new();
+    for event in events {
+        if event.kind != "response"
+            || event
+                .payload
+                .get("operation")
+                .and_then(serde_json::Value::as_str)
+                != Some("models")
+        {
+            continue;
+        }
+        let catalogue = catalogues.entry(event.agent_id.clone()).or_default();
+        if event.payload.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+            let result = &event.payload["result"];
+            catalogue.provider = result
+                .get("provider")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            catalogue.current_model = result
+                .get("currentModel")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            catalogue.models = result
+                .get("models")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            catalogue.error = None;
+        } else {
+            catalogue.current_model = None;
+            catalogue.error = event
+                .payload
+                .pointer("/error/message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| Some("Glass Core did not return its model catalogue".into()));
         }
     }
     catalogues
@@ -626,8 +632,8 @@ fn worker_loop(
                         snapshot.agent_conversations = by_agent;
                         snapshot.core_command_catalogues =
                             core_command_catalogues(&conversation_events);
-                        snapshot.core_command_handoffs =
-                            core_command_handoffs(&conversation_events);
+                        snapshot.core_model_catalogues =
+                            core_model_catalogues(&conversation_events);
                         snapshot.conversation_cursor = highest;
                     }
                 }
@@ -706,7 +712,7 @@ fn worker_loop(
                     snapshot.agent_conversations = by_agent;
                     snapshot.core_command_catalogues =
                         core_command_catalogues(&conversation_events);
-                    snapshot.core_command_handoffs = core_command_handoffs(&conversation_events);
+                    snapshot.core_model_catalogues = core_model_catalogues(&conversation_events);
                     let highest = conversation_events
                         .iter()
                         .map(|event| event.sequence)
@@ -827,14 +833,14 @@ fn compute_snapshot(
             snapshot.conversation_items.clear();
             snapshot.agent_conversations.clear();
             snapshot.core_command_catalogues.clear();
-            snapshot.core_command_handoffs.clear();
+            snapshot.core_model_catalogues.clear();
             "No conversation yet. Press Enter or start typing to compose a message.".into()
         }
         Ok(events) => {
             snapshot.conversation_items = crate::tui::projection::conversation_entries(&events);
             snapshot.agent_conversations = agent_conversations(&events);
             snapshot.core_command_catalogues = core_command_catalogues(&events);
-            snapshot.core_command_handoffs = core_command_handoffs(&events);
+            snapshot.core_model_catalogues = core_model_catalogues(&events);
             crate::tui::projection::conversation(&events)
         }
         Err(error) => format!("Conversation unavailable: {error}"),
@@ -1301,21 +1307,6 @@ mod tests {
             catalogues[&agent].error.as_deref(),
             Some("catalogue unavailable")
         );
-
-        let handoffs = core_command_handoffs(&[crate::AgentEvent {
-            sequence: 4,
-            agent_id: agent.clone(),
-            timestamp_ms: 0,
-            kind: "response".into(),
-            payload: serde_json::json!({
-                "id":"request-4",
-                "operation":"coreCommand",
-                "ok":true,
-                "result":{"requiresInteractive":true,"message":"Select a model"}
-            }),
-        }]);
-        assert_eq!(handoffs[&agent].response_id, "request-4");
-        assert_eq!(handoffs[&agent].message.as_deref(), Some("Select a model"));
     }
 
     #[test]

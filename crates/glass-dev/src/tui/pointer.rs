@@ -1138,6 +1138,7 @@ mod tests {
                 })
             })
             .collect();
+        state.gc_command_query = "cmd".into();
         state.gc_command_selected = 20;
         let mut pointer = PointerState::default();
 

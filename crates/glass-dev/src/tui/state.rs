@@ -1595,18 +1595,24 @@ pub struct DevTuiState {
     pub agent_login_requested: bool,
     /// Set when the user explicitly hands the terminal to GC's native command UI.
     pub agent_command_ui_requested: bool,
-    last_core_handoff_response_id: Option<String>,
     /// Dynamically discovered commands from the selected Glass Core session.
     pub gc_command_menu_open: bool,
     pub gc_command_query: String,
     pub gc_command_items: Vec<serde_json::Value>,
     pub gc_command_selected: usize,
+    /// Model selection is a Core-backed subview of the command palette.
+    pub gc_model_menu_open: bool,
+    pub gc_model_items: Vec<serde_json::Value>,
+    pub gc_model_provider: Option<String>,
+    pub gc_model_current: Option<String>,
+    pub gc_model_error: Option<String>,
     pub gc_command_loading: bool,
     pub gc_command_discovery_requested: bool,
     gc_command_discovery_pending: bool,
     /// Tool job IDs whose command-list responses belong only to the slash
     /// palette. Late results remain cache updates after the menu closes.
     gc_command_discovery_jobs: std::collections::HashSet<u64>,
+    gc_model_discovery_jobs: std::collections::HashSet<u64>,
     composer_gc_command_completion: bool,
     composer_glass_action_completion: Option<String>,
     /// Set by a palette action; the event loop hands the terminal to the
@@ -1957,15 +1963,20 @@ impl DevTuiState {
             harnesses: crate::harness::summary(),
             agent_login_requested: false,
             agent_command_ui_requested: false,
-            last_core_handoff_response_id: None,
             gc_command_menu_open: false,
             gc_command_query: String::new(),
             gc_command_items: Vec::new(),
             gc_command_selected: 0,
+            gc_model_menu_open: false,
+            gc_model_items: Vec::new(),
+            gc_model_provider: None,
+            gc_model_current: None,
+            gc_model_error: None,
             gc_command_loading: false,
             gc_command_discovery_requested: false,
             gc_command_discovery_pending: false,
             gc_command_discovery_jobs: std::collections::HashSet::new(),
+            gc_model_discovery_jobs: std::collections::HashSet::new(),
             composer_gc_command_completion: false,
             composer_glass_action_completion: None,
             harness_launch_requested: None,
@@ -5163,6 +5174,11 @@ impl DevTuiState {
             return true;
         }
         self.gc_command_items.clear();
+        self.gc_model_items.clear();
+        self.gc_model_provider = None;
+        self.gc_model_current = None;
+        self.gc_model_error = None;
+        self.gc_model_menu_open = false;
         self.gc_command_discovery_pending = false;
         if self.gc_command_menu_open {
             self.gc_command_loading = true;
@@ -5957,11 +5973,17 @@ impl DevTuiState {
         arguments: serde_json::Value,
         palette_discovery: bool,
     ) {
-        match self.tool_request(tool, arguments, false) {
+        // Selecting a provider model in this menu is a direct human control
+        // action. It changes Core-owned session configuration; the Core API
+        // validates and applies it without a second Glass approval prompt.
+        let user_initiated_core_config = tool == "glass.agent.model";
+        match self.tool_request(tool, arguments, user_initiated_core_config) {
             Ok((call, context)) => match worker.submit_tool(call, context) {
                 Ok(job) => {
                     self.running_tool_job = Some(job);
-                    if palette_discovery {
+                    if palette_discovery && tool == "glass.agent.models" {
+                        self.gc_model_discovery_jobs.insert(job);
+                    } else if palette_discovery {
                         self.gc_command_discovery_jobs.insert(job);
                         self.gc_command_discovery_pending = true;
                         if self.gc_command_menu_open {
@@ -6041,16 +6063,12 @@ impl DevTuiState {
     }
 
     pub fn select_gc_command_last(&mut self) {
-        let count = self.gc_command_glass_actions().len()
-            + super::command::filter_gc_commands(&self.gc_command_items, &self.gc_command_query)
-                .len();
+        let count = self.gc_palette_item_count();
         self.gc_command_selected = count.saturating_sub(1);
     }
 
     pub fn move_gc_command_selection(&mut self, delta: i32) {
-        let total = self.gc_command_glass_actions().len()
-            + super::command::filter_gc_commands(&self.gc_command_items, &self.gc_command_query)
-                .len();
+        let total = self.gc_palette_item_count();
         if total == 0 {
             self.gc_command_selected = 0;
             return;
@@ -6078,9 +6096,22 @@ impl DevTuiState {
                     format!("{} {} {}", action.label, action.command, action.description)
                         .to_ascii_lowercase();
                 if query.is_empty()
-                    || query
-                        .split_whitespace()
-                        .all(|term| searchable.contains(term))
+                    && [
+                        "view Agent",
+                        "view Code",
+                        "view Browser",
+                        "view Git",
+                        "agent status",
+                        "agent models [AGENT_ID]",
+                        "agent sessions",
+                        "agent new",
+                        "task list",
+                    ]
+                    .contains(&action.command)
+                    || !query.is_empty()
+                        && query
+                            .split_whitespace()
+                            .all(|term| searchable.contains(term))
                 {
                     actions.push(*action);
                 }
@@ -6089,17 +6120,74 @@ impl DevTuiState {
         actions
     }
 
+    /// Keep the empty-query palette focused on common controls. Typing a query
+    /// searches the full GC catalogue; this is a view preference only and does
+    /// not hide or alter Core capabilities.
+    pub fn gc_palette_core_commands(&self) -> Vec<&serde_json::Value> {
+        let matches =
+            super::command::filter_gc_commands(&self.gc_command_items, &self.gc_command_query);
+        if !self.gc_command_query.trim().is_empty() {
+            return matches;
+        }
+        // Keep the first palette view limited to controls Glass can execute
+        // in-place today. The full GC-owned catalogue remains searchable;
+        // interactive-only commands are labelled unsupported on selection
+        // until the runtime exposes the corresponding structured API.
+        const PRIMARY: &[&str] = &["status", "model", "models", "help", "compact"];
+        matches
+            .into_iter()
+            .filter(|item| {
+                item.get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|name| PRIMARY.contains(&name))
+            })
+            .collect()
+    }
+
+    fn gc_palette_item_count(&self) -> usize {
+        let core_count = if self.gc_model_menu_open {
+            self.gc_model_items.len()
+        } else {
+            self.gc_palette_core_commands().len()
+        };
+        core_count
+            + if self.gc_model_menu_open {
+                0
+            } else {
+                self.gc_command_glass_actions().len()
+            }
+    }
+
     pub fn gc_command_selection_is_glass(&self) -> bool {
-        let core_count =
-            super::command::filter_gc_commands(&self.gc_command_items, &self.gc_command_query)
-                .len();
+        if self.gc_model_menu_open {
+            return false;
+        }
+        let core_count = self.gc_palette_core_commands().len();
         self.gc_command_selected >= core_count
     }
 
     pub fn complete_gc_command_selection(&mut self) {
+        if self.gc_model_menu_open {
+            if let Some(model) = self.gc_model_items.get(self.gc_command_selected)
+                && let (Some(provider), Some(id)) = (
+                    model
+                        .get("provider")
+                        .and_then(serde_json::Value::as_str)
+                        .or(self.gc_model_provider.as_deref()),
+                    model.get("id").and_then(serde_json::Value::as_str),
+                )
+            {
+                self.composer_input = format!("/model {provider} {id}");
+                self.composer_cursor = self.composer_input.len();
+                self.gc_command_menu_open = false;
+                self.gc_model_menu_open = false;
+                self.gc_command_query.clear();
+                self.composer_gc_command_completion = true;
+            }
+            return;
+        }
         let glass_actions = self.gc_command_glass_actions();
-        let core_matches =
-            super::command::filter_gc_commands(&self.gc_command_items, &self.gc_command_query);
+        let core_matches = self.gc_palette_core_commands();
         if let Some(action) = glass_actions
             .get(self.gc_command_selected.saturating_sub(core_matches.len()))
             .filter(|_| self.gc_command_selected >= core_matches.len())
@@ -6109,11 +6197,11 @@ impl DevTuiState {
             self.composer_gc_command_completion = false;
             self.composer_glass_action_completion = Some(action.command.to_string());
             self.gc_command_menu_open = false;
+            self.gc_model_menu_open = false;
             self.gc_command_query.clear();
             return;
         }
-        let matches = core_matches;
-        let Some(item) = matches.get(self.gc_command_selected) else {
+        let Some(item) = core_matches.get(self.gc_command_selected).cloned() else {
             self.status = "No command to complete · keep typing or Esc to treat it as text".into();
             return;
         };
@@ -6131,13 +6219,22 @@ impl DevTuiState {
         self.composer_cursor = self.composer_input.len();
         self.composer_gc_command_completion = true;
         self.gc_command_menu_open = false;
+        self.gc_model_menu_open = false;
         self.gc_command_query.clear();
     }
 
     pub fn cancel_gc_command_menu(&mut self) {
+        if self.gc_model_menu_open {
+            self.gc_model_menu_open = false;
+            self.gc_command_selected = 0;
+            self.gc_command_loading = false;
+            self.status = "Glass Core commands · choose a control or Esc to close".into();
+            return;
+        }
         self.composer_input = format!("/{}", self.gc_command_query);
         self.composer_cursor = self.composer_input.len();
         self.gc_command_menu_open = false;
+        self.gc_model_menu_open = false;
         self.gc_command_loading = false;
         self.gc_command_discovery_requested = false;
         self.composer_gc_command_completion = false;
@@ -6153,8 +6250,45 @@ impl DevTuiState {
             return;
         }
         let glass_actions = self.gc_command_glass_actions();
-        let core_matches =
-            super::command::filter_gc_commands(&self.gc_command_items, &self.gc_command_query);
+        if self.gc_model_menu_open {
+            let Some(model) = self.gc_model_items.get(self.gc_command_selected) else {
+                self.status = self
+                    .gc_model_error
+                    .clone()
+                    .unwrap_or_else(|| "No models returned by Glass Core".into());
+                return;
+            };
+            let Some(agent) = self.selected_agent.as_ref() else {
+                self.status = "Select a Glass Core session before changing its model".into();
+                return;
+            };
+            let provider = model
+                .get("provider")
+                .and_then(serde_json::Value::as_str)
+                .or(self.gc_model_provider.as_deref())
+                .map(str::to_owned);
+            let Some(provider) = provider else {
+                self.status = "Glass Core model catalogue omitted its provider".into();
+                return;
+            };
+            let Some(model_id) = model
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+            else {
+                self.status = "Glass Core returned a model without an ID".into();
+                return;
+            };
+            self.gc_model_menu_open = false;
+            self.gc_command_menu_open = false;
+            self.gc_command_query.clear();
+            self.composer_gc_command_completion = false;
+            self.queue_gc_command_tool(worker, "glass.agent.model", serde_json::json!({"agentId":agent.as_str(),"provider":provider,"modelId":model_id}), false);
+            self.status =
+                format!("Asking Glass Core to use {provider}/{model_id} for this session");
+            return;
+        }
+        let core_matches = self.gc_palette_core_commands();
         if let Some(action) = glass_actions
             .get(self.gc_command_selected.saturating_sub(core_matches.len()))
             .copied()
@@ -6173,27 +6307,51 @@ impl DevTuiState {
             }
             return;
         }
-        let matches = core_matches;
-        let Some(item) = matches.get(self.gc_command_selected) else {
+        let Some(item) = core_matches.get(self.gc_command_selected).cloned() else {
             self.status = "No matching Glass Core command".into();
             return;
         };
-        let Some(name) = item.get("name").and_then(serde_json::Value::as_str) else {
+        let Some(name) = item
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        else {
             self.status = "Glass Core returned a command without a name".into();
             return;
         };
-        let name = name.trim_start_matches('/');
+        let name = name.trim_start_matches('/').to_owned();
         let query = self.gc_command_query.trim().trim_start_matches('/');
-        let arguments = query.strip_prefix(name).unwrap_or("").trim().to_string();
+        let arguments = query.strip_prefix(&name).unwrap_or("").trim().to_string();
         let interactive =
             item.get("runtimeMode").and_then(serde_json::Value::as_str) == Some("interactive");
         self.gc_command_menu_open = false;
         self.composer_gc_command_completion = false;
         if interactive {
-            self.gc_command_query.clear();
-            match self.request_agent_command_ui() {
-                Ok(()) => {}
-                Err(error) => self.status = error,
+            if name == "model" {
+                self.gc_model_menu_open = true;
+                self.gc_command_menu_open = true;
+                self.gc_command_selected = 0;
+                self.gc_model_error = None;
+                if self.gc_model_items.is_empty() {
+                    self.gc_command_loading = true;
+                    self.status = "Loading provider models from Glass Core…".into();
+                    let mut args = serde_json::json!({});
+                    if let Some(agent) = self.selected_agent.as_ref() {
+                        args["agentId"] = serde_json::Value::String(agent.as_str().into());
+                    }
+                    self.queue_gc_command_tool(worker, "glass.agent.models", args, true);
+                } else {
+                    self.gc_command_loading = false;
+                    self.status =
+                        "Choose a provider model · Enter applies it to this Core session".into();
+                }
+            } else {
+                self.gc_command_query.clear();
+                self.gc_command_menu_open = false;
+                self.gc_model_menu_open = false;
+                self.status = format!(
+                    "/{name} is owned by Glass Core but has no in-Glass control yet · no action was run"
+                );
             }
             return;
         }
@@ -7120,6 +7278,28 @@ impl DevTuiState {
             }
             // Catalogue discovery is palette state, even if its response
             // arrives after Escape closed the menu. It is never chat output.
+            return;
+        }
+        if self.gc_model_discovery_jobs.remove(&result.id) {
+            if self.running_tool_job == Some(result.id) {
+                self.running_tool_job = None;
+            }
+            match result.result {
+                Ok(value)
+                    if value.get("queued").and_then(serde_json::Value::as_bool) == Some(true) =>
+                {
+                    self.status = "Glass Core is preparing provider models…".into();
+                }
+                Ok(_) => {
+                    self.gc_command_loading = false;
+                    self.gc_model_error = Some("Glass Core returned no provider models".into());
+                }
+                Err(error) => {
+                    self.gc_command_loading = false;
+                    self.gc_model_error = Some(error.clone());
+                    self.status = format!("Could not request provider models: {error}");
+                }
+            }
             return;
         }
         let mut publish_preview_status = true;
@@ -11297,6 +11477,36 @@ impl DevTuiState {
         }
     }
 
+    fn update_gc_model_catalogue(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
+        let Some(catalogue) = self
+            .selected_agent
+            .as_ref()
+            .and_then(|agent_id| snapshot.core_model_catalogues.get(agent_id))
+        else {
+            return;
+        };
+        self.gc_model_error.clone_from(&catalogue.error);
+        if catalogue.error.is_none() {
+            self.gc_model_provider.clone_from(&catalogue.provider);
+            self.gc_model_current.clone_from(&catalogue.current_model);
+            self.gc_model_items.clone_from(&catalogue.models);
+        }
+        if self.gc_model_menu_open {
+            self.gc_command_loading = false;
+            self.gc_command_selected = self
+                .gc_command_selected
+                .min(self.gc_model_items.len().saturating_sub(1));
+            self.status = if let Some(error) = catalogue.error.as_deref() {
+                format!("Could not load provider models: {error}")
+            } else {
+                format!(
+                    "Choose a provider model · current: {} · Enter applies to this Core session",
+                    self.gc_model_current.as_deref().unwrap_or("unknown")
+                )
+            };
+        }
+    }
+
     pub fn apply_snapshot(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
         self.remember_row_selection_identity();
         let was_waiting_for_snapshot = !self.snapshot_ready;
@@ -11400,18 +11610,7 @@ impl DevTuiState {
             }
         }
         self.update_gc_command_catalogue(snapshot);
-        if let Some(agent_id) = self.selected_agent.as_ref()
-            && let Some(handoff) = snapshot.core_command_handoffs.get(agent_id)
-            && !handoff.response_id.is_empty()
-            && self.last_core_handoff_response_id.as_deref() != Some(&handoff.response_id)
-        {
-            self.last_core_handoff_response_id = Some(handoff.response_id.clone());
-            self.agent_command_ui_requested = true;
-            self.status = handoff.message.as_deref().map_or_else(
-                || "Opening the native Glass Core command UI…".into(),
-                |message| format!("{message} · opening Core UI"),
-            );
-        }
+        self.update_gc_model_catalogue(snapshot);
         let entry_count = self.conversation_entries_view().len();
         if entry_count == 0 {
             self.transcript_selection = 0;
@@ -14138,6 +14337,67 @@ fn editor_offset(content: &str, line: u32, column: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slash_palette_starts_focused_and_searches_the_full_core_catalogue() {
+        let (mut state, root) = routed_state("slash-focused-core");
+        state.gc_command_items = vec![
+            serde_json::json!({"name":"status","description":"Current session","runtimeMode":"runtime"}),
+            serde_json::json!({"name":"model","description":"Choose model","runtimeMode":"interactive"}),
+            serde_json::json!({"name":"reconcile","description":"Resolve interrupted tool calls","runtimeMode":"interactive"}),
+        ];
+        let initial = state.gc_palette_core_commands();
+        assert_eq!(
+            initial
+                .iter()
+                .filter_map(|item| item["name"].as_str())
+                .collect::<Vec<_>>(),
+            ["status", "model"]
+        );
+        state.gc_command_query = "reconcile".into();
+        let searched = state.gc_palette_core_commands();
+        assert_eq!(searched.len(), 1);
+        assert_eq!(searched[0]["name"], "reconcile");
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn model_picker_uses_core_catalogue_and_escape_returns_to_palette() {
+        let (mut state, root) = routed_state("slash-model-picker");
+        let agent = crate::AgentId::parse("agent-0001").unwrap();
+        state.selected_agent = Some(agent.clone());
+        state.gc_model_menu_open = true;
+        state.gc_command_menu_open = true;
+        state.gc_command_loading = true;
+        let mut catalogues = std::collections::BTreeMap::new();
+        catalogues.insert(
+            agent,
+            super::super::snapshot::CoreModelCatalogue {
+                provider: Some("openai".into()),
+                current_model: Some("gpt-current".into()),
+                models: vec![
+                    serde_json::json!({"id":"gpt-current","label":"Current"}),
+                    serde_json::json!({"id":"gpt-next","label":"Next"}),
+                ],
+                error: None,
+            },
+        );
+        let snapshot = super::super::snapshot::DisplaySnapshot {
+            core_model_catalogues: catalogues,
+            ..Default::default()
+        };
+        state.update_gc_model_catalogue(&snapshot);
+        assert_eq!(state.gc_model_provider.as_deref(), Some("openai"));
+        assert_eq!(state.gc_model_current.as_deref(), Some("gpt-current"));
+        assert_eq!(state.gc_model_items.len(), 2);
+        assert!(!state.gc_command_loading);
+        state.move_gc_command_selection(1);
+        assert_eq!(state.gc_command_selected, 1);
+        state.cancel_gc_command_menu();
+        assert!(!state.gc_model_menu_open);
+        assert!(state.gc_command_menu_open);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
 
     #[test]
     fn task_assigned_threads_show_task_identity_and_other_threads_keep_role() {

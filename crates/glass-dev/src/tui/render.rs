@@ -252,6 +252,22 @@ pub(super) struct CommandMenuGeometry {
     pub scroll_offset: usize,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct GcCommandMenuGeometry {
+    pub modal: Rect,
+    pub inner: Rect,
+    pub visible_command_rows: usize,
+    pub scroll_offset: usize,
+    command_for_line: Vec<Option<usize>>,
+}
+
+#[derive(Debug)]
+struct GcCommandMenuContent {
+    lines: Vec<Line<'static>>,
+    command_for_line: Vec<Option<usize>>,
+    selected_line: Option<usize>,
+}
+
 fn command_menu_regions(area: Rect) -> [Rect; 2] {
     let rows = if area.height >= 11 {
         Layout::default()
@@ -631,22 +647,33 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
 }
 
 fn render_gc_command_menu(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
-    let width = area.width.saturating_sub(4).min(88);
-    let height = area.height.saturating_sub(4).clamp(5, 16);
-    let modal = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height: height.min(area.height),
-    };
-    let block = Block::default()
+    let block = gc_command_menu_block();
+    let content = gc_command_menu_content(state);
+    let geometry = gc_command_menu_geometry(area, &block, &content);
+    frame.render_widget(Clear, geometry.modal);
+    frame.render_widget(
+        Paragraph::new(Text::from(content.lines))
+            .scroll((u16::try_from(geometry.scroll_offset).unwrap_or(u16::MAX), 0))
+            // Catalogue entries must each occupy exactly one terminal row.
+            // Wrapping descriptions made the selected logical line diverge
+            // from the row Ratatui actually displayed.
+            .block(block),
+        geometry.modal,
+    );
+}
+
+fn gc_command_menu_block() -> Block<'static> {
+    Block::default()
         .title(" CORE COMMANDS · type to filter · ↑↓ move · Tab complete · Enter run · Esc close ")
         .title_style(Style::default().fg(PURPLE).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(PURPLE))
         .bg(PANEL_BACKGROUND)
-        .padding(Padding::horizontal(1));
+        .padding(Padding::horizontal(1))
+}
+
+fn gc_command_menu_content(state: &DevTuiState) -> GcCommandMenuContent {
     let glass_actions = state.gc_command_glass_actions();
     let core_commands =
         command::filter_gc_commands(&state.gc_command_items, &state.gc_command_query);
@@ -655,7 +682,7 @@ fn render_gc_command_menu(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
             "/",
             Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(&state.gc_command_query, Style::default().fg(TEXT)),
+        Span::styled(state.gc_command_query.clone(), Style::default().fg(TEXT)),
         Span::styled("▏", Style::default().fg(PURPLE)),
     ])];
     lines.push(Line::from(vec![
@@ -673,24 +700,28 @@ fn render_gc_command_menu(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
             Style::default().fg(MUTED),
         ),
     ]));
+    let mut command_for_line = vec![None, None];
     let mut selected_line = 0usize;
     if glass_actions.is_empty() && core_commands.is_empty() && !state.gc_command_loading {
         lines.push(Line::from(Span::styled(
             "No matching commands or Glass actions",
             Style::default().fg(MUTED),
         )));
+        command_for_line.push(None);
     } else if !glass_actions.is_empty() || !core_commands.is_empty() {
         if !core_commands.is_empty() || state.gc_command_loading {
             lines.push(Line::from(Span::styled(
                 "CORE COMMANDS · owned by Glass Core",
                 Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
             )));
+            command_for_line.push(None);
         }
         if state.gc_command_loading {
             lines.push(Line::from(Span::styled(
                 "Loading commands from Glass Core…",
                 Style::default().fg(MUTED),
             )));
+            command_for_line.push(None);
         }
         for (index, item) in core_commands.iter().enumerate() {
             let name = item
@@ -723,9 +754,10 @@ fn render_gc_command_menu(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
                     Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(format!("/{name:<16} "), style.add_modifier(Modifier::BOLD)),
-                Span::styled(description, style),
+                Span::styled(description.to_string(), style),
                 Span::styled(format!("  [{runtime}]"), Style::default().fg(MUTED)),
             ]));
+            command_for_line.push(Some(index));
             if index == state.gc_command_selected {
                 selected_line = lines.len() - 1;
             }
@@ -737,6 +769,7 @@ fn render_gc_command_menu(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
                     .fg(ACCENT_BRIGHT)
                     .add_modifier(Modifier::BOLD),
             )));
+            command_for_line.push(None);
         }
         for (index, action) in glass_actions.iter().enumerate() {
             let selected_index = core_commands.len() + index;
@@ -752,6 +785,7 @@ fn render_gc_command_menu(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
                 ),
                 Span::styled(format!("{} · {}", action.label, action.command), style),
             ]));
+            command_for_line.push(Some(selected_index));
             if selected_index == state.gc_command_selected {
                 selected_line = lines.len() - 1;
             }
@@ -761,24 +795,85 @@ fn render_gc_command_menu(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect
             "Loading commands from Glass Core…",
             Style::default().fg(MUTED),
         )));
+        command_for_line.push(None);
     }
     lines.push(Line::from(Span::styled(
         "Tab completes in the composer · Enter runs the selected Core or Glass action",
         Style::default().fg(MUTED),
     )));
+    command_for_line.push(None);
+    GcCommandMenuContent {
+        lines,
+        command_for_line,
+        selected_line: (selected_line != 0).then_some(selected_line),
+    }
+}
+
+fn gc_command_menu_geometry(
+    area: Rect,
+    block: &Block<'static>,
+    content: &GcCommandMenuContent,
+) -> GcCommandMenuGeometry {
+    let width = area.width.saturating_sub(4).min(88);
+    let height = area.height.saturating_sub(4).clamp(5, 16);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height: height.min(area.height),
+    };
     let inner = block.inner(modal);
     let visible_lines = usize::from(inner.height);
-    let max_scroll = lines.len().saturating_sub(visible_lines);
-    let selected_scroll = selected_line.saturating_sub(visible_lines.saturating_sub(1));
-    let scroll = selected_scroll.min(max_scroll) as u16;
-    frame.render_widget(Clear, modal);
-    frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .scroll((scroll, 0))
-            .wrap(Wrap { trim: true })
-            .block(block),
+    let max_scroll = content.lines.len().saturating_sub(visible_lines);
+    let selected_scroll = content
+        .selected_line
+        .unwrap_or(0)
+        .saturating_sub(visible_lines.saturating_sub(1));
+    let scroll_offset = selected_scroll.min(max_scroll);
+    GcCommandMenuGeometry {
         modal,
+        inner,
+        visible_command_rows: content
+            .command_for_line
+            .iter()
+            .skip(scroll_offset)
+            .take(visible_lines)
+            .filter(|command| command.is_some())
+            .count(),
+        scroll_offset,
+        command_for_line: content.command_for_line.clone(),
+    }
+}
+
+pub(super) fn gc_command_menu_geometry_for_screen(state: &DevTuiState) -> GcCommandMenuGeometry {
+    let area = Rect::new(
+        0,
+        0,
+        state.terminal_width.max(1),
+        state.terminal_height.max(1),
     );
+    let block = gc_command_menu_block();
+    let content = gc_command_menu_content(state);
+    gc_command_menu_geometry(area, &block, &content)
+}
+
+pub(super) fn gc_command_menu_hit_index(
+    state: &DevTuiState,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    let geometry = gc_command_menu_geometry_for_screen(state);
+    if column < geometry.inner.x
+        || column >= geometry.inner.right()
+        || row < geometry.inner.y
+        || row >= geometry.inner.bottom()
+    {
+        return None;
+    }
+    let line_index = geometry
+        .scroll_offset
+        .checked_add(usize::from(row - geometry.inner.y))?;
+    geometry.command_for_line.get(line_index).copied().flatten()
 }
 
 fn render_send_attempt_retry_confirmation(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
@@ -5517,6 +5612,55 @@ mod tests {
         for command in ["view Tasks", "view Debug", "view More"] {
             assert!(host_actions.iter().any(|action| action.command == command));
         }
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn gc_command_selection_uses_physical_rows_at_phone_and_desktop_sizes() {
+        let (mut state, root) = overlay_state();
+        state.composer_mode = true;
+        state.gc_command_menu_open = true;
+        state.gc_command_items = (0..24)
+            .map(|index| {
+                serde_json::json!({
+                    "name": format!("cmd{index:02}"),
+                    "description": format!(
+                        "command {index} with a deliberately long description that wraps across multiple terminal rows and used to offset the selection"
+                    ),
+                    "runtimeMode": "runtime"
+                })
+            })
+            .collect();
+        state.gc_command_selected = 20;
+
+        for (width, height) in [(48, 16), (80, 24), (120, 40)] {
+            state.terminal_width = width;
+            state.terminal_height = height;
+            let geometry = gc_command_menu_geometry_for_screen(&state);
+            assert!(geometry.inner.height > 0, "{width}x{height}");
+            assert!(geometry.scroll_offset > 0, "{width}x{height}");
+
+            let buffer = rendered_buffer(&state, width, height);
+            let selected_row = (geometry.inner.y..geometry.inner.bottom())
+                .find(|row| {
+                    let line = (0..width)
+                        .map(|column| buffer[(column, *row)].symbol())
+                        .collect::<String>();
+                    line.contains("/cmd20")
+                })
+                .unwrap_or_else(|| panic!("selected command missing from {width}x{height}"));
+            assert_eq!(
+                gc_command_menu_hit_index(&state, geometry.inner.x, selected_row),
+                Some(20),
+                "visible selected row must hit the same catalogue item at {width}x{height}"
+            );
+            let line = (0..width)
+                .map(|column| buffer[(column, selected_row)].symbol())
+                .collect::<String>();
+            assert!(line.contains("/cmd20"), "{width}x{height}: {line:?}");
+        }
+
         drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -916,7 +916,12 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                 }
             }
             "response" => {
-                if event.payload.get("operation").and_then(Value::as_str) == Some("models") {
+                if event.payload.get("operation").and_then(Value::as_str) == Some("coreCommands") {
+                    // `commands/list` is UI discovery for the slash palette.
+                    // Its complete catalogue is cached separately in the
+                    // snapshot and must not become transcript text or split a
+                    // currently streaming assistant message.
+                } else if event.payload.get("operation").and_then(Value::as_str) == Some("models") {
                     if event.payload.get("ok").and_then(Value::as_bool) == Some(false) {
                         shared.finish_streaming(&mut items);
                         let error = event
@@ -937,7 +942,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     }
                 } else if matches!(
                     event.payload.get("operation").and_then(Value::as_str),
-                    Some("coreCommands" | "coreCommand" | "coreTaskGraph" | "coreTaskAbort")
+                    Some("coreCommand" | "coreTaskGraph" | "coreTaskAbort")
                 ) {
                     shared.finish_streaming(&mut items);
                     let operation = event.payload["operation"].as_str().unwrap_or("coreCommand");
@@ -953,9 +958,7 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                             Some(operation.into()),
                         ));
                     } else if let Some(result) = event.payload.get("result") {
-                        let text = if operation == "coreCommands" {
-                            core_command_catalog_text(result)
-                        } else if operation == "coreTaskGraph" {
+                        let text = if operation == "coreTaskGraph" {
                             core_task_graph_text(result)
                         } else if operation == "coreTaskAbort" {
                             if result.get("accepted").and_then(Value::as_bool) == Some(true) {
@@ -1086,26 +1089,6 @@ fn core_task_graph_text(result: &Value) -> String {
     if tasks.len() > 40 {
         lines.push(format!("… and {} more", tasks.len() - 40));
     }
-    lines.join("\n")
-}
-
-fn core_command_catalog_text(result: &Value) -> String {
-    let mut lines = vec!["Glass Core built-in commands (catalogue from GC)".to_string()];
-    if let Some(commands) = result.get("commands").and_then(Value::as_array) {
-        for command in commands {
-            let name = command.get("name").and_then(Value::as_str).unwrap_or("?");
-            let mode = command
-                .get("runtimeMode")
-                .and_then(Value::as_str)
-                .unwrap_or("interactive");
-            let description = command
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            lines.push(format!("/{name} · {description} · {mode}"));
-        }
-    }
-    lines.push("Commands run through Glass Core. Interactive commands use / → GLASS → Open GC native command menu.".into());
     lines.join("\n")
 }
 
@@ -1323,35 +1306,71 @@ mod tests {
     }
 
     #[test]
-    fn core_command_catalogue_and_native_handoff_are_rendered_from_core_response() {
-        let event = crate::AgentEvent {
-            sequence: 1,
-            agent_id: crate::AgentId::parse("agent-0002").unwrap(),
-            timestamp_ms: 0,
-            kind: "response".into(),
-            payload: serde_json::json!({"operation":"coreCommands","ok":true,"result":{"source":"glass-core","commands":[{"name":"status","description":"View session status","runtimeMode":"runtime"},{"name":"model","description":"Select model","runtimeMode":"interactive"}]}}),
-        };
-        let rendered = conversation(&[event]);
+    fn core_command_discovery_stays_out_of_chat_but_executed_results_remain_visible() {
+        let agent_id = crate::AgentId::parse("agent-0002").unwrap();
+        let events = [
+            crate::AgentEvent {
+                sequence: 1,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "message_update".into(),
+                payload: serde_json::json!({"delta":"before discovery "}),
+            },
+            crate::AgentEvent {
+                sequence: 2,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "response".into(),
+                payload: serde_json::json!({
+                    "operation":"coreCommands",
+                    "ok":true,
+                    "result":{"source":"glass-core","commands":[
+                        {"name":"status","description":"View session status","runtimeMode":"runtime"},
+                        {"name":"model","description":"Select model","runtimeMode":"interactive"}
+                    ]}
+                }),
+            },
+            crate::AgentEvent {
+                sequence: 3,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "message_update".into(),
+                payload: serde_json::json!({"delta":"after discovery"}),
+            },
+            crate::AgentEvent {
+                sequence: 4,
+                agent_id: agent_id.clone(),
+                timestamp_ms: 0,
+                kind: "response".into(),
+                payload: serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"help","text":"Core help output"}}),
+            },
+            crate::AgentEvent {
+                sequence: 5,
+                agent_id,
+                timestamp_ms: 0,
+                kind: "response".into(),
+                payload: serde_json::json!({"operation":"coreCommand","ok":false,"error":{"message":"Core command failed"}}),
+            },
+        ];
+        let rendered = conversation(&events);
         assert!(
-            rendered.contains("/status · View session status · runtime"),
+            rendered.contains("before discovery after discovery"),
             "{rendered}"
         );
         assert!(
-            rendered.contains("/model · Select model · interactive"),
+            !rendered.contains("/status · View session status"),
             "{rendered}"
         );
-
-        let event = crate::AgentEvent {
-            sequence: 2,
-            agent_id: crate::AgentId::parse("agent-0002").unwrap(),
-            timestamp_ms: 0,
-            kind: "response".into(),
-            payload: serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"model","requiresInteractive":true,"message":"/model is available in Glass Core's native command menu."}}),
-        };
-        let rendered = conversation(&[event]);
-        assert!(
-            rendered.contains("Open GC native command menu"),
-            "{rendered}"
+        assert!(!rendered.contains("/model · Select model"), "{rendered}");
+        assert!(rendered.contains("Core help output"), "{rendered}");
+        assert!(rendered.contains("Core command failed"), "{rendered}");
+        assert_eq!(
+            conversation_entries(&events)
+                .iter()
+                .filter(|item| item.text.contains("before discovery"))
+                .count(),
+            1,
+            "catalogue discovery must not split a streaming assistant bubble"
         );
     }
 

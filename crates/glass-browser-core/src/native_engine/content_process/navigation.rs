@@ -37,6 +37,7 @@ fn trace_content_load_stage(
     }
     let mut record = serde_json::json!({
         "component": "native_load",
+        "process_id": std::process::id(),
         "request_id": request_id,
         "stage": stage,
         "phase": phase,

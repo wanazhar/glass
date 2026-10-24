@@ -91,6 +91,7 @@ fn trace_native_cli_phase(stage: &'static str, elapsed: Duration) {
     }
     let record = serde_json::json!({
         "component": "native_cli",
+        "process_id": std::process::id(),
         "stage": stage,
         "elapsed_us": elapsed.as_micros(),
     });

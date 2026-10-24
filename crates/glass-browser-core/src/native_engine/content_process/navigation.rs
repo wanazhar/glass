@@ -1,5 +1,144 @@
 use super::*;
 
+/// Opt-in, privacy-safe timings for the content-process load pipeline. The
+/// trace intentionally records only the local IPC request number, fixed stage
+/// names, item counts and elapsed time; it never records a URL, response body,
+/// cookie, selector or script text. Keeping this inside the child process lets
+/// us distinguish network waits from native parsing without routing diagnostics
+/// through the interactive TUI.
+fn trace_content_load_stage(
+    request_id: u64,
+    stage: &'static str,
+    phase: &'static str,
+    elapsed_us: Option<u128>,
+    items: Option<usize>,
+    ordinal: Option<usize>,
+    resource_type: Option<&'static str>,
+) {
+    let Some(path) = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path).with_extension("native_load.jsonl");
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = file.metadata() {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o600);
+            let _ = file.set_permissions(permissions);
+        }
+    }
+    let mut record = serde_json::json!({
+        "component": "native_load",
+        "request_id": request_id,
+        "stage": stage,
+        "phase": phase,
+        "elapsed_us": elapsed_us,
+    });
+    if let Some(items) = items {
+        record["items"] = serde_json::json!(items);
+    }
+    if let Some(ordinal) = ordinal {
+        record["ordinal"] = serde_json::json!(ordinal);
+    }
+    if let Some(resource_type) = resource_type {
+        record["resource_type"] = serde_json::json!(resource_type);
+    }
+    if let Ok(mut bytes) = serde_json::to_vec(&record) {
+        bytes.push(b'\n');
+        let _ = std::io::Write::write_all(&mut file, &bytes);
+    }
+}
+
+pub(crate) struct ContentLoadStage {
+    request_id: u64,
+    name: &'static str,
+    started: std::time::Instant,
+    completed: bool,
+    ordinal: Option<usize>,
+    resource_type: Option<&'static str>,
+}
+
+impl ContentLoadStage {
+    pub(crate) fn begin(request_id: u64, name: &'static str) -> Self {
+        Self::begin_with_resource(request_id, name, None, None)
+    }
+
+    fn begin_resource(request_id: u64, resource_type: &'static str, ordinal: usize) -> Self {
+        Self::begin_with_resource(
+            request_id,
+            "resource_fetch",
+            Some(ordinal),
+            Some(resource_type),
+        )
+    }
+
+    pub(crate) fn begin_with_resource(
+        request_id: u64,
+        name: &'static str,
+        ordinal: Option<usize>,
+        resource_type: Option<&'static str>,
+    ) -> Self {
+        trace_content_load_stage(
+            request_id,
+            name,
+            "start",
+            None,
+            None,
+            ordinal,
+            resource_type,
+        );
+        Self {
+            request_id,
+            name,
+            started: std::time::Instant::now(),
+            completed: false,
+            ordinal,
+            resource_type,
+        }
+    }
+
+    pub(crate) fn finish(self, items: Option<usize>) {
+        self.finish_as("complete", items);
+    }
+
+    fn finish_as(mut self, phase: &'static str, items: Option<usize>) {
+        trace_content_load_stage(
+            self.request_id,
+            self.name,
+            phase,
+            Some(self.started.elapsed().as_micros()),
+            items,
+            self.ordinal,
+            self.resource_type,
+        );
+        self.completed = true;
+    }
+}
+
+impl Drop for ContentLoadStage {
+    fn drop(&mut self) {
+        if !self.completed {
+            trace_content_load_stage(
+                self.request_id,
+                self.name,
+                "incomplete",
+                Some(self.started.elapsed().as_micros()),
+                None,
+                self.ordinal,
+                self.resource_type,
+            );
+        }
+    }
+}
+
 pub(super) async fn load_parent_content_navigation(
     request_id: u64,
     generation: u32,
@@ -538,6 +677,7 @@ pub(super) async fn load_content_resource(
         }
     };
     loader.set_environment(environment)?;
+    let response_stage = ContentLoadStage::begin(request_id, "navigation_response");
     let resource = if navigation.object_url.is_some() {
         loader
             .load_async_request_with_referrer_policy(&navigation, referrer, referrer_policy)
@@ -644,9 +784,13 @@ pub(super) async fn load_content_resource(
                         .await?
                 }
             }
-            NativeServiceWorkerNavigationOutcome::Suspended => return Ok(None),
+            NativeServiceWorkerNavigationOutcome::Suspended => {
+                response_stage.finish_as("suspended", None);
+                return Ok(None);
+            }
         }
     };
+    response_stage.finish(None);
     if navigation.object_url.is_none() {
         service_workers.commit_document(&resource.url)?;
     }
@@ -668,12 +812,15 @@ pub(super) async fn load_content_resource(
         next_content_resource_fetch_id: 0,
         page_meta_content_security_policies: Vec::new(),
     };
+    let discovery_stage = ContentLoadStage::begin(request_id, "document_discovery_parse");
     let mut discovery = NativeDocument::parse_with_generation_and_referrer_policy(
         &resource.body,
         &limits,
         generation,
         loader.document_referrer_policy(&resource.url)?,
     )?;
+    let stylesheet_links = discovery.external_stylesheet_links();
+    discovery_stage.finish(Some(stylesheet_links.len()));
     loader.apply_meta_content_security_policies(
         &resource.url,
         &discovery.content_security_policy_meta(),
@@ -688,13 +835,15 @@ pub(super) async fn load_content_resource(
     let mut external_stylesheet_states = Vec::new();
     let mut external_stylesheet_bytes = 0usize;
     let mut resource_events = Vec::new();
-    for href in discovery
-        .external_stylesheet_links()
+    let stylesheet_stage = ContentLoadStage::begin(request_id, "stylesheet_fetches");
+    for (ordinal, href) in stylesheet_links
         .into_iter()
         .take(MAX_CONTENT_STYLESHEETS)
+        .enumerate()
     {
         let (node_index, href, integrity, crossorigin) = href;
         let referrer_policy = discovery.stylesheet_link_referrer_policy_for_node_index(node_index);
+        let resource_stage = ContentLoadStage::begin_resource(request_id, "stylesheet", ordinal);
         let stylesheet_result = if is_parent_owned_network_target(&resource.url, &href) {
             parent_fetch_broker
                 .load_stylesheet(
@@ -742,6 +891,7 @@ pub(super) async fn load_content_resource(
             }
             Ok(None) | Err(_) => None,
         };
+        resource_stage.finish(None);
         let event_kind = body
             .as_ref()
             .map_or(NativeEventKind::Error, |_| NativeEventKind::Load);
@@ -753,6 +903,7 @@ pub(super) async fn load_content_resource(
         ));
         resource_events.push((node_index, event_kind));
     }
+    stylesheet_stage.finish(Some(external_stylesheet_states.len()));
     let external_stylesheets = external_stylesheet_states
         .iter()
         .filter_map(|(_, href, stylesheet_url, body)| {
@@ -762,6 +913,7 @@ pub(super) async fn load_content_resource(
             })
         })
         .collect::<Vec<_>>();
+    let document_parse_stage = ContentLoadStage::begin(request_id, "document_stylesheet_parse");
     let mut document = NativeDocument::parse_with_stylesheets_inline_policy_and_referrer_policy(
         &resource.body,
         &limits,
@@ -770,11 +922,13 @@ pub(super) async fn load_content_resource(
         Some(&allowed_inline_style_nodes),
         loader.document_referrer_policy(&resource.url)?,
     )?;
+    document_parse_stage.finish(Some(external_stylesheets.len()));
     document.set_css_target_from_url(&resource.url)?;
     document.set_viewport(viewport)?;
     document.set_external_stylesheet_states(external_stylesheet_states);
     document.mark_inline_style_reports_seen();
     document.mark_content_security_policy_meta_processed();
+    let font_stage = ContentLoadStage::begin(request_id, "font_faces");
     load_font_faces(
         &mut document,
         None,
@@ -783,54 +937,74 @@ pub(super) async fn load_content_resource(
         Some(&mut parent_fetch_broker),
     )
     .await?;
-    resource_events.extend(
-        load_external_image_preloads(
-            &mut document,
-            loader,
-            &resource.url,
-            Some(&mut parent_fetch_broker),
-        )
-        .await?,
-    );
-    resource_events.extend(
-        load_external_images(
-            &mut document,
-            None,
-            loader,
-            &resource.url,
-            viewport,
-            Some(&mut parent_fetch_broker),
-        )
-        .await?,
-    );
+    font_stage.finish(None);
+    let image_preload_stage = ContentLoadStage::begin(request_id, "image_preloads");
+    let image_preload_events = load_external_image_preloads(
+        &mut document,
+        loader,
+        &resource.url,
+        Some(&mut parent_fetch_broker),
+        Some(request_id),
+    )
+    .await?;
+    let image_preload_count = image_preload_events.len();
+    resource_events.extend(image_preload_events);
+    image_preload_stage.finish(Some(image_preload_count));
+    let image_stage = ContentLoadStage::begin(request_id, "images");
+    let image_events = load_external_images(
+        &mut document,
+        None,
+        loader,
+        &resource.url,
+        viewport,
+        Some(&mut parent_fetch_broker),
+        Some(request_id),
+    )
+    .await?;
+    resource_events.extend(image_events);
+    // This stage includes CSS background images, which do not produce load
+    // events in the same vector. Per-resource trace rows provide the exact
+    // counts without overstating this event-vector length.
+    image_stage.finish(None);
+    let poster_stage = ContentLoadStage::begin(request_id, "video_posters");
     load_external_video_posters(
         &mut document,
         loader,
         &resource.url,
         Some(&mut parent_fetch_broker),
+        Some(request_id),
     )
     .await?;
-    resource_events.extend(
-        load_external_media(
-            &mut document,
-            None,
-            loader,
-            &resource.url,
-            Some(&mut parent_fetch_broker),
-        )
-        .await?,
-    );
+    poster_stage.finish(None);
+    let media_stage = ContentLoadStage::begin(request_id, "media");
+    let media_events = load_external_media(
+        &mut document,
+        None,
+        loader,
+        &resource.url,
+        Some(&mut parent_fetch_broker),
+        Some(request_id),
+    )
+    .await?;
+    let media_event_count = media_events.len();
+    resource_events.extend(media_events);
+    media_stage.finish(Some(media_event_count));
+    let script_stage = ContentLoadStage::begin(request_id, "script_sources");
     let (script_sources, script_resource_events) = load_page_script_sources(
         &document,
         loader,
         &resource.url,
         Some(&mut parent_fetch_broker),
+        Some(request_id),
     )
     .await?;
+    script_stage.finish(None);
     resource_events.extend(script_resource_events);
     resource_events.sort_unstable_by_key(|(node_index, _)| *node_index);
     resource_events.dedup();
+    let wire_stage = ContentLoadStage::begin(request_id, "document_wire_encode");
     let wire = document.to_content_wire();
+    wire_stage.finish(Some(wire.nodes.len()));
     Ok(Some((
         NativeContentLoad {
             url: resource.url,
@@ -1039,12 +1213,14 @@ pub(super) async fn load_external_images(
     document_url: &str,
     viewport: Viewport,
     mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+    trace_request_id: Option<u64>,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
     let mut image_events = Vec::new();
-    for (node_index, source) in document
+    for (ordinal, (node_index, source)) in document
         .external_image_links(viewport)
         .into_iter()
         .take(MAX_CONTENT_IMAGES)
+        .enumerate()
     {
         let node_id = NativeNodeId::from_parts(document.generation(), node_index);
         if document.image_load_attempted_for_node(node_id, viewport) {
@@ -1058,6 +1234,8 @@ pub(super) async fn load_external_images(
             .transpose()?
             .flatten();
         let referrer_policy = document.image_referrer_policy_for_node(node_id);
+        let resource_stage = trace_request_id
+            .map(|request_id| ContentLoadStage::begin_resource(request_id, "image", ordinal));
         let image = if let Some(image) = preloaded_image {
             Ok(Some(image))
         } else if is_parent_owned_network_target(document_url, &source) {
@@ -1080,6 +1258,9 @@ pub(super) async fn load_external_images(
                 )
                 .await
         };
+        if let Some(resource_stage) = resource_stage {
+            resource_stage.finish(None);
+        }
         let event_kind = match image {
             Ok(Some(image)) => {
                 document.set_image_resource(node_index, source, image)?;
@@ -1089,10 +1270,11 @@ pub(super) async fn load_external_images(
         };
         image_events.push((node_index, event_kind));
     }
-    for (node_index, source) in document
+    for (ordinal, (node_index, source)) in document
         .external_background_image_links()
         .into_iter()
         .take(MAX_CONTENT_IMAGES)
+        .enumerate()
     {
         let node_id = NativeNodeId::from_parts(document.generation(), node_index);
         if document
@@ -1105,6 +1287,9 @@ pub(super) async fn load_external_images(
             .map(|runtime| runtime.object_url_resource(&source))
             .transpose()?
             .flatten();
+        let resource_stage = trace_request_id.map(|request_id| {
+            ContentLoadStage::begin_resource(request_id, "background_image", ordinal)
+        });
         let image = if is_parent_owned_network_target(document_url, &source) {
             if let Some(broker) = parent_fetch_broker.as_deref_mut() {
                 broker.page_meta_content_security_policies =
@@ -1133,6 +1318,9 @@ pub(super) async fn load_external_images(
                 }
             }
         };
+        if let Some(resource_stage) = resource_stage {
+            resource_stage.finish(None);
+        }
         if let Ok(Some(image)) = image {
             document.set_background_image_resource(node_index, source, image)?;
         }
@@ -1145,12 +1333,14 @@ pub(super) async fn load_external_video_posters(
     loader: &mut NativeResourceLoader,
     document_url: &str,
     mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+    trace_request_id: Option<u64>,
 ) -> Result<(), NativeEngineError> {
     let poster_base_url = Url::parse(&document.effective_base_url(document_url)).ok();
-    for (node_index, source) in document
+    for (ordinal, (node_index, source)) in document
         .external_video_poster_links()
         .into_iter()
         .take(MAX_CONTENT_IMAGES)
+        .enumerate()
     {
         let Some(target_url) = poster_base_url
             .as_ref()
@@ -1166,23 +1356,25 @@ pub(super) async fn load_external_video_posters(
         if !document.mark_video_poster_load(node_index, source.clone())? {
             continue;
         }
-        let referrer_policy = document.document_referrer_policy();
-        let image = if is_parent_owned_network_target(document_url, &target_url) {
-            if let Some(broker) = parent_fetch_broker.as_deref_mut() {
-                broker.page_meta_content_security_policies =
-                    loader.document_meta_content_security_policies(document_url)?;
-                broker
-                    .load_video_poster(document_url, &target_url, referrer_policy)
-                    .await
-            } else {
-                Err(missing_parent_network_authority("video poster load"))
-            }
-        } else {
-            // Poster fetching is currently limited to parent-owned HTTP(S)
-            // images. Data URLs are decoded by the paint path; other schemes
-            // remain unavailable without affecting document loading.
+        if !is_parent_owned_network_target(document_url, &target_url) {
             continue;
+        }
+        let referrer_policy = document.document_referrer_policy();
+        let resource_stage = trace_request_id.map(|request_id| {
+            ContentLoadStage::begin_resource(request_id, "video_poster", ordinal)
+        });
+        let image = if let Some(broker) = parent_fetch_broker.as_deref_mut() {
+            broker.page_meta_content_security_policies =
+                loader.document_meta_content_security_policies(document_url)?;
+            broker
+                .load_video_poster(document_url, &target_url, referrer_policy)
+                .await
+        } else {
+            Err(missing_parent_network_authority("video poster load"))
         };
+        if let Some(resource_stage) = resource_stage {
+            resource_stage.finish(None);
+        }
         match image {
             Ok(Some(image)) => document.set_video_poster_resource(node_index, source, image)?,
             Ok(None)
@@ -1207,6 +1399,7 @@ pub(super) async fn load_external_image_preloads(
     loader: &mut NativeResourceLoader,
     document_url: &str,
     mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+    trace_request_id: Option<u64>,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
     let links = document
         .external_image_preload_links()
@@ -1224,7 +1417,7 @@ pub(super) async fn load_external_image_preloads(
     states.retain(|node_index, _| live_nodes.contains(node_index));
     let mut events = Vec::new();
 
-    for (node_index, href) in links {
+    for (ordinal, (node_index, href)) in links.into_iter().enumerate() {
         if states.get(&node_index) == Some(&href) {
             continue;
         }
@@ -1233,10 +1426,16 @@ pub(super) async fn load_external_image_preloads(
             continue;
         }
         let cache_key = parent_image_preload_cache_key(document_url, &href);
-        let event_kind = if cache_key
+        let cached = cache_key
             .as_deref()
-            .is_some_and(|key| document.has_preloaded_image_resource(key))
-        {
+            .is_some_and(|key| document.has_preloaded_image_resource(key));
+        let resource_stage = trace_request_id.map(|request_id| {
+            ContentLoadStage::begin_resource(request_id, "image_preload", ordinal)
+        });
+        let event_kind = if cached {
+            if let Some(resource_stage) = resource_stage {
+                resource_stage.finish_as("cache_hit", None);
+            }
             NativeEventKind::Load
         } else {
             let referrer_policy =
@@ -1250,7 +1449,7 @@ pub(super) async fn load_external_image_preloads(
             } else {
                 Err(missing_parent_network_authority("image preload"))
             };
-            match image {
+            let event_kind = match image {
                 Ok(Some(image)) => {
                     if let Some(cache_key) = cache_key {
                         let _retained =
@@ -1259,7 +1458,11 @@ pub(super) async fn load_external_image_preloads(
                     NativeEventKind::Load
                 }
                 Ok(None) | Err(_) => NativeEventKind::Error,
+            };
+            if let Some(resource_stage) = resource_stage {
+                resource_stage.finish(None);
             }
+            event_kind
         };
         events.push((node_index, event_kind));
     }
@@ -1273,12 +1476,14 @@ pub(super) async fn load_external_media(
     loader: &mut NativeResourceLoader,
     document_url: &str,
     mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+    trace_request_id: Option<u64>,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
     let mut media_events = Vec::new();
-    for (node_index, source) in document
+    for (ordinal, (node_index, source)) in document
         .external_media_links()
         .into_iter()
         .take(MAX_CONTENT_MEDIA)
+        .enumerate()
     {
         let is_blob = source
             .get(..5)
@@ -1288,6 +1493,8 @@ pub(super) async fn load_external_media(
             continue;
         }
         document.mark_media_load(node_index, source.clone())?;
+        let resource_stage = trace_request_id
+            .map(|request_id| ContentLoadStage::begin_resource(request_id, "media", ordinal));
         let metadata = if !is_blob && is_parent_owned_network_target(document_url, &source) {
             if let Some(broker) = parent_fetch_broker.as_deref_mut() {
                 refresh_parent_broker_meta_csp(loader, Some(broker))?;
@@ -1304,6 +1511,9 @@ pub(super) async fn load_external_media(
                 _ => loader.load_media_async(document_url, &source).await?,
             }
         };
+        if let Some(resource_stage) = resource_stage {
+            resource_stage.finish(None);
+        }
         let event_kind = match metadata {
             Some(metadata) => {
                 document.set_media_resource(node_index, source, metadata)?;
@@ -1617,6 +1827,7 @@ pub(super) async fn load_page_script_sources(
     loader: &mut NativeResourceLoader,
     document_url: &str,
     parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+    trace_request_id: Option<u64>,
 ) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
     load_page_script_source_list(
         document.page_script_sources(
@@ -1632,6 +1843,7 @@ pub(super) async fn load_page_script_sources(
         "glass-inline-module",
         None,
         parent_fetch_broker,
+        trace_request_id,
     )
     .await
 }
@@ -1651,6 +1863,7 @@ pub(super) async fn load_dynamic_page_script_sources(
         "glass-dynamic-module",
         Some(runtime),
         parent_fetch_broker,
+        None,
     )
     .await
 }
@@ -1678,6 +1891,7 @@ pub(super) async fn load_page_script_source_list(
     module_name_prefix: &str,
     runtime: Option<&NativeJavaScriptRuntime>,
     mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
+    trace_request_id: Option<u64>,
 ) -> Result<(Vec<NativePageScript>, Vec<(u32, NativeEventKind)>), NativeEngineError> {
     let mut sources = Vec::new();
     let mut resource_events = Vec::new();
@@ -1807,6 +2021,9 @@ pub(super) async fn load_page_script_source_list(
                 referrer_policy,
                 parser_inserted,
             } => {
+                let resource_stage = trace_request_id.map(|request_id| {
+                    ContentLoadStage::begin_resource(request_id, "external_script", index)
+                });
                 let object_url = runtime
                     .map(|runtime| runtime.object_url_resource(&href))
                     .transpose()?
@@ -1851,6 +2068,9 @@ pub(super) async fn load_page_script_source_list(
                         })
                         .await
                 };
+                if let Some(resource_stage) = resource_stage {
+                    resource_stage.finish(None);
+                }
                 match load_result {
                     Ok(resource) => match resource {
                         Some(resource) => {
@@ -1886,6 +2106,9 @@ pub(super) async fn load_page_script_source_list(
                         continue;
                     }
                 };
+                let resource_stage = trace_request_id.map(|request_id| {
+                    ContentLoadStage::begin_resource(request_id, "external_module", index)
+                });
                 let object_url = runtime
                     .map(|runtime| runtime.object_url_resource(&href))
                     .transpose()?
@@ -1931,6 +2154,9 @@ pub(super) async fn load_page_script_source_list(
                         })
                         .await
                 };
+                if let Some(resource_stage) = resource_stage {
+                    resource_stage.finish(None);
+                }
                 match load_result {
                     Ok(resource) => match resource {
                         Some(resource) => {

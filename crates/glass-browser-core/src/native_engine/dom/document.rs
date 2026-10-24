@@ -3,6 +3,13 @@
 use super::*;
 
 impl NativeDocument {
+    pub(crate) fn has_inline_event_handler(&self, event_type: &str) -> bool {
+        let attribute_name = format!("on{}", event_type.to_ascii_lowercase());
+        self.nodes
+            .iter()
+            .any(|node| node.attribute(&attribute_name).is_some())
+    }
+
     pub(crate) fn set_viewport(&mut self, viewport: Viewport) -> Result<(), NativeEngineError> {
         viewport.validate()?;
         if self.viewport != viewport {

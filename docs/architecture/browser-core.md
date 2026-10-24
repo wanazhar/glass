@@ -52,6 +52,20 @@ socket or cancel the socket request when the child stops reading. The direct
 resource loader has separate demand and cancellation behavior; its tests do
 not imply those features exist in the process-brokered path.
 
+Native page lifecycle events first check the resident runtime's listener maps
+and the native document's inline `on…` attributes. When no handler can observe
+an event, the engine records the event without rebuilding the JS document
+bridge. The first event still initializes that bridge, and events with a
+listener continue through normal evaluation and DOM reconciliation. This keeps
+unhandled `load`/`DOMContentLoaded`/`pageshow` events from repeatedly rebuilding
+the same bridge on large pages. An opt-in `GLASS_RUNTIME_DIAGNOSTIC_TRACE`
+records fixed stage names, elapsed time, and counts in a private profile-local
+file; it never records page URLs, bodies, cookies, or script text. On a
+read-only public Amazon navigation, the initial bridge build took about 9
+seconds and subsequent unhandled lifecycle checks completed below a
+millisecond. This is a measured improvement for that page, not general browser
+parity or a latency guarantee.
+
 ## Validation
 
 The lightweight contract path is checked with

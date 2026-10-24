@@ -1103,7 +1103,7 @@ mod navigation;
 use ipc::*;
 use navigation::*;
 pub(crate) use navigation::{
-    apply_pending_meta_content_security_policies, inline_style_policy_nodes,
+    ContentLoadStage, apply_pending_meta_content_security_policies, inline_style_policy_nodes,
     is_parent_owned_network_target, refresh_inline_style_policy,
 };
 

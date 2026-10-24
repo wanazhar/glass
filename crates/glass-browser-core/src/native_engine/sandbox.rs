@@ -145,6 +145,13 @@ fn prepare_linux(
                 .arg(&storage_lock_path)
                 .arg(&storage_lock_path);
         }
+        if let Some(trace_path) = diagnostic_trace_path(storage_path)? {
+            // The worker can write only its explicitly configured profile
+            // file by default. Opt-in diagnostics get a separate, private
+            // append-only file beside that profile, not a writable mount of
+            // an arbitrary host directory.
+            command.arg("--bind").arg(&trace_path).arg(&trace_path);
+        }
     }
     for root in allowed_file_roots {
         command.arg("--ro-bind").arg(root).arg(root);
@@ -163,6 +170,77 @@ fn prepare_linux(
         });
     }
     Ok((command, NativeContentSandbox {}))
+}
+
+#[cfg(target_os = "linux")]
+fn diagnostic_trace_path(storage_path: &Path) -> Result<Option<PathBuf>, NativeEngineError> {
+    let Some(base) = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE") else {
+        return Ok(None);
+    };
+    let trace_path = PathBuf::from(base).with_extension("native_load.jsonl");
+    let profile_parent = storage_path
+        .parent()
+        .ok_or_else(|| sandbox_error("diagnostic trace requires a profile directory"))?
+        .canonicalize()
+        .map_err(|_| sandbox_error("diagnostic trace profile directory is unavailable"))?;
+    let trace_parent = trace_path
+        .parent()
+        .ok_or_else(|| sandbox_error("diagnostic trace requires a parent directory"))?
+        .canonicalize()
+        .map_err(|_| sandbox_error("diagnostic trace parent directory is unavailable"))?;
+    if profile_parent != trace_parent {
+        return Err(sandbox_error(
+            "diagnostic trace must be stored beside the native profile",
+        ));
+    }
+    let file = match std::fs::OpenOptions::new()
+        .create_new(true)
+        .append(true)
+        .open(&trace_path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = std::fs::symlink_metadata(&trace_path)
+                .map_err(|_| sandbox_error("diagnostic trace file could not be inspected"))?;
+            if !metadata.file_type().is_file() {
+                return Err(sandbox_error(
+                    "diagnostic trace destination must be a regular file",
+                ));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o777 != 0o600 {
+                    return Err(sandbox_error(
+                        "existing diagnostic trace file must be private",
+                    ));
+                }
+            }
+            let mut options = std::fs::OpenOptions::new();
+            options.append(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+            }
+            options
+                .open(&trace_path)
+                .map_err(|_| sandbox_error("diagnostic trace file could not be opened"))?
+        }
+        Err(_) => return Err(sandbox_error("diagnostic trace file could not be opened")),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = file
+            .metadata()
+            .map_err(|_| sandbox_error("diagnostic trace permissions are unavailable"))?
+            .permissions();
+        permissions.set_mode(0o600);
+        file.set_permissions(permissions)
+            .map_err(|_| sandbox_error("diagnostic trace permissions could not be restricted"))?;
+    }
+    Ok(Some(trace_path))
 }
 
 #[cfg(target_os = "macos")]

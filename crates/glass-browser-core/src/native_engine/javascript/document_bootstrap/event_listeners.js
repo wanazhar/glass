@@ -48,6 +48,19 @@
     for (const callbacks of listeners.values()) count += callbacks.length;
     return count;
   }};
+  globalThis.__glassHasHostEventListeners = (encodedTypes) => {{
+    const types = JSON.parse(String(encodedTypes));
+    if (!Array.isArray(types) || types.some(type => typeof type !== "string"))
+      throw new TypeError("native host event types are invalid");
+    const wanted = new Set(types.map(normalizeEventType));
+    for (const registry of [listeners, eventHandlers, inlineAttributeListeners]) {{
+      for (const key of registry.keys()) {{
+        const separator = key.lastIndexOf(":");
+        if (separator >= 0 && wanted.has(key.slice(separator + 1))) return true;
+      }}
+    }}
+    return false;
+  }};
   const listenerOptions = (options) => {{
     if (options === true) return {{ capture: true, once: false }};
     if (!options || typeof options !== "object") return {{ capture: false, once: false }};

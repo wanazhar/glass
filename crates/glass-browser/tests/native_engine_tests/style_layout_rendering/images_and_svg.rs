@@ -1285,8 +1285,8 @@ async fn native_animated_apng_data_images_paint_multiple_frames() {
     };
     let initial = image_pixels(&engine);
     let mut changed = false;
-    for _ in 0..20 {
-        tokio::time::sleep(Duration::from_millis(15)).await;
+    for delay_ms in [17, 23, 29, 31, 37, 41] {
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         if image_pixels(&engine) != initial {
             changed = true;
             break;

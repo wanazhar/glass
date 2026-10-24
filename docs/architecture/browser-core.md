@@ -63,24 +63,27 @@ records fixed stage names, elapsed time, and counts in a private profile-local
 file; it never records page URLs, bodies, cookies, or script text. It includes
 native CLI connect/command/close phases and the parent-brokered document fetch.
 On bounded read-only public Amazon navigations, the CLI completed natively at
-revision 2 in about 30 seconds. The top-level document fetch took 80–165
-milliseconds. A detailed incognito-worker trace attributed about 7.6 seconds
-to first document initialization: loading six static system-font candidates
-took 1.1 seconds and parsing/loading the bounded 64 discovered faces took
-about 7.2 seconds; discovering 375 font paths took 11 milliseconds. HTML5
-construction took 5 milliseconds, DOM materialization 1.4 milliseconds, CSS
-parsing 86 milliseconds, image loading 311 milliseconds, and document wire
-encoding 281 milliseconds.
+revision 2 in about 30 seconds. The top-level document fetch took 96
+milliseconds. A process-tagged incognito trace attributed 7.59 seconds to the
+content worker's first document initialization: loading six static system-font
+candidates took 1.19 seconds and parsing/loading the bounded 64 discovered
+faces took 6.39 seconds; discovering 375 font paths took 8 milliseconds. The
+host process also initialized the same bounded system-font catalog separately
+in 7.84 seconds, so font setup is duplicated across the current process
+boundary. In the content worker, HTML5 construction took 5.7 milliseconds,
+DOM materialization 2.6 milliseconds, CSS parsing 88 milliseconds, image
+loading 408 milliseconds, and document wire encoding 290 milliseconds.
 
 One resource `load` handler caused the full JS snapshot and layout path. The
-snapshot took 8.5 seconds: text projection took 398 milliseconds, element
-projection 649 milliseconds, and layout computation 7.1 seconds. Layout tree
-building took 3.2 seconds, scroll-container calculation 1.0 second, extent
-projection 1.0 second, and geometry projection 331 milliseconds. These are
-nested stage durations from one page and one machine; they must not be added to
-the overall command time. The font initialization and event-triggered layout
-costs are localized but not optimized yet. This does not establish general
-browser parity or a latency guarantee.
+content worker snapshot took 8.0 seconds: text projection took 409
+milliseconds, element projection 494 milliseconds, and layout computation
+6.83 seconds. Layout tree building took 2.94 seconds, scroll-container
+calculation 1.03 seconds, extent projection 992 milliseconds, and geometry
+projection 266 milliseconds. These are nested stage durations from one page
+and one machine; they must not be added to the overall command time. The
+duplicated font initialization and event-triggered layout costs are localized
+but not optimized yet. This does not establish general browser parity or a
+latency guarantee.
 
 ## Validation
 

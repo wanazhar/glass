@@ -798,6 +798,10 @@ pub(crate) fn execute_page_scripts(
             .any(|event_type| document.has_inline_event_handler(event_type))
             && has_listeners == Some(false)
         {
+            // The native event still occurred even when no page listener
+            // observes it. Keep its bounded effect projection while skipping
+            // the unnecessary JavaScript bridge evaluation.
+            events.push((*node_index, *event_kind));
             continue;
         }
         let event_stage = trace_request_id.map(|request_id| {
@@ -966,9 +970,11 @@ pub(crate) fn execute_page_scripts(
             .as_ref()
             .expect("page script runtime initialized")
             .has_host_event_listeners(&event_types)?;
-        if !event_types
-            .iter()
-            .any(|event_type| document.has_inline_event_handler(event_type))
+        let is_window_load = target == u32::MAX && kind == NativeEventKind::Load;
+        if !is_window_load
+            && !event_types
+                .iter()
+                .any(|event_type| document.has_inline_event_handler(event_type))
             && has_listeners == Some(false)
         {
             continue;

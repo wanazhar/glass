@@ -676,7 +676,25 @@ impl NativeEngine {
         if is_network_url(url) {
             let referrer = Some(self.url.clone());
             let referrer_policy = self.document.document_referrer_policy();
+            let stage_started = std::time::Instant::now();
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_worker_start",
+                phase = "start",
+            );
             self.ensure_content_process().await?;
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_worker_start",
+                phase = "complete",
+                elapsed_ms = stage_started.elapsed().as_millis() as u64,
+            );
+            let stage_started = std::time::Instant::now();
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_load",
+                phase = "start",
+            );
             let Some((content, history_commit, page_navigation_handoffs, initial_url)) = self
                 .load_content_with_page_navigation(
                     navigation,
@@ -698,6 +716,12 @@ impl NativeEngine {
                 }
                 return Ok(self.snapshot_unchecked());
             };
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_load",
+                phase = "complete",
+                elapsed_ms = stage_started.elapsed().as_millis() as u64,
+            );
             if cancellation
                 .as_ref()
                 .is_some_and(NativeNavigationCancellation::is_cancelled)
@@ -719,8 +743,26 @@ impl NativeEngine {
                     .await?;
                 return Err(NativeEngineError::NavigationCancelled);
             }
+            let stage_started = std::time::Instant::now();
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_process_commit",
+                phase = "start",
+            );
             self.commit_content_process().await?;
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_process_commit",
+                phase = "complete",
+                elapsed_ms = stage_started.elapsed().as_millis() as u64,
+            );
             if let Some(worker) = self.runtime_worker.clone() {
+                let stage_started = std::time::Instant::now();
+                tracing::debug!(
+                    target: "glass_browser_core::native_navigation",
+                    stage = "content_apply",
+                    phase = "start",
+                );
                 return self
                     .navigate_content_async(
                         content,
@@ -729,9 +771,30 @@ impl NativeEngine {
                         page_navigation_handoffs,
                         &initial_url,
                     )
-                    .await;
+                    .await
+                    .inspect(|_| {
+                        tracing::debug!(
+                            target: "glass_browser_core::native_navigation",
+                            stage = "content_apply",
+                            phase = "complete",
+                            elapsed_ms = stage_started.elapsed().as_millis() as u64,
+                        );
+                    });
             }
-            return self.navigate_content(content, &initial_url, history_commit);
+            let stage_started = std::time::Instant::now();
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_apply",
+                phase = "start",
+            );
+            let result = self.navigate_content(content, &initial_url, history_commit);
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_apply",
+                phase = "complete",
+                elapsed_ms = stage_started.elapsed().as_millis() as u64,
+            );
+            return result;
         }
         self.content_process.take();
         let resource = self
@@ -783,6 +846,12 @@ impl NativeEngine {
             self.content_process.take();
         }
         if self.content_process.is_none() {
+            let stage_started = std::time::Instant::now();
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_worker_spawn",
+                phase = "start",
+            );
             let mut process = NativeContentProcess::spawn_with_event_notify(
                 self.config.storage_path.as_deref(),
                 self.loader.allowed_file_roots(),
@@ -791,6 +860,18 @@ impl NativeEngine {
                 self.content_process_event_notify.clone(),
             )
             .await?;
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_worker_spawn",
+                phase = "complete",
+                elapsed_ms = stage_started.elapsed().as_millis() as u64,
+            );
+            let stage_started = std::time::Instant::now();
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_worker_initialize",
+                phase = "start",
+            );
             process
                 .start(
                     self.config.storage_path.as_deref(),
@@ -807,6 +888,12 @@ impl NativeEngine {
                     self.external_shared_worker_routing,
                 )
                 .await?;
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_worker_initialize",
+                phase = "complete",
+                elapsed_ms = stage_started.elapsed().as_millis() as u64,
+            );
             self.content_process = Some(process);
         }
         Ok(())
@@ -857,6 +944,12 @@ impl NativeEngine {
             self.request_ledger.begin()?;
             let client_id = self.service_worker_client_id();
             let service_worker_clients = self.service_worker_clients.clone();
+            let load_started = std::time::Instant::now();
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_worker_load_exchange",
+                phase = "start",
+            );
             let content_result = match self.content_process.as_mut() {
                 Some(process) => {
                     process
@@ -878,6 +971,12 @@ impl NativeEngine {
                     reason: "native content process is not running".into(),
                 }),
             };
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_worker_load_exchange",
+                phase = "complete",
+                elapsed_ms = load_started.elapsed().as_millis() as u64,
+            );
             self.request_ledger.finish();
             self.reconcile_pending_content_cookie_changes(
                 "content process navigation cookie changes",
@@ -919,7 +1018,19 @@ impl NativeEngine {
                     .await?;
                 return Err(NativeEngineError::NavigationCancelled);
             }
+            let apply_started = std::time::Instant::now();
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_effects_apply",
+                phase = "start",
+            );
             self.apply_content_load_effects(&mut content)?;
+            tracing::debug!(
+                target: "glass_browser_core::native_navigation",
+                stage = "content_effects_apply",
+                phase = "complete",
+                elapsed_ms = apply_started.elapsed().as_millis() as u64,
+            );
             // The response's own CSP governs navigations made by that
             // document, not the navigation that just loaded it. The parent
             // loader also learns response headers during this load, so

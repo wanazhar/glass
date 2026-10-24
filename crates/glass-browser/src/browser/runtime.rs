@@ -280,8 +280,38 @@ impl BrowserRuntimeSession {
         url: impl Into<String>,
         expected_revision: u64,
     ) -> BrowserResult<NavigationResult> {
+        #[cfg(feature = "native-engine")]
+        let operation_lock_started = std::time::Instant::now();
+        #[cfg(feature = "native-engine")]
+        tracing::debug!(
+            target: "glass_browser::native_navigation",
+            stage = "operation_lock",
+            phase = "start",
+        );
         let _operation = self.operation_lock.lock().await;
+        #[cfg(feature = "native-engine")]
+        tracing::debug!(
+            target: "glass_browser::native_navigation",
+            stage = "operation_lock",
+            phase = "complete",
+            elapsed_ms = operation_lock_started.elapsed().as_millis() as u64,
+        );
+        #[cfg(feature = "native-engine")]
+        let revision_validation_started = std::time::Instant::now();
+        #[cfg(feature = "native-engine")]
+        tracing::debug!(
+            target: "glass_browser::native_navigation",
+            stage = "revision_validation",
+            phase = "start",
+        );
         self.require_current_revision(expected_revision).await?;
+        #[cfg(feature = "native-engine")]
+        tracing::debug!(
+            target: "glass_browser::native_navigation",
+            stage = "revision_validation",
+            phase = "complete",
+            elapsed_ms = revision_validation_started.elapsed().as_millis() as u64,
+        );
         self.navigate_unlocked(url.into()).await
     }
 
@@ -3379,8 +3409,11 @@ fn bounded_native_semantic_text(frames: &[NativeFrameInspectionSnapshot]) -> (St
 
 #[cfg(all(test, feature = "native-engine"))]
 mod public_session_tests {
-    use super::{BackendStartup, BrowserRuntime, BrowserRuntimeSession, BrowserSession};
+    use super::{
+        BackendStartup, BrowserRuntime, BrowserRuntimeSession, BrowserSession, NativeEngineConfig,
+    };
     use crate::browser_backend::BrowserBackendError;
+    use std::time::{Duration, Instant};
 
     #[tokio::test]
     async fn canonical_browser_session_starts_native_without_cdp_fallback() {
@@ -3394,6 +3427,97 @@ mod public_session_tests {
             .close()
             .await
             .expect("native BrowserSession should close cleanly");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timed_out_native_navigation_leaves_observe_and_close_responsive() {
+        // Native navigation's composed browser state is intentionally large;
+        // the default Rust test worker stack is too small for this integration
+        // path. Keep the production behavior and run the async scenario with a
+        // normal 8 MiB thread stack, as the CLI receives on Linux.
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build local native test runtime")
+                    .block_on(async {
+                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+                        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                            .await
+                            .expect("bind local navigation fixture");
+                        let address = listener.local_addr().expect("fixture address");
+                        let fixture = tokio::spawn(async move {
+                            let (mut stream, _) = listener
+                                .accept()
+                                .await
+                                .expect("accept navigation request");
+                            let mut request = [0; 4096];
+                            let _ = stream.read(&mut request).await;
+                            tokio::time::sleep(Duration::from_secs(3)).await;
+                            let _ = stream
+                                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nhello, world!")
+                                .await;
+                        });
+
+                        let storage_root = std::env::temp_dir().join(format!(
+                            "glass-native-nav-timeout-{}-{}",
+                            std::process::id(),
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .expect("system clock is after Unix epoch")
+                                .as_nanos()
+                        ));
+                        std::fs::create_dir_all(&storage_root)
+                            .expect("create isolated native storage root");
+                        let session = BrowserSession::start(
+                            NativeEngineConfig::default()
+                                .with_storage_path(storage_root.join("profile.json")),
+                        )
+                        .await
+                        .expect("native browser session should start");
+                        let revision = session
+                            .observe()
+                            .await
+                            .expect("initial native observation should succeed")
+                            .revision;
+                        let started = Instant::now();
+                        let navigation = tokio::time::timeout(
+                            Duration::from_secs(1),
+                            session.navigate_with_revision(
+                                format!("http://{address}/stall"),
+                                revision,
+                            ),
+                        )
+                        .await;
+                        assert!(
+                            navigation.is_err(),
+                            "stalled response must hit the one-second bound"
+                        );
+                        assert!(started.elapsed() < Duration::from_secs(2));
+
+                        tokio::time::timeout(Duration::from_secs(3), session.observe())
+                            .await
+                            .expect(
+                                "native observation must remain responsive after navigation timeout",
+                            )
+                            .expect("native observation should still return an authoritative state");
+
+                        tokio::time::timeout(Duration::from_secs(3), session.close())
+                            .await
+                            .expect("native close must remain responsive after navigation timeout")
+                            .expect("native close should settle cleanly after bounded worker shutdown");
+                        fixture.abort();
+                        std::fs::remove_dir_all(storage_root)
+                            .expect("remove isolated native storage root");
+                    })
+            })
+            .expect("spawn native timeout test worker")
+            .join()
+            .expect("native timeout test worker panicked");
     }
 
     #[tokio::test]

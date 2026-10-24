@@ -71,6 +71,57 @@ pub(super) fn document_bootstrap(
         document.script_snapshot_for_viewport(crate::limits::MAX_TEXT_BYTES, viewport)
     };
     snapshot_stage.finish(None);
+    let style_dedup_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+        0,
+        "javascript_bootstrap_style_interning",
+    );
+    let mut state = serde_json::to_value(state).map_err(|_| NativeEngineError::Worker {
+        operation: "compact JavaScript host view".into(),
+        reason: "native JavaScript host view could not be compacted".into(),
+    })?;
+    let mut computed_styles = Vec::new();
+    let mut style_indices = std::collections::HashMap::<Vec<u8>, u32>::new();
+    if let Some(elements) = state
+        .get_mut("elements")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for element in elements {
+            let Some(element) = element.as_object_mut() else {
+                continue;
+            };
+            let computed_style = element
+                .remove("computedStyle")
+                .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+            let style_key =
+                serde_json::to_vec(&computed_style).map_err(|_| NativeEngineError::Worker {
+                    operation: "compact JavaScript computed style".into(),
+                    reason: "native computed style could not be compacted".into(),
+                })?;
+            let style_index = if let Some(index) = style_indices.get(&style_key) {
+                *index
+            } else {
+                let index = u32::try_from(computed_styles.len()).map_err(|_| {
+                    NativeEngineError::limit(
+                        "native computed style table",
+                        u32::MAX as usize,
+                        computed_styles.len(),
+                    )
+                })?;
+                computed_styles.push(computed_style);
+                style_indices.insert(style_key, index);
+                index
+            };
+            element.insert("computedStyleIndex".into(), serde_json::json!(style_index));
+        }
+    }
+    let computed_style_count = computed_styles.len();
+    if let Some(state) = state.as_object_mut() {
+        state.insert(
+            "computedStyles".into(),
+            serde_json::Value::Array(computed_styles),
+        );
+    }
+    style_dedup_stage.finish(Some(computed_style_count));
     let serialization_stage = crate::native_engine::content_process::ContentLoadStage::begin(
         0,
         "javascript_bootstrap_host_serialize",
@@ -114,6 +165,15 @@ pub(super) fn document_bootstrap(
         reason: "native JavaScript host view could not be serialized".into(),
     })?;
     serialization_stage.finish(Some(serialized.len()));
+    // Keep large host snapshots as one JavaScript string literal and let the
+    // engine's JSON parser build the object graph. Embedding the same snapshot
+    // as a JavaScript object literal creates a retained AST node for every DOM
+    // field before those objects are allocated, exceeding the fixed QuickJS
+    // heap on ordinary multi-thousand-node pages.
+    let serialized = serde_json::to_string(&serialized).map_err(|_| NativeEngineError::Worker {
+        operation: "encode JavaScript host view literal".into(),
+        reason: "native JavaScript host view could not be encoded".into(),
+    })?;
     let ready_state =
         serde_json::to_string(ready_state).map_err(|_| NativeEngineError::Worker {
             operation: "serialize document ready state".into(),

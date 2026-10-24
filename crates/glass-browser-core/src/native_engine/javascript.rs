@@ -219,11 +219,12 @@ const MAX_NATIVE_PAGE_CRYPTO_VALUES_BYTES: usize = 65_536;
 const MAX_NATIVE_CRYPTO_DERIVE_ITERATIONS: usize = 100_000;
 const MAX_NATIVE_CRYPTO_DERIVE_WORK: usize = 10_000_000;
 // Page script realms retain the current DOM projection while host views are
-// refreshed between operations. Keep this bounded, with enough room for the
-// native document bootstrap and a populated frame tree in the same realm.
-const NATIVE_SCRIPT_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+// refreshed between operations. Keep this bounded, with enough room for a
+// multi-thousand-node host snapshot and a populated frame tree in one realm.
+const NATIVE_SCRIPT_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const NATIVE_SCRIPT_STACK_BYTES: usize = 1024 * 1024;
 const NATIVE_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
+const NATIVE_HOST_VIEW_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_WEB_STORAGE_PROFILE_BYTES: usize = 4 * 1024 * 1024;
 const WEB_STORAGE_PROFILE_VERSION: u64 = 1;
 pub(crate) const MAX_NATIVE_SERVICE_WORKER_CACHE_ORIGINS: usize = 64;
@@ -3529,6 +3530,9 @@ mod native_font_face_tests;
 #[cfg(test)]
 #[path = "javascript/tests/native_host_event_tests.rs"]
 mod native_host_event_tests;
+#[cfg(test)]
+#[path = "javascript/tests/native_large_host_view_tests.rs"]
+mod native_large_host_view_tests;
 #[cfg(test)]
 #[path = "javascript/tests/native_selector_tests.rs"]
 mod native_selector_tests;

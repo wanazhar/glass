@@ -1,5 +1,5 @@
 (() => {{
-  const host = {serialized};
+  const host = JSON.parse({serialized});
   const documentContextId = String(host.context_id || "native");
   const documentGeneration = Number(host.generation) || 0;
   const initialDocumentReferrerPolicy = String(
@@ -20,6 +20,13 @@
   globalThis.__glassMessageRealmKey = "page:" + String(host.context_id || "native");
   const initialPageCryptoBytes = {initial_page_crypto_bytes};
   const state = host.state;
+  const snapshotComputedStyles = Array.isArray(state.computedStyles) ? state.computedStyles : [];
+  for (const element of Array.isArray(state.elements) ? state.elements : []) {{
+    if (!element || !Number.isSafeInteger(Number(element.computedStyleIndex))) continue;
+    const styleIndex = Number(element.computedStyleIndex);
+    element.computedStyle = snapshotComputedStyles[styleIndex] || {{}};
+    delete element.computedStyleIndex;
+  }}
   const createSnapshotTextContentResolver = (snapshots) => {{
     const nodes = new Map((Array.isArray(snapshots) ? snapshots : [])
       .filter((entry) => entry && Number.isSafeInteger(Number(entry.nodeIndex)))

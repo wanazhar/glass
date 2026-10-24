@@ -271,6 +271,7 @@ pub(crate) fn execute_inline_scripts(
         document,
         runtime,
         context_id,
+        None,
         &sources,
         document_url,
         document_origin,
@@ -501,6 +502,7 @@ pub(crate) fn execute_page_scripts(
     document: &mut NativeDocument,
     runtime: &mut Option<NativeJavaScriptRuntime>,
     context_id: &str,
+    trace_request_id: Option<u64>,
     sources: &[NativePageScript],
     document_url: &str,
     document_origin: &NativeOrigin,
@@ -512,8 +514,17 @@ pub(crate) fn execute_page_scripts(
     csp_violations: &[NativeCspViolation],
 ) -> Result<NativePageScriptResult, NativeEngineError> {
     document.mark_attached_scripts_started();
+    let runtime_initialization_stage = trace_request_id.map(|request_id| {
+        crate::native_engine::content_process::ContentLoadStage::begin(
+            request_id,
+            "page_script_runtime_initialization",
+        )
+    });
     if runtime.is_none() {
         *runtime = Some(NativeJavaScriptRuntime::new_with_context_id(context_id)?);
+    }
+    if let Some(stage) = runtime_initialization_stage {
+        stage.finish(None);
     }
     runtime
         .as_mut()
@@ -535,6 +546,12 @@ pub(crate) fn execute_page_scripts(
         .as_mut()
         .expect("page script runtime initialized")
         .set_ready_state("loading");
+    let module_setup_stage = trace_request_id.map(|request_id| {
+        crate::native_engine::content_process::ContentLoadStage::begin(
+            request_id,
+            "page_script_module_setup",
+        )
+    });
     let (module_sources, module_base_urls, module_referrer_policies) = module_source_maps(sources);
     runtime
         .as_ref()
@@ -548,6 +565,9 @@ pub(crate) fn execute_page_scripts(
         .as_ref()
         .expect("page script runtime initialized")
         .set_module_referrer_policies(module_referrer_policies);
+    if let Some(stage) = module_setup_stage {
+        stage.finish(Some(sources.len()));
+    }
     let mut pending_fetches = Vec::new();
     let mut websocket_commands = Vec::new();
     let mut event_source_commands = Vec::new();
@@ -559,7 +579,7 @@ pub(crate) fn execute_page_scripts(
     let mut pending_script_sources = Vec::new();
     let mut service_worker_commands = Vec::new();
     let mut dialogs = Vec::new();
-    for source in sources {
+    for (script_ordinal, source) in sources.iter().enumerate() {
         if let NativePageScript::ImportMap(import_map) = source {
             runtime
                 .as_ref()
@@ -572,6 +592,19 @@ pub(crate) fn execute_page_scripts(
             | NativePageScript::Module { node_index, .. } => *node_index,
             NativePageScript::ModuleDependency { .. } | NativePageScript::ImportMap(_) => None,
         };
+        let script_stage = trace_request_id.map(|request_id| {
+            crate::native_engine::content_process::ContentLoadStage::begin_with_resource(
+                request_id,
+                "page_script_evaluation",
+                Some(script_ordinal),
+                Some(match source {
+                    NativePageScript::Classic { .. } => "classic",
+                    NativePageScript::Module { .. } => "module",
+                    NativePageScript::ModuleDependency { .. } => "module_dependency",
+                    NativePageScript::ImportMap(_) => "import_map",
+                }),
+            )
+        });
         let evaluation = {
             let script_runtime = runtime.as_ref().expect("page script runtime initialized");
             match source {
@@ -598,6 +631,9 @@ pub(crate) fn execute_page_scripts(
                 }
             }
         };
+        if let Some(stage) = script_stage {
+            stage.finish(None);
+        }
         let evaluation = match evaluation {
             Ok(evaluation) => evaluation,
             Err(error) if is_ignorable_page_script_error(&error) => {
@@ -651,6 +687,12 @@ pub(crate) fn execute_page_scripts(
             Err(error) => return Err(error),
         };
         let commands = evaluation.commands.clone();
+        let apply_stage = trace_request_id.map(|request_id| {
+            crate::native_engine::content_process::ContentLoadStage::begin(
+                request_id,
+                "page_script_command_apply",
+            )
+        });
         apply_page_script_evaluation(
             document,
             runtime.as_ref().expect("page script runtime initialized"),
@@ -675,6 +717,9 @@ pub(crate) fn execute_page_scripts(
             &mut pending_dynamic_scripts,
             &mut pending_script_sources,
         )?;
+        if let Some(stage) = apply_stage {
+            stage.finish(Some(commands.len()));
+        }
     }
     if !csp_violations.is_empty() {
         let page_events = NativePageEventBatch {
@@ -693,6 +738,12 @@ pub(crate) fn execute_page_scripts(
                 &page_events,
             )?;
         let commands = evaluation.commands.clone();
+        let apply_stage = trace_request_id.map(|request_id| {
+            crate::native_engine::content_process::ContentLoadStage::begin(
+                request_id,
+                "page_csp_event_apply",
+            )
+        });
         apply_page_script_evaluation(
             document,
             runtime.as_ref().expect("page script runtime initialized"),
@@ -717,7 +768,16 @@ pub(crate) fn execute_page_scripts(
             &mut pending_dynamic_scripts,
             &mut pending_script_sources,
         )?;
+        if let Some(stage) = apply_stage {
+            stage.finish(Some(commands.len()));
+        }
     }
+    let resource_event_stage = trace_request_id.map(|request_id| {
+        crate::native_engine::content_process::ContentLoadStage::begin(
+            request_id,
+            "page_resource_event_dispatch",
+        )
+    });
     for (node_index, event_kind) in resource_events {
         if *event_kind == NativeEventKind::Load && failed_script_nodes.contains(node_index) {
             continue;
@@ -725,6 +785,21 @@ pub(crate) fn execute_page_scripts(
         let Some(event_batch) = host_event_batch(&[(*node_index, *event_kind)])? else {
             continue;
         };
+        let event_types = event_batch
+            .iter()
+            .map(|event| event.event_type.clone())
+            .collect::<Vec<_>>();
+        let has_listeners = runtime
+            .as_ref()
+            .expect("page script runtime initialized")
+            .has_host_event_listeners(&event_types)?;
+        if !event_types
+            .iter()
+            .any(|event_type| document.has_inline_event_handler(event_type))
+            && has_listeners == Some(false)
+        {
+            continue;
+        }
         let evaluation = runtime
             .as_ref()
             .expect("page script runtime initialized")
@@ -736,6 +811,12 @@ pub(crate) fn execute_page_scripts(
                 viewport,
             )?;
         let commands = evaluation.commands.clone();
+        let apply_stage = trace_request_id.map(|request_id| {
+            crate::native_engine::content_process::ContentLoadStage::begin(
+                request_id,
+                "page_resource_event_apply",
+            )
+        });
         apply_page_script_evaluation(
             document,
             runtime.as_ref().expect("page script runtime initialized"),
@@ -760,12 +841,24 @@ pub(crate) fn execute_page_scripts(
             &mut pending_dynamic_scripts,
             &mut pending_script_sources,
         )?;
+        if let Some(stage) = apply_stage {
+            stage.finish(Some(commands.len()));
+        }
         events.push((*node_index, *event_kind));
+    }
+    if let Some(stage) = resource_event_stage {
+        stage.finish(Some(resource_events.len()));
     }
     runtime
         .as_mut()
         .expect("page script runtime initialized")
         .set_ready_state("interactive");
+    let dom_content_loaded_stage = trace_request_id.map(|request_id| {
+        crate::native_engine::content_process::ContentLoadStage::begin(
+            request_id,
+            "dom_content_loaded_dispatch",
+        )
+    });
     for (target, kind) in [
         (0, NativeEventKind::ReadyStateChange),
         (0, NativeEventKind::DomContentLoaded),
@@ -773,6 +866,21 @@ pub(crate) fn execute_page_scripts(
         let Some(event_batch) = host_event_batch(&[(target, kind)])? else {
             continue;
         };
+        let event_types = event_batch
+            .iter()
+            .map(|event| event.event_type.clone())
+            .collect::<Vec<_>>();
+        let has_listeners = runtime
+            .as_ref()
+            .expect("page script runtime initialized")
+            .has_host_event_listeners(&event_types)?;
+        if !event_types
+            .iter()
+            .any(|event_type| document.has_inline_event_handler(event_type))
+            && has_listeners == Some(false)
+        {
+            continue;
+        }
         let evaluation = runtime
             .as_ref()
             .expect("page script runtime initialized")
@@ -784,6 +892,12 @@ pub(crate) fn execute_page_scripts(
                 viewport,
             )?;
         let commands = evaluation.commands.clone();
+        let apply_stage = trace_request_id.map(|request_id| {
+            crate::native_engine::content_process::ContentLoadStage::begin(
+                request_id,
+                "dom_content_loaded_apply",
+            )
+        });
         apply_page_script_evaluation(
             document,
             runtime.as_ref().expect("page script runtime initialized"),
@@ -808,12 +922,24 @@ pub(crate) fn execute_page_scripts(
             &mut pending_dynamic_scripts,
             &mut pending_script_sources,
         )?;
+        if let Some(stage) = apply_stage {
+            stage.finish(Some(commands.len()));
+        }
         events.push((target, kind));
+    }
+    if let Some(stage) = dom_content_loaded_stage {
+        stage.finish(None);
     }
     runtime
         .as_mut()
         .expect("page script runtime initialized")
         .set_ready_state("complete");
+    let load_event_stage = trace_request_id.map(|request_id| {
+        crate::native_engine::content_process::ContentLoadStage::begin(
+            request_id,
+            "page_load_event_dispatch",
+        )
+    });
     for (target, kind) in [
         (0, NativeEventKind::ReadyStateChange),
         (u32::MAX, NativeEventKind::Load),
@@ -821,6 +947,21 @@ pub(crate) fn execute_page_scripts(
         let Some(event_batch) = host_event_batch(&[(target, kind)])? else {
             continue;
         };
+        let event_types = event_batch
+            .iter()
+            .map(|event| event.event_type.clone())
+            .collect::<Vec<_>>();
+        let has_listeners = runtime
+            .as_ref()
+            .expect("page script runtime initialized")
+            .has_host_event_listeners(&event_types)?;
+        if !event_types
+            .iter()
+            .any(|event_type| document.has_inline_event_handler(event_type))
+            && has_listeners == Some(false)
+        {
+            continue;
+        }
         let evaluation = runtime
             .as_ref()
             .expect("page script runtime initialized")
@@ -832,6 +973,12 @@ pub(crate) fn execute_page_scripts(
                 viewport,
             )?;
         let commands = evaluation.commands.clone();
+        let apply_stage = trace_request_id.map(|request_id| {
+            crate::native_engine::content_process::ContentLoadStage::begin(
+                request_id,
+                "page_load_event_apply",
+            )
+        });
         apply_page_script_evaluation(
             document,
             runtime.as_ref().expect("page script runtime initialized"),
@@ -856,7 +1003,13 @@ pub(crate) fn execute_page_scripts(
             &mut pending_dynamic_scripts,
             &mut pending_script_sources,
         )?;
+        if let Some(stage) = apply_stage {
+            stage.finish(Some(commands.len()));
+        }
         events.push((target, kind));
+    }
+    if let Some(stage) = load_event_stage {
+        stage.finish(None);
     }
     if !pending_dynamic_scripts.is_empty() {
         let dynamic_result = execute_dynamic_page_scripts(NativeDynamicPageScriptRequest {

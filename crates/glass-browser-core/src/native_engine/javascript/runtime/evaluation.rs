@@ -128,6 +128,12 @@ impl NativeJavaScriptRuntime {
         let history_state = self.history_state();
         let history_length = self.history_length();
         let include_layout = !is_ready_state_comparison(source);
+        let bootstrap_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+            crate::native_engine::content_process::ContentLoadStage::begin(
+                0,
+                "javascript_document_bootstrap",
+            )
+        });
         let bootstrap = document_bootstrap(
             document,
             document_url,
@@ -156,10 +162,19 @@ impl NativeJavaScriptRuntime {
             include_layout,
             &self.environment(),
         )?;
+        if let Some(stage) = bootstrap_stage {
+            stage.finish(None);
+        }
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
             *current = Some(deadline);
         }
+        let evaluation_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+            crate::native_engine::content_process::ContentLoadStage::begin(
+                0,
+                "javascript_context_evaluation",
+            )
+        });
         let result = self.context.with(|ctx| {
             install_native_crypto_sources(ctx.clone())?;
             install_native_sync_xhr_source(
@@ -431,6 +446,9 @@ impl NativeJavaScriptRuntime {
                 worker_script_error: None,
             })
         });
+        if let Some(stage) = evaluation_stage {
+            stage.finish(None);
+        }
         if let Ok(mut current) = self.deadline.lock() {
             *current = None;
         }
@@ -1351,6 +1369,35 @@ impl NativeJavaScriptRuntime {
                     operation: "inspect native ServiceWorker fetch listeners".into(),
                     reason: format!(
                         "ServiceWorker listener query failed: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })
+        })
+    }
+
+    pub(crate) fn has_host_event_listeners(
+        &self,
+        event_types: &[String],
+    ) -> Result<Option<bool>, NativeEngineError> {
+        let payload =
+            serde_json::to_string(event_types).map_err(|_| NativeEngineError::Worker {
+                operation: "inspect native host event listeners".into(),
+                reason: "event type list could not be encoded".into(),
+            })?;
+        self.context.with(|ctx| {
+            let Ok(has_listeners) = ctx
+                .globals()
+                .get::<_, Function>("__glassHasHostEventListeners")
+            else {
+                return Ok(None);
+            };
+            has_listeners
+                .call((payload,))
+                .map(Some)
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "inspect native host event listeners".into(),
+                    reason: format!(
+                        "host event listener query failed: {}",
                         CaughtError::from_error(&ctx, error)
                     ),
                 })

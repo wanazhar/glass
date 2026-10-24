@@ -1745,6 +1745,8 @@ impl NativeContentProcess {
         action: Value,
         parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentMutation, NativeEngineError> {
+        let mutation_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE")
+            .map(|_| ContentLoadStage::begin(id, "content_process_mutation"));
         let owner = NativeContentCookieOwner {
             context_id: self.context_id.clone().ok_or_else(|| {
                 NativeEngineError::worker_failure(
@@ -1789,6 +1791,9 @@ impl NativeContentProcess {
                 Some(parent_loader),
             )
             .await?;
+        if let Some(stage) = mutation_stage {
+            stage.finish(None);
+        }
         if response.get("kind").and_then(Value::as_str) == Some("error") {
             self.mark_failed(NativeWorkerFailureKind::Rejected);
             let _ = self.child.start_kill();

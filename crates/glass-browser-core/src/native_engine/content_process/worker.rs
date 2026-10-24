@@ -1386,10 +1386,14 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     .transpose()?
                                     .unwrap_or_default(),
                             };
+                            let script_stage = id.as_u64().map(|request_id| {
+                                ContentLoadStage::begin(request_id, "page_script_execution")
+                            });
                             let mut page_scripts = execute_page_scripts(
                                 &mut parsed,
                                 &mut script_runtime,
                                 &storage_context_id,
+                                id.as_u64(),
                                 &script_sources,
                                 &resource.url,
                                 &resource.origin,
@@ -1400,6 +1404,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 &resource_events,
                                 &resource.csp_violations,
                             );
+                            if let Some(stage) = script_stage {
+                                stage.finish(Some(script_sources.len()));
+                            }
                             if page_scripts.is_ok()
                                 && let Some(loader) = resource_loader.as_mut()
                                 && let Err(error) = apply_pending_meta_content_security_policies(
@@ -1417,6 +1424,13 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                 })
                                 .unwrap_or_default();
                             if !initial_dynamic_sources.is_empty() {
+                                let dynamic_stage = id.as_u64().map(|request_id| {
+                                    ContentLoadStage::begin(
+                                        request_id,
+                                        "dynamic_page_script_execution",
+                                    )
+                                });
+                                let dynamic_source_count = initial_dynamic_sources.len();
                                 let dynamic_result =
                                     match (script_runtime.as_ref(), resource_loader.as_mut()) {
                                         (Some(runtime), Some(loader)) => {
@@ -1467,6 +1481,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                                     .into(),
                                         }),
                                     };
+                                if let Some(stage) = dynamic_stage {
+                                    stage.finish(Some(dynamic_source_count));
+                                }
                                 match dynamic_result {
                                     Ok(dynamic_result) => {
                                         if let Ok(page_scripts) = page_scripts.as_mut() {
@@ -3521,6 +3538,12 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     indexed_db_state.origin(&storage_key(&committed_url, document_origin)),
                 );
                 match mutate_lifecycle_events(
+                    id.as_u64().ok_or_else(|| {
+                        NativeEngineError::invalid(
+                            "content-process lifecycle request ID",
+                            "must be an unsigned integer",
+                        )
+                    })?,
                     current,
                     runtime,
                     &mut committed_url,

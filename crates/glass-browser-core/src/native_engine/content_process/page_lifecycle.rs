@@ -483,6 +483,7 @@ pub(super) fn mutate_before_unload(
 }
 
 pub(super) fn mutate_lifecycle_events(
+    request_id: u64,
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
     document_url: &mut String,
@@ -522,6 +523,47 @@ pub(super) fn mutate_lifecycle_events(
         operation: "content process lifecycle events".into(),
         reason: "lifecycle event batch was empty".into(),
     })?;
+    let event_types = event_batch
+        .iter()
+        .map(|event| event.event_type.clone())
+        .collect::<Vec<_>>();
+    let listener_stage = ContentLoadStage::begin(request_id, "lifecycle_listener_lookup");
+    let has_listeners = event_types
+        .iter()
+        .any(|event_type| current.has_inline_event_handler(event_type))
+        || runtime.has_host_event_listeners(&event_types)? != Some(false);
+    listener_stage.finish(Some(event_types.len()));
+    if !has_listeners {
+        return Ok((
+            current.clone(),
+            NativeContentMutation {
+                document: current.to_content_wire(),
+                navigate_to_sources: None,
+                events: kinds
+                    .iter()
+                    .copied()
+                    .map(|kind| NativeContentEvent {
+                        node_index: u32::MAX,
+                        kind,
+                    })
+                    .collect(),
+                navigation: None,
+                csp_violations: Vec::new(),
+                allowed: true,
+                history: Vec::new(),
+                scroll_commands: Vec::new(),
+                storage_events: Vec::new(),
+                indexed_db_changes: Vec::new(),
+                dialogs: Vec::new(),
+                popups: Vec::new(),
+                post_messages: Vec::new(),
+                window_closes: Vec::new(),
+                window_navigations: Vec::new(),
+                window_name: String::new(),
+            },
+        ));
+    }
+    let evaluation_stage = ContentLoadStage::begin(request_id, "lifecycle_event_evaluation");
     let evaluation = runtime.evaluate_with_host_events(
         &event_batch,
         current,
@@ -529,6 +571,7 @@ pub(super) fn mutate_lifecycle_events(
         document_origin,
         viewport,
     )?;
+    evaluation_stage.finish(None);
     let mut next = current.clone();
     let mut history = Vec::new();
     let mut scroll_commands = extract_scroll_commands(&evaluation.commands);
@@ -540,6 +583,7 @@ pub(super) fn mutate_lifecycle_events(
         runtime,
         &mut history,
     )?;
+    let command_stage = ContentLoadStage::begin(request_id, "lifecycle_document_commands");
     let (effects, _) = apply_document_commands_with_font_face_ack(
         &mut next,
         runtime,
@@ -549,6 +593,7 @@ pub(super) fn mutate_lifecycle_events(
         &commands,
         false,
     )?;
+    command_stage.finish(Some(commands.len()));
     let mut events = kinds
         .iter()
         .copied()
@@ -570,6 +615,7 @@ pub(super) fn mutate_lifecycle_events(
             )
         })
         .collect::<Vec<_>>();
+    let scroll_stage = ContentLoadStage::begin(request_id, "lifecycle_scroll_events");
     dispatch_scroll_events(
         &mut next,
         runtime,
@@ -580,6 +626,7 @@ pub(super) fn mutate_lifecycle_events(
         &mut event_effects,
         &mut history,
     )?;
+    scroll_stage.finish(Some(scroll_commands.len()));
     if let Some(loader) = loader {
         apply_pending_meta_content_security_policies(&mut next, loader, document_url)?;
         refresh_inline_style_policy(&mut next, loader, document_url)?;
@@ -598,10 +645,14 @@ pub(super) fn mutate_lifecycle_events(
             events.len(),
         ));
     }
+    let serialization_stage =
+        ContentLoadStage::begin(request_id, "lifecycle_document_serialization");
+    let document = next.to_content_wire();
+    serialization_stage.finish(Some(document.nodes.len()));
     Ok((
         next.clone(),
         NativeContentMutation {
-            document: next.to_content_wire(),
+            document,
             navigate_to_sources: None,
             events,
             navigation,
@@ -914,6 +965,7 @@ pub(super) async fn mutate_script_document(
             loader,
             &document_url,
             parent_fetch_broker.as_deref_mut(),
+            None,
         )
         .await?
     } else {
@@ -1001,6 +1053,7 @@ pub(super) async fn mutate_script_document(
             &document_url,
             viewport,
             parent_fetch_broker.as_deref_mut(),
+            None,
         )
         .await?
     } else {
@@ -1046,6 +1099,7 @@ pub(super) async fn mutate_script_document(
             loader,
             &document_url,
             parent_fetch_broker.as_deref_mut(),
+            None,
         )
         .await?;
     }
@@ -1056,6 +1110,7 @@ pub(super) async fn mutate_script_document(
             loader,
             &document_url,
             parent_fetch_broker.as_deref_mut(),
+            None,
         )
         .await?
     } else {

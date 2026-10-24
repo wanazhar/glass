@@ -2202,23 +2202,7 @@ async fn dispatch_session(
     if cli.browser_endpoint.is_some() {
         return Err("persistent sessions do not accept --browser-endpoint".into());
     }
-    if cli.browser_runtime.is_native()
-        && matches!(
-            action,
-            SessionCommand::Start { .. } | SessionCommand::Serve { .. }
-        )
-    {
-        for (unsupported, flag) in [
-            (cli.interaction != InteractionMode::Human, "--interaction"),
-            (cli.audit, "--audit"),
-            (cli.trace_on_error, "--trace-on-error"),
-            (cli.experimental_extensions, "--experimental-extensions"),
-        ] {
-            if unsupported {
-                return Err(format!("{flag} is only available on Chromium sessions").into());
-            }
-        }
-    }
+    validate_native_persistent_settings(cli, action)?;
     match action {
         SessionCommand::Start { name } => {
             if cli.attach {
@@ -2296,6 +2280,27 @@ async fn dispatch_session(
                 },
             )
             .await?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_native_persistent_settings(cli: &Cli, action: &SessionCommand) -> BrowserResult<()> {
+    if cli.browser_runtime.is_native()
+        && matches!(
+            action,
+            SessionCommand::Start { .. } | SessionCommand::Serve { .. }
+        )
+    {
+        for (unsupported, flag) in [
+            (cli.interaction != InteractionMode::Human, "--interaction"),
+            (cli.audit, "--audit"),
+            (cli.trace_on_error, "--trace-on-error"),
+            (cli.experimental_extensions, "--experimental-extensions"),
+        ] {
+            if unsupported {
+                return Err(format!("{flag} is only available on Chromium sessions").into());
+            }
         }
     }
     Ok(())
@@ -4579,27 +4584,38 @@ fn compact_json<T: Serialize + ?Sized>(value: &T) -> BrowserResult<String> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn native_persistent_owner_reports_unsupported_chromium_settings() {
-        for flag in ["--audit", "--trace-on-error", "--experimental-extensions"] {
-            let cli = Cli::try_parse_from([
-                "glass",
-                "--browser-runtime",
-                "native",
-                flag,
-                "session",
-                "start",
-                "review",
-            ])
-            .unwrap();
-            let policy = policy_from_cli(&cli).unwrap();
-            let Some(Commands::Session { action }) = &cli.command else {
-                panic!("session command expected");
-            };
-            let error = dispatch_session(&cli, action, &policy).await.unwrap_err();
-            assert!(error.to_string().contains(flag));
-            assert!(error.to_string().contains("Chromium"));
-        }
+    #[test]
+    fn native_persistent_owner_reports_unsupported_chromium_settings() {
+        // Clap's generated parser for this large CLI needs more stack than
+        // the Rust test harness's default worker thread. The actual `glass`
+        // process has a normal main-thread stack; run the same parse and
+        // validation on an explicit 8 MiB test worker instead of aborting the
+        // whole test binary with a misleading runtime stack overflow.
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                for flag in ["--audit", "--trace-on-error", "--experimental-extensions"] {
+                    let cli = Cli::try_parse_from([
+                        "glass",
+                        "--browser-runtime",
+                        "native",
+                        flag,
+                        "session",
+                        "start",
+                        "review",
+                    ])
+                    .unwrap();
+                    let Some(Commands::Session { action }) = &cli.command else {
+                        panic!("session command expected");
+                    };
+                    let error = validate_native_persistent_settings(&cli, action).unwrap_err();
+                    assert!(error.to_string().contains(flag), "{error}");
+                    assert!(error.to_string().contains("Chromium"), "{error}");
+                }
+            })
+            .expect("spawn CLI parser test worker")
+            .join()
+            .expect("CLI parser test worker panicked");
     }
 
     #[test]

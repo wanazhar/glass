@@ -1,5 +1,37 @@
 use super::*;
 
+/// Retire the worker if an in-flight IPC future is dropped by its caller.
+/// The worker may be waiting for a parent navigation response, so the next
+/// IPC request cannot safely share that protocol exchange.
+struct KillContentChildOnDrop {
+    pid: Option<u32>,
+    armed: bool,
+}
+
+impl KillContentChildOnDrop {
+    fn new(pid: Option<u32>) -> Self {
+        Self { pid, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for KillContentChildOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        #[cfg(unix)]
+        if let Some(pid) = self.pid.and_then(|pid| libc::pid_t::try_from(pid).ok()) {
+            // SAFETY: this is the unreaped child owned by this content process;
+            // its active IPC future is being aborted, so its protocol is stale.
+            let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    }
+}
+
 fn decode_content_process_error_response(
     response: &Value,
     operation: &str,
@@ -1870,7 +1902,9 @@ impl NativeContentProcess {
         request: Value,
         parent_loader: Option<&mut NativeResourceLoader>,
     ) -> Result<Value, NativeEngineError> {
+        let mut abort_child_on_drop = KillContentChildOnDrop::new(self.child.id());
         let result = self.exchange_inner(request, parent_loader).await;
+        abort_child_on_drop.disarm();
         match result {
             Ok(response) => {
                 if let Err(error) = self.collect_cookie_changes(&response) {

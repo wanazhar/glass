@@ -427,6 +427,7 @@ impl NativeDocument {
             viewport: Viewport::default(),
             css_target_fragment: None,
             computed_styles: None,
+            layout_style_cache: NativeLayoutStyleCache::default(),
             diagnostics: Vec::new(),
             diagnostics_truncated: false,
             script_node_ids: BTreeMap::new(),

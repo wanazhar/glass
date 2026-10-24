@@ -12,7 +12,7 @@ use super::dom::{MAX_NATIVE_CANVAS_DIMENSION, NativeDocument, NativeNode, Native
 use super::error::NativeEngineError;
 use super::font::NativeTextMetrics;
 use builder::LayoutBuilder;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 pub(crate) use svg::{
     svg_image_viewport, svg_line_points, svg_path_subpaths, svg_points, svg_preserve_aspect_ratio,
     svg_transform_for_node, svg_transform_points, svg_transformed_points, svg_transformed_subpaths,
@@ -316,69 +316,54 @@ impl NativeLayoutSnapshot {
             0,
             "native_layout_extent_projection",
         );
-        let max_box_bottom = builder
-            .boxes
-            .iter()
-            .filter(|layout_box| {
-                !layout_box.fixed
-                    && !has_overflow_clip_ancestor(document, layout_box.node_id, false, false)
-            })
-            .map(|layout_box| layout_box.rect.bottom())
-            .max()
-            .unwrap_or(0);
-        let max_box_right = builder
-            .boxes
-            .iter()
-            .filter(|layout_box| {
-                !layout_box.fixed
-                    && !has_overflow_clip_ancestor(document, layout_box.node_id, false, true)
-            })
-            .map(|layout_box| layout_box.rect.right())
-            .max()
-            .unwrap_or(0);
-        let max_text_right = builder
-            .text_runs
-            .iter()
-            .filter(|text_run| {
-                !text_run.fixed
-                    && !has_overflow_clip_ancestor(document, text_run.node_id, true, true)
-            })
-            .filter_map(|text_run| {
-                if text_run.truncated || text_run.text.is_empty() {
-                    return None;
-                }
-                let text_rect = NativeRect {
-                    x: text_run.origin.x,
-                    y: text_run.origin.y,
-                    width: document
-                        .text_metrics_for_layout(text_run.node_id)
-                        .measure_text(
-                            &text_run.text,
-                            document
-                                .computed_style_for_layout(text_run.node_id)
-                                .letter_spacing(),
-                            document
-                                .computed_style_for_layout(text_run.node_id)
-                                .word_spacing(),
-                        )
-                        .saturating_add(
-                            text_run
-                                .text
-                                .chars()
-                                .filter(|character| *character == ' ')
-                                .count()
-                                .try_into()
-                                .unwrap_or(u32::MAX)
-                                .saturating_mul(text_run.justify_spacing),
-                        ),
-                    height: document.text_line_height_for_layout(text_run.node_id),
-                };
-                let visible_rect = overflow_clip_for(document, &builder.boxes, text_run.node_id)
-                    .map_or(text_rect, |clip| intersect_rect(text_rect, clip));
-                (visible_rect.width > 0 && visible_rect.height > 0).then_some(visible_rect.right())
-            })
-            .max()
-            .unwrap_or(0);
+        let mut overflow_ancestors = OverflowClipAncestorCache::with_capacity(builder.boxes.len());
+        let mut max_box_bottom = 0;
+        let mut max_box_right = 0;
+        for layout_box in &builder.boxes {
+            if layout_box.fixed {
+                continue;
+            }
+            if !overflow_ancestors.has_clip_ancestor(document, layout_box.node_id, false, false) {
+                max_box_bottom = max_box_bottom.max(layout_box.rect.bottom());
+            }
+            if !overflow_ancestors.has_clip_ancestor(document, layout_box.node_id, false, true) {
+                max_box_right = max_box_right.max(layout_box.rect.right());
+            }
+        }
+        let mut max_text_right = 0;
+        for text_run in &builder.text_runs {
+            if text_run.fixed
+                || text_run.truncated
+                || text_run.text.is_empty()
+                || overflow_ancestors.has_clip_ancestor(document, text_run.node_id, true, true)
+            {
+                continue;
+            }
+            let style = document.computed_style_for_layout(text_run.node_id);
+            let text_rect = NativeRect {
+                x: text_run.origin.x,
+                y: text_run.origin.y,
+                width: document
+                    .text_metrics_for_layout(text_run.node_id)
+                    .measure_text(&text_run.text, style.letter_spacing(), style.word_spacing())
+                    .saturating_add(
+                        text_run
+                            .text
+                            .chars()
+                            .filter(|character| *character == ' ')
+                            .count()
+                            .try_into()
+                            .unwrap_or(u32::MAX)
+                            .saturating_mul(text_run.justify_spacing),
+                    ),
+                height: document.text_line_height_for_layout(text_run.node_id),
+            };
+            let visible_rect = overflow_clip_for(document, &builder.boxes, text_run.node_id)
+                .map_or(text_rect, |clip| intersect_rect(text_rect, clip));
+            if visible_rect.width > 0 && visible_rect.height > 0 {
+                max_text_right = max_text_right.max(visible_rect.right());
+            }
+        }
         extent_stage.finish(Some(builder.text_runs.len()));
         let overflow_clips = builder
             .boxes
@@ -791,32 +776,63 @@ fn nearest_scroll_ancestor(
     None
 }
 
-fn has_overflow_clip_ancestor(
-    document: &NativeDocument,
-    node_id: NativeNodeId,
-    include_self: bool,
-    horizontal: bool,
-) -> bool {
-    let mut current = if include_self {
-        Some(node_id)
-    } else {
-        document.node(node_id).and_then(|node| node.parent())
-    };
-    for _ in 0..=MAX_NATIVE_DOM_DEPTH {
-        let Some(current_id) = current else {
-            break;
-        };
-        let style = document.computed_style_for_layout(current_id);
-        if if horizontal {
-            style.overflow_clip_x()
-        } else {
-            style.overflow_clip_y()
-        } {
-            return true;
+struct OverflowClipAncestorCache {
+    includes_self_by_node: HashMap<NativeNodeId, (bool, bool)>,
+}
+
+impl OverflowClipAncestorCache {
+    fn with_capacity(node_count: usize) -> Self {
+        Self {
+            includes_self_by_node: HashMap::with_capacity(node_count),
         }
-        current = document.node(current_id).and_then(|node| node.parent());
     }
-    false
+
+    fn has_clip_ancestor(
+        &mut self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+        include_self: bool,
+        horizontal: bool,
+    ) -> bool {
+        let start = if include_self {
+            Some(node_id)
+        } else {
+            document.node(node_id).and_then(|node| node.parent())
+        };
+        let Some(start) = start else {
+            return false;
+        };
+        let flags = self.includes_self(document, start);
+        if horizontal { flags.0 } else { flags.1 }
+    }
+
+    fn includes_self(&mut self, document: &NativeDocument, node_id: NativeNodeId) -> (bool, bool) {
+        if let Some(flags) = self.includes_self_by_node.get(&node_id) {
+            return *flags;
+        }
+
+        let mut path = Vec::with_capacity(MAX_NATIVE_DOM_DEPTH.min(16));
+        let mut current = Some(node_id);
+        let mut flags = (false, false);
+        for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+            let Some(current_id) = current else {
+                break;
+            };
+            if let Some(cached) = self.includes_self_by_node.get(&current_id) {
+                flags = *cached;
+                break;
+            }
+            path.push(current_id);
+            current = document.node(current_id).and_then(|node| node.parent());
+        }
+        for current_id in path.into_iter().rev() {
+            let style = document.computed_style_for_layout(current_id);
+            flags.0 |= style.overflow_clip_x();
+            flags.1 |= style.overflow_clip_y();
+            self.includes_self_by_node.insert(current_id, flags);
+        }
+        flags
+    }
 }
 
 fn nested_scroll_offset_for_node(

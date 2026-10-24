@@ -107,6 +107,7 @@ impl NativeDocument {
             });
         }
         node.state.custom_validity = message.to_owned();
+        self.invalidate_layout_styles();
         Ok(())
     }
 
@@ -130,6 +131,7 @@ impl NativeDocument {
             });
         }
         node.state.form_associated_disabled = Some(disabled);
+        self.invalidate_layout_styles();
         Ok(())
     }
 
@@ -236,6 +238,7 @@ impl NativeDocument {
             .state;
         state.focused = false;
         state.focus_anchor_node_index = None;
+        self.invalidate_layout_styles();
         Ok(vec![
             (id, NativeEventKind::Blur),
             (id, NativeEventKind::FocusOut),
@@ -271,6 +274,7 @@ impl NativeDocument {
                     .state
                     .selected = matching == Some(option_id);
             }
+            self.invalidate_layout_styles();
             return Ok(());
         }
         if element_name == "input"
@@ -289,6 +293,7 @@ impl NativeDocument {
                 .ok_or(NativeEngineError::DetachedTarget)?;
             node.state.files.clear();
             node.state.value = Some(String::new());
+            self.invalidate_layout_styles();
             return Ok(());
         }
         if !matches!(element_name, "input" | "textarea") {
@@ -309,6 +314,7 @@ impl NativeDocument {
             let end = value.chars().count();
             self.set_selection_state(id, end, end, "none")?;
         }
+        self.invalidate_layout_styles();
         Ok(())
     }
 
@@ -361,6 +367,7 @@ impl NativeDocument {
                 .state
                 .checked = checked;
         }
+        self.invalidate_layout_styles();
         Ok(())
     }
 
@@ -387,6 +394,7 @@ impl NativeDocument {
             .ok_or(NativeEngineError::DetachedTarget)?
             .state
             .indeterminate = indeterminate;
+        self.invalidate_layout_styles();
         Ok(())
     }
 
@@ -422,6 +430,7 @@ impl NativeDocument {
                 .state
                 .selected = false;
         }
+        self.invalidate_layout_styles();
         Ok(())
     }
 
@@ -462,7 +471,7 @@ impl NativeDocument {
         } else {
             node.state.attribute_namespaces.remove(&name);
         }
-        self.computed_styles = None;
+        self.invalidate_layout_styles();
         self.apply_meta_referrer_policy_to_node(id);
         Ok(())
     }
@@ -500,7 +509,7 @@ impl NativeDocument {
         }
         attributes.remove(&name);
         node.state.attribute_namespaces.remove(&name);
-        self.computed_styles = None;
+        self.invalidate_layout_styles();
         self.apply_meta_referrer_policy_to_node(id);
         Ok(())
     }
@@ -532,6 +541,7 @@ impl NativeDocument {
                 NativeNodeKind::Comment(_) => NativeNodeKind::Comment(value.to_owned()),
                 _ => NativeNodeKind::Text(value.to_owned()),
             };
+            self.invalidate_layout_styles();
             return Ok(());
         }
         if !matches!(kind, NativeNodeKind::Element { .. }) {
@@ -550,6 +560,7 @@ impl NativeDocument {
         if !value.is_empty() {
             self.add_node(id, NativeNodeKind::Text(value.to_owned()), self.max_nodes)?;
         }
+        self.invalidate_layout_styles();
         Ok(())
     }
 
@@ -818,7 +829,7 @@ impl NativeDocument {
                 self.diagnostics_truncated = true;
             }
         }
-        self.computed_styles = None;
+        self.invalidate_layout_styles();
         self.capture_attached_content_security_policy_meta();
         Ok(())
     }

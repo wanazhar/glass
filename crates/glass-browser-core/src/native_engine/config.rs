@@ -5,9 +5,15 @@ use std::path::PathBuf;
 use url::Url;
 
 /// Maximum source document size accepted by the native resource loader.
-pub const MAX_NATIVE_DOCUMENT_BYTES: usize = 256 * 1024;
-/// Maximum DOM nodes accepted by the initial arena.
-pub const MAX_NATIVE_NODES: usize = 4_096;
+///
+/// One MiB admits complex article and application-shell documents while
+/// keeping the source transfer and parser input bounded independently of the
+/// larger IPC serialization ceiling.
+pub const MAX_NATIVE_DOCUMENT_BYTES: usize = 1024 * 1024;
+/// Maximum DOM nodes accepted by the initial arena. The value admits the
+/// measured 15,475-node Wikipedia HTML article while keeping large-tree work
+/// bounded.
+pub const MAX_NATIVE_NODES: usize = 16_384;
 /// Maximum open element depth accepted by the initial tree builder.
 pub const MAX_NATIVE_DOM_DEPTH: usize = 128;
 /// Maximum history entries retained by one native context.
@@ -612,9 +618,27 @@ pub(crate) fn resolve_fixture_relative_url(
 #[cfg(test)]
 mod tests {
     use super::{
-        NativeEngineError, TextFragmentTerms, decode_percent_encoded_fragment,
-        decode_text_fragment_terms, resolve_fixture_relative_url,
+        MAX_NATIVE_DOCUMENT_BYTES, NativeEngineError, NativeEngineLimits, TextFragmentTerms,
+        decode_percent_encoded_fragment, decode_text_fragment_terms, resolve_fixture_relative_url,
     };
+
+    #[test]
+    fn default_document_budget_covers_megabyte_article_pages_and_remains_bounded() {
+        assert_eq!(
+            NativeEngineLimits::default().max_document_bytes,
+            1024 * 1024
+        );
+        let at_limit = NativeEngineLimits {
+            max_document_bytes: MAX_NATIVE_DOCUMENT_BYTES,
+            ..NativeEngineLimits::default()
+        };
+        assert!(at_limit.validate().is_ok());
+        let over_limit = NativeEngineLimits {
+            max_document_bytes: MAX_NATIVE_DOCUMENT_BYTES + 1,
+            ..NativeEngineLimits::default()
+        };
+        assert!(over_limit.validate().is_err());
+    }
 
     #[test]
     fn fragment_percent_decoding_is_utf8_and_not_form_encoded() {

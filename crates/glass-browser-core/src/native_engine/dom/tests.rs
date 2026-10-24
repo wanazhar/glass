@@ -67,6 +67,8 @@ fn find_template_element_by_id(
 mod foreign_content;
 #[path = "tests/html_parsing.rs"]
 mod html_parsing;
+#[path = "tests/layout_style_cache.rs"]
+mod layout_style_cache;
 #[path = "tests/preload_and_policy.rs"]
 mod preload_and_policy;
 #[path = "tests/scripts_and_fonts.rs"]

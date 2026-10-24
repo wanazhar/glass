@@ -528,9 +528,8 @@ pub(super) fn load_local_dynamic_images(
     }
     document.refresh_background_image_sources();
     for (node_index, source) in document
-        .external_background_image_links()
+        .external_background_image_links(MAX_NATIVE_LOCAL_IMAGES)
         .into_iter()
-        .take(MAX_NATIVE_LOCAL_IMAGES)
     {
         let is_blob = source
             .get(..5)
@@ -847,9 +846,8 @@ pub(super) fn load_local_initial_file_images(
     }
     document.refresh_background_image_sources();
     for (node_index, source) in document
-        .external_background_image_links()
+        .external_background_image_links(MAX_NATIVE_LOCAL_IMAGES)
         .into_iter()
-        .take(MAX_NATIVE_LOCAL_IMAGES)
     {
         if !is_file_subresource_source(document_url, &source) {
             continue;

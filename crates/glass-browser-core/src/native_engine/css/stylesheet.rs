@@ -1,6 +1,35 @@
 use super::*;
 
 impl NativeStylesheet {
+    /// Whether a node can receive a background-image declaration from a
+    /// matching stylesheet rule. This is a conservative candidate check: the
+    /// normal computed-style cascade still chooses the final value.
+    pub(crate) fn has_background_image_rule_for_node(
+        &self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+        viewport: Viewport,
+    ) -> bool {
+        let Some(node) = document.node(node_id) else {
+            return false;
+        };
+        self.background_image_rule_index
+            .candidates(node)
+            .into_iter()
+            .any(|rule_index| {
+                let rule = &self.rules[rule_index];
+                !rule
+                    .media
+                    .as_deref()
+                    .is_some_and(|media| !css_media_list_matches(media, viewport))
+                    && !rule
+                        .supports
+                        .as_deref()
+                        .is_some_and(|supports| !css_supports_condition_matches(supports))
+                    && rule.selector.matches_in_document(document, node_id)
+            })
+    }
+
     #[cfg(test)]
     pub(crate) fn from_sources(
         sources: impl IntoIterator<Item = String>,
@@ -32,6 +61,15 @@ impl NativeStylesheet {
             )?;
         }
         stylesheet.rule_index = NativeStyleRuleIndex::build(&stylesheet.rules);
+        stylesheet.background_image_rule_index = NativeStyleRuleIndex::build_selected(
+            &stylesheet.rules,
+            stylesheet
+                .rules
+                .iter()
+                .enumerate()
+                .filter(|(_, rule)| rule.declarations.background_image.is_some())
+                .map(|(index, _)| index),
+        );
         Ok(stylesheet)
     }
 

@@ -719,13 +719,59 @@ fn gc_command_menu_content(state: &DevTuiState) -> GcCommandMenuContent {
     if state.gc_model_menu_open {
         lines.push(Line::from(Span::styled(
             format!(
-                "CORE · provider models · {} · current {}",
+                "CORE settings · provider {} · model {}",
                 state.gc_model_provider.as_deref().unwrap_or("provider"),
                 state.gc_model_current.as_deref().unwrap_or("unknown")
             ),
             Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
         )));
         command_for_line.push(None);
+        if state.gc_settings_view {
+            if let Some(settings) = state.gc_session_settings.as_ref() {
+                if let Some(error) = settings.error.as_deref() {
+                    lines.push(Line::from(Span::styled(
+                        format!("Session details unavailable: {error}"),
+                        Style::default().fg(ERROR),
+                    )));
+                    command_for_line.push(None);
+                } else {
+                    for (label, value) in [
+                        ("tool mode", settings.tool_mode.clone()),
+                        (
+                            "max tokens",
+                            settings.max_tokens.map(|value| value.to_string()),
+                        ),
+                        (
+                            "image input",
+                            settings.image_input.map(|value| value.to_string()),
+                        ),
+                        (
+                            "reasoning budget",
+                            settings.reasoning_budget.map(|value| value.to_string()),
+                        ),
+                    ] {
+                        if let Some(value) = value {
+                            lines.push(Line::from(vec![
+                                Span::styled(format!("  {label}: "), Style::default().fg(MUTED)),
+                                Span::styled(value, Style::default().fg(TEXT)),
+                            ]));
+                            command_for_line.push(None);
+                        }
+                    }
+                }
+            } else {
+                lines.push(Line::from(Span::styled(
+                    "Loading session details from Core…",
+                    Style::default().fg(MUTED),
+                )));
+                command_for_line.push(None);
+            }
+            lines.push(Line::from(Span::styled(
+                "Choose a model below to update Core provider/model settings",
+                Style::default().fg(MUTED),
+            )));
+            command_for_line.push(None);
+        }
         if state.gc_command_loading {
             lines.push(Line::from(Span::styled(
                 "Loading models from Glass Core…",
@@ -849,7 +895,7 @@ fn gc_command_menu_content(state: &DevTuiState) -> GcCommandMenuContent {
     }
     lines.push(Line::from(Span::styled(
         if state.gc_model_menu_open {
-            "Enter applies the selected model to this Core session · Esc returns to commands"
+            "Enter applies through Core session/configure · Esc returns to commands"
         } else {
             "Search the full Core catalogue · unsupported controls stay in this workspace"
         },
@@ -5673,6 +5719,12 @@ mod tests {
                 .iter()
                 .any(|action| action.command == "view More")
         );
+        assert!(
+            !host_actions
+                .iter()
+                .any(|action| action.command == "agent command-ui"),
+            "normal Glass discovery must not switch to the standalone Core TUI"
+        );
         state.gc_command_query = "view More".into();
         assert!(
             state
@@ -5697,7 +5749,7 @@ mod tests {
             serde_json::json!({"id":"gpt-next","label":"Next"}),
         ];
         let output = rendered(&state, 80, 24);
-        assert!(output.contains("provider models"));
+        assert!(output.contains("CORE settings"));
         assert!(output.contains("openai"));
         assert!(output.contains("gpt-current"));
         assert!(output.contains("current"));

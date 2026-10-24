@@ -94,6 +94,8 @@ pub struct DisplaySnapshot {
     pub core_command_catalogues: std::collections::BTreeMap<crate::AgentId, CoreCommandCatalogue>,
     /// Core-owned provider/model catalogues returned by each resident session.
     pub core_model_catalogues: std::collections::BTreeMap<crate::AgentId, CoreModelCatalogue>,
+    /// Safe display-only fields from Core's session/describe response.
+    pub core_session_settings: std::collections::BTreeMap<crate::AgentId, CoreSessionSettings>,
     pub agent_chrome: Vec<AgentChrome>,
     pub tasks: String,
     pub editor: String,
@@ -141,6 +143,20 @@ pub struct CoreModelCatalogue {
     pub provider: Option<String>,
     pub current_model: Option<String>,
     pub models: Vec<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+/// Safe, display-only subset of the selected Core session manifest.
+/// Credentials, endpoints, instructions, and workspace paths are deliberately
+/// excluded from the UI projection.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CoreSessionSettings {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub max_tokens: Option<u64>,
+    pub image_input: Option<bool>,
+    pub tool_mode: Option<String>,
+    pub reasoning_budget: Option<u64>,
     pub error: Option<String>,
 }
 
@@ -221,6 +237,59 @@ fn core_model_catalogues(
         }
     }
     catalogues
+}
+
+fn core_session_settings(
+    events: &[crate::AgentEvent],
+) -> std::collections::BTreeMap<crate::AgentId, CoreSessionSettings> {
+    let mut settings = std::collections::BTreeMap::new();
+    for event in events {
+        if event.kind != "response"
+            || event
+                .payload
+                .get("operation")
+                .and_then(serde_json::Value::as_str)
+                != Some("hello")
+        {
+            continue;
+        }
+        let setting = if event.payload.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+        {
+            let value = &event.payload["result"];
+            CoreSessionSettings {
+                provider: value
+                    .get("provider")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                model: value
+                    .get("model")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                max_tokens: value.get("maxTokens").and_then(serde_json::Value::as_u64),
+                image_input: value.get("imageInput").and_then(serde_json::Value::as_bool),
+                tool_mode: value
+                    .get("toolMode")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                reasoning_budget: value
+                    .get("reasoningBudget")
+                    .and_then(serde_json::Value::as_u64),
+                error: None,
+            }
+        } else {
+            CoreSessionSettings {
+                error: event
+                    .payload
+                    .pointer("/error/message")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| Some("Glass Core session details are unavailable".into())),
+                ..Default::default()
+            }
+        };
+        settings.insert(event.agent_id.clone(), setting);
+    }
+    settings
 }
 
 #[derive(Debug, Clone, Default)]
@@ -634,6 +703,8 @@ fn worker_loop(
                             core_command_catalogues(&conversation_events);
                         snapshot.core_model_catalogues =
                             core_model_catalogues(&conversation_events);
+                        snapshot.core_session_settings =
+                            core_session_settings(&conversation_events);
                         snapshot.conversation_cursor = highest;
                     }
                 }
@@ -713,6 +784,7 @@ fn worker_loop(
                     snapshot.core_command_catalogues =
                         core_command_catalogues(&conversation_events);
                     snapshot.core_model_catalogues = core_model_catalogues(&conversation_events);
+                    snapshot.core_session_settings = core_session_settings(&conversation_events);
                     let highest = conversation_events
                         .iter()
                         .map(|event| event.sequence)
@@ -834,6 +906,7 @@ fn compute_snapshot(
             snapshot.agent_conversations.clear();
             snapshot.core_command_catalogues.clear();
             snapshot.core_model_catalogues.clear();
+            snapshot.core_session_settings.clear();
             "No conversation yet. Press Enter or start typing to compose a message.".into()
         }
         Ok(events) => {
@@ -841,6 +914,7 @@ fn compute_snapshot(
             snapshot.agent_conversations = agent_conversations(&events);
             snapshot.core_command_catalogues = core_command_catalogues(&events);
             snapshot.core_model_catalogues = core_model_catalogues(&events);
+            snapshot.core_session_settings = core_session_settings(&events);
             crate::tui::projection::conversation(&events)
         }
         Err(error) => format!("Conversation unavailable: {error}"),
@@ -1263,6 +1337,45 @@ fn workspace_status_projection(workspace: &mut crate::DevelopmentWorkspace) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn core_session_settings_keep_only_the_display_allowlist() {
+        let agent = crate::AgentId::parse("agent-0001").unwrap();
+        let values = core_session_settings(&[crate::AgentEvent {
+            sequence: 1,
+            agent_id: agent.clone(),
+            timestamp_ms: 0,
+            kind: "response".into(),
+            payload: serde_json::json!({
+                "operation":"hello",
+                "ok":true,
+                "result":{
+                    "provider":"openai",
+                    "model":"gpt-test",
+                    "maxTokens":8192,
+                    "imageInput":true,
+                    "toolMode":"mixed",
+                    "reasoningBudget":2048,
+                    "instructions":"must not surface",
+                    "baseUrl":"https://private.invalid",
+                    "apiKeyEnv":"PRIVATE_KEY",
+                    "cwd":"/private/project"
+                }
+            }),
+        }]);
+        assert_eq!(
+            values[&agent],
+            CoreSessionSettings {
+                provider: Some("openai".into()),
+                model: Some("gpt-test".into()),
+                max_tokens: Some(8192),
+                image_input: Some(true),
+                tool_mode: Some("mixed".into()),
+                reasoning_budget: Some(2048),
+                error: None,
+            }
+        );
+    }
 
     #[test]
     fn core_command_catalogues_keep_latest_session_result_and_errors() {

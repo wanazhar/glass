@@ -194,6 +194,12 @@ const CORE_AGENT_ACTIONS: &[SurfaceAction] = &[
         description: "show Glass host readiness for the selected Core session",
     },
     SurfaceAction {
+        label: "Core settings · provider and model",
+        command: "agent settings",
+        key: "/",
+        description: "inspect the selected Core session and choose its provider model",
+    },
+    SurfaceAction {
         label: "Compose message",
         command: "i",
         key: "/",
@@ -282,12 +288,6 @@ const CORE_AGENT_ACTIONS: &[SurfaceAction] = &[
         command: "agent commands",
         key: "/",
         description: "ask the resident Core for its current command catalogue",
-    },
-    SurfaceAction {
-        label: "Open GC native command menu",
-        command: "agent command-ui",
-        key: "/",
-        description: "hand the terminal to standalone Glass Core",
     },
     SurfaceAction {
         label: "Select Core model",

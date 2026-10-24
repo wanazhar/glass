@@ -98,7 +98,12 @@ impl NativeDocument {
             ));
         }
         let temporary_node_limit = limits.max_nodes.saturating_mul(2);
+        let html_parse_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "html5_tree_construction",
+        );
         let parsed = parse_html5(source, temporary_node_limit, limits.max_dom_depth);
+        html_parse_stage.finish(Some(parsed.nodes.len()));
         if let Some(failure) = parsed.sink_failure {
             return Err(match failure {
                 HtmlTreeSinkFailure::InvalidTree(reason) => NativeEngineError::Parse {
@@ -133,7 +138,12 @@ impl NativeDocument {
             generation,
             index: 0,
         };
+        let document_init_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "native_document_initialize",
+        );
         let mut document = Self::empty();
+        document_init_stage.finish(None);
         document.generation = generation;
         document.revision = u64::from(generation);
         document.document_referrer_policy = initial_referrer_policy;
@@ -142,6 +152,10 @@ impl NativeDocument {
         document.max_dom_depth = limits.max_dom_depth;
         document.quirks_mode = parsed.quirks_mode;
         document.nodes[0].id = root;
+        let materialize_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "html_dom_materialize",
+        );
         document.append_html_parsed_nodes(
             &parsed.nodes,
             &root_node.children,
@@ -150,12 +164,18 @@ impl NativeDocument {
             limits.max_nodes,
             limits.max_dom_depth,
         )?;
+        materialize_stage.finish(Some(document.nodes.len()));
+        let finish_parse_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "html_document_finalize",
+        );
         document.finish_html_parse(
             external_stylesheets,
             allowed_inline_style_nodes,
             parsed.parse_error_count,
             include_user_agent_stylesheet,
         )?;
+        finish_parse_stage.finish(None);
         Ok(document)
     }
 

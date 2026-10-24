@@ -62,14 +62,25 @@ the same bridge on large pages. An opt-in `GLASS_RUNTIME_DIAGNOSTIC_TRACE`
 records fixed stage names, elapsed time, and counts in a private profile-local
 file; it never records page URLs, bodies, cookies, or script text. It includes
 native CLI connect/command/close phases and the parent-brokered document fetch.
-On a bounded read-only public Amazon navigation, the CLI completed natively at
-revision 2 in 29.67 seconds: runtime connection took 8.27 seconds, the navigate
-command 21.17 seconds, the top-level document fetch 0.11 seconds, and content
-mutation 1.61 seconds. The current spans leave about 18 seconds of command time
-unattributed, so this measurement does not establish the remaining bottleneck.
-Earlier tracing showed an approximately 9-second initial bridge build and
-sub-millisecond subsequent unhandled lifecycle checks. These are measurements
-from a specific page, not general browser parity or a latency guarantee.
+On bounded read-only public Amazon navigations, the CLI completed natively at
+revision 2 in about 30 seconds. The top-level document fetch took 80–165
+milliseconds. A detailed incognito-worker trace attributed about 7.6 seconds
+to first document initialization: loading six static system-font candidates
+took 1.1 seconds and parsing/loading the bounded 64 discovered faces took
+about 7.2 seconds; discovering 375 font paths took 11 milliseconds. HTML5
+construction took 5 milliseconds, DOM materialization 1.4 milliseconds, CSS
+parsing 86 milliseconds, image loading 311 milliseconds, and document wire
+encoding 281 milliseconds.
+
+One resource `load` handler caused the full JS snapshot and layout path. The
+snapshot took 8.5 seconds: text projection took 398 milliseconds, element
+projection 649 milliseconds, and layout computation 7.1 seconds. Layout tree
+building took 3.2 seconds, scroll-container calculation 1.0 second, extent
+projection 1.0 second, and geometry projection 331 milliseconds. These are
+nested stage durations from one page and one machine; they must not be added to
+the overall command time. The font initialization and event-triggered layout
+costs are localized but not optimized yet. This does not establish general
+browser parity or a latency guarantee.
 
 ## Validation
 

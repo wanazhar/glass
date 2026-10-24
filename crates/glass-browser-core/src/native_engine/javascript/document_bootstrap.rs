@@ -34,6 +34,10 @@ pub(super) fn document_bootstrap(
     include_layout: bool,
     environment: &NativeEnvironmentOverrides,
 ) -> Result<String, NativeEngineError> {
+    let random_seed_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+        0,
+        "javascript_bootstrap_crypto_seed",
+    );
     let native_file_bytes = MAX_NATIVE_FILE_BYTES;
     let native_form_body_bytes = MAX_NATIVE_FORM_BODY_BYTES;
     let javascript_mime_type_essences = JAVASCRIPT_MIME_TYPE_ESSENCES
@@ -51,6 +55,11 @@ pub(super) fn document_bootstrap(
             operation: "serialize native page crypto seed".into(),
             reason: "native page crypto seed bytes could not be serialized".into(),
         })?;
+    random_seed_stage.finish(Some(random_bytes.len()));
+    let snapshot_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+        0,
+        "javascript_bootstrap_dom_snapshot",
+    );
     let state = if include_layout {
         document.script_snapshot_with_layout(
             crate::limits::MAX_TEXT_BYTES,
@@ -61,6 +70,11 @@ pub(super) fn document_bootstrap(
     } else {
         document.script_snapshot_for_viewport(crate::limits::MAX_TEXT_BYTES, viewport)
     };
+    snapshot_stage.finish(None);
+    let serialization_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+        0,
+        "javascript_bootstrap_host_serialize",
+    );
     let serialized = serde_json::to_string(&serde_json::json!({
         "url": document_url,
         "base_url": document.effective_base_url(document_url),
@@ -99,6 +113,7 @@ pub(super) fn document_bootstrap(
         operation: "serialize JavaScript host view".into(),
         reason: "native JavaScript host view could not be serialized".into(),
     })?;
+    serialization_stage.finish(Some(serialized.len()));
     let ready_state =
         serde_json::to_string(ready_state).map_err(|_| NativeEngineError::Worker {
             operation: "serialize document ready state".into(),
@@ -110,6 +125,10 @@ pub(super) fn document_bootstrap(
     let font_face_script = native_font_face_script();
     let native_dom_max_depth = MAX_NATIVE_DOM_DEPTH;
     let native_dom_max_nodes = MAX_NATIVE_NODES;
+    let assembly_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+        0,
+        "javascript_bootstrap_template_assembly",
+    );
     let mut bootstrap = format!(
         concat!(
             include_str!("document_bootstrap/runtime_timers.js"),
@@ -187,5 +206,6 @@ pub(super) fn document_bootstrap(
         xml_document_script = xml_document_script,
     );
     bootstrap.push_str(NATIVE_DYNAMIC_IMPORT_OPTIONS_BOOTSTRAP);
+    assembly_stage.finish(Some(bootstrap.len()));
     Ok(bootstrap)
 }

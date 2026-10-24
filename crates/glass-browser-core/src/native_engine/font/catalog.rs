@@ -19,6 +19,10 @@ pub(super) fn system_font_book() -> &'static NativeFontBook {
 
 pub(super) fn load_system_font_book() -> NativeFontBook {
     let mut book = NativeFontBook::default();
+    let candidate_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+        0,
+        "system_font_static_candidates",
+    );
     for &(path, family, generic_family, weight, style) in system_font_candidates() {
         let path = Path::new(path);
         let Ok(bytes) = std::fs::read(path) else {
@@ -34,9 +38,20 @@ pub(super) fn load_system_font_book() -> NativeFontBook {
             0,
         );
     }
+    candidate_stage.finish(Some(book.faces.len()));
 
     let mut discovered_bytes = 0usize;
-    for path in discover_system_font_paths() {
+    let discovery_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+        0,
+        "system_font_path_discovery",
+    );
+    let font_paths = discover_system_font_paths();
+    discovery_stage.finish(Some(font_paths.len()));
+    let load_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+        0,
+        "system_font_discovered_load",
+    );
+    for path in font_paths {
         if book.faces.len() >= MAX_NATIVE_SYSTEM_FONT_FACES {
             break;
         }
@@ -86,6 +101,7 @@ pub(super) fn load_system_font_book() -> NativeFontBook {
             );
         }
     }
+    load_stage.finish(Some(book.faces.len()));
     book
 }
 
@@ -104,6 +120,8 @@ pub(super) fn insert_font_face(
     {
         return false;
     }
+    let font_parse_stage =
+        crate::native_engine::content_process::ContentLoadStage::begin(0, "system_font_face_parse");
     let Ok(font) = fontdue::Font::from_bytes(
         bytes.clone(),
         fontdue::FontSettings {
@@ -114,6 +132,7 @@ pub(super) fn insert_font_face(
     ) else {
         return false;
     };
+    font_parse_stage.finish(None);
     let font_data: Arc<[u8]> = Arc::from(bytes);
     if book.faces.iter().any(|face| {
         face.family.eq_ignore_ascii_case(&family)
@@ -123,9 +142,14 @@ pub(super) fn insert_font_face(
     }) {
         return false;
     }
+    let shaper_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+        0,
+        "system_font_face_shaper_init",
+    );
     let shaper_data = harfrust::FontRef::new(font_data.as_ref())
         .ok()
         .map(|font| Arc::new(harfrust::ShaperData::new(&font)));
+    shaper_stage.finish(None);
     book.faces.push(NativeFontFace {
         family: family.clone(),
         family_key: font_family_hash(&family),

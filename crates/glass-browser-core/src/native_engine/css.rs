@@ -23,7 +23,10 @@ use border_parser::*;
 // to 16,777,216 rule/node pairs. The content-process protocol already uses
 // 4,096 for this typed resource limit; keep parser and worker budgets aligned.
 pub(crate) const MAX_NATIVE_STYLE_RULES: usize = 4_096;
-pub(crate) const MAX_NATIVE_FONT_FACE_RULES: usize = 16;
+// Public sites often declare more faces than the bounded runtime can load.
+// Retain enough CSS rules for normal cascade matching while keeping actual
+// font resource admission separately capped by MAX_NATIVE_FONT_FACES.
+pub(crate) const MAX_NATIVE_FONT_FACE_RULES: usize = 64;
 pub(crate) const MAX_NATIVE_FONT_PALETTE_RULES: usize = 16;
 pub(crate) const MAX_NATIVE_FONT_PALETTE_OVERRIDES: usize = 32;
 pub(crate) const MAX_NATIVE_GRID_TRACKS: usize = 8;

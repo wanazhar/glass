@@ -1052,6 +1052,28 @@ fn font_face_parser_rejects_generic_families_but_keeps_local_sources() {
 }
 
 #[test]
+fn font_face_rule_budget_keeps_page_css_and_bounds_retained_faces() {
+    let sources = (0..=MAX_NATIVE_FONT_FACE_RULES)
+        .map(|index| {
+            format!("@font-face {{ font-family: Face{index}; src: local(\"missing-{index}\"); }}")
+        })
+        .collect::<Vec<_>>();
+    let mut diagnostics = NativeDiagnosticSink::default();
+    let stylesheet = NativeStylesheet::from_sources_with_diagnostics(sources, &mut diagnostics)
+        .expect("an over-budget font face should not reject the stylesheet");
+
+    assert_eq!(
+        stylesheet.font_face_rules().len(),
+        MAX_NATIVE_FONT_FACE_RULES
+    );
+    let (diagnostics, _) = diagnostics.finish();
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == NativeDiagnosticCode::UnsupportedCssValue
+            && diagnostic.detail == "font-face-rule-limit"
+    }));
+}
+
+#[test]
 fn font_size_parser_accepts_bounded_absolute_units() {
     assert_eq!(parse_font_size("16px"), Some(16));
     assert_eq!(parse_font_size("9pt"), Some(12));

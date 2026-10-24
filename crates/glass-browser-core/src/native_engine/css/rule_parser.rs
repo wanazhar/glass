@@ -676,11 +676,13 @@ fn parse_font_face_rule(
         return Ok(());
     };
     if context.font_face_rules.len() >= MAX_NATIVE_FONT_FACE_RULES {
-        return Err(NativeEngineError::limit(
-            "CSS @font-face rules",
-            MAX_NATIVE_FONT_FACE_RULES,
-            context.font_face_rules.len().saturating_add(1),
-        ));
+        context.diagnostics.push(
+            NativeDiagnosticCode::UnsupportedCssValue,
+            context.diagnostic_source,
+            selector_start,
+            "font-face-rule-limit",
+        );
+        return Ok(());
     }
     context.font_face_rules.push(NativeFontFaceRule {
         family_key: font_family_hash(&family),

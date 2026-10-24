@@ -1032,22 +1032,33 @@ where
             continue;
         }
 
-        if local_daemon && is_lease_method(&request.method) {
-            let lease_context = lease_context
-                .as_ref()
-                .expect("daemon lease context available");
-            let response = handle_lease_request(
-                &request,
-                &lease_context.manager,
-                &lease_context.session_id,
-                &lease_context.owner_id,
-                Some(&lease_context.status),
-            )
-            .await;
-            if !request.id.is_notification() {
-                send_response(&outbound_tx, response, format).await?;
+        match lease_context_for_request(local_daemon, &request.method, lease_context.as_ref()) {
+            Err(error) => {
+                if !request.id.is_notification() {
+                    send_response(
+                        &outbound_tx,
+                        error_response(request.id.response_value(), -32603, error),
+                        format,
+                    )
+                    .await?;
+                }
+                continue;
             }
-            continue;
+            Ok(Some(lease_context)) => {
+                let response = handle_lease_request(
+                    &request,
+                    &lease_context.manager,
+                    &lease_context.session_id,
+                    &lease_context.owner_id,
+                    Some(&lease_context.status),
+                )
+                .await;
+                if !request.id.is_notification() {
+                    send_response(&outbound_tx, response, format).await?;
+                }
+                continue;
+            }
+            Ok(None) => {}
         }
         if local_daemon
             && request.method == "tools/call"
@@ -1151,18 +1162,11 @@ where
         let active_workflow_owner = lease_context
             .as_ref()
             .map(|context| context.owner_id.clone());
-        if let (Some(request_id), Some(status)) = (
+        if let (Some(request_id), Some(status), Some(context)) = (
             active_workflow_request.as_deref(),
             active_workflow_status.as_ref(),
-        ) && let Err(error) = status
-            .begin_workflow(
-                request_id,
-                &lease_context
-                    .as_ref()
-                    .expect("daemon lease context available")
-                    .owner_id,
-            )
-            .await
+            lease_context.as_ref(),
+        ) && let Err(error) = status.begin_workflow(request_id, &context.owner_id).await
         {
             task_cancellations_remove(&cancellations, &cancellation_key);
             if !request.id.is_notification() {
@@ -1328,6 +1332,18 @@ fn is_lease_method(method: &str) -> bool {
         method,
         "glass/lease/acquire" | "glass/lease/renew" | "glass/lease/release"
     )
+}
+
+fn lease_context_for_request<'a>(
+    local_daemon: bool,
+    method: &str,
+    context: Option<&'a Arc<DaemonLeaseContext>>,
+) -> Result<Option<&'a Arc<DaemonLeaseContext>>, &'static str> {
+    if local_daemon && is_lease_method(method) {
+        context.map(Some).ok_or("daemon lease context unavailable")
+    } else {
+        Ok(None)
+    }
 }
 
 fn workflow_request_id(request: &JsonRpcRequest) -> Option<String> {
@@ -7773,6 +7789,106 @@ fn encode_response(response: &JsonRpcResponse, limit: usize) -> io::Result<Strin
 mod tests {
     use super::*;
     use crate::browser::session::{ActionKind, ActionStatus, ActionVerificationEvidence};
+
+    #[test]
+    fn daemon_lease_methods_without_context_return_an_error_instead_of_panicking() {
+        for method in [
+            "glass/lease/acquire",
+            "glass/lease/renew",
+            "glass/lease/release",
+        ] {
+            assert!(matches!(
+                lease_context_for_request(true, method, None),
+                Err("daemon lease context unavailable")
+            ));
+        }
+        assert!(matches!(
+            lease_context_for_request(false, "glass/lease/acquire", None),
+            Ok(None)
+        ));
+        assert!(matches!(
+            lease_context_for_request(true, "tools/list", None),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn daemon_lease_request_without_context_returns_json_rpc_error() {
+        std::thread::Builder::new()
+            .name("glass-mcp-missing-lease-context-test".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("MCP test runtime should build");
+                let local = tokio::task::LocalSet::new();
+                runtime.block_on(local.run_until(async {
+                    let cli = Cli::try_parse_from_on_dedicated_stack([
+                        "glass",
+                        "--mcp",
+                        "--incognito",
+                    ])
+                    .expect("MCP test CLI arguments should parse");
+                    let (mut client_writer, server_reader) = tokio::io::duplex(64 * 1024);
+                    let (server_writer, client_reader) = tokio::io::duplex(64 * 1024);
+                    let server = tokio::task::spawn_local(async move {
+                        run_mcp_stream_inner(
+                            BufReader::new(server_reader),
+                            server_writer,
+                            &cli,
+                            Arc::new(Mutex::new(None)),
+                            false,
+                            true,
+                            true,
+                            None,
+                            None,
+                        )
+                        .await
+                    });
+                    let mut client_reader = BufReader::new(client_reader);
+                    client_writer
+                        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":\"init\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}\n")
+                        .await
+                        .expect("send initialize");
+                    let mut line = String::new();
+                    client_reader
+                        .read_line(&mut line)
+                        .await
+                        .expect("read initialize response");
+                    assert!(serde_json::from_str::<Value>(&line)
+                        .expect("valid initialize response")
+                        .get("result")
+                        .is_some());
+                    client_writer
+                        .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":\"lease\",\"method\":\"glass/lease/acquire\",\"params\":{}}\n")
+                        .await
+                        .expect("send lease request");
+                    line.clear();
+                    client_reader
+                        .read_line(&mut line)
+                        .await
+                        .expect("read lease response");
+                    let response: Value = serde_json::from_str(&line)
+                        .expect("valid lease error response");
+                    assert_eq!(response["id"], "lease");
+                    assert_eq!(response["error"]["code"], -32603);
+                    assert_eq!(
+                        response["error"]["message"],
+                        "daemon lease context unavailable"
+                    );
+                    drop(client_writer);
+                    tokio::time::timeout(Duration::from_secs(1), server)
+                        .await
+                        .expect("server exits after client EOF")
+                        .expect("server task joins")
+                        .expect("MCP server returns cleanly");
+                }));
+            })
+            .expect("MCP test thread should spawn")
+            .join()
+            .expect("MCP test thread should not panic");
+    }
 
     fn valid_web_ir_fixture() -> Value {
         json!({

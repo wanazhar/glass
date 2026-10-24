@@ -1399,9 +1399,11 @@ async fn parent_navigation_broker_response(
                 )
             })
             .and_then(NativeFetchReferrerPolicy::parse)?;
+        let navigation_stage = ContentLoadStage::begin(request_id, "parent_navigation_fetch");
         let resource = loader
             .load_async_request_with_referrer_policy(&navigation, referrer, referrer_policy)
             .await?;
+        navigation_stage.finish(Some(resource.body.len()));
         let document_cookie = loader.document_cookie(&resource.url)?;
         if document_cookie.len() > MAX_CONTENT_DOCUMENT_COOKIE_BYTES {
             return Err(NativeEngineError::limit(

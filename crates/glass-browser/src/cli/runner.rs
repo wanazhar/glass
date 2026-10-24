@@ -64,7 +64,41 @@ use std::future::Future;
 use std::io::{IsTerminal, Read};
 use std::path::Path;
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// Record fixed-name, privacy-safe native CLI phase timings alongside the
+/// content-process load trace. Never include the requested URL or page data.
+fn trace_native_cli_phase(stage: &'static str, elapsed: Duration) {
+    let Some(path) = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path).with_extension("native_load.jsonl");
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = file.metadata() {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o600);
+            let _ = file.set_permissions(permissions);
+        }
+    }
+    let record = serde_json::json!({
+        "component": "native_cli",
+        "stage": stage,
+        "elapsed_us": elapsed.as_micros(),
+    });
+    if let Ok(mut bytes) = serde_json::to_vec(&record) {
+        bytes.push(b'\n');
+        let _ = std::io::Write::write_all(&mut file, &bytes);
+    }
+}
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 pub(crate) fn parse_viewport(value: &str) -> BrowserResult<(i64, i64)> {
@@ -454,6 +488,7 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
         policy.prepare_hardened_session(true).await?;
     }
 
+    let native_connect_started = Instant::now();
     #[cfg(feature = "native-engine")]
     let interactive_native_dialogs = native && std::io::stdin().is_terminal();
     #[cfg(feature = "native-engine")]
@@ -481,11 +516,15 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
         })?;
         BrowserRuntimeSession::connect(cli.browser_runtime, endpoint).await?
     };
+    if native {
+        trace_native_cli_phase("runtime_connect", native_connect_started.elapsed());
+    }
     let context_result = if !matches!(command, Commands::Navigate { .. }) && !native {
         validate_alternative_runtime_context(&session, policy).await
     } else {
         Ok(())
     };
+    let command_started = Instant::now();
     let result = match context_result {
         Ok(()) => {
             let operation = run_alternative_runtime_command(
@@ -507,7 +546,14 @@ async fn dispatch_alternative_runtime(cli: &Cli, policy: &mut BrowserPolicy) -> 
         }
         Err(error) => Err(error),
     };
+    if native {
+        trace_native_cli_phase("command_execution", command_started.elapsed());
+    }
+    let close_started = Instant::now();
     let close_result = session.close().await;
+    if native {
+        trace_native_cli_phase("runtime_close", close_started.elapsed());
+    }
     result?;
     close_result
 }

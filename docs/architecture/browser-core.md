@@ -60,11 +60,16 @@ listener continue through normal evaluation and DOM reconciliation. This keeps
 unhandled `load`/`DOMContentLoaded`/`pageshow` events from repeatedly rebuilding
 the same bridge on large pages. An opt-in `GLASS_RUNTIME_DIAGNOSTIC_TRACE`
 records fixed stage names, elapsed time, and counts in a private profile-local
-file; it never records page URLs, bodies, cookies, or script text. On a
-read-only public Amazon navigation, the initial bridge build took about 9
-seconds and subsequent unhandled lifecycle checks completed below a
-millisecond. This is a measured improvement for that page, not general browser
-parity or a latency guarantee.
+file; it never records page URLs, bodies, cookies, or script text. It includes
+native CLI connect/command/close phases and the parent-brokered document fetch.
+On a bounded read-only public Amazon navigation, the CLI completed natively at
+revision 2 in 29.67 seconds: runtime connection took 8.27 seconds, the navigate
+command 21.17 seconds, the top-level document fetch 0.11 seconds, and content
+mutation 1.61 seconds. The current spans leave about 18 seconds of command time
+unattributed, so this measurement does not establish the remaining bottleneck.
+Earlier tracing showed an approximately 9-second initial bridge build and
+sub-millisecond subsequent unhandled lifecycle checks. These are measurements
+from a specific page, not general browser parity or a latency guarantee.
 
 ## Validation
 

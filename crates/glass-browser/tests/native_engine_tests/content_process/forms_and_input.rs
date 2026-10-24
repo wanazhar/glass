@@ -1477,8 +1477,25 @@ async fn native_content_process_commits_recovered_malformed_html_inner() {
     session.close().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_owns_external_form_mutations_and_effects() {
+#[test]
+fn native_content_process_owns_external_form_mutations_and_effects() {
+    std::thread::Builder::new()
+        .name("native-form-mutations-test".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("native form mutation test runtime should build");
+            runtime
+                .block_on(native_content_process_owns_external_form_mutations_and_effects_inner());
+        })
+        .expect("native form mutation test thread should start")
+        .join()
+        .expect("native form mutation test thread should complete");
+}
+
+async fn native_content_process_owns_external_form_mutations_and_effects_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

@@ -1941,9 +1941,7 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts_inner() {
     )
     .await
     .unwrap();
-    let adopted = session
-        .script(
-            r##"(() => {
+    let adoption_script = r##"(() => {
                 const childDocument = document.getElementById('child').contentDocument;
                 const siblingDocument = document.getElementById('sibling').contentDocument;
                 const adoptionTrace = [];
@@ -2050,7 +2048,7 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts_inner() {
                 try { topTarget.adoptNode(depthSource); } catch (error) { depthError = error.name; }
 
                 const nodeSource = document.getElementById('node-source');
-                for (let index = 0; index < 5000; index += 1) {
+                for (let index = 0; index < __NATIVE_NODE_LIMIT_PLUS_ONE__; index += 1) {
                   const synthetic = Object.create(Text.prototype);
                   Object.defineProperty(synthetic, 'nodeType', { value: 3 });
                   nodeSource.__glassChildren.push(synthetic);
@@ -2103,10 +2101,12 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts_inner() {
                   customAdoption: [adoptionProbe.ownerDocument === childDocument,
                     adoptionTrace.length, adoptionTrace[0]],
                 };
-              })()"##,
-        )
-        .await
-        .unwrap();
+              })()"##
+        .replace(
+            "__NATIVE_NODE_LIMIT_PLUS_ONE__",
+            &(NativeEngineLimits::default().max_nodes + 1).to_string(),
+        );
+    let adopted = session.script(&adoption_script).await.unwrap();
     assert_eq!(
         adopted.value,
         serde_json::json!({

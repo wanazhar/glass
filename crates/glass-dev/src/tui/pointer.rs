@@ -20,6 +20,7 @@ pub enum HitRegion {
     Entity(usize),
     MoreRoute(usize),
     Menu(usize),
+    GcCommand(usize),
     Help,
     Other,
 }
@@ -64,6 +65,17 @@ impl PointerState {
                 }
                 MouseEventKind::ScrollDown => {
                     state.move_menu_selection(3);
+                    return true;
+                }
+                _ => {}
+            },
+            Some(ActiveOverlay::GcCommandMenu) => match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    state.move_gc_command_selection(-3);
+                    return true;
+                }
+                MouseEventKind::ScrollDown => {
+                    state.move_gc_command_selection(3);
                     return true;
                 }
                 _ => {}
@@ -169,6 +181,13 @@ impl PointerState {
                 // cancel presses that began elsewhere.
                 return;
             }
+            Some(ActiveOverlay::GcCommandMenu)
+                if self.down.as_ref().is_some_and(|down| {
+                    down.button == MouseButton::Left && matches!(&down.hit, HitRegion::GcCommand(_))
+                }) =>
+            {
+                return;
+            }
             Some(_) => {
                 self.reset();
                 return;
@@ -200,6 +219,11 @@ pub fn hit_test(state: &DevTuiState, column: u16, row: u16) -> HitRegion {
         Some(ActiveOverlay::CommandCenterMenu) => {
             return super::render::command_menu_hit_index(state, column, row)
                 .map(HitRegion::Menu)
+                .unwrap_or(HitRegion::Other);
+        }
+        Some(ActiveOverlay::GcCommandMenu) => {
+            return super::render::gc_command_menu_hit_index(state, column, row)
+                .map(HitRegion::GcCommand)
                 .unwrap_or(HitRegion::Other);
         }
         Some(ActiveOverlay::Composer) => {
@@ -284,6 +308,7 @@ fn apply_select(state: &mut DevTuiState, hit: &HitRegion) {
             }
         }
         HitRegion::MoreRoute(index) => state.select_more(*index),
+        HitRegion::GcCommand(index) => state.gc_command_selected = *index,
         _ => {}
     }
 }
@@ -1092,6 +1117,104 @@ mod tests {
             hit_test(&state, geometry.list_inner.x, selected_row),
             HitRegion::Menu(state.menu_selection)
         );
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn gc_command_menu_pointer_scroll_and_hits_follow_selected_physical_row() {
+        let (mut state, root) = overlay_state();
+        state.composer_mode = true;
+        state.gc_command_menu_open = true;
+        state.gc_command_items = (0..24)
+            .map(|index| {
+                serde_json::json!({
+                    "name": format!("cmd{index:02}"),
+                    "description": format!(
+                        "long description {index} repeated across a narrow screen to expose line-height drift"
+                    ),
+                    "runtimeMode": "runtime"
+                })
+            })
+            .collect();
+        state.gc_command_selected = 20;
+        let mut pointer = PointerState::default();
+
+        for (layout, width, height) in [
+            (TuiLayout::Mobile, 48, 16),
+            (TuiLayout::Compact, 80, 24),
+            (TuiLayout::Desktop, 120, 40),
+        ] {
+            state.layout = layout;
+            state.terminal_width = width;
+            state.terminal_height = height;
+            state.gc_command_selected = 20;
+            pointer.reset();
+            let geometry = super::super::render::gc_command_menu_geometry_for_screen(&state);
+            let selected_row = (geometry.inner.y..geometry.inner.bottom())
+                .find(|row| {
+                    super::super::render::gc_command_menu_hit_index(&state, geometry.inner.x, *row)
+                        == Some(20)
+                })
+                .unwrap_or_else(|| panic!("selected row is not hit-testable at {width}x{height}"));
+            assert_eq!(
+                hit_test(&state, geometry.inner.x, selected_row),
+                HitRegion::GcCommand(20)
+            );
+
+            pointer.handle(
+                &mut state,
+                MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: geometry.inner.x,
+                    row: selected_row,
+                    modifiers: crossterm::event::KeyModifiers::empty(),
+                },
+                Instant::now(),
+            );
+            let expected_selection = 20 + 3;
+            assert_eq!(state.gc_command_selected, expected_selection);
+            let after_scroll = super::super::render::gc_command_menu_geometry_for_screen(&state);
+            assert!(
+                (after_scroll.inner.y..after_scroll.inner.bottom()).any(|row| {
+                    super::super::render::gc_command_menu_hit_index(
+                        &state,
+                        after_scroll.inner.x,
+                        row,
+                    ) == Some(expected_selection)
+                }),
+                "wheel selection must remain in the visible hit-test range at {width}x{height}"
+            );
+
+            let click_row = (after_scroll.inner.y..after_scroll.inner.bottom())
+                .find(|row| {
+                    super::super::render::gc_command_menu_hit_index(
+                        &state,
+                        after_scroll.inner.x,
+                        *row,
+                    ) == Some(15)
+                })
+                .expect("another visible command row for mouse selection");
+            let clicked_at = Instant::now();
+            let down = MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: after_scroll.inner.x,
+                row: click_row,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            };
+            pointer.handle(&mut state, down, clicked_at);
+            pointer.poll(&mut state, clicked_at + Duration::from_millis(1));
+            pointer.handle(
+                &mut state,
+                MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    ..down
+                },
+                clicked_at + Duration::from_millis(2),
+            );
+            assert_eq!(state.gc_command_selected, 15);
+        }
 
         drop(state);
         std::fs::remove_dir_all(root).expect("remove test workspace");

@@ -841,6 +841,23 @@ pub(crate) fn run_with_browser_policy(
                     } else if active_overlay == Some(overlay::ActiveOverlay::GcCommandMenu) {
                         match (key.code, key.modifiers) {
                             (KeyCode::Esc, _) => state.cancel_gc_command_menu(),
+                            (KeyCode::Backspace, _) if state.gc_command_query.is_empty() => {
+                                state.dismiss_gc_command_menu_trigger();
+                            }
+                            (KeyCode::Home, _) => state.select_gc_command_first(),
+                            (KeyCode::End, _) => state.select_gc_command_last(),
+                            (KeyCode::PageUp, _) => {
+                                let step = render::gc_command_menu_geometry_for_screen(&state)
+                                    .visible_command_rows
+                                    .max(1) as i32;
+                                state.move_gc_command_selection(-step);
+                            }
+                            (KeyCode::PageDown, _) => {
+                                let step = render::gc_command_menu_geometry_for_screen(&state)
+                                    .visible_command_rows
+                                    .max(1) as i32;
+                                state.move_gc_command_selection(step);
+                            }
                             (KeyCode::Enter, _) => state.submit_gc_command_selection(&mut worker),
                             (KeyCode::Tab, _) => state.complete_gc_command_selection(),
                             (KeyCode::Up, _) => state.move_gc_command_selection(-1),

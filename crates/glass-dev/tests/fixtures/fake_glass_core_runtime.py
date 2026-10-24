@@ -486,14 +486,27 @@ def main() -> None:
             )
         elif method == "commands/list":
             assert params.get("sessionId") == SESSION_ID
+            commands = [
+                {"name": "status", "description": "View session status", "runtimeMode": "runtime"},
+                {"name": "model", "description": "Select model", "runtimeMode": "interactive"},
+            ]
+            if MODE == "many-commands":
+                commands = [
+                    {
+                        "name": f"command-{index:02d}",
+                        "description": (
+                            "A detailed command description with several explanatory words "
+                            * (1 + index % 4)
+                        ).strip(),
+                        "runtimeMode": "runtime" if index % 3 else "interactive",
+                    }
+                    for index in range(24)
+                ]
             reply(identifier, {
                 "source": "glass-core",
                 "scope": "built-in actions",
                 "completeBuiltinCatalogue": True,
-                "commands": [
-                    {"name": "status", "description": "View session status", "runtimeMode": "runtime"},
-                    {"name": "model", "description": "Select model", "runtimeMode": "interactive"},
-                ],
+                "commands": commands,
             })
         elif method == "commands/execute":
             assert params.get("sessionId") == SESSION_ID

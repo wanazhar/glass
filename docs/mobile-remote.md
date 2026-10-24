@@ -63,6 +63,13 @@ The phone layout uses the same keyboard and authority rules as desktop:
 | `/` → Glass → Review workspace changes | open the evidence-aware review |
 | `/` → Glass → Harness catalog | inspect installed external harnesses (informational only) |
 
+In the slash menu, arrows, Page Up/Down, Home/End, and supported mouse-wheel
+input keep the highlighted command within the visible list. Backspace on an
+empty query removes the opening slash and returns to the unchanged composer;
+Escape closes the menu and keeps the typed query as an unsent `/query` draft.
+Discovering Core commands fills the palette cache and does not add the catalogue
+to the conversation.
+
 In the full-screen Code editor, `Alt-W` toggles soft wrapping (off by default);
 on, lines wrap at whitespace where possible with continuation gutters and
 synchronized cursor/selection/highlighting; off horizontally scrolls source

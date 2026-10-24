@@ -1603,6 +1603,10 @@ pub struct DevTuiState {
     pub gc_command_selected: usize,
     pub gc_command_loading: bool,
     pub gc_command_discovery_requested: bool,
+    gc_command_discovery_pending: bool,
+    /// Tool job IDs whose command-list responses belong only to the slash
+    /// palette. Late results remain cache updates after the menu closes.
+    gc_command_discovery_jobs: std::collections::HashSet<u64>,
     composer_gc_command_completion: bool,
     composer_glass_action_completion: Option<String>,
     /// Set by a palette action; the event loop hands the terminal to the
@@ -1960,6 +1964,8 @@ impl DevTuiState {
             gc_command_selected: 0,
             gc_command_loading: false,
             gc_command_discovery_requested: false,
+            gc_command_discovery_pending: false,
+            gc_command_discovery_jobs: std::collections::HashSet::new(),
             composer_gc_command_completion: false,
             composer_glass_action_completion: None,
             harness_launch_requested: None,
@@ -5157,6 +5163,7 @@ impl DevTuiState {
             return true;
         }
         self.gc_command_items.clear();
+        self.gc_command_discovery_pending = false;
         if self.gc_command_menu_open {
             self.gc_command_loading = true;
             self.gc_command_discovery_requested = true;
@@ -5930,14 +5937,17 @@ impl DevTuiState {
         self.composer_gc_command_completion = false;
         self.composer_glass_action_completion = None;
         self.status = "Loading commands from Glass Core…".into();
-        if catalogue_cached {
+        if catalogue_cached
+            || self.gc_command_discovery_pending
+            || !self.gc_command_discovery_jobs.is_empty()
+        {
             return;
         }
         let mut arguments = serde_json::json!({});
         if let Some(agent) = self.selected_agent.as_ref() {
             arguments["agentId"] = serde_json::Value::String(agent.as_str().to_string());
         }
-        self.queue_gc_command_tool(worker, "glass.agent.commands", arguments);
+        self.queue_gc_command_tool(worker, "glass.agent.commands", arguments, true);
     }
 
     fn queue_gc_command_tool(
@@ -5945,12 +5955,19 @@ impl DevTuiState {
         worker: &mut super::snapshot::SnapshotWorker,
         tool: &str,
         arguments: serde_json::Value,
+        palette_discovery: bool,
     ) {
         match self.tool_request(tool, arguments, false) {
             Ok((call, context)) => match worker.submit_tool(call, context) {
                 Ok(job) => {
                     self.running_tool_job = Some(job);
-                    self.gc_command_loading = true;
+                    if palette_discovery {
+                        self.gc_command_discovery_jobs.insert(job);
+                        self.gc_command_discovery_pending = true;
+                        if self.gc_command_menu_open {
+                            self.gc_command_loading = true;
+                        }
+                    }
                 }
                 Err(error) => {
                     self.gc_command_loading = false;
@@ -5989,6 +6006,7 @@ impl DevTuiState {
             worker,
             "glass.agent.commands",
             serde_json::json!({"agentId": agent.as_str()}),
+            true,
         );
     }
 
@@ -6004,6 +6022,29 @@ impl DevTuiState {
             self.gc_command_query.truncate(index);
         }
         self.gc_command_selected = 0;
+    }
+
+    /// Remove the opening slash and return to the unchanged composer draft.
+    pub fn dismiss_gc_command_menu_trigger(&mut self) {
+        self.gc_command_menu_open = false;
+        self.gc_command_loading = false;
+        self.gc_command_discovery_requested = false;
+        self.composer_gc_command_completion = false;
+        self.composer_glass_action_completion = None;
+        self.gc_command_query.clear();
+        self.gc_command_selected = 0;
+        self.status = "Command menu closed · draft unchanged".into();
+    }
+
+    pub fn select_gc_command_first(&mut self) {
+        self.gc_command_selected = 0;
+    }
+
+    pub fn select_gc_command_last(&mut self) {
+        let count = self.gc_command_glass_actions().len()
+            + super::command::filter_gc_commands(&self.gc_command_items, &self.gc_command_query)
+                .len();
+        self.gc_command_selected = count.saturating_sub(1);
     }
 
     pub fn move_gc_command_selection(&mut self, delta: i32) {
@@ -6164,6 +6205,7 @@ impl DevTuiState {
             worker,
             "glass.agent.command",
             serde_json::json!({"agentId":agent.as_str(),"name":name,"arguments":arguments}),
+            false,
         );
         self.gc_command_query.clear();
     }
@@ -7028,6 +7070,58 @@ impl DevTuiState {
             self.refresh_attention_items();
             return;
         }
+        let palette_discovery = self.gc_command_discovery_jobs.remove(&result.id);
+        if palette_discovery {
+            if self.running_tool_job == Some(result.id) {
+                self.running_tool_job = None;
+            }
+            match result.result {
+                Ok(value)
+                    if value
+                        .get("initializing")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true) =>
+                {
+                    self.gc_command_discovery_pending = false;
+                    if self.gc_command_menu_open {
+                        if let Some(agent_id) = value
+                            .get("agentId")
+                            .and_then(serde_json::Value::as_str)
+                            .and_then(|value| crate::AgentId::parse(value).ok())
+                        {
+                            self.select_agent(Some(agent_id));
+                        }
+                        self.gc_command_discovery_requested = true;
+                        self.gc_command_loading = true;
+                    }
+                }
+                Ok(value)
+                    if value.get("queued").and_then(serde_json::Value::as_bool) == Some(true) => {}
+                Ok(value) => {
+                    self.gc_command_discovery_pending = false;
+                    if let Some(commands) =
+                        value.get("commands").and_then(serde_json::Value::as_array)
+                    {
+                        self.gc_command_items.clone_from(commands);
+                    }
+                    if self.gc_command_menu_open {
+                        self.gc_command_loading = false;
+                    }
+                }
+                Err(error) if self.gc_command_menu_open => {
+                    self.gc_command_discovery_pending = false;
+                    self.gc_command_loading = false;
+                    self.gc_command_discovery_requested = false;
+                    self.status = format!("Could not load Glass Core commands: {error}");
+                }
+                Err(_) => {
+                    self.gc_command_discovery_pending = false;
+                }
+            }
+            // Catalogue discovery is palette state, even if its response
+            // arrives after Escape closed the menu. It is never chat output.
+            return;
+        }
         let mut publish_preview_status = true;
         if result.tool == "glass.agent.send"
             && self
@@ -7161,23 +7255,6 @@ impl DevTuiState {
                 if result.tool == "glass.agent.sessions" {
                     self.open_session_picker(&value);
                     return;
-                }
-                if result.tool == "glass.agent.commands"
-                    && self.gc_command_menu_open
-                    && value
-                        .get("initializing")
-                        .and_then(serde_json::Value::as_bool)
-                        == Some(true)
-                {
-                    if let Some(agent_id) = value
-                        .get("agentId")
-                        .and_then(serde_json::Value::as_str)
-                        .and_then(|value| crate::AgentId::parse(value).ok())
-                    {
-                        self.select_agent(Some(agent_id));
-                    }
-                    self.gc_command_discovery_requested = true;
-                    self.gc_command_loading = true;
                 }
                 if result.tool == "glass.agent.stats" {
                     self.agent_token_summary = stats_summary(&value);
@@ -11195,6 +11272,31 @@ impl DevTuiState {
     }
 
     /// Apply one background snapshot without touching UI-only fields.
+    fn update_gc_command_catalogue(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
+        let Some(catalogue) = self
+            .selected_agent
+            .as_ref()
+            .and_then(|agent_id| snapshot.core_command_catalogues.get(agent_id))
+        else {
+            return;
+        };
+        if let Some(error) = catalogue.error.as_deref() {
+            self.gc_command_discovery_pending = false;
+            if self.gc_command_menu_open {
+                self.gc_command_loading = false;
+                self.gc_command_discovery_requested = false;
+                self.status = format!("Glass Core command discovery failed: {error}");
+            }
+            return;
+        }
+        self.gc_command_items.clone_from(&catalogue.commands);
+        self.gc_command_discovery_pending = false;
+        if self.gc_command_menu_open {
+            self.gc_command_loading = false;
+            self.gc_command_discovery_requested = false;
+        }
+    }
+
     pub fn apply_snapshot(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
         self.remember_row_selection_identity();
         let was_waiting_for_snapshot = !self.snapshot_ready;
@@ -11297,20 +11399,7 @@ impl DevTuiState {
                     .to_string();
             }
         }
-        if self.gc_command_menu_open
-            && let Some(agent_id) = self.selected_agent.as_ref()
-            && let Some(catalogue) = snapshot.core_command_catalogues.get(agent_id)
-        {
-            if let Some(error) = catalogue.error.as_deref() {
-                self.gc_command_loading = false;
-                self.gc_command_discovery_requested = false;
-                self.status = format!("Glass Core command discovery failed: {error}");
-            } else {
-                self.gc_command_items.clone_from(&catalogue.commands);
-                self.gc_command_loading = false;
-                self.gc_command_discovery_requested = false;
-            }
-        }
+        self.update_gc_command_catalogue(snapshot);
         if let Some(agent_id) = self.selected_agent.as_ref()
             && let Some(handoff) = snapshot.core_command_handoffs.get(agent_id)
             && !handoff.response_id.is_empty()
@@ -16225,6 +16314,96 @@ mod tests {
             state.selected_palette_action().map(|action| action.label),
             Some("Open task tracking")
         );
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove palette workspace");
+    }
+
+    #[test]
+    fn gc_command_menu_dismissal_preserves_composer_and_escape_restores_query() {
+        let (mut state, root) = routed_state("gc-command-dismissal");
+        state.composer_input = "keep this draft".into();
+        state.composer_cursor = 4;
+        state.gc_command_menu_open = true;
+        state.gc_command_query.clear();
+        state.dismiss_gc_command_menu_trigger();
+        assert!(!state.gc_command_menu_open);
+        assert_eq!(state.composer_input, "keep this draft");
+        assert_eq!(state.composer_cursor, 4);
+
+        state.gc_command_menu_open = true;
+        state.gc_command_query = "help".into();
+        state.cancel_gc_command_menu();
+        assert!(!state.gc_command_menu_open);
+        assert_eq!(state.composer_input, "/help");
+        assert_eq!(state.composer_cursor, "/help".len());
+
+        state.gc_command_menu_open = false;
+        state.status = "Conversation ready · draft preserved".into();
+        state.gc_command_discovery_jobs.insert(17);
+        state.running_tool_job = Some(17);
+        state.apply_tool_job_result(super::super::snapshot::ToolJobResult {
+            id: 17,
+            tool: "glass.agent.commands".into(),
+            result: Ok(serde_json::json!({"queued":true,"agentId":"agent-0002"})),
+        });
+        assert_eq!(state.running_tool_job, None);
+        assert_eq!(state.status, "Conversation ready · draft preserved");
+        assert!(!state.gc_command_menu_open);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove palette workspace");
+    }
+
+    #[test]
+    fn late_core_command_catalogue_updates_only_the_closed_palette_cache() {
+        let (mut state, root) = routed_state("late-core-command-catalogue");
+        let agent_id = crate::AgentId::parse("agent-0002").unwrap();
+        state.selected_agent = Some(agent_id.clone());
+        state.gc_command_menu_open = false;
+        state.gc_command_loading = false;
+        state.status = "Conversation ready · draft preserved".into();
+        let mut snapshot = super::super::snapshot::DisplaySnapshot::default();
+        snapshot.core_command_catalogues.insert(
+            agent_id.clone(),
+            super::super::snapshot::CoreCommandCatalogue {
+                commands: vec![serde_json::json!({"name":"help","description":"Show help"})],
+                error: None,
+            },
+        );
+
+        state.update_gc_command_catalogue(&snapshot);
+        assert!(!state.gc_command_menu_open);
+        assert!(!state.gc_command_loading);
+        assert!(!state.gc_command_discovery_pending);
+        assert_eq!(state.gc_command_items[0]["name"], "help");
+        assert_eq!(state.status, "Conversation ready · draft preserved");
+
+        snapshot.core_command_catalogues.insert(
+            agent_id,
+            super::super::snapshot::CoreCommandCatalogue {
+                commands: Vec::new(),
+                error: Some("late discovery failure".into()),
+            },
+        );
+        state.update_gc_command_catalogue(&snapshot);
+        assert_eq!(state.status, "Conversation ready · draft preserved");
+
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove palette workspace");
+    }
+
+    #[test]
+    fn reopening_gc_menu_waits_for_the_existing_catalogue_request() {
+        let (mut state, root) = routed_state("gc-command-pending-reopen");
+        state.gc_command_discovery_pending = true;
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+        state.open_gc_command_menu(&mut worker);
+        assert!(state.gc_command_menu_open);
+        assert!(state.gc_command_loading);
+        assert!(state.gc_command_discovery_pending);
+        assert_eq!(state.running_tool_job, None);
+        state.dismiss_gc_command_menu_trigger();
+        assert!(state.gc_command_discovery_pending);
+        drop(worker);
         drop(state);
         std::fs::remove_dir_all(root).expect("remove palette workspace");
     }

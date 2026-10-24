@@ -3650,6 +3650,114 @@ fn gc_commands_are_discoverable_and_forwarded_from_the_launcher_terminal() {
 }
 
 #[test]
+fn gc_slash_palette_scroll_and_dismissal_stay_out_of_chat() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    for (width, height) in [(58, 24), (120, 36)] {
+        let root = workspace_root();
+        let fixture_state = root.join(".glass");
+        std::fs::create_dir_all(&fixture_state).unwrap();
+        std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+        let fake_core = fake_core_binary_with_mode("many-commands");
+        let mut session =
+            Session::start_with_core_binary(&binary(), &root, width, height, Some(&fake_core));
+        session.wait_for_agent_surface();
+
+        // Fresh launch '/' initializes the idle GC session and discovers its
+        // dynamic catalogue without a provider turn.
+        session.send(b"/");
+        assert!(
+            session.wait_for("/command-00", Duration::from_secs(8)),
+            "catalogue did not load at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        let requests_path = fixture_state.join("e2e-core-requests.jsonl");
+        let request_count = || {
+            std::fs::read_to_string(&requests_path)
+                .unwrap_or_default()
+                .lines()
+                .filter(|line| line.contains("\"method\":\"commands/list\""))
+                .count()
+        };
+        assert_eq!(
+            request_count(),
+            1,
+            "one palette open should issue one catalogue request"
+        );
+
+        // Move eight rows on a compact phone-like terminal. Render tests also
+        // inspect the selected screen cell and pointer-row mapping.
+        session.clear_output();
+        let mut down_keys = Vec::new();
+        for _ in 0..8 {
+            down_keys.extend_from_slice(b"\x1b[B");
+        }
+        session.send(&down_keys);
+        assert!(
+            session.wait_for_output_after(0, "/command-08", Duration::from_secs(5)),
+            "selection/viewport diverged at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        session.clear_output();
+        session.send(b"\x1b[H");
+        assert!(
+            session.wait_for_output_after(0, "/command-00", Duration::from_secs(5)),
+            "Home did not select the first visible command at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        session.clear_output();
+        session.send(b"\x1b[F");
+        assert!(
+            session.wait_for_output_after(0, "GLASS ", Duration::from_secs(5)),
+            "End did not select the last visible workspace action at {width}x{height}\n{}",
+            session.output_tail()
+        );
+
+        // Backspace on an empty query removes the opening slash. The close
+        // frame must not put the palette catalogue into the transcript.
+        session.clear_output();
+        session.send(b"\x7f");
+        assert!(
+            session.wait_for_output_after(0, "Command menu closed", Duration::from_secs(5)),
+            "Backspace did not close the empty slash menu at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        let closed_frame = session.visible_output();
+        assert!(
+            !closed_frame.contains("/command-00") && !closed_frame.contains("/command-23"),
+            "palette discovery leaked into the transcript at {width}x{height}\n{closed_frame}"
+        );
+
+        // Reopening uses the cached catalogue. Escape keeps a query as an
+        // unsent composer draft; it neither duplicates requests nor chat rows.
+        session.clear_output();
+        session.send(b"/");
+        assert!(
+            session.wait_for_output_after(0, "/command-00", Duration::from_secs(5)),
+            "cached catalogue did not reopen at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        assert_eq!(request_count(), 1, "reopening duplicated commands/list");
+        session.send(b"command-08");
+        session.clear_output();
+        session.send(b"\x1b");
+        assert!(
+            session.wait_for_output_after(0, "/command-08", Duration::from_secs(5)),
+            "Escape did not preserve the typed query as a draft at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        let closed_with_draft = session.visible_output();
+        assert!(!closed_with_draft.contains("YOU  /command-08"));
+        assert!(!closed_with_draft.contains("/command-00"));
+
+        session.kill();
+        let _ = std::fs::remove_file(fake_core);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn live_core_greeting_settles_without_glass_approval_notice() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1")
         || std::env::var("GLASS_LIVE_GREETING").ok().as_deref() != Some("1")

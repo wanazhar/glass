@@ -3,6 +3,12 @@ use crate::native_engine::css;
 
 impl NativeDocument {
     pub(crate) fn to_content_wire(&self) -> NativeDocumentWire {
+        let style_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+            crate::native_engine::content_process::ContentLoadStage::begin(
+                0,
+                "document_wire_computed_styles",
+            )
+        });
         let computed_styles = (0..self.nodes.len())
             .map(|index| {
                 self.computed_style_for_layout(NativeNodeId {
@@ -11,6 +17,12 @@ impl NativeDocument {
                 })
             })
             .collect();
+        if let Some(stage) = style_stage {
+            stage.finish(Some(self.nodes.len()));
+        }
+        let node_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+            crate::native_engine::content_process::ContentLoadStage::begin(0, "document_wire_nodes")
+        });
         let nodes = self
             .nodes
             .iter()
@@ -62,6 +74,15 @@ impl NativeDocument {
                 },
             })
             .collect();
+        if let Some(stage) = node_stage {
+            stage.finish(Some(self.nodes.len()));
+        }
+        let resources_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+            crate::native_engine::content_process::ContentLoadStage::begin(
+                0,
+                "document_wire_resources",
+            )
+        });
         let image_resources = self
             .image_resources
             .iter()
@@ -256,7 +277,7 @@ impl NativeDocument {
                     .encode(resource.bytes.as_ref()),
             })
             .collect();
-        NativeDocumentWire {
+        let wire = NativeDocumentWire {
             nodes,
             computed_styles,
             viewport: self.viewport,
@@ -297,7 +318,11 @@ impl NativeDocument {
             media_resources,
             media_loads,
             media_errors,
+        };
+        if let Some(stage) = resources_stage {
+            stage.finish(Some(self.nodes.len()));
         }
+        wire
     }
 
     pub(crate) fn from_content_wire(

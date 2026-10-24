@@ -898,64 +898,82 @@ fn scroll_containers_for(
     boxes: &[NativeLayoutBox],
     text_runs: &[NativeTextLayout],
 ) -> Vec<NativeScrollContainer> {
-    boxes
-        .iter()
-        .filter_map(|container_box| {
-            let style = document.computed_style_for_layout(container_box.node_id);
-            if !is_scroll_container(document, container_box.node_id) {
-                return None;
-            }
-            let mut scroll_width = container_box.rect.width;
-            let mut scroll_height = container_box.rect.height;
-            for child_box in boxes.iter().filter(|child_box| {
-                child_box.node_id != container_box.node_id
-                    && !child_box.fixed
-                    && nearest_scroll_ancestor(document, child_box.node_id, false)
-                        == Some(container_box.node_id)
-            }) {
-                scroll_width =
-                    scroll_width.max(child_box.rect.right().saturating_sub(container_box.rect.x));
-                scroll_height =
-                    scroll_height.max(child_box.rect.bottom().saturating_sub(container_box.rect.y));
-            }
-            for text_run in text_runs.iter().filter(|text_run| {
-                !text_run.fixed
-                    && nearest_scroll_ancestor(document, text_run.node_id, true)
-                        == Some(container_box.node_id)
-            }) {
-                let text_width = LayoutBuilder::text_width_with_justification(
-                    &text_run.text,
-                    style.letter_spacing(),
-                    style.word_spacing(),
-                    text_run.justify_spacing,
-                );
-                scroll_width = scroll_width.max(
-                    text_run
-                        .origin
-                        .x
-                        .saturating_add(text_width)
-                        .saturating_sub(container_box.rect.x),
-                );
-                scroll_height = scroll_height.max(
-                    text_run
-                        .origin
-                        .y
-                        .saturating_add(DEFAULT_LINE_HEIGHT)
-                        .saturating_sub(container_box.rect.y),
-                );
-            }
-            Some(NativeScrollContainer {
-                node_id: container_box.node_id,
-                client_width: container_box.rect.width,
-                client_height: container_box.rect.height,
-                scroll_width,
-                scroll_height,
-                scrollable_x: scrollable_overflow_axis(style.overflow_x()),
-                scrollable_y: scrollable_overflow_axis(style.overflow_y()),
-                scroll_offset: NativePoint { x: 0, y: 0 },
-            })
-        })
-        .collect()
+    let mut container_indices = HashMap::new();
+    let mut container_rects = HashMap::new();
+    let mut containers = Vec::new();
+    for container_box in boxes {
+        let style = document.computed_style_for_layout(container_box.node_id);
+        if !style.overflow_clip_x() && !style.overflow_clip_y() {
+            continue;
+        }
+        let index = containers.len();
+        container_indices.insert(container_box.node_id, index);
+        container_rects.insert(container_box.node_id, container_box.rect);
+        containers.push(NativeScrollContainer {
+            node_id: container_box.node_id,
+            client_width: container_box.rect.width,
+            client_height: container_box.rect.height,
+            scroll_width: container_box.rect.width,
+            scroll_height: container_box.rect.height,
+            scrollable_x: scrollable_overflow_axis(style.overflow_x()),
+            scrollable_y: scrollable_overflow_axis(style.overflow_y()),
+            scroll_offset: NativePoint { x: 0, y: 0 },
+        });
+    }
+
+    for child_box in boxes.iter().filter(|child_box| !child_box.fixed) {
+        let Some(container_id) = nearest_scroll_ancestor(document, child_box.node_id, false) else {
+            continue;
+        };
+        let (Some(&container_index), Some(container_rect)) = (
+            container_indices.get(&container_id),
+            container_rects.get(&container_id),
+        ) else {
+            continue;
+        };
+        let container = &mut containers[container_index];
+        container.scroll_width = container
+            .scroll_width
+            .max(child_box.rect.right().saturating_sub(container_rect.x));
+        container.scroll_height = container
+            .scroll_height
+            .max(child_box.rect.bottom().saturating_sub(container_rect.y));
+    }
+
+    for text_run in text_runs.iter().filter(|text_run| !text_run.fixed) {
+        let Some(container_id) = nearest_scroll_ancestor(document, text_run.node_id, true) else {
+            continue;
+        };
+        let (Some(&container_index), Some(container_rect)) = (
+            container_indices.get(&container_id),
+            container_rects.get(&container_id),
+        ) else {
+            continue;
+        };
+        let style = document.computed_style_for_layout(container_id);
+        let text_width = LayoutBuilder::text_width_with_justification(
+            &text_run.text,
+            style.letter_spacing(),
+            style.word_spacing(),
+            text_run.justify_spacing,
+        );
+        let container = &mut containers[container_index];
+        container.scroll_width = container.scroll_width.max(
+            text_run
+                .origin
+                .x
+                .saturating_add(text_width)
+                .saturating_sub(container_rect.x),
+        );
+        container.scroll_height = container.scroll_height.max(
+            text_run
+                .origin
+                .y
+                .saturating_add(DEFAULT_LINE_HEIGHT)
+                .saturating_sub(container_rect.y),
+        );
+    }
+    containers
 }
 
 fn fixed_layout_root(

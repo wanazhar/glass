@@ -39,9 +39,11 @@ fn viewport_invalidation_clears_cache_and_clones_are_isolated() {
     let p = document.find_element(document.root(), "p").unwrap();
     let initial = document.computed_style_for_layout(p);
     assert!(!document.layout_style_cache.0.lock().unwrap().is_empty());
+    assert!(!document.layout_style_cache.1.lock().unwrap().is_empty());
 
     let clone = document.clone();
     assert_eq!(clone.computed_style_for_layout(p), initial);
+    assert!(!clone.layout_style_cache.1.lock().unwrap().is_empty());
     document
         .set_viewport(Viewport {
             width: 640,
@@ -50,7 +52,9 @@ fn viewport_invalidation_clears_cache_and_clones_are_isolated() {
         })
         .unwrap();
     assert!(document.layout_style_cache.0.lock().unwrap().is_empty());
+    assert!(document.layout_style_cache.1.lock().unwrap().is_empty());
     assert!(!clone.layout_style_cache.0.lock().unwrap().is_empty());
+    assert!(!clone.layout_style_cache.1.lock().unwrap().is_empty());
 
     let updated = document.computed_style_for_layout(p);
     let fresh = NativeDocument::parse(NESTED_STYLES, &limits).unwrap();
@@ -108,6 +112,61 @@ fn script_class_attribute_mutations_match_a_fresh_cascade() {
         base_fresh.computed_style_for_layout(base_fresh.find_element_by_id("target").unwrap())
     );
     assert_eq!(base, reset);
+}
+
+#[test]
+fn layout_style_cache_reuses_and_invalidates_inherited_custom_properties() {
+    let limits = NativeEngineLimits::default();
+    let source = "<style>main{--accent:#123456} main.active{--accent:#abcdef} p{color:var(--accent)}</style><main id=root><section><p id=target>text</p></section></main>";
+    let mut cached = NativeDocument::parse(source, &limits).unwrap();
+    let mut fresh = NativeDocument::parse(source, &limits).unwrap();
+    let root = cached.find_element_by_id("root").unwrap();
+    let target = cached.find_element_by_id("target").unwrap();
+    let fresh_root = fresh.find_element_by_id("root").unwrap();
+    let fresh_target = fresh.find_element_by_id("target").unwrap();
+
+    let initial = cached.computed_style_for_layout(target);
+    assert_eq!(
+        initial.color(),
+        Some(NativeColor {
+            red: 0x12,
+            green: 0x34,
+            blue: 0x56,
+            alpha: u8::MAX,
+        })
+    );
+    assert_eq!(initial, fresh.computed_style_for_layout(fresh_target));
+    let cached_custom_property_count = cached.layout_style_cache.1.lock().unwrap().len();
+    assert!(cached_custom_property_count >= 5);
+
+    cached
+        .apply_script_attribute(root.index(), "class", "active", None, &BTreeMap::new())
+        .unwrap();
+    fresh
+        .apply_script_attribute(
+            fresh_root.index(),
+            "class",
+            "active",
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    assert!(cached.layout_style_cache.0.lock().unwrap().is_empty());
+    assert!(cached.layout_style_cache.1.lock().unwrap().is_empty());
+    assert_eq!(
+        cached.computed_style_for_layout(target),
+        fresh.computed_style_for_layout(fresh_target)
+    );
+    assert_ne!(cached.computed_style_for_layout(target), initial);
+    assert_eq!(
+        cached.computed_style_for_layout(target).color(),
+        Some(NativeColor {
+            red: 0xab,
+            green: 0xcd,
+            blue: 0xef,
+            alpha: u8::MAX,
+        })
+    );
 }
 
 #[test]

@@ -202,7 +202,18 @@ impl NativeJavaScriptRuntime {
                 operation: "install native dialog host callback".into(),
                 reason: "native JavaScript dialog host callback could not be installed".into(),
             })?;
-            ctx.eval::<(), _>(bootstrap.as_str())
+            let host_view_bytes = bootstrap.len();
+            let host_view_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+                crate::native_engine::content_process::ContentLoadStage::begin(
+                    0,
+                    "javascript_host_view_eval",
+                )
+            });
+            let host_view_result = ctx.eval::<(), _>(bootstrap.as_str());
+            if let Some(stage) = host_view_stage {
+                stage.finish(Some(host_view_bytes));
+            }
+            host_view_result
                 .map_err(|error| NativeEngineError::Worker {
                     operation: "install JavaScript host view".into(),
                     reason: format!(

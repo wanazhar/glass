@@ -95,6 +95,7 @@ impl NativeDocument {
         let mut inherited_word_spacing = 0;
         let mut inherited_letter_spacing = 0;
         let mut inherited_pointer_events = NativePointerEventsValue::Auto;
+        let mut inherited_custom_properties = Arc::new(BTreeMap::new());
         for current_id in chain.into_iter().rev() {
             let Some(_) = self.node(current_id) else {
                 continue;
@@ -102,6 +103,35 @@ impl NativeDocument {
             let is_root_element = self
                 .node(current_id)
                 .is_some_and(|node| node.element_name().is_some());
+            let cached_custom_properties = {
+                self.layout_style_cache
+                    .1
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get(&current_id)
+                    .cloned()
+            };
+            let custom_properties = cached_custom_properties.unwrap_or_else(|| {
+                let local = self.stylesheet.custom_properties_for_node_in_document(
+                    self,
+                    current_id,
+                    self.viewport,
+                );
+                let values = if local.is_empty() {
+                    Arc::clone(&inherited_custom_properties)
+                } else {
+                    let mut values = (*inherited_custom_properties).clone();
+                    values.extend(local);
+                    Arc::new(values)
+                };
+                self.layout_style_cache
+                    .1
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(current_id, Arc::clone(&values));
+                values
+            });
+            inherited_custom_properties = Arc::clone(&custom_properties);
             let cached_style = self
                 .layout_style_cache
                 .0
@@ -112,82 +142,85 @@ impl NativeDocument {
             let style = if let Some(style) = cached_style {
                 style
             } else {
-                let style = self.stylesheet.computed_for_in_document_with_inheritance(
-                    self,
-                    current_id,
-                    NativeInheritedStyle {
-                        color: inherited_color,
-                        background_color: inherited_background_color,
-                        text_decoration_color: inherited_text_decoration_color,
-                        border_color: inherited_border_color,
-                        border_width: inherited_border_width,
-                        border_style: inherited_border_style,
-                        border_radius: inherited_border_radius,
-                        padding: inherited_padding,
-                        margin: inherited_margin,
-                        box_sizing: inherited_box_sizing,
-                        width: inherited_width,
-                        height: inherited_height,
-                        min_width: inherited_min_width,
-                        max_width: inherited_max_width,
-                        min_height: inherited_min_height,
-                        max_height: inherited_max_height,
-                        justify_content: inherited_justify_content,
-                        align_items: inherited_align_items,
-                        align_self: inherited_align_self,
-                        align_content: inherited_align_content,
-                        flex_direction: inherited_flex_direction,
-                        flex_wrap: inherited_flex_wrap,
-                        flex_item_order: inherited_flex_item_order,
-                        row_gap: inherited_row_gap,
-                        column_gap: inherited_column_gap,
-                        direction: inherited_direction,
-                        flex_grow: inherited_flex_grow,
-                        flex_shrink: inherited_flex_shrink,
-                        flex_basis: inherited_flex_basis,
-                        white_space: inherited_white_space,
-                        line_height: inherited_line_height,
-                        text_align: inherited_text_align,
-                        text_align_last: inherited_text_align_last,
-                        text_justify: inherited_text_justify,
-                        text_decoration: inherited_text_decoration,
-                        text_decoration_style: inherited_text_decoration_style,
-                        text_decoration_skip_ink: inherited_text_decoration_skip_ink,
-                        text_decoration_skip_spaces: inherited_text_decoration_skip_spaces,
-                        text_decoration_thickness: inherited_text_decoration_thickness,
-                        text_underline_offset: inherited_text_underline_offset,
-                        text_transform: inherited_text_transform,
-                        font_variant_ligatures: inherited_font_variant_ligatures,
-                        font_variant_caps: inherited_font_variant_caps,
-                        font_variant_position: inherited_font_variant_position,
-                        font_variant_alternates: inherited_font_variant_alternates,
-                        font_language_override: inherited_font_language_override,
-                        font_variation_settings: inherited_font_variation_settings,
-                        font_variant_east_asian: inherited_font_variant_east_asian,
-                        font_variant_numeric: inherited_font_variant_numeric,
-                        font_feature_settings: inherited_font_feature_settings,
-                        font_kerning: inherited_font_kerning,
-                        font_optical_sizing: inherited_font_optical_sizing,
-                        font_palette: inherited_font_palette,
-                        font_weight: inherited_font_weight,
-                        font_style: inherited_font_style,
-                        font_stretch: inherited_font_stretch,
-                        font_family: inherited_font_family,
-                        font_size: inherited_font_size,
-                        root_font_size: inherited_root_font_size,
-                        viewport: self.viewport,
-                        word_break: inherited_word_break,
-                        text_overflow: inherited_text_overflow,
-                        overflow_x: inherited_overflow_x,
-                        overflow_y: inherited_overflow_y,
-                        vertical_align: inherited_vertical_align,
-                        text_indent: inherited_text_indent,
-                        word_spacing: inherited_word_spacing,
-                        letter_spacing: inherited_letter_spacing,
-                        pointer_events: inherited_pointer_events,
-                    },
-                    self.viewport,
-                );
+                let style = self
+                    .stylesheet
+                    .computed_for_in_document_with_inheritance_and_custom_properties(
+                        self,
+                        current_id,
+                        NativeInheritedStyle {
+                            color: inherited_color,
+                            background_color: inherited_background_color,
+                            text_decoration_color: inherited_text_decoration_color,
+                            border_color: inherited_border_color,
+                            border_width: inherited_border_width,
+                            border_style: inherited_border_style,
+                            border_radius: inherited_border_radius,
+                            padding: inherited_padding,
+                            margin: inherited_margin,
+                            box_sizing: inherited_box_sizing,
+                            width: inherited_width,
+                            height: inherited_height,
+                            min_width: inherited_min_width,
+                            max_width: inherited_max_width,
+                            min_height: inherited_min_height,
+                            max_height: inherited_max_height,
+                            justify_content: inherited_justify_content,
+                            align_items: inherited_align_items,
+                            align_self: inherited_align_self,
+                            align_content: inherited_align_content,
+                            flex_direction: inherited_flex_direction,
+                            flex_wrap: inherited_flex_wrap,
+                            flex_item_order: inherited_flex_item_order,
+                            row_gap: inherited_row_gap,
+                            column_gap: inherited_column_gap,
+                            direction: inherited_direction,
+                            flex_grow: inherited_flex_grow,
+                            flex_shrink: inherited_flex_shrink,
+                            flex_basis: inherited_flex_basis,
+                            white_space: inherited_white_space,
+                            line_height: inherited_line_height,
+                            text_align: inherited_text_align,
+                            text_align_last: inherited_text_align_last,
+                            text_justify: inherited_text_justify,
+                            text_decoration: inherited_text_decoration,
+                            text_decoration_style: inherited_text_decoration_style,
+                            text_decoration_skip_ink: inherited_text_decoration_skip_ink,
+                            text_decoration_skip_spaces: inherited_text_decoration_skip_spaces,
+                            text_decoration_thickness: inherited_text_decoration_thickness,
+                            text_underline_offset: inherited_text_underline_offset,
+                            text_transform: inherited_text_transform,
+                            font_variant_ligatures: inherited_font_variant_ligatures,
+                            font_variant_caps: inherited_font_variant_caps,
+                            font_variant_position: inherited_font_variant_position,
+                            font_variant_alternates: inherited_font_variant_alternates,
+                            font_language_override: inherited_font_language_override,
+                            font_variation_settings: inherited_font_variation_settings,
+                            font_variant_east_asian: inherited_font_variant_east_asian,
+                            font_variant_numeric: inherited_font_variant_numeric,
+                            font_feature_settings: inherited_font_feature_settings,
+                            font_kerning: inherited_font_kerning,
+                            font_optical_sizing: inherited_font_optical_sizing,
+                            font_palette: inherited_font_palette,
+                            font_weight: inherited_font_weight,
+                            font_style: inherited_font_style,
+                            font_stretch: inherited_font_stretch,
+                            font_family: inherited_font_family,
+                            font_size: inherited_font_size,
+                            root_font_size: inherited_root_font_size,
+                            viewport: self.viewport,
+                            word_break: inherited_word_break,
+                            text_overflow: inherited_text_overflow,
+                            overflow_x: inherited_overflow_x,
+                            overflow_y: inherited_overflow_y,
+                            vertical_align: inherited_vertical_align,
+                            text_indent: inherited_text_indent,
+                            word_spacing: inherited_word_spacing,
+                            letter_spacing: inherited_letter_spacing,
+                            pointer_events: inherited_pointer_events,
+                        },
+                        &custom_properties,
+                        self.viewport,
+                    );
                 self.layout_style_cache
                     .0
                     .lock()

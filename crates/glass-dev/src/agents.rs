@@ -1571,7 +1571,25 @@ impl AgentRegistry {
                     }
                 };
                 if let Some(phase) = phase {
-                    self.persist_run_phase(&id, phase)?;
+                    let is_settlement = event_type == Some("agent_settled");
+                    let started = Instant::now();
+                    if is_settlement {
+                        trace_worker_handoff("settle_persist_begin", &id, "agent_settled", None);
+                    }
+                    let result = self.persist_run_phase(&id, phase);
+                    if is_settlement {
+                        trace_worker_handoff(
+                            if result.is_ok() {
+                                "settle_persist_complete"
+                            } else {
+                                "settle_persist_error"
+                            },
+                            &id,
+                            "agent_settled",
+                            Some(started.elapsed().as_micros()),
+                        );
+                    }
+                    result?;
                 }
                 if event_type == Some("waiting") {
                     self.persist_unambiguous_active_send_attempt(&id, SendAttemptStatus::Waiting)?;
@@ -1610,6 +1628,9 @@ impl AgentRegistry {
                         record.snapshot.evidence.remove(0);
                     }
                     record.snapshot.evidence.push(value.clone());
+                }
+                if event_type == Some("agent_settled") {
+                    trace_worker_handoff("settle_snapshot_applied", &id, "agent_settled", None);
                 }
                 let kind = value
                     .get("type")
@@ -2615,6 +2636,66 @@ mod tests {
             ["usage", "agent_end", "agent_settled", "response"]
         );
         assert_eq!(dropped.load(Ordering::Relaxed), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_waits_for_thread_store_lock_before_projecting_settled_idle() {
+        use fs2::FileExt;
+
+        let root = test_root();
+        let mut registry = AgentRegistry::new(&root).unwrap();
+        let id = AgentId::parse("agent-settle-lock").unwrap();
+        let (command, commands) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let worker = thread::spawn(move || {
+            while let Ok(command) = commands.recv() {
+                if matches!(command, WorkerCommand::Shutdown) {
+                    break;
+                }
+            }
+        });
+        insert_test_worker(&mut registry, id.clone(), command, worker);
+        assert_eq!(
+            registry.records.get(&id).unwrap().snapshot.status,
+            AgentStatus::Working
+        );
+
+        let lock_path = root.join(".glass/threads/registry.lock");
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .unwrap();
+        lock.lock_exclusive().unwrap();
+        registry
+            .events_tx
+            .send(WorkerEvent::Engine(
+                id.clone(),
+                serde_json::json!({"type":"agent_settled","detail":{"reason":"completed"}}),
+            ))
+            .unwrap();
+
+        // A terminal refresh applies `agent_settled` synchronously. The
+        // exclusive registry lock holds that refresh before its idle snapshot
+        // can be returned to the UI. Releasing the lock lets it finish.
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(180));
+            FileExt::unlock(&lock).unwrap();
+        });
+        let started = Instant::now();
+        let snapshot = registry.snapshot(&id).unwrap();
+        let elapsed = started.elapsed();
+        release.join().unwrap();
+
+        assert!(
+            elapsed >= Duration::from_millis(150),
+            "refresh took {elapsed:?}"
+        );
+        assert_eq!(snapshot.status, AgentStatus::Idle);
+        drop(registry);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]

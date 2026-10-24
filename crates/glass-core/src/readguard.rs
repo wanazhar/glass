@@ -192,10 +192,7 @@ impl ReadSet {
         // A compiler or test run read and validated every file it touched, and
         // the failure text names them, so anything mentioned in a non-empty
         // result from a build tool counts as read.
-        let builds = [
-            "cargo", "go", "npm", "make", "tsc", "pytest", "gcc", "clang",
-        ];
-        if builds.iter().any(|b| cmd.starts_with(b)) && !output.trim().is_empty() {
+        if is_build_command(cmd) && !output.trim().is_empty() {
             for line in output.lines() {
                 for tok in line.split_whitespace() {
                     let t = tok.trim_matches(|c: char| {
@@ -218,6 +215,24 @@ impl ReadSet {
             .filter(|p| p.is_file() && !self.contains(p))
             .collect()
     }
+}
+
+fn is_build_command(command: &str) -> bool {
+    const BUILD_TOOLS: &[&str] = &[
+        "cargo", "go", "npm", "make", "tsc", "pytest", "gcc", "clang", "gradle", "gradlew", "mvn",
+        "dotnet", "yarn", "pnpm", "pip", "pip3", "poetry",
+    ];
+    let Some(tokens) = shell_tokens(command) else {
+        return false;
+    };
+    let Some((executable, _)) = tokens.into_iter().find(|(_, operator)| !operator) else {
+        return false;
+    };
+    let name = Path::new(&executable)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&executable);
+    BUILD_TOOLS.contains(&name)
 }
 
 // Small lexical scan, never shell execution. Operators terminate commands;
@@ -696,12 +711,46 @@ mod tests {
         let d = scratch("build");
         let f = d.join("a.rs");
         std::fs::write(&f, "x").unwrap();
-        let mut rs = ReadSet::new();
-        rs.observe("cargo build", &format!("error[E0425]: {}", f.display()), &d);
-        assert!(
-            rs.contains(&f),
-            "a compiler that named the file clearly read it"
-        );
+        for command in [
+            "cargo build",
+            "/usr/bin/cargo build",
+            "gradle test",
+            "./gradlew test",
+            "mvn test",
+            "dotnet test",
+            "yarn build",
+            "pnpm build",
+            "pip install package",
+            "pip3 install package",
+            "poetry build",
+        ] {
+            let mut reads = ReadSet::new();
+            reads.observe(command, &format!("error[E0425]: {}", f.display()), &d);
+            assert!(
+                reads.contains(&f),
+                "a recognized build tool that named the file clearly read it: {command}"
+            );
+        }
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn build_output_from_a_prefix_collision_does_not_mark_files_read() {
+        let d = scratch("build-prefix");
+        let f = d.join("a.rs");
+        std::fs::write(&f, "x").unwrap();
+        for command in [
+            "cargo-wrapper build",
+            "npm-preview test",
+            "maven-helper test",
+        ] {
+            let mut reads = ReadSet::new();
+            reads.observe(command, &format!("diagnostic mentions {}", f.display()), &d);
+            assert!(
+                !reads.contains(&f),
+                "an unrelated executable must not earn build-read credit: {command}"
+            );
+        }
         std::fs::remove_dir_all(&d).ok();
     }
 

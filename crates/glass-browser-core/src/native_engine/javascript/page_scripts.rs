@@ -800,6 +800,14 @@ pub(crate) fn execute_page_scripts(
         {
             continue;
         }
+        let event_stage = trace_request_id.map(|request_id| {
+            let stage = match event_kind {
+                NativeEventKind::Load => "page_resource_load_handler",
+                NativeEventKind::Error => "page_resource_error_handler",
+                _ => "page_resource_other_handler",
+            };
+            crate::native_engine::content_process::ContentLoadStage::begin(request_id, stage)
+        });
         let evaluation = runtime
             .as_ref()
             .expect("page script runtime initialized")
@@ -810,6 +818,9 @@ pub(crate) fn execute_page_scripts(
                 document_origin,
                 viewport,
             )?;
+        if let Some(stage) = event_stage {
+            stage.finish(Some(event_types.len()));
+        }
         let commands = evaluation.commands.clone();
         let apply_stage = trace_request_id.map(|request_id| {
             crate::native_engine::content_process::ContentLoadStage::begin(

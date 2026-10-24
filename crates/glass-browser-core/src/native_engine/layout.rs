@@ -300,8 +300,22 @@ impl NativeLayoutSnapshot {
                 height: viewport.height,
             },
         };
+        let build_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "native_layout_tree_build",
+        );
         let flow = builder.layout_children(document.root(), 0, 0, viewport.width, 0);
+        build_stage.finish(Some(builder.boxes.len()));
+        let scroll_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "native_layout_scroll_containers",
+        );
         let scroll_containers = scroll_containers_for(document, &builder.boxes, &builder.text_runs);
+        scroll_stage.finish(Some(scroll_containers.len()));
+        let extent_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "native_layout_extent_projection",
+        );
         let max_box_bottom = builder
             .boxes
             .iter()
@@ -365,6 +379,7 @@ impl NativeLayoutSnapshot {
             })
             .max()
             .unwrap_or(0);
+        extent_stage.finish(Some(builder.text_runs.len()));
         let overflow_clips = builder
             .boxes
             .iter()

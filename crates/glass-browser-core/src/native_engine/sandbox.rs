@@ -47,7 +47,12 @@ pub(crate) fn prepare_worker_command(
 ) -> Result<(Command, NativeContentSandbox), NativeEngineError> {
     #[cfg(target_os = "linux")]
     {
-        prepare_linux(worker_path, storage_path, allowed_file_roots)
+        prepare_linux(
+            worker_path,
+            storage_path,
+            allowed_file_roots,
+            std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE"),
+        )
     }
     #[cfg(target_os = "macos")]
     {
@@ -72,6 +77,7 @@ fn prepare_linux(
     worker_path: &Path,
     storage_path: Option<&Path>,
     allowed_file_roots: &[PathBuf],
+    diagnostic_trace_base: Option<std::ffi::OsString>,
 ) -> Result<(Command, NativeContentSandbox), NativeEngineError> {
     let Some(bwrap) = find_executable("bwrap") else {
         return Err(sandbox_error(
@@ -145,13 +151,13 @@ fn prepare_linux(
                 .arg(&storage_lock_path)
                 .arg(&storage_lock_path);
         }
-        if let Some(trace_path) = diagnostic_trace_path(storage_path)? {
-            // The worker can write only its explicitly configured profile
-            // file by default. Opt-in diagnostics get a separate, private
-            // append-only file beside that profile, not a writable mount of
-            // an arbitrary host directory.
-            command.arg("--bind").arg(&trace_path).arg(&trace_path);
-        }
+    }
+    if let Some(trace_path) = diagnostic_trace_path(storage_path, diagnostic_trace_base)? {
+        // Opt-in diagnostics grant the worker write access only to this
+        // private append-only file, never to its containing host directory.
+        // Incognito sessions have no storage path but still need the same
+        // explicitly authorized trace sink for isolated worker stages.
+        command.arg("--bind").arg(&trace_path).arg(&trace_path);
     }
     for root in allowed_file_roots {
         command.arg("--ro-bind").arg(root).arg(root);
@@ -173,25 +179,30 @@ fn prepare_linux(
 }
 
 #[cfg(target_os = "linux")]
-fn diagnostic_trace_path(storage_path: &Path) -> Result<Option<PathBuf>, NativeEngineError> {
-    let Some(base) = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE") else {
+fn diagnostic_trace_path(
+    storage_path: Option<&Path>,
+    base: Option<std::ffi::OsString>,
+) -> Result<Option<PathBuf>, NativeEngineError> {
+    let Some(base) = base else {
         return Ok(None);
     };
     let trace_path = PathBuf::from(base).with_extension("native_load.jsonl");
-    let profile_parent = storage_path
-        .parent()
-        .ok_or_else(|| sandbox_error("diagnostic trace requires a profile directory"))?
-        .canonicalize()
-        .map_err(|_| sandbox_error("diagnostic trace profile directory is unavailable"))?;
     let trace_parent = trace_path
         .parent()
         .ok_or_else(|| sandbox_error("diagnostic trace requires a parent directory"))?
         .canonicalize()
         .map_err(|_| sandbox_error("diagnostic trace parent directory is unavailable"))?;
-    if profile_parent != trace_parent {
-        return Err(sandbox_error(
-            "diagnostic trace must be stored beside the native profile",
-        ));
+    if let Some(storage_path) = storage_path {
+        let profile_parent = storage_path
+            .parent()
+            .ok_or_else(|| sandbox_error("diagnostic trace requires a profile directory"))?
+            .canonicalize()
+            .map_err(|_| sandbox_error("diagnostic trace profile directory is unavailable"))?;
+        if profile_parent != trace_parent {
+            return Err(sandbox_error(
+                "diagnostic trace must be stored beside the native profile",
+            ));
+        }
     }
     let file = match std::fs::OpenOptions::new()
         .create_new(true)
@@ -455,7 +466,7 @@ mod tests {
         );
 
         let (worker_command, _) =
-            prepare_linux(Path::new("/usr/bin/true"), None, &[]).expect("sandbox args");
+            prepare_linux(Path::new("/usr/bin/true"), None, &[], None).expect("sandbox args");
         let worker_args = worker_command
             .as_std()
             .get_args()
@@ -479,6 +490,53 @@ mod tests {
             STRICTER_PARENT_LIMIT_BYTES / 1024,
             "the worker must retain a stricter inherited limit"
         );
+    }
+
+    #[test]
+    fn incognito_diagnostic_trace_is_a_private_single_file_mount() {
+        let trace_dir = std::env::temp_dir().join(format!(
+            "glass-native-trace-test-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("worker")
+        ));
+        std::fs::create_dir_all(&trace_dir).expect("create isolated trace directory");
+        let trace_base = trace_dir.join("diagnostic.jsonl");
+        let trace_path = diagnostic_trace_path(None, Some(trace_base.clone().into_os_string()))
+            .expect("prepare incognito diagnostic trace")
+            .expect("trace path exists");
+        assert_eq!(trace_path, trace_dir.join("diagnostic.native_load.jsonl"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&trace_path)
+                    .expect("trace metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        let (command, _) = prepare_linux(
+            Path::new("/usr/bin/true"),
+            None,
+            &[],
+            Some(trace_base.into_os_string()),
+        )
+        .expect("prepare private sandbox with trace");
+        let arguments = command
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let bind_index = arguments.iter().enumerate().find_map(|(index, argument)| {
+            (argument == "--bind"
+                && arguments.get(index + 1) == Some(&trace_path.display().to_string())
+                && arguments.get(index + 2) == Some(&trace_path.display().to_string()))
+            .then_some(index)
+        });
+        assert!(bind_index.is_some(), "only the exact trace file is mounted");
+        let _ = std::fs::remove_dir_all(trace_dir);
     }
 
     fn address_space_limit_kib(parent_limit: Option<u64>) -> u64 {

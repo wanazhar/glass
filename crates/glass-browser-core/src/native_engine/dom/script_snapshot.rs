@@ -107,13 +107,22 @@ impl NativeDocument {
         max_text_bytes: usize,
         viewport: Viewport,
     ) -> NativeScriptDocumentSnapshot {
+        let text_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "script_snapshot_text_projection",
+        );
         let (title, _) = self.title(max_text_bytes);
         let (visible_text, _) = self.visible_text(max_text_bytes);
+        text_stage.finish(Some(visible_text.len()));
         let script_node_indices = self
             .script_node_ids
             .values()
             .map(|id| id.index())
             .collect::<BTreeSet<_>>();
+        let nodes_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "script_snapshot_nodes",
+        );
         let nodes = self
             .nodes
             .iter()
@@ -161,7 +170,12 @@ impl NativeDocument {
                     children,
                 })
             })
-            .collect();
+            .collect::<Vec<_>>();
+        nodes_stage.finish(Some(nodes.len()));
+        let elements_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "script_snapshot_elements",
+        );
         let elements = self
             .nodes
             .iter()
@@ -243,8 +257,13 @@ impl NativeDocument {
                     computed_style,
                 })
             })
-            .collect();
-        let canvas_resources = self
+            .collect::<Vec<_>>();
+        elements_stage.finish(Some(elements.len()));
+        let resources_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "script_snapshot_resources",
+        );
+        let canvas_resources: Vec<NativeCanvasResourceWire> = self
             .canvas_resources
             .iter()
             .filter_map(|(node_index, resource)| {
@@ -259,6 +278,8 @@ impl NativeDocument {
                 })
             })
             .collect();
+        let image_resources = self.script_image_resources(viewport);
+        resources_stage.finish(Some(canvas_resources.len() + image_resources.len()));
         NativeScriptDocumentSnapshot {
             revision: self.revision,
             title,
@@ -280,7 +301,7 @@ impl NativeDocument {
                 })
                 .collect(),
             canvas_resources,
-            image_resources: self.script_image_resources(viewport),
+            image_resources,
         }
     }
 
@@ -292,11 +313,20 @@ impl NativeDocument {
         nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
     ) -> Result<NativeScriptDocumentSnapshot, NativeEngineError> {
         let mut snapshot = self.script_snapshot_for_viewport(max_text_bytes, viewport);
+        let layout_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "script_snapshot_layout_compute",
+        );
         let layout = self.layout(viewport)?.with_scroll_offset(
             self,
             scroll_offset,
             nested_scroll_offsets,
         )?;
+        layout_stage.finish(Some(layout.boxes.len()));
+        let geometry_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "script_snapshot_geometry_projection",
+        );
         snapshot.geometry = layout
             .boxes
             .iter()
@@ -376,6 +406,7 @@ impl NativeDocument {
                 }
             })
             .collect();
+        geometry_stage.finish(Some(snapshot.geometry.len()));
         for element in &mut snapshot.elements {
             if let Some(geometry) = snapshot
                 .geometry

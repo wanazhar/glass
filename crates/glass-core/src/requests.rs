@@ -111,7 +111,8 @@ impl Snapshot {
                         .map(|(n, d, s)| n.len() + d.len() + s.len())
                         .sum::<usize>())
                 .div_ceil(4)
-                .min(u32::MAX as usize) as u32,
+                .try_into()
+                .unwrap_or(u32::MAX),
             ),
         }
     }

@@ -633,8 +633,7 @@ pub fn inspector(session: &Session) -> Value {
 
 /// `HH:MM:SS UTC` for a recorded millisecond stamp.
 fn clock(unix_ms: u128) -> String {
-    let seconds = (unix_ms / 1000) as i64;
-    let day = seconds.rem_euclid(86_400);
+    let day = (unix_ms / 1000) % 86_400;
     format!(
         "{:02}:{:02}:{:02} UTC",
         day / 3600,
@@ -777,6 +776,12 @@ pub fn view(
 mod tests {
     use super::*;
     use crate::session::Record;
+
+    #[test]
+    fn clock_formats_timestamps_larger_than_i64_without_wrapping() {
+        let unix_ms = (u128::from(u64::try_from(i64::MAX).unwrap()) + 1) * 1000;
+        assert_eq!(clock(unix_ms), "15:30:08 UTC");
+    }
 
     /// A real session directory plus its id, so tests read back the log the
     /// harness actually wrote rather than a hand-built stand-in.

@@ -10,7 +10,7 @@ use std::io::Read;
 
 use serde_json::{Value, json};
 
-use super::{Error, Event, Provider, Request, Usage, http_agent, read_lossy};
+use super::{Error, Event, Provider, Request, Usage, bounded_usage_tokens, http_agent, read_lossy};
 use crate::sse::{SseDecoder, SseEvent};
 
 /// Default context window for models we do not recognise explicitly.
@@ -406,7 +406,15 @@ impl<R: Read> StreamEvents<R> {
 
         match kind.as_str() {
             "content_block_start" => {
-                let index = v.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let Some(index) =
+                    super::checked_stream_index(v.get("index").and_then(Value::as_u64))
+                else {
+                    self.done = true;
+                    self.outbox.push_back(Event::Error(
+                        "Provider content block index exceeds platform capacity".into(),
+                    ));
+                    return;
+                };
                 let block = v.get("content_block").cloned().unwrap_or(Value::Null);
                 let btype = block.get("type").and_then(Value::as_str).unwrap_or("");
                 match btype {
@@ -442,7 +450,15 @@ impl<R: Read> StreamEvents<R> {
                 }
             }
             "content_block_delta" => {
-                let index = v.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let Some(index) =
+                    super::checked_stream_index(v.get("index").and_then(Value::as_u64))
+                else {
+                    self.done = true;
+                    self.outbox.push_back(Event::Error(
+                        "Provider content block index exceeds platform capacity".into(),
+                    ));
+                    return;
+                };
                 let delta = v.get("delta").cloned().unwrap_or(Value::Null);
                 let dtype = delta.get("type").and_then(Value::as_str).unwrap_or("");
                 match dtype {
@@ -469,7 +485,15 @@ impl<R: Read> StreamEvents<R> {
                 }
             }
             "content_block_stop" => {
-                let index = v.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let Some(index) =
+                    super::checked_stream_index(v.get("index").and_then(Value::as_u64))
+                else {
+                    self.done = true;
+                    self.outbox.push_back(Event::Error(
+                        "Provider content block index exceeds platform capacity".into(),
+                    ));
+                    return;
+                };
                 if let Some((idx, id, name)) = self.pending_tool.take()
                     && idx == index
                 {
@@ -493,7 +517,7 @@ impl<R: Read> StreamEvents<R> {
             "message_start" => {
                 let u = v.get("message").and_then(|m| m.get("usage")).cloned();
                 if let Some(u) = u {
-                    let get = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0) as u32;
+                    let get = |k: &str| bounded_usage_tokens(u.get(k).and_then(Value::as_u64));
                     self.pending = Some(Usage {
                         input: get("input_tokens"),
                         cache_read: get("cache_read_input_tokens"),
@@ -505,11 +529,11 @@ impl<R: Read> StreamEvents<R> {
             "message_delta" => {
                 // Output tokens arrive here; carry forward the prompt
                 // buckets captured at message_start.
-                let out = v
-                    .get("usage")
-                    .and_then(|u| u.get("output_tokens"))
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0) as u32;
+                let out = bounded_usage_tokens(
+                    v.get("usage")
+                        .and_then(|u| u.get("output_tokens"))
+                        .and_then(Value::as_u64),
+                );
                 let mut u = self.pending.take().unwrap_or_default();
                 u.output = out;
                 self.outbox.push_back(Event::Usage(u));
@@ -587,6 +611,34 @@ impl<R: Read> Iterator for StreamEvents<R> {
 mod tests {
     use super::*;
     use glass_mod_api::Message;
+
+    #[test]
+    fn oversized_provider_usage_is_clamped_without_wrapping() {
+        let oversized = u64::from(u32::MAX) + 17;
+        let mut stream = StreamEvents::new(std::io::Cursor::new(Vec::<u8>::new()));
+        stream.process(crate::sse::SseEvent {
+            event: Some("message_start".into()),
+            data: json!({"message":{"usage":{
+                "input_tokens": oversized,
+                "cache_read_input_tokens": oversized,
+                "cache_creation_input_tokens": oversized
+            }}})
+            .to_string(),
+        });
+        stream.process(crate::sse::SseEvent {
+            event: Some("message_delta".into()),
+            data: json!({"usage":{"output_tokens":oversized}}).to_string(),
+        });
+        assert_eq!(
+            stream.outbox.pop_front(),
+            Some(Event::Usage(Usage {
+                input: u32::MAX,
+                cache_read: u32::MAX,
+                cache_write: u32::MAX,
+                output: u32::MAX,
+            }))
+        );
+    }
 
     #[test]
     fn an_image_message_becomes_an_image_block() {

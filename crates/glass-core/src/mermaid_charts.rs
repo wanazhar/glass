@@ -55,9 +55,26 @@ fn magnitude(n: f64) -> String {
         n.to_string()
     }
 }
+fn usize_f64(value: usize) -> f64 {
+    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
+}
+fn bounded_index(value: f64, max: usize) -> usize {
+    let upper = usize_f64(max);
+    let value = if value.is_finite() {
+        value.round().clamp(0.0, upper)
+    } else {
+        0.0
+    };
+    // The value is finite, nonnegative and bounded by a usize limit converted
+    // above; the float-to-index cast therefore cannot wrap or become negative.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        value as usize
+    }
+}
 fn bar(n: f64, scale: f64, w: usize) -> String {
     let count = if scale > 0.0 {
-        ((n.abs() / scale).clamp(0.0, 1.0) * w as f64).round() as usize
+        bounded_index((n.abs() / scale).clamp(0.0, 1.0) * usize_f64(w), w)
     } else {
         0
     };
@@ -219,11 +236,11 @@ fn xy(lines: &[&str], w: usize) -> Option<Vec<String>> {
     let labels = labels.unwrap_or_else(|| {
         (0..count)
             .map(|i| {
-                magnitude(range.map_or((i + 1) as f64, |(a, b)| {
+                magnitude(range.map_or(usize_f64(i + 1), |(a, b)| {
                     if count == 1 {
                         a
                     } else {
-                        a + (b - a) * i as f64 / (count - 1) as f64
+                        a + (b - a) * usize_f64(i) / usize_f64(count - 1)
                     }
                 }))
             })
@@ -253,7 +270,7 @@ fn xy(lines: &[&str], w: usize) -> Option<Vec<String>> {
                 .iter()
                 .map(|n| {
                     glyphs[if max > min {
-                        (((n - min) / (max - min)) * 7.0).round() as usize
+                        bounded_index(((n - min) / (max - min)) * 7.0, glyphs.len() - 1)
                     } else {
                         3
                     }]
@@ -496,8 +513,8 @@ fn quadrant(lines: &[&str], w: usize) -> Option<Vec<String>> {
         grid[rows / 2].fill('─');
         grid[rows / 2][columns / 2] = '┼';
         for (_, x, y) in &points {
-            let col = (x * (columns - 1) as f64).round() as usize;
-            let row = ((1.0 - y) * (rows - 1) as f64).round() as usize;
+            let col = bounded_index(x * usize_f64(columns - 1), columns - 1);
+            let row = bounded_index((1.0 - y) * usize_f64(rows - 1), rows - 1);
             grid[row][col] = if matches!(grid[row][col], ' ' | '│' | '─' | '┼') {
                 '●'
             } else {
@@ -624,7 +641,7 @@ fn date(text: &str) -> Option<i64> {
     ];
     if !(1..=9999).contains(&y)
         || !(1..=12).contains(&m)
-        || !(1..=days[(m - 1) as usize]).contains(&d)
+        || !(1..=days[usize::try_from(m - 1).ok()?]).contains(&d)
     {
         return None;
     }
@@ -753,7 +770,7 @@ fn gantt(lines: &[&str], w: usize) -> Option<Vec<String>> {
     }
     let min = tasks.iter().map(|t| t.2).min()?;
     let max = tasks.iter().map(|t| t.3).max()?;
-    let span = (max - min).max(1) as f64;
+    let span = usize::try_from((max - min).max(1)).ok()?;
     let columns = w.saturating_sub(2).min(48);
     push(&mut out, "Gantt · calendar days", w);
     let mut current = String::new();
@@ -764,8 +781,12 @@ fn gantt(lines: &[&str], w: usize) -> Option<Vec<String>> {
         }
         push(&mut out, name, w);
         push(&mut out, detail.trim_end_matches(" · "), w);
-        let offset = (((start - min) as f64 / span) * columns as f64).floor() as usize;
-        let length = ((((end - start) as f64 / span) * columns as f64).round() as usize)
+        let offset = usize::try_from(start - min).ok()?.saturating_mul(columns) / span;
+        let length = (usize::try_from(end - start)
+            .ok()?
+            .saturating_mul(columns)
+            .saturating_add(span / 2)
+            / span)
             .max(1)
             .min(columns.saturating_sub(offset).max(1));
         push(
@@ -890,5 +911,20 @@ mod tests {
         assert!(render("pie\n\"x\":1", 7).unwrap().is_err());
         let rows = render("pie\n\"界界\\u{1b}\":1", 8).unwrap().unwrap();
         assert!(rows.iter().all(|r| width(r) <= 8));
+    }
+
+    #[test]
+    fn chart_coordinate_casts_are_finite_and_bounded() {
+        assert_eq!(bounded_index(f64::NAN, 7), 0);
+        assert_eq!(bounded_index(f64::INFINITY, 7), 0);
+        assert_eq!(bounded_index(-4.0, 7), 0);
+        assert_eq!(bounded_index(3.6, 7), 4);
+        assert_eq!(bounded_index(90.0, 7), 7);
+        assert_eq!(usize_f64(usize::MAX), f64::from(u32::MAX));
+
+        let source = "gantt\nA :milestone, a, 0001-01-01, 0001-01-01\nB :milestone, b, 9999-12-31, 9999-12-31";
+        let rows = render(source, 40).unwrap().unwrap();
+        assert!(rows.iter().all(|row| width(row) <= 40));
+        assert!(rows.iter().any(|row| row.contains('◆')));
     }
 }

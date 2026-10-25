@@ -190,11 +190,15 @@ pub fn worktree(workspace: &Path, root: &Path, id: &str) -> Result<PathBuf, Stri
 }
 
 /// A filesystem-safe unique id, so two worktrees cannot collide.
+fn duration_millis_u64(duration: std::time::Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
 fn unique_id() -> String {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
+        .map(duration_millis_u64)
         .unwrap_or(0);
     format!("{millis:x}-{:x}", SEQ.fetch_add(1, Ordering::Relaxed))
 }
@@ -202,6 +206,14 @@ fn unique_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filesystem_id_timestamp_saturates_at_u64_max() {
+        assert_eq!(
+            duration_millis_u64(std::time::Duration::new(u64::MAX, 999_999_999)),
+            u64::MAX
+        );
+    }
     use std::sync::Mutex as StdMutex;
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;

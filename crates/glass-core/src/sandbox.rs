@@ -960,7 +960,14 @@ mod landlock {
                 CREATE_VERSION,
             )
         };
-        (v >= 1).then_some(v as u32)
+        landlock_abi_version(v)
+    }
+
+    fn landlock_abi_version(value: libc::c_long) -> Option<u32> {
+        if value < 1 {
+            return None;
+        }
+        u32::try_from(value).ok()
     }
 
     /// Stable roots shared by sidecar reading, capability resolution and
@@ -1542,6 +1549,17 @@ mod landlock {
     mod tests {
         use super::*;
         use std::process::Command;
+
+        #[test]
+        fn landlock_abi_version_rejects_values_outside_u32() {
+            assert_eq!(landlock_abi_version(0), None);
+            assert_eq!(landlock_abi_version(1), Some(1));
+            assert_eq!(
+                landlock_abi_version(u32::MAX as libc::c_long),
+                Some(u32::MAX)
+            );
+            assert_eq!(landlock_abi_version(u32::MAX as libc::c_long + 1), None);
+        }
 
         fn scratch(tag: &str) -> PathBuf {
             static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

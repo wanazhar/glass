@@ -24,10 +24,15 @@ pub(super) struct Shared {
     record: Record,
 }
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    duration_millis_saturating(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default(),
+    )
+}
+
+fn duration_millis_saturating(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 impl Shared {
     pub(super) fn open(key: [u8; 32]) -> Result<Option<Self>, Error> {
@@ -141,7 +146,11 @@ impl Shared {
         let now = Instant::now();
         let past = |value: Option<Instant>| {
             value
-                .map(|t| wall.saturating_sub(now.saturating_duration_since(t).as_millis() as u64))
+                .map(|t| {
+                    wall.saturating_sub(duration_millis_saturating(
+                        now.saturating_duration_since(t),
+                    ))
+                })
                 .unwrap_or(0)
         };
         self.record = Record {
@@ -150,13 +159,21 @@ impl Shared {
             previous: past(state.previous),
             cooldown: state
                 .cooldown
-                .map(|t| wall + t.saturating_duration_since(now).as_millis() as u64)
+                .map(|t| {
+                    wall.saturating_add(duration_millis_saturating(
+                        t.saturating_duration_since(now),
+                    ))
+                })
                 .unwrap_or(0),
             server_cooldown: state
                 .server_cooldown
-                .map(|t| wall + t.saturating_duration_since(now).as_millis() as u64)
+                .map(|t| {
+                    wall.saturating_add(duration_millis_saturating(
+                        t.saturating_duration_since(now),
+                    ))
+                })
                 .unwrap_or(0),
-            gap: state.gap.as_millis() as u64,
+            gap: duration_millis_saturating(state.gap),
             healthy: state.healthy,
         };
         let write = || -> std::io::Result<()> {
@@ -167,5 +184,20 @@ impl Shared {
         };
         let mut write = write;
         write().map_err(|error| Error::Config(format!("provider pacing state: {error}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::duration_millis_saturating;
+    use std::time::Duration;
+
+    #[test]
+    fn duration_millis_saturate_when_the_u128_result_exceeds_u64() {
+        assert_eq!(duration_millis_saturating(Duration::from_millis(42)), 42);
+        assert_eq!(
+            duration_millis_saturating(Duration::from_secs(u64::MAX)),
+            u64::MAX
+        );
     }
 }

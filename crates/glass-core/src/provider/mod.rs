@@ -40,20 +40,56 @@ pub struct Usage {
 impl Usage {
     /// Total prompt tokens actually sent, however they were billed.
     pub fn prompt_total(&self) -> u32 {
-        self.input + self.cache_read + self.cache_write
+        self.input
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_write)
+    }
+}
+
+/// Provider APIs expose token counts as unsigned 64-bit integers while the
+/// public usage event keeps its historical 32-bit fields. Clamp oversized
+/// counts so malformed or unusually large provider values cannot wrap into a
+/// misleading small number.
+pub(super) fn bounded_usage_tokens(tokens: Option<u64>) -> u32 {
+    tokens
+        .map(|tokens| u32::try_from(tokens).unwrap_or(u32::MAX))
+        .unwrap_or(0)
+}
+
+/// Provider streams number content/tool blocks with `u64` indices. Preserve
+/// the historical default for a missing index, but reject values that cannot
+/// be represented by this target instead of wrapping them onto another slot.
+pub(super) fn checked_stream_index(index: Option<u64>) -> Option<usize> {
+    index.map_or(Some(0), |index| usize::try_from(index).ok())
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::{Usage, checked_stream_index, estimate_token_count};
+
+    #[test]
+    fn prompt_total_saturates_at_public_counter_limit() {
+        let usage = Usage {
+            input: u32::MAX,
+            cache_read: 1,
+            cache_write: u32::MAX,
+            output: 0,
+        };
+        assert_eq!(usage.prompt_total(), u32::MAX);
     }
 
-    /// Fraction of prompt tokens served from cache, 0.0 to 1.0.
-    ///
-    /// This is the number that tells you whether the breakpoint layout is
-    /// working. A rate that sits near zero means either the prefix is below the
-    /// model's minimum or the breakpoint is on a block that changes.
-    pub fn hit_rate(&self) -> f32 {
-        let total = self.prompt_total();
-        if total == 0 {
-            return 0.0;
-        }
-        self.cache_read as f32 / total as f32
+    #[test]
+    fn provider_stream_indices_do_not_wrap_on_narrow_targets() {
+        assert_eq!(checked_stream_index(None), Some(0));
+        assert_eq!(
+            checked_stream_index(Some(u64::MAX)),
+            usize::try_from(u64::MAX).ok()
+        );
+    }
+
+    #[test]
+    fn token_estimates_saturate_at_public_counter_limit() {
+        assert_eq!(estimate_token_count(usize::MAX), u32::MAX);
     }
 }
 
@@ -162,14 +198,22 @@ pub fn default_estimate_for(messages: &[Message], chat_reasoning: bool) -> u32 {
         if matches!(m, Message::Image { .. }) {
             // Images are billed by pixels, not bytes; a flat allowance keeps
             // a base64 data URI from reading as millions of phantom tokens.
-            chars += 8_000;
+            chars = chars.saturating_add(8_000);
             continue;
         }
-        chars += m.text().len();
-        chars += 8; // role and framing overhead per message
+        chars = chars.saturating_add(m.text().len());
+        chars = chars.saturating_add(8); // role and framing overhead per message
     }
+    estimate_token_count(chars)
+}
+
+fn estimate_token_count(chars: usize) -> u32 {
     let tokens = chars.div_ceil(4);
-    (tokens as f64 * 1.15) as u32
+    let estimate = u128::try_from(tokens)
+        .unwrap_or(u128::MAX)
+        .saturating_mul(115)
+        .div_ceil(100);
+    u32::try_from(estimate).unwrap_or(u32::MAX)
 }
 
 #[derive(Debug)]

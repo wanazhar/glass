@@ -299,8 +299,10 @@ impl Host {
             }
             "durable/entries" => {
                 let cv = string(p, "conversationId")?;
-                let cursor = p["cursor"].as_u64().unwrap_or(0) as usize;
-                let limit = p["limit"].as_u64().unwrap_or(25).clamp(1, 128) as usize;
+                let cursor = p["cursor"].as_u64().unwrap_or(0);
+                let cursor = usize::try_from(cursor)
+                    .map_err(|_| "entry cursor exceeds platform capacity")?;
+                let limit = p["limit"].as_u64().unwrap_or(25).clamp(1, 256) as usize;
                 let records = self.store.borrow().records(cv)?;
                 if cursor > records.len() {
                     return Err("entry cursor exceeds record count".into());
@@ -432,7 +434,7 @@ impl Host {
             }
             "durable/changes" => self.store.borrow().changes(
                 p["cursor"].as_u64().unwrap_or(0),
-                p["limit"].as_u64().unwrap_or(25) as usize,
+                p["limit"].as_u64().unwrap_or(25).clamp(1, 128) as usize,
             ),
             "durable/task" => {
                 let id = string(p, "taskId")?;

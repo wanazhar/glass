@@ -543,11 +543,14 @@ pub fn context_report(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let bytes = cfg.system_prompt.len()
-        + instructions.as_ref().map_or(0, String::len)
-        + catalogue.as_ref().map_or(0, String::len)
-        + m.attachments.iter().map(|a| a.text.len()).sum::<usize>();
-    let estimate = crate::provider::default_estimate(&messages) + bytes.div_ceil(4) as u32;
+    let bytes = m.attachments.iter().fold(
+        cfg.system_prompt
+            .len()
+            .saturating_add(instructions.as_ref().map_or(0, String::len))
+            .saturating_add(catalogue.as_ref().map_or(0, String::len)),
+        |total, attachment| total.saturating_add(attachment.text.len()),
+    );
+    let estimate = add_byte_estimate(crate::provider::default_estimate(&messages), bytes);
     let compaction = s
         .records
         .iter()
@@ -646,6 +649,11 @@ pub fn context_report(
             &compaction
         }
     )
+}
+
+fn add_byte_estimate(base: u32, bytes: usize) -> u32 {
+    let extra = u32::try_from(bytes.div_ceil(4)).unwrap_or(u32::MAX);
+    base.saturating_add(extra)
 }
 pub fn context(
     keys: &KeyReader,
@@ -1018,6 +1026,13 @@ pub fn external_editor(draft: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn byte_token_estimate_saturates_at_u32_max() {
+        assert_eq!(add_byte_estimate(10, usize::MAX), u32::MAX);
+        assert_eq!(add_byte_estimate(10, 40), 20);
+    }
+
     fn scratch() -> PathBuf {
         let p = std::env::temp_dir().join(format!("glass-polish-{}", auth::random(8).unwrap()));
         std::fs::create_dir_all(&p).unwrap();

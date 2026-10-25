@@ -254,6 +254,8 @@ mod tests {
             vec![
                 "bash",
                 "state",
+                "web_search",
+                "web_fetch",
                 "display_image",
                 "view_image",
                 "read",
@@ -283,6 +285,8 @@ mod tests {
             vec![
                 "bash",
                 "state",
+                "web_search",
+                "web_fetch",
                 "display_image",
                 "view_image",
                 "read",

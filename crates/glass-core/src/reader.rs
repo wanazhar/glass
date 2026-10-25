@@ -258,13 +258,13 @@ impl Reader {
                     KeyCode::Home if ctrl || self.fullscreen => self.transcript.top(),
                     KeyCode::Up => self.transcript.step(-1, area.height),
                     KeyCode::Down => self.transcript.step(1, area.height),
-                    KeyCode::PageUp => self.transcript.step(-(area.height as isize), area.height),
-                    KeyCode::PageDown => self.transcript.step(area.height as isize, area.height),
+                    KeyCode::PageUp => self.transcript.step(-page_delta(area.height), area.height),
+                    KeyCode::PageDown => self.transcript.step(page_delta(area.height), area.height),
                     KeyCode::Char('b') if ctrl => {
-                        self.transcript.step(-(area.height as isize), area.height)
+                        self.transcript.step(-page_delta(area.height), area.height)
                     }
                     KeyCode::Char('f') if ctrl => {
-                        self.transcript.step(area.height as isize, area.height)
+                        self.transcript.step(page_delta(area.height), area.height)
                     }
                     _ => return Ok(Action::PassThrough),
                 }
@@ -460,6 +460,10 @@ impl Reader {
     }
 }
 
+fn page_delta(height: u16) -> isize {
+    isize::try_from(height).unwrap_or(isize::MAX)
+}
+
 type LoadedSpills = HashMap<(usize, String), Result<(String, bool), String>>;
 
 fn render_entries(
@@ -549,6 +553,15 @@ fn make_clean_terminal(rect: Rect) -> io::Result<Tui> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn page_delta_is_bounded_by_platform_isize() {
+        assert_eq!(super::page_delta(12), 12);
+        assert_eq!(
+            super::page_delta(u16::MAX),
+            isize::try_from(u16::MAX).unwrap_or(isize::MAX)
+        );
+    }
+
     use super::*;
 
     #[test]

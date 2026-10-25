@@ -615,15 +615,15 @@ fn skill_doctor(cfg: &config::Config) -> String {
         "{:<28} {:>9} {:>9}  {}",
         "skill", "body", "desc", "modified"
     )];
-    let mut bodies = 0usize;
-    let mut descs = 0usize;
+    let mut bodies = 0u64;
+    let mut descs = 0u64;
     for s in &skills {
         let body = std::fs::metadata(&s.path)
-            .map(|m| m.len() as usize)
+            .map(|metadata| metadata.len())
             .unwrap_or(0);
-        let desc = s.name.len() + s.description.len();
-        bodies += body;
-        descs += desc;
+        let desc = s.name.len().saturating_add(s.description.len());
+        bodies = bodies.saturating_add(body);
+        descs = descs.saturating_add(u64::try_from(desc).unwrap_or(u64::MAX));
         let modified = std::fs::metadata(&s.path)
             .and_then(|m| m.modified())
             .ok()
@@ -731,7 +731,7 @@ pub(crate) fn format_time(t: std::time::SystemTime) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let days = (secs / 86_400) as i64;
+    let days = i64::try_from(secs / 86_400).unwrap_or(i64::MAX);
     let sod = secs % 86_400;
     let (y, m, d) = civil_from_days(days);
     format!(
@@ -746,13 +746,13 @@ pub(crate) fn format_time(t: std::time::SystemTime) -> String {
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let doe = (z - era * 146_097).cast_unsigned(); // [0, 146096]
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe as i64 + era * 400;
+    let y = yoe.cast_signed() + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
     let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let d = u32::try_from(doy - (153 * mp + 2) / 5 + 1).unwrap_or_default(); // [1, 31]
+    let m = u32::try_from(if mp < 10 { mp + 3 } else { mp - 9 }).unwrap_or_default(); // [1, 12]
     (y + if m <= 2 { 1 } else { 0 }, m, d)
 }
 
@@ -4379,9 +4379,9 @@ fn usage_line(u: &provider::Usage, card: Option<&pricing::RateCard>, narrow: boo
     let total = if narrow {
         compact(u.prompt_total() as u64)
     } else {
-        thousands(u.prompt_total())
+        thousands(u64::from(u.prompt_total()))
     };
-    let pct = (u.hit_rate() * 100.0).round() as u32;
+    let pct = percentage(u64::from(u.cache_read), u64::from(u.prompt_total()), 100);
     let cached = if u.cache_read > 0 || u.cache_write > 0 {
         format!(" · cache {pct}%")
     } else {
@@ -4395,7 +4395,7 @@ fn usage_line(u: &provider::Usage, card: Option<&pricing::RateCard>, narrow: boo
     let output = if narrow {
         compact(u.output as u64)
     } else {
-        thousands(u.output)
+        thousands(u64::from(u.output))
     };
     format!("\x1b[90m  {total} input / {output} output{cached}{cost}\x1b[0m")
 }
@@ -4428,16 +4428,18 @@ impl Totals {
     }
 
     fn add(&mut self, u: &provider::Usage) {
-        self.last_input = Some(u.prompt_total() as u64);
-        self.turns += 1;
-        self.input += u.input as u64;
-        self.cache_read += u.cache_read as u64;
-        self.cache_write += u.cache_write as u64;
-        self.output += u.output as u64;
+        self.last_input = Some(u64::from(u.prompt_total()));
+        self.turns = self.turns.saturating_add(1);
+        self.input = self.input.saturating_add(u64::from(u.input));
+        self.cache_read = self.cache_read.saturating_add(u64::from(u.cache_read));
+        self.cache_write = self.cache_write.saturating_add(u64::from(u.cache_write));
+        self.output = self.output.saturating_add(u64::from(u.output));
     }
 
     fn prompt_total(&self) -> u64 {
-        self.input + self.cache_read + self.cache_write
+        self.input
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_write)
     }
 
     /// Compact tail for the usage line: cumulative tokens,
@@ -4450,11 +4452,11 @@ impl Totals {
     /// the tail takes its own row, so the line never
     /// wraps mid-number.
     fn suffix(&self, window: u32, card: Option<&pricing::RateCard>, narrow: bool) -> String {
-        let tok = self.prompt_total() + self.output;
+        let tok = self.prompt_total().saturating_add(self.output);
         let fill = self
             .last_input
             .filter(|_| window > 0)
-            .map(|input| ((input as f64 / window as f64 * 100.0).round() as u32).min(999));
+            .map(|input| percentage(input, u64::from(window), 999));
         let cost = card
             .map(|c| format!(" · {}", pricing::money(self.total_cost(c))))
             .unwrap_or_default();
@@ -4483,10 +4485,10 @@ impl Totals {
 
     /// What the session has cost so far, in dollars.
     fn total_cost(&self, card: &pricing::RateCard) -> f64 {
-        (self.input as f64 * card.input
-            + self.cache_read as f64 * card.cache_read
-            + self.cache_write as f64 * card.cache_write
-            + self.output as f64 * card.output)
+        (count_as_f64(self.input) * card.input
+            + count_as_f64(self.cache_read) * card.cache_read
+            + count_as_f64(self.cache_write) * card.cache_write
+            + count_as_f64(self.output) * card.output)
             / 1_000_000.0
     }
 }
@@ -4494,16 +4496,50 @@ impl Totals {
 /// Abbreviate a large count so the session tail stays short.
 fn compact(n: u64) -> String {
     if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
+        compact_scaled(n, 1_000_000, "M")
     } else if n >= 10_000 {
-        format!("{:.1}k", n as f64 / 1_000.0)
+        compact_scaled(n, 1_000, "k")
     } else {
-        thousands(n as u32)
+        thousands(n)
     }
 }
 
+fn compact_scaled(value: u64, scale: u64, suffix: &str) -> String {
+    let whole = value / scale;
+    let tenths = ((value % scale) * 10 + scale / 2) / scale;
+    if tenths == 10 {
+        format!("{}.0{suffix}", whole.saturating_add(1))
+    } else {
+        format!("{whole}.{tenths}{suffix}")
+    }
+}
+
+fn percentage(numerator: u64, denominator: u64, ceiling: u32) -> u32 {
+    if denominator == 0 {
+        return 0;
+    }
+    let threshold = denominator.saturating_mul(u64::from(ceiling)).div_ceil(100);
+    if numerator >= threshold {
+        return ceiling;
+    }
+    let whole = numerator / denominator;
+    let remainder = numerator % denominator;
+    let percent = whole
+        .saturating_mul(100)
+        .saturating_add((remainder * 100 + denominator / 2) / denominator);
+    u32::try_from(percent).unwrap_or(ceiling).min(ceiling)
+}
+
+/// Token pricing uses `f64`; this split avoids a narrowing cast, while the
+/// final floating arithmetic remains display-only and approximate.
+fn count_as_f64(value: u64) -> f64 {
+    let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
+    let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or_default();
+    f64::from(high) * 4_294_967_296.0 + f64::from(low)
+}
+
 /// Group digits so long token counts stay readable at a glance.
-fn thousands(n: u32) -> String {
+fn thousands(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
@@ -5193,7 +5229,7 @@ fn view_transcript(
 
 #[cfg(test)]
 mod totals_tests {
-    use super::{Totals, compact};
+    use super::{Totals, compact, percentage, thousands};
     use crate::provider::Usage;
 
     fn u(input: u32, read: u32, write: u32, output: u32) -> Usage {
@@ -5230,6 +5266,24 @@ mod totals_tests {
         assert_eq!(compact(9_999), "9,999");
         assert_eq!(compact(12_345), "12.3k");
         assert_eq!(compact(2_500_000), "2.5M");
+        assert_eq!(compact(u64::MAX), "18446744073709.6M");
+        assert_eq!(thousands(u64::MAX), "18,446,744,073,709,551,615");
+    }
+
+    #[test]
+    fn percentage_rounds_and_caps_without_float_narrowing() {
+        assert_eq!(percentage(1, 3, 100), 33);
+        assert_eq!(percentage(2, 3, 100), 67);
+        assert_eq!(percentage(u64::MAX, 1, 999), 999);
+        assert_eq!(percentage(1, 0, 100), 0);
+    }
+
+    #[test]
+    fn accumulated_counts_saturate_instead_of_wrapping() {
+        let mut totals = Totals::new();
+        totals.input = u64::MAX - u64::from(u32::MAX);
+        totals.add(&u(u32::MAX, 0, 0, 0));
+        assert_eq!(totals.input, u64::MAX);
     }
 
     #[test]

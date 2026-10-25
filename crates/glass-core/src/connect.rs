@@ -923,7 +923,8 @@ fn history_path(path: &std::path::Path, before: usize) -> Result<Value, String> 
         .metadata()
         .map_err(|e| e.to_string())?
         .len()
-        .min(usize::MAX as u64) as usize;
+        .try_into()
+        .unwrap_or(usize::MAX);
     let end = before.min(length);
     let offset = end.saturating_sub(512 * 1024);
     let starts_mid_record = if offset > 0 {
@@ -1359,7 +1360,7 @@ fn browse(settings: &Settings, query: &HashMap<String, String>) -> Result<Value,
             libc::S_IFLNK => "link",
             _ => "special",
         };
-        entries.push(json!({"name":name,"kind":kind,"size":stat.st_size.max(0),"bytes":stat.st_blocks.max(0) as u64 * 512}));
+        entries.push(json!({"name":name,"kind":kind,"size":stat.st_size.max(0),"bytes":allocation_bytes(stat.st_blocks)}));
         if start.elapsed() > Duration::from_millis(150) {
             more = true;
             break;
@@ -1404,7 +1405,7 @@ fn disk_usage(settings: &Settings, path: &str) -> Result<Value, String> {
                 }
                 continue;
             }
-            bytes = bytes.saturating_add(stat.st_blocks.max(0) as u64 * 512);
+            bytes = bytes.saturating_add(allocation_bytes(stat.st_blocks));
             if stat.st_mode & libc::S_IFMT == libc::S_IFDIR {
                 if depth < 16 && pending.len() < 256 {
                     pending.push_back((path.join(name), depth + 1));
@@ -1418,6 +1419,12 @@ fn disk_usage(settings: &Settings, path: &str) -> Result<Value, String> {
         }
     }
     Ok(json!({"path":root,"bytes":bytes,"entries":count,"partial":partial}))
+}
+
+fn allocation_bytes(blocks: libc::blkcnt_t) -> u64 {
+    u64::try_from(blocks.max(0))
+        .unwrap_or(u64::MAX)
+        .saturating_mul(512)
 }
 struct Artifact {
     created: Instant,
@@ -2077,6 +2084,13 @@ fn gateway(cfg: crate::config::Config, settings: Settings) -> Result<(), String>
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn allocation_block_bytes_are_nonnegative_and_saturating() {
+        assert_eq!(super::allocation_bytes(-1), 0);
+        assert_eq!(super::allocation_bytes(2), 1024);
+        assert_eq!(super::allocation_bytes(libc::blkcnt_t::MAX), u64::MAX);
+    }
+
     use super::*;
     fn settings() -> Settings {
         Settings {

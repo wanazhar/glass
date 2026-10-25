@@ -9,7 +9,7 @@ use std::io::Read;
 
 use serde_json::{Value, json};
 
-use super::{Error, Event, Provider, Request, Usage, http_agent, read_lossy};
+use super::{Error, Event, Provider, Request, Usage, bounded_usage_tokens, http_agent, read_lossy};
 use crate::sse::SseDecoder;
 
 const DEFAULT_WINDOW: u32 = 128_000;
@@ -707,7 +707,11 @@ impl<R: Read> StreamEvents<R> {
                 }
                 "response.output_item.added" => {
                     if v["item"]["type"] == "function_call" {
-                        let i = v["output_index"].as_u64().unwrap_or(0) as usize;
+                        let Some(i) = super::checked_stream_index(v["output_index"].as_u64())
+                        else {
+                            self.fail("Provider output index exceeds platform capacity".into());
+                            return;
+                        };
                         self.acc.tools.insert(
                             i,
                             Partial {
@@ -719,7 +723,10 @@ impl<R: Read> StreamEvents<R> {
                     }
                 }
                 "response.function_call_arguments.delta" => {
-                    let i = v["output_index"].as_u64().unwrap_or(0) as usize;
+                    let Some(i) = super::checked_stream_index(v["output_index"].as_u64()) else {
+                        self.fail("Provider output index exceeds platform capacity".into());
+                        return;
+                    };
                     self.acc
                         .tools
                         .entry(i)
@@ -729,7 +736,11 @@ impl<R: Read> StreamEvents<R> {
                 }
                 "response.output_item.done" => {
                     if v["item"]["type"] == "function_call" {
-                        let i = v["output_index"].as_u64().unwrap_or(0) as usize;
+                        let Some(i) = super::checked_stream_index(v["output_index"].as_u64())
+                        else {
+                            self.fail("Provider output index exceeds platform capacity".into());
+                            return;
+                        };
                         self.acc.tools.insert(
                             i,
                             Partial {
@@ -839,7 +850,11 @@ impl<R: Read> StreamEvents<R> {
             .and_then(Value::as_array)
         {
             for c in calls {
-                let idx = c.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let Some(idx) = super::checked_stream_index(c.get("index").and_then(Value::as_u64))
+                else {
+                    self.fail("Provider tool index exceeds platform capacity".into());
+                    return;
+                };
                 let slot = self.acc.tools.entry(idx).or_default();
                 if let Some(id) = c.get("id").and_then(Value::as_str)
                     && !id.is_empty()
@@ -866,33 +881,37 @@ impl<R: Read> StreamEvents<R> {
 
     fn read_usage(&mut self, v: &Value) {
         if let Some(usage) = v.get("usage").filter(|u| !u.is_null()) {
-            let prompt = usage
-                .get("prompt_tokens")
-                .or_else(|| usage.get("input_tokens"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as u32;
-            let output = usage
-                .get("completion_tokens")
-                .or_else(|| usage.get("output_tokens"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as u32;
+            let prompt = bounded_usage_tokens(
+                usage
+                    .get("prompt_tokens")
+                    .or_else(|| usage.get("input_tokens"))
+                    .and_then(Value::as_u64),
+            );
+            let output = bounded_usage_tokens(
+                usage
+                    .get("completion_tokens")
+                    .or_else(|| usage.get("output_tokens"))
+                    .and_then(Value::as_u64),
+            );
 
             // Unlike Anthropic, OpenAI reports `cached_tokens` as a SUBSET of
             // `prompt_tokens`, not in addition to it. Subtracting is what makes
             // the buckets mean the same thing across both adapters, so a cost
             // model does not have to special-case the provider.
-            let cached = usage
-                .get("prompt_tokens_details")
-                .or_else(|| usage.get("input_tokens_details"))
-                .and_then(|d| d.get("cached_tokens"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as u32;
-            let written = usage
-                .get("prompt_tokens_details")
-                .or_else(|| usage.get("input_tokens_details"))
-                .and_then(|d| d.get("cache_write_tokens"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as u32;
+            let cached = bounded_usage_tokens(
+                usage
+                    .get("prompt_tokens_details")
+                    .or_else(|| usage.get("input_tokens_details"))
+                    .and_then(|d| d.get("cached_tokens"))
+                    .and_then(Value::as_u64),
+            );
+            let written = bounded_usage_tokens(
+                usage
+                    .get("prompt_tokens_details")
+                    .or_else(|| usage.get("input_tokens_details"))
+                    .and_then(|d| d.get("cache_write_tokens"))
+                    .and_then(Value::as_u64),
+            );
 
             if prompt > 0 || output > 0 {
                 self.acc.usage = Some(Usage {
@@ -1167,7 +1186,13 @@ mod stream_tests {
                     .into_iter()
                     .flatten()
                 {
-                    let idx = c.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                    let Some(idx) =
+                        super::super::checked_stream_index(c.get("index").and_then(Value::as_u64))
+                    else {
+                        return vec![Event::Error(
+                            "Provider tool index exceeds platform capacity".into(),
+                        )];
+                    };
                     let slot = acc.tools.entry(idx).or_default();
                     if let Some(n) = c["function"]["name"].as_str() {
                         slot.name.push_str(n);
@@ -1277,6 +1302,38 @@ mod protocol_regressions {
                     cache_write: 0
                 }),
                 Event::Done
+            ]
+        );
+    }
+
+    #[test]
+    fn oversized_provider_usage_is_clamped_without_wrapping() {
+        let oversized = u64::from(u32::MAX) + 17;
+        let output = events(
+            &[
+                json!({"type":"response.output_text.delta","delta":"ok"}),
+                json!({
+                    "type":"response.completed",
+                    "response":{"usage":{
+                        "input_tokens":oversized,
+                        "output_tokens":oversized,
+                        "input_tokens_details":{"cached_tokens":oversized}
+                    }}
+                }),
+            ],
+            false,
+        );
+        assert_eq!(
+            output,
+            vec![
+                Event::Text("ok".into()),
+                Event::Usage(Usage {
+                    input: 0,
+                    cache_read: u32::MAX,
+                    cache_write: 0,
+                    output: u32::MAX,
+                }),
+                Event::Done,
             ]
         );
     }

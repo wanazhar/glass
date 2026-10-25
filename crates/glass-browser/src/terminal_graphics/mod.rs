@@ -254,7 +254,6 @@ pub struct TerminalGraphics {
     cleanup_count: u64,
     fallback_count: u64,
     last_fallback: Option<GraphicsFallbackReason>,
-    last_rendered_frame: Option<(u64, u64)>,
     cleaned: bool,
     ownership: VecDeque<FrameOwnershipRecord>,
 }
@@ -276,7 +275,6 @@ impl TerminalGraphics {
             cleanup_count: 0,
             fallback_count: 0,
             last_fallback: None,
-            last_rendered_frame: None,
             cleaned: false,
             ownership: VecDeque::new(),
         })
@@ -667,26 +665,6 @@ impl TerminalGraphics {
         })
     }
 
-    /// Render a terminal graphics payload only when its geometry/generation
-    /// identity has not already been emitted. Semantic text remains owned by
-    /// Ratatui and is intentionally not replayed through this path.
-    #[allow(dead_code)]
-    pub(crate) fn render_current_if_new(
-        &mut self,
-        semantic: &str,
-    ) -> Result<Option<RenderedFrame>, GraphicsError> {
-        let Some(current) = self.current_payload.as_ref() else {
-            return Ok(None);
-        };
-        let key = (current.frame.geometry_revision, current.frame.generation);
-        if self.last_rendered_frame == Some(key) {
-            return Ok(None);
-        }
-        let rendered = self.render_current(semantic)?;
-        self.last_rendered_frame = Some(key);
-        Ok(Some(rendered))
-    }
-
     fn kitty_placement(&self) -> (u16, u16, u16, u16) {
         let Some(geometry) = self.geometry.as_ref() else {
             return (self.pane.x, self.pane.y, self.pane.width, self.pane.height);
@@ -806,7 +784,6 @@ impl TerminalGraphics {
         if let Some(frame) = self.pending_payload.take() {
             self.record(frame.frame, FrameOwnershipEvent::Released { reason });
         }
-        self.last_rendered_frame = None;
         self.mailbox.clear();
     }
 
@@ -938,58 +915,6 @@ mod tests {
         assert!(graphics.ownership().any(|record| {
             record.generation == 3 && record.event == FrameOwnershipEvent::Presented
         }));
-    }
-
-    #[test]
-    fn kitty_frames_render_once_and_promoted_frames_render_immediately() {
-        let mut graphics = TerminalGraphics::new(GraphicsMode::Kitty, identity()).unwrap();
-        graphics
-            .resize(
-                PaneArea::new(1, 1, 40, 20),
-                PixelSize::new(640, 480),
-                PixelSize::new(640, 480),
-                CaptureScale::FULL,
-                1,
-            )
-            .unwrap();
-        assert_eq!(
-            graphics.submit(frame(1, 1), b"one").unwrap(),
-            SubmitResult::Presented
-        );
-        assert_eq!(
-            graphics
-                .render_current_if_new("semantic")
-                .unwrap()
-                .unwrap()
-                .generation,
-            Some(1)
-        );
-        assert!(
-            graphics
-                .render_current_if_new("semantic")
-                .unwrap()
-                .is_none()
-        );
-
-        assert_eq!(
-            graphics.submit(frame(2, 1), b"two").unwrap(),
-            SubmitResult::Queued
-        );
-        assert!(graphics.present_pending().unwrap());
-        assert_eq!(
-            graphics
-                .render_current_if_new("semantic")
-                .unwrap()
-                .unwrap()
-                .generation,
-            Some(2)
-        );
-        assert!(
-            graphics
-                .render_current_if_new("semantic")
-                .unwrap()
-                .is_none()
-        );
     }
 
     #[test]

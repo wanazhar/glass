@@ -22,13 +22,8 @@ pub const MAX_ENTRIES: usize = 64;
 pub const MAX_PATHS: usize = 8_192;
 
 #[derive(Default)]
-#[allow(dead_code)] // bytes feeds eviction sizing; dirs future nested walks
 struct Walk {
     names: Vec<String>,
-    /// Kept for future nested-walk work; single-level caching is what the
-    /// consumers use, and honest bounds beat carrying dead weight.
-    dirs: Vec<String>,
-    bytes: usize,
 }
 
 #[derive(Default)]
@@ -113,8 +108,6 @@ pub fn read_dir(dir: &Path) -> Option<Vec<std::fs::DirEntry>> {
             key.clone(),
             Walk {
                 names: fresh.clone(),
-                dirs: Vec::new(),
-                bytes,
             },
         );
         cache.bytes += bytes;

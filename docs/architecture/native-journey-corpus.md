@@ -134,6 +134,17 @@ license review, and a separate audio output design. The implementation must
 choose and package a narrow initial matrix before reporting support; it must
 not infer support from a recognized MIME type or successful metadata parse.
 
+One Rust VP8/VP9 candidate was inspected: [`media-codec-vpx`](https://crates.io/crates/media-codec-vpx)
+is MIT/Apache-2.0 licensed, but its `media-codec-vpx-sys` build script uses
+`pkg-config` to require system `libvpx` 1.15.2 or later and runs `bindgen` over
+the system headers. It does not bundle the decoder. The 25 October development audit found no
+`vpx.pc` metadata, and the existing Linux/macOS/Windows release matrix does not
+provision libvpx development/runtime packages. Adding the crate as-is would
+therefore make native-engine builds depend on an undeclared per-platform
+library install; it would still leave WebM demuxing, bounded frame delivery,
+playback scheduling, and audio or explicit silent-video policy to implement.
+This candidate is not yet a validated distributable route.
+
 ### Current dependency and output audit
 
 The 25 October 2026 workspace audit found no video demuxer/decoder or audio

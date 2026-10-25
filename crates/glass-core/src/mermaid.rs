@@ -78,8 +78,9 @@ struct Edge {
 
 #[derive(Debug, Default)]
 pub struct Flowchart {
-    /// Original direction is retained; narrow terminal layouts use vertical flow.
-    #[allow(dead_code)]
+    /// Direction is retained so orientations the terminal renderer cannot
+    /// reproduce can fall back to the readable source instead of being drawn
+    /// with a misleading vertical layout.
     direction: Direction,
     chain_layout: bool,
     nodes: Vec<Node>,
@@ -766,6 +767,9 @@ fn node_of(raw: &str, chart: &mut Flowchart) -> Option<String> {
 /// Render at the given column width. `None` means the diagram cannot fit
 /// under the caps and the caller falls back to the fenced source.
 pub fn render(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
+    if chart.direction == Direction::Right {
+        return None;
+    }
     render_compact(chart, width)
 }
 fn render_compact(chart: &Flowchart, width: usize) -> Option<Vec<String>> {
@@ -1746,6 +1750,14 @@ flowchart TD
     fn render_falls_back_when_wider_than_the_column() {
         let chart = parse("flowchart TD\n A[Start] --> B[End]").unwrap();
         assert!(render(&chart, 2).is_none());
+    }
+
+    #[test]
+    fn horizontal_flowcharts_fall_back_instead_of_rendering_with_vertical_edges() {
+        for header in ["flowchart LR", "graph RL"] {
+            let chart = parse(&format!("{header}\n A[Start] --> B[End]")).unwrap();
+            assert!(render(&chart, 60).is_none(), "{header}");
+        }
     }
 
     #[test]

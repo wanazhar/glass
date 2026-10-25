@@ -1872,14 +1872,22 @@ impl<'a> Agent<'a> {
 
         // Report in call order. `_` is the batch index; the results are already
         // sorted, so this is the same order the model would have seen inline.
-        let mut by_batch: std::collections::HashMap<usize, tools::Outcome> =
+        let mut by_batch: std::collections::HashMap<usize, Result<tools::Outcome, _>> =
             results.into_iter().collect();
         for (i, call) in calls.iter().enumerate() {
-            if let Some(out) = by_batch.remove(&i) {
-                self.apply_bash_result(call, out);
-            } else if self.steer.is_none() {
-                self.loop_guard(call);
-                self.run_tool_pumped_or_inline(call, pump);
+            match by_batch.remove(&i) {
+                Some(Ok(out)) => self.apply_bash_result(call, out),
+                Some(Err(concurrency::ToolPanicked)) => self.apply_bash_result(
+                    call,
+                    tools::Outcome::err(
+                        "Tool execution panicked after it started; the result is unknown and was not retried.",
+                    ),
+                ),
+                None if self.steer.is_none() => {
+                    self.loop_guard(call);
+                    self.run_tool_pumped_or_inline(call, pump);
+                }
+                None => {}
             }
         }
     }

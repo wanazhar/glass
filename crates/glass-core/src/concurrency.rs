@@ -238,7 +238,7 @@ impl Plan {
 ///
 /// Uses scoped threads so a panic in a tool cannot take the process down, and
 /// so the batch's threads are joined before this returns.
-fn run_wave<T, F>(wave: &[usize], f: F) -> Vec<(usize, T)>
+fn run_wave<T, F>(wave: &[usize], f: F) -> Vec<(usize, Result<T, ToolPanicked>)>
 where
     T: Send,
     F: Fn(usize) -> T + Sync,
@@ -248,34 +248,57 @@ where
             .iter()
             .map(|&i| {
                 let f = &f;
-                scope.spawn(move || (i, f(i)))
+                (
+                    i,
+                    scope.spawn(move || {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(i)))
+                            .map_err(|_| ToolPanicked)
+                    }),
+                )
             })
             .collect();
-        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        handles
+            .into_iter()
+            .map(|(index, handle)| match handle.join() {
+                Ok(result) => (index, result),
+                Err(_) => (index, Err(ToolPanicked)),
+            })
+            .collect()
     })
 }
+
+/// A tool panicked after it started. Its side effects are unknown, so callers
+/// must surface the failed result and must not retry it automatically.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ToolPanicked;
 
 /// Execute a whole batch, returning results keyed by call index.
 ///
 /// Results come back in call order regardless of completion order, which is the
 /// property a chat-completions endpoint requires and which makes a transcript
 /// with parallel calls reproducible.
-pub fn execute<T, F>(plan: &Plan, max_parallel: usize, f: F) -> Vec<(usize, T)>
+pub fn execute<T, F>(
+    plan: &Plan,
+    max_parallel: usize,
+    f: F,
+) -> Vec<(usize, Result<T, ToolPanicked>)>
 where
     T: Send,
     F: Fn(usize) -> T + Sync,
 {
-    let mut done: HashMap<usize, T> = HashMap::new();
+    let mut done: HashMap<usize, Result<T, ToolPanicked>> = HashMap::new();
 
     for wave in plan.waves(max_parallel) {
         if wave.len() == 1 {
             // A single call is a plain function call, not a thread hand-off.
             let i = wave[0];
-            done.insert(i, f(i));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(i)))
+                .map_err(|_| ToolPanicked);
+            done.insert(i, result);
             continue;
         }
-        for (i, v) in run_wave(&wave, &f) {
-            done.insert(i, v);
+        for (i, result) in run_wave(&wave, &f) {
+            done.insert(i, result);
         }
     }
 
@@ -484,7 +507,7 @@ mod exec_tests {
     fn single_call_runs_inline() {
         let p = plan_bash(&[(0, "cat a".into())], Path::new("/w"));
         let out = execute(&p, 4, |i| i * 2);
-        assert_eq!(out, vec![(0, 0)]);
+        assert_eq!(out, vec![(0, Ok(0))]);
     }
 
     #[test]
@@ -539,7 +562,7 @@ mod exec_tests {
         });
         let seen = log.into_inner().unwrap();
         assert_eq!(seen, vec![0, 1], "same-path writes must not overlap");
-        assert_eq!(out[0].0, 0);
+        assert_eq!(out[0], (0, Ok(0)));
     }
 
     #[test]
@@ -564,20 +587,29 @@ mod exec_tests {
     }
 
     #[test]
-    fn a_panicking_tool_does_not_lose_other_results() {
+    fn a_panicking_tool_is_reported_without_losing_other_results_or_retrying() {
         let p = plan_bash(
             &(0..3).map(|i| (i, format!("cat f{i}"))).collect::<Vec<_>>(),
             Path::new("/w"),
         );
+        let executions = std::sync::atomic::AtomicUsize::new(0);
+        let side_effects = std::sync::atomic::AtomicUsize::new(0);
         let out = execute(&p, 8, |i| {
+            executions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if i == 1 {
+                side_effects.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 panic!("tool blew up");
             }
             i
         });
-        // The panicking call is dropped rather than poisoning the batch.
-        assert_eq!(out.len(), 2);
-        assert!(out.iter().all(|(i, _)| *i != 1));
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], (0, Ok(0)));
+        assert_eq!(out[1], (1, Err(ToolPanicked)));
+        assert_eq!(out[2], (2, Ok(2)));
+        // Each call was entered once. Agent must surface the explicit panic
+        // result instead of treating it as absent and rerunning it inline.
+        assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert_eq!(side_effects.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }
 

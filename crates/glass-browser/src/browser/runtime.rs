@@ -51,10 +51,8 @@ use crate::browser_backend::{PromptDecision, PromptResult};
 #[cfg(feature = "native-engine")]
 use crate::protocol::{RetryClassification, RetryGuidance};
 #[cfg(feature = "native-engine")]
-use std::{
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
-};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::sync::Mutex;
 #[cfg(feature = "native-engine")]
 use tokio::sync::Notify;
@@ -313,6 +311,40 @@ impl BrowserRuntimeSession {
             elapsed_ms = revision_validation_started.elapsed().as_millis() as u64,
         );
         self.navigate_unlocked(url.into()).await
+    }
+
+    /// Navigate with a caller supplied deadline, including time spent waiting
+    /// for the session operation lock.
+    pub async fn navigate_with_deadline(
+        &self,
+        url: impl Into<String>,
+        deadline: Duration,
+    ) -> BrowserResult<NavigationResult> {
+        let url = url.into();
+        tokio::time::timeout(deadline, async {
+            let _operation = self.operation_lock.lock().await;
+            self.navigate_unlocked(url).await
+        })
+        .await
+        .map_err(|_| navigation_deadline_error(deadline))?
+    }
+
+    /// Revision-guarded navigation with a caller supplied deadline, including
+    /// lock acquisition and revision validation.
+    pub async fn navigate_with_revision_and_deadline(
+        &self,
+        url: impl Into<String>,
+        expected_revision: u64,
+        deadline: Duration,
+    ) -> BrowserResult<NavigationResult> {
+        let url = url.into();
+        tokio::time::timeout(deadline, async {
+            let _operation = self.operation_lock.lock().await;
+            self.require_current_revision(expected_revision).await?;
+            self.navigate_unlocked(url).await
+        })
+        .await
+        .map_err(|_| navigation_deadline_error(deadline))?
     }
 
     async fn navigate_unlocked(&self, url: String) -> BrowserResult<NavigationResult> {
@@ -3006,6 +3038,16 @@ impl BrowserRuntimeSession {
     }
 }
 
+fn navigation_deadline_error(deadline: Duration) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!(
+            "navigation exceeded its {} ms deadline",
+            deadline.as_millis()
+        ),
+    )
+}
+
 #[cfg(feature = "native-engine")]
 fn is_http_navigation_url(value: &str) -> bool {
     url::Url::parse(value).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
@@ -3485,14 +3527,13 @@ mod public_session_tests {
                             .expect("initial native observation should succeed")
                             .revision;
                         let started = Instant::now();
-                        let navigation = tokio::time::timeout(
-                            Duration::from_secs(1),
-                            session.navigate_with_revision(
+                        let navigation = session
+                            .navigate_with_revision_and_deadline(
                                 format!("http://{address}/stall"),
                                 revision,
-                            ),
-                        )
-                        .await;
+                                Duration::from_secs(1),
+                            )
+                            .await;
                         assert!(
                             navigation.is_err(),
                             "stalled response must hit the one-second bound"

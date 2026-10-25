@@ -1271,7 +1271,7 @@ async fn run_alternative_runtime_command(
         Commands::Navigate {
             url,
             expected_revision,
-            ..
+            timeout_ms,
         } => {
             let url = if session.runtime().is_native() {
                 crate::browser::session::normalize_url(url)
@@ -1281,10 +1281,18 @@ async fn run_alternative_runtime_command(
             let result = match expected_revision {
                 Some(expected_revision) => {
                     session
-                        .navigate_with_revision(url, *expected_revision)
+                        .navigate_with_revision_and_deadline(
+                            url,
+                            *expected_revision,
+                            Duration::from_millis(*timeout_ms),
+                        )
                         .await?
                 }
-                None => session.navigate(url).await?,
+                None => {
+                    session
+                        .navigate_with_deadline(url, Duration::from_millis(*timeout_ms))
+                        .await?
+                }
             };
             alternative_json_output(&result, response_mode)
         }

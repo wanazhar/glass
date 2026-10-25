@@ -165,8 +165,72 @@
   }}
   nativeCustomElementUpgradeTree(document, true);
   nativeFormAssociatedReconcile(document);
-  for (const text of textNodes) {{
-    try {{ Object.setPrototypeOf(text, TextNative.prototype); }} catch (_error) {{}}
+  if (textNodes.length > 0) {{
+    let sharedTextTreePrototype = globalThis.__glassNativeTextTreePrototype;
+    if (!(sharedTextTreePrototype && Object.getPrototypeOf(sharedTextTreePrototype) === TextNative.prototype)) {{
+      sharedTextTreePrototype = Object.create(TextNative.prototype);
+      Object.defineProperties(sharedTextTreePrototype, {{
+        parentNode: {{ configurable: true, get() {{ return this.__glassParent || null; }} }},
+        parentElement: {{ configurable: true, get() {{
+          let parent = this.__glassParent || null;
+          while (parent && Number(parent.nodeType) !== 1) parent = parent.__glassParent || null;
+          return parent || null;
+        }} }},
+        nextSibling: {{ configurable: true, get() {{
+          const parent = this.__glassParent || null;
+          const siblings = parent && Array.isArray(parent.__glassChildren) ? parent.__glassChildren : [];
+          const index = siblings.indexOf(this);
+          return index >= 0 ? siblings[index + 1] || null : null;
+        }} }},
+        previousSibling: {{ configurable: true, get() {{
+          const parent = this.__glassParent || null;
+          const siblings = parent && Array.isArray(parent.__glassChildren) ? parent.__glassChildren : [];
+          const index = siblings.indexOf(this);
+          return index > 0 ? siblings[index - 1] : null;
+        }} }},
+        firstChild: {{ configurable: true, get() {{ return this.__glassChildren?.[0] || null; }} }},
+        lastChild: {{ configurable: true, get() {{
+          const children = this.__glassChildren || [];
+          return children[children.length - 1] || null;
+        }} }},
+        hasChildNodes: {{ configurable: true, value() {{ return Boolean(this.__glassChildren?.length); }} }},
+        isConnected: {{ configurable: true, get() {{
+          const owner = this.ownerDocument || null;
+          let current = this;
+          while (current) {{
+            if (owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(current)) return true;
+            current = current.__glassParent || null;
+          }}
+          return false;
+        }} }},
+        getRootNode: {{ configurable: true, value() {{
+          let current = this;
+          for (let depth = 0; current.__glassParent && depth <= {max_commands}; depth += 1)
+            current = current.__glassParent;
+          const owner = this.ownerDocument || null;
+          return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(current)
+            ? owner : current;
+        }} }},
+        contains: {{ configurable: true, value(candidate) {{
+          if (candidate === this) return true;
+          for (let current = candidate && candidate.__glassParent; current; current = current.__glassParent)
+            if (current === this) return true;
+          return false;
+        }} }},
+      }});
+      for (const name of [
+        "childNodes", "firstChild", "lastChild", "nextSibling", "previousSibling",
+        "nextElementSibling", "previousElementSibling", "hasChildNodes", "contains",
+        "isConnected", "getRootNode", "cloneNode", "isSameNode", "isEqualNode", "normalize",
+      ]) {{
+        const descriptor = Object.getOwnPropertyDescriptor(nativeElementSharedPrototype, name);
+        if (descriptor) Object.defineProperty(sharedTextTreePrototype, name, descriptor);
+      }}
+      globalThis.__glassNativeTextTreePrototype = sharedTextTreePrototype;
+    }}
+    for (const text of textNodes) {{
+      try {{ Object.setPrototypeOf(text, sharedTextTreePrototype); }} catch (_error) {{}}
+    }}
   }}
   for (const comment of commentNodes) {{
     try {{ Object.setPrototypeOf(comment, CommentNative.prototype); }} catch (_error) {{}}

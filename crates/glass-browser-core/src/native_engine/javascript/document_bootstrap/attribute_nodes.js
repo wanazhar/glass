@@ -116,8 +116,13 @@
     error.name = name;
     return error;
   }};
-  const installAttributeNodeSurface = (element, ownerDocumentResolver) => {{
-    if (Object.prototype.hasOwnProperty.call(element, "__glassAttributeNodes")) return;
+  const attributeNodeSurfaceStates = new WeakMap();
+  const ensureAttributeNodeSurface = (
+    element,
+    ownerDocumentResolver = () => globalThis.document || null,
+  ) => {{
+    const existingState = attributeNodeSurfaceStates.get(element);
+    if (existingState) return existingState;
     const attributeNodes = new Map();
     Object.defineProperty(element, "__glassAttributeNodes", {{
       enumerable: false,
@@ -317,6 +322,44 @@
         return namedNodeMapView;
       }},
     }});
+    const state = {{ sync: syncAttributeNodes }};
+    attributeNodeSurfaceStates.set(element, state);
+    return state;
   }};
+  const installAttributeNodeSurface = () => {{}};
+  Object.defineProperties(nativeElementSharedPrototype, {{
+    attributes: {{
+      enumerable: true,
+      configurable: true,
+      get() {{
+        ensureAttributeNodeSurface(this);
+        return this.attributes;
+      }},
+    }},
+    getAttributeNode: {{ configurable: true, writable: true, value(name) {{
+      ensureAttributeNodeSurface(this);
+      return this.getAttributeNode(name);
+    }} }},
+    getAttributeNodeNS: {{ configurable: true, writable: true, value(namespace, name) {{
+      ensureAttributeNodeSurface(this);
+      return this.getAttributeNodeNS(namespace, name);
+    }} }},
+    setAttributeNode: {{ configurable: true, writable: true, value(attribute) {{
+      ensureAttributeNodeSurface(this);
+      return this.setAttributeNode(attribute);
+    }} }},
+    setAttributeNodeNS: {{ configurable: true, writable: true, value(namespace, attribute) {{
+      ensureAttributeNodeSurface(this);
+      return this.setAttributeNodeNS(namespace, attribute);
+    }} }},
+    removeAttributeNode: {{ configurable: true, writable: true, value(attribute) {{
+      ensureAttributeNodeSurface(this);
+      return this.removeAttributeNode(attribute);
+    }} }},
+    __glassSyncAttributeNodes: {{ configurable: true, value() {{
+      const state = attributeNodeSurfaceStates.get(this);
+      if (state) state.sync();
+    }} }},
+  }});
   if (typeof globalThis.__glassNativeHostViewMark === "function")
     globalThis.__glassNativeHostViewMark("module_attribute_nodes");

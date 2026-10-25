@@ -20,6 +20,37 @@
       ]
     },
     {
+      "id": "local-image-gallery-full-view",
+      "backend": "native",
+      "scope": "local-fixture",
+      "capabilities": ["navigation", "image-fetch", "image-decode", "image-dimensions", "paint", "capture"],
+      "timeoutMs": 10000,
+      "steps": [
+        {"id":"gallery","action":"navigate","url":"fixture://journey-images.test/gallery"},
+        {"id":"assert-thumbnail","action":"assert","expression":"document.title === 'Journey gallery' && document.querySelector('#thumbnail').complete && document.querySelector('#thumbnail').naturalWidth === 2"},
+        {"id":"open-observed-image","action":"click","target":"id=full-image-link","targetSource":"fresh-observation"},
+        {"id":"assert-full-image","action":"assert","expression":"document.title === 'Full image' && document.querySelector('#full-image').complete && document.querySelector('#full-image').naturalWidth === 2 && document.querySelector('#full-image').naturalHeight === 2"},
+        {"id":"capture-full-image","action":"capture","assertion":"raster contains decoded image pixels"}
+      ]
+    },
+    {
+      "id": "local-disclosure-search-and-results",
+      "backend": "native",
+      "scope": "local-fixture",
+      "capabilities": ["navigation", "disclosure", "form-input", "search", "history"],
+      "timeoutMs": 10000,
+      "steps": [
+        {"id":"search-page","action":"navigate","url":"fixture://journey-search.test/"},
+        {"id":"open-disclosure","action":"click","target":"id=help-toggle","targetSource":"fresh-observation"},
+        {"id":"assert-disclosure","action":"assert","expression":"document.querySelector('#help-toggle').getAttribute('aria-expanded') === 'true' && !document.querySelector('#help-answer').hidden && document.querySelector('#help-answer').textContent.includes('search')"},
+        {"id":"enter-query","action":"type","target":"id=query","targetSource":"fresh-observation","text":"rust"},
+        {"id":"submit-search","action":"click","target":"id=search-submit","targetSource":"fresh-observation"},
+        {"id":"assert-result","action":"assert","expression":"document.title === 'Search results' && document.querySelector('#result').textContent.includes('Rust') && location.search === '?q=rust'"},
+        {"id":"return-to-search","action":"back"},
+        {"id":"assert-search-history","action":"assert","expression":"document.title === 'Search' && location.search === ''"}
+      ]
+    },
+    {
       "id": "public-documentation-deep-page",
       "backend": "native",
       "scope": "public-read-only",
@@ -32,10 +63,10 @@
       ]
     },
     {
-      "id": "public-wikipedia-article-and-image",
+      "id": "public-wikipedia-article-and-observed-subpage",
       "backend": "native",
       "scope": "public-read-only",
-      "capabilities": ["navigation", "image-fetch", "image-decode", "capture"],
+      "capabilities": ["navigation", "observation", "semantic-targeting", "subpage-navigation"],
       "timeoutMs": 120000,
       "steps": [
         {"id":"article","action":"navigate","url":"https://en.wikipedia.org/wiki/Computer"},

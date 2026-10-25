@@ -74,7 +74,10 @@
     return asNativeCollection(proxy, constructorName);
   }};
   const defineMissing = (target, name, descriptor) => {{
-    if (!Object.prototype.hasOwnProperty.call(target, name)) Object.defineProperty(target, name, descriptor);
+    // Element and Node prototypes already carry the shared implementation.
+    // Defining an own wrapper here retained a fresh closure for every host
+    // node even when the inherited behavior was identical.
+    if (!(name in target)) Object.defineProperty(target, name, descriptor);
   }};
   const descendantsInTree = (owner, predicate) => {{
     const result = [];
@@ -1036,9 +1039,110 @@
     return node;
   }};
   defineTreeAccessorsForNativeFragments = defineTreeAccessors;
+  Object.defineProperties(nativeElementSharedPrototype, {{
+    childNodes: {{ configurable: true, get() {{ return liveCollection(this, () => true, "NodeList"); }} }},
+    children: {{ configurable: true, get() {{
+      return liveCollection(this, (child) => Number(child.nodeType) === 1, "HTMLCollection");
+    }} }},
+    firstChild: {{ configurable: true, get() {{ return this.__glassChildren?.[0] || null; }} }},
+    lastChild: {{ configurable: true, get() {{
+      const children = this.__glassChildren || [];
+      return children[children.length - 1] || null;
+    }} }},
+    firstElementChild: {{ configurable: true, get() {{
+      return (this.__glassChildren || []).find((child) => Number(child.nodeType) === 1) || null;
+    }} }},
+    lastElementChild: {{ configurable: true, get() {{
+      const children = (this.__glassChildren || []).filter((child) => Number(child.nodeType) === 1);
+      return children[children.length - 1] || null;
+    }} }},
+    nextSibling: {{ configurable: true, get() {{
+      const parent = this.__glassParent || null;
+      const siblings = parent && Array.isArray(parent.__glassChildren) ? parent.__glassChildren : [];
+      const index = siblings.indexOf(this);
+      return index >= 0 ? siblings[index + 1] || null : null;
+    }} }},
+    previousSibling: {{ configurable: true, get() {{
+      const parent = this.__glassParent || null;
+      const siblings = parent && Array.isArray(parent.__glassChildren) ? parent.__glassChildren : [];
+      const index = siblings.indexOf(this);
+      return index > 0 ? siblings[index - 1] : null;
+    }} }},
+    nextElementSibling: {{ configurable: true, get() {{
+      let sibling = this.nextSibling;
+      while (sibling && Number(sibling.nodeType) !== 1) sibling = sibling.nextSibling;
+      return sibling || null;
+    }} }},
+    previousElementSibling: {{ configurable: true, get() {{
+      let sibling = this.previousSibling;
+      while (sibling && Number(sibling.nodeType) !== 1) sibling = sibling.previousSibling;
+      return sibling || null;
+    }} }},
+    hasChildNodes: {{ configurable: true, value() {{ return Boolean(this.__glassChildren?.length); }} }},
+    contains: {{ configurable: true, value(candidate) {{
+      if (candidate === this) return true;
+      for (let current = candidate && (candidate.__glassParent || candidate.parentNode); current;
+          current = current.__glassParent || current.parentNode) {{
+        if (current === this) return true;
+      }}
+      return false;
+    }} }},
+    isConnected: {{ configurable: true, get() {{
+      const owner = this.ownerDocument || null;
+      let current = this;
+      while (current) {{
+        if (owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(current)) return true;
+        current = current.__glassParent || null;
+      }}
+      return false;
+    }} }},
+    getRootNode: {{ configurable: true, value() {{
+      let current = this;
+      for (let depth = 0; current.__glassParent && depth <= {max_commands}; depth += 1)
+        current = current.__glassParent;
+      const owner = this.ownerDocument || null;
+      return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(current)
+        ? owner : current;
+    }} }},
+    cloneNode: {{ configurable: true, value(deep = false) {{
+      const owner = this.ownerDocument || null;
+      if (!owner) throw new DOMExceptionNative("The node has no owner document", "InvalidStateError");
+      return cloneNativeNodeIntoDocument(this, owner, Boolean(deep), {{ nodeCount: 0 }}, 0, true);
+    }} }},
+    isSameNode: {{ configurable: true, value(other) {{ return this === other; }} }},
+    isEqualNode: {{ configurable: true, value(other) {{
+      if (this === other) return true;
+      if (!other || Number(this.nodeType) !== Number(other.nodeType)) return false;
+      if (Number(this.nodeType) === 1) {{
+        if (this.localName !== other.localName || this.namespaceURI !== other.namespaceURI) return false;
+        const names = this.getAttributeNames();
+        if (names.length !== other.getAttributeNames().length) return false;
+        for (const name of names) if (this.getAttribute(name) !== other.getAttribute(name)) return false;
+      }}
+      const left = this.__glassChildren || [];
+      const right = other.__glassChildren || [];
+      return left.length === right.length && left.every((child, index) => child.isEqualNode(right[index]));
+    }} }},
+    normalize: {{ configurable: true, value() {{
+      let previousText = null;
+      for (const child of (this.__glassChildren || []).slice()) {{
+        if (Number(child.nodeType) === 3) {{
+          const value = String(child.nodeValue || "");
+          if (!value) child.remove();
+          else if (previousText) {{ previousText.data += value; child.remove(); }}
+          else previousText = child;
+        }} else {{
+          if (typeof child.normalize === "function") child.normalize();
+          previousText = null;
+        }}
+      }}
+    }} }},
+  }});
   if (!reuseExistingHostTree) {{
-    for (const element of elements) defineTreeAccessors(element);
-    for (const text of textNodes) defineTreeAccessors(text);
+    // The shared element prototype now supplies tree navigation and node
+    // helpers, so host-sized documents do not allocate one wrapper per node.
+    if (typeof globalThis.__glassNativeHostViewMark === "function")
+      globalThis.__glassNativeHostViewMark("node_sync_element_accessors");
     for (const fragment of fragmentNodes) defineTreeAccessors(fragment);
     for (const comment of commentNodes) {{
       defineTreeAccessors(comment);
@@ -1055,3 +1159,5 @@
   for (const documentType of documentTypeNodes) {{
     try {{ Object.setPrototypeOf(documentType, DocumentTypeNative.prototype); }} catch (_error) {{}}
   }}
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("module_node_sync_collections_clone");

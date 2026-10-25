@@ -1,6 +1,15 @@
+  const nativeSelectorListCache = new Map();
+  const nativeSelectorChainCache = new Map();
+  const cacheSelectorParse = (cache, key, value) => {{
+    if (cache.size >= 128) cache.clear();
+    cache.set(key, value);
+    return value;
+  }};
   const splitSelectorList = (selector) => {{
     const value = String(selector).trim();
     if (!value) throw new SyntaxError("selector cannot be empty");
+    const cached = nativeSelectorListCache.get(value);
+    if (cached) return cached;
     const result = [];
     let part = "";
     let depth = 0;
@@ -32,9 +41,11 @@
     }}
     if (quote || depth !== 0 || !part.trim()) throw new SyntaxError("invalid selector");
     result.push(part.trim());
-    return result;
+    return cacheSelectorParse(nativeSelectorListCache, value, result);
   }};
   const parseSelectorChain = (selector) => {{
+    const cached = nativeSelectorChainCache.get(selector);
+    if (cached) return cached;
     const tokens = [];
     let part = "";
     let depth = 0;
@@ -88,7 +99,7 @@
         || tokens[tokens.length - 1].type !== "simple") {{
       throw new SyntaxError("invalid selector chain");
     }}
-    return tokens;
+    return cacheSelectorParse(nativeSelectorChainCache, selector, tokens);
   }};
   const attributeNamespaceForSelectorPrefix = (prefix) => {{
     switch (String(prefix).toLowerCase()) {{
@@ -688,15 +699,7 @@
     }}
     return api;
   }};
-  const installClassList = (element) => {{
-    if (Object.prototype.hasOwnProperty.call(element, "classList")) return;
-    let current = null;
-    Object.defineProperty(element, "classList", {{
-      enumerable: false,
-      configurable: false,
-      get() {{ return current || (current = makeClassList(element)); }},
-    }});
-  }};
+  const installClassList = (element) => element;
   const stylePropertyName = (name) => {{
     let value = String(name).trim();
     if (!value) return "";
@@ -918,23 +921,46 @@
     }});
     return proxy;
   }};
+  Object.defineProperties(nativeElementSharedPrototype, {{
+    classList: {{
+      enumerable: false,
+      configurable: true,
+      get() {{
+        let current = nativeElementClassListCache.get(this);
+        if (!current) {{
+          current = makeClassList(this);
+          nativeElementClassListCache.set(this, current);
+        }}
+        return current;
+      }},
+    }},
+    style: {{
+      enumerable: true,
+      configurable: true,
+      get() {{
+        let current = nativeElementStyleCache.get(this);
+        if (!current) {{
+          current = makeStyleDeclaration(this);
+          nativeElementStyleCache.set(this, current);
+        }}
+        return current;
+      }},
+    }},
+    dataset: {{
+      enumerable: true,
+      configurable: true,
+      get() {{
+        let current = nativeElementDatasetCache.get(this);
+        if (!current) {{
+          current = makeDataset(this);
+          nativeElementDatasetCache.set(this, current);
+        }}
+        return current;
+      }},
+    }},
+  }});
   const installElementStyleAndDataset = (element) => {{
-    if (!Object.prototype.hasOwnProperty.call(element, "style")) {{
-      let current = null;
-      Object.defineProperty(element, "style", {{
-        enumerable: true,
-        configurable: false,
-        get() {{ return current || (current = makeStyleDeclaration(element)); }},
-      }});
-    }}
-    if (!Object.prototype.hasOwnProperty.call(element, "dataset")) {{
-      let current = null;
-      Object.defineProperty(element, "dataset", {{
-        enumerable: true,
-        configurable: false,
-        get() {{ return current || (current = makeDataset(element)); }},
-      }});
-    }}
+    return element;
   }};
   for (const element of elements) {{
     installClassList(element);
@@ -1296,3 +1322,5 @@
   }};
   const matches = (element, selector, scope = element) => matchesSelector(element, selector, scope);
   const findAll = (selector) => asNodeList(liveDocumentElements().filter((element) => matches(element, selector, documentElement)));
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("module_selectors_and_styles");

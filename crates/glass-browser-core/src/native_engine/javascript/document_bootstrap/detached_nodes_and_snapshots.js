@@ -825,26 +825,6 @@
     Object.defineProperty(text, "__glassCreated", {{ enumerable: false, configurable: false, writable: true, value: false }});
     Object.defineProperty(text, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return isComment ? "" : textContent; }} }});
     Object.defineProperty(text, "__glassMarkup", {{ enumerable: false, configurable: false, get() {{ return isComment ? "<!--" + textContent + "-->" : serializeHtmlTextNode(text, textContent); }} }});
-    Object.defineProperty(text, "parentElement", {{
-      enumerable: false,
-      configurable: false,
-      get() {{
-        let current = text.__glassParent || null;
-        while (current && current.nodeType !== 1) current = current.__glassParent || null;
-        return current || null;
-      }},
-    }});
-    Object.defineProperty(text, "parentNode", {{
-      enumerable: false,
-      configurable: false,
-      get() {{
-        if (text.__glassParent) return text.__glassParent;
-        const owner = globalThis.document;
-        return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(text)
-          ? owner
-          : null;
-      }},
-    }});
     Object.defineProperty(text, "nodeValue", {{
       enumerable: true,
       configurable: false,
@@ -923,9 +903,10 @@
     globalThis.__glassNativeHostViewMark("text_content_resolver_ready");
   let elementBuildIndex = -1;
   let elementBuildMode = "none";
-  let elements;
+  const elements = reuseExistingHostTree ? cachedHostCollections.elements : [];
   try {{
-    elements = reuseExistingHostTree ? cachedHostCollections.elements : snapshotElements.map((entry, index) => {{
+    if (!reuseExistingHostTree) for (let index = 0; index < snapshotElements.length; index += 1) {{
+      const entry = snapshotElements[index];
       elementBuildIndex = index;
       const existing = scriptNodeAliasesByIndex.get(entry.nodeIndex) || previousElements.get(entry.nodeIndex);
       if (existing && typeof existing.__glassRefresh === "function") {{
@@ -933,56 +914,58 @@
         if (!reuseExistingHostTree && !belongsToDetachedCreatedSubtree(existing)) {{
           existing.__glassRefresh(entry, snapshotTextContentForNode);
         }}
-        return existing;
+        elements.push(existing);
+        continue;
       }}
       elementBuildMode = "create";
-      return makeElement(entry, snapshotTextContentForNode);
-    }});
+      elements.push(makeElement(entry, snapshotTextContentForNode));
+    }}
   }} catch (error) {{
     if (typeof globalThis.__glassNativeHostViewMark === "function") {{
       const failedEntry = snapshotElements[elementBuildIndex];
       globalThis.__glassNativeHostViewMark(
-        `elements_error:${{elementBuildIndex}}:${{String(failedEntry?.tagName || "")}}:${{Object.keys(failedEntry?.attributes || {{}}).length}}:${{String(failedEntry?.text || "").length}}:${{elementBuildMode}}`,
+        `elements_error:${{elementBuildIndex}}:${{String(failedEntry?.tagName || "")}}:${{Object.keys(failedEntry?.attributes || {{}}).length}}:${{String(failedEntry?.text || "").length}}:${{elementBuildMode}}:${{nativeElementBuildPhase}}`,
       );
     }}
     throw error;
   }}
   if (typeof globalThis.__glassNativeHostViewMark === "function")
     globalThis.__glassNativeHostViewMark("elements_ready");
-  const elementsByIndex = reuseExistingHostTree
-    ? cachedHostCollections.elementsByIndex
-    : new Map(elements.map((element) => [element.nodeIndex, element]));
-  const textNodes = reuseExistingHostTree ? cachedHostCollections.textNodes : snapshotNodes
-    .filter((entry) => entry && Number(entry.nodeType) === 3)
-    .map((entry) => {{
+  const elementsByIndex = reuseExistingHostTree ? cachedHostCollections.elementsByIndex : new Map();
+  if (!reuseExistingHostTree) for (const element of elements) elementsByIndex.set(element.nodeIndex, element);
+  const textNodes = reuseExistingHostTree ? cachedHostCollections.textNodes : [];
+  if (!reuseExistingHostTree) for (const entry of snapshotNodes) {{
+    if (!entry || Number(entry.nodeType) !== 3) continue;
       const existing = previousNodes.get(entry.nodeIndex);
       const scriptAlias = scriptNodeAliasesByIndex.get(entry.nodeIndex);
       const reusable = scriptAlias || existing;
       if (reusable && typeof reusable.__glassRefresh === "function") {{
         if (!reuseExistingHostTree && !belongsToDetachedCreatedSubtree(reusable)) reusable.__glassRefresh(entry);
-        return reusable;
+        textNodes.push(reusable);
+        continue;
       }}
-      return makeSnapshotText(entry);
-    }});
+      textNodes.push(makeSnapshotText(entry));
+  }}
   if (typeof globalThis.__glassNativeHostViewMark === "function")
     globalThis.__glassNativeHostViewMark("text_nodes_ready");
-  const commentNodes = reuseExistingHostTree ? cachedHostCollections.commentNodes : snapshotNodes
-    .filter((entry) => entry && Number(entry.nodeType) === 8)
-    .map((entry) => {{
+  const commentNodes = reuseExistingHostTree ? cachedHostCollections.commentNodes : [];
+  if (!reuseExistingHostTree) for (const entry of snapshotNodes) {{
+    if (!entry || Number(entry.nodeType) !== 8) continue;
       const existing = previousNodes.get(entry.nodeIndex);
       const scriptAlias = scriptNodeAliasesByIndex.get(entry.nodeIndex);
       const reusable = scriptAlias || existing;
       if (reusable && typeof reusable.__glassRefresh === "function") {{
         if (!reuseExistingHostTree) reusable.__glassRefresh(entry);
-        return reusable;
+        commentNodes.push(reusable);
+        continue;
       }}
-      return makeSnapshotText(entry);
-    }});
+      commentNodes.push(makeSnapshotText(entry));
+  }}
   if (typeof globalThis.__glassNativeHostViewMark === "function")
     globalThis.__glassNativeHostViewMark("comment_nodes_ready");
-  const documentTypeNodes = reuseExistingHostTree ? cachedHostCollections.documentTypeNodes : snapshotNodes
-    .filter((entry) => entry && Number(entry.nodeType) === 10)
-    .map((entry) => {{
+  const documentTypeNodes = reuseExistingHostTree ? cachedHostCollections.documentTypeNodes : [];
+  if (!reuseExistingHostTree) for (const entry of snapshotNodes) {{
+      if (!entry || Number(entry.nodeType) !== 10) continue;
       const existing = scriptNodeAliasesByIndex.get(entry.nodeIndex) || previousNodes.get(entry.nodeIndex);
       const documentType = existing || {{
         nodeIndex: entry.nodeIndex,
@@ -1057,16 +1040,16 @@
           }},
         }});
       }}
-      return documentType;
-    }});
+      documentTypeNodes.push(documentType);
+  }}
   if (typeof globalThis.__glassNativeHostViewMark === "function")
     globalThis.__glassNativeHostViewMark("document_type_nodes_ready");
   const templateContentsCache = globalThis.__glassTemplateContents instanceof Map
     ? globalThis.__glassTemplateContents
     : (globalThis.__glassTemplateContents = new Map());
-  const fragmentNodes = reuseExistingHostTree ? cachedHostCollections.fragmentNodes : snapshotNodes
-    .filter((entry) => entry && Number(entry.nodeType) === 11)
-    .map((entry) => {{
+  const fragmentNodes = reuseExistingHostTree ? cachedHostCollections.fragmentNodes : [];
+  if (!reuseExistingHostTree) for (const entry of snapshotNodes) {{
+      if (!entry || Number(entry.nodeType) !== 11) continue;
       const hostIndex = entry.templateHostIndex == null ? null : Number(entry.templateHostIndex);
       const cached = hostIndex == null ? null : templateContentsCache.get(hostIndex);
       const existing = cached || previousNodes.get(entry.nodeIndex);
@@ -1075,19 +1058,14 @@
         : makeDocumentFragment(entry);
       if (!reuseExistingHostTree && typeof fragment.__glassRefresh === "function") fragment.__glassRefresh(entry);
       if (hostIndex != null) templateContentsCache.set(hostIndex, fragment);
-      return fragment;
-    }});
+      fragmentNodes.push(fragment);
+  }}
   if (typeof globalThis.__glassNativeHostViewMark === "function")
     globalThis.__glassNativeHostViewMark("fragment_nodes_ready");
-  const nodesByIndex = reuseExistingHostTree
-    ? cachedHostCollections.nodesByIndex
-    : new Map([
-        ...elements.map((element) => [element.nodeIndex, element]),
-        ...textNodes.map((text) => [text.nodeIndex, text]),
-        ...commentNodes.map((comment) => [comment.nodeIndex, comment]),
-        ...documentTypeNodes.map((documentType) => [documentType.nodeIndex, documentType]),
-        ...fragmentNodes.map((fragment) => [fragment.nodeIndex, fragment]),
-      ]);
+  const nodesByIndex = reuseExistingHostTree ? cachedHostCollections.nodesByIndex : new Map();
+  if (!reuseExistingHostTree) for (const nodes of [elements, textNodes, commentNodes, documentTypeNodes, fragmentNodes]) {{
+    for (const node of nodes) nodesByIndex.set(node.nodeIndex, node);
+  }}
   if (typeof globalThis.__glassNativeHostViewMark === "function")
     globalThis.__glassNativeHostViewMark("nodes_by_index_ready");
   // Script-created detached nodes are not in the document snapshot. Keep
@@ -1265,22 +1243,6 @@
   }};
   if (!reuseExistingHostTree) {{
   for (const element of elements) {{
-    if (!Object.prototype.hasOwnProperty.call(element, "parentElement")) {{
-      Object.defineProperty(element, "parentElement", {{
-        enumerable: false,
-        configurable: false,
-        get() {{
-          if (element.parentIndex === null) return null;
-          const current = globalThis.__glassHostElements;
-          return current instanceof Map ? current.get(element.parentIndex) || null : null;
-        }},
-      }});
-      Object.defineProperty(element, "parentNode", {{
-        enumerable: false,
-        configurable: false,
-        get() {{ return element.parentElement; }},
-      }});
-    }}
     if (["IFRAME", "FRAME"].includes(element.tagName)
         && !Object.prototype.hasOwnProperty.call(element, "contentWindow")) {{
       Object.defineProperty(element, "contentWindow", {{

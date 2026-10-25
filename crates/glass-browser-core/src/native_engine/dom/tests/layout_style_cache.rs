@@ -151,6 +151,29 @@ fn layout_snapshot_cache_matches_fresh_layout_and_invalidates_style_and_viewport
 }
 
 #[test]
+fn setting_an_attribute_to_its_existing_value_keeps_valid_layout_caches() {
+    let limits = NativeEngineLimits::default();
+    let mut document = NativeDocument::parse(
+        "<style>.active{width:240px}</style><main><p id=target class=active>text</p></main>",
+        &limits,
+    )
+    .unwrap();
+    let target = document.find_element_by_id("target").unwrap();
+    let viewport = Viewport::default();
+    let initial = document.layout(viewport).unwrap();
+    assert!(!document.layout_style_cache.0.lock().unwrap().is_empty());
+    assert!(document.layout_style_cache.2.lock().unwrap().is_some());
+
+    document
+        .apply_script_attribute(target.index(), "class", "active", None, &BTreeMap::new())
+        .unwrap();
+
+    assert!(!document.layout_style_cache.0.lock().unwrap().is_empty());
+    assert!(document.layout_style_cache.2.lock().unwrap().is_some());
+    assert_eq!(document.layout(viewport).unwrap(), initial);
+}
+
+#[test]
 fn script_snapshot_cache_reuses_and_invalidates_complete_projection() {
     let limits = NativeEngineLimits::default();
     let source = "<input id='field' value='initial'>";

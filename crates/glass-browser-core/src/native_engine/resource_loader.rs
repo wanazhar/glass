@@ -242,6 +242,18 @@ pub(crate) struct NativeMediaMetadata {
     pub(crate) content_type: String,
     pub(crate) byte_length: usize,
     pub(crate) duration_millis: Option<u64>,
+    #[serde(default)]
+    pub(crate) video_frames: Vec<NativeVideoFrame>,
+}
+
+/// One decoded, bounded VP8 frame retained for native WebM video playback.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeVideoFrame {
+    pub(crate) timestamp_millis: u64,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pixels: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -2849,11 +2861,166 @@ fn media_metadata_from_bytes(
     let duration_millis = (content_type == "audio/wav")
         .then(|| wav_duration_millis(bytes))
         .flatten();
+    let video_frames = if content_type == "video/webm" {
+        decode_bounded_vp8_webm(bytes)?
+    } else {
+        Vec::new()
+    };
+    let video_duration = if content_type == "video/webm" {
+        let duration = matroska_demuxer::MatroskaFile::open(std::io::Cursor::new(bytes))
+            .ok()
+            .and_then(|file| {
+                file.info().duration().map(|duration| {
+                    (duration * file.info().timestamp_scale().get() as f64 / 1_000_000.0).max(0.0)
+                        as u64
+                })
+            });
+        duration.or_else(|| {
+            video_frames
+                .last()
+                .map(|frame| frame.timestamp_millis.saturating_add(100))
+        })
+    } else {
+        None
+    };
+    let duration_millis = if content_type == "video/webm" && video_frames.is_empty() {
+        None
+    } else {
+        video_duration.or(duration_millis)
+    };
     Ok(Some(NativeMediaMetadata {
         content_type: content_type.to_owned(),
         byte_length: bytes.len(),
         duration_millis,
+        video_frames,
     }))
+}
+
+pub(crate) const MAX_NATIVE_VIDEO_FRAME_COUNT: usize = 60;
+pub(crate) const MAX_NATIVE_VIDEO_DIMENSION: u32 = 640;
+pub(crate) const MAX_NATIVE_VIDEO_DECODED_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_NATIVE_DOCUMENT_VIDEO_FRAMES: usize = 120;
+pub(crate) const MAX_NATIVE_DOCUMENT_VIDEO_BYTES: usize = 4 * 1024 * 1024;
+
+fn decode_bounded_vp8_webm(bytes: &[u8]) -> Result<Vec<NativeVideoFrame>, NativeEngineError> {
+    use std::io::Cursor;
+    use zvidlib_core::{
+        CancellationToken, Codec, CodecProfile, ColorRange, EncodedVideoSample, FrameIndex,
+        HardwarePreference, Limits, PixelFormat, VideoDecoderConfig, VideoDecoderFactory,
+        VideoDimensions,
+    };
+    use zvidlib_vp8::native_vp8_video_decoder_factory;
+
+    let mut file = match matroska_demuxer::MatroskaFile::open(Cursor::new(bytes)) {
+        Ok(file) if file.ebml_header().doc_type().eq_ignore_ascii_case("webm") => file,
+        _ => return Ok(Vec::new()),
+    };
+    let Some((track_number, width, height)) = file
+        .tracks()
+        .iter()
+        .find(|track| track.codec_id() == "V_VP8" && track.video().is_some())
+        .and_then(|track| {
+            let video = track.video()?;
+            Some((
+                track.track_number().get(),
+                u32::try_from(video.pixel_width().get()).ok()?,
+                u32::try_from(video.pixel_height().get()).ok()?,
+            ))
+        })
+    else {
+        return Ok(Vec::new());
+    };
+    if width == 0
+        || height == 0
+        || width > MAX_NATIVE_VIDEO_DIMENSION
+        || height > MAX_NATIVE_VIDEO_DIMENSION
+    {
+        return Ok(Vec::new());
+    }
+    let limits = Limits {
+        max_width: MAX_NATIVE_VIDEO_DIMENSION,
+        max_height: MAX_NATIVE_VIDEO_DIMENSION,
+        max_allocation_bytes: MAX_NATIVE_VIDEO_DECODED_BYTES as u64,
+        max_cached_frames: MAX_NATIVE_VIDEO_FRAME_COUNT as u32,
+        max_decode_samples_per_seek: MAX_NATIVE_VIDEO_FRAME_COUNT as u32,
+        ..Limits::default()
+    };
+    let dimensions = VideoDimensions::new(width, height, &limits)
+        .map_err(|error| NativeEngineError::invalid("native VP8 dimensions", error.to_string()))?;
+    let config = VideoDecoderConfig {
+        codec: Codec::Vp8,
+        profile: CodecProfile::Vp8,
+        coded_dimensions: dimensions,
+        output_format: PixelFormat::Rgba8,
+        color_range: ColorRange::Limited,
+        hardware: HardwarePreference::Avoid,
+        configuration: Vec::new(),
+    };
+    let factory = native_vp8_video_decoder_factory();
+    let mut decoder = factory
+        .create(&config, &limits)
+        .map_err(|error| NativeEngineError::invalid("native VP8 decoder", error.to_string()))?;
+    let mut frame = matroska_demuxer::Frame::default();
+    let mut output = Vec::new();
+    let mut retained_bytes = 0usize;
+    let timestamp_scale = file.info().timestamp_scale().get();
+    let mut index = 0u64;
+    while file
+        .next_frame(&mut frame)
+        .map_err(|error| NativeEngineError::invalid("native WebM demux", error.to_string()))?
+    {
+        if frame.track != track_number {
+            continue;
+        }
+        if output.len() >= MAX_NATIVE_VIDEO_FRAME_COUNT {
+            return Ok(Vec::new());
+        }
+        let decoded = decoder
+            .submit(
+                &EncodedVideoSample {
+                    presentation_index: FrameIndex(index),
+                    random_access: frame.is_keyframe.unwrap_or(index == 0),
+                    data: frame.data.clone(),
+                },
+                &CancellationToken::new(),
+            )
+            .map_err(|error| NativeEngineError::invalid("native VP8 decode", error.to_string()))?;
+        let timestamp_millis = frame.timestamp.saturating_mul(timestamp_scale) / 1_000_000;
+        for decoded_frame in decoded {
+            let plane = decoded_frame.frame.planes.first().ok_or_else(|| {
+                NativeEngineError::invalid("native VP8 decode", "decoder returned no pixel plane")
+            })?;
+            let required = plane.stride.checked_mul(height as usize).ok_or_else(|| {
+                NativeEngineError::limit(
+                    "native decoded video bytes",
+                    MAX_NATIVE_VIDEO_DECODED_BYTES,
+                    usize::MAX,
+                )
+            })?;
+            if plane.data.len() < required || plane.stride < width as usize * 4 {
+                return Err(NativeEngineError::invalid(
+                    "native VP8 decode",
+                    "decoder returned malformed RGBA pixels",
+                ));
+            }
+            let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+            for row in plane.data.chunks(plane.stride).take(height as usize) {
+                pixels.extend_from_slice(&row[..width as usize * 4]);
+            }
+            retained_bytes = retained_bytes.saturating_add(pixels.len());
+            if retained_bytes > MAX_NATIVE_VIDEO_DECODED_BYTES {
+                return Ok(Vec::new());
+            }
+            output.push(NativeVideoFrame {
+                timestamp_millis,
+                width,
+                height,
+                pixels,
+            });
+        }
+        index = index.saturating_add(1);
+    }
+    Ok(output)
 }
 
 fn data_media_metadata(url: &Url) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {

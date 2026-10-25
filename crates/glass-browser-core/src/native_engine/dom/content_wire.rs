@@ -180,6 +180,10 @@ impl NativeDocument {
                     content_type: resource.content_type.clone(),
                     byte_length: resource.byte_length,
                     duration_millis: resource.duration_millis,
+                    video_frames: resource.video_frames.clone(),
+                    current_time_millis: resource.current_time_millis,
+                    is_playing: resource.is_playing,
+                    playback_rate_millionths: resource.playback_rate_millionths,
                 })
             })
             .collect();
@@ -1067,6 +1071,8 @@ impl NativeDocument {
             ));
         }
         let mut media_resources = BTreeMap::new();
+        let mut document_video_bytes = 0usize;
+        let mut document_video_frame_count = 0usize;
         for resource in wire.media_resources {
             if resource.source.is_empty()
                 || resource.source.len() > MAX_ATTRIBUTE_BYTES
@@ -1076,6 +1082,7 @@ impl NativeDocument {
                 || resource.byte_length == 0
                 || resource.byte_length > MAX_NATIVE_MEDIA_BYTES
                 || !media_type_is_supported(Some(&resource.content_type))
+                || resource.playback_rate_millionths == 0
             {
                 return Err(NativeEngineError::Parse {
                     offset: 0,
@@ -1101,6 +1108,37 @@ impl NativeDocument {
                     reason: "content process returned a media resource for a different node".into(),
                 });
             }
+            let mut decoded_video_bytes = 0usize;
+            let valid_video_frames = resource.video_frames.len() <= MAX_NATIVE_VIDEO_FRAME_COUNT
+                && resource.video_frames.iter().all(|frame| {
+                    let expected = (frame.width as usize)
+                        .checked_mul(frame.height as usize)
+                        .and_then(|pixels| pixels.checked_mul(4));
+                    let Some(expected) = expected else {
+                        return false;
+                    };
+                    decoded_video_bytes = decoded_video_bytes.saturating_add(expected);
+                    frame.width > 0
+                        && frame.height > 0
+                        && frame.width <= MAX_NATIVE_VIDEO_DIMENSION
+                        && frame.height <= MAX_NATIVE_VIDEO_DIMENSION
+                        && frame.pixels.len() == expected
+                        && decoded_video_bytes <= MAX_NATIVE_VIDEO_DECODED_BYTES
+                });
+            document_video_bytes = document_video_bytes.saturating_add(decoded_video_bytes);
+            document_video_frame_count =
+                document_video_frame_count.saturating_add(resource.video_frames.len());
+            if !valid_video_frames
+                || (!resource.video_frames.is_empty() && node.element_name() != Some("video"))
+                || (resource.is_playing && resource.video_frames.is_empty())
+                || document_video_bytes > MAX_NATIVE_DOCUMENT_VIDEO_BYTES
+                || document_video_frame_count > MAX_NATIVE_DOCUMENT_VIDEO_FRAMES
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned invalid or over-budget video frames".into(),
+                });
+            }
             if media_resources
                 .insert(
                     resource.node_index,
@@ -1109,6 +1147,11 @@ impl NativeDocument {
                         content_type: resource.content_type,
                         byte_length: resource.byte_length,
                         duration_millis: resource.duration_millis,
+                        video_frames: resource.video_frames,
+                        current_time_millis: resource.current_time_millis,
+                        is_playing: resource.is_playing,
+                        playback_rate_millionths: resource.playback_rate_millionths,
+                        playback_started_at: resource.is_playing.then(std::time::Instant::now),
                     },
                 )
                 .is_some()

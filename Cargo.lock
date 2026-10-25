@@ -1192,6 +1192,7 @@ dependencies = [
  "image-webp",
  "jpeg-encoder",
  "libc",
+ "matroska-demuxer",
  "png 0.17.16",
  "regex",
  "reqwest",
@@ -1208,6 +1209,8 @@ dependencies = [
  "webp-rust",
  "wuff",
  "zune-jpeg 0.5.16-rc2",
+ "zvidlib-core",
+ "zvidlib-vp8",
 ]
 
 [[package]]
@@ -1863,6 +1866,12 @@ checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
 ]
+
+[[package]]
+name = "matroska-demuxer"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cbf36668475a45a46bf8710e927e7458b7c387e7c46ddb5457ae0c71cf5e817"
 
 [[package]]
 name = "memchr"
@@ -4380,4 +4389,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b554da611136df9905629a243ee2e9a92453e0c4476d91185133d9b9c058af15"
 dependencies = [
  "zune-core 0.5.3",
+]
+
+[[package]]
+name = "zvidlib-build"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4703bf6f711ae09b600c6272c6e629d4b9e9857c6aea50bb599f65bec876c169"
+
+[[package]]
+name = "zvidlib-color"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c337a4d5bae5eae15934c4d4081bf6a4be04d309332b018d8c2dfa494f95934"
+dependencies = [
+ "zvidlib-core",
+]
+
+[[package]]
+name = "zvidlib-core"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "568189ce764b4890342f24ed013595066b6beb0d8e30af37bb755fafae074b90"
+
+[[package]]
+name = "zvidlib-vp8"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed40a5ba17bf2b7db9b9ae08a9c5669753332be34f3b346439a1c1188aa3834a"
+dependencies = [
+ "zvidlib-build",
+ "zvidlib-color",
+ "zvidlib-core",
 ]

@@ -1173,6 +1173,14 @@ impl NativeDocument {
                 NativeScriptCommand::MediaLoad { node_index } => {
                     self.reset_media_load(*node_index, &script_nodes)?;
                 }
+                NativeScriptCommand::MediaFrameTime {
+                    node_index,
+                    time_millis,
+                    playing,
+                    playback_rate,
+                } => {
+                    self.set_media_frame_time(*node_index, *time_millis, *playing, *playback_rate)?;
+                }
                 NativeScriptCommand::SetChecked {
                     node_index,
                     checked,

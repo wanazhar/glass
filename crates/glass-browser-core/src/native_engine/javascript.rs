@@ -2861,6 +2861,7 @@ pub(crate) fn validate_frame_script_command(
                 | NativeScriptCommand::SetSelection { .. }
                 | NativeScriptCommand::CanvasCommit { .. }
                 | NativeScriptCommand::MediaLoad { .. }
+                | NativeScriptCommand::MediaFrameTime { .. }
                 | NativeScriptCommand::SetChecked { .. }
                 | NativeScriptCommand::SetIndeterminate { .. }
                 | NativeScriptCommand::SetSelected { .. }
@@ -2911,6 +2912,7 @@ fn is_frame_script_batch_command(command: &NativeScriptCommand) -> bool {
             | NativeScriptCommand::SetSelection { .. }
             | NativeScriptCommand::CanvasCommit { .. }
             | NativeScriptCommand::MediaLoad { .. }
+            | NativeScriptCommand::MediaFrameTime { .. }
             | NativeScriptCommand::SetChecked { .. }
             | NativeScriptCommand::SetIndeterminate { .. }
             | NativeScriptCommand::SetSelected { .. }

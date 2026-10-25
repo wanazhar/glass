@@ -51,11 +51,13 @@ impl NativeDocument {
                     NativeNodeKind::Text(value) => NativeNodeKindWire::Text(value.clone()),
                 },
                 state: NativeElementStateWire {
-                    namespace_uri: node
-                        .state
-                        .namespace_uri
-                        .clone()
-                        .or_else(|| Some(String::new())),
+                    namespace_uri: node.element_name().and_then(|_| {
+                        match node.state.namespace_uri.as_deref() {
+                            Some(super::HTML_NAMESPACE_URI) => None,
+                            Some(namespace) => Some(namespace.to_owned()),
+                            None => Some(String::new()),
+                        }
+                    }),
                     value: node.state.value.clone(),
                     files: node.state.files.clone(),
                     attribute_namespaces: node.state.attribute_namespaces.clone(),

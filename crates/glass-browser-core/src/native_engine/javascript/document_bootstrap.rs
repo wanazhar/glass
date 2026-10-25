@@ -147,7 +147,11 @@ pub(super) fn document_bootstrap(
                         style_indices.insert(style_key, index);
                         index
                     };
-                    element.insert("computedStyleIndex".into(), serde_json::json!(style_index));
+                    // This key is repeated for every styled element in the
+                    // 16 MiB-bounded host snapshot. Keep the transport name
+                    // compact; runtime_timers.js restores the computed style
+                    // from the shared table before page scripts run.
+                    element.insert("cs".into(), serde_json::json!(style_index));
                 }
                 batch_stage.finish(Some(style_key_bytes));
             }

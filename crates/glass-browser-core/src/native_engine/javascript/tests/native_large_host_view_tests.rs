@@ -118,18 +118,18 @@ fn repeated_host_views_reuse_decoded_canvas_image_resources_and_repair_public_ma
         .expect("native JavaScript runtime must construct");
     let first = runtime
         .evaluate(
-            "(() => { const canvas = document.getElementById('target'); canvas.getContext('2d').drawImage(document.getElementById('source'), 0, 0); const result = [globalThis.__glassCanvasImageResources.size, canvas.__glassCanvasSurface.pixels.slice(0, 4)]; globalThis.__glassHeldCanvasImageResources = globalThis.__glassCanvasImageResources; globalThis.__glassCanvasImageResources.values().next().value.pixels[0] = 99; globalThis.__glassCanvasImageResources.clear(); globalThis.__glassCanvasImageResources.set(-1, null); return result; })()",
+            "(() => { const canvas = document.getElementById('target'); canvas.getContext('2d').drawImage(document.getElementById('source'), 0, 0); const resource = globalThis.__glassCanvasImageResources.values().next().value; const result = [globalThis.__glassCanvasImageResources.size, Array.isArray(resource.pixels), canvas.__glassCanvasSurface.pixels.slice(0, 4)]; globalThis.__glassHeldCanvasImageResources = globalThis.__glassCanvasImageResources; resource.pixels[0] = 99; globalThis.__glassCanvasImageResources.clear(); globalThis.__glassCanvasImageResources.set(-1, null); return result; })()",
             &document,
             "fixture://canvas-cache.test/",
             &NativeOrigin::Opaque,
             Viewport::default(),
         )
         .expect("initial canvas image resources must install");
-    assert_eq!(first.value, serde_json::json!([1, [17, 34, 51, 255]]));
+    assert_eq!(first.value, serde_json::json!([1, true, [17, 34, 51, 255]]));
 
     let second = runtime
         .evaluate(
-            "(() => { const canvas = document.getElementById('target'); canvas.getContext('2d').clearRect(0, 0, 1, 1); canvas.getContext('2d').drawImage(document.getElementById('source'), 0, 0); const result = [globalThis.__glassCanvasImageResources.size, globalThis.__glassCanvasImageResources.has(-1), globalThis.__glassCanvasImageResources.values().next().value.pixels[0], globalThis.__glassHeldCanvasImageResources === globalThis.__glassCanvasImageResources, canvas.__glassCanvasSurface.pixels.slice(0, 4)]; globalThis.__glassCanvasSurfaces.clear(); return result; })()",
+            "(() => { const canvas = document.getElementById('target'); canvas.getContext('2d').clearRect(0, 0, 1, 1); canvas.getContext('2d').drawImage(document.getElementById('source'), 0, 0); const resource = globalThis.__glassCanvasImageResources.values().next().value; const result = [globalThis.__glassCanvasImageResources.size, globalThis.__glassCanvasImageResources.has(-1), Array.isArray(resource.pixels), resource.pixels[0], globalThis.__glassHeldCanvasImageResources === globalThis.__glassCanvasImageResources, canvas.__glassCanvasSurface.pixels.slice(0, 4)]; globalThis.__glassCanvasSurfaces.clear(); return result; })()",
             &document,
             "fixture://canvas-cache.test/",
             &NativeOrigin::Opaque,
@@ -138,7 +138,7 @@ fn repeated_host_views_reuse_decoded_canvas_image_resources_and_repair_public_ma
         .expect("unchanged image resource snapshot must reuse its decoded cache");
     assert_eq!(
         second.value,
-        serde_json::json!([1, false, 17, true, [17, 34, 51, 255]])
+        serde_json::json!([1, false, true, 17, true, [17, 34, 51, 255]])
     );
 
     let canvas_commit = second

@@ -337,6 +337,37 @@ fn content_wire_round_trips_user_interacted_state() {
 }
 
 #[test]
+fn content_wire_omits_default_node_state_and_empty_children() {
+    let limits = NativeEngineLimits::default();
+    let document = NativeDocument::parse("<main><p>hello <span>world</span></p></main>", &limits)
+        .expect("static content wire fixture must parse");
+    let wire = document.to_content_wire();
+    let encoded = serde_json::to_value(&wire).expect("content wire must serialize");
+    let nodes = encoded["nodes"]
+        .as_array()
+        .expect("content wire nodes must be an array");
+    assert!(
+        nodes.iter().any(|node| node.get("state").is_none()),
+        "default per-node state should be omitted"
+    );
+    assert!(
+        nodes.iter().any(|node| node.get("children").is_none()),
+        "empty leaf child lists should be omitted"
+    );
+
+    let decoded: NativeDocumentWire =
+        serde_json::from_value(encoded).expect("omitted defaults must deserialize");
+    assert_eq!(decoded, wire);
+    let restored = NativeDocument::from_content_wire(decoded, &limits, document.generation())
+        .expect("omitted defaults must preserve the document");
+    assert_eq!(restored.visible_text(1024), document.visible_text(1024));
+    assert_eq!(
+        restored.resolve_target("css=span").unwrap().index(),
+        document.resolve_target("css=span").unwrap().index()
+    );
+}
+
+#[test]
 fn content_wire_round_trips_background_images_resolved_from_custom_properties() {
     let limits = NativeEngineLimits::default();
     let document = NativeDocument::parse(

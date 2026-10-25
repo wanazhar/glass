@@ -58,10 +58,10 @@
   const snapshotComputedStyles = Array.isArray(state.computedStyles) ? state.computedStyles : [];
   if (!reuseCachedHostSnapshotState) {{
     for (const element of Array.isArray(state.elements) ? state.elements : []) {{
-      if (!element || !Number.isSafeInteger(Number(element.computedStyleIndex))) continue;
-      const styleIndex = Number(element.computedStyleIndex);
+      if (!element || !Number.isSafeInteger(Number(element.cs))) continue;
+      const styleIndex = Number(element.cs);
       element.computedStyle = snapshotComputedStyles[styleIndex] || {{}};
-      delete element.computedStyleIndex;
+      delete element.cs;
     }}
   }}
   const createSnapshotTextContentResolver = (snapshots) => {{

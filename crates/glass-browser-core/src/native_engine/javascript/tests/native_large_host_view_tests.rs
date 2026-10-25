@@ -2,6 +2,65 @@ use super::*;
 use crate::native_engine::NativeEngineLimits;
 
 #[test]
+fn host_view_cache_key_tracks_resource_projection_invalidations() {
+    let viewport = Viewport::default();
+    let mut document = NativeDocument::parse(
+        "<img id='animated' src='/animated.gif'>",
+        &NativeEngineLimits::default(),
+    )
+    .expect("native image fixture must parse");
+    let original_revision = document.revision();
+    let original_key = NativeHostViewCacheKey::new(
+        &document,
+        viewport,
+        true,
+        NativePoint { x: 0, y: 0 },
+        &BTreeMap::new(),
+    );
+    let image_id = document
+        .element_node_ids()
+        .find(|id| {
+            document
+                .node(*id)
+                .is_some_and(|node| node.element_name() == Some("img"))
+        })
+        .expect("fixture image must be an attached element");
+    let source = document.image_current_src(image_id, viewport);
+    document
+        .mark_image_load(image_id.index(), source.clone(), viewport)
+        .expect("image request state must be accepted");
+    let animation = crate::native_engine::image::NativeImage::with_frames(
+        1,
+        1,
+        vec![
+            crate::native_engine::image::NativeImageFrame {
+                delay_ms: 10,
+                pixels: vec![0; 4],
+            },
+            crate::native_engine::image::NativeImageFrame {
+                delay_ms: 10,
+                pixels: vec![1; 4],
+            },
+        ],
+        Some(0),
+    )
+    .expect("bounded animation fixture must be valid");
+    document
+        .set_image_resource(image_id.index(), source, animation)
+        .expect("decoded image resource must be accepted");
+
+    assert_eq!(document.revision(), original_revision);
+    let invalidated_key = NativeHostViewCacheKey::new(
+        &document,
+        viewport,
+        true,
+        NativePoint { x: 0, y: 0 },
+        &BTreeMap::new(),
+    );
+    assert_ne!(invalidated_key, original_key);
+}
+
+#[test]
 fn host_view_covers_representative_html_svg_mathml_and_custom_element_categories() {
     let markup = r##"<!doctype html>
       <html><head><title>local element contract</title><meta charset="utf-8">
@@ -124,10 +183,21 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
         .expect("native JavaScript runtime must construct");
     let document = NativeDocument::parse(&markup, &NativeEngineLimits::default())
         .expect("bounded synthetic content page must parse");
-    for _ in 0..6 {
+    for install in 0..6 {
+        let (source, expected) = if install == 0 {
+            (
+                "(() => { const first = document.body.children[0].children[0].children[0]; globalThis.__glassHeldHostElement = first; first.__glassReuseMarker = 42; return [document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(first).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView')]; })()",
+                serde_json::json!(["BODY", ELEMENTS, "bold", "normal", false]),
+            )
+        } else {
+            (
+                "[document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(document.body.children[0].children[0].children[0]).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView'), globalThis.__glassHeldHostElement === document.body.children[0].children[0].children[0], globalThis.__glassHeldHostElement.__glassReuseMarker]",
+                serde_json::json!(["BODY", ELEMENTS, "bold", "normal", false, true, 42]),
+            )
+        };
         let evaluation = runtime
             .evaluate(
-                "[document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(document.body.children[0].children[0].children[0]).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView')]",
+                source,
                 &document,
                 "fixture://large-host-view.test/",
                 &NativeOrigin::Opaque,
@@ -135,10 +205,7 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
             )
             .expect("repeated large host views must install within the fixed QuickJS memory limit");
 
-        assert_eq!(
-            evaluation.value,
-            serde_json::json!(["BODY", ELEMENTS, "bold", "normal", false])
-        );
+        assert_eq!(evaluation.value, expected);
     }
     let second_runtime = NativeJavaScriptRuntime::new_with_context_id("second-large-host-view")
         .expect("second native JavaScript runtime must construct");

@@ -68,27 +68,8 @@ fn script_snapshot_retained_bytes(snapshot: &NativeScriptDocumentSnapshot) -> us
 }
 
 impl NativeDocument {
-    pub(crate) fn has_cached_script_snapshot(
-        &self,
-        max_text_bytes: usize,
-        viewport: Viewport,
-    ) -> bool {
-        self.layout_style_cache
-            .has_script_snapshot(self.revision, max_text_bytes, viewport)
-    }
-
-    pub(crate) fn has_cached_scrolled_script_projection(
-        &self,
-        viewport: Viewport,
-        scroll_offset: NativePoint,
-        nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
-    ) -> bool {
-        self.layout_style_cache.has_scrolled_script_projection(
-            self.revision,
-            viewport,
-            scroll_offset,
-            nested_scroll_offsets,
-        )
+    pub(crate) fn script_snapshot_generation(&self) -> u64 {
+        self.layout_style_cache.script_snapshot_generation()
     }
 
     pub(crate) fn element_node_ids(&self) -> impl Iterator<Item = NativeNodeId> + '_ {

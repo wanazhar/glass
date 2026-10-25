@@ -886,6 +886,10 @@
   const previousNodes = globalThis.__glassHostNodes instanceof Map
     ? globalThis.__glassHostNodes
     : new Map();
+  const reuseExistingHostTree = Boolean(
+    host.reuse_state
+      && previousElements.size === (Array.isArray(state.elements) ? state.elements.length : 0),
+  );
   const belongsToDetachedCreatedSubtree = (node) => {{
     let current = node;
     for (let depth = 0; current && depth <= {max_commands}; depth += 1) {{
@@ -901,7 +905,7 @@
   const elements = state.elements.map((entry) => {{
     const existing = scriptNodeAliasesByIndex.get(entry.nodeIndex) || previousElements.get(entry.nodeIndex);
     if (existing && typeof existing.__glassRefresh === "function") {{
-      if (!belongsToDetachedCreatedSubtree(existing)) {{
+      if (!reuseExistingHostTree && !belongsToDetachedCreatedSubtree(existing)) {{
         existing.__glassRefresh(entry, snapshotTextContentForNode);
       }}
       return existing;
@@ -916,7 +920,7 @@
       const scriptAlias = scriptNodeAliasesByIndex.get(entry.nodeIndex);
       const reusable = scriptAlias || existing;
       if (reusable && typeof reusable.__glassRefresh === "function") {{
-        if (!belongsToDetachedCreatedSubtree(reusable)) reusable.__glassRefresh(entry);
+        if (!reuseExistingHostTree && !belongsToDetachedCreatedSubtree(reusable)) reusable.__glassRefresh(entry);
         return reusable;
       }}
       return makeSnapshotText(entry);
@@ -928,7 +932,7 @@
       const scriptAlias = scriptNodeAliasesByIndex.get(entry.nodeIndex);
       const reusable = scriptAlias || existing;
       if (reusable && typeof reusable.__glassRefresh === "function") {{
-        reusable.__glassRefresh(entry);
+        if (!reuseExistingHostTree) reusable.__glassRefresh(entry);
         return reusable;
       }}
       return makeSnapshotText(entry);
@@ -972,12 +976,14 @@
           }},
         }});
       }}
-      if (existing && typeof documentType.__glassRefresh === "function") documentType.__glassRefresh(entry);
-      documentType.parentIndex = entry.parentIndex == null ? null : entry.parentIndex;
-      documentType.name = String(entry.nodeName || "");
-      documentType.nodeName = documentType.name;
-      documentType.publicId = entry.publicId == null ? "" : String(entry.publicId);
-      documentType.systemId = entry.systemId == null ? "" : String(entry.systemId);
+      if (!reuseExistingHostTree) {{
+        if (existing && typeof documentType.__glassRefresh === "function") documentType.__glassRefresh(entry);
+        documentType.parentIndex = entry.parentIndex == null ? null : entry.parentIndex;
+        documentType.name = String(entry.nodeName || "");
+        documentType.nodeName = documentType.name;
+        documentType.publicId = entry.publicId == null ? "" : String(entry.publicId);
+        documentType.systemId = entry.systemId == null ? "" : String(entry.systemId);
+      }}
       if (!Object.prototype.hasOwnProperty.call(documentType, "ownerDocument")) {{
         Object.defineProperty(documentType, "ownerDocument", {{
           enumerable: false,
@@ -1022,7 +1028,7 @@
       const fragment = existing && typeof existing.__glassRefresh === "function"
         ? existing
         : makeDocumentFragment(entry);
-      if (typeof fragment.__glassRefresh === "function") fragment.__glassRefresh(entry);
+      if (!reuseExistingHostTree && typeof fragment.__glassRefresh === "function") fragment.__glassRefresh(entry);
       if (hostIndex != null) templateContentsCache.set(hostIndex, fragment);
       return fragment;
     }});
@@ -1044,49 +1050,51 @@
   }}
   globalThis.__glassHostElements = elementsByIndex;
   globalThis.__glassHostNodes = nodesByIndex;
-  for (const element of elements) {{
-    if (belongsToDetachedCreatedSubtree(element)) continue;
-    element.__glassChildren = [];
-    element.__glassParent = null;
-  }}
-  for (const text of textNodes) {{
-    if (belongsToDetachedCreatedSubtree(text)) continue;
-    text.__glassChildren = [];
-    text.__glassParent = null;
-  }}
-  for (const comment of commentNodes) {{
-    if (belongsToDetachedCreatedSubtree(comment)) continue;
-    comment.__glassChildren = [];
-    comment.__glassParent = null;
-  }}
-  for (const documentType of documentTypeNodes) {{
-    if (belongsToDetachedCreatedSubtree(documentType)) continue;
-    documentType.__glassChildren = [];
-    documentType.__glassParent = null;
-  }}
-  for (const fragment of fragmentNodes) {{
-    if (belongsToDetachedCreatedSubtree(fragment)) continue;
-    fragment.__glassChildren = [];
-    fragment.__glassParent = null;
-  }}
-  if (snapshotNodes.length > 0) {{
-    for (const snapshotNode of snapshotNodes) {{
-      const parent = nodesByIndex.get(snapshotNode.nodeIndex);
-      if (!parent || !Array.isArray(snapshotNode.children)) continue;
-      for (const childIndex of snapshotNode.children) {{
-        const child = nodesByIndex.get(childIndex);
-        if (!child) continue;
-        parent.__glassChildren.push(child);
-        child.__glassParent = parent;
-      }}
-    }}
-  }} else {{
+  if (!reuseExistingHostTree) {{
     for (const element of elements) {{
-      if (element.parentIndex === null) continue;
-      const parent = elementsByIndex.get(element.parentIndex);
-      if (!parent) continue;
-      parent.__glassChildren.push(element);
-      element.__glassParent = parent;
+      if (belongsToDetachedCreatedSubtree(element)) continue;
+      element.__glassChildren = [];
+      element.__glassParent = null;
+    }}
+    for (const text of textNodes) {{
+      if (belongsToDetachedCreatedSubtree(text)) continue;
+      text.__glassChildren = [];
+      text.__glassParent = null;
+    }}
+    for (const comment of commentNodes) {{
+      if (belongsToDetachedCreatedSubtree(comment)) continue;
+      comment.__glassChildren = [];
+      comment.__glassParent = null;
+    }}
+    for (const documentType of documentTypeNodes) {{
+      if (belongsToDetachedCreatedSubtree(documentType)) continue;
+      documentType.__glassChildren = [];
+      documentType.__glassParent = null;
+    }}
+    for (const fragment of fragmentNodes) {{
+      if (belongsToDetachedCreatedSubtree(fragment)) continue;
+      fragment.__glassChildren = [];
+      fragment.__glassParent = null;
+    }}
+    if (snapshotNodes.length > 0) {{
+      for (const snapshotNode of snapshotNodes) {{
+        const parent = nodesByIndex.get(snapshotNode.nodeIndex);
+        if (!parent || !Array.isArray(snapshotNode.children)) continue;
+        for (const childIndex of snapshotNode.children) {{
+          const child = nodesByIndex.get(childIndex);
+          if (!child) continue;
+          parent.__glassChildren.push(child);
+          child.__glassParent = parent;
+        }}
+      }}
+    }} else {{
+      for (const element of elements) {{
+        if (element.parentIndex === null) continue;
+        const parent = elementsByIndex.get(element.parentIndex);
+        if (!parent) continue;
+        parent.__glassChildren.push(element);
+        element.__glassParent = parent;
+      }}
     }}
   }}
   globalThis.__glassApplyNativeCommand = (command) => {{

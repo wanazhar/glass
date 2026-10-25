@@ -6,19 +6,16 @@ use std::process::Command;
 
 type MainResult = Result<(), Box<dyn std::error::Error>>;
 const RUNTIME_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024;
+const MAIN_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 fn main() -> MainResult {
-    #[cfg(windows)]
-    return std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("glass-main".into())
-        .stack_size(8 * 1024 * 1024)
+        .stack_size(MAIN_THREAD_STACK_SIZE)
         .spawn(|| run().map_err(|error| error.to_string()))?
         .join()
         .map_err(|_| std::io::Error::other("Glass main thread panicked"))?
-        .map_err(|error| std::io::Error::other(error).into());
-
-    #[cfg(not(windows))]
-    run()
+        .map_err(|error| std::io::Error::other(error).into())
 }
 
 fn run() -> MainResult {

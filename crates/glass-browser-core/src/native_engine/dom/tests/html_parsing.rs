@@ -119,6 +119,35 @@ fn visible_text_excludes_html_iframe_fallback_descendants() {
 }
 
 #[test]
+fn visible_text_snapshot_propagates_hidden_state_to_descendants() {
+    let document = NativeDocument::parse(
+        "<style>.css-hidden{display:none}</style><main><section class='css-hidden'><span id='css-child'>secret css</span></section><section hidden><span id='attribute-child'>secret attribute</span></section><template><section hidden><span id='template-child'>secret template</span></section></template><p id='shown'>visible text</p></main>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+
+    assert_eq!(document.visible_text(1024), ("visible text".into(), false));
+    let snapshot = document.script_snapshot_for_viewport(1024, Viewport::default());
+    let hidden = |id: &str| {
+        snapshot
+            .elements
+            .iter()
+            .find(|element| {
+                element
+                    .attributes
+                    .get("id")
+                    .is_some_and(|value| value == id)
+            })
+            .expect("fixture element must be snapshotted")
+            .hidden
+    };
+    assert!(hidden("css-child"));
+    assert!(hidden("attribute-child"));
+    assert!(hidden("template-child"));
+    assert!(!hidden("shown"));
+}
+
+#[test]
 fn discovers_only_enforced_csp_meta_policies_in_head() {
     let limits = NativeEngineLimits::default();
     let document = NativeDocument::parse(

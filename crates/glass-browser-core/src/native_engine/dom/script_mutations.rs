@@ -1235,9 +1235,25 @@ impl NativeDocument {
     /// bit. Head, script, style, template, hidden, and aria-hidden subtrees are
     /// omitted until style/layout semantics exist.
     pub fn visible_text(&self, max_bytes: usize) -> (String, bool) {
+        let hidden_by_index = self.effective_hidden_by_index();
+        self.visible_text_with_hidden(max_bytes, &hidden_by_index)
+    }
+
+    pub(super) fn visible_text_with_hidden(
+        &self,
+        max_bytes: usize,
+        hidden_by_index: &std::collections::HashMap<u32, bool>,
+    ) -> (String, bool) {
         let mut output = String::new();
         let mut truncated = false;
-        self.collect_visible(self.root, false, &mut output, &mut truncated, max_bytes);
+        self.collect_visible(
+            self.root,
+            false,
+            hidden_by_index,
+            &mut output,
+            &mut truncated,
+            max_bytes,
+        );
         (output, truncated)
     }
 }

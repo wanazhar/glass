@@ -2726,6 +2726,31 @@ impl NativeDocument {
         false
     }
 
+    /// Capture effective hidden state in document order so snapshot walks do
+    /// not repeat an ancestor scan for every descendant element.
+    pub(super) fn effective_hidden_by_index(&self) -> HashMap<u32, bool> {
+        let mut hidden_by_index = HashMap::with_capacity(self.nodes.len());
+        let mut pending = vec![(self.root, false)];
+        while let Some((id, inherited_hidden)) = pending.pop() {
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            let own_hidden = node.attributes().is_some_and(has_hidden_signal)
+                || node
+                    .element_name()
+                    .is_some_and(|_| self.computed_style_for_layout(id).hidden());
+            let hidden = inherited_hidden || own_hidden;
+            hidden_by_index.insert(id.index(), hidden);
+            pending.extend(node.children().iter().rev().map(|child| (*child, hidden)));
+            if let Some(template_content) = node.template_content {
+                // Template descendants are attached for DOM snapshots, but
+                // their parent chain does not inherit from the template host.
+                pending.push((template_content, false));
+            }
+        }
+        hidden_by_index
+    }
+
     pub(super) fn is_inert(&self, id: NativeNodeId) -> bool {
         let mut current = Some(id);
         while let Some(current_id) = current {
@@ -2815,6 +2840,7 @@ impl NativeDocument {
         &self,
         id: NativeNodeId,
         hidden_parent: bool,
+        hidden_by_index: &HashMap<u32, bool>,
         output: &mut String,
         truncated: &mut bool,
         max_bytes: usize,
@@ -2831,7 +2857,14 @@ impl NativeDocument {
             }
             NativeNodeKind::Document | NativeNodeKind::DocumentFragment => {
                 for child in node.children() {
-                    self.collect_visible(*child, hidden_parent, output, truncated, max_bytes);
+                    self.collect_visible(
+                        *child,
+                        hidden_parent,
+                        hidden_by_index,
+                        output,
+                        truncated,
+                        max_bytes,
+                    );
                 }
             }
             NativeNodeKind::Element { name, .. } => {
@@ -2845,9 +2878,16 @@ impl NativeDocument {
                         name.as_str(),
                         "head" | "script" | "style" | "template" | "title"
                     )
-                    || self.is_hidden(id);
+                    || hidden_by_index.get(&id.index()).copied().unwrap_or(false);
                 for child in node.children() {
-                    self.collect_visible(*child, hidden, output, truncated, max_bytes);
+                    self.collect_visible(
+                        *child,
+                        hidden,
+                        hidden_by_index,
+                        output,
+                        truncated,
+                        max_bytes,
+                    );
                 }
             }
             NativeNodeKind::Text(_) => {}

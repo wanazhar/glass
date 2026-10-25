@@ -193,8 +193,9 @@ impl NativeDocument {
             0,
             "script_snapshot_text_projection",
         );
+        let hidden_by_index = self.effective_hidden_by_index();
         let (title, _) = self.title(max_text_bytes);
-        let (visible_text, _) = self.visible_text(max_text_bytes);
+        let (visible_text, _) = self.visible_text_with_hidden(max_text_bytes, &hidden_by_index);
         text_stage.finish(Some(visible_text.len()));
         let script_node_indices = self
             .script_node_ids
@@ -312,7 +313,10 @@ impl NativeDocument {
                     indeterminate: node.state.indeterminate,
                     selected: node.state.selected,
                     disabled: self.is_disabled(node.id()),
-                    hidden: self.is_hidden(node.id()),
+                    hidden: hidden_by_index
+                        .get(&node.id().index())
+                        .copied()
+                        .unwrap_or(false),
                     focused: node.state.focused,
                     focus_anchor_node_index: node.state.focus_anchor_node_index,
                     hovered: node.state.hovered,

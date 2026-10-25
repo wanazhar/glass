@@ -104,6 +104,126 @@ fn layout_snapshot_cache_matches_fresh_layout_and_invalidates_style_and_viewport
 }
 
 #[test]
+fn decoded_image_arrival_invalidates_cached_intrinsic_layout() {
+    let limits = NativeEngineLimits::default();
+    let viewport = Viewport::default();
+    let mut document = NativeDocument::parse("<img id='image' src='/image.png'>", &limits).unwrap();
+    let image_id = document.find_element_by_id("image").unwrap();
+    let before = document.layout(viewport).unwrap();
+    assert_eq!(
+        before.box_for(image_id),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 20,
+        })
+    );
+
+    let source = document.image_current_src(image_id, viewport);
+    document
+        .mark_image_load(image_id.index(), source.clone(), viewport)
+        .unwrap();
+    document
+        .set_image_resource(
+            image_id.index(),
+            source,
+            NativeImage::new(24, 40, vec![0; 24 * 40 * 4]),
+        )
+        .unwrap();
+
+    assert!(document.layout_style_cache.2.lock().unwrap().is_none());
+    let after = document.layout(viewport).unwrap();
+    assert_eq!(
+        after.box_for(image_id),
+        Some(NativeRect {
+            x: 0,
+            y: 0,
+            width: 24,
+            height: 40,
+        })
+    );
+}
+
+#[test]
+fn decoded_video_poster_arrival_invalidates_cached_intrinsic_layout() {
+    let limits = NativeEngineLimits::default();
+    let viewport = Viewport::default();
+    let mut document =
+        NativeDocument::parse("<video id='video' poster='/poster.png'></video>", &limits).unwrap();
+    let video_id = document.find_element_by_id("video").unwrap();
+    let before = document.layout(viewport).unwrap();
+    assert_eq!(
+        before
+            .box_for(video_id)
+            .map(|rect| (rect.width, rect.height)),
+        Some((8, 20))
+    );
+
+    let source = document.selected_video_poster_source(video_id).unwrap();
+    document
+        .mark_video_poster_load(video_id.index(), source.clone())
+        .unwrap();
+    document
+        .set_video_poster_resource(
+            video_id.index(),
+            source,
+            NativeImage::new(24, 40, vec![0; 24 * 40 * 4]),
+        )
+        .unwrap();
+
+    assert!(document.layout_style_cache.2.lock().unwrap().is_none());
+    let after = document.layout(viewport).unwrap();
+    assert_eq!(
+        after
+            .box_for(video_id)
+            .map(|rect| (rect.width, rect.height)),
+        Some((24, 40))
+    );
+
+    // Starting a new load clears the old decoded poster. Its old intrinsic
+    // dimensions must not survive in the same-revision layout cache.
+    document
+        .mark_video_poster_load(video_id.index(), "/poster.png".to_owned())
+        .unwrap();
+    assert!(document.layout_style_cache.2.lock().unwrap().is_none());
+    assert_eq!(
+        document
+            .layout(viewport)
+            .unwrap()
+            .box_for(video_id)
+            .map(|rect| (rect.width, rect.height)),
+        Some((8, 20))
+    );
+
+    document
+        .set_video_poster_resource(
+            video_id.index(),
+            "/poster.png".to_owned(),
+            NativeImage::new(24, 40, vec![0; 24 * 40 * 4]),
+        )
+        .unwrap();
+    assert_eq!(
+        document
+            .layout(viewport)
+            .unwrap()
+            .box_for(video_id)
+            .map(|rect| (rect.width, rect.height)),
+        Some((24, 40))
+    );
+    document.clear_video_poster_loads();
+    assert!(document.layout_style_cache.2.lock().unwrap().is_none());
+    assert_eq!(
+        document
+            .layout(viewport)
+            .unwrap()
+            .box_for(video_id)
+            .map(|rect| (rect.width, rect.height)),
+        Some((8, 20))
+    );
+}
+
+#[test]
 fn script_style_mutation_invalidates_cached_cascade() {
     let limits = NativeEngineLimits::default();
     let mut document = NativeDocument::parse(NESTED_STYLES, &limits).unwrap();

@@ -643,8 +643,11 @@ impl NativeDocument {
         {
             return Ok(false);
         }
-        self.video_poster_resources.remove(&node_index);
+        let removed_resource = self.video_poster_resources.remove(&node_index).is_some();
         self.video_poster_loads.insert(node_index, source);
+        if removed_resource {
+            self.invalidate_layout_styles();
+        }
         Ok(true)
     }
 
@@ -665,8 +668,12 @@ impl NativeDocument {
     }
 
     pub(crate) fn clear_video_poster_loads(&mut self) {
+        let had_resources = !self.video_poster_resources.is_empty();
         self.video_poster_resources.clear();
         self.video_poster_loads.clear();
+        if had_resources {
+            self.invalidate_layout_styles();
+        }
     }
 
     pub(crate) fn video_poster_resource_for_node(
@@ -733,6 +740,7 @@ impl NativeDocument {
         }
         self.video_poster_resources
             .insert(node_index, NativeImageResource { source, image });
+        self.invalidate_layout_styles();
         Ok(())
     }
 
@@ -862,6 +870,7 @@ impl NativeDocument {
         }
         self.image_resources
             .insert(node_index, NativeImageResource { source, image });
+        self.invalidate_layout_styles();
         Ok(())
     }
 

@@ -591,10 +591,7 @@ pub fn stop(
             return Err("daemon status socket does not match the requested socket".into());
         }
         if process_is_alive(status.pid) {
-            let result = unsafe { libc::kill(status.pid as libc::pid_t, libc::SIGTERM) };
-            if result != 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
+            terminate_daemon_process(status.pid)?;
         }
         let _ = std::fs::remove_file(status_path);
         let _ = remove_socket_if_safe(socket);
@@ -909,6 +906,10 @@ fn validate_status(path: &Path, status: &DaemonStatus) -> Result<(), String> {
     if status.status_path != path {
         return Err("daemon status path does not match the requested status".into());
     }
+    #[cfg(unix)]
+    if status.pid == 0 || i32::try_from(status.pid).is_err() {
+        return Err("daemon status contains an invalid process ID".into());
+    }
     if status.client_sessions > MAX_DAEMON_CLIENT_SESSIONS {
         return Err("daemon status reports too many client sessions".into());
     }
@@ -971,6 +972,50 @@ fn process_is_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
+#[cfg(target_os = "linux")]
+fn terminate_daemon_process(pid: u32) -> Result<(), std::io::Error> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+    if pidfd < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ENOSYS) {
+            return Err(error);
+        }
+        let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        return if result == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        };
+    }
+
+    let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd as std::os::fd::RawFd) };
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd.as_raw_fd(),
+            libc::SIGTERM,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn terminate_daemon_process(pid: u32) -> Result<(), std::io::Error> {
+    if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 #[cfg(not(unix))]
 fn process_is_alive(_pid: u32) -> bool {
     false
@@ -979,6 +1024,47 @@ fn process_is_alive(_pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_status_rejects_process_ids_that_could_become_negative() {
+        let path = Path::new("/tmp/glass-daemon.json");
+        let status = DaemonStatus {
+            protocol_version: DAEMON_PROTOCOL_VERSION,
+            schema_version: RESULT_SCHEMA_VERSION,
+            state: "running".into(),
+            pid: u32::MAX,
+            socket: PathBuf::from("/tmp/glass-daemon.sock"),
+            status_path: path.to_path_buf(),
+            log_path: None,
+            recovery_path: None,
+            started_at: "2026-07-28T00:00:00Z".into(),
+            transport: "unix-mcp-isolated-sessions".into(),
+            client_sessions: 0,
+            mutation_lease_owner: None,
+            provenance: ExperienceProvenance::default(),
+            resource_refs: Vec::new(),
+            active_runs: Vec::new(),
+        };
+
+        assert!(
+            validate_status(path, &status)
+                .unwrap_err()
+                .contains("process ID")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn daemon_termination_signals_the_opened_process_identity() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("start an owned test child");
+        terminate_daemon_process(child.id()).expect("signal child through its pidfd");
+        let status = child.wait().expect("reap child");
+        assert!(!status.success());
+    }
 
     #[test]
     fn daemon_status_serialization_is_versioned_and_local_only() {

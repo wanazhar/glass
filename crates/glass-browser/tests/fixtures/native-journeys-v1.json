@@ -58,7 +58,7 @@
       "timeoutMs": 10000,
       "steps": [
         {"id":"repository-fixture","action":"navigate","url":"fixture://journey-responsive.test/"},
-        {"id":"choose-large-screen-library-link","action":"click","target":"css=td.react-directory-row-name-cell-large-screen a[href='fixture://journey-responsive.test/library']","targetSource":"fresh-observation"},
+        {"id":"choose-large-screen-library-link","action":"clickObserved","role":"link","nameContains":"library","targetSource":"fresh-observation"},
         {"id":"assert-library-page","action":"assert","expression":"document.title === 'Rust library' && document.querySelector('#core').textContent.includes('Core library')"}
       ]
     },
@@ -98,7 +98,7 @@
         {"id":"repository","action":"navigate","url":"https://github.com/rust-lang/rust"},
         {"id":"observe-repository","action":"observe"},
         {"id":"assert-repository-content","action":"assert","expression":"document.title.toLowerCase().includes('rust') && document.body.innerText.includes('rust-lang/rust')"},
-        {"id":"open-observed-library","action":"click","target":"css=td.react-directory-row-name-cell-large-screen a[href='/rust-lang/rust/tree/main/library']","targetSource":"fresh-observation"},
+        {"id":"open-observed-library","action":"clickObserved","role":"link","nameContains":"library","targetSource":"fresh-observation"},
         {"id":"observe-library","action":"observe"},
         {"id":"assert-library-content","action":"assert","expression":"location.pathname === '/rust-lang/rust/tree/master/library' && document.body.innerText.toLowerCase().includes('core')"}
       ]

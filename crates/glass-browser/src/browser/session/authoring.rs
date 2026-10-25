@@ -1058,6 +1058,7 @@ fn batch_step_is_mutating(step: &BatchStep) -> bool {
         step,
         BatchStep::Navigate { .. }
             | BatchStep::Click { .. }
+            | BatchStep::ClickObserved { .. }
             | BatchStep::Type { .. }
             | BatchStep::Check { .. }
             | BatchStep::Uncheck { .. }

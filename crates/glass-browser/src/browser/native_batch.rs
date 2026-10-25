@@ -204,6 +204,25 @@ async fn execute_step(
             )
             .await
         }
+        BatchStep::ClickObserved {
+            role,
+            name_contains,
+        } => {
+            let (revision, target) = session
+                .native_resolve_observed_target(role, name_contains)
+                .await?;
+            if expected_revision.is_some_and(|expected| expected != revision) {
+                return Err("batch revision changed before observed target selection".into());
+            }
+            execute_action(
+                session,
+                SemanticAction::Click {
+                    target: target.reference,
+                },
+                Some(revision),
+            )
+            .await
+        }
         BatchStep::Type { text, target } => {
             let target = target.clone().ok_or("native batch type requires target")?;
             execute_action(
@@ -388,6 +407,7 @@ fn action_name(step: &BatchStep) -> String {
     match step {
         BatchStep::Navigate { .. } => "navigate",
         BatchStep::Click { .. } => "click",
+        BatchStep::ClickObserved { .. } => "clickObserved",
         BatchStep::Type { .. } => "type",
         BatchStep::Check { .. } => "check",
         BatchStep::Uncheck { .. } => "uncheck",

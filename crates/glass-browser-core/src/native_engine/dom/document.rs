@@ -1,6 +1,7 @@
 //! Native document state, mutations, traversal, and semantic projections.
 
 use super::*;
+use sha2::{Digest, Sha256};
 
 impl NativeDocument {
     pub(crate) fn has_inline_event_handler(&self, event_type: &str) -> bool {
@@ -2212,6 +2213,10 @@ impl NativeDocument {
             .or_else(|| (role == "file").then_some(node.state.files.is_empty()));
         let checked = matches!(role.as_str(), "checkbox" | "radio").then(|| node.state.checked);
         let selected = (role == "option").then_some(node.state.selected);
+        let navigation_target_fingerprint = (role == "link")
+            .then(|| node.attribute("href"))
+            .flatten()
+            .map(|href| format!("{:x}", Sha256::digest(href.as_bytes())));
         Some(NativeSemanticNode {
             node_id: id,
             reference: self.node_reference(id)?,
@@ -2228,6 +2233,7 @@ impl NativeDocument {
             read_only: self.is_read_only(id),
             required: self.is_required(id),
             focused: node.state.focused,
+            navigation_target_fingerprint,
         })
     }
 

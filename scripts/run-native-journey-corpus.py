@@ -23,7 +23,17 @@ DEFAULT_CORPUS = ROOT / "crates/glass-browser/tests/fixtures/native-journeys-v1.
 
 def classify(message: str, timed_out: bool = False) -> str:
     text = message.lower()
-    if "native action target was not found" in text or "native action target matched" in text:
+    if any(
+        marker in text
+        for marker in (
+            "native action target was not found",
+            "native action target matched",
+            "observed target not found",
+            "observed target is ambiguous",
+            "no visible target matches",
+            "multiple visible targets match",
+        )
+    ):
         return "product_bug"
     if "content-process document snapshot" in text and "exceeds limit" in text:
         return "resource_limit"
@@ -45,6 +55,14 @@ def error_kind(message: str, timed_out: bool = False) -> str:
     if "native action target was not found" in text:
         return "native_target_not_found"
     if "native action target matched" in text:
+        return "native_target_ambiguous"
+    if "observed target not found" in text:
+        return "native_target_not_found"
+    if "observed target is ambiguous" in text:
+        return "native_target_ambiguous"
+    if "no visible target matches" in text:
+        return "native_target_not_found"
+    if "multiple visible targets match" in text:
         return "native_target_ambiguous"
     if "content-process document snapshot" in text and "exceeds limit" in text:
         return "native_snapshot_budget_exceeded"
@@ -69,6 +87,16 @@ def error_kind(message: str, timed_out: bool = False) -> str:
     return "journey_step_error"
 
 
+def observed_click_step(step: dict) -> dict:
+    if step.get("targetSource") != "fresh-observation":
+        raise ValueError("clickObserved requires targetSource=fresh-observation")
+    role = step.get("role")
+    name_contains = step.get("nameContains")
+    if not isinstance(role, str) or not role or not isinstance(name_contains, str) or not name_contains:
+        raise ValueError("clickObserved requires nonempty role and nameContains")
+    return {"action": "clickObserved", "role": role, "nameContains": name_contains}
+
+
 def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
     steps = []
     for step in journey["steps"]:
@@ -79,6 +107,11 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
             steps.append({"action": "observe"})
         elif action == "click":
             steps.append({"action": "click", "target": step["target"]})
+        elif action == "clickObserved":
+            try:
+                steps.append(observed_click_step(step))
+            except ValueError as error:
+                return {"id": journey["id"], "classification": "product_bug", "message": str(error)}
         elif action == "assert":
             condition = step["condition"] if "condition" in step else f"js={step['expression']}"
             steps.append({"action": "wait", "condition": condition, "timeout_ms": step.get("timeoutMs", 5000)})

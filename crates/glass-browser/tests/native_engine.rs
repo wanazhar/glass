@@ -15,10 +15,11 @@ use glass_browser::browser::native_engine::{
     NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, NativeWorkerFailureKind, Viewport,
 };
 use glass_browser::browser::session::{
-    Cookie, ExtractionField, ExtractionKind, IntentConfidence, IntentConstraints,
-    SemanticIntentAction, SemanticIntentExecutionRequest, SemanticIntentRequest,
-    SemanticObservationLevel, SemanticResolutionPolicy, StructuredExtractionRequest,
-    VerificationPredicate, VisualCaptureOptions, VisualClip, VisualFormat, WaitCondition,
+    BatchMode, BatchStep, BatchStepOutcome, Cookie, ExtractionField, ExtractionKind,
+    IntentConfidence, IntentConstraints, SemanticIntentAction, SemanticIntentExecutionRequest,
+    SemanticIntentRequest, SemanticObservationLevel, SemanticResolutionPolicy,
+    StructuredExtractionRequest, VerificationPredicate, VisualCaptureOptions, VisualClip,
+    VisualFormat, WaitCondition,
 };
 use glass_browser::browser::{NativeDialogController, NativeDialogResolution, NativePendingDialog};
 use glass_browser::browser_backend::{
@@ -279,8 +280,16 @@ async fn versioned_native_disclosure_search_form_and_history_journey() {
     engine.close_async().await.unwrap();
 }
 
-#[tokio::test]
-async fn versioned_native_journey_selects_observed_responsive_duplicate_by_region() {
+#[test]
+fn versioned_native_journey_selects_observed_responsive_duplicate_by_region() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            versioned_native_journey_selects_observed_responsive_duplicate_by_region_inner(),
+        );
+    });
+}
+
+async fn versioned_native_journey_selects_observed_responsive_duplicate_by_region_inner() {
     let corpus: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/native-journeys-v1.json"))
             .expect("native journey corpus must be valid JSON");
@@ -291,49 +300,157 @@ async fn versioned_native_journey_selects_observed_responsive_duplicate_by_regio
         .find(|journey| journey["id"] == "local-responsive-duplicate-link")
         .expect("responsive duplicate link journey is required");
     assert_eq!(journey["backend"], "native");
+    let click_step = &journey["steps"][1];
+    assert_eq!(click_step["action"], "clickObserved");
+    assert_eq!(click_step["targetSource"], "fresh-observation");
 
-    let home = "<title>Rust repository</title><main><table><tbody><tr><td class='react-directory-row-name-cell-small-screen'><a href='fixture://journey-responsive.test/library'>library</a></td><td class='react-directory-row-name-cell-large-screen'><a href='fixture://journey-responsive.test/library'>library</a></td></tr></tbody></table></main>";
+    let leading_controls = (0..40)
+        .map(|index| format!("<button>action {index}</button>"))
+        .collect::<String>();
+    let home = format!(
+        "<title>Rust repository</title><style>.react-directory-row-name-cell-small-screen{{display:none}}</style><main>{leading_controls}<table><tbody><tr><td class='react-directory-row-name-cell-small-screen'><a href='fixture://journey-responsive.test/library'>library</a></td><td class='react-directory-row-name-cell-large-screen'><a href='fixture://journey-responsive.test/library'>library</a></td></tr></tbody></table></main>"
+    );
     let library = "<title>Rust library</title><main id='core'>Core library source</main>";
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://journey-responsive.test/")
-        .with_fixture("fixture://journey-responsive.test/", home)
+        .with_fixture("fixture://journey-responsive.test/", &home)
         .unwrap()
         .with_fixture("fixture://journey-responsive.test/library", library)
         .unwrap();
-    let mut engine = NativeEngine::new(config).unwrap();
-    engine.initialize_async().await.unwrap();
-
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
     assert_eq!(
-        engine
-            .evaluate_async("document.querySelectorAll(\"a[href='fixture://journey-responsive.test/library']\").length")
+        session
+            .script("document.querySelectorAll(\"a[href='fixture://journey-responsive.test/library']\").length")
             .await
-            .unwrap(),
+            .unwrap()
+            .value,
         serde_json::json!(2),
     );
-    let observed_revision = engine.revision();
-    let selected = engine
-        .resolve_target(
-            "css=td.react-directory-row-name-cell-large-screen a[href='fixture://journey-responsive.test/library']",
-        )
-        .unwrap();
-    engine
-        .action_async(NativeAction::Click {
-            target: format!("ref=r{observed_revision}:n{}", selected.index()),
+    let observation = session.observe().await.unwrap();
+    let matching_targets = observation
+        .regions
+        .iter()
+        .flat_map(|region| region.targets.iter())
+        .filter(|target| {
+            target.role == click_step["role"].as_str().unwrap_or_default()
+                && target.name.to_lowercase().contains(
+                    &click_step["nameContains"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_lowercase(),
+                )
         })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matching_targets.len(),
+        0,
+        "the library link is beyond the bounded response target window"
+    );
+    assert!(observation.limits.omitted_targets > 0);
+    let outcome = session
+        .native_run_batch(
+            &[BatchStep::ClickObserved {
+                role: click_step["role"].as_str().unwrap().to_owned(),
+                name_contains: click_step["nameContains"].as_str().unwrap().to_owned(),
+            }],
+            false,
+            BatchMode::Unguarded,
+            None,
+        )
         .await
         .unwrap();
+    assert!(outcome.success);
+    assert_eq!(outcome.completed, 1);
     assert_eq!(
-        engine.snapshot().unwrap().url,
+        session.evidence(EvidenceLevel::Compact).await.unwrap().url,
         "fixture://journey-responsive.test/library"
     );
     assert_eq!(
-        engine
-            .evaluate_async("document.title === 'Rust library' && document.querySelector('#core').textContent.includes('Core library')")
+        session
+            .script("document.title === 'Rust library' && document.querySelector('#core').textContent.includes('Core library')")
             .await
-            .unwrap(),
+            .unwrap()
+            .value,
         serde_json::json!(true),
     );
-    engine.close_async().await.unwrap();
+    session.close().await.unwrap();
+}
+
+#[test]
+fn observed_duplicate_links_with_the_same_destination_are_one_action_target() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let config = NativeEngineConfig::default()
+                .with_initial_url("fixture://same-link.test/")
+                .with_fixture(
+                    "fixture://same-link.test/",
+                    "<main><a href='/library'>library</a><a href='/library'>library</a></main>",
+                )
+                .unwrap()
+                .with_fixture(
+                    "fixture://same-link.test/library",
+                    "<title>Library</title><main>Library details</main>",
+                )
+                .unwrap();
+            let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+            let outcome = session
+                .native_run_batch(
+                    &[BatchStep::ClickObserved {
+                        role: "link".into(),
+                        name_contains: "library".into(),
+                    }],
+                    false,
+                    BatchMode::Unguarded,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(outcome.success);
+            assert_eq!(
+                session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+                "fixture://same-link.test/library"
+            );
+        });
+    });
+}
+
+#[test]
+fn observed_duplicate_links_with_different_destinations_remain_ambiguous() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let config = NativeEngineConfig::default()
+                .with_initial_url("fixture://different-links.test/")
+                .with_fixture(
+                    "fixture://different-links.test/",
+                    "<main><a href='/library-one'>library</a><a href='/library-two'>library</a></main>",
+                )
+                .unwrap();
+            let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+            let outcome = session
+                .native_run_batch(
+                    &[BatchStep::ClickObserved {
+                        role: "link".into(),
+                        name_contains: "library".into(),
+                    }],
+                    false,
+                    BatchMode::Unguarded,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(!outcome.success);
+            match &outcome.steps[0] {
+                BatchStepOutcome::Error { message, .. } => {
+                    assert!(message.contains("multiple visible targets"));
+                }
+                BatchStepOutcome::Success { .. } => panic!("different links must stay ambiguous"),
+            }
+            assert_eq!(
+                session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+                "fixture://different-links.test/"
+            );
+        });
+    });
 }
 
 #[tokio::test]
@@ -435,9 +552,13 @@ async fn native_host_view_dense_multirelational_links_keep_attributes_and_semant
         ));
     }
     markup.push_str("</main>");
+    let destination =
+        "<title>Selected dense link</title><main id='destination'>Link click completed</main>";
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://dense-links.test/")
         .with_fixture("fixture://dense-links.test/", &markup)
+        .unwrap()
+        .with_fixture("fixture://dense-links.test/wiki/Target_5499", destination)
         .unwrap();
     let mut engine = NativeEngine::new(config).unwrap();
     engine.initialize_async().await.unwrap();
@@ -454,6 +575,24 @@ async fn native_host_view_dense_multirelational_links_keep_attributes_and_semant
             .await
             .unwrap(),
         serde_json::json!([3, true, true, true, true, null, null, true]),
+    );
+    let selected = engine.resolve_target("id=link-5499").unwrap();
+    engine
+        .action_async(NativeAction::Click {
+            target: format!("ref=r{}:n{}", engine.revision(), selected.index()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://dense-links.test/wiki/Target_5499"
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.title === 'Selected dense link' && document.querySelector('#destination').textContent.includes('completed')")
+            .await
+            .unwrap(),
+        serde_json::json!(true),
     );
     engine.close_async().await.unwrap();
 }

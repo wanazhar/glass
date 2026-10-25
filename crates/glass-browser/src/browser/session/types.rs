@@ -68,6 +68,14 @@ pub enum BatchStep {
     },
     #[serde(rename = "click")]
     Click { target: String },
+    /// Resolve exactly one target from a fresh structured observation, then
+    /// click its revision-bound reference.
+    #[serde(rename = "clickObserved")]
+    ClickObserved {
+        role: String,
+        #[serde(rename = "nameContains")]
+        name_contains: String,
+    },
     #[serde(rename = "type")]
     Type {
         text: String,

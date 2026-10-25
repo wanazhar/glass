@@ -280,6 +280,63 @@ async fn versioned_native_disclosure_search_form_and_history_journey() {
 }
 
 #[tokio::test]
+async fn versioned_native_journey_selects_observed_responsive_duplicate_by_region() {
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/native-journeys-v1.json"))
+            .expect("native journey corpus must be valid JSON");
+    let journey = corpus["journeys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|journey| journey["id"] == "local-responsive-duplicate-link")
+        .expect("responsive duplicate link journey is required");
+    assert_eq!(journey["backend"], "native");
+
+    let home = "<title>Rust repository</title><main><table><tbody><tr><td class='react-directory-row-name-cell-small-screen'><a href='fixture://journey-responsive.test/library'>library</a></td><td class='react-directory-row-name-cell-large-screen'><a href='fixture://journey-responsive.test/library'>library</a></td></tr></tbody></table></main>";
+    let library = "<title>Rust library</title><main id='core'>Core library source</main>";
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://journey-responsive.test/")
+        .with_fixture("fixture://journey-responsive.test/", home)
+        .unwrap()
+        .with_fixture("fixture://journey-responsive.test/library", library)
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async("document.querySelectorAll(\"a[href='fixture://journey-responsive.test/library']\").length")
+            .await
+            .unwrap(),
+        serde_json::json!(2),
+    );
+    let observed_revision = engine.revision();
+    let selected = engine
+        .resolve_target(
+            "css=td.react-directory-row-name-cell-large-screen a[href='fixture://journey-responsive.test/library']",
+        )
+        .unwrap();
+    engine
+        .action_async(NativeAction::Click {
+            target: format!("ref=r{observed_revision}:n{}", selected.index()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().unwrap().url,
+        "fixture://journey-responsive.test/library"
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.title === 'Rust library' && document.querySelector('#core').textContent.includes('Core library')")
+            .await
+            .unwrap(),
+        serde_json::json!(true),
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_host_view_handles_large_local_anchor_collections_within_budget() {
     let anchors = (0..2_000)
         .map(|index| format!("<a href='/item/{index}' title='item {index}'>item</a>"))

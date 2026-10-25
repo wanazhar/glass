@@ -8,15 +8,152 @@ use super::{
     BatchStep, SemanticIntentAction, WorkflowDefinition, WorkflowDraft, WorkflowTransactionClass,
     WorkflowValidationError,
 };
+use serde::de::{self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_yaml::value::{Tag, TaggedValue};
 use sha2::{Digest, Sha256};
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub const WORKFLOW_AUTHORING_SCHEMA_VERSION: u32 = 1;
 const MAX_SOURCE_BYTES: usize = 256 * 1024;
+const MAX_YAML_EXPANDED_NODES: usize = 32 * 1024;
+const MAX_YAML_EXPANDED_SCALAR_BYTES: usize = 1024 * 1024;
 const MAX_DIAGNOSTIC_MESSAGE_BYTES: usize = 512;
+
+#[derive(Default)]
+struct YamlExpansionBudget {
+    nodes: Cell<usize>,
+    scalar_bytes: Cell<usize>,
+    exceeded: Cell<bool>,
+}
+
+impl YamlExpansionBudget {
+    fn charge<E: de::Error>(&self, nodes: usize, scalar_bytes: usize) -> Result<(), E> {
+        let next_nodes = self.nodes.get().saturating_add(nodes);
+        let next_bytes = self.scalar_bytes.get().saturating_add(scalar_bytes);
+        self.nodes.set(next_nodes);
+        self.scalar_bytes.set(next_bytes);
+        if next_nodes > MAX_YAML_EXPANDED_NODES || next_bytes > MAX_YAML_EXPANDED_SCALAR_BYTES {
+            self.exceeded.set(true);
+            return Err(E::custom(
+                "workflow YAML expansion exceeds its bounded size",
+            ));
+        }
+        Ok(())
+    }
+}
+
+struct BoundedYamlValue<'a>(&'a YamlExpansionBudget);
+
+impl<'de> DeserializeSeed<'de> for BoundedYamlValue<'_> {
+    type Value = serde_yaml::Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(BoundedYamlVisitor(self.0))
+    }
+}
+
+struct BoundedYamlVisitor<'a>(&'a YamlExpansionBudget);
+
+impl<'de> Visitor<'de> for BoundedYamlVisitor<'_> {
+    type Value = serde_yaml::Value;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a bounded YAML value")
+    }
+
+    fn visit_bool<E: de::Error>(self, value: bool) -> Result<Self::Value, E> {
+        self.0.charge(1, 0)?;
+        Ok(serde_yaml::Value::Bool(value))
+    }
+
+    fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
+        self.0.charge(1, 0)?;
+        Ok(serde_yaml::Value::Number(value.into()))
+    }
+
+    fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
+        self.0.charge(1, 0)?;
+        Ok(serde_yaml::Value::Number(value.into()))
+    }
+
+    fn visit_f64<E: de::Error>(self, value: f64) -> Result<Self::Value, E> {
+        self.0.charge(1, 0)?;
+        Ok(serde_yaml::Value::Number(value.into()))
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        self.0.charge(1, value.len())?;
+        Ok(serde_yaml::Value::String(value.to_owned()))
+    }
+
+    fn visit_string<E: de::Error>(self, value: String) -> Result<Self::Value, E> {
+        self.0.charge(1, value.len())?;
+        Ok(serde_yaml::Value::String(value))
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        self.0.charge(1, 0)?;
+        Ok(serde_yaml::Value::Null)
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        self.visit_unit()
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        BoundedYamlValue(self.0).deserialize(deserializer)
+    }
+
+    fn visit_newtype_struct<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        BoundedYamlValue(self.0).deserialize(deserializer)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
+        self.0.charge(1, 0)?;
+        let mut values = Vec::new();
+        while let Some(value) = sequence.next_element_seed(BoundedYamlValue(self.0))? {
+            values.push(value);
+        }
+        Ok(serde_yaml::Value::Sequence(values))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        self.0.charge(1, 0)?;
+        let mut values = serde_yaml::Mapping::new();
+        while let Some(key) = map.next_key_seed(BoundedYamlValue(self.0))? {
+            if values.contains_key(&key) {
+                return Err(de::Error::custom("duplicate YAML mapping key"));
+            }
+            let value = map.next_value_seed(BoundedYamlValue(self.0))?;
+            values.insert(key, value);
+        }
+        Ok(serde_yaml::Value::Mapping(values))
+    }
+
+    fn visit_enum<A: EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
+        self.0.charge(1, 0)?;
+        let (tag, value) = data.variant::<String>()?;
+        self.0.charge(0, tag.len())?;
+        let value = value.newtype_variant_seed(BoundedYamlValue(self.0))?;
+        Ok(serde_yaml::Value::Tagged(Box::new(TaggedValue {
+            tag: Tag::new(tag),
+            value,
+        })))
+    }
+}
 
 /// Source syntax accepted by the authoring compiler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,38 +333,54 @@ pub fn compile_workflow(
         ));
     }
     let value = match format {
-        WorkflowAuthoringFormat::Yaml => serde_yaml::from_str::<serde_yaml::Value>(source)
-            .map_err(|error| {
-                let location = error.location();
-                compile_error(
-                    format,
-                    diagnostic(
-                        "authoring.parse",
-                        WorkflowDiagnosticSeverity::Error,
-                        "invalid YAML workflow source",
-                        "$",
-                        location.as_ref().map(|location| location.line()),
-                        location.as_ref().map(|location| location.column()),
-                        "Fix the YAML syntax at the reported location.",
-                    ),
-                )
-            })
-            .and_then(|value| {
-                serde_json::to_value(value).map_err(|_| {
+        WorkflowAuthoringFormat::Yaml => {
+            let budget = YamlExpansionBudget::default();
+            let value = BoundedYamlValue(&budget)
+                .deserialize(serde_yaml::Deserializer::from_str(source))
+                .map_err(|error| {
+                    if budget.exceeded.get() {
+                        return compile_error(
+                            format,
+                            diagnostic(
+                                "authoring.expansion_limit",
+                                WorkflowDiagnosticSeverity::Error,
+                                "expanded YAML exceeds the workflow authoring resource limit",
+                                "$",
+                                None,
+                                None,
+                                "Reduce YAML aliases or repeated values, then compile again.",
+                            ),
+                        );
+                    }
+                    let location = error.location();
                     compile_error(
                         format,
                         diagnostic(
                             "authoring.parse",
                             WorkflowDiagnosticSeverity::Error,
-                            "YAML value could not be represented as JSON",
+                            "invalid YAML workflow source",
                             "$",
-                            None,
-                            None,
-                            "Use JSON-compatible scalar, array, and object values.",
+                            location.as_ref().map(|location| location.line()),
+                            location.as_ref().map(|location| location.column()),
+                            "Fix the YAML syntax at the reported location.",
                         ),
                     )
-                })
-            })?,
+                })?;
+            serde_json::to_value(value).map_err(|_| {
+                compile_error(
+                    format,
+                    diagnostic(
+                        "authoring.parse",
+                        WorkflowDiagnosticSeverity::Error,
+                        "YAML value could not be represented as JSON",
+                        "$",
+                        None,
+                        None,
+                        "Use JSON-compatible scalar, array, and object values.",
+                    ),
+                )
+            })?
+        }
         WorkflowAuthoringFormat::Json => {
             serde_json::from_str::<Value>(source).map_err(|error| {
                 compile_error(
@@ -1038,6 +1191,31 @@ outputs: {}
         let yaml = compile_workflow_yaml(YAML).unwrap();
         let json = compile_workflow_json(&yaml.canonical_json).unwrap();
         assert_eq!(yaml.canonical_json, json.canonical_json);
+    }
+
+    #[test]
+    fn yaml_alias_expansion_is_bounded_before_schema_validation() {
+        let payload = "x".repeat(120 * 1024);
+        let aliases = std::iter::repeat_n("*payload", 12)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source = format!("payload: &payload '{payload}'\ncopies: [{aliases}]\n");
+        assert!(source.len() < MAX_SOURCE_BYTES);
+
+        let error = compile_workflow_yaml(&source).unwrap_err();
+        assert_eq!(error.diagnostics[0].code, "authoring.expansion_limit");
+    }
+
+    #[test]
+    fn yaml_aliases_below_the_expansion_limit_keep_their_value() {
+        let source = YAML
+            .replace(
+                "url: https://example.test/docs",
+                "url: &docs https://example.test/docs",
+            )
+            .replace("urlEquals: https://example.test/docs", "urlEquals: *docs");
+        let compiled = compile_workflow_yaml(&source).unwrap();
+        assert_eq!(compiled.definition.name, "docs-search");
     }
 
     #[test]

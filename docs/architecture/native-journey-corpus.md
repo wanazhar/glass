@@ -42,9 +42,15 @@ execution reached 60.8 s. This is a product deadline failure, not a Wikipedia
 compatibility pass; repeated style/layout and page-script work remain open.
 After this public run, a bounded per-layout text-width cache was added for exact
 short LTR text and default shaping options. A synthetic 64-span fixture measured
-127 cache hits, 769 direct text-width calls, and a 44.3 ms layout. This is
-workload-specific local evidence, not a controlled speedup or a public-site pass;
-no Wikipedia rerun has been made with the cache. A previous run failed at the
+127 cache hits, 769 direct text-width calls, and a 44.3 ms layout. A later
+bounded Wikipedia run with the cache enabled exceeded the runner's 120-second
+outer deadline and returned inconclusive with no step result, so it is not a
+site pass. Its private trace recorded 7,397 cache hits, 54,926 direct text-width
+measurements taking 12.995 s, 12 host-view installs (maximum 6.60 s), and nine
+layout builds totaling 15.36 s. Page-script execution totaled 45.64 s, with a
+33.72-second maximum single script; computed style took 30.11 s. A prior run
+measured 20.46 s for text widths, but the public DOM varies between runs, so
+these are not a controlled speedup comparison. A previous run failed at the
 15-second host-view deadline and an earlier run raised a QuickJS null exception
 during element construction; those are separate outcomes. A local dense fixture with 5,500 anchors and 1,000 styled spans
 passes, but does not reproduce the public page's full style and script

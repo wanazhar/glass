@@ -40,7 +40,9 @@ choose a different private location. A failed journey returns a nonzero exit
 code while preserving the report.
 
 The public entries cover a deep MDN reference, a Wikipedia article that
-follows an observed link to a second article, and a GitHub repository journey
+asserts the first article title, follows the freshly observed
+“Computer science” link by accessible role and name, then checks the second
+article URL and title, and a GitHub repository journey
 that follows an observed link into the Rust repository's `library` directory.
 The GitHub journey checks repository identity, follows the observed `library`
 link into the Rust repository, then asserts the subpage URL and directory

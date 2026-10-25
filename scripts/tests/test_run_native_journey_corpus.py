@@ -11,6 +11,32 @@ SPEC.loader.exec_module(corpus)
 
 
 class JourneyFailureClassificationTests(unittest.TestCase):
+    def test_wikipedia_journey_uses_observed_link_and_asserts_both_articles(self):
+        import json
+
+        manifest = corpus.DEFAULT_CORPUS
+        journeys = json.loads(manifest.read_text(encoding="utf-8"))["journeys"]
+        journey = next(
+            item
+            for item in journeys
+            if item["id"] == "public-wikipedia-article-and-observed-subpage"
+        )
+        steps = journey["steps"]
+        self.assertEqual(steps[0]["url"], "https://en.wikipedia.org/wiki/Computer")
+        conditions = [
+            step.get("condition") for step in steps if step["action"] == "assert"
+        ]
+        self.assertIn("title-contains=Computer", conditions)
+        click = next(step for step in steps if step["id"] == "choose-observed-subpage")
+        self.assertEqual(
+            corpus.observed_click_step(click),
+            {"action": "clickObserved", "role": "link", "nameContains": "computer science"},
+        )
+        self.assertIn("title-contains=Computer science", conditions)
+        self.assertIn(
+            "url-prefix=https://en.wikipedia.org/wiki/Computer_science", conditions
+        )
+
     def test_observed_click_compiles_to_fresh_semantic_selector(self):
         self.assertEqual(
             corpus.observed_click_step(

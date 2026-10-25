@@ -100,7 +100,7 @@ impl Jobs {
         let exception = approvals.permits_exact(command);
         if !exception && let Some(reason) = crate::sandbox::refusal() {
             return Err(format!(
-                "sandbox = strict is not available ({reason}); refusing jobs unsandboxed"
+                "the active sandbox or egress policy is unavailable ({reason}); refusing to run jobs without it"
             ));
         }
         std::fs::create_dir_all(dir).map_err(err)?;

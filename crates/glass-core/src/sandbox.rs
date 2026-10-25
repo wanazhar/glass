@@ -235,6 +235,7 @@ static STATE: OnceLock<State> = OnceLock::new();
 /// *and* the sandbox is on. Holding the box keeps the listener thread alive;
 /// dropping it (process exit) closes the port.
 static EGRESS: OnceLock<Option<crate::egress::Proxy>> = OnceLock::new();
+static INIT_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
 
 impl State {
     fn off() -> Self {
@@ -250,6 +251,14 @@ impl State {
             scrub_env: false,
         }
     }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn own_test_ruleset_fd(fd: std::os::fd::RawFd) -> std::os::fd::OwnedFd {
+    use std::os::fd::FromRawFd;
+
+    // SAFETY: successful Landlock builders return one newly owned ruleset fd.
+    unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) }
 }
 
 /// Paths a confined command may write beneath.
@@ -309,7 +318,16 @@ fn readable_paths(workspace: &std::path::Path) -> Vec<PathBuf> {
 
 /// Initialise the process-wide sandbox state. Returns warnings to print.
 pub fn init(cfg: &config::Config) -> Vec<String> {
+    let _guard = INIT_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut warnings = Vec::new();
+    if STATE.get().is_some() || EGRESS.get().is_some() {
+        warnings
+            .push("sandbox is already initialized; the first process policy remains active".into());
+        return warnings;
+    }
     let effective = match cfg.permission_profile {
         PermissionProfile::ReadOnly => Policy::Strict,
         PermissionProfile::WorkspaceEdit if cfg.sandbox == Policy::Off => Policy::Workspace,
@@ -318,12 +336,14 @@ pub fn init(cfg: &config::Config) -> Vec<String> {
     // Egress policy proxy only exists under a sandbox; without one the
     // child can reach the network anyway and a policy proxy would be
     // decoration, not enforcement.
+    let egress_proxy_started;
     if cfg.sandbox_egress == "policy" {
         if effective == Policy::Off {
             warnings.push(
-                "sandbox_egress = policy needs sandbox = workspace or strict to enforce anything; direct egress remains".into(),
+                "sandbox_egress = policy needs sandbox = workspace or strict; commands are refused until confinement is enabled".into(),
             );
             let _ = EGRESS.set(None);
+            egress_proxy_started = false;
         } else {
             let policy = HostPolicy::new(
                 cfg.egress_allow.clone(),
@@ -340,19 +360,22 @@ pub fn init(cfg: &config::Config) -> Vec<String> {
                         proxy.policy_shape().0
                     ));
                     let _ = EGRESS.set(Some(proxy));
+                    egress_proxy_started = true;
                 }
                 Err(e) => {
                     // Fail closed: no proxy means no policy enforcement, so
                     // refusing commands is safer than pretending.
                     warnings.push(format!(
-                        "egress proxy failed to start ({e}); commands run without egress policy"
+                        "egress proxy failed to start ({e}); commands are refused because the requested egress policy is unavailable"
                     ));
                     let _ = EGRESS.set(None);
+                    egress_proxy_started = false;
                 }
             }
         }
     } else {
         let _ = EGRESS.set(None);
+        egress_proxy_started = false;
     }
     let scrub = match cfg.sandbox_env.as_str() {
         "inherit" => false,
@@ -374,9 +397,52 @@ pub fn init(cfg: &config::Config) -> Vec<String> {
         state
     };
     let mut state = state;
+    if let Some(reason) = egress_policy_refusal(
+        cfg.sandbox_egress == "policy",
+        effective,
+        confinement_active(&state),
+        egress_proxy_started,
+    ) {
+        state.refusal.get_or_insert_with(|| reason.into());
+    }
     state.extension_strict = cfg.extension_isolation == "strict";
     let _ = STATE.set(state);
     warnings
+}
+
+fn egress_policy_refusal(
+    requested: bool,
+    effective_sandbox: Policy,
+    confinement_active: bool,
+    proxy_started: bool,
+) -> Option<&'static str> {
+    if !requested {
+        None
+    } else if effective_sandbox == Policy::Off {
+        Some("sandbox egress policy requires workspace or strict confinement")
+    } else if !confinement_active {
+        Some("the requested egress policy requires active sandbox confinement")
+    } else if !proxy_started {
+        Some("the requested egress policy proxy could not start")
+    } else {
+        None
+    }
+}
+
+fn confinement_active(state: &State) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        state.jail.is_some()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        state.profile.is_some()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = state;
+        false
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1548,6 +1614,7 @@ mod landlock {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::os::fd::AsRawFd;
         use std::process::Command;
 
         #[test]
@@ -1579,15 +1646,17 @@ mod landlock {
             let ws = dir.join("ws");
             std::fs::create_dir_all(&ws).unwrap();
             std::fs::write(dir.join("secret.txt"), "SECRET-READABLE").unwrap();
-            let fd = build(
-                &ws,
-                std::slice::from_ref(&ws),
-                std::slice::from_ref(&ws),
-                false,
-                None,
-            )
-            .expect("ruleset")
-            .0;
+            let fd = super::super::own_test_ruleset_fd(
+                build(
+                    &ws,
+                    std::slice::from_ref(&ws),
+                    std::slice::from_ref(&ws),
+                    false,
+                    None,
+                )
+                .expect("ruleset")
+                .0,
+            );
             let mut cmd = Command::new("/bin/sh");
             cmd.arg("-c").arg(format!(
                 "echo ok > '{ws}/in.txt'; echo no > '{dir}/out.txt' 2>/dev/null || echo WRITE-DENIED; cat '{dir}/secret.txt'",
@@ -1596,7 +1665,7 @@ mod landlock {
             ));
             unsafe {
                 use std::os::unix::process::CommandExt;
-                cmd.pre_exec(move || enter(fd));
+                cmd.pre_exec(move || enter(fd.as_raw_fd()));
             }
             let out = cmd.output().unwrap();
             let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1635,9 +1704,11 @@ mod landlock {
                 PathBuf::from("/etc"),
             ]
             .to_vec();
-            let fd = build(&ws, std::slice::from_ref(&ws), &readable, true, None)
-                .expect("ruleset")
-                .0;
+            let fd = super::super::own_test_ruleset_fd(
+                build(&ws, std::slice::from_ref(&ws), &readable, true, None)
+                    .expect("ruleset")
+                    .0,
+            );
             let mut cmd = Command::new("/bin/sh");
             cmd.arg("-c").arg(format!(
                 "cat '{ws}/inside.txt'; cat '{dir}/secret.txt' 2>/dev/null || echo READ-DENIED",
@@ -1646,7 +1717,7 @@ mod landlock {
             ));
             unsafe {
                 use std::os::unix::process::CommandExt;
-                cmd.pre_exec(move || enter(fd));
+                cmd.pre_exec(move || enter(fd.as_raw_fd()));
             }
             let out = cmd.output().unwrap();
             let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1665,8 +1736,9 @@ mod landlock {
             let ws = dir.join("ws");
             std::fs::create_dir_all(&ws).unwrap();
             let ghost = dir.join("does-not-exist");
-            build(&ws, &[ws.clone(), ghost], &[], false, None)
+            let fd = build(&ws, &[ws.clone(), ghost], &[], false, None)
                 .expect("a missing dir must be skipped");
+            drop(super::super::own_test_ruleset_fd(fd.0));
             let _ = std::fs::remove_dir_all(&dir);
         }
 
@@ -1689,6 +1761,7 @@ mod landlock {
                 Some(&[allowed.local_addr().unwrap().port()]),
             )
             .expect("ruleset");
+            let fd = super::super::own_test_ruleset_fd(fd);
             assert!(notes.is_empty(), "{notes:?}");
             let script = format!(
                 "import socket\n\
@@ -1705,7 +1778,7 @@ mod landlock {
             cmd.arg("-c").arg(script);
             unsafe {
                 use std::os::unix::process::CommandExt;
-                cmd.pre_exec(move || enter(fd));
+                cmd.pre_exec(move || enter(fd.as_raw_fd()));
             }
             let out = cmd.output().unwrap();
             let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1765,6 +1838,32 @@ mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use std::os::fd::AsRawFd;
+
+    #[test]
+    fn requested_egress_policy_refuses_unavailable_confinement_or_proxy() {
+        assert_eq!(
+            egress_policy_refusal(false, Policy::Off, false, false),
+            None
+        );
+        assert_eq!(
+            egress_policy_refusal(true, Policy::Off, false, false),
+            Some("sandbox egress policy requires workspace or strict confinement")
+        );
+        assert_eq!(
+            egress_policy_refusal(true, Policy::Workspace, true, false),
+            Some("the requested egress policy proxy could not start")
+        );
+        assert_eq!(
+            egress_policy_refusal(true, Policy::Workspace, false, true),
+            Some("the requested egress policy requires active sandbox confinement")
+        );
+        assert_eq!(
+            egress_policy_refusal(true, Policy::Workspace, true, true),
+            None
+        );
+    }
 
     #[test]
     fn credential_names_are_recognised_by_shape_and_by_list() {
@@ -1854,6 +1953,7 @@ mod tests {
                 .success()
         );
         let (fd, _) = landlock::build(&workspace, &[], &readable, true, Some(&[])).unwrap();
+        let fd = own_test_ruleset_fd(fd);
         let mut child = Command::new("/bin/sh");
         // Keep the fixture independent of intentionally unreadable user config.
         child
@@ -1865,7 +1965,7 @@ mod tests {
             workspace.display(), inside.display(), outside.display()
         ));
         unsafe {
-            child.pre_exec(move || landlock::enter(fd));
+            child.pre_exec(move || landlock::enter(fd.as_raw_fd()));
         }
         assert!(
             child.status().unwrap().success(),
@@ -1912,6 +2012,7 @@ mod tests {
             &mut notes,
         )
         .unwrap();
+        let fd = own_test_ruleset_fd(fd);
         let mut child = Command::new("/bin/sh");
         child.arg("-c").arg(format!(
             "printf ok > '{}/allowed'; printf no > '{}/denied' 2>/dev/null || true",
@@ -1919,7 +2020,7 @@ mod tests {
             workspace.display()
         ));
         unsafe {
-            child.pre_exec(move || landlock::enter(fd));
+            child.pre_exec(move || landlock::enter(fd.as_raw_fd()));
         }
         assert!(child.status().unwrap().success());
         assert!(pinned_path.join("allowed").exists());
@@ -1977,6 +2078,7 @@ mod tests {
             &mut notes,
         )
         .unwrap();
+        let fd = own_test_ruleset_fd(fd);
         let mut child = Command::new("/bin/sh");
         child.arg("-c").arg(format!(
             "cat '{}/inside.txt'; cat '{}/secret.txt' 2>/dev/null || echo READ-DENIED",
@@ -1984,7 +2086,7 @@ mod tests {
             workspace.display()
         ));
         unsafe {
-            child.pre_exec(move || landlock::enter(fd));
+            child.pre_exec(move || landlock::enter(fd.as_raw_fd()));
         }
         let output = child.output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2143,7 +2245,8 @@ mod tests {
         let (fd, _) =
             landlock::build_extension_pinned(&caps, landlock::abi().unwrap(), writes, reads)
                 .unwrap();
-        let descriptor_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        let fd = own_test_ruleset_fd(fd);
+        let descriptor_flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
         assert!(
             descriptor_flags >= 0 && descriptor_flags & libc::FD_CLOEXEC != 0,
             "kernel ruleset descriptors must not leak through exec"
@@ -2156,7 +2259,7 @@ mod tests {
             outside.display()
         ));
         unsafe {
-            child.pre_exec(move || landlock::enter(fd));
+            child.pre_exec(move || landlock::enter(fd.as_raw_fd()));
         }
         let status = child.status().unwrap();
         assert!(status.success());

@@ -43,6 +43,26 @@ fn trace_runtime_frame(
     elapsed_us: Option<u128>,
     correlation_hash: Option<String>,
 ) {
+    trace_runtime_frame_with_turn(
+        component,
+        phase,
+        class,
+        bytes,
+        elapsed_us,
+        correlation_hash,
+        None,
+    );
+}
+
+fn trace_runtime_frame_with_turn(
+    component: &str,
+    phase: &str,
+    class: &str,
+    bytes: usize,
+    elapsed_us: Option<u128>,
+    correlation_hash: Option<String>,
+    runtime_turn_hash: Option<String>,
+) {
     let Some(path) = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE") else {
         return;
     };
@@ -69,6 +89,9 @@ fn trace_runtime_frame(
     if let Some(correlation_hash) = correlation_hash {
         record["correlation_hash"] = json!(correlation_hash);
     }
+    if let Some(runtime_turn_hash) = runtime_turn_hash {
+        record["runtime_turn_hash"] = json!(runtime_turn_hash);
+    }
     let _ = writeln!(file, "{record}");
 }
 
@@ -80,8 +103,12 @@ fn runtime_correlation_hash(value: &Value) -> Option<String> {
     Some(crate::hashing::sha256(id.to_string().as_bytes()))
 }
 
+fn runtime_turn_hash(turn: &Value) -> String {
+    crate::hashing::sha256(turn.to_string().as_bytes())
+}
+
 fn trace_turn_phase(phase: &str, class: &str, turn: &Value, elapsed_us: Option<u128>) {
-    let hash = crate::hashing::sha256(turn.to_string().as_bytes());
+    let hash = runtime_turn_hash(turn);
     trace_runtime_frame("core_turn", phase, class, 0, elapsed_us, Some(hash));
 }
 
@@ -516,11 +543,32 @@ impl Wire {
         if call.id.len() > 256 {
             return plain("Provider tool call ID exceeds 256 bytes");
         }
+        let host_wait_started = Instant::now();
+        let host_request = json!({"id":request});
+        let host_correlation = runtime_correlation_hash(&host_request);
+        trace_runtime_frame_with_turn(
+            "core_tool",
+            "host_wait_begin",
+            "host_execution",
+            0,
+            None,
+            host_correlation.clone(),
+            Some(runtime_turn_hash(turn)),
+        );
         if !send(
             json!({"jsonrpc":"2.0","id":request,"method":"tool/execute","params":{
             "sessionId":session,"turnId":turn,"callId":call.id,"name":call.name,
             "arguments":serde_json::from_str::<Value>(&call.arguments).unwrap_or(Value::Null)}}),
         ) {
+            trace_runtime_frame_with_turn(
+                "core_tool",
+                "host_wait_send_failed",
+                "host_execution",
+                0,
+                Some(host_wait_started.elapsed().as_micros()),
+                host_correlation,
+                Some(runtime_turn_hash(turn)),
+            );
             return plain("Host tool request exceeds 1 MiB; not dispatched");
         }
         let mut deadline = None;
@@ -680,6 +728,15 @@ impl Wire {
                 Err(_) => {}
             }
         };
+        trace_runtime_frame_with_turn(
+            "core_tool",
+            "host_wait_complete",
+            execution_status,
+            0,
+            Some(host_wait_started.elapsed().as_micros()),
+            host_correlation,
+            Some(runtime_turn_hash(turn)),
+        );
         output.attachments.push(Record::Custom {
             kind: "runtime/tool_metadata".into(),
             data: Some(
@@ -1473,6 +1530,7 @@ fn run(
         .with_image_input(c.cfg.image_input)
         .with_prompt(c.instructions.clone(),None,None)
         .with_stream_factory(factory)
+        .with_runtime_turn(turn)
         .with_limits(c.cfg.max_tokens,c.cfg.reasoning_budget,usize::MAX)
         .with_progress(|progress|{
             let publish=|kind:&str,data:Value|{if durable.is_none_or(|context|context.publish(kind,data.clone(),turn)){event(&sid,turn,kind,data);}};

@@ -1,7 +1,7 @@
 use super::*;
 
 impl NativeDocument {
-    pub(super) fn apply_script_canvas(
+    pub(in crate::native_engine) fn apply_script_canvas(
         &mut self,
         node_index: u32,
         width: u32,
@@ -470,6 +470,26 @@ impl NativeDocument {
                 .insert(name.clone(), namespace_uri);
         } else {
             node.state.attribute_namespaces.remove(&name);
+        }
+        if crate::native_engine::content_process::runtime_diagnostic_trace_enabled() {
+            let category = match name.as_str() {
+                "class" => "class",
+                "style" => "style",
+                "id" => "id",
+                "width" | "height" | "hidden" => "dimension_or_visibility",
+                "src" | "srcset" => "image_or_resource_source",
+                "href" => "link_target",
+                name if name.starts_with("aria-") => "aria",
+                name if name.starts_with("data-") => "data",
+                _ => "other",
+            };
+            crate::native_engine::content_process::ContentLoadStage::begin_with_resource(
+                0,
+                "script_attribute_update",
+                None,
+                Some(category),
+            )
+            .finish(None);
         }
         self.invalidate_layout_styles();
         self.apply_meta_referrer_policy_to_node(id);

@@ -8,9 +8,9 @@
 //! Many types are re-exported through [`super`] at the session level
 //! and through [`crate::browser`] for library consumers.
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
+#[cfg(feature = "visual-compare")]
 use base64::Engine;
+#[cfg(feature = "visual-compare")]
 use base64::engine::general_purpose::STANDARD;
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
@@ -19,21 +19,18 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::sync::Mutex;
 
 use super::PageClassification;
 use crate::browser::cdp::{CdpClient, CdpEventWithParams, RuntimeEvaluateResponse};
-use crate::browser::chrome::ChromeProcess;
 use crate::browser::dom::{
     AxNode, CompactAxNode, CompactInteractiveElement, DomNode, backend_node_reference,
     backend_node_reference_with_context, find_interactive_elements, format_tree,
 };
 use crate::browser::mouse::{MouseEngine, Point};
 use crate::browser::policy::{BrowserPolicy, PolicyError};
-use crate::browser::profile::{ProfileLock, ProfileManager};
+use crate::browser::profile::ProfileManager;
 
 /// Convenience alias for fallible browser operations. All session methods
 /// return this type so callers can propagate errors with `?` without boxing
@@ -2580,297 +2577,6 @@ pub struct TopologyTrace {
     pub event_loss_count: u64,
 }
 
-/// A browser process, one CDP page connection, and its profile state.
-pub struct CdpBrowserSession {
-    pub(crate) cdp: CdpClient,
-    pub(crate) chrome: Option<ChromeProcess>,
-    pub(crate) disposable_profile: Option<DisposableProfileDir>,
-    pub(crate) launched_incognito_context_id: Option<String>,
-    pub(crate) profile: String,
-    pub(crate) _profile_lock: Option<ProfileLock>,
-    pub(crate) interaction_mode: InteractionMode,
-    pub(crate) mouse: MouseEngine,
-    pub(crate) pointer: Mutex<Option<Point>>,
-    pub(crate) page_revision: Arc<AtomicU64>,
-    pub(crate) observation_cache: Mutex<Option<CachedObservation>>,
-    pub(crate) network_wait_leases: Arc<Mutex<NetworkLeaseState>>,
-    pub(crate) diagnostic_leases: Arc<Mutex<DiagnosticLeaseState>>,
-    pub(crate) download_scope: Arc<Mutex<()>>,
-    pub(crate) download_sequence: AtomicU64,
-    pub(crate) topology: Arc<Mutex<TopologyRegistry>>,
-    pub(crate) popup_click_scope: Mutex<()>,
-    pub(crate) upload_root: PathBuf,
-    pub(crate) policy: BrowserPolicy,
-    pub(crate) policy_interception: Option<PolicyInterception>,
-    pub(crate) audit_log: std::sync::Mutex<VecDeque<AuditEntry>>,
-    pub(crate) audit_sequence: AtomicU64,
-    pub(crate) audit_enabled: bool,
-}
-
-pub(crate) struct CachedObservation {
-    pub(crate) revision: u64,
-    pub(crate) context: CompactPageContext,
-}
-
-pub(crate) type PausedPolicyRequests = Arc<Mutex<HashSet<(Option<String>, String)>>>;
-
-pub(crate) struct PolicyInterception {
-    pub(crate) cdp: CdpClient,
-    pub(crate) sessions: Arc<Mutex<HashSet<String>>>,
-    pub(crate) paused: PausedPolicyRequests,
-    pub(crate) last_denial: Arc<Mutex<Option<PolicyError>>>,
-    pub(crate) worker: tokio::task::JoinHandle<()>,
-}
-
-impl PolicyInterception {
-    pub(crate) async fn start(
-        cdp: CdpClient,
-        policy: BrowserPolicy,
-        initial_session: String,
-    ) -> BrowserResult<Self> {
-        let mut events = cdp.subscribe_events_with_params();
-        let sessions = Arc::new(Mutex::new(HashSet::from([initial_session.clone()])));
-        let paused = Arc::new(Mutex::new(HashSet::new()));
-        let last_denial = Arc::new(Mutex::new(None));
-        let worker_cdp = cdp.clone();
-        let worker_sessions = Arc::clone(&sessions);
-        let worker_paused = Arc::clone(&paused);
-        let worker_denial = Arc::clone(&last_denial);
-        let worker = tokio::spawn(async move {
-            loop {
-                let event = match events.recv().await {
-                    Ok(event) => event,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        *worker_denial.lock().await = Some(PolicyError::Denied {
-                            operation: "navigation".to_string(),
-                            reason: format!(
-                                "policy event stream lagged by {count}; paused requests remain blocked"
-                            ),
-                        });
-                        continue;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                };
-                if event.method == "Target.attachedToTarget" {
-                    if let Some(session_id) = event.params["sessionId"].as_str() {
-                        arm_or_resume_policy_target(
-                            &worker_cdp,
-                            session_id,
-                            &worker_sessions,
-                            &worker_denial,
-                        )
-                        .await;
-                    }
-                    continue;
-                }
-                if event.method != "Fetch.requestPaused" {
-                    continue;
-                }
-                let Some(request_id) = event.params["requestId"].as_str() else {
-                    continue;
-                };
-                let request_id = request_id.to_string();
-                let key = (event.session_id.clone(), request_id.clone());
-                worker_paused.lock().await.insert(key.clone());
-                let url = event.params["request"]["url"].as_str().unwrap_or_default();
-                let decision = policy.require_url(url).await;
-                let (method, params) = match decision {
-                    Ok(_) => (
-                        "Fetch.continueRequest",
-                        serde_json::json!({"requestId": &request_id}),
-                    ),
-                    Err(error) => {
-                        *worker_denial.lock().await = Some(error);
-                        (
-                            "Fetch.failRequest",
-                            serde_json::json!({
-                                "requestId": &request_id,
-                                "errorReason": "BlockedByClient"
-                            }),
-                        )
-                    }
-                };
-                let _ = match event.session_id.as_deref() {
-                    Some(session_id) => {
-                        worker_cdp
-                            .send_to_session(session_id, method, Some(params))
-                            .await
-                    }
-                    None => worker_cdp.send(method, Some(params)).await,
-                };
-                worker_paused.lock().await.remove(&key);
-            }
-        });
-        if let Err(error) = enable_fetch_for(&cdp, &initial_session).await {
-            worker.abort();
-            return Err(error);
-        }
-        Ok(Self {
-            cdp,
-            sessions,
-            paused,
-            last_denial,
-            worker,
-        })
-    }
-
-    async fn take_denial(&self) -> Option<PolicyError> {
-        self.last_denial.lock().await.take()
-    }
-
-    async fn shutdown(self) {
-        for (session_id, request_id) in self.paused.lock().await.clone() {
-            let params = Some(serde_json::json!({
-                "requestId": request_id,
-                "errorReason": "Aborted"
-            }));
-            let _ = match session_id.as_deref() {
-                Some(session_id) => {
-                    self.cdp
-                        .send_to_session(session_id, "Fetch.failRequest", params)
-                        .await
-                }
-                None => self.cdp.send("Fetch.failRequest", params).await,
-            };
-        }
-        for session_id in self.sessions.lock().await.clone() {
-            let _ = disable_fetch_for(&self.cdp, Some(&session_id)).await;
-        }
-        self.worker.abort();
-    }
-}
-
-/// A unique user-data directory owned by an incognito Glass session.
-///
-/// Chrome still receives `--incognito`; the fresh directory also prevents it
-/// from inheriting a user's default browser profile or leaving state behind
-/// after a normal Glass shutdown.
-#[derive(Debug)]
-pub(crate) struct DisposableProfileDir {
-    pub(crate) path: PathBuf,
-}
-
-pub(crate) const DISPOSABLE_OWNER_FILE: &str = ".glass-owner.json";
-pub(crate) const DISPOSABLE_CLEANUP_BATCH: usize = 1024;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct DisposableProfileOwner {
-    pub(crate) pid: u32,
-    pub(crate) process_start: u64,
-}
-
-impl DisposableProfileDir {
-    fn create() -> BrowserResult<Self> {
-        static NEXT_DISPOSABLE_PROFILE: AtomicU64 = AtomicU64::new(0);
-
-        let root = std::env::temp_dir().join("glass");
-        std::fs::create_dir_all(&root)?;
-        Self::cleanup_abandoned(&root)?;
-        let pid = std::process::id();
-        let process_start = process_start_identity(pid)
-            .ok_or("could not determine Glass process start identity")?;
-        for _ in 0..32 {
-            let sequence = NEXT_DISPOSABLE_PROFILE.fetch_add(1, Ordering::Relaxed);
-            let nonce = format!(
-                "{}-{}-{sequence}",
-                std::process::id(),
-                chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-            );
-            let path = root.join(format!("incognito-{nonce}"));
-            match std::fs::create_dir(&path) {
-                Ok(()) => {
-                    let owner = DisposableProfileOwner { pid, process_start };
-                    let owner_json = serde_json::to_vec(&owner)?;
-                    if let Err(error) = std::fs::write(path.join(DISPOSABLE_OWNER_FILE), owner_json)
-                    {
-                        let _ = std::fs::remove_dir_all(&path);
-                        return Err(error.into());
-                    }
-                    return Ok(Self { path });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Err("could not allocate a unique incognito user-data directory".into())
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn cleanup_abandoned(root: &Path) -> BrowserResult<()> {
-        let mut candidates = Vec::new();
-        for entry in std::fs::read_dir(root)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir()
-                || !entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("incognito-")
-            {
-                continue;
-            }
-            let bytes = match std::fs::read(entry.path().join(DISPOSABLE_OWNER_FILE)) {
-                Ok(bytes) => bytes,
-                Err(_) => continue,
-            };
-            let owner = match serde_json::from_slice::<DisposableProfileOwner>(&bytes) {
-                Ok(owner) if owner.pid != 0 && owner.process_start != 0 => owner,
-                _ => continue,
-            };
-            candidates.push((entry.path(), owner));
-            if candidates.len() == DISPOSABLE_CLEANUP_BATCH {
-                reap_disposable_candidates(&mut candidates)?;
-            }
-        }
-        reap_disposable_candidates(&mut candidates)
-    }
-}
-
-pub(crate) fn reap_disposable_candidates(
-    candidates: &mut Vec<(PathBuf, DisposableProfileOwner)>,
-) -> BrowserResult<()> {
-    if candidates.is_empty() {
-        return Ok(());
-    }
-    let pids = candidates
-        .iter()
-        .map(|(_, owner)| Pid::from_u32(owner.pid))
-        .collect::<Vec<_>>();
-    let mut system = System::new();
-    system.refresh_processes(ProcessesToUpdate::Some(&pids), true);
-    for (path, owner) in candidates.drain(..) {
-        let live_start = system
-            .process(Pid::from_u32(owner.pid))
-            .map(|process| process.start_time());
-        if live_start != Some(owner.process_start)
-            && let Err(error) = std::fs::remove_dir_all(path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err(error.into());
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn process_start_identity(pid: u32) -> Option<u64> {
-    let pid = Pid::from_u32(pid);
-    let mut system = System::new();
-    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-    system.process(pid).map(|process| process.start_time())
-}
-
-impl Drop for DisposableProfileDir {
-    fn drop(&mut self) {
-        if let Err(error) = std::fs::remove_dir_all(&self.path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(path = %self.path.display(), %error, "could not remove disposable incognito profile");
-        }
-    }
-}
-
 pub(crate) async fn wait_for_stable_popup_topology(
     topology: &Arc<Mutex<TopologyRegistry>>,
     snapshot: &PopupTopologySnapshot,
@@ -2918,6 +2624,7 @@ pub(crate) async fn wait_for_stable_popup_topology(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn interactive_elements(roots: &[AxNode], revision: u64) -> Vec<InteractiveElement> {
     interactive_elements_with_context(roots, revision, None)
 }

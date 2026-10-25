@@ -520,6 +520,8 @@
     return {{ body, bodyBase64: null, contentType: "multipart/form-data; boundary=" + boundary }};
   }};
   globalThis.FormData = FormDataNative;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("fetch_phase_forms");
   const appendUrlSearchParam = (target, name, value) => {{
     const key = String(name);
     const normalizedValue = String(value);
@@ -651,6 +653,8 @@
     return this._entries.map(entry => encode(entry[0]) + "=" + encode(entry[1])).join("&");
   }};
   globalThis.URLSearchParams = URLSearchParamsNative;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("fetch_phase_search_params");
   const nativeUrlParts = (input) => {{
     const source = String(input);
     const hashIndex = source.indexOf("#");
@@ -899,6 +903,8 @@
   URLNative.prototype.toString = function() {{ return this.href; }};
   URLNative.prototype.toJSON = function() {{ return this.href; }};
   globalThis.URL = URLNative;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("fetch_phase_url");
   const nativeObjectUrlRegistry = globalThis.__glassObjectUrlRegistry instanceof Map
     ? globalThis.__glassObjectUrlRegistry
     : new Map();
@@ -1064,6 +1070,8 @@
   }});
   HeadersNative.prototype[Symbol.iterator] = HeadersNative.prototype.entries;
   globalThis.Headers = HeadersNative;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("fetch_phase_headers");
   const nativeBodylessMethods = ["GET", "HEAD"];
   const nativeRequestUrl = (value) => {{
     const source = value && value.__glassUrl === true ? value.href : String(value);
@@ -1203,6 +1211,8 @@
     return new RequestNative(this);
   }};
   globalThis.Request = RequestNative;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("fetch_phase_request");
   const nativeAbortError = () => {{
     const error = new Error("The operation was aborted");
     error.name = "AbortError";
@@ -1311,6 +1321,8 @@
   }};
   globalThis.AbortSignal = AbortSignalNative;
   globalThis.AbortController = AbortControllerNative;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("fetch_phase_abort");
   const clearFetchAbortListener = (pending) => {{
     if (pending.signal && pending.abortListener) pending.signal.removeEventListener("abort", pending.abortListener);
   }};
@@ -1547,3 +1559,7 @@
       pushCommand({{ kind: "fetch", request_id: requestId, href, credentials, credentials_mode: credentialsMode, referrer: referrer.referrer, referrer_url: referrer.url, referrer_policy: referrerPolicy || documentReferrerPolicy.value, method, headers: requestHeaders, body, body_base64: bodyBase64, content_type: contentType, mode, redirect, cache, timeout_ms: timeoutMs, upload_stream_id: hasStreamedBody ? requestId : null, destination }});
     }});
   }};
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("fetch_phase_dispatch");
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("module_fetch_requests");

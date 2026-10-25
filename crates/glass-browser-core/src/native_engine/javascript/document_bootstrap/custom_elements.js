@@ -1249,3 +1249,5 @@
     enumerable: true,
     get() {{ return nativeCustomRegistry; }},
   }});
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("custom_elements_ready");

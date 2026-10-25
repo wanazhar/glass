@@ -258,3 +258,5 @@
     CONNECTING: {{ value: 0 }}, OPEN: {{ value: 1 }}, CLOSED: {{ value: 2 }},
   }});
   globalThis.EventSource = EventSourceNative;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("module_websocket_eventsource");

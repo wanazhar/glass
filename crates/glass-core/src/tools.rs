@@ -160,7 +160,7 @@ pub fn bash_owned(
     let exception = approvals.permits_exact(&command);
     if !exception && let Some(reason) = crate::sandbox::refusal() {
         return Outcome::err(format!(
-            "error: sandbox = strict is not available ({reason}); refusing to run commands unsandboxed"
+            "error: the active sandbox or egress policy is unavailable ({reason}); refusing to run commands without it"
         ));
     }
 

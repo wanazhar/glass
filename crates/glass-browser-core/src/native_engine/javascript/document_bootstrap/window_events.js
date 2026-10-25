@@ -230,5 +230,7 @@
   cachedHostState = state;
   cachedGeometrySnapshot = state.geometry;
   cachedGeometryMap = geometryByIndex;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("installer_complete");
   }};
 }})()

@@ -1941,6 +1941,16 @@ impl NativeContentProcess {
         request: Value,
         parent_loader: Option<&mut NativeResourceLoader>,
     ) -> Result<Value, NativeEngineError> {
+        if !self.healthy {
+            let kind = self
+                .failure_kind
+                .unwrap_or(NativeWorkerFailureKind::Transport);
+            return Err(NativeEngineError::worker_failure(
+                "content process IPC",
+                kind,
+                "content worker is already unhealthy; restart is required",
+            ));
+        }
         let mut abort_child_on_drop =
             KillContentChildOnDrop::new(self.child.id(), Arc::clone(&self.ipc_aborted));
         let result = self.exchange_inner(request, parent_loader).await;

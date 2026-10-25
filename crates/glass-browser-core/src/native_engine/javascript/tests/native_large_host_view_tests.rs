@@ -61,6 +61,116 @@ fn host_view_cache_key_tracks_resource_projection_invalidations() {
 }
 
 #[test]
+fn repeated_host_views_reuse_decoded_canvas_image_resources_and_repair_public_map() {
+    let mut document = NativeDocument::parse(
+        "<img id='source' src='/pixel.png'><canvas id='target' width='1' height='1'></canvas>",
+        &NativeEngineLimits::default(),
+    )
+    .expect("canvas image fixture must parse");
+    let image_id = document
+        .element_node_ids()
+        .find(|id| {
+            document
+                .node(*id)
+                .is_some_and(|node| node.element_name() == Some("img"))
+        })
+        .expect("fixture image must exist");
+    let source = document.image_current_src(image_id, Viewport::default());
+    document
+        .mark_image_load(image_id.index(), source.clone(), Viewport::default())
+        .expect("image request state must be accepted");
+    document
+        .set_image_resource(
+            image_id.index(),
+            source.clone(),
+            crate::native_engine::image::NativeImage::new(1, 1, vec![17, 34, 51, 255]),
+        )
+        .expect("decoded fixture image must be accepted");
+
+    let runtime = NativeJavaScriptRuntime::new_with_context_id("canvas-image-cache")
+        .expect("native JavaScript runtime must construct");
+    let first = runtime
+        .evaluate(
+            "(() => { const canvas = document.getElementById('target'); canvas.getContext('2d').drawImage(document.getElementById('source'), 0, 0); const result = [globalThis.__glassCanvasImageResources.size, canvas.__glassCanvasSurface.pixels.slice(0, 4)]; globalThis.__glassHeldCanvasImageResources = globalThis.__glassCanvasImageResources; globalThis.__glassCanvasImageResources.values().next().value.pixels[0] = 99; globalThis.__glassCanvasImageResources.clear(); globalThis.__glassCanvasImageResources.set(-1, null); return result; })()",
+            &document,
+            "fixture://canvas-cache.test/",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+        )
+        .expect("initial canvas image resources must install");
+    assert_eq!(first.value, serde_json::json!([1, [17, 34, 51, 255]]));
+
+    let second = runtime
+        .evaluate(
+            "(() => { const canvas = document.getElementById('target'); canvas.getContext('2d').clearRect(0, 0, 1, 1); canvas.getContext('2d').drawImage(document.getElementById('source'), 0, 0); const result = [globalThis.__glassCanvasImageResources.size, globalThis.__glassCanvasImageResources.has(-1), globalThis.__glassCanvasImageResources.values().next().value.pixels[0], globalThis.__glassHeldCanvasImageResources === globalThis.__glassCanvasImageResources, canvas.__glassCanvasSurface.pixels.slice(0, 4)]; globalThis.__glassCanvasSurfaces.clear(); return result; })()",
+            &document,
+            "fixture://canvas-cache.test/",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+        )
+        .expect("unchanged image resource snapshot must reuse its decoded cache");
+    assert_eq!(
+        second.value,
+        serde_json::json!([1, false, 17, true, [17, 34, 51, 255]])
+    );
+
+    let canvas_commit = second
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            NativeScriptCommand::CanvasCommit {
+                node_index,
+                width,
+                height,
+                pixels_base64,
+                origin_clean,
+            } => Some((
+                *node_index,
+                *width,
+                *height,
+                pixels_base64.clone(),
+                *origin_clean,
+            )),
+            _ => None,
+        })
+        .expect("drawing the canvas must emit a persisted canvas resource");
+    document
+        .apply_script_canvas(
+            canvas_commit.0,
+            canvas_commit.1,
+            canvas_commit.2,
+            &canvas_commit.3,
+            canvas_commit.4,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("canvas resource must be accepted by the document");
+
+    document
+        .mark_image_load(image_id.index(), source.clone(), Viewport::default())
+        .expect("replacement image request state must be accepted");
+    document
+        .set_image_resource(
+            image_id.index(),
+            source,
+            crate::native_engine::image::NativeImage::new(1, 1, vec![201, 202, 203, 255]),
+        )
+        .expect("replacement image resource must be accepted");
+    let updated = runtime
+        .evaluate(
+            "(() => { const canvas = document.getElementById('target'); const persistedCanvasPixels = canvas.__glassCanvasSurface.pixels.slice(0, 4); canvas.getContext('2d').clearRect(0, 0, 1, 1); canvas.getContext('2d').drawImage(document.getElementById('source'), 0, 0); return [globalThis.__glassCanvasImageResources.size, persistedCanvasPixels, canvas.__glassCanvasSurface.pixels.slice(0, 4)]; })()",
+            &document,
+            "fixture://canvas-cache.test/",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+        )
+        .expect("changed image resource snapshot must invalidate its decoded cache");
+    assert_eq!(
+        updated.value,
+        serde_json::json!([1, [17, 34, 51, 255], [201, 202, 203, 255]])
+    );
+}
+
+#[test]
 fn host_view_covers_representative_html_svg_mathml_and_custom_element_categories() {
     let markup = r##"<!doctype html>
       <html><head><title>local element contract</title><meta charset="utf-8">
@@ -186,14 +296,15 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
     for install in 0..6 {
         let (source, expected) = if install == 0 {
             (
-                "(() => { const first = document.body.children[0].children[0].children[0]; globalThis.__glassHeldHostElement = first; globalThis.__glassHeldDocument = document; globalThis.__glassDocumentObserver = new MutationObserver(() => {}); globalThis.__glassDocumentObserver.observe(document, { attributes: true, subtree: true }); first.__glassReuseMarker = 42; return [document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(first).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView'), document.documentElement.parentNode === document, document.documentElement.getRootNode() === document]; })()",
+                "(() => { const first = document.body.children[0].children[0].children[0]; globalThis.__glassHeldHostElement = first; globalThis.__glassHeldHostElements = globalThis.__glassHostElements; globalThis.__glassHeldElementMapSize = globalThis.__glassHostElements.size; globalThis.__glassHeldNodeMapSize = globalThis.__glassHostNodes.size; globalThis.__glassHostElements.set(-1, null); globalThis.__glassHostNodes.clear(); globalThis.__glassHeldDocument = document; globalThis.__glassDocumentObserver = new MutationObserver(() => {}); globalThis.__glassDocumentObserver.observe(document, { attributes: true, subtree: true }); first.__glassReuseMarker = 42; return [document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(first).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView'), document.documentElement.parentNode === document, document.documentElement.getRootNode() === document]; })()",
                 serde_json::json!(["BODY", ELEMENTS, "bold", "normal", false, true, true]),
             )
         } else {
             (
-                "[document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(document.body.children[0].children[0].children[0]).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView'), globalThis.__glassHeldHostElement === document.body.children[0].children[0].children[0], globalThis.__glassHeldHostElement.__glassReuseMarker, document.documentElement.parentNode === document, document.documentElement.getRootNode() === document, globalThis.__glassHeldDocument !== document]",
+                "[document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(document.body.children[0].children[0].children[0]).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView'), globalThis.__glassHeldHostElement === document.body.children[0].children[0].children[0], globalThis.__glassHeldHostElement.__glassReuseMarker, document.documentElement.parentNode === document, document.documentElement.getRootNode() === document, globalThis.__glassHeldDocument !== document, globalThis.__glassHeldHostElements !== globalThis.__glassHostElements, globalThis.__glassHostElements.size === globalThis.__glassHeldElementMapSize, globalThis.__glassHostNodes.size === globalThis.__glassHeldNodeMapSize, !globalThis.__glassHostElements.has(-1), globalThis.__glassHostNodes.size > 0]",
                 serde_json::json!([
-                    "BODY", ELEMENTS, "bold", "normal", false, true, 42, true, true, true
+                    "BODY", ELEMENTS, "bold", "normal", false, true, 42, true, true, true, true,
+                    true, true, true, true
                 ]),
             )
         };
@@ -231,7 +342,7 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
         .expect("changed fixture document must parse");
     let changed_evaluation = runtime
         .evaluate(
-            "(() => { const first = document.getElementById('item-0'); return [first.className, getComputedStyle(first).fontWeight, globalThis.__glassHeldHostElement === first, globalThis.__glassHeldHostElement.__glassReuseMarker]; })()",
+            "(() => { const first = document.getElementById('item-0'); return [first.className, getComputedStyle(first).fontWeight, globalThis.__glassHeldHostElement === first, globalThis.__glassHeldHostElement.__glassReuseMarker, globalThis.__glassHeldHostElements === globalThis.__glassHostElements, globalThis.__glassHeldHostNodes === globalThis.__glassHostNodes]; })()",
             &changed_document,
             "fixture://large-host-view.test/changed",
             &NativeOrigin::Opaque,
@@ -240,7 +351,7 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
         .expect("a changed document key must perform a complete host refresh");
     assert_eq!(
         changed_evaluation.value,
-        serde_json::json!(["content-row changed", "normal", true, 42])
+        serde_json::json!(["content-row changed", "normal", true, 42, false, false])
     );
     let second_runtime = NativeJavaScriptRuntime::new_with_context_id("second-large-host-view")
         .expect("second native JavaScript runtime must construct");

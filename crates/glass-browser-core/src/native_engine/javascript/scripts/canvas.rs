@@ -11,80 +11,126 @@ pub(in crate::native_engine::javascript) const NATIVE_CANVAS_SCRIPT: &str = r###
     nativeCanvasSurfaces.clear();
     globalThis.__glassCanvasRevision = nativeCanvasRevision;
   }
-  const nativeCanvasLiveIndexes = new Set(
-    (Array.isArray(state.elements) ? state.elements : [])
-      .filter((entry) => entry && String(entry.tagName || "").toLowerCase() === "canvas")
-      .map((entry) => Number(entry.nodeIndex)),
-  );
+  const liveElementSnapshot = Array.isArray(state.elements) ? state.elements : [];
+  if (cachedCanvasLiveIndexSource !== liveElementSnapshot || !(cachedCanvasLiveIndexes instanceof Set)) {
+    cachedCanvasLiveIndexSource = liveElementSnapshot;
+    cachedCanvasLiveIndexes = new Set(
+      liveElementSnapshot
+        .filter((entry) => entry && String(entry.tagName || "").toLowerCase() === "canvas")
+        .map((entry) => Number(entry.nodeIndex)),
+    );
+  }
+  const nativeCanvasLiveIndexes = cachedCanvasLiveIndexes;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("canvas_phase_live_indexes");
   for (const nodeIndex of Array.from(nativeCanvasSurfaces.keys())) {
     if (!nativeCanvasLiveIndexes.has(Number(nodeIndex))) nativeCanvasSurfaces.delete(nodeIndex);
   }
-  const nativeCanvasResources = globalThis.__glassCanvasResources instanceof Map
+  const canvasResourceSnapshot = Array.isArray(state.canvasResources) ? state.canvasResources : [];
+  if (!(cachedCanvasResources instanceof Map)) cachedCanvasResources = new Map();
+  if (cachedCanvasResourceSource !== canvasResourceSnapshot) {
+    cachedCanvasResourceSource = canvasResourceSnapshot;
+    cachedCanvasResources.clear();
+    for (const resource of canvasResourceSnapshot) {
+      if (!resource || !Number.isSafeInteger(Number(resource.node_index))) continue;
+      const width = Number(resource.width);
+      const height = Number(resource.height);
+      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+          || width < 1 || height < 1 || width > nativeCanvasDimensionLimit
+          || height > nativeCanvasDimensionLimit || width * height > nativeCanvasPixelLimit) continue;
+      try {
+        const pixels = decodeBase64(String(resource.pixels_base64 || ""), nativeCanvasByteLimit);
+        if (pixels.length === width * height * 4) {
+          cachedCanvasResources.set(Number(resource.node_index), {
+            width,
+            height,
+            pixels,
+            originClean: resource.origin_clean !== false,
+          });
+        }
+      } catch (_error) {}
+    }
+  }
+  const nativeCanvasResources = cachedCanvasResources;
+  const publicCanvasResources = globalThis.__glassCanvasResources instanceof Map
     ? globalThis.__glassCanvasResources
     : new Map();
-  nativeCanvasResources.clear();
-  globalThis.__glassCanvasResources = nativeCanvasResources;
-  for (const resource of Array.isArray(state.canvasResources) ? state.canvasResources : []) {
-    if (!resource || !Number.isSafeInteger(Number(resource.node_index))) continue;
-    const width = Number(resource.width);
-    const height = Number(resource.height);
-    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
-        || width < 1 || height < 1 || width > nativeCanvasDimensionLimit
-        || height > nativeCanvasDimensionLimit || width * height > nativeCanvasPixelLimit) continue;
-    try {
-      const pixels = decodeBase64(String(resource.pixels_base64 || ""), nativeCanvasByteLimit);
-      if (pixels.length === width * height * 4) {
-        nativeCanvasResources.set(Number(resource.node_index), {
-          width,
-          height,
-          pixels,
-          originClean: resource.origin_clean !== false,
-        });
-      }
-    } catch (_error) {}
+  publicCanvasResources.clear();
+  for (const [nodeIndex, resource] of nativeCanvasResources) {
+    publicCanvasResources.set(nodeIndex, {
+      get width() { return resource.width; },
+      get height() { return resource.height; },
+      get pixels() { return resource.pixels.slice(); },
+      get originClean() { return resource.originClean; },
+    });
   }
-  const nativeCanvasImageResources = globalThis.__glassCanvasImageResources instanceof Map
+  globalThis.__glassCanvasResources = publicCanvasResources;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("canvas_phase_canvas_resources");
+  const imageResourceSnapshot = Array.isArray(state.imageResources) ? state.imageResources : [];
+  if (!(cachedCanvasImageResources instanceof Map)) cachedCanvasImageResources = new Map();
+  if (cachedCanvasImageResourceSource !== imageResourceSnapshot) {
+    cachedCanvasImageResourceSource = imageResourceSnapshot;
+    cachedCanvasImageResources.clear();
+    for (const resource of imageResourceSnapshot) {
+      if (!resource || !Number.isSafeInteger(Number(resource.nodeIndex))) continue;
+      const width = Number(resource.width);
+      const height = Number(resource.height);
+      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+          || width < 1 || height < 1 || width > nativeCanvasDimensionLimit
+          || height > nativeCanvasDimensionLimit || width * height > nativeCanvasPixelLimit) continue;
+      try {
+        const pixels = decodeBase64(String(resource.pixelsBase64 || ""), nativeCanvasByteLimit);
+        if (pixels.length === width * height * 4) {
+          const frames = [];
+          for (const frame of Array.isArray(resource.frames) ? resource.frames : []) {
+            const delayMs = Number(frame && frame.delayMs);
+            if (!Number.isSafeInteger(delayMs) || delayMs < 1 || delayMs > 60000) continue;
+            try {
+              const framePixels = decodeBase64(String(frame.pixelsBase64 || ""), nativeCanvasByteLimit);
+              if (framePixels.length === width * height * 4) frames.push({ delayMs, pixels: framePixels });
+            } catch (_error) {}
+          }
+          const animationElapsedMs = Number(resource.animationElapsedMs);
+          cachedCanvasImageResources.set(Number(resource.nodeIndex), {
+            width,
+            height,
+            pixels,
+            source: String(resource.source || ""),
+            frames,
+            loopCount: resource.loopCount !== null && resource.loopCount !== undefined
+              && Number.isSafeInteger(Number(resource.loopCount)) && Number(resource.loopCount) >= 0
+              ? Number(resource.loopCount)
+              : null,
+            animationOriginNowMs: Number.isSafeInteger(animationElapsedMs)
+              ? Number(host.now_ms) - animationElapsedMs
+              : null,
+          });
+        }
+      } catch (_error) {}
+    }
+  }
+  const nativeCanvasImageResources = cachedCanvasImageResources;
+  const publicCanvasImageResources = globalThis.__glassCanvasImageResources instanceof Map
     ? globalThis.__glassCanvasImageResources
     : new Map();
-  nativeCanvasImageResources.clear();
-  globalThis.__glassCanvasImageResources = nativeCanvasImageResources;
-  for (const resource of Array.isArray(state.imageResources) ? state.imageResources : []) {
-    if (!resource || !Number.isSafeInteger(Number(resource.nodeIndex))) continue;
-    const width = Number(resource.width);
-    const height = Number(resource.height);
-    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
-        || width < 1 || height < 1 || width > nativeCanvasDimensionLimit
-        || height > nativeCanvasDimensionLimit || width * height > nativeCanvasPixelLimit) continue;
-    try {
-      const pixels = decodeBase64(String(resource.pixelsBase64 || ""), nativeCanvasByteLimit);
-      if (pixels.length === width * height * 4) {
-        const frames = [];
-        for (const frame of Array.isArray(resource.frames) ? resource.frames : []) {
-          const delayMs = Number(frame && frame.delayMs);
-          if (!Number.isSafeInteger(delayMs) || delayMs < 1 || delayMs > 60000) continue;
-          try {
-            const framePixels = decodeBase64(String(frame.pixelsBase64 || ""), nativeCanvasByteLimit);
-            if (framePixels.length === width * height * 4) frames.push({ delayMs, pixels: framePixels });
-          } catch (_error) {}
-        }
-        const animationElapsedMs = Number(resource.animationElapsedMs);
-        nativeCanvasImageResources.set(Number(resource.nodeIndex), {
-          width,
-          height,
-          pixels,
-          source: String(resource.source || ""),
-          frames,
-          loopCount: resource.loopCount !== null && resource.loopCount !== undefined
-            && Number.isSafeInteger(Number(resource.loopCount)) && Number(resource.loopCount) >= 0
-            ? Number(resource.loopCount)
-            : null,
-          animationOriginNowMs: Number.isSafeInteger(animationElapsedMs)
-            ? Number(host.now_ms) - animationElapsedMs
-            : null,
-        });
-      }
-    } catch (_error) {}
+  publicCanvasImageResources.clear();
+  for (const [nodeIndex, resource] of nativeCanvasImageResources) {
+    publicCanvasImageResources.set(nodeIndex, {
+      get width() { return resource.width; },
+      get height() { return resource.height; },
+      get pixels() { return resource.pixels.slice(); },
+      get source() { return resource.source; },
+      get frames() {
+        return resource.frames.map((frame) => ({ delayMs: frame.delayMs, pixels: frame.pixels.slice() }));
+      },
+      get loopCount() { return resource.loopCount; },
+      get animationOriginNowMs() { return resource.animationOriginNowMs; },
+    });
   }
+  globalThis.__glassCanvasImageResources = publicCanvasImageResources;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("canvas_phase_image_resources");
   const nativeCanvasDimension = (entry, name, fallback) => {
     const value = Number.parseInt(String(entry && entry.attributes && entry.attributes[name] || ""), 10);
     return Number.isSafeInteger(value) && value > 0 && value <= nativeCanvasDimensionLimit

@@ -756,6 +756,7 @@ fn scrollable_overflow_axis(value: OverflowValue) -> bool {
     )
 }
 
+#[cfg(test)]
 fn nearest_scroll_ancestor(
     document: &NativeDocument,
     node_id: NativeNodeId,
@@ -774,6 +775,42 @@ fn nearest_scroll_ancestor(
         current = document.node(current_id).and_then(|node| node.parent());
     }
     None
+}
+
+fn nearest_scroll_ancestor_cached(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+    include_self: bool,
+    nearest_by_node: &mut HashMap<NativeNodeId, Option<NativeNodeId>>,
+) -> Option<NativeNodeId> {
+    let start = if include_self {
+        Some(node_id)
+    } else {
+        document.node(node_id).and_then(|node| node.parent())
+    };
+    let mut current = start;
+    let mut path = Vec::new();
+    let mut nearest = None;
+    for _ in 0..=MAX_NATIVE_DOM_DEPTH {
+        let Some(current_id) = current else {
+            break;
+        };
+        if let Some(cached) = nearest_by_node.get(&current_id) {
+            nearest = *cached;
+            break;
+        }
+        if is_scroll_container(document, current_id) {
+            nearest = Some(current_id);
+            nearest_by_node.insert(current_id, nearest);
+            break;
+        }
+        path.push(current_id);
+        current = document.node(current_id).and_then(|node| node.parent());
+    }
+    for path_node in path.into_iter().rev() {
+        nearest_by_node.insert(path_node, nearest);
+    }
+    nearest
 }
 
 struct OverflowClipAncestorCache {
@@ -900,6 +937,7 @@ fn scroll_containers_for(
 ) -> Vec<NativeScrollContainer> {
     let mut container_indices = HashMap::new();
     let mut container_rects = HashMap::new();
+    let mut nearest_by_node = HashMap::with_capacity(document.node_count());
     let mut containers = Vec::new();
     for container_box in boxes {
         let style = document.computed_style_for_layout(container_box.node_id);
@@ -922,7 +960,12 @@ fn scroll_containers_for(
     }
 
     for child_box in boxes.iter().filter(|child_box| !child_box.fixed) {
-        let Some(container_id) = nearest_scroll_ancestor(document, child_box.node_id, false) else {
+        let Some(container_id) = nearest_scroll_ancestor_cached(
+            document,
+            child_box.node_id,
+            false,
+            &mut nearest_by_node,
+        ) else {
             continue;
         };
         let (Some(&container_index), Some(container_rect)) = (
@@ -941,7 +984,9 @@ fn scroll_containers_for(
     }
 
     for text_run in text_runs.iter().filter(|text_run| !text_run.fixed) {
-        let Some(container_id) = nearest_scroll_ancestor(document, text_run.node_id, true) else {
+        let Some(container_id) =
+            nearest_scroll_ancestor_cached(document, text_run.node_id, true, &mut nearest_by_node)
+        else {
             continue;
         };
         let (Some(&container_index), Some(container_rect)) = (
@@ -974,6 +1019,46 @@ fn scroll_containers_for(
         );
     }
     containers
+}
+
+#[cfg(test)]
+mod scroll_ancestor_cache_tests {
+    use super::*;
+    use crate::native_engine::NativeEngineLimits;
+
+    #[test]
+    fn cached_scroll_ancestor_matches_uncached_for_nested_document_nodes() {
+        let document = NativeDocument::parse(
+            "<main><section style='overflow:auto'><div><p>text</p><aside style='overflow:hidden'><b>nested</b></aside></div></section><footer>tail</footer></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("fixture document parses");
+        let mut nodes = vec![document.root()];
+        let mut index = 0;
+        while index < nodes.len() {
+            if let Some(node) = document.node(nodes[index]) {
+                nodes.extend_from_slice(node.children());
+            }
+            index += 1;
+        }
+
+        let mut nearest_by_node = HashMap::with_capacity(nodes.len());
+        for node_id in nodes {
+            for include_self in [false, true] {
+                assert_eq!(
+                    nearest_scroll_ancestor_cached(
+                        &document,
+                        node_id,
+                        include_self,
+                        &mut nearest_by_node,
+                    ),
+                    nearest_scroll_ancestor(&document, node_id, include_self),
+                    "scroll ancestor mismatch for node {} include_self={include_self}",
+                    node_id.index(),
+                );
+            }
+        }
+    }
 }
 
 fn fixed_layout_root(

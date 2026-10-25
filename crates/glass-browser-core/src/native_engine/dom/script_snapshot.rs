@@ -1,5 +1,72 @@
 use super::*;
 
+const MAX_NATIVE_SCRIPT_SNAPSHOT_CACHE_BYTES: usize = 16 * 1024 * 1024;
+
+fn script_snapshot_retained_bytes(snapshot: &NativeScriptDocumentSnapshot) -> usize {
+    let mut bytes = snapshot
+        .title
+        .len()
+        .saturating_add(snapshot.visible_text.len());
+    for element in &snapshot.elements {
+        bytes = bytes
+            .saturating_add(element.tag_name.len())
+            .saturating_add(element.text.len())
+            .saturating_add(element.inner_html.len())
+            .saturating_add(element.value.as_ref().map_or(0, String::len))
+            .saturating_add(element.image_current_src.len())
+            .saturating_add(element.media_current_src.len())
+            .saturating_add(element.validation_message.len())
+            .saturating_add(element.custom_validity.len());
+        bytes = bytes.saturating_add(element.namespace_uri.as_ref().map_or(0, String::len));
+        for (name, value) in &element.attributes {
+            bytes = bytes.saturating_add(name.len()).saturating_add(value.len());
+        }
+        for (name, namespace) in &element.attribute_namespaces {
+            bytes = bytes
+                .saturating_add(name.len())
+                .saturating_add(namespace.len());
+        }
+        for file in &element.files {
+            bytes = bytes
+                .saturating_add(file.name.len())
+                .saturating_add(file.media_type.len())
+                .saturating_add(file.bytes.len());
+        }
+    }
+    for node in &snapshot.nodes {
+        bytes = bytes
+            .saturating_add(node.node_name.len())
+            .saturating_add(node.node_value.as_ref().map_or(0, String::len))
+            .saturating_add(
+                node.children
+                    .len()
+                    .saturating_mul(std::mem::size_of::<u32>()),
+            );
+    }
+    for resource in &snapshot.canvas_resources {
+        bytes = bytes.saturating_add(resource.pixels_base64.len());
+    }
+    for resource in &snapshot.image_resources {
+        bytes = bytes
+            .saturating_add(resource.source.len())
+            .saturating_add(resource.pixels_base64.len());
+        for frame in &resource.frames {
+            bytes = bytes.saturating_add(frame.pixels_base64.len());
+        }
+    }
+    let structures = snapshot
+        .elements
+        .len()
+        .saturating_mul(std::mem::size_of::<NativeScriptElementSnapshot>())
+        .saturating_add(
+            snapshot
+                .nodes
+                .len()
+                .saturating_mul(std::mem::size_of::<NativeScriptNodeSnapshot>()),
+        );
+    bytes.saturating_mul(2).saturating_add(structures)
+}
+
 impl NativeDocument {
     pub(crate) fn element_node_ids(&self) -> impl Iterator<Item = NativeNodeId> + '_ {
         self.nodes
@@ -107,6 +174,17 @@ impl NativeDocument {
         max_text_bytes: usize,
         viewport: Viewport,
     ) -> NativeScriptDocumentSnapshot {
+        if let Some(snapshot) =
+            self.layout_style_cache
+                .script_snapshot(self.revision, max_text_bytes, viewport)
+        {
+            let cache_hit_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+                0,
+                "script_snapshot_cache_hit",
+            );
+            cache_hit_stage.finish(Some(snapshot.elements.len()));
+            return snapshot;
+        }
         let text_stage = crate::native_engine::content_process::ContentLoadStage::begin(
             0,
             "script_snapshot_text_projection",
@@ -280,7 +358,7 @@ impl NativeDocument {
             .collect();
         let image_resources = self.script_image_resources(viewport);
         resources_stage.finish(Some(canvas_resources.len() + image_resources.len()));
-        NativeScriptDocumentSnapshot {
+        let snapshot = NativeScriptDocumentSnapshot {
             revision: self.revision,
             title,
             visible_text,
@@ -302,7 +380,22 @@ impl NativeDocument {
                 .collect(),
             canvas_resources,
             image_resources,
+        };
+        let has_animated_images = snapshot
+            .image_resources
+            .iter()
+            .any(|resource| resource.frames.len() > 1);
+        if !has_animated_images
+            && script_snapshot_retained_bytes(&snapshot) <= MAX_NATIVE_SCRIPT_SNAPSHOT_CACHE_BYTES
+        {
+            self.layout_style_cache.cache_script_snapshot(
+                self.revision,
+                max_text_bytes,
+                viewport,
+                snapshot.clone(),
+            );
         }
+        snapshot
     }
 
     pub(crate) fn script_snapshot_with_layout(

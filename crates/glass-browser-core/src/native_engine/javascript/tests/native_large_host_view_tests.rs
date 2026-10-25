@@ -104,7 +104,7 @@ fn host_view_covers_representative_html_svg_mathml_and_custom_element_categories
 }
 
 #[test]
-fn host_view_bootstrap_accepts_large_valid_document_with_a_bounded_quickjs_heap() {
+fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
     const ELEMENTS: usize = 2_586;
     let mut markup = String::with_capacity(ELEMENTS * 96);
     markup.push_str("<style>.accent { font-weight: 700; }</style><main><section>");
@@ -124,20 +124,22 @@ fn host_view_bootstrap_accepts_large_valid_document_with_a_bounded_quickjs_heap(
         .expect("native JavaScript runtime must construct");
     let document = NativeDocument::parse(&markup, &NativeEngineLimits::default())
         .expect("bounded synthetic content page must parse");
-    let evaluation = runtime
-        .evaluate(
-            "[document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(document.body.children[0].children[0].children[0]).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight]",
-            &document,
-            "fixture://large-host-view.test/",
-            &NativeOrigin::Opaque,
-            Viewport::default(),
-        )
-        .expect("large but valid host view must install within the fixed QuickJS memory limit");
+    for _ in 0..6 {
+        let evaluation = runtime
+            .evaluate(
+                "[document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(document.body.children[0].children[0].children[0]).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight]",
+                &document,
+                "fixture://large-host-view.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("repeated large host views must install within the fixed QuickJS memory limit");
 
-    assert_eq!(
-        evaluation.value,
-        serde_json::json!(["BODY", ELEMENTS, "bold", "normal"])
-    );
+        assert_eq!(
+            evaluation.value,
+            serde_json::json!(["BODY", ELEMENTS, "bold", "normal"])
+        );
+    }
     let heap = runtime.runtime.memory_usage();
     assert!(heap.memory_used_size > 0);
     assert!(heap.memory_used_size <= 256 * 1024 * 1024);

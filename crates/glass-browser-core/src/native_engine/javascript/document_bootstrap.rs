@@ -90,33 +90,45 @@ pub(super) fn document_bootstrap(
         .get_mut("elements")
         .and_then(serde_json::Value::as_array_mut)
     {
-        for element in elements {
-            let Some(element) = element.as_object_mut() else {
-                continue;
-            };
-            let computed_style = element
-                .remove("computedStyle")
-                .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
-            let style_key =
-                serde_json::to_vec(&computed_style).map_err(|_| NativeEngineError::Worker {
-                    operation: "compact JavaScript computed style".into(),
-                    reason: "native computed style could not be compacted".into(),
-                })?;
-            let style_index = if let Some(index) = style_indices.get(&style_key) {
-                *index
-            } else {
-                let index = u32::try_from(computed_styles.len()).map_err(|_| {
-                    NativeEngineError::limit(
-                        "native computed style table",
-                        u32::MAX as usize,
-                        computed_styles.len(),
-                    )
-                })?;
-                computed_styles.push(computed_style);
-                style_indices.insert(style_key, index);
-                index
-            };
-            element.insert("computedStyleIndex".into(), serde_json::json!(style_index));
+        for (batch_ordinal, batch) in elements.chunks_mut(128).enumerate() {
+            let batch_stage =
+                crate::native_engine::content_process::ContentLoadStage::begin_with_resource(
+                    0,
+                    "javascript_bootstrap_style_interning_batch",
+                    Some(batch_ordinal),
+                    Some("elements"),
+                );
+            let mut style_key_bytes = 0usize;
+            for element in batch {
+                let Some(element) = element.as_object_mut() else {
+                    continue;
+                };
+                let computed_style = element
+                    .remove("computedStyle")
+                    .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+                let style_key =
+                    serde_json::to_vec(&computed_style).map_err(|_| NativeEngineError::Worker {
+                        operation: "compact JavaScript computed style".into(),
+                        reason: "native computed style could not be compacted".into(),
+                    })?;
+                style_key_bytes = style_key_bytes.saturating_add(style_key.len());
+                let style_index = if let Some(index) = style_indices.get(&style_key) {
+                    *index
+                } else {
+                    let index = u32::try_from(computed_styles.len()).map_err(|_| {
+                        NativeEngineError::limit(
+                            "native computed style table",
+                            u32::MAX as usize,
+                            computed_styles.len(),
+                        )
+                    })?;
+                    computed_styles.push(computed_style);
+                    style_indices.insert(style_key, index);
+                    index
+                };
+                element.insert("computedStyleIndex".into(), serde_json::json!(style_index));
+            }
+            batch_stage.finish(Some(style_key_bytes));
         }
     }
     let computed_style_count = computed_styles.len();

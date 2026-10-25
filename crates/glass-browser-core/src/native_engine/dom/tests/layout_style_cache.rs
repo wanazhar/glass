@@ -104,6 +104,143 @@ fn layout_snapshot_cache_matches_fresh_layout_and_invalidates_style_and_viewport
 }
 
 #[test]
+fn script_snapshot_cache_reuses_and_invalidates_complete_projection() {
+    let limits = NativeEngineLimits::default();
+    let source = "<input id='field' value='initial'>";
+    let mut document = NativeDocument::parse(source, &limits).unwrap();
+    let viewport = Viewport::default();
+    let first = document.script_snapshot_for_viewport(crate::limits::MAX_TEXT_BYTES, viewport);
+    assert!(document.layout_style_cache.4.lock().unwrap().is_some());
+    assert_eq!(
+        serde_json::to_value(
+            document.script_snapshot_for_viewport(crate::limits::MAX_TEXT_BYTES, viewport)
+        )
+        .unwrap(),
+        serde_json::to_value(first).unwrap()
+    );
+
+    let field = document.find_element_by_id("field").unwrap();
+    document
+        .apply_script_attribute(field.index(), "data-state", "ready", None, &BTreeMap::new())
+        .unwrap();
+    document.set_revision(document.revision() + 1);
+    assert!(document.layout_style_cache.4.lock().unwrap().is_none());
+    let refreshed = document.script_snapshot_for_viewport(crate::limits::MAX_TEXT_BYTES, viewport);
+    assert_eq!(
+        refreshed
+            .elements
+            .iter()
+            .find(|element| element.node_index == field.index())
+            .and_then(|element| element.attributes.get("data-state"))
+            .map(String::as_str),
+        Some("ready")
+    );
+
+    let mut fresh = NativeDocument::parse(
+        "<input id='field' value='initial' data-state='ready'>",
+        &limits,
+    )
+    .unwrap();
+    fresh.set_revision(document.revision());
+    assert_eq!(
+        serde_json::to_value(refreshed).unwrap(),
+        serde_json::to_value(
+            fresh.script_snapshot_for_viewport(crate::limits::MAX_TEXT_BYTES, viewport)
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn script_snapshot_cache_invalidates_when_image_properties_arrive() {
+    let limits = NativeEngineLimits::default();
+    let viewport = Viewport::default();
+    let mut document = NativeDocument::parse("<img id='image' src='/image.png'>", &limits).unwrap();
+    let image_id = document.find_element_by_id("image").unwrap();
+    let before = document.script_snapshot_for_viewport(crate::limits::MAX_TEXT_BYTES, viewport);
+    let before_image = before
+        .elements
+        .iter()
+        .find(|element| element.node_index == image_id.index())
+        .unwrap();
+    assert!(!before_image.image_complete);
+
+    let source = document.image_current_src(image_id, viewport);
+    document
+        .mark_image_load(image_id.index(), source.clone(), viewport)
+        .unwrap();
+    document
+        .set_image_resource(
+            image_id.index(),
+            source,
+            NativeImage::new(24, 40, vec![0; 24 * 40 * 4]),
+        )
+        .unwrap();
+    let after = document.script_snapshot_for_viewport(crate::limits::MAX_TEXT_BYTES, viewport);
+    let after_image = after
+        .elements
+        .iter()
+        .find(|element| element.node_index == image_id.index())
+        .unwrap();
+    assert!(after_image.image_complete);
+    assert_eq!(after_image.image_natural_width, 24);
+    assert_eq!(after_image.image_natural_height, 40);
+}
+
+#[test]
+fn script_snapshot_cache_skips_animated_images_and_oversized_file_payloads() {
+    let limits = NativeEngineLimits::default();
+    let viewport = Viewport::default();
+    let mut image_document =
+        NativeDocument::parse("<img id='image' src='/image.png'>", &limits).unwrap();
+    let image_id = image_document.find_element_by_id("image").unwrap();
+    let source = image_document.image_current_src(image_id, viewport);
+    image_document
+        .mark_image_load(image_id.index(), source.clone(), viewport)
+        .unwrap();
+    let animation = NativeImage::with_frames(
+        1,
+        1,
+        vec![
+            NativeImageFrame {
+                delay_ms: 10,
+                pixels: vec![0; 4],
+            },
+            NativeImageFrame {
+                delay_ms: 10,
+                pixels: vec![1; 4],
+            },
+        ],
+        Some(0),
+    )
+    .unwrap();
+    image_document
+        .set_image_resource(image_id.index(), source, animation)
+        .unwrap();
+    image_document.script_snapshot_for_viewport(crate::limits::MAX_TEXT_BYTES, viewport);
+    assert!(
+        image_document
+            .layout_style_cache
+            .4
+            .lock()
+            .unwrap()
+            .is_none()
+    );
+
+    let mut file_document =
+        NativeDocument::parse("<input id='upload' type='file'>", &limits).unwrap();
+    let upload_id = file_document.find_element_by_id("upload").unwrap();
+    file_document.node_mut(upload_id).unwrap().state.files = vec![NativeFile {
+        name: "large.bin".into(),
+        media_type: "application/octet-stream".into(),
+        last_modified: 0,
+        bytes: vec![0; 9 * 1024 * 1024],
+    }];
+    file_document.script_snapshot_for_viewport(crate::limits::MAX_TEXT_BYTES, viewport);
+    assert!(file_document.layout_style_cache.4.lock().unwrap().is_none());
+}
+
+#[test]
 fn decoded_image_arrival_invalidates_cached_intrinsic_layout() {
     let limits = NativeEngineLimits::default();
     let viewport = Viewport::default();

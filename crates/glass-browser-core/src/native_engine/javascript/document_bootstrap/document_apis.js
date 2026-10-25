@@ -110,7 +110,7 @@
       pushCommand({{ kind: "cookieSet", value: text }});
       pendingDocumentCookieWrites.push(text);
     }},
-    readyState: {ready_state},
+    readyState: bootstrapParams.readyState,
     addEventListener(type, callback, options) {{
       addListener("document", type, callback, options);
     }},
@@ -999,8 +999,8 @@
       href,
     );
   }};
-  globalThis.innerWidth = {width};
-  globalThis.innerHeight = {height};
+  globalThis.innerWidth = bootstrapParams.width;
+  globalThis.innerHeight = bootstrapParams.height;
   const nativeMediaDimension = (value) => {{
     const match = /^(-?\d+(?:\.\d+)?)px$/i.exec(String(value).trim());
     return match ? Number(match[1]) : null;

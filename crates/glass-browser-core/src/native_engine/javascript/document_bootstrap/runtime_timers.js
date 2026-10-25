@@ -1,6 +1,13 @@
 (() => {{
-  const host = JSON.parse(globalThis.__glassHostViewJson);
-  delete globalThis.__glassHostViewJson;
+  let cachedHostState = null;
+  return (__glassHostViewJson) => {{
+  const host = JSON.parse(__glassHostViewJson);
+  if (host.reuse_state) {{
+    if (cachedHostState === null) throw new Error("native host snapshot reuse has no prior state");
+    host.state = cachedHostState;
+  }}
+  const bootstrapParams = host.__glassBootstrap || {{}};
+  delete host.__glassBootstrap;
   const documentContextId = String(host.context_id || "native");
   const documentGeneration = Number(host.generation) || 0;
   const initialDocumentReferrerPolicy = String(
@@ -19,7 +26,7 @@
   let applyDynamicReferrerMetaPolicyToNode = null;
   let captureDynamicReferrerMetaPolicy = null;
   globalThis.__glassMessageRealmKey = "page:" + String(host.context_id || "native");
-  const initialPageCryptoBytes = {initial_page_crypto_bytes};
+  const initialPageCryptoBytes = bootstrapParams.initialPageCryptoBytes;
   const state = host.state;
   const snapshotComputedStyles = Array.isArray(state.computedStyles) ? state.computedStyles : [];
   for (const element of Array.isArray(state.elements) ? state.elements : []) {{
@@ -175,8 +182,8 @@
   const intersectionViewport = () => ({{
     x: 0,
     y: 0,
-    width: Math.max(0, Number({width}) || 0),
-    height: Math.max(0, Number({height}) || 0),
+    width: Math.max(0, Number(bootstrapParams.width) || 0),
+    height: Math.max(0, Number(bootstrapParams.height) || 0),
   }});
   const intersectionRect = (geometry) => {{
     const value = geometry || zeroGeometry();

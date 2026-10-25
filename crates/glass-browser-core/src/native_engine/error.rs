@@ -71,6 +71,56 @@ pub enum NativeEngineError {
 }
 
 impl NativeEngineError {
+    /// Return a privacy-safe static classification for opt-in worker diagnostics.
+    pub fn diagnostic_class(&self) -> &'static str {
+        match self {
+            Self::InvalidConfiguration { .. } => "invalid_configuration",
+            Self::Lifecycle { .. } => "lifecycle",
+            Self::UnsupportedUrl { .. } => "unsupported_url",
+            Self::Network { .. } => "network",
+            Self::Worker { .. } => "worker",
+            Self::WorkerFailure { .. } => "worker_failure",
+            Self::NavigationCancelled => "navigation_cancelled",
+            Self::StorageProfileLocked { .. } => "storage_profile_locked",
+            Self::Parse { .. } => "parse",
+            Self::LimitExceeded { .. } => "limit_exceeded",
+            Self::Scheduler { .. } => "scheduler",
+            Self::TargetNotFound => "target_not_found",
+            Self::AmbiguousTarget { .. } => "ambiguous_target",
+            Self::DetachedTarget => "detached_target",
+            Self::TargetNotActionable { .. } => "target_not_actionable",
+            Self::DisabledTarget => "disabled_target",
+            Self::ReadOnlyTarget => "read_only_target",
+        }
+    }
+
+    /// Return bounded resource-limit diagnostics without exposing page data.
+    pub fn diagnostic_limit(&self) -> Option<(String, usize, usize)> {
+        let Self::LimitExceeded {
+            resource,
+            limit,
+            actual,
+        } = self
+        else {
+            return None;
+        };
+
+        // Limit names are supplied by native implementation call sites. Keep
+        // opt-in diagnostics safe if a future caller accidentally passes
+        // externally sourced text.
+        let safe_resource = resource
+            .chars()
+            .filter(|character| {
+                character.is_ascii_alphanumeric()
+                    || *character == ' '
+                    || *character == '_'
+                    || *character == '-'
+            })
+            .take(80)
+            .collect();
+        Some((safe_resource, *limit, *actual))
+    }
+
     pub fn invalid(field: impl Into<String>, reason: impl Into<String>) -> Self {
         Self::InvalidConfiguration {
             field: field.into(),
@@ -171,3 +221,28 @@ impl fmt::Display for NativeEngineError {
 }
 
 impl std::error::Error for NativeEngineError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagnostic_class_is_static_and_excludes_error_details() {
+        let error = NativeEngineError::Network {
+            operation: "private page request".into(),
+            reason: "secret response text".into(),
+        };
+        assert_eq!(error.diagnostic_class(), "network");
+        assert!(!error.diagnostic_class().contains("private"));
+        assert!(!error.diagnostic_class().contains("secret"));
+        let limit = NativeEngineError::limit("native script bytes", 10, 11);
+        assert_eq!(
+            limit.diagnostic_limit(),
+            Some(("native script bytes".to_owned(), 10, 11))
+        );
+        assert_eq!(
+            NativeEngineError::limit("private page text", 10, 11).diagnostic_limit(),
+            Some(("private page text".to_owned(), 10, 11))
+        );
+    }
+}

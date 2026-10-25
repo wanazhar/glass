@@ -1,4 +1,62 @@
 use super::*;
+use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
+
+pub(in crate::native_engine::content_process) fn encode_document_snapshot_base64(
+    bytes: &[u8],
+) -> String {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+    if encoder.write_all(bytes).is_ok()
+        && let Ok(compressed) = encoder.finish()
+        && compressed.len() < bytes.len()
+    {
+        return base64::engine::general_purpose::STANDARD.encode(compressed);
+    }
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+pub(in crate::native_engine::content_process) fn decode_document_snapshot_base64(
+    encoded: &str,
+    operation: &str,
+) -> Result<Vec<u8>, NativeEngineError> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned an invalid document snapshot".into(),
+        })?;
+    let is_zlib = bytes.get(..2).is_some_and(|header| {
+        header[0] == 0x78 && u16::from_be_bytes([header[0], header[1]]) % 31 == 0
+    });
+    if !is_zlib {
+        if bytes.len() > MAX_CONTENT_DOCUMENT_WIRE_BYTES {
+            return Err(NativeEngineError::limit(
+                "content-process document snapshot",
+                MAX_CONTENT_DOCUMENT_WIRE_BYTES,
+                bytes.len(),
+            ));
+        }
+        return Ok(bytes);
+    }
+
+    let mut decoder = ZlibDecoder::new(bytes.as_slice());
+    let mut decoded = Vec::new();
+    decoder
+        .by_ref()
+        .take((MAX_CONTENT_DOCUMENT_WIRE_BYTES as u64).saturating_add(1))
+        .read_to_end(&mut decoded)
+        .map_err(|_| NativeEngineError::Worker {
+            operation: operation.into(),
+            reason: "content process returned a malformed compressed document snapshot".into(),
+        })?;
+    if decoded.len() > MAX_CONTENT_DOCUMENT_WIRE_BYTES {
+        return Err(NativeEngineError::limit(
+            "content-process document snapshot",
+            MAX_CONTENT_DOCUMENT_WIRE_BYTES,
+            decoded.len(),
+        ));
+    }
+    Ok(decoded)
+}
 
 pub(in crate::native_engine::content_process) fn parent_broker_owner_matches_operation(
     process: &NativeContentProcess,
@@ -140,6 +198,27 @@ pub(in crate::native_engine::content_process) async fn write_frame(
     payload: &[u8],
 ) -> Result<(), NativeEngineError> {
     if payload.len() > MAX_CONTENT_IPC_FRAME_BYTES {
+        if std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").is_some() {
+            let field_sizes = serde_json::from_slice::<Value>(payload)
+                .ok()
+                .and_then(|value| value.as_object().cloned())
+                .map(|fields| {
+                    let mut sizes = fields
+                        .iter()
+                        .map(|(name, value)| {
+                            let size = serde_json::to_vec(value).map_or(0, |bytes| bytes.len());
+                            (name.clone(), size)
+                        })
+                        .collect::<Vec<_>>();
+                    sizes.sort_by_key(|(_, size)| std::cmp::Reverse(*size));
+                    sizes.truncate(12);
+                    sizes
+                });
+            eprintln!(
+                "native content worker oversized IPC frame: {} bytes; largest fields: {field_sizes:?}",
+                payload.len()
+            );
+        }
         return Err(NativeEngineError::limit(
             "content IPC frame",
             MAX_CONTENT_IPC_FRAME_BYTES,
@@ -386,5 +465,51 @@ pub(in crate::native_engine::content_process) fn forward_content_ipc_frames(
         } else if request_sender.blocking_send(Ok(payload)).is_err() {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod document_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn compressed_document_snapshot_round_trips_with_bounded_decoding() {
+        let document = br#"{"nodes":[{"kind":"Element","state":{}},{"kind":"Text","value":"repeated document content"}]}"#
+            .repeat(128);
+        let encoded = encode_document_snapshot_base64(&document);
+        let packed = base64::engine::general_purpose::STANDARD
+            .decode(&encoded)
+            .unwrap();
+        assert!(packed.len() < document.len());
+        assert_eq!(
+            decode_document_snapshot_base64(&encoded, "test snapshot").unwrap(),
+            document
+        );
+    }
+
+    #[test]
+    fn raw_legacy_document_snapshot_still_decodes() {
+        let document = b"{\"legacy\":true}";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(document);
+        assert_eq!(
+            decode_document_snapshot_base64(&encoded, "test snapshot").unwrap(),
+            document
+        );
+    }
+
+    #[test]
+    fn compressed_document_snapshot_cannot_expand_past_document_budget() {
+        let oversized = vec![b'x'; MAX_CONTENT_DOCUMENT_WIRE_BYTES + 1];
+        let encoded = encode_document_snapshot_base64(&oversized);
+        assert!(encoded.len() < MAX_CONTENT_IPC_FRAME_BYTES);
+        assert!(matches!(
+            decode_document_snapshot_base64(&encoded, "test snapshot"),
+            Err(NativeEngineError::LimitExceeded {
+                resource,
+                limit: MAX_CONTENT_DOCUMENT_WIRE_BYTES,
+                actual,
+            }) if resource == "content-process document snapshot"
+                && actual == MAX_CONTENT_DOCUMENT_WIRE_BYTES + 1
+        ));
     }
 }

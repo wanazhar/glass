@@ -223,7 +223,10 @@
   if (Array.isArray(host.storage_events) && host.storage_events.length > 0) {{
     globalThis.__glassDispatchStorageEvents(host.storage_events);
   }}
-  if ({run_timers}) {{
+  if (bootstrapParams.runTimers) {{
     globalThis.__glassRunTimers(host.now_ms);
   }}
-}})();
+  {dynamic_import_bootstrap}
+  cachedHostState = state;
+  }};
+}})()

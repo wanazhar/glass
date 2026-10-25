@@ -273,6 +273,59 @@ pub struct NativeLayoutSnapshot {
 }
 
 impl NativeLayoutSnapshot {
+    pub(crate) fn retained_bytes(&self) -> usize {
+        let mut bytes = std::mem::size_of::<Self>()
+            .saturating_add(
+                self.boxes
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<NativeLayoutBox>()),
+            )
+            .saturating_add(
+                self.text_runs
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<NativeTextLayout>()),
+            )
+            .saturating_add(
+                self.paint_order
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<NativeLayoutPaintOrder>()),
+            )
+            .saturating_add(
+                self.overflow_clips
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Option<NativeRect>>()),
+            )
+            .saturating_add(
+                self.sticky_projections
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<NativeStickyProjection>()),
+            )
+            .saturating_add(
+                self.scroll_containers
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<NativeScrollContainer>()),
+            )
+            .saturating_add(
+                self.nested_scroll_offsets
+                    .len()
+                    .saturating_mul(std::mem::size_of::<(u32, NativePoint)>()),
+            )
+            .saturating_add(
+                self.projected_boxes
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<NativeRect>()),
+            )
+            .saturating_add(
+                self.projected_overflow_clips
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Option<NativeRect>>()),
+            );
+        for text_run in &self.text_runs {
+            bytes = bytes.saturating_add(text_run.text.capacity());
+        }
+        bytes
+    }
+
     pub(crate) fn compute(
         document: &NativeDocument,
         viewport: Viewport,

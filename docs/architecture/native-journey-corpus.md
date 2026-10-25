@@ -17,9 +17,16 @@ current document and binds actions to that observation revision. Additional
 local journeys open an observed image link and assert decoded dimensions plus
 painted pixels, and use a disclosure and GET search form to reach and verify a
 result page before checking browser history. A responsive duplicate-link
-fixture also proves that the native engine resolves one destination-specific
-link from two small/large-screen copies, binds it to the observed revision, and
-reaches the asserted subpage. The repository's broader authored fixture coverage remains grouped under
+fixture exercises the native semantic API and batch runner: it hides the
+small-screen copy, observes the page, and requests the `link` named `library`.
+When the target is outside the response's bounded target window, `clickObserved`
+performs a unique role and case-insensitive accessible-name-fragment lookup
+against a fresh native semantic source
+snapshot and dispatches its reference with that revision. Repeated visible
+links collapse to one action only when each candidate has the same
+privacy-safe destination fingerprint; different destinations remain an
+ambiguity error.
+The repository's broader authored fixture coverage remains grouped under
 `tests/native_engine_tests/`; this corpus is an acceptance entry point, not a
 replacement for those focused regressions.
 
@@ -36,7 +43,9 @@ The public entries cover a deep MDN reference, a Wikipedia article that
 follows an observed link to a second article, and a GitHub repository journey
 that follows an observed link into the Rust repository's `library` directory.
 The GitHub journey checks repository identity and directory content before
-reporting success. The early selectors either assumed the stale `master` branch,
+reporting success. Its `clickObserved` step requests a visible `link` named
+`library` from a fresh structured observation and bounded native lookup; it
+does not depend on a CSS selector or node ID. The early selectors either assumed the stale `master` branch,
 failed to resolve the accessible name, or matched two elements after locating
 the current `main` branch. Inspection of the public markup found the duplicate
 links in responsive small-screen and large-screen cells of the same directory
@@ -50,7 +59,15 @@ a single follow-up again reached the repository assertion and unique target,
 then exceeded the same deadline at 5.143 seconds during click. The local
 5,500-link host-view fixture passes with the change; this follow-up is not a
 controlled public performance comparison and does not establish GitHub
-compatibility.
+compatibility. The local agent-facing test exposed a related target-selection
+defect: native semantic enumeration retained the hidden flag but ignored it
+when publishing interactive targets, so both responsive copies were offered.
+Hidden native semantic nodes are now excluded, and the versioned fixture puts
+the target beyond the initial 32-target response window. It passes through
+`BrowserRuntimeSession.observe()` and the revision-guarded `clickObserved`
+batch lookup. This local result repairs target choice but does not change the
+recorded public GitHub failure, which is now a bounded target-lookup miss rather
+than a click deadline.
 The latest bounded Wikipedia
 journey on 25 October did not reach its first observation: navigation hit its
 120-second deadline. It ran 12 host-view installs, with the slowest at 8.03 s,

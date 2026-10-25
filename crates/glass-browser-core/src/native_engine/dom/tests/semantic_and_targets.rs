@@ -143,11 +143,16 @@ fn semantic_projection_infers_roles_labels_attributes_and_state() {
 
     let checkbox = nodes.iter().find(|node| node.role == "checkbox").unwrap();
     assert_eq!(checkbox.checked, Some(true));
-    assert!(
-        nodes
-            .iter()
-            .any(|node| node.role == "link" && node.name == "Next")
+    let next = nodes
+        .iter()
+        .find(|node| node.role == "link" && node.name == "Next")
+        .unwrap();
+    assert_eq!(
+        next.navigation_target_fingerprint.as_deref().unwrap().len(),
+        64
     );
+    let serialized_link = serde_json::to_string(next).unwrap();
+    assert!(!serialized_link.contains("/next"));
 }
 
 #[test]

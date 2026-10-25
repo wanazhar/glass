@@ -749,6 +749,10 @@ pub struct NativeSemanticNode {
     pub read_only: bool,
     pub required: bool,
     pub focused: bool,
+    /// Privacy-safe identity for deduplicating repeated links to the same
+    /// destination during revision-scoped semantic target selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub navigation_target_fingerprint: Option<String>,
 }
 
 /// Bounded document data used to refresh the native JavaScript host view.

@@ -1,5 +1,20 @@
 use super::*;
 
+fn host_event_batch_has_listeners(
+    document: &NativeDocument,
+    runtime: &NativeJavaScriptRuntime,
+    event_batch: &[crate::native_engine::javascript::NativeHostEvent],
+) -> Result<bool, NativeEngineError> {
+    let event_types = event_batch
+        .iter()
+        .map(|event| event.event_type.clone())
+        .collect::<Vec<_>>();
+    Ok(event_types
+        .iter()
+        .any(|event_type| document.has_inline_event_handler(event_type))
+        || runtime.has_host_event_listeners(&event_types)? != Some(false))
+}
+
 pub(super) fn mutate_click_with_event_preflight(
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
@@ -19,7 +34,9 @@ pub(super) fn mutate_click_with_event_preflight(
         .iter()
         .map(|(node, kind)| (node.index(), *kind))
         .collect::<Vec<_>>();
-    if let Some(event_batch) = host_event_batch(&focus_metadata)? {
+    if let Some(event_batch) = host_event_batch(&focus_metadata)?
+        && host_event_batch_has_listeners(&next, runtime, &event_batch)?
+    {
         let evaluation = runtime.evaluate_with_host_events(
             &event_batch,
             &next,
@@ -50,40 +67,49 @@ pub(super) fn mutate_click_with_event_preflight(
     let checkable_pre_activation = next.pre_activate_checkable(node_id)?;
 
     let click_event_batch = host_click_event_batch_with_modifiers(node_index, modifiers)?;
-    let click_evaluation = runtime.evaluate_with_host_events(
-        &click_event_batch,
-        &next,
-        document_url,
-        document_origin,
-        viewport,
-    )?;
-    let click_allowed = click_evaluation
-        .value
-        .as_array()
-        .and_then(|values| values.first())
-        .and_then(Value::as_bool)
-        .ok_or_else(|| NativeEngineError::Worker {
-            operation: "content process click preflight".into(),
-            reason: "native click event result was invalid".into(),
-        })?;
-    apply_content_event_history(
-        &click_evaluation.commands,
-        document_url,
-        document_origin,
-        runtime,
-        &mut history,
-    )?;
-    scroll_commands.extend(extract_scroll_commands(&click_evaluation.commands));
-    let (effects, _) = apply_document_commands_with_font_face_ack(
-        &mut next,
-        runtime,
-        document_url,
-        document_origin,
-        viewport,
-        &click_evaluation.commands,
-        false,
-    )?;
-    events.extend(effects);
+    let click_allowed = if host_event_batch_has_listeners(&next, runtime, &click_event_batch)? {
+        let click_evaluation = runtime.evaluate_with_host_events(
+            &click_event_batch,
+            &next,
+            document_url,
+            document_origin,
+            viewport,
+        )?;
+        let allowed = click_evaluation
+            .value
+            .as_array()
+            .and_then(|values| values.first())
+            .and_then(Value::as_bool)
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: "content process click preflight".into(),
+                reason: "native click event result was invalid".into(),
+            })?;
+        apply_content_event_history(
+            &click_evaluation.commands,
+            document_url,
+            document_origin,
+            runtime,
+            &mut history,
+        )?;
+        scroll_commands.extend(extract_scroll_commands(&click_evaluation.commands));
+        let (effects, _) = apply_document_commands_with_font_face_ack(
+            &mut next,
+            runtime,
+            document_url,
+            document_origin,
+            viewport,
+            &click_evaluation.commands,
+            false,
+        )?;
+        events.extend(effects);
+        allowed
+    } else {
+        // With no inline or registered listeners the click is still a real
+        // event; its native default action below is enough. Avoid rebuilding
+        // the complete JavaScript host view just to discover that no script
+        // can cancel or handle it.
+        true
+    };
     let mut navigation = None;
     if click_allowed {
         let click_events = if checkable_pre_activation.is_some() {

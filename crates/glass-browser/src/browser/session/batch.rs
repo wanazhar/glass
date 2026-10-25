@@ -219,6 +219,46 @@ async fn execute_batch_step(
                 Some(outcome.execution_id),
             ))
         }
+        BatchStep::ClickObserved {
+            role,
+            name_contains,
+        } => {
+            let context = session.observe().await?;
+            let observation = SemanticObservation::from_page_context(
+                &context,
+                SemanticObservationLevel::Interactive,
+            )?;
+            if expected_revision.is_some_and(|revision| revision != observation.revision) {
+                return Err("batch revision changed before observed target selection".into());
+            }
+            let name_fragment = name_contains.to_lowercase();
+            let mut matches = observation
+                .regions
+                .iter()
+                .flat_map(|region| region.targets.iter())
+                .filter(|target| {
+                    target.role == *role && target.name.to_lowercase().contains(&name_fragment)
+                });
+            let target = matches.next().ok_or_else(|| {
+                format!("observed target not found: role={role:?}, nameContains={name_contains:?}")
+            })?;
+            if matches.next().is_some() {
+                return Err(format!(
+                    "observed target is ambiguous: role={role:?}, nameContains={name_contains:?}"
+                )
+                .into());
+            }
+            let outcome = session
+                .click_with_revision(&target.reference, observation.revision)
+                .await?;
+            Ok((
+                serde_json::to_string(&outcome)
+                    .ok()
+                    .map(|value| value.len()),
+                Some(outcome.current_revision),
+                Some(outcome.execution_id),
+            ))
+        }
         BatchStep::Type { text, target } => {
             let outcome = session
                 .type_text_with_expected_revision(text, target.as_deref(), expected_revision)
@@ -347,6 +387,7 @@ fn step_action_name(step: &BatchStep) -> String {
     match step {
         BatchStep::Navigate { .. } => "navigate".to_string(),
         BatchStep::Click { .. } => "click".to_string(),
+        BatchStep::ClickObserved { .. } => "clickObserved".to_string(),
         BatchStep::Type { .. } => "type".to_string(),
         BatchStep::Check { .. } => "check".to_string(),
         BatchStep::Uncheck { .. } => "uncheck".to_string(),

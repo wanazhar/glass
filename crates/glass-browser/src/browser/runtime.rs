@@ -1234,6 +1234,91 @@ impl BrowserRuntimeSession {
         self.native_semantic_observe(level).await
     }
 
+    /// Resolve one role/name-fragment selector from a fresh bounded native
+    /// semantic source snapshot. This extends lookup beyond the response
+    /// target window without returning an unbounded target list to the caller.
+    #[cfg(feature = "native-engine")]
+    pub(crate) async fn native_resolve_observed_target(
+        &self,
+        role: &str,
+        name_contains: &str,
+    ) -> BrowserResult<(u64, super::session::SemanticTarget)> {
+        self.require_native_operation("resolve_observed_target")?;
+        if role.trim().is_empty() || name_contains.trim().is_empty() {
+            return Err("observed target role and nameContains must be nonempty".into());
+        }
+        let _operation = self.operation_lock.lock().await;
+        let frames = self.native_inspection_snapshots_unlocked().await?;
+        let observation = build_native_semantic_observation(
+            &frames,
+            super::session::SemanticObservationLevel::Interactive,
+        )?;
+        let revision = observation.revision;
+        let nodes = frames
+            .iter()
+            .flat_map(|frame| {
+                frame
+                    .inspection
+                    .nodes
+                    .iter()
+                    .filter(|node| {
+                        native_semantic_role_is_interactive(&node.role) && node.role == role
+                    })
+                    .map(move |node| (frame, node))
+            })
+            .collect::<Vec<_>>();
+        let folded_name = name_contains.to_lowercase();
+        let matches = nodes
+            .iter()
+            .filter(|(_, node)| {
+                native_semantic_node_is_interactive(node)
+                    && !node.name_truncated
+                    && node.name.to_lowercase().contains(&folded_name)
+            })
+            .collect::<Vec<_>>();
+        let Some((frame, node)) = matches.first().copied() else {
+            let hidden_partial = nodes
+                .iter()
+                .filter(|(_, node)| node.hidden && node.name.to_lowercase().contains(&folded_name))
+                .count();
+            let partial_visible = nodes
+                .iter()
+                .filter(|(_, node)| {
+                    native_semantic_node_is_interactive(node)
+                        && node.name.to_lowercase().contains(&folded_name)
+                })
+                .count();
+            return Err(super::session::SemanticObservationError::new(
+                "target",
+                format!(
+                    "no visible target matches role={role:?}, nameContains={name_contains:?}; roleTargets={}, hiddenPartial={hidden_partial}, visiblePartial={partial_visible}",
+                    nodes.len(),
+                ),
+            )
+            .into());
+        };
+        let same_navigation_target = matches.len() > 1
+            && role == "link"
+            && matches
+                .iter()
+                .all(|(_, node)| node.name == matches[0].1.name)
+            && matches.iter().all(|(_, node)| {
+                node.navigation_target_fingerprint.is_some()
+                    && node.navigation_target_fingerprint
+                        == matches[0].1.navigation_target_fingerprint
+            });
+        if matches.len() > 1 && !same_navigation_target {
+            return Err(super::session::SemanticObservationError::new(
+                "target",
+                format!(
+                    "multiple visible targets match role={role:?}, nameContains={name_contains:?}"
+                ),
+            )
+            .into());
+        }
+        Ok((revision, native_semantic_target(node, &frame.frame_id)))
+    }
+
     /// Return the standard native inspection envelope for the active page.
     #[cfg(feature = "native-engine")]
     pub async fn inspect_page(&self) -> BrowserResult<InspectPageResult> {
@@ -3356,8 +3441,13 @@ fn native_accessibility_nodes(
 
 #[cfg(feature = "native-engine")]
 fn native_semantic_node_is_interactive(node: &super::native_engine::NativeSemanticNode) -> bool {
+    !node.hidden && native_semantic_role_is_interactive(&node.role)
+}
+
+#[cfg(feature = "native-engine")]
+fn native_semantic_role_is_interactive(role: &str) -> bool {
     matches!(
-        node.role.as_str(),
+        role,
         "button"
             | "checkbox"
             | "combobox"
@@ -3500,6 +3590,7 @@ mod public_session_tests {
             read_only: false,
             required: false,
             focused: false,
+            navigation_target_fingerprint: None,
         };
 
         let target = super::native_semantic_target(&node, "frame-1");

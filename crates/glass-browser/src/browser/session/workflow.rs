@@ -2286,6 +2286,13 @@ fn resolve_batch_step(
         BatchStep::Click { target } => BatchStep::Click {
             target: resolve("target", target, MAX_TARGET_BYTES)?,
         },
+        BatchStep::ClickObserved {
+            role,
+            name_contains,
+        } => BatchStep::ClickObserved {
+            role: resolve("role", role, 64)?,
+            name_contains: resolve("nameContains", name_contains, MAX_TARGET_BYTES)?,
+        },
         BatchStep::Type { text, target } => BatchStep::Type {
             text: resolve("text", text, MAX_TEXT_BYTES)?,
             target: target
@@ -2800,6 +2807,18 @@ fn validate_batch_step(action: &BatchStep, path: &str) -> Result<(), WorkflowVal
         | BatchStep::Check { target }
         | BatchStep::Uncheck { target }
         | BatchStep::Clear { target } => validate_target(&format!("{path}.target"), target)?,
+        BatchStep::ClickObserved {
+            role,
+            name_contains,
+        } => {
+            validate_bytes(&format!("{path}.role"), role, 1, 64)?;
+            validate_bytes(
+                &format!("{path}.nameContains"),
+                name_contains,
+                1,
+                MAX_TARGET_BYTES,
+            )?;
+        }
         BatchStep::Type { text, target } => {
             validate_bytes(&format!("{path}.text"), text, 0, MAX_TEXT_BYTES)?;
             if let Some(target) = target {

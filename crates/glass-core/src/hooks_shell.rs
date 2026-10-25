@@ -72,6 +72,10 @@ pub fn matches(hook: &PreToolUse, tool_name: &str) -> bool {
 
 /// Run the hook for one call. Never panics, never blocks past the timeout.
 pub fn run(hook: &PreToolUse, call_json: &str) -> Verdict {
+    run_with_timeout(hook, call_json, std::time::Duration::from_secs(TIMEOUT_S))
+}
+
+fn run_with_timeout(hook: &PreToolUse, call_json: &str, timeout: std::time::Duration) -> Verdict {
     let name = tool_name_of(call_json).to_string();
     if !matches(hook, &name) {
         return Verdict::Allow;
@@ -107,15 +111,13 @@ pub fn run(hook: &PreToolUse, call_json: &str) -> Verdict {
     let stdout_t = drain(child.stdout.take());
     let stderr_t = drain(child.stderr.take());
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TIMEOUT_S);
+    let deadline = std::time::Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
                 let code = status.code().unwrap_or(1);
-                let stdout = bounded(
-                    String::from_utf8_lossy(&stdout_t.join().unwrap_or_default()).into_owned(),
-                );
-                let _ = stderr_t.join();
+                let stdout = bounded(String::from_utf8_lossy(&stdout_t.finish()).into_owned());
+                let _ = stderr_t.finish();
                 return verdict_from(code, stdout);
             }
             Ok(None) => {
@@ -123,33 +125,206 @@ pub fn run(hook: &PreToolUse, call_json: &str) -> Verdict {
                     // Negative pid signals the whole process group: a hook
                     // that bg-spawned descendants dies with them, exactly
                     // like the bash tool's own timeout path.
-                    #[cfg(unix)]
-                    unsafe {
-                        kill(-(child.id() as i32), 9);
-                    }
-                    #[cfg(not(unix))]
-                    let _ = child.kill();
+                    terminate_hook(&mut child);
                     let _ = child.wait();
-                    let _ = stdout_t.join();
-                    let _ = stderr_t.join();
+                    let _ = stdout_t.cancel();
+                    let _ = stderr_t.cancel();
                     return warn(format!("hook timeout ({TIMEOUT_S}s): allowing the call"));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
-            Err(_) => return warn("hook crashed".to_string()),
+            Err(error) => {
+                terminate_hook(&mut child);
+                let _ = child.wait();
+                let _ = stdout_t.cancel();
+                let _ = stderr_t.cancel();
+                return warn(format!("hook wait failed: {error}"));
+            }
         }
     }
 }
 
-/// Drain a pipe on a thread, capping what we keep at OUTPUT_CAP.
-fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
-    std::thread::spawn(move || {
+fn terminate_hook(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        if let Ok(process_group) = i32::try_from(child.id()) {
+            // SAFETY: the command is launched with a fresh process group, and
+            // the checked positive child pid identifies that group.
+            unsafe {
+                kill(-process_group, 9);
+            }
+        } else {
+            let _ = child.kill();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+}
+
+struct PipeDrain {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<Vec<u8>>>,
+}
+
+impl PipeDrain {
+    fn finish(mut self) -> Vec<u8> {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.join()
+    }
+
+    fn cancel(mut self) -> Vec<u8> {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.join()
+    }
+
+    fn join(&mut self) -> Vec<u8> {
+        self.thread
+            .take()
+            .and_then(|thread| thread.join().ok())
+            .unwrap_or_default()
+    }
+}
+
+/// Drain a pipe without retaining more than the protocol output cap. On
+/// timeout the reader can stop even if an escaped descendant still owns the
+/// write end, so joining it never extends hook execution past its deadline.
+#[cfg(unix)]
+fn drain(pipe: Option<impl std::io::Read + std::os::fd::AsRawFd + Send + 'static>) -> PipeDrain {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let thread = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let Some(mut pipe) = pipe else { return out };
+        let fd = pipe.as_raw_fd();
+        // SAFETY: fcntl reads and updates flags for this live pipe read end.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return out;
+        }
+        let mut chunk = [0u8; 1024];
+        let mut after_stop_bytes = OUTPUT_CAP;
+        loop {
+            let stopping = thread_stop.load(Ordering::Relaxed);
+            if stopping && after_stop_bytes == 0 {
+                break;
+            }
+            match pipe.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let room = OUTPUT_CAP.saturating_sub(out.len());
+                    out.extend_from_slice(&chunk[..n.min(room)]);
+                    if stopping {
+                        after_stop_bytes = after_stop_bytes.saturating_sub(n);
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if thread_stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        out
+    });
+    PipeDrain {
+        stop,
+        thread: Some(thread),
+    }
+}
+
+#[cfg(windows)]
+fn drain(
+    pipe: Option<impl std::io::Read + std::os::windows::io::AsRawHandle + Send + 'static>,
+) -> PipeDrain {
+    use std::io::Read;
+    use std::os::windows::io::AsRawHandle;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let thread = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let Some(mut pipe) = pipe else { return out };
+        let mut chunk = [0u8; 1024];
+        let mut after_stop_bytes = OUTPUT_CAP;
+        loop {
+            let stopping = thread_stop.load(Ordering::Relaxed);
+            if stopping && after_stop_bytes == 0 {
+                break;
+            }
+            let mut available = 0_u32;
+            // SAFETY: the borrowed handle is a live child pipe for this call;
+            // no optional output buffers are requested.
+            let readable = unsafe {
+                PeekNamedPipe(
+                    pipe.as_raw_handle() as _,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &mut available,
+                    std::ptr::null_mut(),
+                )
+            };
+            if readable == 0 {
+                break;
+            }
+            if available == 0 {
+                if stopping {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                continue;
+            }
+            let read_len = available.min(chunk.len() as u32) as usize;
+            match pipe.read(&mut chunk[..read_len]) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let room = OUTPUT_CAP.saturating_sub(out.len());
+                    out.extend_from_slice(&chunk[..n.min(room)]);
+                    if stopping {
+                        after_stop_bytes = after_stop_bytes.saturating_sub(n);
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        out
+    });
+    PipeDrain {
+        stop,
+        thread: Some(thread),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> PipeDrain {
+    use std::io::Read;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let thread = std::thread::spawn(move || {
         let mut out = Vec::new();
         if let Some(mut pipe) = pipe {
             let mut chunk = [0u8; 1024];
-            // Read everything (so the child never blocks on a full pipe) but
-            // stop *keeping* bytes past the cap.
-            while let Ok(n) = pipe.read(&mut chunk) {
+            while !thread_stop.load(Ordering::Relaxed) {
+                let Ok(n) = pipe.read(&mut chunk) else { break };
                 if n == 0 {
                     break;
                 }
@@ -158,7 +333,11 @@ fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> std::thread::Join
             }
         }
         out
-    })
+    });
+    PipeDrain {
+        stop,
+        thread: Some(thread),
+    }
 }
 
 fn verdict_from(code: i32, stdout: String) -> Verdict {
@@ -232,6 +411,7 @@ pub fn load_config() -> Option<PreToolUse> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn hook(command: &str, matcher: &str) -> PreToolUse {
         PreToolUse {
@@ -283,6 +463,46 @@ mod tests {
         let elapsed = started.elapsed();
         assert!(matches!(v, Verdict::Warn(_)), "{v:?}");
         assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn timeout_does_not_wait_for_a_descendant_that_escaped_the_hook_group() {
+        struct EscapedChild(PathBuf);
+        impl Drop for EscapedChild {
+            fn drop(&mut self) {
+                if let Ok(pid) = std::fs::read_to_string(&self.0)
+                    && let Ok(pid) = pid.trim().parse::<i32>()
+                {
+                    // SAFETY: the PID was written by this test's `setsid`
+                    // child and is owned by this regression.
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
+        let pid_path = std::env::temp_dir().join(format!(
+            "gc-hook-escaped-{}-{}.pid",
+            std::process::id(),
+            crate::loops::now()
+        ));
+        let _escaped_child = EscapedChild(pid_path.clone());
+        let command = format!(
+            "setsid sh -c 'echo $$ > {}; exec sleep 30' & sleep 30",
+            pid_path.display()
+        );
+        let started = std::time::Instant::now();
+        let verdict = run_with_timeout(
+            &hook(&command, ""),
+            CALL,
+            std::time::Duration::from_millis(150),
+        );
+        let elapsed = started.elapsed();
+
+        assert!(matches!(verdict, Verdict::Warn(message) if message.contains("hook timeout")));
+        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
+        assert!(pid_path.is_file(), "the escaped child should have started");
     }
 
     #[test]

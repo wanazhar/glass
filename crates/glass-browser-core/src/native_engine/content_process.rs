@@ -129,11 +129,11 @@ const MAX_CONTENT_DOCUMENT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONTENT_DOCUMENT_COOKIE_BYTES: usize =
     MAX_NATIVE_COOKIE_PROFILE_BYTES * MAX_NATIVE_COOKIE_PROFILE_ENTRIES;
 const CONTENT_WORKER_PROTOCOL_VERSION: u64 = 33;
-// Match the browser integration's bounded 60-second navigation budget. The
-// outer caller still owns its shorter operation deadline and cancellation;
-// this inner guard must not silently cut an explicitly longer navigation in
-// half before that caller's deadline.
-const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(60);
+// Match the public native operation's maximum bounded 120-second navigation
+// budget. The outer caller still owns its shorter operation deadline and
+// cancellation; this inner guard must not silently cut an explicitly longer
+// navigation in half before that caller's deadline.
+const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(120);
 // Async owner turns can await a parent-brokered Fetch. Keep their independent
 // network/effect budget at 30 seconds rather than extending it with document
 // navigation.

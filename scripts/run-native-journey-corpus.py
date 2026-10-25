@@ -23,6 +23,8 @@ DEFAULT_CORPUS = ROOT / "crates/glass-browser/tests/fixtures/native-journeys-v1.
 
 def classify(message: str, timed_out: bool = False) -> str:
     text = message.lower()
+    if "content-process document snapshot" in text and "exceeds limit" in text:
+        return "resource_limit"
     if any(word in text for word in ("unsupported", "not supported", "not implemented")):
         return "unsupported"
     if any(word in text for word in ("403", "forbidden", "captcha", "challenge", "access denied")):
@@ -38,6 +40,8 @@ def classify(message: str, timed_out: bool = False) -> str:
 
 def error_kind(message: str, timed_out: bool = False) -> str:
     text = message.lower()
+    if "content-process document snapshot" in text and "exceeds limit" in text:
+        return "native_snapshot_budget_exceeded"
     if ("host view" in text or "javascript host snapshot" in text) and (
         "interrupted" in text or "deadline" in text
     ):

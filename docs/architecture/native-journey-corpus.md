@@ -31,24 +31,27 @@ code while preserving the report.
 
 The public entries cover a deep MDN reference and a Wikipedia article that
 follows an observed link to a second article. The latest bounded Wikipedia
-journey did not reach its first observation. After 113.2 seconds, host-view
-installation was interrupted at its fixed 15-second per-install deadline
-(15,005,447 microseconds); the page had 16,053 wire nodes, 8,015 element
-snapshots, and an 18,544,284-byte host snapshot. The run had four page-script
-evaluations totaling 59.8 seconds. The runner now classifies this error shape
-as `native_host_view_deadline`. This is evidence of the existing resource deadline, not proof of an allocator
-OOM. The prior run failed with a QuickJS null exception during element
-construction; its cause remains separately unresolved. A local dense fixture
-with 5,500 anchors and 1,000 styled spans passes, but does not reproduce the
-public page's full style and script workload. The native image journey passes
-locally with decode, intrinsic dimensions, and painted-pixel assertions; the
-local disclosure/search/history and observed nested-scroll journeys also pass.
-The Wikipedia journey declares only navigation, observation, and observed
-subpage navigation; it does not exercise image viewing. A single native MDN
-deep-reference journey passed, though an earlier JavaScript URL predicate
-timed out and was replaced with a bounded URL-prefix wait. These are individual
-site results, not universal compatibility. Run these scenarios only through
-the native backend and record
+journey on 25 October did not reach its first observation: navigation hit its
+120-second deadline. It ran 12 host-view installs, with the slowest at 8.03 s,
+under the unchanged 15-second per-install limit. Lazy image-pixel decoding
+reduced the image-resource host-view phase from 6.90 s to 0.0007 s in the
+measured run. The remaining measured work included 27.8 s computing 16,053
+elements' styles, 20.5 s measuring text widths, 23.5 s building the initial
+layout tree, and 47.5 s in the slowest classic page script. Total page-script
+execution reached 60.8 s. This is a product deadline failure, not a Wikipedia
+compatibility pass; repeated style/layout and page-script work remain open. A
+previous run failed at the 15-second host-view deadline and an earlier run
+raised a QuickJS null exception during element construction; those are separate
+outcomes. A local dense fixture with 5,500 anchors and 1,000 styled spans
+passes, but does not reproduce the public page's full style and script
+workload. The native image journey passes locally with decode, intrinsic
+dimensions, and painted-pixel assertions; the local disclosure/search/history
+and observed nested-scroll journeys also pass. The Wikipedia journey declares
+navigation, observation, and observed subpage navigation; the current attempt
+failed before observation. A single native MDN deep-reference journey passed,
+though an earlier JavaScript URL predicate timed out and was replaced with a
+bounded URL-prefix wait. These are individual site results, not universal
+compatibility. Run these scenarios only through the native backend and record
 network denial, challenge pages, external instability, unsupported
 capabilities, and product bugs as distinct outcomes. A successfully fetched
 video poster is not video playback: the native engine currently reports video

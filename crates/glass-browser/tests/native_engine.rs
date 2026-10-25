@@ -456,6 +456,84 @@ fn observed_duplicate_links_with_different_destinations_remain_ambiguous() {
     });
 }
 
+#[test]
+fn observed_scroll_target_uses_fresh_revision_bound_evidence() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let config = NativeEngineConfig::default()
+                .with_initial_url("fixture://observed-scroll.test/")
+                .with_fixture(
+                    "fixture://observed-scroll.test/",
+                    "<title>Reactive State</title><style>#feed{width:120px;height:32px;overflow-y:auto}#item{height:160px}</style><main><div id='feed' aria-label='Feed panel'><div id='item'>Feed content</div></div></main>",
+                )
+                .unwrap();
+            let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+            let observation = session.observe().await.unwrap();
+            let feed_targets = observation
+                .scroll_targets
+                .iter()
+                .filter(|target| {
+                    target.name.contains("Feed panel")
+                        && target.tag_name == "div"
+                        && target.max_scroll_y > target.scroll_y
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(feed_targets.len(), 1, "{:?}", observation.scroll_targets);
+            assert!(feed_targets[0].reference.starts_with("ref=r"));
+            let outcome = session
+                .native_run_batch(
+                    &[BatchStep::ScrollTargetObserved {
+                        name_contains: Some("Feed panel".into()),
+                        tag_name: Some("div".into()),
+                        frame_id: None,
+                        dx: 0.0,
+                        dy: 28.0,
+                    }],
+                    false,
+                    BatchMode::Unguarded,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(outcome.success, "{:?}", outcome.steps);
+            assert_eq!(
+                session
+                    .script("document.querySelector('#feed').scrollTop")
+                    .await
+                    .unwrap()
+                    .value,
+                serde_json::json!(28),
+            );
+            let missing = session
+                .native_run_batch(
+                    &[BatchStep::ScrollTargetObserved {
+                        name_contains: Some("missing feed".into()),
+                        tag_name: Some("aside".into()),
+                        frame_id: None,
+                        dx: 0.0,
+                        dy: 28.0,
+                    }],
+                    false,
+                    BatchMode::Unguarded,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(!missing.success);
+            assert!(format!("{:?}", missing.steps).contains("div[Feed panel]"));
+            let title = session
+                .native_wait(
+                    WaitCondition::TitleContains("reactive".into()),
+                    Duration::from_secs(1),
+                )
+                .await
+                .unwrap();
+            assert_eq!(title.condition, "title_contains");
+            session.close().await.unwrap();
+        });
+    });
+}
+
 #[tokio::test]
 async fn native_host_view_handles_large_local_anchor_collections_within_budget() {
     let anchors = (0..2_000)

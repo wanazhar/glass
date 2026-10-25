@@ -15,7 +15,8 @@
         {"id":"detail-content","action":"assert","expression":"document.title === 'Journey detail' && document.querySelector('#detail').textContent.includes('Detail')"},
         {"id":"history-back","action":"back"},
         {"id":"history-forward","action":"forward"},
-        {"id":"select-scroller","action":"scrollTarget","target":"id=feed","targetSource":"fresh-observation","deltaY":28},
+        {"id":"observe-feed","action":"observe"},
+        {"id":"select-scroller","action":"scrollTargetObserved","nameContains":"Feed","tagName":"div","targetSource":"fresh-observation","dy":28},
         {"id":"verify-scroller","action":"assert","expression":"document.querySelector('#feed').scrollTop === 28"}
       ]
     },
@@ -86,6 +87,21 @@
         {"id":"choose-observed-subpage","action":"click","target":"css=a[href='/wiki/Computer_science']","targetSource":"fresh-observation"},
         {"id":"observe-subpage","action":"observe"},
         {"id":"assert-subpage","action":"assert","condition":"url-prefix=https://en.wikipedia.org/wiki/Computer_science"}
+      ]
+    },
+    {
+      "id": "public-svelte-documentation-page-scroll",
+      "backend": "native",
+      "scope": "public-read-only",
+      "capabilities": ["navigation", "observation", "page-scroll"],
+      "timeoutMs": 120000,
+      "steps": [
+        {"id":"docs-page","action":"navigate","url":"https://svelte.dev/docs/svelte/svelte-reactivity"},
+        {"id":"observe-docs","action":"observe"},
+        {"id":"assert-docs-content","action":"assert","condition":"title-contains=reactivity"},
+        {"id":"observe-viewport-before-scroll","action":"observe"},
+        {"id":"scroll-page","action":"scroll","targetSource":"observed-viewport","dy":400},
+        {"id":"observe-after-scroll","action":"observe"}
       ]
     },
     {

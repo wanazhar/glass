@@ -42,32 +42,28 @@ code while preserving the report.
 The public entries cover a deep MDN reference, a Wikipedia article that
 follows an observed link to a second article, and a GitHub repository journey
 that follows an observed link into the Rust repository's `library` directory.
-The GitHub journey checks repository identity and directory content before
-reporting success. Its `clickObserved` step requests a visible `link` named
-`library` from a fresh structured observation and bounded native lookup; it
-does not depend on a CSS selector or node ID. The early selectors either assumed the stale `master` branch,
-failed to resolve the accessible name, or matched two elements after locating
-the current `main` branch. Inspection of the public markup found the duplicate
-links in responsive small-screen and large-screen cells of the same directory
-row. The runner classifies missing and ambiguous targets as product failures.
-Scoping to the large-screen cell resolved exactly one target, but its click
-exceeded the existing five-second content-process operation deadline while
-updating the document. The report records `content_process_deadline`; the
-subpage was not observed, so GitHub is not a full journey pass. After replacing
-repeated inherited-visibility ancestor walks with one per-snapshot state map,
-a single follow-up again reached the repository assertion and unique target,
-then exceeded the same deadline at 5.143 seconds during click. The local
-5,500-link host-view fixture passes with the change; this follow-up is not a
-controlled public performance comparison and does not establish GitHub
-compatibility. The local agent-facing test exposed a related target-selection
-defect: native semantic enumeration retained the hidden flag but ignored it
-when publishing interactive targets, so both responsive copies were offered.
-Hidden native semantic nodes are now excluded, and the versioned fixture puts
-the target beyond the initial 32-target response window. It passes through
-`BrowserRuntimeSession.observe()` and the revision-guarded `clickObserved`
-batch lookup. This local result repairs target choice but does not change the
-recorded public GitHub failure, which is now a bounded target-lookup miss rather
-than a click deadline.
+The GitHub journey checks repository identity, follows the observed `library`
+link into the Rust repository, then asserts the subpage URL and directory
+content. On 25 October the native run passed all six steps in 50.62 seconds.
+The responsive duplicate link is resolved from fresh semantic evidence and
+dispatched at that observation revision; no CSS selector or node ID is baked
+into the public journey. Earlier click-deadline failures remain historical
+measurements and do not describe the latest run.
+
+The Svelte docs journey uses the deep `/docs/svelte/svelte-reactivity` page,
+asserts its page title through the native semantic snapshot, scrolls the
+observed viewport, and takes a fresh observation afterward. On 25 October it
+passed all six steps in 80.21 seconds, including the accepted 400-pixel scroll.
+The SSR article contains about 20,000 characters and 18 headings. The run is a
+functional pass with substantial latency: navigation took 73.19 seconds;
+measured stage totals included 47.61 seconds of page-script evaluation, 33.36
+seconds for document bootstrap, 16.85 seconds computing styles, and 14.73
+seconds building layout. These stage timings overlap and are not additive.
+A shorter Svelte overview page had no scrollable extent and is not used as a
+scroll scenario. The local nested-scroll fixture separately passes through a
+revision-bound `scrollTargetObserved` selection. A missing selector reports up
+to eight observed target tags and bounded labels to make target selection
+evidence inspectable without dumping the page.
 The latest bounded Wikipedia
 journey on 25 October did not reach its first observation: navigation hit its
 120-second deadline. It ran 12 host-view installs, with the slowest at 8.03 s,
@@ -143,11 +139,12 @@ not infer support from a recognized MIME type or successful metadata parse.
 | Journey surface | Evidence source | Current status |
 |---|---|---|
 | Multi-page navigation and history | `versioned_native_journey_corpus_runs_local_navigation_and_scroll_journey` | Pass: observed link, detail content, back/forward, and a fresh revision-bound nested-scroll target |
-| Observed nested scroll container | Versioned local journey | Explicit `scrollTarget`; arbitrary-pane fallback is unsupported |
+| Observed nested scroll container | Versioned local journey | Pass: bounded `scrollTargets` expose revision-bound references; `scrollTargetObserved` requires an explicit name or tag selector and reports compact available targets on a miss |
 | Image gallery to full image | `versioned_native_image_journey_opens_and_paints_full_image` | Local fixture asserts observed link navigation, decode completion, intrinsic dimensions, and actual raster pixels |
 | Search, disclosure, and GET form | `versioned_native_disclosure_search_form_and_history_journey` | Local fixture asserts disclosure state, typed query, result URL/content, and back navigation |
 | Responsive duplicate links | `versioned_native_journey_selects_observed_responsive_duplicate_by_region` | Pass: region-scoped selector resolves one of two identical destination links and follows its revision-bound target to asserted content |
-| Public repository subpage | `public-github-repository-and-observed-directory` | Latest native-only follow-up observed/asserted the repository and uniquely resolved its responsive link; click still exceeded the 5-second content-process deadline at 5.143 s, before subpage observation |
+| Public repository subpage | `public-github-repository-and-observed-directory` | Pass on 25 October: observed repository link, subpage URL, and directory content; 6/6 steps in 50.62 s |
+| Public documentation page scroll | `public-svelte-documentation-page-scroll` | Pass on 25 October: Svelte reactivity page title, accepted viewport scroll, and post-scroll observation; 6/6 in 80.21 s. Page-script execution remains 47.61 s in this run. |
 | Video decoding and playback | `native_video_reports_decoder_absence_and_does_not_claim_playback` | Explicitly unsupported; poster rendering is separate |
 | Dynamic disclosure, search form, and result history | `versioned_native_disclosure_search_form_and_history_journey` | Pass: click an observed disclosure control, verify hidden-state/content update, type a GET query, verify result URL/content, and go back |
 | Menus, frames, SPA routes, and additional form patterns | Focused authored fixture tests under `tests/native_engine_tests/` | Add journeys where a measured gap is demonstrated |

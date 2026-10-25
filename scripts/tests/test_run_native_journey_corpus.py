@@ -23,6 +23,36 @@ class JourneyFailureClassificationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fresh-observation"):
             corpus.observed_click_step({"targetSource": "fixed-selector", "role": "link", "nameContains": "library"})
 
+    def test_observed_scroll_compiles_to_fresh_explicit_target(self):
+        self.assertEqual(
+            corpus.observed_scroll_step(
+                {"targetSource": "fresh-observation", "tagName": "main", "dy": 400}
+            ),
+            {"action": "scrollTargetObserved", "dx": 0, "dy": 400, "tagName": "main"},
+        )
+
+    def test_observed_scroll_rejects_blind_or_unbounded_selection(self):
+        with self.assertRaisesRegex(ValueError, "fresh-observation"):
+            corpus.observed_scroll_step({"targetSource": "fallback", "tagName": "main"})
+        with self.assertRaisesRegex(ValueError, "nameContains or tagName"):
+            corpus.observed_scroll_step({"targetSource": "fresh-observation", "dy": 400})
+
+    def test_viewport_scroll_requires_immediately_preceding_observation(self):
+        self.assertEqual(
+            corpus.observed_viewport_scroll_step(
+                {"targetSource": "observed-viewport", "dy": 400}, "observe"
+            ),
+            {"action": "scroll", "dx": 0, "dy": 400},
+        )
+        with self.assertRaisesRegex(ValueError, "immediately before"):
+            corpus.observed_viewport_scroll_step(
+                {"targetSource": "observed-viewport", "dy": 400}, "navigate"
+            )
+        with self.assertRaisesRegex(ValueError, "nonzero delta"):
+            corpus.observed_viewport_scroll_step(
+                {"targetSource": "observed-viewport"}, "observe"
+            )
+
     def test_missing_observed_target_is_a_product_failure(self):
         message = "unsupported operation action: native action target was not found"
         self.assertEqual(corpus.classify(message), "product_bug")
@@ -32,6 +62,19 @@ class JourneyFailureClassificationTests(unittest.TestCase):
         message = "native action target matched 2 elements; exactly one is required"
         self.assertEqual(corpus.classify(message), "product_bug")
         self.assertEqual(corpus.error_kind(message), "native_target_ambiguous")
+
+    def test_missing_or_ambiguous_observed_scroll_target_is_a_product_failure(self):
+        missing = "fresh observation has no matching scroll target"
+        ambiguous = "fresh observation has ambiguous scroll targets"
+        self.assertEqual(corpus.classify(missing), "product_bug")
+        self.assertEqual(corpus.error_kind(missing), "native_scroll_target_not_found")
+        self.assertEqual(corpus.classify(ambiguous), "product_bug")
+        self.assertEqual(corpus.error_kind(ambiguous), "native_scroll_target_ambiguous")
+
+    def test_unavailable_viewport_scroll_is_typed(self):
+        message = "native viewport scroll produced no movement (scrollY=0, documentHeight=720, viewportHeight=720)"
+        self.assertEqual(corpus.classify(message), "product_bug")
+        self.assertEqual(corpus.error_kind(message), "native_viewport_scroll_unavailable")
 
     def test_missing_bounded_semantic_target_is_a_product_failure(self):
         message = 'observed target not found: role="link", name="library"'

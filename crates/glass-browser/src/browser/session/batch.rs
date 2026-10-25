@@ -329,6 +329,9 @@ async fn execute_batch_step(
                 Some(outcome.execution_id),
             ))
         }
+        BatchStep::ScrollTargetObserved { .. } => {
+            Err("scrollTargetObserved requires the native browser runtime".into())
+        }
         BatchStep::Wait {
             condition,
             timeout_ms,
@@ -395,6 +398,7 @@ fn step_action_name(step: &BatchStep) -> String {
         BatchStep::Clear { .. } => "clear".to_string(),
         BatchStep::Scroll { .. } => "scroll".to_string(),
         BatchStep::ScrollTarget { .. } => "scrollTarget".to_string(),
+        BatchStep::ScrollTargetObserved { .. } => "scrollTargetObserved".to_string(),
         BatchStep::Wait { .. } => "wait".to_string(),
         BatchStep::Observe { .. } => "observe".to_string(),
         BatchStep::Screenshot => "screenshot".to_string(),

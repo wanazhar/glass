@@ -27,6 +27,7 @@ pub use recorder::*;
 /// The workflow definition schema understood by this crate.
 pub const WORKFLOW_SCHEMA_VERSION: u32 = 1;
 const MAX_NAME_BYTES: usize = 128;
+const MAX_SCROLL_FILTER_BYTES: usize = 256;
 const MAX_DESCRIPTION_BYTES: usize = 4 * 1024;
 const MAX_INPUTS: usize = 64;
 const MAX_STEPS: usize = 64;
@@ -2326,6 +2327,28 @@ fn resolve_batch_step(
             dx: *dx,
             dy: *dy,
         },
+        BatchStep::ScrollTargetObserved {
+            name_contains,
+            tag_name,
+            frame_id,
+            dx,
+            dy,
+        } => BatchStep::ScrollTargetObserved {
+            name_contains: name_contains
+                .as_deref()
+                .map(|value| resolve("nameContains", value, MAX_SCROLL_FILTER_BYTES))
+                .transpose()?,
+            tag_name: tag_name
+                .as_deref()
+                .map(|value| resolve("tagName", value, MAX_SCROLL_FILTER_BYTES))
+                .transpose()?,
+            frame_id: frame_id
+                .as_deref()
+                .map(|value| resolve("frameId", value, MAX_TARGET_BYTES))
+                .transpose()?,
+            dx: *dx,
+            dy: *dy,
+        },
         BatchStep::Observe {
             include_dom,
             include_screenshot,
@@ -2851,6 +2874,37 @@ fn validate_batch_step(action: &BatchStep, path: &str) -> Result<(), WorkflowVal
                 return Err(WorkflowValidationError::new(
                     path,
                     "scroll deltas must be finite and bounded",
+                ));
+            }
+        }
+        BatchStep::ScrollTargetObserved {
+            name_contains,
+            tag_name,
+            dx,
+            dy,
+            ..
+        } => {
+            if name_contains
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+                && tag_name
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+            {
+                return Err(WorkflowValidationError::new(
+                    path,
+                    "scrollTargetObserved requires nameContains or tagName",
+                ));
+            }
+            if !dx.is_finite()
+                || !dy.is_finite()
+                || dx.abs() > 1_000_000.0
+                || dy.abs() > 1_000_000.0
+                || (*dx == 0.0 && *dy == 0.0)
+            {
+                return Err(WorkflowValidationError::new(
+                    path,
+                    "scroll deltas must be nonzero, finite, and bounded",
                 ));
             }
         }

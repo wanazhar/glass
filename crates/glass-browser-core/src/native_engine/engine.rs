@@ -61,7 +61,7 @@ use super::javascript::{
     validate_native_shared_worker_options, validate_page_message_port_command,
     validate_service_worker_client_states,
 };
-use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
+use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect, NativeScrollMetrics};
 use super::lifecycle::NativeLifecycleState;
 use super::module_import_map::NativeModuleImportMap;
 use super::origin::NativeOrigin;
@@ -414,6 +414,25 @@ pub struct NativeTargetPreflight {
     pub likely_form_submit: bool,
 }
 
+/// Revision-bound visible overflow metadata from one native inspection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeScrollTargetSnapshot {
+    pub reference: String,
+    pub tag_name: String,
+    pub id: Option<String>,
+    pub label: Option<String>,
+    pub scroll_offset: NativePoint,
+    pub max_scroll_offset: NativePoint,
+}
+
+fn bounded_inspection_label(value: &str) -> String {
+    let mut label = value.trim().chars().take(256).collect::<String>();
+    if label.chars().any(char::is_control) {
+        label.retain(|character| !character.is_control());
+    }
+    label
+}
+
 /// One atomic native inspection snapshot used by higher-level semantic
 /// discovery surfaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -422,6 +441,7 @@ pub struct NativeInspectionSnapshot {
     pub snapshot: NativeEngineSnapshot,
     pub nodes: Vec<super::dom::NativeSemanticNode>,
     pub layout: NativeLayoutSnapshot,
+    pub scroll_targets: Vec<NativeScrollTargetSnapshot>,
 }
 
 /// Single-owner native browser kernel.
@@ -1288,11 +1308,35 @@ impl NativeEngine {
     /// revision so agent-facing discovery cannot combine different states.
     pub fn inspection_snapshot(&self) -> Result<NativeInspectionSnapshot, NativeEngineError> {
         self.require_running("semantic inspection")?;
+        let layout = self.layout()?;
+        let scroll_targets = layout
+            .observed_scroll_targets()
+            .into_iter()
+            .filter_map(|metrics: NativeScrollMetrics| {
+                let node = self.document.node(metrics.node_id)?;
+                let tag_name = node.element_name()?.to_owned();
+                let reference = self.document.node_reference(metrics.node_id)?;
+                let id = node.attribute("id").map(bounded_inspection_label);
+                let label = node
+                    .attribute("aria-label")
+                    .or_else(|| node.attribute("title"))
+                    .map(bounded_inspection_label);
+                Some(NativeScrollTargetSnapshot {
+                    reference,
+                    tag_name,
+                    id,
+                    label,
+                    scroll_offset: metrics.scroll_offset,
+                    max_scroll_offset: metrics.max_scroll_offset,
+                })
+            })
+            .collect();
         Ok(NativeInspectionSnapshot {
             context_id: self.config.context_id.clone(),
             snapshot: self.snapshot()?,
             nodes: self.document.semantic_nodes(),
-            layout: self.layout()?,
+            scroll_targets,
+            layout,
         })
     }
 

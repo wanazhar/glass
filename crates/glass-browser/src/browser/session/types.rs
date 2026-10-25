@@ -105,6 +105,21 @@ pub enum BatchStep {
         #[serde(default)]
         dy: f64,
     },
+    /// Resolve one revision-bound native scroll container from fresh observed
+    /// scroll evidence, then scroll only that container.
+    #[serde(rename = "scrollTargetObserved")]
+    ScrollTargetObserved {
+        #[serde(default, rename = "nameContains")]
+        name_contains: Option<String>,
+        #[serde(default, rename = "tagName")]
+        tag_name: Option<String>,
+        #[serde(default, rename = "frameId")]
+        frame_id: Option<String>,
+        #[serde(default)]
+        dx: f64,
+        #[serde(default)]
+        dy: f64,
+    },
     #[serde(rename = "wait")]
     Wait {
         condition: String,
@@ -1280,6 +1295,7 @@ pub enum WaitCondition {
     Lifecycle(String),
     UrlExact(String),
     UrlPrefix(String),
+    TitleContains(String),
     TargetAttached(String),
     TargetVisible(String),
     TargetHidden(String),
@@ -3712,6 +3728,7 @@ impl WaitCondition {
             }
             "url" => Self::UrlExact(argument.to_string()),
             "url-prefix" => Self::UrlPrefix(argument.to_string()),
+            "title-contains" => Self::TitleContains(argument.to_string()),
             "target-attached" => Self::TargetAttached(argument.to_string()),
             "target-visible" => Self::TargetVisible(argument.to_string()),
             "target-hidden" => Self::TargetHidden(argument.to_string()),
@@ -3737,6 +3754,7 @@ impl WaitCondition {
             Self::Lifecycle(_) => "lifecycle".to_string(),
             Self::UrlExact(_) => "url_exact".to_string(),
             Self::UrlPrefix(_) => "url_prefix".to_string(),
+            Self::TitleContains(_) => "title_contains".to_string(),
             Self::TargetAttached(_) => "target_attached".to_string(),
             Self::TargetVisible(_) => "target_visible".to_string(),
             Self::TargetHidden(_) => "target_hidden".to_string(),
@@ -3754,6 +3772,7 @@ impl WaitCondition {
             Self::Lifecycle(value)
             | Self::UrlExact(value)
             | Self::UrlPrefix(value)
+            | Self::TitleContains(value)
             | Self::TargetAttached(value)
             | Self::TargetVisible(value)
             | Self::TargetHidden(value)

@@ -131,12 +131,13 @@ pub(crate) use semantic::{
     MAX_LABEL_BYTES, MAX_ROLE_BYTES, bounded_semantic_text, find_region_node,
 };
 pub use semantic::{
-    SEMANTIC_OBSERVATION_SCHEMA_VERSION, SemanticAccessibilityNode, SemanticChangeKind,
-    SemanticChangeSet, SemanticConfidence, SemanticContinuity, SemanticExpansionHandle,
-    SemanticObservation, SemanticObservationError, SemanticObservationLevel,
-    SemanticObservationLimits, SemanticPage, SemanticPageKind, SemanticRegion,
-    SemanticRegionChange, SemanticRegionKind, SemanticRouteIdentity, SemanticStructuredRecord,
-    SemanticTarget, SemanticTargetChange, SemanticViewport,
+    MAX_SEMANTIC_SCROLL_TARGETS, SEMANTIC_OBSERVATION_SCHEMA_VERSION, SemanticAccessibilityNode,
+    SemanticChangeKind, SemanticChangeSet, SemanticConfidence, SemanticContinuity,
+    SemanticExpansionHandle, SemanticObservation, SemanticObservationError,
+    SemanticObservationLevel, SemanticObservationLimits, SemanticPage, SemanticPageKind,
+    SemanticRegion, SemanticRegionChange, SemanticRegionKind, SemanticRouteIdentity,
+    SemanticScrollTarget, SemanticStructuredRecord, SemanticTarget, SemanticTargetChange,
+    SemanticViewport,
 };
 pub use snapshot::{
     SESSION_SNAPSHOT_SCHEMA_VERSION, SessionSnapshot, SessionSnapshotDiff, SessionSnapshotStore,

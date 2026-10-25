@@ -1008,6 +1008,10 @@ fn wait_conditions_parse_typed_forms_and_reject_unbounded_values() {
         WaitCondition::TargetVisible("name=Save".to_string())
     );
     assert_eq!(
+        WaitCondition::parse("title-contains=reactivity").unwrap(),
+        WaitCondition::TitleContains("reactivity".to_string())
+    );
+    assert_eq!(
         WaitCondition::parse("network-quiet=250").unwrap(),
         WaitCondition::NetworkQuiet(Duration::from_millis(250))
     );

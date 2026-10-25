@@ -83,7 +83,8 @@ pub use engine::parse_point_target;
 pub use engine::{
     NativeActionResult, NativeActionabilityReason, NativeDiagnosticsSnapshot,
     NativeEffectsSnapshot, NativeEngine, NativeEngineSnapshot, NativeInspectionSnapshot,
-    NativePreflightAction, NativeTargetErrorKind, NativeTargetPreflight,
+    NativePreflightAction, NativeScrollTargetSnapshot, NativeTargetErrorKind,
+    NativeTargetPreflight,
 };
 pub use error::{NativeEngineError, NativeWorkerFailureKind};
 pub use font::{NativeFontRun, NativeGlyph, NativeGlyphComposite};

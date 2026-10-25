@@ -103,6 +103,11 @@
         },
         {
           "level": "2",
+          "title": "Issue #65 workspace unsafe inventory",
+          "anchor": "issue-65-workspace-unsafe-inventory"
+        },
+        {
+          "level": "2",
           "title": "Verification in this working tree",
           "anchor": "verification-in-this-working-tree"
         }

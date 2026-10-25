@@ -139,6 +139,10 @@ const CONTENT_PROCESS_LOAD_TIMEOUT: Duration = Duration::from_secs(60);
 // navigation.
 pub(crate) const CONTENT_PROCESS_ASYNC_EFFECT_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTENT_PROCESS_MUTATION_TIMEOUT: Duration = Duration::from_secs(5);
+// Page lifecycle handlers can run several site scripts and brokered resource
+// effects against a large document. Keep ordinary user mutations at five
+// seconds, while giving this bounded lifecycle batch its own fixed ceiling.
+const CONTENT_PROCESS_LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const CONTENT_PROCESS_SCRIPT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CONTENT_EVENT_LOOP_TURNS: usize = MAX_NATIVE_EFFECTS;
 const MAX_NATIVE_COOKIE_CHANGE_BATCH: usize = MAX_NATIVE_EFFECTS;

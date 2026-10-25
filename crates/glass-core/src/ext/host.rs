@@ -1561,3 +1561,18 @@ fn fd_readable(_fd: i32, timeout: std::time::Duration) -> bool {
     std::thread::sleep(timeout);
     true
 }
+
+#[cfg(all(test, unix))]
+mod fd_readable_tests {
+    use super::fd_readable;
+    use std::{io::Write, os::fd::AsRawFd, os::unix::net::UnixStream, time::Duration};
+
+    #[test]
+    fn poll_reports_empty_and_readable_stream_states() {
+        let (mut writer, reader) = UnixStream::pair().expect("stream pair opens");
+
+        assert!(!fd_readable(reader.as_raw_fd(), Duration::from_millis(1)));
+        writer.write_all(b"ready").expect("stream accepts bytes");
+        assert!(fd_readable(reader.as_raw_fd(), Duration::from_millis(50)));
+    }
+}

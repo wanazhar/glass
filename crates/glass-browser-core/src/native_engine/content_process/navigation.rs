@@ -110,6 +110,10 @@ impl ContentLoadStage {
         self.finish_as("complete", items);
     }
 
+    pub(crate) fn fail(self, items: Option<usize>) {
+        self.finish_as("error", items);
+    }
+
     fn finish_as(mut self, phase: &'static str, items: Option<usize>) {
         trace_content_load_stage(
             self.request_id,

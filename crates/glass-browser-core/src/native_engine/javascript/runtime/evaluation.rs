@@ -214,7 +214,11 @@ impl NativeJavaScriptRuntime {
             }
             let host_view_result = ctx.eval::<(), _>(bootstrap.as_str());
             if let Some(stage) = host_view_stage {
-                stage.finish(Some(host_view_bytes));
+                if host_view_result.is_ok() {
+                    stage.finish(Some(host_view_bytes));
+                } else {
+                    stage.fail(Some(host_view_bytes));
+                }
             }
             if let Ok(mut current) = self.deadline.lock() {
                 *current = Some(Instant::now() + NATIVE_SCRIPT_TIMEOUT);

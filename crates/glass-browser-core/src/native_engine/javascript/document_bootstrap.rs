@@ -38,6 +38,7 @@ pub(super) fn document_bootstrap(
     run_timers: bool,
     include_layout: bool,
     environment: &NativeEnvironmentOverrides,
+    runtime_has_matching_host_state: bool,
 ) -> Result<NativeDocumentBootstrap, NativeEngineError> {
     let random_seed_stage = crate::native_engine::content_process::ContentLoadStage::begin(
         0,
@@ -55,88 +56,110 @@ pub(super) fn document_bootstrap(
         operation: "seed native page crypto".into(),
         reason: "the operating system did not provide page crypto seed bytes".into(),
     })?;
-    let initial_random_bytes =
-        serde_json::to_string(&random_bytes).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize native page crypto seed".into(),
-            reason: "native page crypto seed bytes could not be serialized".into(),
-        })?;
     random_seed_stage.finish(Some(random_bytes.len()));
     let snapshot_stage = crate::native_engine::content_process::ContentLoadStage::begin(
         0,
         "javascript_bootstrap_dom_snapshot",
     );
-    let state = if include_layout {
-        document.script_snapshot_with_layout(
+    let snapshot_is_cached = runtime_has_matching_host_state
+        && document.has_cached_script_snapshot(crate::limits::MAX_TEXT_BYTES, viewport)
+        && (!include_layout
+            || document.has_cached_scrolled_script_projection(
+                viewport,
+                scroll_offset,
+                nested_scroll_offsets,
+            ));
+    let reuse_state_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+        crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "javascript_bootstrap_host_state_reuse",
+        )
+    });
+    if let Some(stage) = reuse_state_stage {
+        stage.finish(Some(usize::from(snapshot_is_cached)));
+    }
+    let state = if snapshot_is_cached {
+        None
+    } else if include_layout {
+        Some(document.script_snapshot_with_layout(
             crate::limits::MAX_TEXT_BYTES,
             viewport,
             scroll_offset,
             nested_scroll_offsets,
-        )?
+        )?)
     } else {
-        document.script_snapshot_for_viewport(crate::limits::MAX_TEXT_BYTES, viewport)
+        Some(document.script_snapshot_for_viewport(crate::limits::MAX_TEXT_BYTES, viewport))
     };
     snapshot_stage.finish(None);
     let style_dedup_stage = crate::native_engine::content_process::ContentLoadStage::begin(
         0,
         "javascript_bootstrap_style_interning",
     );
-    let mut state = serde_json::to_value(state).map_err(|_| NativeEngineError::Worker {
-        operation: "compact JavaScript host view".into(),
-        reason: "native JavaScript host view could not be compacted".into(),
-    })?;
-    let mut computed_styles = Vec::new();
-    let mut style_indices = std::collections::HashMap::<Vec<u8>, u32>::new();
-    if let Some(elements) = state
-        .get_mut("elements")
-        .and_then(serde_json::Value::as_array_mut)
-    {
-        for (batch_ordinal, batch) in elements.chunks_mut(128).enumerate() {
-            let batch_stage =
-                crate::native_engine::content_process::ContentLoadStage::begin_with_resource(
-                    0,
-                    "javascript_bootstrap_style_interning_batch",
-                    Some(batch_ordinal),
-                    Some("elements"),
-                );
-            let mut style_key_bytes = 0usize;
-            for element in batch {
-                let Some(element) = element.as_object_mut() else {
-                    continue;
-                };
-                let computed_style = element
-                    .remove("computedStyle")
-                    .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
-                let style_key =
-                    serde_json::to_vec(&computed_style).map_err(|_| NativeEngineError::Worker {
-                        operation: "compact JavaScript computed style".into(),
-                        reason: "native computed style could not be compacted".into(),
+    let mut state =
+        state
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|_| NativeEngineError::Worker {
+                operation: "compact JavaScript host view".into(),
+                reason: "native JavaScript host view could not be compacted".into(),
+            })?;
+    let mut computed_style_count = 0;
+    if let Some(state) = state.as_mut() {
+        let mut computed_styles = Vec::new();
+        let mut style_indices = std::collections::HashMap::<Vec<u8>, u32>::new();
+        if let Some(elements) = state
+            .get_mut("elements")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for (batch_ordinal, batch) in elements.chunks_mut(128).enumerate() {
+                let batch_stage =
+                    crate::native_engine::content_process::ContentLoadStage::begin_with_resource(
+                        0,
+                        "javascript_bootstrap_style_interning_batch",
+                        Some(batch_ordinal),
+                        Some("elements"),
+                    );
+                let mut style_key_bytes = 0usize;
+                for element in batch {
+                    let Some(element) = element.as_object_mut() else {
+                        continue;
+                    };
+                    let computed_style = element
+                        .remove("computedStyle")
+                        .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+                    let style_key = serde_json::to_vec(&computed_style).map_err(|_| {
+                        NativeEngineError::Worker {
+                            operation: "compact JavaScript computed style".into(),
+                            reason: "native computed style could not be compacted".into(),
+                        }
                     })?;
-                style_key_bytes = style_key_bytes.saturating_add(style_key.len());
-                let style_index = if let Some(index) = style_indices.get(&style_key) {
-                    *index
-                } else {
-                    let index = u32::try_from(computed_styles.len()).map_err(|_| {
-                        NativeEngineError::limit(
-                            "native computed style table",
-                            u32::MAX as usize,
-                            computed_styles.len(),
-                        )
-                    })?;
-                    computed_styles.push(computed_style);
-                    style_indices.insert(style_key, index);
-                    index
-                };
-                element.insert("computedStyleIndex".into(), serde_json::json!(style_index));
+                    style_key_bytes = style_key_bytes.saturating_add(style_key.len());
+                    let style_index = if let Some(index) = style_indices.get(&style_key) {
+                        *index
+                    } else {
+                        let index = u32::try_from(computed_styles.len()).map_err(|_| {
+                            NativeEngineError::limit(
+                                "native computed style table",
+                                u32::MAX as usize,
+                                computed_styles.len(),
+                            )
+                        })?;
+                        computed_styles.push(computed_style);
+                        style_indices.insert(style_key, index);
+                        index
+                    };
+                    element.insert("computedStyleIndex".into(), serde_json::json!(style_index));
+                }
+                batch_stage.finish(Some(style_key_bytes));
             }
-            batch_stage.finish(Some(style_key_bytes));
         }
-    }
-    let computed_style_count = computed_styles.len();
-    if let Some(state) = state.as_object_mut() {
-        state.insert(
-            "computedStyles".into(),
-            serde_json::Value::Array(computed_styles),
-        );
+        computed_style_count = computed_styles.len();
+        if let Some(state) = state.as_object_mut() {
+            state.insert(
+                "computedStyles".into(),
+                serde_json::Value::Array(computed_styles),
+            );
+        }
     }
     style_dedup_stage.finish(Some(computed_style_count));
     let serialization_stage = crate::native_engine::content_process::ContentLoadStage::begin(
@@ -158,6 +181,7 @@ pub(super) fn document_bootstrap(
         "opener_url": opener_url,
         "origin": origin.serialized(),
         "state": state,
+        "reuse_state": snapshot_is_cached,
         "font_faces": document.font_face_script_descriptors(),
         "history_state": history_state,
         "history_length": history_length,
@@ -176,6 +200,13 @@ pub(super) fn document_bootstrap(
         "geolocation": &environment.geolocation,
         "timezone_id": &environment.timezone_id,
         "cpu_throttling_rate": environment.cpu_throttling_rate,
+        "__glassBootstrap": {
+            "width": viewport.width,
+            "height": viewport.height,
+            "readyState": ready_state,
+            "runTimers": run_timers,
+            "initialPageCryptoBytes": random_bytes,
+        },
     }))
     .map_err(|_| NativeEngineError::Worker {
         operation: "serialize JavaScript host view".into(),
@@ -186,11 +217,6 @@ pub(super) fn document_bootstrap(
     // in the generated JavaScript makes the parser retain a large string
     // literal and its syntax tree at the same time as JSON.parse allocates the
     // object graph. The evaluator deletes this temporary global after parsing.
-    let ready_state =
-        serde_json::to_string(ready_state).map_err(|_| NativeEngineError::Worker {
-            operation: "serialize document ready state".into(),
-            reason: "native document ready state could not be serialized".into(),
-        })?;
     let message_channel_script = message_channel_bootstrap();
     let service_worker_page_script = service_worker_page_script();
     let xml_document_script = native_xml_document_script();
@@ -201,7 +227,7 @@ pub(super) fn document_bootstrap(
         0,
         "javascript_bootstrap_template_assembly",
     );
-    let mut bootstrap = format!(
+    let bootstrap = format!(
         concat!(
             include_str!("document_bootstrap/runtime_timers.js"),
             include_str!("document_bootstrap/storage_indexeddb.js"),
@@ -261,13 +287,8 @@ pub(super) fn document_bootstrap(
         dialog_text_limit = MAX_NATIVE_DIALOG_TEXT_BYTES,
         max_frame_window_indices = MAX_NATIVE_FRAME_SCRIPT_BINDINGS,
         window_name_bytes_limit = MAX_NATIVE_WINDOW_NAME_BYTES,
-        run_timers = run_timers,
-        width = viewport.width,
-        height = viewport.height,
-        ready_state = ready_state,
         history_state_bytes_limit = MAX_NATIVE_HISTORY_STATE_BYTES,
         history_length_limit = MAX_NATIVE_HISTORY_DELTA,
-        initial_page_crypto_bytes = initial_random_bytes,
         page_crypto_pool_limit = MAX_NATIVE_PAGE_CRYPTO_POOL_BYTES,
         page_crypto_values_limit = MAX_NATIVE_PAGE_CRYPTO_VALUES_BYTES,
         native_crypto_derive_work = MAX_NATIVE_CRYPTO_DERIVE_WORK,
@@ -275,8 +296,8 @@ pub(super) fn document_bootstrap(
         message_channel_script = message_channel_script,
         service_worker_page_script = service_worker_page_script,
         xml_document_script = xml_document_script,
+        dynamic_import_bootstrap = NATIVE_DYNAMIC_IMPORT_OPTIONS_BOOTSTRAP,
     );
-    bootstrap.push_str(NATIVE_DYNAMIC_IMPORT_OPTIONS_BOOTSTRAP);
     assembly_stage.finish(Some(bootstrap.len()));
     Ok(NativeDocumentBootstrap {
         source: bootstrap,

@@ -1051,6 +1051,15 @@ pub struct NativeDocument {
 /// Per-document memo of cascade results for layout queries. It is derived
 /// state: clones get an independent copy, while document equality ignores it.
 type CachedNativeScriptSnapshot = (u64, u64, usize, Viewport, NativeScriptDocumentSnapshot);
+type CachedNativeScrollProjection = (
+    u64,
+    u64,
+    Viewport,
+    NativePoint,
+    BTreeMap<u32, NativePoint>,
+    NativeLayoutSnapshot,
+    Vec<NativeScriptGeometrySnapshot>,
+);
 
 #[derive(Debug, Default)]
 struct NativeLayoutStyleCache(
@@ -1059,6 +1068,7 @@ struct NativeLayoutStyleCache(
     Mutex<Option<NativeLayoutSnapshot>>,
     Mutex<u64>,
     Mutex<Option<CachedNativeScriptSnapshot>>,
+    Mutex<Option<CachedNativeScrollProjection>>,
 );
 
 impl Clone for NativeLayoutStyleCache {
@@ -1087,6 +1097,7 @@ impl Clone for NativeLayoutStyleCache {
             Mutex::new(custom_properties),
             Mutex::new(layout),
             Mutex::new(snapshot_generation),
+            Mutex::new(None),
             Mutex::new(None),
         )
     }
@@ -1127,6 +1138,10 @@ impl NativeLayoutStyleCache {
             .4
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self
+            .5
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
     fn script_snapshot(
@@ -1152,6 +1167,30 @@ impl NativeLayoutStyleCache {
                 },
             )
             .map(|(_, _, _, _, snapshot)| snapshot.clone())
+    }
+
+    fn has_script_snapshot(
+        &self,
+        revision: u64,
+        max_text_bytes: usize,
+        viewport: Viewport,
+    ) -> bool {
+        let generation = *self
+            .3
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.4
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(
+                |(cached_revision, cached_generation, cached_limit, cached_viewport, _)| {
+                    *cached_revision == revision
+                        && *cached_generation == generation
+                        && *cached_limit == max_text_bytes
+                        && *cached_viewport == viewport
+                },
+            )
     }
 
     fn cache_script_snapshot(
@@ -1186,6 +1225,118 @@ impl NativeLayoutStyleCache {
             .2
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(layout);
+    }
+
+    fn scrolled_script_projection(
+        &self,
+        revision: u64,
+        viewport: Viewport,
+        scroll_offset: NativePoint,
+        nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
+    ) -> Option<(NativeLayoutSnapshot, Vec<NativeScriptGeometrySnapshot>)> {
+        let generation = *self
+            .3
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.5
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .filter(
+                |(
+                    cached_revision,
+                    cached_generation,
+                    cached_viewport,
+                    cached_scroll,
+                    cached_nested,
+                    _,
+                    _,
+                )| {
+                    *cached_revision == revision
+                        && *cached_generation == generation
+                        && *cached_viewport == viewport
+                        && *cached_scroll == scroll_offset
+                        && cached_nested == nested_scroll_offsets
+                },
+            )
+            .map(|(_, _, _, _, _, layout, geometry)| (layout.clone(), geometry.clone()))
+    }
+
+    fn has_scrolled_script_projection(
+        &self,
+        revision: u64,
+        viewport: Viewport,
+        scroll_offset: NativePoint,
+        nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
+    ) -> bool {
+        let generation = *self
+            .3
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.5
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(
+                |(
+                    cached_revision,
+                    cached_generation,
+                    cached_viewport,
+                    cached_scroll,
+                    cached_nested,
+                    _,
+                    _,
+                )| {
+                    *cached_revision == revision
+                        && *cached_generation == generation
+                        && *cached_viewport == viewport
+                        && *cached_scroll == scroll_offset
+                        && cached_nested == nested_scroll_offsets
+                },
+            )
+    }
+
+    fn cache_scrolled_script_projection(
+        &self,
+        revision: u64,
+        viewport: Viewport,
+        scroll_offset: NativePoint,
+        nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
+        layout: NativeLayoutSnapshot,
+        geometry: Vec<NativeScriptGeometrySnapshot>,
+    ) {
+        const MAX_RETAINED_BYTES: usize = 16 * 1024 * 1024;
+        let retained_bytes = layout
+            .retained_bytes()
+            .saturating_add(
+                geometry
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<NativeScriptGeometrySnapshot>()),
+            )
+            .saturating_add(
+                nested_scroll_offsets
+                    .len()
+                    .saturating_mul(std::mem::size_of::<(u32, NativePoint)>()),
+            );
+        if retained_bytes > MAX_RETAINED_BYTES {
+            return;
+        }
+        let generation = *self
+            .3
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *self
+            .5
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((
+            revision,
+            generation,
+            viewport,
+            scroll_offset,
+            nested_scroll_offsets.clone(),
+            layout,
+            geometry,
+        ));
     }
 }
 

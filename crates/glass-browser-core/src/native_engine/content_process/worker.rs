@@ -1869,8 +1869,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                         "scroll_commands": scroll_commands,
                                         "frame_sources": resource.frame_sources,
                                         "navigate_to_sources": resource.navigate_to_sources,
-                                        "document_base64": base64::engine::general_purpose::STANDARD
-                                            .encode(serde_json::to_vec(&document_wire).unwrap_or_default()),
+                                        "document_base64": encode_document_snapshot_base64(
+                                            &serde_json::to_vec(&document_wire).unwrap_or_default(),
+                                        ),
                                     })
                                 }
                                 Err(error) => content_error_response(id, error),
@@ -2752,8 +2753,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                                     "mutation_history": mutation.history,
                                     "scroll_commands": mutation.scroll_commands,
                                     "frame_scripts": frame_scripts,
-                                    "document_base64": base64::engine::general_purpose::STANDARD
-                                        .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                                    "document_base64": encode_document_snapshot_base64(
+                                        &serde_json::to_vec(&mutation.document).unwrap_or_default(),
+                                    ),
                                     "events": mutation.events.iter().map(|event| json!({
                                         "node_index": event.node_index,
                                         "kind": event_kind_text(event.kind),
@@ -2876,8 +2878,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "allowed": mutation.allowed,
                             "mutation_history": mutation.history,
                             "scroll_commands": mutation.scroll_commands,
-                            "document_base64": base64::engine::general_purpose::STANDARD
-                                .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                            "document_base64": encode_document_snapshot_base64(
+                                &serde_json::to_vec(&mutation.document).unwrap_or_default(),
+                            ),
                             "events": mutation.events.iter().map(|event| json!({
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
@@ -2983,8 +2986,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "id": id,
                             "mutation_history": mutation.history,
                             "scroll_commands": mutation.scroll_commands,
-                            "document_base64": base64::engine::general_purpose::STANDARD
-                                .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                            "document_base64": encode_document_snapshot_base64(
+                                &serde_json::to_vec(&mutation.document).unwrap_or_default(),
+                            ),
                             "events": mutation.events.iter().map(|event| json!({
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
@@ -3144,8 +3148,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "id": id,
                             "mutation_history": mutation.history,
                             "scroll_commands": mutation.scroll_commands,
-                            "document_base64": base64::engine::general_purpose::STANDARD
-                                .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                            "document_base64": encode_document_snapshot_base64(
+                                &serde_json::to_vec(&mutation.document).unwrap_or_default(),
+                            ),
                             "events": mutation.events.iter().map(|event| json!({
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
@@ -3367,8 +3372,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "allowed": mutation.allowed,
                             "mutation_history": mutation.history,
                             "scroll_commands": mutation.scroll_commands,
-                            "document_base64": base64::engine::general_purpose::STANDARD
-                                .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                            "document_base64": encode_document_snapshot_base64(
+                                &serde_json::to_vec(&mutation.document).unwrap_or_default(),
+                            ),
                             "events": mutation.events.iter().map(|event| json!({
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
@@ -3445,8 +3451,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "allowed": allowed,
                             "mutation_history": mutation.history,
                             "scroll_commands": mutation.scroll_commands,
-                            "document_base64": base64::engine::general_purpose::STANDARD
-                                .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                            "document_base64": encode_document_snapshot_base64(
+                                &serde_json::to_vec(&mutation.document).unwrap_or_default(),
+                            ),
                             "events": mutation.events.iter().map(|event| json!({
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
@@ -3560,8 +3567,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "id": id,
                             "mutation_history": mutation.history,
                             "scroll_commands": mutation.scroll_commands,
-                            "document_base64": base64::engine::general_purpose::STANDARD
-                                .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                            "document_base64": encode_document_snapshot_base64(
+                                &serde_json::to_vec(&mutation.document).unwrap_or_default(),
+                            ),
                             "events": mutation.events.iter().map(|event| json!({
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
@@ -3649,8 +3657,9 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             "id": id,
                             "mutation_history": mutation.history,
                             "scroll_commands": mutation.scroll_commands,
-                            "document_base64": base64::engine::general_purpose::STANDARD
-                                .encode(serde_json::to_vec(&mutation.document).unwrap_or_default()),
+                            "document_base64": encode_document_snapshot_base64(
+                                &serde_json::to_vec(&mutation.document).unwrap_or_default(),
+                            ),
                             "events": mutation.events.iter().map(|event| json!({
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
@@ -3821,9 +3830,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                             operation: "encode parent-brokered mutation resources".into(),
                             reason: "the mutated document could not be encoded".into(),
                         })?;
-                    response["document_base64"] = Value::String(
-                        base64::engine::general_purpose::STANDARD.encode(encoded_document),
-                    );
+                    response["document_base64"] =
+                        Value::String(encode_document_snapshot_base64(&encoded_document));
                     append_content_mutation_response_effects(&mut response, &mutation)?;
                     if !mutation.history.is_empty() {
                         let document_origin = document_origin.as_ref().ok_or_else(|| {

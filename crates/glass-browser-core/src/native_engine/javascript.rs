@@ -106,8 +106,8 @@ use hmac::{Hmac, Mac};
 use rquickjs::function::This;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{
-    ArrayBuffer, CaughtError, Coerced, Context, Ctx, Error, FromJs, Function, Module, Runtime,
-    TypedArray, Value,
+    ArrayBuffer, CaughtError, Coerced, Context, Ctx, Error, FromJs, Function, Module, Persistent,
+    Runtime, TypedArray, Value,
 };
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
@@ -2942,9 +2942,21 @@ struct NativeUnhandledPromiseRejections {
     next_order: u64,
 }
 
+/// A QuickJS handle owned by one `NativeJavaScriptRuntime`. The upstream
+/// handle is intentionally not `Send`, although its runtime is movable.
+/// This wrapper permits that same exclusive owner transfer.
+struct PersistentHostViewInstaller(Persistent<Function<'static>>);
+
+// SAFETY: The handle is private to NativeJavaScriptRuntime, whose QuickJS
+// context is entered under exclusive ownership. Runtime moves with the
+// handle, the mutex serializes access, and Drop releases it before Runtime.
+unsafe impl Send for PersistentHostViewInstaller {}
+
 pub(crate) struct NativeJavaScriptRuntime {
     runtime: Runtime,
     context: Context,
+    host_view_installer: Mutex<Option<PersistentHostViewInstaller>>,
+    host_view_cache_key: Mutex<Option<NativeHostViewCacheKey>>,
     deadline: Arc<Mutex<Option<Instant>>>,
     environment: Arc<Mutex<NativeEnvironmentOverrides>>,
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,
@@ -2997,6 +3009,48 @@ pub(crate) struct NativeJavaScriptRuntime {
     storage_context_id: String,
     ready_state: String,
     clock_origin: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeHostViewCacheKey {
+    document_address: usize,
+    generation: u32,
+    revision: u64,
+    viewport: Viewport,
+    include_layout: bool,
+    scroll_offset: NativePoint,
+    nested_scroll_offsets: BTreeMap<u32, NativePoint>,
+}
+
+impl NativeHostViewCacheKey {
+    fn new(
+        document: &NativeDocument,
+        viewport: Viewport,
+        include_layout: bool,
+        scroll_offset: NativePoint,
+        nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
+    ) -> Self {
+        Self {
+            document_address: std::ptr::from_ref(document) as usize,
+            generation: document.generation(),
+            revision: document.revision(),
+            viewport,
+            include_layout,
+            scroll_offset,
+            nested_scroll_offsets: nested_scroll_offsets.clone(),
+        }
+    }
+}
+
+impl Drop for NativeJavaScriptRuntime {
+    fn drop(&mut self) {
+        // A Persistent QuickJS handle owns a JS value reference and must be
+        // released while its runtime is still alive. Rust drops fields in
+        // declaration order, so explicitly empty this cache before runtime.
+        if let Ok(cached) = self.host_view_installer.get_mut() {
+            cached.take();
+        }
+    }
 }
 
 pub(crate) struct NativeTimerPumpGuard<'a> {

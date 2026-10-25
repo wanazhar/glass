@@ -81,12 +81,8 @@ pub(in crate::native_engine::content_process) fn decode_load_response(
             operation: "decode content process load".into(),
             reason: "content process omitted the document snapshot".into(),
         })?;
-    let document_bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded_document)
-        .map_err(|_| NativeEngineError::Worker {
-            operation: "decode content process load".into(),
-            reason: "content process returned an invalid document snapshot".into(),
-        })?;
+    let document_bytes =
+        decode_document_snapshot_base64(encoded_document, "decode content process load")?;
     if document_bytes.len() > MAX_CONTENT_DOCUMENT_WIRE_BYTES {
         return Err(NativeEngineError::limit(
             "content-process document snapshot",
@@ -452,12 +448,7 @@ pub(in crate::native_engine::content_process) fn decode_mutation_payload(
             operation: operation.into(),
             reason: "content process omitted the mutated document snapshot".into(),
         })?;
-    let document_bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded_document)
-        .map_err(|_| NativeEngineError::Worker {
-            operation: operation.into(),
-            reason: "content process returned an invalid document snapshot".into(),
-        })?;
+    let document_bytes = decode_document_snapshot_base64(encoded_document, operation)?;
     let document = decode_document_wire(&document_bytes, operation)?;
     let navigate_to_sources = decode_navigation_sources(response, operation)?;
     let events = decode_event_payload(response, operation)?;

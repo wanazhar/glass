@@ -68,6 +68,29 @@ fn script_snapshot_retained_bytes(snapshot: &NativeScriptDocumentSnapshot) -> us
 }
 
 impl NativeDocument {
+    pub(crate) fn has_cached_script_snapshot(
+        &self,
+        max_text_bytes: usize,
+        viewport: Viewport,
+    ) -> bool {
+        self.layout_style_cache
+            .has_script_snapshot(self.revision, max_text_bytes, viewport)
+    }
+
+    pub(crate) fn has_cached_scrolled_script_projection(
+        &self,
+        viewport: Viewport,
+        scroll_offset: NativePoint,
+        nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
+    ) -> bool {
+        self.layout_style_cache.has_scrolled_script_projection(
+            self.revision,
+            viewport,
+            scroll_offset,
+            nested_scroll_offsets,
+        )
+    }
+
     pub(crate) fn element_node_ids(&self) -> impl Iterator<Item = NativeNodeId> + '_ {
         self.nodes
             .iter()
@@ -410,102 +433,128 @@ impl NativeDocument {
             0,
             "script_snapshot_layout_compute",
         );
-        let layout = self.layout(viewport)?.with_scroll_offset(
-            self,
+        let cached_projection = self.layout_style_cache.scrolled_script_projection(
+            self.revision,
+            viewport,
             scroll_offset,
             nested_scroll_offsets,
-        )?;
-        layout_stage.finish(Some(layout.boxes.len()));
-        let geometry_stage = crate::native_engine::content_process::ContentLoadStage::begin(
-            0,
-            "script_snapshot_geometry_projection",
         );
-        snapshot.geometry = layout
-            .boxes
-            .iter()
-            .map(|layout_box| {
-                let scroll_container = layout.scroll_container_for(layout_box.node_id);
-                let nested_scroll_offset = if layout_box.fixed {
-                    NativePoint { x: 0, y: 0 }
-                } else {
-                    layout.nested_scroll_offset_for(self, layout_box.node_id, false)
-                };
-                let is_root = self
-                    .node(layout_box.node_id)
-                    .and_then(|node| node.element_name())
-                    == Some("html");
-                let client_width = if is_root {
-                    viewport.width
-                } else {
-                    scroll_container
-                        .map(|container| container.client_width)
-                        .unwrap_or(layout_box.rect.width)
-                };
-                let client_height = if is_root {
-                    viewport.height
-                } else {
-                    scroll_container
-                        .map(|container| container.client_height)
-                        .unwrap_or(layout_box.rect.height)
-                };
-                NativeScriptGeometrySnapshot {
-                    node_index: layout_box.node_id.index(),
-                    x: i64::from(layout_box.rect.x)
-                        - i64::from(layout.scroll_offset.x)
-                        - i64::from(nested_scroll_offset.x),
-                    y: i64::from(layout_box.rect.y)
-                        - i64::from(layout.scroll_offset.y)
-                        - i64::from(nested_scroll_offset.y),
-                    width: layout_box.rect.width,
-                    height: layout_box.rect.height,
-                    content_x: i64::from(layout_box.content_rect.x)
-                        - i64::from(layout.scroll_offset.x)
-                        - i64::from(nested_scroll_offset.x),
-                    content_y: i64::from(layout_box.content_rect.y)
-                        - i64::from(layout.scroll_offset.y)
-                        - i64::from(nested_scroll_offset.y),
-                    content_width: layout_box.content_rect.width,
-                    content_height: layout_box.content_rect.height,
-                    scroll_x: if is_root {
-                        layout.scroll_offset.x
-                    } else {
-                        scroll_container
-                            .map(|container| container.scroll_offset.x)
-                            .unwrap_or(0)
-                    },
-                    scroll_y: if is_root {
-                        layout.scroll_offset.y
-                    } else {
-                        scroll_container
-                            .map(|container| container.scroll_offset.y)
-                            .unwrap_or(0)
-                    },
-                    scroll_width: if is_root {
-                        layout.content_width
-                    } else {
-                        scroll_container
-                            .map(|container| container.scroll_width)
-                            .unwrap_or(layout_box.rect.width)
-                    },
-                    scroll_height: if is_root {
-                        layout.content_height
-                    } else {
-                        scroll_container
-                            .map(|container| container.scroll_height)
-                            .unwrap_or(layout_box.rect.height)
-                    },
-                    client_width,
-                    client_height,
-                }
-            })
-            .collect();
-        geometry_stage.finish(Some(snapshot.geometry.len()));
-        for element in &mut snapshot.elements {
-            if let Some(geometry) = snapshot
-                .geometry
+        let (layout, geometry) = if let Some((layout, geometry)) = cached_projection {
+            let cache_hit = crate::native_engine::content_process::ContentLoadStage::begin(
+                0,
+                "script_snapshot_scroll_projection_cache_hit",
+            );
+            cache_hit.finish(Some(geometry.len()));
+            (layout, geometry)
+        } else {
+            let layout = self.layout(viewport)?.with_scroll_offset(
+                self,
+                scroll_offset,
+                nested_scroll_offsets,
+            )?;
+            let geometry_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+                0,
+                "script_snapshot_geometry_projection",
+            );
+            let geometry = layout
+                .boxes
                 .iter()
-                .find(|geometry| geometry.node_index == element.node_index)
-            {
+                .map(|layout_box| {
+                    let scroll_container = layout.scroll_container_for(layout_box.node_id);
+                    let nested_scroll_offset = if layout_box.fixed {
+                        NativePoint { x: 0, y: 0 }
+                    } else {
+                        layout.nested_scroll_offset_for(self, layout_box.node_id, false)
+                    };
+                    let is_root = self
+                        .node(layout_box.node_id)
+                        .and_then(|node| node.element_name())
+                        == Some("html");
+                    let client_width = if is_root {
+                        viewport.width
+                    } else {
+                        scroll_container
+                            .map(|container| container.client_width)
+                            .unwrap_or(layout_box.rect.width)
+                    };
+                    let client_height = if is_root {
+                        viewport.height
+                    } else {
+                        scroll_container
+                            .map(|container| container.client_height)
+                            .unwrap_or(layout_box.rect.height)
+                    };
+                    NativeScriptGeometrySnapshot {
+                        node_index: layout_box.node_id.index(),
+                        x: i64::from(layout_box.rect.x)
+                            - i64::from(layout.scroll_offset.x)
+                            - i64::from(nested_scroll_offset.x),
+                        y: i64::from(layout_box.rect.y)
+                            - i64::from(layout.scroll_offset.y)
+                            - i64::from(nested_scroll_offset.y),
+                        width: layout_box.rect.width,
+                        height: layout_box.rect.height,
+                        content_x: i64::from(layout_box.content_rect.x)
+                            - i64::from(layout.scroll_offset.x)
+                            - i64::from(nested_scroll_offset.x),
+                        content_y: i64::from(layout_box.content_rect.y)
+                            - i64::from(layout.scroll_offset.y)
+                            - i64::from(nested_scroll_offset.y),
+                        content_width: layout_box.content_rect.width,
+                        content_height: layout_box.content_rect.height,
+                        scroll_x: if is_root {
+                            layout.scroll_offset.x
+                        } else {
+                            scroll_container
+                                .map(|container| container.scroll_offset.x)
+                                .unwrap_or(0)
+                        },
+                        scroll_y: if is_root {
+                            layout.scroll_offset.y
+                        } else {
+                            scroll_container
+                                .map(|container| container.scroll_offset.y)
+                                .unwrap_or(0)
+                        },
+                        scroll_width: if is_root {
+                            layout.content_width
+                        } else {
+                            scroll_container
+                                .map(|container| container.scroll_width)
+                                .unwrap_or(layout_box.rect.width)
+                        },
+                        scroll_height: if is_root {
+                            layout.content_height
+                        } else {
+                            scroll_container
+                                .map(|container| container.scroll_height)
+                                .unwrap_or(layout_box.rect.height)
+                        },
+                        client_width,
+                        client_height,
+                    }
+                })
+                .collect::<Vec<_>>();
+            geometry_stage.finish(Some(geometry.len()));
+            self.layout_style_cache.cache_scrolled_script_projection(
+                self.revision,
+                viewport,
+                scroll_offset,
+                nested_scroll_offsets,
+                layout.clone(),
+                geometry.clone(),
+            );
+            (layout, geometry)
+        };
+        layout_stage.finish(Some(layout.boxes.len()));
+        snapshot.geometry = geometry;
+        let geometry_by_node = snapshot
+            .geometry
+            .iter()
+            .map(|geometry| (geometry.node_index, geometry))
+            .collect::<std::collections::HashMap<_, _>>();
+        for element in &mut snapshot.elements {
+            if let Some(geometry) = geometry_by_node.get(&element.node_index) {
                 element.scroll_x = geometry.scroll_x;
                 element.scroll_y = geometry.scroll_y;
             }

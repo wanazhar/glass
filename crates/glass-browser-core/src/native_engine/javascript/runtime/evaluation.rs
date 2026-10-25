@@ -125,9 +125,30 @@ impl NativeJavaScriptRuntime {
         let frame_id = self.frame_id();
         let scroll_offset = self.scroll_offset();
         let nested_scroll_offsets = self.nested_scroll_offsets();
+        let include_layout = !is_ready_state_comparison(source);
+        let host_state_cache_key = NativeHostViewCacheKey::new(
+            document,
+            viewport,
+            include_layout,
+            scroll_offset,
+            &nested_scroll_offsets,
+        );
+        let runtime_has_matching_host_state = self
+            .host_view_cache_key
+            .lock()
+            .map(|key| key.as_ref() == Some(&host_state_cache_key))
+            .unwrap_or(false);
+        let host_state_key_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+            crate::native_engine::content_process::ContentLoadStage::begin(
+                0,
+                "javascript_host_state_runtime_key_match",
+            )
+        });
+        if let Some(stage) = host_state_key_stage {
+            stage.finish(Some(usize::from(runtime_has_matching_host_state)));
+        }
         let history_state = self.history_state();
         let history_length = self.history_length();
-        let include_layout = !is_ready_state_comparison(source);
         let bootstrap_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
             crate::native_engine::content_process::ContentLoadStage::begin(
                 0,
@@ -161,6 +182,7 @@ impl NativeJavaScriptRuntime {
             self.timer_pump_enabled(),
             include_layout,
             &self.environment(),
+            runtime_has_matching_host_state,
         )?;
         if let Some(stage) = bootstrap_stage {
             stage.finish(Some(
@@ -207,10 +229,7 @@ impl NativeJavaScriptRuntime {
                 operation: "install native dialog host callback".into(),
                 reason: "native JavaScript dialog host callback could not be installed".into(),
             })?;
-            let host_view_bytes = bootstrap
-                .source
-                .len()
-                .saturating_add(bootstrap.host_state_json.len());
+            let host_view_bytes = bootstrap.host_state_json.len();
             let host_view_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
                 crate::native_engine::content_process::ContentLoadStage::begin(
                     0,
@@ -220,26 +239,56 @@ impl NativeJavaScriptRuntime {
             if let Ok(mut current) = self.deadline.lock() {
                 *current = Some(Instant::now() + NATIVE_HOST_VIEW_TIMEOUT);
             }
-            let host_view_result = ctx
-                .globals()
-                .set("__glassHostViewJson", bootstrap.host_state_json.as_str())
-                .map_err(|error| NativeEngineError::Worker {
-                    operation: "install JavaScript host snapshot".into(),
-                    reason: format!(
-                        "native JavaScript host snapshot could not be installed: {}",
-                        CaughtError::from_error(&ctx, error)
-                    ),
-                })
-                .and_then(|()| {
-                    ctx.eval::<(), _>(bootstrap.source.as_str())
-                        .map_err(|error| NativeEngineError::Worker {
-                            operation: "install JavaScript host view".into(),
-                            reason: format!(
-                                "native JavaScript host view could not be installed: {}",
-                                CaughtError::from_error(&ctx, error)
-                            ),
-                        })
-                });
+            let host_view_result = (|| {
+                let installer = {
+                    let mut cached = self.host_view_installer.lock().map_err(|_| {
+                        NativeEngineError::Worker {
+                            operation: "access JavaScript host view installer".into(),
+                            reason: "native JavaScript host view installer state is unavailable".into(),
+                        }
+                    })?;
+                    if let Some(installer) = cached.as_ref() {
+                        installer.0.clone().restore(&ctx).map_err(|error| NativeEngineError::Worker {
+                            operation: "restore JavaScript host view installer".into(),
+                            reason: format!("native JavaScript host view installer could not be restored: {}", CaughtError::from_error(&ctx, error)),
+                        })?
+                    } else {
+                        let compile_stage =
+                            std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+                                crate::native_engine::content_process::ContentLoadStage::begin(
+                                    0,
+                                    "javascript_host_view_bootstrap_compile",
+                                )
+                            });
+                        let compile_result = ctx.eval::<Function, _>(bootstrap.source.as_str());
+                        if let Some(stage) = compile_stage {
+                            if compile_result.is_ok() {
+                                stage.finish(Some(bootstrap.source.len()));
+                            } else {
+                                stage.fail(Some(bootstrap.source.len()));
+                            }
+                        }
+                        let installer = compile_result.map_err(|error| NativeEngineError::Worker {
+                            operation: "compile JavaScript host view installer".into(),
+                            reason: format!("native JavaScript host view installer could not be compiled: {}", CaughtError::from_error(&ctx, error)),
+                        })?;
+                        *cached = Some(PersistentHostViewInstaller(Persistent::save(
+                            &ctx,
+                            installer.clone(),
+                        )));
+                        installer
+                    }
+                };
+                installer
+                    .call::<_, ()>((bootstrap.host_state_json.as_str(),))
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "install JavaScript host snapshot".into(),
+                        reason: format!(
+                            "native JavaScript host snapshot could not be installed: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })
+            })();
             if let Some(stage) = host_view_stage {
                 if host_view_result.is_ok() {
                     stage.finish(Some(host_view_bytes));
@@ -251,6 +300,9 @@ impl NativeJavaScriptRuntime {
                 *current = Some(Instant::now() + NATIVE_SCRIPT_TIMEOUT);
             }
             host_view_result?;
+            if let Ok(mut key) = self.host_view_cache_key.lock() {
+                *key = Some(host_state_cache_key);
+            }
             dispatch_window_proxy_updates(&ctx, &proxy_updates)?;
             dispatch_page_event_batch(ctx.clone(), page_events)?;
             if let Some(dispatch) = dispatch {
@@ -2118,6 +2170,13 @@ impl NativeJavaScriptRuntime {
         let frame_id = self.frame_id();
         let scroll_offset = self.scroll_offset();
         let nested_scroll_offsets = self.nested_scroll_offsets();
+        let host_state_cache_key = NativeHostViewCacheKey::new(
+            document,
+            viewport,
+            true,
+            scroll_offset,
+            &nested_scroll_offsets,
+        );
         let history_state = self.history_state();
         let history_length = self.history_length();
         let document_creation_url = self.document_creation_url_for(document, document_url)?;
@@ -2148,6 +2207,7 @@ impl NativeJavaScriptRuntime {
             self.timer_pump_enabled(),
             true,
             &self.environment(),
+            false,
         )?;
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
@@ -2167,8 +2227,43 @@ impl NativeJavaScriptRuntime {
             if let Ok(mut current) = self.deadline.lock() {
                 *current = Some(Instant::now() + NATIVE_HOST_VIEW_TIMEOUT);
             }
-            ctx.globals()
-                .set("__glassHostViewJson", bootstrap.host_state_json.as_str())
+            let installer = {
+                let mut cached = self.host_view_installer.lock().map_err(|_| {
+                    NativeEngineError::Worker {
+                        operation: "access JavaScript host view installer".into(),
+                        reason: "native JavaScript host view installer state is unavailable"
+                            .into(),
+                    }
+                })?;
+                if let Some(installer) = cached.as_ref() {
+                    installer.0.clone().restore(&ctx).map_err(|error| {
+                        NativeEngineError::Worker {
+                            operation: "restore JavaScript host view installer".into(),
+                            reason: format!(
+                                "native JavaScript host view installer could not be restored: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
+                        }
+                    })?
+                } else {
+                    let installer = ctx
+                        .eval::<Function, _>(bootstrap.source.as_str())
+                        .map_err(|error| NativeEngineError::Worker {
+                            operation: "compile JavaScript host view installer".into(),
+                            reason: format!(
+                                "native JavaScript host view installer could not be compiled: {}",
+                                CaughtError::from_error(&ctx, error)
+                            ),
+                        })?;
+                    *cached = Some(PersistentHostViewInstaller(Persistent::save(
+                        &ctx,
+                        installer.clone(),
+                    )));
+                    installer
+                }
+            };
+            installer
+                .call::<_, ()>((bootstrap.host_state_json.as_str(),))
                 .map_err(|error| NativeEngineError::Worker {
                     operation: "install JavaScript host snapshot".into(),
                     reason: format!(
@@ -2176,14 +2271,9 @@ impl NativeJavaScriptRuntime {
                         CaughtError::from_error(&ctx, error)
                     ),
                 })?;
-            ctx.eval::<(), _>(bootstrap.source.as_str())
-                .map_err(|error| NativeEngineError::Worker {
-                    operation: "install JavaScript host view".into(),
-                    reason: format!(
-                        "native JavaScript host view could not be installed: {}",
-                        CaughtError::from_error(&ctx, error)
-                    ),
-                })?;
+            if let Ok(mut key) = self.host_view_cache_key.lock() {
+                *key = Some(host_state_cache_key);
+            }
             if let Ok(mut current) = self.deadline.lock() {
                 *current = Some(Instant::now() + NATIVE_SCRIPT_TIMEOUT);
             }
@@ -2287,10 +2377,5 @@ impl NativeJavaScriptRuntime {
             *current = None;
         }
         result
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn has_pending_jobs(&self) -> bool {
-        self.runtime.is_job_pending()
     }
 }

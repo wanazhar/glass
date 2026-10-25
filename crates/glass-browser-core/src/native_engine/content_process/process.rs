@@ -156,11 +156,15 @@ impl NativeContentProcess {
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(if std::env::var_os("RUST_BACKTRACE").is_some() {
-                Stdio::inherit()
-            } else {
-                Stdio::null()
-            })
+            .stderr(
+                if std::env::var_os("RUST_BACKTRACE").is_some()
+                    || std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").is_some()
+                {
+                    Stdio::inherit()
+                } else {
+                    Stdio::null()
+                },
+            )
             .kill_on_drop(true)
             .spawn()
             .map_err(|_| {
@@ -1928,7 +1932,7 @@ impl NativeContentProcess {
         }
     }
 
-    async fn exchange(&mut self, request: Value) -> Result<Value, NativeEngineError> {
+    pub(super) async fn exchange(&mut self, request: Value) -> Result<Value, NativeEngineError> {
         self.exchange_with_parent_loader(request, None).await
     }
 
@@ -1956,15 +1960,19 @@ impl NativeContentProcess {
                 }
             }
             Err(error) => {
-                let kind = match self.child.try_wait() {
-                    Ok(Some(_)) => NativeWorkerFailureKind::Exited,
-                    Ok(None) | Err(_) => NativeWorkerFailureKind::Transport,
+                let (kind, exit_status) = match self.child.try_wait() {
+                    Ok(Some(status)) => (NativeWorkerFailureKind::Exited, Some(status)),
+                    Ok(None) | Err(_) => (NativeWorkerFailureKind::Transport, None),
                 };
                 self.mark_failed(kind);
+                let reason = exit_status.map_or_else(
+                    || error.to_string(),
+                    |status| format!("{error}; content worker exit status: {status}"),
+                );
                 Err(NativeEngineError::worker_failure(
                     "content process IPC",
                     kind,
-                    error.to_string(),
+                    reason,
                 ))
             }
         }

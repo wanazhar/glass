@@ -152,6 +152,219 @@ fn script_snapshot_cache_reuses_and_invalidates_complete_projection() {
 }
 
 #[test]
+fn scrolled_script_projection_cache_matches_fresh_layouts_and_invalidates() {
+    let limits = NativeEngineLimits::default();
+    let source = "<style>html,body{margin:0}body{height:2400px}#scroller{width:120px;height:80px;overflow:auto}#inner{width:300px;height:500px}</style><main><div id='scroller'><div id='inner'>nested scroll content</div></div></main>";
+    let viewport = Viewport::default();
+    let mut cached = NativeDocument::parse(source, &limits).unwrap();
+    let base_layout = cached.layout(viewport).unwrap();
+    let root_max = base_layout.max_scroll_offset();
+    assert!(root_max.y > 0);
+    let root_offset = NativePoint {
+        x: root_max.x.min(5),
+        y: root_max.y.min(13),
+    };
+    let scroller = cached.find_element_by_id("scroller").unwrap();
+    let metrics = base_layout.scroll_container_for(scroller).unwrap();
+    let nested_scroll = BTreeMap::from([(
+        scroller.index(),
+        NativePoint {
+            x: metrics
+                .scroll_width
+                .saturating_sub(metrics.client_width)
+                .min(17),
+            y: metrics
+                .scroll_height
+                .saturating_sub(metrics.client_height)
+                .min(19),
+        },
+    )]);
+    assert!(
+        nested_scroll
+            .values()
+            .any(|point| point.x > 0 || point.y > 0)
+    );
+
+    let first = cached
+        .script_snapshot_with_layout(
+            crate::limits::MAX_TEXT_BYTES,
+            viewport,
+            root_offset,
+            &nested_scroll,
+        )
+        .unwrap();
+    assert!(cached.layout_style_cache.5.lock().unwrap().is_some());
+    let repeated = cached
+        .script_snapshot_with_layout(
+            crate::limits::MAX_TEXT_BYTES,
+            viewport,
+            root_offset,
+            &nested_scroll,
+        )
+        .unwrap();
+    let mut fresh = NativeDocument::parse(source, &limits).unwrap();
+    let fresh_scroller = fresh.find_element_by_id("scroller").unwrap();
+    let fresh_metrics = fresh
+        .layout(viewport)
+        .unwrap()
+        .scroll_container_for(fresh_scroller)
+        .unwrap();
+    let fresh_nested_scroll = BTreeMap::from([(
+        fresh_scroller.index(),
+        NativePoint {
+            x: fresh_metrics
+                .scroll_width
+                .saturating_sub(fresh_metrics.client_width)
+                .min(17),
+            y: fresh_metrics
+                .scroll_height
+                .saturating_sub(fresh_metrics.client_height)
+                .min(19),
+        },
+    )]);
+    let fresh_snapshot = fresh
+        .script_snapshot_with_layout(
+            crate::limits::MAX_TEXT_BYTES,
+            viewport,
+            root_offset,
+            &fresh_nested_scroll,
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&first).unwrap(),
+        serde_json::to_value(&repeated).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&first).unwrap(),
+        serde_json::to_value(&fresh_snapshot).unwrap()
+    );
+
+    let changed_root_offset = NativePoint {
+        x: root_max.x.min(2),
+        y: root_max.y.min(7),
+    };
+    let changed_nested_scroll = BTreeMap::from([(scroller.index(), NativePoint { x: 1, y: 1 })]);
+    let changed = cached
+        .script_snapshot_with_layout(
+            crate::limits::MAX_TEXT_BYTES,
+            viewport,
+            changed_root_offset,
+            &changed_nested_scroll,
+        )
+        .unwrap();
+    let fresh_changed = fresh
+        .script_snapshot_with_layout(
+            crate::limits::MAX_TEXT_BYTES,
+            viewport,
+            changed_root_offset,
+            &BTreeMap::from([(fresh_scroller.index(), NativePoint { x: 1, y: 1 })]),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&changed).unwrap(),
+        serde_json::to_value(&fresh_changed).unwrap()
+    );
+
+    let resized_viewport = Viewport {
+        width: 640,
+        height: 480,
+        device_scale_factor_milli: viewport.device_scale_factor_milli,
+    };
+    let resized = cached
+        .script_snapshot_with_layout(
+            crate::limits::MAX_TEXT_BYTES,
+            resized_viewport,
+            NativePoint { x: 0, y: 0 },
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    let fresh_resized = fresh
+        .script_snapshot_with_layout(
+            crate::limits::MAX_TEXT_BYTES,
+            resized_viewport,
+            NativePoint { x: 0, y: 0 },
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&resized).unwrap(),
+        serde_json::to_value(&fresh_resized).unwrap()
+    );
+
+    let inner = cached.find_element_by_id("inner").unwrap();
+    let fresh_inner = fresh.find_element_by_id("inner").unwrap();
+    cached
+        .apply_script_attribute(
+            inner.index(),
+            "style",
+            "width:320px;height:600px",
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    fresh
+        .apply_script_attribute(
+            fresh_inner.index(),
+            "style",
+            "width:320px;height:600px",
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    assert!(cached.layout_style_cache.5.lock().unwrap().is_none());
+    let mutated = cached
+        .script_snapshot_with_layout(
+            crate::limits::MAX_TEXT_BYTES,
+            viewport,
+            changed_root_offset,
+            &changed_nested_scroll,
+        )
+        .unwrap();
+    let fresh_mutated = fresh
+        .script_snapshot_with_layout(
+            crate::limits::MAX_TEXT_BYTES,
+            viewport,
+            changed_root_offset,
+            &BTreeMap::from([(fresh_scroller.index(), NativePoint { x: 1, y: 1 })]),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&mutated).unwrap(),
+        serde_json::to_value(&fresh_mutated).unwrap()
+    );
+
+    let clone = cached.clone();
+    assert!(clone.layout_style_cache.5.lock().unwrap().is_none());
+    let cloned_snapshot = clone
+        .script_snapshot_with_layout(
+            crate::limits::MAX_TEXT_BYTES,
+            viewport,
+            changed_root_offset,
+            &changed_nested_scroll,
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&mutated).unwrap(),
+        serde_json::to_value(&cloned_snapshot).unwrap()
+    );
+
+    let invalid_offset = NativePoint {
+        x: root_max.x,
+        y: root_max.y.saturating_add(1),
+    };
+    assert!(
+        cached
+            .script_snapshot_with_layout(
+                crate::limits::MAX_TEXT_BYTES,
+                viewport,
+                invalid_offset,
+                &changed_nested_scroll,
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn script_snapshot_cache_invalidates_when_image_properties_arrive() {
     let limits = NativeEngineLimits::default();
     let viewport = Viewport::default();

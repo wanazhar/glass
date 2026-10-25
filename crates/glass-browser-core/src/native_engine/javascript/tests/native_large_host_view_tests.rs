@@ -127,7 +127,7 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
     for _ in 0..6 {
         let evaluation = runtime
             .evaluate(
-                "[document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(document.body.children[0].children[0].children[0]).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight]",
+                "[document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(document.body.children[0].children[0].children[0]).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView')]",
                 &document,
                 "fixture://large-host-view.test/",
                 &NativeOrigin::Opaque,
@@ -137,9 +137,24 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
 
         assert_eq!(
             evaluation.value,
-            serde_json::json!(["BODY", ELEMENTS, "bold", "normal"])
+            serde_json::json!(["BODY", ELEMENTS, "bold", "normal", false])
         );
     }
+    let second_runtime = NativeJavaScriptRuntime::new_with_context_id("second-large-host-view")
+        .expect("second native JavaScript runtime must construct");
+    let second_runtime_evaluation = second_runtime
+        .evaluate(
+            "[document.body.children[0].children[0].children.length, document.body.children[0].children[0].children[0].id]",
+            &document,
+            "fixture://large-host-view.test/",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+        )
+        .expect("a runtime without a private state cache must receive the full cached document snapshot");
+    assert_eq!(
+        second_runtime_evaluation.value,
+        serde_json::json!([ELEMENTS, "item-0"])
+    );
     let heap = runtime.runtime.memory_usage();
     assert!(heap.memory_used_size > 0);
     assert!(heap.memory_used_size <= 256 * 1024 * 1024);

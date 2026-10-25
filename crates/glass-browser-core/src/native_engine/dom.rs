@@ -1144,6 +1144,13 @@ impl NativeLayoutStyleCache {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
+    fn script_snapshot_generation(&self) -> u64 {
+        *self
+            .3
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn script_snapshot(
         &self,
         revision: u64,
@@ -1167,30 +1174,6 @@ impl NativeLayoutStyleCache {
                 },
             )
             .map(|(_, _, _, _, snapshot)| snapshot.clone())
-    }
-
-    fn has_script_snapshot(
-        &self,
-        revision: u64,
-        max_text_bytes: usize,
-        viewport: Viewport,
-    ) -> bool {
-        let generation = *self
-            .3
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.4
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
-            .is_some_and(
-                |(cached_revision, cached_generation, cached_limit, cached_viewport, _)| {
-                    *cached_revision == revision
-                        && *cached_generation == generation
-                        && *cached_limit == max_text_bytes
-                        && *cached_viewport == viewport
-                },
-            )
     }
 
     fn cache_script_snapshot(
@@ -1260,40 +1243,6 @@ impl NativeLayoutStyleCache {
                 },
             )
             .map(|(_, _, _, _, _, layout, geometry)| (layout.clone(), geometry.clone()))
-    }
-
-    fn has_scrolled_script_projection(
-        &self,
-        revision: u64,
-        viewport: Viewport,
-        scroll_offset: NativePoint,
-        nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
-    ) -> bool {
-        let generation = *self
-            .3
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.5
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
-            .is_some_and(
-                |(
-                    cached_revision,
-                    cached_generation,
-                    cached_viewport,
-                    cached_scroll,
-                    cached_nested,
-                    _,
-                    _,
-                )| {
-                    *cached_revision == revision
-                        && *cached_generation == generation
-                        && *cached_viewport == viewport
-                        && *cached_scroll == scroll_offset
-                        && cached_nested == nested_scroll_offsets
-                },
-            )
     }
 
     fn cache_scrolled_script_projection(

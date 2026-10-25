@@ -61,14 +61,13 @@ pub(super) fn document_bootstrap(
         0,
         "javascript_bootstrap_dom_snapshot",
     );
-    let snapshot_is_cached = runtime_has_matching_host_state
-        && document.has_cached_script_snapshot(crate::limits::MAX_TEXT_BYTES, viewport)
-        && (!include_layout
-            || document.has_cached_scrolled_script_projection(
-                viewport,
-                scroll_offset,
-                nested_scroll_offsets,
-            ));
+    // The persistent QuickJS installer already owns the last successful
+    // snapshot. Its runtime key includes document identity/revision, the
+    // document's snapshot-invalidation generation, viewport, and scroll
+    // projection inputs, so a matching key can reuse that state even when the
+    // bounded Rust snapshot cache intentionally declined to retain a copy
+    // (for example, because the page has animated image resources).
+    let snapshot_is_cached = runtime_has_matching_host_state;
     let reuse_state_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
         crate::native_engine::content_process::ContentLoadStage::begin(
             0,

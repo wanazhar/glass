@@ -299,6 +299,11 @@ impl NativeJavaScriptRuntime {
             if let Ok(mut current) = self.deadline.lock() {
                 *current = Some(Instant::now() + NATIVE_SCRIPT_TIMEOUT);
             }
+            if host_view_result.is_err()
+                && let Ok(mut key) = self.host_view_cache_key.lock()
+            {
+                *key = None;
+            }
             host_view_result?;
             if let Ok(mut key) = self.host_view_cache_key.lock() {
                 *key = Some(host_state_cache_key);
@@ -2262,7 +2267,7 @@ impl NativeJavaScriptRuntime {
                     installer
                 }
             };
-            installer
+            let host_view_result = installer
                 .call::<_, ()>((bootstrap.host_state_json.as_str(),))
                 .map_err(|error| NativeEngineError::Worker {
                     operation: "install JavaScript host snapshot".into(),
@@ -2270,7 +2275,13 @@ impl NativeJavaScriptRuntime {
                         "native JavaScript host snapshot could not be installed: {}",
                         CaughtError::from_error(&ctx, error)
                     ),
-                })?;
+                });
+            if host_view_result.is_err()
+                && let Ok(mut key) = self.host_view_cache_key.lock()
+            {
+                *key = None;
+            }
+            host_view_result?;
             if let Ok(mut key) = self.host_view_cache_key.lock() {
                 *key = Some(host_state_cache_key);
             }

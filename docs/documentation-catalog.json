@@ -96,6 +96,11 @@
         },
         {
           "level": "2",
+          "title": "Issue #65 dead-code allowance dispositions",
+          "anchor": "issue-65-dead-code-allowance-dispositions"
+        },
+        {
+          "level": "2",
           "title": "Verification in this working tree",
           "anchor": "verification-in-this-working-tree"
         }

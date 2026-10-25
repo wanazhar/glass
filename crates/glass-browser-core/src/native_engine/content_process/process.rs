@@ -1768,8 +1768,31 @@ impl NativeContentProcess {
         parent_loader: &mut NativeResourceLoader,
         operation_timeout: Duration,
     ) -> Result<NativeContentMutation, NativeEngineError> {
-        let mutation_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE")
-            .map(|_| ContentLoadStage::begin(id, "content_process_mutation"));
+        let mutation_stage_name = match request_kind {
+            "mutate_click_preflight" => "content_process_click_preflight",
+            "mutate_lifecycle_events" => "content_process_lifecycle_mutation",
+            _ => "content_process_mutation",
+        };
+        let mutation_kind = match request_kind {
+            "mutate_click_preflight" => "mutate_click_preflight",
+            "mutate_lifecycle_events" => "mutate_lifecycle_events",
+            "mutate_before_unload" => "mutate_before_unload",
+            "mutate_hash_change" => "mutate_hash_change",
+            "mutate_type_events" => "mutate_type_events",
+            "mutate_form_events" => "mutate_form_events",
+            "mutate_key_events" => "mutate_key_events",
+            "mutate_key_event" => "mutate_key_event",
+            "mutate_key_shortcut" => "mutate_key_shortcut",
+            _ => "other_mutation",
+        };
+        let mutation_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+            ContentLoadStage::begin_with_resource(
+                id,
+                mutation_stage_name,
+                None,
+                Some(mutation_kind),
+            )
+        });
         let owner = NativeContentCookieOwner {
             context_id: self.context_id.clone().ok_or_else(|| {
                 NativeEngineError::worker_failure(

@@ -484,15 +484,32 @@ pub(in crate::native_engine::content_process) fn decode_mutation_payload(
     response: &Value,
     operation: &str,
 ) -> Result<NativeContentMutation, NativeEngineError> {
-    let encoded_document = response
-        .get("document_base64")
-        .and_then(Value::as_str)
-        .ok_or_else(|| NativeEngineError::Worker {
-            operation: operation.into(),
-            reason: "content process omitted the mutated document snapshot".into(),
-        })?;
-    let document_bytes = decode_document_snapshot_base64(encoded_document, operation)?;
-    let document = decode_document_wire(&document_bytes, operation)?;
+    let native_document_state_replayable = response
+        .get("native_document_state_replayable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let document = if native_document_state_replayable {
+        if !response.get("document_base64").is_some_and(Value::is_null) {
+            return Err(NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "replayable document response unexpectedly included a snapshot".into(),
+            });
+        }
+        NativeDocumentWire {
+            native_document_state_replayable: true,
+            ..NativeDocumentWire::default()
+        }
+    } else {
+        let encoded_document = response
+            .get("document_base64")
+            .and_then(Value::as_str)
+            .ok_or_else(|| NativeEngineError::Worker {
+                operation: operation.into(),
+                reason: "content process omitted the mutated document snapshot".into(),
+            })?;
+        let document_bytes = decode_document_snapshot_base64(encoded_document, operation)?;
+        decode_document_wire(&document_bytes, operation)?
+    };
     let navigate_to_sources = decode_navigation_sources(response, operation)?;
     let events = decode_event_payload(response, operation)?;
     let csp_violations = decode_csp_violations(response, operation)?;

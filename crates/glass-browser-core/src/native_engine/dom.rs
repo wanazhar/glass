@@ -312,8 +312,12 @@ pub enum NativeNodeKind {
     Text(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeDocumentWire {
+    /// The content owner knows the parent already has the exact current state,
+    /// so it can reuse it instead of transferring a full document snapshot.
+    #[serde(default)]
+    pub(crate) native_document_state_replayable: bool,
     pub(crate) nodes: Vec<NativeNodeWire>,
     pub(crate) computed_styles: Vec<NativeComputedStyle>,
     #[serde(default)]

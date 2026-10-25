@@ -16,6 +16,7 @@ fn host_event_batch_has_listeners(
 }
 
 pub(super) fn mutate_click_with_event_preflight(
+    request_id: u64,
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
     document_url: &mut String,
@@ -34,9 +35,16 @@ pub(super) fn mutate_click_with_event_preflight(
         .iter()
         .map(|(node, kind)| (node.index(), *kind))
         .collect::<Vec<_>>();
-    if let Some(event_batch) = host_event_batch(&focus_metadata)?
-        && host_event_batch_has_listeners(&next, runtime, &event_batch)?
-    {
+    let focus_event_batch = host_event_batch(&focus_metadata)?;
+    let focus_listener_stage = ContentLoadStage::begin(request_id, "click_focus_listener_lookup");
+    let focus_has_listeners = focus_event_batch
+        .as_ref()
+        .map(|event_batch| host_event_batch_has_listeners(&next, runtime, event_batch))
+        .transpose()?
+        .unwrap_or(false);
+    focus_listener_stage.finish(focus_event_batch.as_ref().map(Vec::len));
+    if let Some(event_batch) = focus_event_batch.filter(|_| focus_has_listeners) {
+        let evaluation_stage = ContentLoadStage::begin(request_id, "click_focus_event_evaluation");
         let evaluation = runtime.evaluate_with_host_events(
             &event_batch,
             &next,
@@ -44,6 +52,7 @@ pub(super) fn mutate_click_with_event_preflight(
             document_origin,
             viewport,
         )?;
+        evaluation_stage.finish(None);
         apply_content_event_history(
             &evaluation.commands,
             document_url,
@@ -65,9 +74,14 @@ pub(super) fn mutate_click_with_event_preflight(
     }
 
     let checkable_pre_activation = next.pre_activate_checkable(node_id)?;
+    let has_checkable_pre_activation = checkable_pre_activation.is_some();
 
     let click_event_batch = host_click_event_batch_with_modifiers(node_index, modifiers)?;
-    let click_allowed = if host_event_batch_has_listeners(&next, runtime, &click_event_batch)? {
+    let click_listener_stage = ContentLoadStage::begin(request_id, "click_listener_lookup");
+    let click_has_listeners = host_event_batch_has_listeners(&next, runtime, &click_event_batch)?;
+    click_listener_stage.finish(Some(click_event_batch.len()));
+    let click_allowed = if click_has_listeners {
+        let evaluation_stage = ContentLoadStage::begin(request_id, "click_event_evaluation");
         let click_evaluation = runtime.evaluate_with_host_events(
             &click_event_batch,
             &next,
@@ -75,6 +89,7 @@ pub(super) fn mutate_click_with_event_preflight(
             document_origin,
             viewport,
         )?;
+        evaluation_stage.finish(None);
         let allowed = click_evaluation
             .value
             .as_array()
@@ -111,6 +126,8 @@ pub(super) fn mutate_click_with_event_preflight(
         true
     };
     let mut navigation = None;
+    let native_default_action_stage =
+        ContentLoadStage::begin(request_id, "click_native_default_action");
     if click_allowed {
         let click_events = if checkable_pre_activation.is_some() {
             next.apply_click_after_checkable_pre_activation(node_id)?
@@ -242,6 +259,8 @@ pub(super) fn mutate_click_with_event_preflight(
         }
         events.push((node_id, NativeEventKind::Click));
     }
+    native_default_action_stage.finish(Some(events.len()));
+    let scroll_event_stage = ContentLoadStage::begin(request_id, "click_scroll_event_dispatch");
     dispatch_scroll_events(
         &mut next,
         runtime,
@@ -252,10 +271,13 @@ pub(super) fn mutate_click_with_event_preflight(
         &mut events,
         &mut history,
     )?;
+    scroll_event_stage.finish(Some(events.len()));
+    let policy_refresh_stage = ContentLoadStage::begin(request_id, "click_policy_refresh");
     if let Some(loader) = loader {
         apply_pending_meta_content_security_policies(&mut next, loader, document_url)?;
         refresh_inline_style_policy(&mut next, loader, document_url)?;
     }
+    policy_refresh_stage.finish(None);
     if events.len() > MAX_NATIVE_EFFECTS {
         return Err(NativeEngineError::limit(
             "content-process click event effects",
@@ -263,8 +285,35 @@ pub(super) fn mutate_click_with_event_preflight(
             events.len(),
         ));
     }
+    let native_document_state_replayable = click_allowed
+        && next.node(node_id).and_then(|node| node.element_name()) == Some("a")
+        && !focus_has_listeners
+        && !click_has_listeners
+        && !has_checkable_pre_activation
+        && history.is_empty()
+        && scroll_commands.is_empty()
+        && events.iter().all(|(_, kind)| {
+            matches!(
+                kind,
+                NativeEventKind::Blur
+                    | NativeEventKind::Focus
+                    | NativeEventKind::FocusIn
+                    | NativeEventKind::FocusOut
+                    | NativeEventKind::Click
+            )
+        });
+    let wire_stage = ContentLoadStage::begin(request_id, "click_document_wire_projection");
+    let document_wire = if native_document_state_replayable {
+        NativeDocumentWire {
+            native_document_state_replayable: true,
+            ..NativeDocumentWire::default()
+        }
+    } else {
+        next.to_content_wire()
+    };
+    wire_stage.finish(Some(document_wire.nodes.len()));
     let mutation = NativeContentMutation {
-        document: next.to_content_wire(),
+        document: document_wire,
         navigate_to_sources: None,
         events: events
             .into_iter()
@@ -945,6 +994,7 @@ pub(super) fn mutate_key_event_with_event_bridge(
                 && (event_allowed || keyboard_checkable_target_remains)));
     if should_activate {
         let (clicked, click_mutation) = mutate_click_with_event_preflight(
+            0,
             &next,
             runtime,
             document_url,
@@ -1213,6 +1263,7 @@ pub(super) fn mutate_key_shortcut_with_event_bridge(
             &mut history,
         )?;
         let (clicked, click_mutation) = mutate_click_with_event_preflight(
+            0,
             &next,
             runtime,
             document_url,
@@ -1287,6 +1338,7 @@ pub(super) fn mutate_key_shortcut_with_event_bridge(
             &mut history,
         )?;
         let (clicked, click_mutation) = mutate_click_with_event_preflight(
+            0,
             &next,
             runtime,
             document_url,

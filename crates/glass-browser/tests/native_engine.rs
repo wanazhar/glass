@@ -380,12 +380,15 @@ async fn versioned_native_journey_selects_observed_responsive_duplicate_by_regio
 fn observed_duplicate_links_with_the_same_destination_are_one_action_target() {
     run_native_browser_worker_test(|runtime| {
         runtime.block_on(async {
+            let dense_controls = (0..800)
+                .map(|index| format!("<button>control {index}</button>"))
+                .collect::<String>();
+            let home = format!(
+                "<main>{dense_controls}<a href='/library'>library</a><a href='/library'>library</a></main><script>document.querySelector('main').addEventListener('click', event => {{ if (event.target.closest('a')) window.linkClickSeen = true; }}); addEventListener('pagehide', () => window.pageHideSeen = true);</script>"
+            );
             let config = NativeEngineConfig::default()
                 .with_initial_url("fixture://same-link.test/")
-                .with_fixture(
-                    "fixture://same-link.test/",
-                    "<main><a href='/library'>library</a><a href='/library'>library</a></main>",
-                )
+                .with_fixture("fixture://same-link.test/", &home)
                 .unwrap()
                 .with_fixture(
                     "fixture://same-link.test/library",

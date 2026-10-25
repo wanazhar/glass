@@ -527,6 +527,8 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
         if let Some(runtime) = javascript_runtime.as_ref() {
             runtime.set_environment(environment.clone());
         }
+        let click_response_match_stage = (kind == "mutate_click_preflight")
+            .then(|| ContentLoadStage::begin(request_id, "click_worker_response_match"));
         let mut response = match kind {
             "ping" if protocol_matches(&request) => {
                 json!({"kind":"pong","id":id,"protocol":CONTENT_WORKER_PROTOCOL_VERSION})
@@ -2860,6 +2862,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     indexed_db_state.origin(&storage_key(&committed_url, document_origin)),
                 );
                 match mutate_click_with_event_preflight(
+                    request_id,
                     current,
                     runtime,
                     &mut committed_url,
@@ -2872,15 +2875,28 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     Ok((next, mutation)) => {
                         document = Some(next);
                         document_url = Some(committed_url);
+                        let document_base64 = if mutation.document.native_document_state_replayable
+                        {
+                            Value::Null
+                        } else {
+                            let encode_stage =
+                                ContentLoadStage::begin(request_id, "click_document_wire_encode");
+                            let encoded_document =
+                                serde_json::to_vec(&mutation.document).unwrap_or_default();
+                            let encoded_bytes = encoded_document.len();
+                            let document_base64 =
+                                encode_document_snapshot_base64(&encoded_document);
+                            encode_stage.finish(Some(encoded_bytes));
+                            Value::String(document_base64)
+                        };
                         json!({
                             "kind": "mutated",
                             "id": id,
                             "allowed": mutation.allowed,
+                            "native_document_state_replayable": mutation.document.native_document_state_replayable,
                             "mutation_history": mutation.history,
                             "scroll_commands": mutation.scroll_commands,
-                            "document_base64": encode_document_snapshot_base64(
-                                &serde_json::to_vec(&mutation.document).unwrap_or_default(),
-                            ),
+                            "document_base64": document_base64,
                             "events": mutation.events.iter().map(|event| json!({
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
@@ -3434,6 +3450,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     indexed_db_state.origin(&storage_key(&committed_url, document_origin)),
                 );
                 match mutate_before_unload(
+                    request_id,
                     current,
                     runtime,
                     &mut committed_url,
@@ -3443,17 +3460,26 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 ) {
                     Ok((next, mutation)) => {
                         let allowed = mutation.allowed;
+                        let native_document_state_replayable =
+                            mutation.document.native_document_state_replayable;
                         document = Some(next);
                         document_url = Some(committed_url);
+                        let document_base64 = if native_document_state_replayable {
+                            Value::Null
+                        } else {
+                            encode_document_snapshot_base64(
+                                &serde_json::to_vec(&mutation.document).unwrap_or_default(),
+                            )
+                            .into()
+                        };
                         json!({
                             "kind": "mutated",
                             "id": id,
                             "allowed": allowed,
+                            "native_document_state_replayable": native_document_state_replayable,
                             "mutation_history": mutation.history,
                             "scroll_commands": mutation.scroll_commands,
-                            "document_base64": encode_document_snapshot_base64(
-                                &serde_json::to_vec(&mutation.document).unwrap_or_default(),
-                            ),
+                            "document_base64": document_base64,
                             "events": mutation.events.iter().map(|event| json!({
                                 "node_index": event.node_index,
                                 "kind": event_kind_text(event.kind),
@@ -3728,8 +3754,22 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                 },
             ),
         };
+        if let Some(stage) = click_response_match_stage {
+            stage.finish(None);
+        }
+        let click_response_postprocess_stage = (kind == "mutate_click_preflight")
+            .then(|| ContentLoadStage::begin(request_id, "click_worker_response_postprocess"));
+        let native_document_state_replayable = response
+            .get("native_document_state_replayable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        // A replayable native action or a listener-free beforeunload callback
+        // cannot have requested page-script resources. Keep the worker's
+        // already committed state and avoid generic settlement, which projects
+        // the full DOM again.
         let is_action_mutation = response.get("kind").and_then(Value::as_str) == Some("mutated")
-            && kind.starts_with("mutate_");
+            && kind.starts_with("mutate_")
+            && !native_document_state_replayable;
         if is_action_mutation && let Some(current_document_url) = document_url.clone() {
             let settlement = async {
                 let owner = active_cookie_owner.clone().ok_or_else(|| {
@@ -4145,7 +4185,15 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
             &pending_service_worker_open_windows,
             &pending_lifetime_cookie_changes,
         )? || service_workers.has_pending_parent_lifetime_fetches();
+        if let Some(stage) = click_response_postprocess_stage {
+            stage.finish(None);
+        }
+        let click_response_write_stage = (kind == "mutate_click_preflight")
+            .then(|| ContentLoadStage::begin(request_id, "click_worker_response_write"));
         write_value_frame(&mut stdout, &response).await?;
+        if let Some(stage) = click_response_write_stage {
+            stage.finish(None);
+        }
         write_async_effects_ready(
             &mut stdout,
             has_pending_effects,

@@ -328,6 +328,8 @@ impl NativeEngine {
                 };
                 let navigation = mutation.navigation.clone();
                 let click_allowed = mutation.allowed;
+                let native_document_state_replayable =
+                    mutation.document.native_document_state_replayable;
                 if click_allowed
                     && initial_link_href.is_some()
                     && mutation.history.iter().any(|command| {
@@ -346,6 +348,10 @@ impl NativeEngine {
                 let outcome = self
                     .apply_content_process_mutation_async_at(next_revision, mutation)
                     .await?;
+                if native_document_state_replayable {
+                    preview.set_revision(self.revision);
+                    self.document = preview;
+                }
                 if let Some(navigation) = navigation {
                     self.navigate_script_navigation_async(navigation, 0).await?;
                     return Ok(NativeActionResult {

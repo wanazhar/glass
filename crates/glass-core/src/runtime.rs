@@ -2115,4 +2115,89 @@ mod tests {
         assert_eq!(request_hash, event_hash);
         assert!(!request_hash.contains("prompt-private-value"));
     }
+
+    #[test]
+    fn bounded_runtime_input_applies_backpressure_and_resumes_after_drain() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        tx.send(Ok(json!({"id":"first"}))).unwrap();
+        let mut wire = Wire {
+            rx,
+            pending: VecDeque::new(),
+            disconnected: false,
+            steer: None,
+            steer_records: Vec::new(),
+            image_enabled: true,
+            completing: false,
+            cancel_grace_ms: 100,
+            durable: None,
+            durable_task: None,
+            protocol_version: None,
+        };
+
+        assert!(matches!(
+            tx.try_send(Ok(json!({"id":"second"}))),
+            Err(mpsc::TrySendError::Full(_))
+        ));
+        assert_eq!(wire.incoming().unwrap()["id"], "first");
+
+        // The producer's normal blocking send can proceed once the protocol
+        // loop has drained a queued frame; no retry or queue growth is needed.
+        let producer = std::thread::spawn(move || tx.send(Ok(json!({"id":"second"}))));
+        producer.join().unwrap().unwrap();
+        assert_eq!(wire.incoming().unwrap()["id"], "second");
+    }
+
+    #[test]
+    fn host_wait_accepts_cancellation_ack_without_a_provider_or_network() {
+        let (tx, rx) = mpsc::sync_channel(4);
+        tx.send(Ok(json!({
+            "jsonrpc":"2.0",
+            "id":"cancel-ack",
+            "method":"tool/cancelled",
+            "params":{
+                "sessionId":"session-test",
+                "requestId":"host:session-test:1:call-test",
+                "executionStatus":"cancelled"
+            }
+        })))
+        .unwrap();
+        let mut wire = Wire {
+            rx,
+            pending: VecDeque::new(),
+            disconnected: false,
+            steer: Some(String::new()),
+            steer_records: Vec::new(),
+            image_enabled: true,
+            completing: false,
+            cancel_grace_ms: 100,
+            durable: None,
+            durable_task: None,
+            protocol_version: Some(2),
+        };
+
+        let result = wire.tool(
+            &glass_mod_api::ToolCall {
+                id: "call-test".into(),
+                name: "glass.test".into(),
+                arguments: "{}".into(),
+            },
+            "session-test",
+            &json!("turn-test"),
+            1,
+        );
+
+        assert!(result.outcome.body.contains("Host confirmed cancellation."));
+        let metadata = result
+            .attachments
+            .iter()
+            .find_map(|record| match record {
+                Record::Custom { kind, data } if kind == "runtime/tool_metadata" => data.as_deref(),
+                _ => None,
+            })
+            .unwrap();
+        let metadata: Value = serde_json::from_str(metadata).unwrap();
+        assert_eq!(metadata["executionStatus"], "cancelled");
+        assert_eq!(metadata["callId"], "call-test");
+        assert_eq!(metadata["isError"], true);
+    }
 }

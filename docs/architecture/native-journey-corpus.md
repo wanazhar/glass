@@ -39,10 +39,14 @@ measured run. The remaining measured work included 27.8 s computing 16,053
 elements' styles, 20.5 s measuring text widths, 23.5 s building the initial
 layout tree, and 47.5 s in the slowest classic page script. Total page-script
 execution reached 60.8 s. This is a product deadline failure, not a Wikipedia
-compatibility pass; repeated style/layout and page-script work remain open. A
-previous run failed at the 15-second host-view deadline and an earlier run
-raised a QuickJS null exception during element construction; those are separate
-outcomes. A local dense fixture with 5,500 anchors and 1,000 styled spans
+compatibility pass; repeated style/layout and page-script work remain open.
+After this public run, a bounded per-layout text-width cache was added for exact
+short LTR text and default shaping options. A synthetic 64-span fixture measured
+127 cache hits, 769 direct text-width calls, and a 44.3 ms layout. This is
+workload-specific local evidence, not a controlled speedup or a public-site pass;
+no Wikipedia rerun has been made with the cache. A previous run failed at the
+15-second host-view deadline and an earlier run raised a QuickJS null exception
+during element construction; those are separate outcomes. A local dense fixture with 5,500 anchors and 1,000 styled spans
 passes, but does not reproduce the public page's full style and script
 workload. The native image journey passes locally with decode, intrinsic
 dimensions, and painted-pixel assertions; the local disclosure/search/history

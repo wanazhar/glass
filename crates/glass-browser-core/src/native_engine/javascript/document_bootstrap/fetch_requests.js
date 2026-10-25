@@ -202,33 +202,40 @@
     }}
     return {{ text: bytes === null ? text : utf8TextFromBytes(bytes), bytes }};
   }};
-  const base64Digit = (character) => {{
-    const code = character.charCodeAt(0);
-    if (code >= 65 && code <= 90) return code - 65;
-    if (code >= 97 && code <= 122) return code - 97 + 26;
-    if (code >= 48 && code <= 57) return code - 48 + 52;
-    if (character === "+") return 62;
-    if (character === "/") return 63;
-    if (character === "=") return -2;
-    return -1;
-  }};
+  const base64Digits = new Int8Array(128);
+  base64Digits.fill(-1);
+  for (let index = 0; index < 26; index += 1) {{
+    base64Digits[65 + index] = index;
+    base64Digits[97 + index] = index + 26;
+  }}
+  for (let index = 0; index < 10; index += 1) base64Digits[48 + index] = index + 52;
+  base64Digits[43] = 62;
+  base64Digits[47] = 63;
+  base64Digits[61] = -2;
   const decodeBase64 = (encoded, maxBytes = storageValueLimit) => {{
     if (typeof encoded !== "string" || encoded.length % 4 !== 0) throw new TypeError("native response bytes are not valid base64");
-    const bytes = [];
+    const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+    const byteLength = encoded.length / 4 * 3 - padding;
+    if (byteLength > maxBytes) throw new RangeError("native binary payload exceeds its limit");
+    const bytes = new Array(byteLength);
+    let outputIndex = 0;
     for (let index = 0; index < encoded.length; index += 4) {{
-      const first = base64Digit(encoded[index]);
-      const second = base64Digit(encoded[index + 1]);
-      const third = base64Digit(encoded[index + 2]);
-      const fourth = base64Digit(encoded[index + 3]);
+      const firstCode = encoded.charCodeAt(index);
+      const secondCode = encoded.charCodeAt(index + 1);
+      const thirdCode = encoded.charCodeAt(index + 2);
+      const fourthCode = encoded.charCodeAt(index + 3);
+      const first = firstCode < base64Digits.length ? base64Digits[firstCode] : -1;
+      const second = secondCode < base64Digits.length ? base64Digits[secondCode] : -1;
+      const third = thirdCode < base64Digits.length ? base64Digits[thirdCode] : -1;
+      const fourth = fourthCode < base64Digits.length ? base64Digits[fourthCode] : -1;
       if (first < 0 || second < 0 || third === -1 || fourth === -1
           || (third === -2 && fourth !== -2)
           || (third === -2 && index + 4 !== encoded.length)
           || (fourth === -2 && index + 4 !== encoded.length)) throw new TypeError("native response bytes are not valid base64");
-      bytes.push((first << 2) | (second >> 4));
-      if (third !== -2) bytes.push(((second & 15) << 4) | (third >> 2));
-      if (fourth !== -2) bytes.push(((third & 3) << 6) | fourth);
+      bytes[outputIndex++] = (first << 2) | (second >> 4);
+      if (third !== -2) bytes[outputIndex++] = ((second & 15) << 4) | (third >> 2);
+      if (fourth !== -2) bytes[outputIndex++] = ((third & 3) << 6) | fourth;
     }}
-    if (bytes.length > maxBytes) throw new RangeError("native binary payload exceeds its limit");
     return bytes;
   }};
   const encodeBase64 = (bytes, maxBytes = storageValueLimit) => {{

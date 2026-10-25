@@ -2,6 +2,33 @@ use super::*;
 use crate::native_engine::NativeEngineLimits;
 
 #[test]
+fn base64_fast_path_decodes_bytes_and_rejects_bad_padding() {
+    let document = NativeDocument::parse("<body></body>", &NativeEngineLimits::default())
+        .expect("base64 decoder fixture must parse");
+    let runtime = NativeJavaScriptRuntime::new_with_context_id("base64-fast-path")
+        .expect("native JavaScript runtime must construct");
+    let decoded = runtime
+        .evaluate(
+            "Array.from(atob('AAECA/8='), (character) => character.charCodeAt(0))",
+            &document,
+            "fixture://base64-fast-path.test/",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+        )
+        .expect("valid base64 must decode");
+    assert_eq!(decoded.value, serde_json::json!([0, 1, 2, 3, 255]));
+
+    let invalid = runtime.evaluate(
+        "atob('AA=A')",
+        &document,
+        "fixture://base64-fast-path.test/",
+        &NativeOrigin::Opaque,
+        Viewport::default(),
+    );
+    assert!(invalid.is_err(), "interior base64 padding must fail");
+}
+
+#[test]
 fn host_view_cache_key_tracks_resource_projection_invalidations() {
     let viewport = Viewport::default();
     let mut document = NativeDocument::parse(
@@ -168,6 +195,47 @@ fn repeated_host_views_reuse_decoded_canvas_image_resources_and_repair_public_ma
         updated.value,
         serde_json::json!([1, [17, 34, 51, 255], [201, 202, 203, 255]])
     );
+}
+
+#[test]
+fn large_decoded_image_resource_survives_base64_host_install() {
+    let mut document = NativeDocument::parse(
+        "<img id='source' src='/large.png'><canvas id='target' width='256' height='256'></canvas>",
+        &NativeEngineLimits::default(),
+    )
+    .expect("large canvas image fixture must parse");
+    let image_id = document
+        .element_node_ids()
+        .find(|id| {
+            document
+                .node(*id)
+                .is_some_and(|node| node.element_name() == Some("img"))
+        })
+        .expect("large fixture image must exist");
+    let source = document.image_current_src(image_id, Viewport::default());
+    document
+        .mark_image_load(image_id.index(), source.clone(), Viewport::default())
+        .expect("large image request state must be accepted");
+    document
+        .set_image_resource(
+            image_id.index(),
+            source,
+            crate::native_engine::image::NativeImage::new(256, 256, vec![23; 256 * 256 * 4]),
+        )
+        .expect("large decoded image must be accepted");
+
+    let runtime = NativeJavaScriptRuntime::new_with_context_id("large-image-base64")
+        .expect("native JavaScript runtime must construct");
+    let result = runtime
+        .evaluate(
+            "(() => { const image = document.getElementById('source'); const canvas = document.getElementById('target'); canvas.getContext('2d').drawImage(image, 0, 0); const pixels = canvas.__glassCanvasSurface.pixels; return [image.complete, image.naturalWidth, pixels[0], pixels[pixels.length - 1]]; })()",
+            &document,
+            "fixture://large-image-base64.test/",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+        )
+        .expect("large decoded image must install and paint");
+    assert_eq!(result.value, serde_json::json!([true, 256, 23, 23]));
 }
 
 #[test]

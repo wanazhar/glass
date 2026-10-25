@@ -178,6 +178,19 @@ impl NativeEngine {
                     .collect();
                 (events, moved)
             }
+            NativeAction::ScrollTarget {
+                target,
+                delta_x,
+                delta_y,
+            } => {
+                let id = self.document.resolve_target(&target)?;
+                let moved = self.apply_scroll_target(id, delta_x, delta_y)?;
+                let events = moved
+                    .then_some((id, NativeEventKind::Scroll))
+                    .into_iter()
+                    .collect();
+                (events, moved)
+            }
         };
         if !accepted {
             return Ok(NativeActionResult {
@@ -688,7 +701,7 @@ impl NativeEngine {
                 self.apply_content_process_mutation_async_at(next_revision, mutation)
                     .await
             }
-            NativeAction::Scroll { .. } => self.action(action),
+            NativeAction::Scroll { .. } | NativeAction::ScrollTarget { .. } => self.action(action),
         }
     }
 
@@ -725,7 +738,8 @@ impl NativeEngine {
             | NativeAction::KeyUp { .. }
             | NativeAction::Shortcut { .. }
             | NativeAction::KeyPress { .. }
-            | NativeAction::Scroll { .. } => {}
+            | NativeAction::Scroll { .. }
+            | NativeAction::ScrollTarget { .. } => {}
         }
         for target in targets {
             if parse_point_target(target)?.is_some() {

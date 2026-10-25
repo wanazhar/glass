@@ -1904,6 +1904,15 @@ impl NativeEngineBackend {
             SemanticAction::Scroll { delta_x, delta_y } => {
                 NativeAction::Scroll { delta_x, delta_y }
             }
+            SemanticAction::ScrollTarget {
+                target,
+                delta_x,
+                delta_y,
+            } => NativeAction::ScrollTarget {
+                target,
+                delta_x,
+                delta_y,
+            },
         };
         {
             let mut targets = self.lock_targets(BackendOperation::Action)?;
@@ -8585,6 +8594,15 @@ impl BrowserBackend for NativeEngineBackend {
                         SemanticAction::Scroll { delta_x, delta_y } => {
                             NativeAction::Scroll { delta_x, delta_y }
                         }
+                        SemanticAction::ScrollTarget {
+                            target,
+                            delta_x,
+                            delta_y,
+                        } => NativeAction::ScrollTarget {
+                            target,
+                            delta_x,
+                            delta_y,
+                        },
                     };
                     let previous_revision = engine.revision();
                     let outcome = engine.action_async(action).await.map_err(native_error)?;

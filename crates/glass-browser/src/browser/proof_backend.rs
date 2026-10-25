@@ -244,7 +244,8 @@ impl ProofBackend {
                     | SemanticAction::KeyUp { .. }
                     | SemanticAction::Shortcut { .. }
                     | SemanticAction::KeyPress { .. }
-                    | SemanticAction::Scroll { .. } => {
+                    | SemanticAction::Scroll { .. }
+                    | SemanticAction::ScrollTarget { .. } => {
                         return Err(invalid_action("proof backend supports click and type only"));
                     }
                 }

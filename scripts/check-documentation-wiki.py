@@ -70,6 +70,7 @@ def topic_for(path: str) -> str:
         token in path.lower()
         for token in (
             "browser",
+            "journey",
             "profile",
             "action",
             "semantic",

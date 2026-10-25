@@ -1386,9 +1386,11 @@ impl super::CdpBrowserSession {
                 mode: BatchMode::Fixed,
                 initial_revision: expected_revision,
                 final_revision: current_revision(self),
+                final_url: None,
                 steps: vec![super::types::BatchStepOutcome::Success {
                     index: 0,
                     action: "intent".into(),
+                    elapsed_ms: 0,
                     response_bytes: serde_json::to_string(&action).ok().map(|value| value.len()),
                     execution_id: Some(execution_id),
                 }],
@@ -1656,6 +1658,7 @@ impl super::CdpBrowserSession {
                                         mode: BatchMode::Unguarded,
                                         initial_revision: current_revision(self),
                                         final_revision: current_revision(self),
+                                        final_url: None,
                                         steps: Vec::new(),
                                         completed: 0,
                                         failed: 0,
@@ -2311,6 +2314,11 @@ fn resolve_batch_step(
             timeout_ms: *timeout_ms,
         },
         BatchStep::Scroll { dx, dy } => BatchStep::Scroll { dx: *dx, dy: *dy },
+        BatchStep::ScrollTarget { target, dx, dy } => BatchStep::ScrollTarget {
+            target: resolve("target", target, MAX_TARGET_BYTES)?,
+            dx: *dx,
+            dy: *dy,
+        },
         BatchStep::Observe {
             include_dom,
             include_screenshot,
@@ -2803,6 +2811,19 @@ fn validate_batch_step(action: &BatchStep, path: &str) -> Result<(), WorkflowVal
             validate_bytes(&format!("{path}.value"), value, 1, MAX_TEXT_BYTES)?;
         }
         BatchStep::Scroll { dx, dy } => {
+            if !dx.is_finite()
+                || !dy.is_finite()
+                || dx.abs() > 1_000_000.0
+                || dy.abs() > 1_000_000.0
+            {
+                return Err(WorkflowValidationError::new(
+                    path,
+                    "scroll deltas must be finite and bounded",
+                ));
+            }
+        }
+        BatchStep::ScrollTarget { target, dx, dy } => {
+            validate_target(&format!("{path}.target"), target)?;
             if !dx.is_finite()
                 || !dy.is_finite()
                 || dx.abs() > 1_000_000.0

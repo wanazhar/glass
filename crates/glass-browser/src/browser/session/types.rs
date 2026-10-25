@@ -89,6 +89,14 @@ pub enum BatchStep {
         #[serde(default)]
         dy: f64,
     },
+    #[serde(rename = "scrollTarget")]
+    ScrollTarget {
+        target: String,
+        #[serde(default)]
+        dx: f64,
+        #[serde(default)]
+        dy: f64,
+    },
     #[serde(rename = "wait")]
     Wait {
         condition: String,
@@ -138,6 +146,8 @@ pub enum BatchStepOutcome {
     Success {
         index: usize,
         action: String,
+        #[serde(rename = "elapsedMs")]
+        elapsed_ms: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         response_bytes: Option<usize>,
         #[serde(rename = "executionId", skip_serializing_if = "Option::is_none")]
@@ -146,6 +156,8 @@ pub enum BatchStepOutcome {
     Error {
         index: usize,
         action: String,
+        #[serde(rename = "elapsedMs")]
+        elapsed_ms: u64,
         message: String,
         #[serde(rename = "executionId", skip_serializing_if = "Option::is_none")]
         execution_id: Option<String>,
@@ -160,6 +172,8 @@ pub struct BatchOutcome {
     pub initial_revision: u64,
     #[serde(rename = "finalRevision")]
     pub final_revision: u64,
+    #[serde(rename = "finalUrl", skip_serializing_if = "Option::is_none")]
+    pub final_url: Option<String>,
     pub steps: Vec<BatchStepOutcome>,
     pub completed: usize,
     pub failed: usize,

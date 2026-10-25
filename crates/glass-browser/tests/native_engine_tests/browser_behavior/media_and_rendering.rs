@@ -1,6 +1,46 @@
 use super::*;
 
 #[tokio::test]
+async fn native_video_reports_decoder_absence_and_does_not_claim_playback() {
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://video-capability.test/")
+        .with_fixture(
+            "fixture://video-capability.test/",
+            "<video id='video' controls><source src='clip.mp4' type='video/mp4'></video>",
+        )
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const video = document.getElementById('video'); return [video.canPlayType('video/mp4'), video.readyState, video.currentTime]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["", 0, 0])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "globalThis.nativeVideoPlayResult = 'pending'; document.getElementById('video').play().then(() => { nativeVideoPlayResult = 'playing'; }, error => { nativeVideoPlayResult = error.name; }); true",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.nativeVideoPlayResult")
+            .await
+            .unwrap(),
+        serde_json::json!("NotSupportedError")
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn native_offscreen_canvas_transfer_preserves_worker_raster_and_detaches_source() {
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {

@@ -57,6 +57,113 @@ use tokio_tungstenite::{
 };
 use url::Url;
 
+#[tokio::test]
+async fn versioned_native_journey_corpus_runs_local_navigation_and_scroll_journey() {
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/native-journeys-v1.json"))
+            .expect("native journey corpus must be valid JSON");
+    assert_eq!(corpus["schemaVersion"], 1);
+    let journey = corpus["journeys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|journey| journey["id"] == "local-navigation-and-nested-scroll")
+        .expect("local native journey is required");
+    assert_eq!(journey["backend"], "native");
+
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://journey.test/")
+        .with_fixture(
+            "fixture://journey.test/",
+            "<title>Journey landing</title><a id='detail-link' href='fixture://journey.test/detail'>Detail</a><div id='feed' style='height:32px;overflow-y:auto'><div style='height:160px'>Feed</div></div>",
+        )
+        .unwrap()
+        .with_fixture(
+            "fixture://journey.test/detail",
+            "<title>Journey detail</title><main id='detail'>Detail content</main>",
+        )
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    // Resolve the action from the current DOM before acting, then use its
+    // revision-bound reference so the corpus exercises the same stale-target
+    // protection available to agents.
+    let link = engine.resolve_target("id=detail-link").unwrap();
+    let link_ref = format!("ref=r{}:n{}", engine.revision(), link.index());
+    engine
+        .action_async(NativeAction::Click { target: link_ref })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.evaluate_async("document.title").await.unwrap(),
+        serde_json::json!("Journey detail")
+    );
+    engine.go_back_async().await.unwrap();
+    assert_eq!(engine.snapshot().unwrap().url, "fixture://journey.test/");
+    engine.go_forward_async().await.unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.querySelector('#detail').textContent")
+            .await
+            .unwrap(),
+        serde_json::json!("Detail content")
+    );
+
+    engine
+        .navigate_async("fixture://journey.test/")
+        .await
+        .unwrap();
+    let feed = engine.resolve_target("id=feed").unwrap();
+    let feed_ref = format!("ref=r{}:n{}", engine.revision(), feed.index());
+    engine
+        .action_async(NativeAction::ScrollTarget {
+            target: feed_ref,
+            delta_x: 0,
+            delta_y: 28,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("document.querySelector('#feed').scrollTop")
+            .await
+            .unwrap(),
+        serde_json::json!(28)
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_host_view_handles_large_local_anchor_collections_within_budget() {
+    let anchors = (0..2_000)
+        .map(|index| format!("<a href='/item/{index}' title='item {index}'>item</a>"))
+        .collect::<String>();
+    let html = format!("<title>Large anchor fixture</title><main>{anchors}</main>");
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://large-host-view.test/")
+        .with_fixture("fixture://large-host-view.test/", &html)
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async("document.links.length")
+            .await
+            .unwrap(),
+        serde_json::json!(2_000),
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("document.links[1999].getAttribute('href')")
+            .await
+            .unwrap(),
+        serde_json::json!("/item/1999"),
+    );
+    engine.close_async().await.unwrap();
+}
+
 fn native_content_process_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))

@@ -26,6 +26,73 @@ fn initialized_engine() -> NativeEngine {
 }
 
 #[tokio::test]
+async fn explicit_scroll_target_moves_only_the_observed_nested_container() {
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://targeted-scroll.test/")
+        .with_fixture(
+            "fixture://targeted-scroll.test/",
+            "<style>#feed{width:120px;height:32px;overflow-y:auto}#item{height:160px}</style><main><div id='feed'><div id='item'>content</div></div><div id='outside'>outside</div></main>",
+        )
+        .expect("targeted scroll fixture must validate");
+    let mut engine = NativeEngine::new(config).expect("native engine must construct");
+    engine
+        .initialize_async()
+        .await
+        .expect("native engine must initialize");
+
+    let feed = engine.resolve_target("id=feed").unwrap();
+    let feed_reference = format!("ref=r{}:n{}", engine.revision(), feed.index());
+    engine.resolve_target("id=outside").unwrap();
+    let root_before = engine.scroll_offset();
+    let scroll_top_before = engine
+        .evaluate_async("document.getElementById('feed').scrollTop")
+        .await
+        .unwrap();
+    assert_eq!(scroll_top_before, serde_json::json!(0));
+
+    let outcome = engine
+        .action_async(NativeAction::ScrollTarget {
+            target: feed_reference.clone(),
+            delta_x: 0,
+            delta_y: 24,
+        })
+        .await
+        .unwrap();
+
+    assert!(outcome.accepted);
+    assert_eq!(outcome.revision, 2);
+    assert_eq!(engine.scroll_offset(), root_before);
+    assert_eq!(
+        engine
+            .evaluate_async("document.getElementById('feed').scrollTop")
+            .await
+            .unwrap(),
+        serde_json::json!(24)
+    );
+    assert!(matches!(
+        engine
+            .action_async(NativeAction::ScrollTarget {
+                target: feed_reference,
+                delta_x: 0,
+                delta_y: 24,
+            })
+            .await,
+        Err(NativeEngineError::DetachedTarget)
+    ));
+    assert!(matches!(
+        engine
+            .action_async(NativeAction::ScrollTarget {
+                target: "id=outside".into(),
+                delta_x: 0,
+                delta_y: 24,
+            })
+            .await,
+        Err(NativeEngineError::TargetNotActionable { .. })
+    ));
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn asynchronous_effect_turn_rejects_a_different_context_or_frame() {
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://async-effect-owner")

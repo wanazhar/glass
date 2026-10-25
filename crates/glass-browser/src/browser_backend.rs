@@ -1821,6 +1821,12 @@ pub enum SemanticAction {
         delta_x: i32,
         delta_y: i32,
     },
+    ScrollTarget {
+        #[serde(deserialize_with = "deserialize_bounded_string")]
+        target: String,
+        delta_x: i32,
+        delta_y: i32,
+    },
 }
 
 /// Keyboard modifiers held during one primary-button browser click.
@@ -2046,6 +2052,9 @@ impl BackendContract for SemanticAction {
                 validate_text("shortcut", shortcut, MAX_LIMITATION_BYTES)
             }
             Self::Scroll { .. } => Ok(()),
+            Self::ScrollTarget { target, .. } => {
+                validate_text("action target", target, MAX_TEXT_BYTES)
+            }
         }
     }
 }

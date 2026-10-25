@@ -911,6 +911,7 @@ fn batch_step_is_mutating(step: &BatchStep) -> bool {
             | BatchStep::Select { .. }
             | BatchStep::Clear { .. }
             | BatchStep::Scroll { .. }
+            | BatchStep::ScrollTarget { .. }
             | BatchStep::Evaluate { .. }
             | BatchStep::AcceptDialog
             | BatchStep::DismissDialog

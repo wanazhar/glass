@@ -99,6 +99,9 @@ DEPTH_CONTRACTS = {
         "## Backend capability contract", "## Errors and recovery",
         "## Tests and promotion boundary",
     ),
+    "docs/architecture/native-journey-corpus.md": (
+        "## Coverage map",
+    ),
     "docs/workflows.md": (
         "## Definition", "## Retry safety", "## Outputs and evidence",
         "## Checkpoints and resume", "## Authoring",

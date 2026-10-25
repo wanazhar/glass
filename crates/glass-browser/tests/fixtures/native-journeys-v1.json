@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "corpus": "glass-browser-native-journeys",
+  "privacy": "authored fixtures only; public journeys are read-only and retain no page dumps",
+  "journeys": [
+    {
+      "id": "local-navigation-and-nested-scroll",
+      "backend": "native",
+      "scope": "local-fixture",
+      "capabilities": ["navigation", "semantic-targeting", "history", "nested-scroll"],
+      "timeoutMs": 10000,
+      "steps": [
+        {"id":"landing","action":"navigate","url":"fixture://journey.test/"},
+        {"id":"choose-detail","action":"click","target":"id=detail-link","targetSource":"fresh-observation"},
+        {"id":"detail-content","action":"assert","expression":"document.title === 'Journey detail' && document.querySelector('#detail').textContent.includes('Detail')"},
+        {"id":"history-back","action":"back"},
+        {"id":"history-forward","action":"forward"},
+        {"id":"select-scroller","action":"scrollTarget","target":"id=feed","targetSource":"fresh-observation","deltaY":28},
+        {"id":"verify-scroller","action":"assert","expression":"document.querySelector('#feed').scrollTop === 28"}
+      ]
+    },
+    {
+      "id": "public-documentation-deep-page",
+      "backend": "native",
+      "scope": "public-read-only",
+      "capabilities": ["navigation", "observation", "semantic-targeting"],
+      "timeoutMs": 120000,
+      "steps": [
+        {"id":"reference","action":"navigate","url":"https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/map"},
+        {"id":"observe-reference","action":"observe"},
+        {"id":"assert-reference","action":"assert","condition":"url-prefix=https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/map"}
+      ]
+    },
+    {
+      "id": "public-wikipedia-article-and-image",
+      "backend": "native",
+      "scope": "public-read-only",
+      "capabilities": ["navigation", "image-fetch", "image-decode", "capture"],
+      "timeoutMs": 120000,
+      "steps": [
+        {"id":"article","action":"navigate","url":"https://en.wikipedia.org/wiki/Computer"},
+        {"id":"observe-article","action":"observe"},
+        {"id":"choose-observed-subpage","action":"click","target":"css=a[href='/wiki/Computer_science']","targetSource":"fresh-observation"},
+        {"id":"observe-subpage","action":"observe"},
+        {"id":"assert-subpage","action":"assert","condition":"url-prefix=https://en.wikipedia.org/wiki/Computer_science"}
+      ]
+    },
+    {
+      "id": "media-decoder-capability",
+      "backend": "native",
+      "scope": "local-fixture",
+      "capabilities": ["media-capability"],
+      "expectedCapability": "unsupported",
+      "steps": [
+        {"id":"probe-decoder","action":"capability","name":"video-decoder"}
+      ]
+    }
+  ]
+}

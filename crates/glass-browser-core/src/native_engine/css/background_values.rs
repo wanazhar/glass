@@ -524,20 +524,70 @@ pub(crate) fn collect_background_image_sources(
             continue;
         };
         let (value, _) = strip_important_suffix(value);
-        if property.trim().eq_ignore_ascii_case("background-image") {
-            if let Some(source) = parse_background_image_url(value) {
-                register_background_image_source(source, background_image_sources);
-            }
-        } else if property.trim().eq_ignore_ascii_case("background")
-            && parse_background_shorthand(value).is_some()
-            && let Some(tokens) = split_css_value_tokens(value)
-        {
-            for token in tokens {
-                if let Some(source) = parse_background_image_url(token) {
-                    register_background_image_source(source, background_image_sources);
-                }
-            }
+        let property = property.trim();
+        if property.eq_ignore_ascii_case("background-image") || property.starts_with("--") {
+            collect_background_image_value_source(value, background_image_sources);
+        } else if property.eq_ignore_ascii_case("background") {
+            collect_background_shorthand_sources(value, background_image_sources);
         }
+    }
+}
+
+fn collect_background_image_value_source(
+    value: &str,
+    background_image_sources: &mut BTreeMap<u32, String>,
+) {
+    if let Some(source) = parse_background_image_url(value) {
+        register_background_image_source(source, background_image_sources);
+    } else if let Some((_, Some(fallback))) = parse_flex_var_arguments(value) {
+        collect_background_image_value_source(fallback, background_image_sources);
+    }
+}
+
+fn collect_background_shorthand_sources(
+    value: &str,
+    background_image_sources: &mut BTreeMap<u32, String>,
+) {
+    if let Some((_, Some(fallback))) = parse_flex_var_arguments(value) {
+        collect_background_shorthand_sources(fallback, background_image_sources);
+    } else if parse_background_shorthand(value).is_some()
+        && let Some(tokens) = split_css_value_tokens(value)
+    {
+        for token in tokens {
+            collect_background_image_value_source(token, background_image_sources);
+        }
+    }
+}
+
+#[cfg(test)]
+mod collect_source_tests {
+    use super::*;
+
+    #[test]
+    fn custom_property_urls_and_background_fallback_urls_are_registered() {
+        let image = "https://example.test/variable.png";
+        let fallback = "https://example.test/fallback.png";
+        let mut sources = BTreeMap::new();
+        collect_background_image_sources(
+            &format!(
+                "--hero: url('{image}'); background-image: var(--hero); \
+                 background: var(--page-background, red url('{fallback}') no-repeat)"
+            ),
+            &mut sources,
+        );
+
+        assert_eq!(
+            sources
+                .get(&background_image_source_id(image))
+                .map(String::as_str),
+            Some(image)
+        );
+        assert_eq!(
+            sources
+                .get(&background_image_source_id(fallback))
+                .map(String::as_str),
+            Some(fallback)
+        );
     }
 }
 

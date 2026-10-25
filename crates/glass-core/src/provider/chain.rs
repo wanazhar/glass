@@ -59,7 +59,6 @@ impl Chain {
     /// The model id actually answering, the primary's when healthy.
     /// Diagnostic surface for tests and the recovery inspector's provider
     /// identity record.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn serving_model(&self) -> &str {
         self.levels
             .get(self.sticky.get())

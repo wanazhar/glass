@@ -79,10 +79,8 @@ impl PermissionProfile {
 
 /// Exact command approvals held only for the lifetime of one session.
 #[derive(Debug, Default)]
-#[allow(dead_code)] // host approval integration hook, intentionally not implicitly granted
 pub struct SessionApprovals(std::collections::BTreeSet<String>);
 
-#[allow(dead_code)] // exposed for the host approval UI to consume in the next integration step
 impl SessionApprovals {
     pub fn approve_exact(&mut self, command: &str) {
         self.0.insert(command.to_owned());
@@ -180,7 +178,6 @@ impl HostPolicy {
 /// Apply the configured jail or a previously approved exact-command
 /// exception to this one child. Approval bypasses only this child's jail; it
 /// never mutates the process-wide profile or approves another command.
-#[allow(dead_code)] // consumed by the host's per-command approval integration
 pub fn harden_command(
     cmd: &mut Command,
     command: &str,
@@ -205,7 +202,6 @@ pub fn harden_command(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ApprovalDecision {
     Approved,
     NeedsInteractiveApproval,
@@ -703,7 +699,6 @@ pub fn extension_isolation_strict() -> bool {
 }
 
 /// Permission profile label for status and doctor surfaces.
-#[allow(dead_code)]
 pub fn permission_profile_label() -> &'static str {
     match STATE
         .get()
@@ -717,7 +712,6 @@ pub fn permission_profile_label() -> &'static str {
 }
 
 /// Extension confinement label for status and doctor surfaces.
-#[allow(dead_code)]
 pub fn extension_isolation_label() -> &'static str {
     if extension_isolation_strict() {
         "strict"
@@ -727,7 +721,6 @@ pub fn extension_isolation_label() -> &'static str {
 }
 
 /// A value-free summary suitable for diagnostic display.
-#[allow(dead_code)]
 pub fn security_summary() -> String {
     let refusal = refusal()
         .map(|reason| format!("; refused: {reason}"))
@@ -771,7 +764,6 @@ pub fn extension_capabilities(
 
 /// Inspect and validate the pre-execution capability sidecar without launching
 /// the extension. Status/enable flows can use this even while isolation is off.
-#[allow(dead_code)] // host extension review integration hook
 pub fn inspect_extension_capabilities(
     spec: &str,
     workspace: &std::path::Path,

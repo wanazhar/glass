@@ -84,7 +84,6 @@ const NATIVE_CSP_REPORT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_NATIVE_CSP_SOURCE_EXPRESSION_BYTES: usize = 2048;
 pub(crate) const MAX_NATIVE_MEDIA_BYTES: usize = 16 * 1024 * 1024;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeSubresourceKind {
     Style,
@@ -128,7 +127,6 @@ enum NativeInlineCspKind {
     StyleAttribute,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeCorsMode {
     NoCors,

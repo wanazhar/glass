@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn native_video_reports_decoder_absence_and_does_not_claim_playback() {
+async fn native_video_rejects_unsupported_mp4_without_claiming_playback() {
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://video-capability.test/")
         .with_fixture(
@@ -38,6 +38,157 @@ async fn native_video_reports_decoder_absence_and_does_not_claim_playback() {
         serde_json::json!("NotSupportedError")
     );
     engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_webm_vp8_play_pause_seek_paints_decoded_video_frame() {
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../../fixtures/native-journeys-v1.json"))
+            .expect("native journey corpus must be valid JSON");
+    let journey = corpus["journeys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|journey| journey["id"] == "local-silent-video-webm-vp8-playback")
+        .expect("bounded native video journey is required");
+    assert_eq!(journey["backend"], "native");
+    assert_eq!(journey["expectedCapability"], "supported");
+    let steps = journey["steps"].as_array().unwrap();
+    assert_eq!(
+        steps
+            .iter()
+            .map(|step| step["action"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "capability",
+            "assert",
+            "seek",
+            "seek",
+            "play",
+            "wait",
+            "pause",
+            "capture"
+        ]
+    );
+    let root = std::env::temp_dir().join(format!(
+        "glass-native-vp8-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../glass-browser-core")
+        .join(journey["asset"].as_str().unwrap());
+    fs::write(root.join("clip.webm"), fs::read(fixture_path).unwrap()).unwrap();
+    fs::write(
+        root.join("index.html"),
+        "<html><body style='margin:0'><video id='clip' width='16' height='16' src='clip.webm' style='display:block;width:16px;height:16px'></video></body></html>",
+    )
+    .unwrap();
+    let page_url = url::Url::from_file_path(root.join("index.html")).unwrap();
+    let config = NativeEngineConfig::default()
+        .with_initial_url(page_url.to_string())
+        .with_allowed_file_root(&root)
+        .with_viewport(Viewport {
+            width: 64,
+            height: 64,
+            device_scale_factor_milli: 1000,
+        });
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+    let capability_type = steps[0]["type"].as_str().unwrap();
+    let expected_capability = steps[0]["expected"].as_str().unwrap();
+    let expected_ready_state = steps[1]["readyState"].as_u64().unwrap();
+    let expected_duration = journey["expectedDurationSeconds"].as_f64().unwrap();
+    let capability = engine
+        .evaluate_async(&format!(
+            "(() => {{ const video = document.getElementById('clip'); return [video.canPlayType({}), video.readyState, video.duration]; }})()",
+            serde_json::to_string(capability_type).unwrap()
+        ))
+        .await
+        .unwrap();
+    assert_eq!(capability[0], serde_json::json!(expected_capability));
+    assert_eq!(capability[1], serde_json::json!(expected_ready_state));
+    assert_eq!(capability[2].as_f64(), Some(expected_duration));
+    let seek_seconds = steps[2]["timeSeconds"].as_f64().unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async(&format!(
+                "(() => {{ const video = document.getElementById('clip'); video.currentTime = {seek_seconds}; return [video.paused, video.currentTime]; }})()"
+            ))
+            .await
+            .unwrap(),
+        serde_json::json!([true, seek_seconds])
+    );
+    let rewind_seconds = steps[3]["timeSeconds"].as_f64().unwrap();
+    engine
+        .evaluate_async(&format!(
+            "(() => {{ const video = document.getElementById('clip'); video.currentTime = {rewind_seconds}; video.play(); return true; }})()"
+        ))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(
+        journey["playbackWaitMs"].as_u64().unwrap(),
+    ))
+    .await;
+    let video_id = engine.resolve_target("id=clip").unwrap();
+    let playing_list = engine.display_list().unwrap();
+    let playing_frame = playing_list
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            NativeDisplayCommand::Image {
+                node_id, pixels, ..
+            } if *node_id == video_id => Some(pixels),
+            _ => None,
+        })
+        .expect("video playback should advance the painted frame without a script read");
+    assert!(
+        playing_frame[2] > 200,
+        "expected playback to paint blue frame"
+    );
+    let playback = engine
+        .evaluate_async(
+            "(() => { const video = document.getElementById('clip'); const time = video.currentTime; video.pause(); return [video.paused, time]; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(playback[0], serde_json::json!(true));
+    assert!(
+        playback[1].as_f64().unwrap() >= 0.5,
+        "playback did not advance: {playback}"
+    );
+    let list = engine.display_list().unwrap();
+    let image = list
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            NativeDisplayCommand::Image {
+                node_id,
+                rect,
+                pixels,
+                ..
+            } if *node_id == video_id => Some((*rect, pixels.clone())),
+            _ => None,
+        })
+        .expect("native video should paint a decoded frame");
+    assert_eq!(journey["expectedFrameColor"], "blue");
+    assert!(image.1[2] > 200, "expected decoded blue frame pixels");
+    assert!(image.1[0] < 80, "expected decoded blue frame pixels");
+    let surface = list.rasterize().unwrap();
+    let pixel = surface
+        .pixel(
+            image.0.x + image.0.width / 2,
+            image.0.y + image.0.height / 2,
+        )
+        .unwrap();
+    assert!(pixel[2] > 200, "expected decoded blue frame, got {pixel:?}");
+    assert!(pixel[0] < 80, "expected decoded blue frame, got {pixel:?}");
+    engine.close_async().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]

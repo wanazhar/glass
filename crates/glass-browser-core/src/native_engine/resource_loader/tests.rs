@@ -247,6 +247,26 @@ fn media_metadata_accepts_supported_types_and_bounds_payloads() {
 }
 
 #[test]
+fn native_webm_vp8_decodes_bounded_real_rgba_frames() {
+    let bytes = include_bytes!("../../../tests/fixtures/native-media/two-color-frames-vp8.webm");
+    let metadata = media_metadata_from_bytes(Some("video/webm"), bytes)
+        .unwrap()
+        .unwrap();
+    assert_eq!(metadata.content_type, "video/webm");
+    assert_eq!(metadata.video_frames.len(), 2);
+    assert!(metadata.duration_millis.unwrap() >= 900);
+    for frame in &metadata.video_frames {
+        assert_eq!((frame.width, frame.height), (16, 16));
+        assert_eq!(frame.pixels.len(), 16 * 16 * 4);
+        assert_eq!(frame.pixels[3], 255);
+    }
+    assert!(metadata.video_frames[0].pixels[0] > 200);
+    assert!(metadata.video_frames[0].pixels[2] < 80);
+    assert!(metadata.video_frames[1].pixels[0] < 80);
+    assert!(metadata.video_frames[1].pixels[2] > 200);
+}
+
+#[test]
 fn data_media_decodes_bounded_binary_payloads() {
     let url = Url::parse(
         "data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA",

@@ -557,6 +557,23 @@ fn video_poster_paint_command(
     if node.element_name() != Some("video") || bounds.width == 0 || bounds.height == 0 {
         return None;
     }
+    if let Some(frame) = document.decoded_video_frame_for_node(node_id) {
+        let rect = centered_contain_rect(bounds, frame.width, frame.height)?;
+        return Some(NativeDisplayCommand::Image {
+            node_id,
+            rect,
+            source_rect: NativeRect {
+                x: 0,
+                y: 0,
+                width: frame.width,
+                height: frame.height,
+            },
+            source_width: frame.width,
+            source_height: frame.height,
+            pixels: Arc::from(frame.pixels.clone()),
+            clip,
+        });
+    }
     let image = document
         .video_poster_resource_for_node(node_id)
         .cloned()

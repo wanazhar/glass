@@ -742,6 +742,7 @@
       mediaError: () => mediaError,
       mediaReset: resetMediaState,
       mediaLoad: () => pushCommand({{ kind: "mediaLoad", node_index: entry.nodeIndex }}),
+      mediaFrameTime: (timeMillis, playing, playbackRate) => pushCommand({{ kind: "mediaFrameTime", node_index: entry.nodeIndex, time_millis: Math.max(0, Math.trunc(Number(timeMillis) || 0)), playing: Boolean(playing), playback_rate: Number(playbackRate) }}),
     }});
     refreshInlineAttributeHandlers();
     nativeCanvasInstallElement(element, entry);

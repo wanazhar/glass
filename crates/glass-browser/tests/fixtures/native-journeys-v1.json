@@ -122,13 +122,25 @@
       ]
     },
     {
-      "id": "media-decoder-capability",
+      "id": "local-silent-video-webm-vp8-playback",
       "backend": "native",
       "scope": "local-fixture",
-      "capabilities": ["media-capability"],
-      "expectedCapability": "unsupported",
+      "capabilities": ["webm-demux", "vp8-decode", "silent-video", "playback-clock", "pause", "seek", "paint"],
+      "asset": "tests/fixtures/native-media/two-color-frames-vp8.webm",
+      "expectedCapability": "supported",
+      "expectedDurationSeconds": 1,
+      "seekSeconds": 0.75,
+      "playbackWaitMs": 650,
+      "expectedFrameColor": "blue",
       "steps": [
-        {"id":"probe-decoder","action":"capability","name":"video-decoder"}
+        {"id":"probe-vp8-decoder","action":"capability","type":"video/webm; codecs=\"vp8\"","expected":"maybe"},
+        {"id":"admit-video","action":"assert","readyState":1,"durationSeconds":1},
+        {"id":"seek","action":"seek","timeSeconds":0.75},
+        {"id":"rewind","action":"seek","timeSeconds":0},
+        {"id":"play","action":"play"},
+        {"id":"advance-clock","action":"wait","durationMs":650},
+        {"id":"pause","action":"pause"},
+        {"id":"verify-frame","action":"capture","frameColor":"blue"}
       ]
     }
   ]

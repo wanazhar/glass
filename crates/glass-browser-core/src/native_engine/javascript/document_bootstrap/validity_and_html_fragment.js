@@ -565,9 +565,14 @@
       let mediaPlaybackStartedAt = null;
       let mediaPlaybackStartTime = 0;
       let mediaPlayedRanges = [];
+      let mediaPlaybackTimer = null;
       const mediaNow = () => {{
         const now = Number(globalThis.performance && globalThis.performance.now && globalThis.performance.now());
         return Number.isFinite(now) && now >= 0 ? now : 0;
+      }};
+      const publishNativeVideoTime = () => {{
+        if (element.localName !== "video" || typeof state.mediaFrameTime !== "function") return;
+        state.mediaFrameTime(mediaCurrentTime * 1000, !mediaPaused, mediaPlaybackRate);
       }};
       const recordMediaPlayedRange = (start, end) => {{
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
@@ -594,6 +599,15 @@
         if (!inserted) ranges.push([nextStart, nextEnd]);
         mediaPlayedRanges = ranges;
       }};
+      const stopMediaTicker = () => {{
+        if (mediaPlaybackTimer === null) return;
+        if (typeof globalThis.clearInterval === "function") globalThis.clearInterval(mediaPlaybackTimer);
+        mediaPlaybackTimer = null;
+      }};
+      const startMediaTicker = () => {{
+        if (mediaPlaybackTimer !== null || typeof globalThis.setInterval !== "function") return;
+        mediaPlaybackTimer = globalThis.setInterval(() => syncMediaClock(), 100);
+      }};
       const dispatchMediaEvent = (type) => {{
         try {{ dispatchTarget(element, createEvent(type)); }} catch (_error) {{}}
       }};
@@ -612,6 +626,7 @@
         if (next > previous) {{
           mediaCurrentTime = next;
           recordMediaPlayedRange(previous, next);
+          publishNativeVideoTime();
           dispatchMediaEvent("timeupdate");
         }}
         if (next >= duration && mediaPlaybackRate > 0) {{
@@ -619,10 +634,13 @@
           mediaEnded = true;
           mediaPaused = true;
           mediaPlaybackStartedAt = null;
+          stopMediaTicker();
+          publishNativeVideoTime();
           dispatchMediaEvent("ended");
         }}
       }};
       const resetMediaState = () => {{
+        stopMediaTicker();
         mediaCurrentTime = 0;
         mediaPaused = true;
         mediaEnded = false;
@@ -630,6 +648,7 @@
         mediaPlaybackStartedAt = null;
         mediaPlaybackStartTime = 0;
         mediaPlayedRanges = [];
+        publishNativeVideoTime();
         if (typeof state.mediaReset === "function") state.mediaReset();
       }};
       const mediaTimeRanges = (kind = "buffered") => {{
@@ -667,6 +686,7 @@
             if (!Number.isFinite(numeric) || numeric < 0) throw new DOMExceptionNative("The media time is invalid", "InvalidStateError");
             const duration = mediaDuration();
             mediaCurrentTime = Number.isFinite(duration) ? Math.min(numeric, duration) : numeric;
+            publishNativeVideoTime();
             mediaEnded = Number.isFinite(duration) && mediaCurrentTime >= duration;
             if (!mediaPaused) {{
               mediaPlaybackStartedAt = mediaNow();
@@ -695,6 +715,7 @@
               mediaPlaybackStartedAt = mediaNow();
               mediaPlaybackStartTime = mediaCurrentTime;
             }}
+            publishNativeVideoTime();
             dispatchMediaEvent("ratechange");
           }},
         }},
@@ -765,8 +786,10 @@
           mediaPlaybackStartedAt = mediaNow();
           mediaPlaybackStartTime = mediaCurrentTime;
           mediaPaused = false;
+          publishNativeVideoTime();
           dispatchMediaEvent("play");
           dispatchMediaEvent("playing");
+          startMediaTicker();
         }}
         return Promise.resolve();
       }};
@@ -775,15 +798,22 @@
           syncMediaClock();
           mediaPaused = true;
           mediaPlaybackStartedAt = null;
+          stopMediaTicker();
+          publishNativeVideoTime();
           dispatchMediaEvent("pause");
         }}
       }};
       element.fastSeek = (next) => {{ element.currentTime = next; }};
-      element.canPlayType = (type) => element.localName !== "video"
-        && nativeMediaTypeSupported(type)
-        && String(type || "").trim()
-        ? "maybe"
-        : "";
+      element.canPlayType = (type) => {{
+        const text = String(type || "").trim();
+        if (!text || !nativeMediaTypeSupported(text)) return "";
+        if (element.localName === "video") {{
+          return /^video\/webm(?:\s*;\s*codecs\s*=\s*["']?vp8["']?)?$/i.test(text)
+            ? "maybe"
+            : "";
+        }}
+        return "maybe";
+      }};
       element.__glassMediaReset = resetMediaState;
     }}
     Object.defineProperty(element, "type", {{

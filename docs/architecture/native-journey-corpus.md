@@ -100,43 +100,38 @@ bounded URL-prefix wait. These are individual site results, not universal
 compatibility. Run these scenarios only through the native backend and record
 network denial, challenge pages, external instability, unsupported
 capabilities, and product bugs as distinct outcomes. A successfully fetched
-video poster is not video playback: the native engine currently reports video
-decoding as unsupported.
+video poster is not video playback; playback evidence must show decoded frame
+progression and pause/seek behavior.
 
 ## Native video capability boundary
 
-The current media loader admits bounded encoded bytes and exposes MIME and,
-for WAV, duration metadata. It does not demux video containers, decode video
-frames, schedule an audio/video clock, or render an audio output stream. The
-native `HTMLVideoElement.canPlayType()` therefore returns the empty string and
-`play()` rejects with `NotSupportedError`; poster fetch/paint is an independent
-image path. Keep these answers truthful until every advertised type has a
-working decoder and playback path.
+The native engine currently supports a narrow silent-video path for WebM files
+with a VP8 track. `matroska-demuxer` demuxes the container and the pure Rust
+`zvidlib-vp8` decoder produces RGBA frames; `canPlayType()` reports `maybe` for
+`video/webm` and `video/webm; codecs="vp8"`. The native media clock advances,
+pauses, seeks, and selects the decoded frame painted by the display list. An
+authored local two-color clip verifies that seeking and elapsed playback show
+the blue second frame. This is one deterministic local capability result, not
+a claim of broad public-site compatibility.
 
-A real implementation needs separate bounded stages: (1) resource policy and
-byte admission; (2) container demux into timestamped packets; (3) codec decode
-into bounded video frames and audio samples; (4) a monotonic media clock with
-pause, seek, rate, readiness and ordered media events; and (5) frame invalidation
-and painting through the native display-list path plus an actual audio sink.
-The content process should own the media session and communicate only
-generation-tagged state/frame updates to its document; stale navigation must
-cancel decoding and discard late frames. Enforce caps for encoded bytes,
-dimensions, decoded frame bytes, queued frames, and work deadlines, with
-back-pressure rather than unbounded buffering. Tests must distinguish poster
-painting from decoded frame progression and assert seeking, pause, time advance,
-and audio capability independently.
+The decoder is bounded: encoded media remains capped at 16 MiB; VP8 dimensions
+at 640 by 640; decoded data at 2 MiB per resource and 4 MiB per document; and
+retained frames at 60 per resource and 120 per document. Media outside those
+caps or without a VP8 track is not advertised as playable. Other containers
+and codecs, audio decoding/output, captions, and full media Web IDL behavior
+remain unsupported. Poster fetch/paint remains an independent image path.
 
-The native feature currently depends on still-image decoders (PNG, JPEG, GIF,
-and WebP) and contains no video/audio decoder or sink dependency. A system
-FFmpeg/GStreamer binding would add native-library and package availability
-requirements across release targets; an external command would add process and
-sandbox lifecycle concerns. A Rust demux/decoder stack avoids that system
-dependency but still needs an explicit supported-container/codec matrix,
-license review, and a separate audio output design. The implementation must
-choose and package a narrow initial matrix before reporting support; it must
-not infer support from a recognized MIME type or successful metadata parse.
+The decoder dependencies are optional through `glass-browser-core/native-engine`.
+[`zvidlib-vp8`](https://docs.rs/zvidlib-vp8/0.5.0) is MIT-licensed and built
+with default features disabled, selecting its software decoder across supported
+targets. [`matroska-demuxer`](https://docs.rs/matroska-demuxer/0.8.1) is
+available under Zlib, MIT, or Apache-2.0. The engine does not invoke a system FFmpeg
+binary, link libvpx, or claim an audio output device. The fixture file is a
+locally generated two-frame test pattern; FFmpeg is only a fixture-generation
+tool and is not a runtime dependency.
 
-One Rust VP8/VP9 candidate was inspected: [`media-codec-vpx`](https://crates.io/crates/media-codec-vpx)
+An alternative Rust VP8/VP9 candidate inspected earlier was
+[`media-codec-vpx`](https://crates.io/crates/media-codec-vpx)
 is MIT/Apache-2.0 licensed, but its `media-codec-vpx-sys` build script uses
 `pkg-config` to require system `libvpx` 1.15.2 or later and runs `bindgen` over
 the system headers. It does not bundle the decoder. The 25 October development audit found no
@@ -149,29 +144,14 @@ This candidate is not yet a validated distributable route.
 
 ### Current dependency and output audit
 
-The 25 October 2026 workspace audit found no video demuxer/decoder or audio
-sink in `Cargo.toml`/`Cargo.lock`; `symphonia`, FFmpeg bindings, GStreamer,
-`cpal`, and `rodio` are absent. The system `ffmpeg` executable available in
-this development environment reports a GPL build with GPL-enabled codecs,
-including `libx264`; it is not an acceptable implicit runtime dependency or
-redistributable decoder choice for the existing native binaries. FFmpeg's
-own [license guidance](https://www.ffmpeg.org/legal.html) distinguishes its
-LGPL build from optional GPL components and documents the dynamic-linking and
-corresponding-source requirements for redistribution. The host has runtime
-libav shared libraries, but `pkg-config` cannot locate `libavformat` development
-metadata. `aplay -l` reports no sound cards. The project CI builds across
-Ubuntu, macOS, and Windows, so these local packages do not establish a
-cross-platform build or playback path.
-
-This leaves an explicit implementation blocker: maintainers must select the
-initial container/codec and its license-compatible packaging route, and decide
-how a native browser session supplies audio output (including a deliberate
-silent-video mode if no device is available). The decoder must also expose
-bounded decoded frames to the existing paint path and a clock/event contract
-to the media element. Until those choices are made and that path is tested,
-`canPlayType()` remains empty and `play()` rejects with `NotSupportedError`.
-Symphonia 0.6 is not a video-decoding shortcut: its [upstream release notes](https://github.com/pdeljanov/Symphonia/releases)
-state that video and subtitle decoders are not yet supported.
+`symphonia`, FFmpeg bindings, GStreamer, `cpal`, and `rodio` are not part of
+this narrow video path. The system `ffmpeg` executable available in this
+development environment reports a GPL build with GPL-enabled codecs,
+including `libx264`; it is not a runtime dependency or redistributable decoder
+choice. FFmpeg's [license guidance](https://www.ffmpeg.org/legal.html)
+distinguishes its LGPL build from optional GPL components. The chosen VP8
+software decoder and WebM demuxer are Rust crates with permissive licenses and
+need no system multimedia package.
 
 ## Coverage map
 
@@ -184,7 +164,7 @@ state that video and subtitle decoders are not yet supported.
 | Responsive duplicate links | `versioned_native_journey_selects_observed_responsive_duplicate_by_region` | Pass: region-scoped selector resolves one of two identical destination links and follows its revision-bound target to asserted content |
 | Public repository subpage | `public-github-repository-and-observed-directory` | Pass on 25 October: observed repository link, subpage URL, and directory content; 6/6 steps in 50.62 s |
 | Public documentation page scroll | `public-svelte-documentation-page-scroll` | Pass on 25 October: Svelte reactivity page title, accepted viewport scroll, and post-scroll observation; 6/6 in 80.21 s. Page-script execution remains 47.61 s in this run. |
-| Video decoding and playback | `native_video_reports_decoder_absence_and_does_not_claim_playback` | Explicitly unsupported; poster rendering is separate |
+| Silent WebM/VP8 video decoding and playback | `native_webm_vp8_play_pause_seek_paints_decoded_video_frame` plus `native_webm_vp8_decodes_bounded_real_rgba_frames` | Pass: local authored clip verifies two decoded colors, 1 s metadata, capability, elapsed playback, pause, seek, and painted frame |
 | Dynamic disclosure, search form, and result history | `versioned_native_disclosure_search_form_and_history_journey` | Pass: click an observed disclosure control, verify hidden-state/content update, type a GET query, verify result URL/content, and go back |
 | Menus, frames, SPA routes, and additional form patterns | Focused authored fixture tests under `tests/native_engine_tests/` | Add journeys where a measured gap is demonstrated |
 

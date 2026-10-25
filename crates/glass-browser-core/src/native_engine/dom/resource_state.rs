@@ -463,16 +463,118 @@ impl NativeDocument {
             });
         }
         self.media_errors.remove(&node_index);
+        let retained_video_bytes = self
+            .media_resources
+            .iter()
+            .filter(|(existing_index, resource)| {
+                **existing_index != node_index && resource.source != source
+            })
+            .flat_map(|(_, resource)| resource.video_frames.iter())
+            .fold(0usize, |total, frame| {
+                total.saturating_add(frame.pixels.len())
+            });
+        let retained_video_frames = self
+            .media_resources
+            .iter()
+            .filter(|(existing_index, resource)| {
+                **existing_index != node_index && resource.source != source
+            })
+            .map(|(_, resource)| resource.video_frames.len())
+            .fold(0usize, usize::saturating_add);
+        let incoming_video_bytes = metadata.video_frames.iter().fold(0usize, |total, frame| {
+            total.saturating_add(frame.pixels.len())
+        });
+        let mut video_frames = metadata.video_frames;
+        let mut duration_millis = metadata.duration_millis;
+        if retained_video_bytes.saturating_add(incoming_video_bytes)
+            > MAX_NATIVE_DOCUMENT_VIDEO_BYTES
+            || retained_video_frames.saturating_add(video_frames.len())
+                > MAX_NATIVE_DOCUMENT_VIDEO_FRAMES
+        {
+            video_frames.clear();
+            duration_millis = None;
+        }
         self.media_resources.insert(
             node_index,
             NativeMediaResource {
                 source,
                 content_type: metadata.content_type,
                 byte_length: metadata.byte_length,
-                duration_millis: metadata.duration_millis,
+                duration_millis,
+                video_frames,
+                current_time_millis: 0,
+                is_playing: false,
+                playback_rate_millionths: 1_000_000,
+                playback_started_at: None,
             },
         );
         self.layout_style_cache.invalidate_script_snapshot();
+        Ok(())
+    }
+
+    pub(crate) fn decoded_video_frame_for_node(
+        &self,
+        node_id: NativeNodeId,
+    ) -> Option<&NativeVideoFrame> {
+        let resource = self.media_resources.get(&node_id.index())?;
+        if resource.source != self.media_current_src(node_id) {
+            return None;
+        }
+        let playback_elapsed_ms = resource
+            .playback_started_at
+            .filter(|_| resource.is_playing)
+            .map(|started_at| {
+                started_at.elapsed().as_millis() as f64
+                    * (resource.playback_rate_millionths as f64 / 1_000_000.0)
+            })
+            .unwrap_or_default();
+        let current_time_millis = (resource.current_time_millis as f64 + playback_elapsed_ms)
+            .max(0.0)
+            .min(resource.duration_millis.unwrap_or(u64::MAX) as f64)
+            as u64;
+        resource
+            .video_frames
+            .iter()
+            .take_while(|frame| frame.timestamp_millis <= current_time_millis)
+            .last()
+            .or_else(|| resource.video_frames.first())
+    }
+
+    pub(crate) fn set_media_frame_time(
+        &mut self,
+        node_index: u32,
+        time_millis: u64,
+        is_playing: bool,
+        playback_rate: f64,
+    ) -> Result<(), NativeEngineError> {
+        let node_id = NativeNodeId::from_parts(self.generation, node_index);
+        let node = self
+            .node(node_id)
+            .ok_or(NativeEngineError::DetachedTarget)?;
+        if node.element_name() != Some("video") {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "decoded video frame time requires a video element".into(),
+            });
+        }
+        let resource = self.media_resources.get_mut(&node_index).ok_or(
+            NativeEngineError::TargetNotActionable {
+                reason: "video frame time requires a loaded media resource".into(),
+            },
+        )?;
+        if resource.video_frames.is_empty() || !playback_rate.is_finite() || playback_rate == 0.0 {
+            return Ok(());
+        }
+        resource.current_time_millis =
+            time_millis.min(resource.duration_millis.unwrap_or(u64::MAX));
+        resource.is_playing = is_playing;
+        let mut playback_rate_millionths = (playback_rate * 1_000_000.0).round() as i64;
+        if playback_rate > 0.0 {
+            playback_rate_millionths = playback_rate_millionths.max(1);
+        } else {
+            playback_rate_millionths = playback_rate_millionths.min(-1);
+        }
+        resource.playback_rate_millionths = playback_rate_millionths;
+        resource.playback_started_at = is_playing.then(std::time::Instant::now);
         Ok(())
     }
 

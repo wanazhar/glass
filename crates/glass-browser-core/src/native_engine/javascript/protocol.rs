@@ -393,6 +393,12 @@ pub enum NativeScriptCommand {
     MediaLoad {
         node_index: u32,
     },
+    MediaFrameTime {
+        node_index: u32,
+        time_millis: u64,
+        playing: bool,
+        playback_rate: f64,
+    },
     SetChecked {
         node_index: u32,
         checked: bool,

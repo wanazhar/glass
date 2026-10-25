@@ -3985,8 +3985,8 @@ content-process owners, and installs destination entries before the page
 `message` event structured clone runs. HTTP(S) coverage proves the delivered
 page can fetch the worker-owned Blob without network or cache fallback, while
 the source worker retains independent revocation ownership. Channel-message
-events intentionally retain the HTML default empty `origin`; media and
-remaining browser/Web IDL conformance consumers remain separate issue #40
+events intentionally retain the HTML default empty `origin`; other codecs,
+audio output, and remaining media/browser Web IDL conformance remain issue #40
 work.
 
 Slice `native-engine-browser-468` closes the first bounded media-resource
@@ -4210,6 +4210,17 @@ wildcard `Vary`, partial status, missing cache metadata, empty/oversized
 payloads, or failed policy checks are not retained. The cache is in-memory and
 process-local; `local()` lookup, loading events, variable/color fonts, and
 complete text-rendering parity remain issue #40 work.
+
+Slice `native-engine-native-video-vp8` adds bounded silent WebM/VP8 playback.
+The optional native-engine dependencies use the pure Rust VP8 software decoder
+and Matroska demuxer, with hardware codec features disabled. Encoded input is
+limited to 16 MiB, dimensions to 640 by 640, decoded frames to 2 MiB per
+resource and 4 MiB per document, and retained frames to 60 per resource and
+120 per document. The native media clock advances, pauses, and seeks by
+selecting timestamped decoded frames; the display list paints those RGBA
+pixels. A local generated two-color clip verifies the support response,
+elapsed time, seek, pause, and actual raster output. It does not enable audio,
+other video codecs/containers, captions, or arbitrary public-site playback.
 
 Slice `native-engine-browser-472` closes the embedded data-media boundary.
 Static and dynamic local media plus HTTP(S) content-process media now admit
@@ -6027,7 +6038,7 @@ JavaScript surface owns only the current realm state; a coalesced
 RGBA dimensions and retains the resource on the canvas node. Layout supplies
 intrinsic dimensions and the existing software display list paints the
 resource, so screenshots and content snapshots observe the same pixels.
-Canvas/Web IDL breadth, video/media sources, font shaping, GPU paths,
+Canvas/Web IDL breadth, additional video/media source types, font shaping, GPU paths,
 and full native/CDP replacement remain Issue #40 gates. Exact evidence is
 recorded in `docs/plan/tasks/native-engine-browser-310.md`.
 
@@ -6056,7 +6067,7 @@ same bounded RGBA storage; transferred drawing commits through the native
 canvas resource used by layout and capture, while bitmap snapshots and PNG
 export reuse the existing security guards. In-place resource-map refresh keeps
 persistent DOM/context closures coherent across host snapshots. Worker-realm
-installation, video/media sources, complete OffscreenCanvas/Canvas Web IDL
+installation, additional video/media source types, complete OffscreenCanvas/Canvas Web IDL
 semantics, and the final native/CDP replacement gates remain Issue #40 work.
 Exact evidence is recorded in `docs/plan/tasks/native-engine-browser-313.md`.
 

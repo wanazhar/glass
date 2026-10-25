@@ -228,5 +228,7 @@
   }}
   {dynamic_import_bootstrap}
   cachedHostState = state;
+  cachedGeometrySnapshot = state.geometry;
+  cachedGeometryMap = geometryByIndex;
   }};
 }})()

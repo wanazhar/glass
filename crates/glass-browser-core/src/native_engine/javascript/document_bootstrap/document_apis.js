@@ -1,5 +1,6 @@
   const body = elements.find((element) => element.tagName === "BODY") || null;
   const documentElement = elements.find((element) => element.tagName === "HTML") || null;
+  const previousHostDocument = globalThis.__glassHostDocument || null;
   const rootSnapshot = snapshotNodes.find((entry) => entry && Number(entry.nodeIndex) === 0);
   const rootChildren = rootSnapshot && Array.isArray(rootSnapshot.children)
     ? rootSnapshot.children.map((index) => nodesByIndex.get(index)).filter(Boolean)
@@ -207,6 +208,22 @@
   }});
   defineTreeAccessors(document);
   globalThis.__glassHostDocument = document;
+  if (reuseExistingHostTree) {{
+    // The serialized tree and its nodes are reused, but the Document wrapper
+    // is recreated for every bootstrap. Keep the root links pointed at this
+    // wrapper so parentNode/getRootNode and document-targeted observers remain
+    // coherent across an otherwise unchanged snapshot.
+    for (const child of rootChildren) {{
+      if (child && typeof child === "object") child.__glassParent = document;
+    }}
+    if (previousHostDocument && previousHostDocument !== document) {{
+      for (const observer of mutationObservers) {{
+        for (const registration of observer.__glassRegistrations || []) {{
+          if (registration.target === previousHostDocument) registration.target = document;
+        }}
+      }}
+    }}
+  }}
   globalThis.__glassDispatchHostEvents = (events) => {{
     const results = events.map((descriptor) => {{
       const target = descriptor.node_index === 0

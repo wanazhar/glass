@@ -1928,6 +1928,67 @@ impl NativeEngine {
         Ok(true)
     }
 
+    fn apply_scroll_target(
+        &mut self,
+        target: NativeNodeId,
+        delta_x: i32,
+        delta_y: i32,
+    ) -> Result<bool, NativeEngineError> {
+        if delta_x == 0 && delta_y == 0 {
+            return Ok(false);
+        }
+        let node_name = self
+            .document
+            .node(target)
+            .and_then(|node| node.element_name())
+            .ok_or(NativeEngineError::TargetNotFound)?;
+        if matches!(node_name, "html" | "body") {
+            return self.apply_scroll(delta_x, delta_y);
+        }
+        let layout = self.document.layout(self.config.viewport)?;
+        let container = layout.scroll_container_for(target).ok_or_else(|| {
+            NativeEngineError::TargetNotActionable {
+                reason: "selected element is not a native scroll container".into(),
+            }
+        })?;
+        let maximum = container.max_scroll_offset();
+        let current = self
+            .nested_scroll_offsets
+            .get(&target.index())
+            .copied()
+            .unwrap_or(NativePoint { x: 0, y: 0 });
+        let next = NativePoint {
+            x: u32::try_from(
+                (i64::from(current.x) + i64::from(delta_x)).clamp(0, i64::from(maximum.x)),
+            )
+            .map_err(|_| {
+                NativeEngineError::invalid(
+                    "native targeted scroll action",
+                    "horizontal scroll offset exceeds bounds",
+                )
+            })?,
+            y: u32::try_from(
+                (i64::from(current.y) + i64::from(delta_y)).clamp(0, i64::from(maximum.y)),
+            )
+            .map_err(|_| {
+                NativeEngineError::invalid(
+                    "native targeted scroll action",
+                    "vertical scroll offset exceeds bounds",
+                )
+            })?,
+        };
+        if next == current {
+            return Ok(false);
+        }
+        if next.x == 0 && next.y == 0 {
+            self.nested_scroll_offsets.remove(&target.index());
+        } else {
+            self.nested_scroll_offsets.insert(target.index(), next);
+        }
+        self.sync_javascript_scroll_offset();
+        Ok(true)
+    }
+
     fn sync_javascript_scroll_offset(&self) {
         if let Some(javascript) = self.javascript.as_ref() {
             javascript.set_scroll_offset(self.scroll_offset);

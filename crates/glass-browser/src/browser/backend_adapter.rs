@@ -487,6 +487,14 @@ async fn execute_action(
             .scroll(f64::from(*delta_x), f64::from(*delta_y))
             .await
             .map_err(|error| translate_error("action", error.as_ref()))?,
+        SemanticAction::ScrollTarget {
+            target,
+            delta_x,
+            delta_y,
+        } => session
+            .scroll_target_with_revision(target, f64::from(*delta_x), f64::from(*delta_y), None)
+            .await
+            .map_err(|error| translate_error("action", error.as_ref()))?,
     };
     Ok(ActionResult {
         context_id: request.context_id.clone(),

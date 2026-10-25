@@ -75,7 +75,9 @@
         "BUG_REPORT.md",
         "docs/INDEX.md"
       ],
-      "dependencies": [],
+      "dependencies": [
+        "docs/architecture/native-journey-corpus.md"
+      ],
       "topicRoute": "docs/INDEX.md#workspace-operations",
       "route": "BUG_HUNT_REPORT.md#glass-workspace-implementation-matrix",
       "sections": [
@@ -1675,6 +1677,7 @@
         "docs/architecture/experience.md",
         "docs/architecture/mobile-cockpit.md",
         "docs/architecture/native-engine.md",
+        "docs/architecture/native-journey-corpus.md",
         "docs/architecture/product-workspace.md",
         "docs/architecture/semantic-core-hardening.md",
         "docs/architecture/semantic-resource-budgets.md",
@@ -3072,6 +3075,35 @@
           "level": "2",
           "title": "Tests and promotion boundary",
           "anchor": "tests-and-promotion-boundary"
+        }
+      ]
+    },
+    {
+      "path": "docs/architecture/native-journey-corpus.md",
+      "class": "current",
+      "topic": "workspace",
+      "audience": "glass-user",
+      "status": "current-source-guidance",
+      "recommendation": "KEEP_PUBLIC",
+      "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "BUG_HUNT_REPORT.md",
+        "docs/INDEX.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#workspace-operations",
+      "route": "docs/architecture/native-journey-corpus.md#native-browser-journey-corpus",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Native browser journey corpus",
+          "anchor": "native-browser-journey-corpus"
+        },
+        {
+          "level": "2",
+          "title": "Coverage map",
+          "anchor": "coverage-map"
         }
       ]
     },

@@ -732,7 +732,11 @@
         }}
       }};
       element.fastSeek = (next) => {{ element.currentTime = next; }};
-      element.canPlayType = (type) => nativeMediaTypeSupported(type) && String(type || "").trim() ? "maybe" : "";
+      element.canPlayType = (type) => element.localName !== "video"
+        && nativeMediaTypeSupported(type)
+        && String(type || "").trim()
+        ? "maybe"
+        : "";
       element.__glassMediaReset = resetMediaState;
     }}
     Object.defineProperty(element, "type", {{

@@ -919,16 +919,36 @@
   const snapshotTextContentForNode = reuseExistingHostTree
     ? null
     : createSnapshotTextContentResolver(snapshotNodes);
-  const elements = reuseExistingHostTree ? cachedHostCollections.elements : snapshotElements.map((entry) => {{
-    const existing = scriptNodeAliasesByIndex.get(entry.nodeIndex) || previousElements.get(entry.nodeIndex);
-    if (existing && typeof existing.__glassRefresh === "function") {{
-      if (!reuseExistingHostTree && !belongsToDetachedCreatedSubtree(existing)) {{
-        existing.__glassRefresh(entry, snapshotTextContentForNode);
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("text_content_resolver_ready");
+  let elementBuildIndex = -1;
+  let elementBuildMode = "none";
+  let elements;
+  try {{
+    elements = reuseExistingHostTree ? cachedHostCollections.elements : snapshotElements.map((entry, index) => {{
+      elementBuildIndex = index;
+      const existing = scriptNodeAliasesByIndex.get(entry.nodeIndex) || previousElements.get(entry.nodeIndex);
+      if (existing && typeof existing.__glassRefresh === "function") {{
+        elementBuildMode = "refresh";
+        if (!reuseExistingHostTree && !belongsToDetachedCreatedSubtree(existing)) {{
+          existing.__glassRefresh(entry, snapshotTextContentForNode);
+        }}
+        return existing;
       }}
-      return existing;
+      elementBuildMode = "create";
+      return makeElement(entry, snapshotTextContentForNode);
+    }});
+  }} catch (error) {{
+    if (typeof globalThis.__glassNativeHostViewMark === "function") {{
+      const failedEntry = snapshotElements[elementBuildIndex];
+      globalThis.__glassNativeHostViewMark(
+        `elements_error:${{elementBuildIndex}}:${{String(failedEntry?.tagName || "")}}:${{Object.keys(failedEntry?.attributes || {{}}).length}}:${{String(failedEntry?.text || "").length}}:${{elementBuildMode}}`,
+      );
     }}
-    return makeElement(entry, snapshotTextContentForNode);
-  }});
+    throw error;
+  }}
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("elements_ready");
   const elementsByIndex = reuseExistingHostTree
     ? cachedHostCollections.elementsByIndex
     : new Map(elements.map((element) => [element.nodeIndex, element]));
@@ -944,6 +964,8 @@
       }}
       return makeSnapshotText(entry);
     }});
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("text_nodes_ready");
   const commentNodes = reuseExistingHostTree ? cachedHostCollections.commentNodes : snapshotNodes
     .filter((entry) => entry && Number(entry.nodeType) === 8)
     .map((entry) => {{
@@ -956,6 +978,8 @@
       }}
       return makeSnapshotText(entry);
     }});
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("comment_nodes_ready");
   const documentTypeNodes = reuseExistingHostTree ? cachedHostCollections.documentTypeNodes : snapshotNodes
     .filter((entry) => entry && Number(entry.nodeType) === 10)
     .map((entry) => {{
@@ -1035,6 +1059,8 @@
       }}
       return documentType;
     }});
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("document_type_nodes_ready");
   const templateContentsCache = globalThis.__glassTemplateContents instanceof Map
     ? globalThis.__glassTemplateContents
     : (globalThis.__glassTemplateContents = new Map());
@@ -1051,6 +1077,8 @@
       if (hostIndex != null) templateContentsCache.set(hostIndex, fragment);
       return fragment;
     }});
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("fragment_nodes_ready");
   const nodesByIndex = reuseExistingHostTree
     ? cachedHostCollections.nodesByIndex
     : new Map([
@@ -1060,6 +1088,8 @@
         ...documentTypeNodes.map((documentType) => [documentType.nodeIndex, documentType]),
         ...fragmentNodes.map((fragment) => [fragment.nodeIndex, fragment]),
       ]);
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("nodes_by_index_ready");
   // Script-created detached nodes are not in the document snapshot. Keep
   // their objects addressable across realm refreshes so detached subtrees
   // retain their children and can later be inserted into the live document.

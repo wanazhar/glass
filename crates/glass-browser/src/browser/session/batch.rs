@@ -78,11 +78,13 @@ impl CdpBrowserSession {
         for (index, step) in steps.iter().enumerate() {
             let action = step_action_name(step);
             let step_revision = chained_revision;
+            let step_started = std::time::Instant::now();
             match execute_batch_step(self, step, step_revision).await {
                 Ok((response_bytes, resulting_revision, execution_id)) => {
                     outcomes.push(BatchStepOutcome::Success {
                         index,
                         action,
+                        elapsed_ms: step_started.elapsed().as_millis() as u64,
                         response_bytes,
                         execution_id,
                     });
@@ -97,6 +99,7 @@ impl CdpBrowserSession {
                     outcomes.push(BatchStepOutcome::Error {
                         index,
                         action,
+                        elapsed_ms: step_started.elapsed().as_millis() as u64,
                         message,
                         execution_id: None,
                     });
@@ -110,6 +113,7 @@ impl CdpBrowserSession {
             mode,
             initial_revision,
             final_revision: self.page_revision.load(Ordering::Relaxed),
+            final_url: None,
             success: failed == 0,
             completed,
             failed,
@@ -275,6 +279,16 @@ async fn execute_batch_step(
                 Some(outcome.execution_id),
             ))
         }
+        BatchStep::ScrollTarget { target, dx, dy } => {
+            let outcome = session
+                .scroll_target_with_revision(target, *dx, *dy, expected_revision)
+                .await?;
+            Ok((
+                serde_json::to_string(&outcome).ok().map(|s| s.len()),
+                Some(outcome.current_revision),
+                Some(outcome.execution_id),
+            ))
+        }
         BatchStep::Wait {
             condition,
             timeout_ms,
@@ -339,6 +353,7 @@ fn step_action_name(step: &BatchStep) -> String {
         BatchStep::Select { .. } => "select".to_string(),
         BatchStep::Clear { .. } => "clear".to_string(),
         BatchStep::Scroll { .. } => "scroll".to_string(),
+        BatchStep::ScrollTarget { .. } => "scrollTarget".to_string(),
         BatchStep::Wait { .. } => "wait".to_string(),
         BatchStep::Observe { .. } => "observe".to_string(),
         BatchStep::Screenshot => "screenshot".to_string(),

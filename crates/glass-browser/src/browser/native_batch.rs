@@ -122,11 +122,13 @@ pub(crate) async fn run(
     for (index, step) in steps.iter().enumerate() {
         let action = action_name(step);
         let step_revision = chained_revision;
+        let step_started = std::time::Instant::now();
         match execute_step(session, step, step_revision).await {
             Ok((response_bytes, resulting_revision, execution_id)) => {
                 outcomes.push(BatchStepOutcome::Success {
                     index,
                     action,
+                    elapsed_ms: step_started.elapsed().as_millis() as u64,
                     response_bytes,
                     execution_id,
                 });
@@ -139,6 +141,7 @@ pub(crate) async fn run(
                 outcomes.push(BatchStepOutcome::Error {
                     index,
                     action,
+                    elapsed_ms: step_started.elapsed().as_millis() as u64,
                     message: bounded_text(&error.to_string(), 512),
                     execution_id: None,
                 });
@@ -149,10 +152,17 @@ pub(crate) async fn run(
     }
 
     let final_revision = session.native_observe().await?.revision;
+    let final_url = session
+        .contexts()
+        .await
+        .ok()
+        .and_then(|contexts| contexts.into_iter().find(|context| context.active))
+        .map(|context| crate::browser::session::redact_diagnostic_url(&context.url));
     Ok(BatchOutcome {
         mode,
         initial_revision,
         final_revision,
+        final_url,
         steps: outcomes,
         completed,
         failed,
@@ -252,6 +262,19 @@ async fn execute_step(
             execute_action(
                 session,
                 SemanticAction::Scroll { delta_x, delta_y },
+                expected_revision,
+            )
+            .await
+        }
+        BatchStep::ScrollTarget { target, dx, dy } => {
+            let (delta_x, delta_y) = scroll_deltas(*dx, *dy)?;
+            execute_action(
+                session,
+                SemanticAction::ScrollTarget {
+                    target: target.clone(),
+                    delta_x,
+                    delta_y,
+                },
                 expected_revision,
             )
             .await
@@ -371,6 +394,7 @@ fn action_name(step: &BatchStep) -> String {
         BatchStep::Select { .. } => "select",
         BatchStep::Clear { .. } => "clear",
         BatchStep::Scroll { .. } => "scroll",
+        BatchStep::ScrollTarget { .. } => "scrollTarget",
         BatchStep::Wait { .. } => "wait",
         BatchStep::Observe { .. } => "observe",
         BatchStep::Screenshot => "screenshot",

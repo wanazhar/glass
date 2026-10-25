@@ -253,6 +253,12 @@ pub enum NativeAction {
         delta_x: i32,
         delta_y: i32,
     },
+    /// Scroll one explicitly selected element from the current observation.
+    ScrollTarget {
+        target: String,
+        delta_x: i32,
+        delta_y: i32,
+    },
 }
 
 /// Native event kinds retained by the single-owner document coordinator.

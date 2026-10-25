@@ -283,10 +283,52 @@ impl NativeJavaScriptRuntime {
                 };
                 if host_view_phase_markers {
                     let last = Arc::new(Mutex::new(Instant::now()));
+                    let host_view_failure = Arc::new(Mutex::new(None::<(usize, String)>));
+                    let marker_failure = Arc::clone(&host_view_failure);
                     let marker = Function::new(ctx.clone(), move |phase: String| -> bool {
+                        if let Some(details) = phase.strip_prefix("elements_error:")
+                            && let Some((index, metadata)) = details.split_once(':')
+                            && let Ok(index) = index.parse::<usize>()
+                        {
+                            if let Ok(mut failure) = marker_failure.lock() {
+                                *failure = Some((index, metadata.to_owned()));
+                            }
+                            crate::native_engine::content_process::record_content_load_measurement(
+                                "javascript_host_view_element_error",
+                                0,
+                                index,
+                            );
+                            tracing::warn!(element_index = index, element_metadata = metadata, "native host view element construction failed");
+                            let fields: Vec<_> = metadata.split(':').collect();
+                            if fields.len() == 4 {
+                                crate::native_engine::content_process::record_content_load_measurement(
+                                    "javascript_host_view_error_tag_bytes",
+                                    fields[0].len() as u128,
+                                    index,
+                                );
+                                crate::native_engine::content_process::record_content_load_measurement(
+                                    "javascript_host_view_error_attribute_count",
+                                    fields[1].parse().unwrap_or(u128::MAX),
+                                    index,
+                                );
+                                crate::native_engine::content_process::record_content_load_measurement(
+                                    "javascript_host_view_error_text_len",
+                                    fields[2].parse().unwrap_or(u128::MAX),
+                                    index,
+                                );
+                            }
+                            return true;
+                        }
                         let stage = match phase.as_str() {
                             "json_state_parsed" => "javascript_host_view_phase_json_state",
                             "tree_admission_checked" => "javascript_host_view_phase_tree_admission",
+                            "text_content_resolver_ready" => "javascript_host_view_phase_text_resolver",
+                            "elements_ready" => "javascript_host_view_phase_elements",
+                            "text_nodes_ready" => "javascript_host_view_phase_text_nodes",
+                            "comment_nodes_ready" => "javascript_host_view_phase_comment_nodes",
+                            "document_type_nodes_ready" => "javascript_host_view_phase_doctype_nodes",
+                            "fragment_nodes_ready" => "javascript_host_view_phase_fragment_nodes",
+                            "nodes_by_index_ready" => "javascript_host_view_phase_nodes_by_index",
                             "collections_ready" => "javascript_host_view_phase_collections",
                             "tree_linking_ready" => "javascript_host_view_phase_tree_linking",
                             "tree_accessors_ready" => "javascript_host_view_phase_tree_accessors",
@@ -340,6 +382,31 @@ impl NativeJavaScriptRuntime {
                             operation: "publish native host-view diagnostic".into(),
                             reason: "native host-view diagnostic callback could not be published".into(),
                         })?;
+                    let host_view_failure_for_error = Arc::clone(&host_view_failure);
+                    let installation = installer
+                        .call::<_, ()>((bootstrap.host_state_json.as_str(),))
+                        .map_err(|error| {
+                            let base = format!(
+                                "native JavaScript host snapshot could not be installed: {}",
+                                CaughtError::from_error(&ctx, error)
+                            );
+                            let structure = host_view_failure_for_error
+                                .lock()
+                                .ok()
+                                .and_then(|failure| failure.clone());
+                            NativeEngineError::Worker {
+                                operation: "install JavaScript host snapshot".into(),
+                                reason: if let Some((index, metadata)) = structure {
+                                    format!("{base}; host_view_element={index}:{metadata}")
+                                } else {
+                                    base
+                                },
+                            }
+                        });
+                    if host_view_phase_markers {
+                        let _ = ctx.globals().remove("__glassNativeHostViewMark");
+                    }
+                    return installation;
                 }
                 let installation = installer
                     .call::<_, ()>((bootstrap.host_state_json.as_str(),))

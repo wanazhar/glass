@@ -134,6 +134,42 @@ impl CdpBrowserSession {
             .await
     }
 
+    /// Scroll one element selected by a fresh, revision-bound observation.
+    pub async fn scroll_target_with_revision(
+        &self,
+        target: &str,
+        dx: f64,
+        dy: f64,
+        expected_revision: Option<u64>,
+    ) -> BrowserResult<ActionOutcome> {
+        if !dx.is_finite() || !dy.is_finite() || dx.abs() > 1_000_000.0 || dy.abs() > 1_000_000.0 {
+            return Err("targeted scroll deltas must be finite and bounded".into());
+        }
+        self.cdp
+            .with_current_route(async {
+                self.require_expected_revision(expected_revision)?;
+                let element = self.resolve_element(target).await?;
+                let object_id = self
+                    .cdp
+                    .resolve_node_object(element.node_id, element.backend_dom_node_id)
+                    .await?;
+                let remote = RemoteObjectGuard::new(self.cdp.clone(), object_id);
+                let function = format!(
+                    "function() {{ if (!this.isConnected) return false; this.scrollBy({dx:.4}, {dy:.4}); return true; }}"
+                );
+                let result = self
+                    .cdp
+                    .call_on_object(&remote.object_id, &function)
+                    .await?;
+                if runtime_value(&result)?.as_bool() != Some(true) {
+                    return Err("selected scroll target is detached".into());
+                }
+                self.action_outcome(ActionKind::Scroll, Some(element), None)
+                    .await
+            })
+            .await
+    }
+
     /// Capture the full accessibility tree snapshot for the current page.
     ///
     /// Returns the page info, accessibility roots, and all interactive elements.

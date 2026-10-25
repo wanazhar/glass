@@ -455,6 +455,21 @@ impl NativeDocument {
             ));
         }
         let id = self.resolve_script_node_id(node_index, script_nodes);
+        let attribute_changed = self.script_node(id, script_nodes).is_some_and(|node| {
+            let namespace_changed = node
+                .state
+                .attribute_namespaces
+                .get(&name)
+                .map(String::as_str)
+                != namespace_uri.as_deref();
+            let value_changed = match &node.kind {
+                NativeNodeKind::Element { attributes, .. } => {
+                    attributes.get(&name).map(String::as_str) != Some(value)
+                }
+                _ => true,
+            };
+            namespace_changed || value_changed
+        });
         let node = self
             .script_node_mut(id, script_nodes)
             .ok_or(NativeEngineError::DetachedTarget)?;
@@ -491,7 +506,9 @@ impl NativeDocument {
             )
             .finish(None);
         }
-        self.invalidate_layout_styles();
+        if attribute_changed {
+            self.invalidate_layout_styles();
+        }
         self.apply_meta_referrer_policy_to_node(id);
         Ok(())
     }

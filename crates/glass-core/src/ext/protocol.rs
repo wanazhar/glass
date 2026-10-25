@@ -483,7 +483,11 @@ impl Request {
 
 /// Parse a handshake reply into a [`Manifest`].
 pub fn parse_manifest(v: &Value) -> Result<Manifest, String> {
-    let version = v.get("protocol").and_then(Value::as_u64).unwrap_or(0) as u32;
+    let version = v
+        .get("protocol")
+        .and_then(Value::as_u64)
+        .and_then(|version| u32::try_from(version).ok())
+        .unwrap_or(0);
     if version != PROTOCOL_VERSION {
         return Err(format!(
             "extension speaks protocol {version}, this glass speaks {PROTOCOL_VERSION}"
@@ -862,6 +866,14 @@ mod tests {
     fn rejects_a_protocol_mismatch() {
         let mut v = reply();
         v["protocol"] = json!(99);
+        let err = parse_manifest(&v).unwrap_err();
+        assert!(err.contains("protocol"), "{err}");
+    }
+
+    #[test]
+    fn rejects_a_protocol_version_that_wraps_to_the_current_version() {
+        let mut v = reply();
+        v["protocol"] = json!(u64::from(PROTOCOL_VERSION) + (1_u64 << u32::BITS));
         let err = parse_manifest(&v).unwrap_err();
         assert!(err.contains("protocol"), "{err}");
     }

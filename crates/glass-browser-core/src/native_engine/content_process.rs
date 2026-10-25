@@ -159,6 +159,8 @@ const MAX_CONTENT_IMAGES: usize = MAX_NATIVE_VIDEO_POSTERS;
 const MAX_CONTENT_MEDIA: usize = 64;
 const MAX_CONTENT_FRAME_SOURCES: usize = 64;
 const MAX_CONTENT_NAVIGATION_SOURCES: usize = 64;
+const MAX_CONTENT_POLICY_SOURCES_PER_GROUP: usize = 512;
+const MAX_CONTENT_POLICY_SOURCES_TOTAL: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeContentTaskSource {

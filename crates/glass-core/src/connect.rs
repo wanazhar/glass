@@ -886,12 +886,17 @@ fn origin(settings: &Settings) -> String {
         web_url(settings)
     }
 }
+fn origin_authority(value: &str) -> Option<&str> {
+    let (scheme, authority) = value.split_once("://")?;
+    (!scheme.is_empty() && !authority.is_empty()).then_some(authority)
+}
 fn authorized(settings: &Settings, r: &Request) -> bool {
     let candidates = [origin(settings), https_url(settings)];
     let Some(expected) = candidates.iter().find(|candidate| {
-        r.headers
-            .get("host")
-            .is_some_and(|host| host == candidate.split_once("://").unwrap().1)
+        let Some(authority) = origin_authority(candidate) else {
+            return false;
+        };
+        r.headers.get("host").is_some_and(|host| host == authority)
     }) else {
         return false;
     };
@@ -1697,7 +1702,11 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
     let path = url.path();
     if path == "/api/local" && app.settings.local && r.method == "POST" {
         let expected = origin(&app.settings);
-        if r.headers.get("host") != Some(&expected.split_once("://").unwrap().1.to_string())
+        let Some(expected_authority) = origin_authority(&expected) else {
+            return json_response(&mut stream, 403, json!({"error":"Origin rejected"}))
+                .map_err(|e| e.to_string());
+        };
+        if r.headers.get("host").map(String::as_str) != Some(expected_authority)
             || r.headers.get("origin") != Some(&expected)
         {
             return json_response(&mut stream, 403, json!({"error":"Origin rejected"}))
@@ -2129,6 +2138,15 @@ mod tests {
         r.headers
             .insert("tailscale-user-login".into(), "other".into());
         assert!(!authorized(&s, &r));
+    }
+    #[test]
+    fn origin_authority_rejects_malformed_values_without_panicking() {
+        assert_eq!(
+            origin_authority("https://example.test:8443"),
+            Some("example.test:8443")
+        );
+        assert_eq!(origin_authority("https://"), None);
+        assert_eq!(origin_authority("missing-scheme"), None);
     }
     #[test]
     fn directory_pages_policy_and_usage_are_bounded() {

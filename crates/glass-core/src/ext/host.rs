@@ -1547,32 +1547,13 @@ fn fd_of(_s: &ChildStdout) -> i32 {
 #[cfg(unix)]
 fn fd_readable(fd: i32, timeout: std::time::Duration) -> bool {
     let ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-    let mut pfd = PollFd {
+    let mut pfd = libc::pollfd {
         fd,
-        events: POLLIN,
+        events: libc::POLLIN,
         revents: 0,
     };
-    let rc = unsafe { poll(&mut pfd as *mut PollFd, 1, ms) };
-    rc > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR)) != 0
-}
-
-#[cfg(unix)]
-const POLLIN: i16 = 0x0001;
-#[cfg(unix)]
-const POLLERR: i16 = 0x0008;
-#[cfg(unix)]
-const POLLHUP: i16 = 0x0010;
-
-#[cfg(unix)]
-#[repr(C)]
-struct PollFd {
-    fd: i32,
-    events: i16,
-    revents: i16,
-}
-
-unsafe extern "C" {
-    fn poll(fds: *mut PollFd, nfds: u64, timeout: i32) -> i32;
+    let rc = unsafe { libc::poll(&mut pfd, 1, ms) };
+    rc > 0 && (pfd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR)) != 0
 }
 
 #[cfg(not(unix))]

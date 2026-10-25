@@ -88,18 +88,20 @@ pub(in crate::native_engine::javascript) const NATIVE_CANVAS_SCRIPT: &str = r###
           const pixels = decodeBase64(encoded, nativeCanvasByteLimit, true);
           return pixels.length === expectedBytes ? pixels : new Uint8Array(0);
         };
-        const source = String(resource.pixelsBase64 || "");
+        let source = String(resource.pixelsBase64 || "");
         const frames = [];
         for (const frame of Array.isArray(resource.frames) ? resource.frames : []) {
           const delayMs = Number(frame && frame.delayMs);
           if (!Number.isSafeInteger(delayMs) || delayMs < 1 || delayMs > 60000) continue;
-          const frameSource = String(frame.pixelsBase64 || "");
+          let frameSource = String(frame.pixelsBase64 || "");
           frames.push({
             delayMs,
             pixels: null,
             getPixels() {
               if (this.pixels === null) {
-                try { this.pixels = decodePixels(frameSource); }
+                const encoded = frameSource;
+                frameSource = "";
+                try { this.pixels = decodePixels(encoded); }
                 catch (_error) { this.pixels = new Uint8Array(0); }
               }
               return this.pixels;
@@ -113,7 +115,9 @@ pub(in crate::native_engine::javascript) const NATIVE_CANVAS_SCRIPT: &str = r###
           pixels: null,
           getPixels() {
             if (this.pixels === null) {
-              try { this.pixels = decodePixels(source); }
+              const encoded = source;
+              source = "";
+              try { this.pixels = decodePixels(encoded); }
               catch (_error) { this.pixels = new Uint8Array(0); }
             }
             return this.pixels;

@@ -346,6 +346,9 @@ impl NativeLayoutSnapshot {
             fixed: false,
             sticky_root: None,
             stacking_context: 0,
+            text_width_cache: HashMap::new(),
+            text_width_cache_entries: 0,
+            text_width_cache_hits: 0,
             containing_block: PositionedContainingBlock {
                 x: 0,
                 y: 0,
@@ -376,6 +379,13 @@ impl NativeLayoutSnapshot {
                 "native_layout_text_width",
                 text_width_elapsed_us,
                 text_width_calls,
+            );
+        }
+        if builder.text_width_cache_hits > 0 {
+            crate::native_engine::content_process::record_content_load_measurement(
+                "native_layout_text_width_cache_hits",
+                0,
+                builder.text_width_cache_hits,
             );
         }
         build_stage.finish(Some(builder.boxes.len()));
@@ -1373,6 +1383,36 @@ mod scroll_ancestor_cache_tests {
                 layout_box.fixed,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod repeated_text_layout_tests {
+    use super::*;
+    use crate::native_engine::NativeEngineLimits;
+
+    #[test]
+    fn repeated_inline_labels_keep_layout_geometry_with_cached_text_widths() {
+        let mut html = String::from("<div>");
+        for _ in 0..64 {
+            html.push_str("<span>Common repeated navigation label</span>");
+        }
+        html.push_str("</div>");
+        let document = NativeDocument::parse(&html, &NativeEngineLimits::default())
+            .expect("repeated-label fixture parses");
+
+        let layout = NativeLayoutSnapshot::compute(
+            &document,
+            Viewport {
+                width: 800,
+                height: 600,
+                device_scale_factor_milli: 1000,
+            },
+        )
+        .expect("repeated-label layout computes");
+
+        assert!(layout.boxes.len() >= 64);
+        assert!(layout.text_runs.len() >= 64);
     }
 }
 

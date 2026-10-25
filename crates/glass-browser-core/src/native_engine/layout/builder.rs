@@ -1,7 +1,11 @@
 use super::super::css::{
     AlignContentValue, DisplayValue, FlexBasisValue, FlexDirectionValue, FlexWrapValue,
-    NativeGridTrack, NativeGridTrackList, NativePositionValue, TextJustifyValue, TextOverflowValue,
-    TextTransformValue, WhiteSpaceValue, WordBreakValue,
+    FontStyleValue, FontWeightValue, NativeFontFamilyList, NativeFontKerning,
+    NativeFontOpticalSizing, NativeFontVariantAlternates, NativeFontVariantCaps,
+    NativeFontVariantEastAsian, NativeFontVariantLigatures, NativeFontVariantNumeric,
+    NativeFontVariantPosition, NativeFontVariationSettings, NativeGridTrack, NativeGridTrackList,
+    NativePositionValue, TextJustifyValue, TextOverflowValue, TextTransformValue, WhiteSpaceValue,
+    WordBreakValue,
 };
 use super::super::dom::NativeNodeKind;
 use super::super::image::image_dimensions_from_source;
@@ -15,6 +19,20 @@ mod grid;
 #[path = "builder/text.rs"]
 mod text;
 
+const MAX_LAYOUT_TEXT_WIDTH_CACHE_ENTRIES: usize = 4096;
+const MAX_LAYOUT_TEXT_WIDTH_CACHE_TEXT_BYTES: usize = 128;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(super) struct NativeTextWidthCacheKey {
+    font_family: NativeFontFamilyList,
+    font_size: u32,
+    font_weight: FontWeightValue,
+    font_style: FontStyleValue,
+    font_stretch: u16,
+    letter_spacing: u32,
+    word_spacing: u32,
+}
+
 pub(super) struct LayoutBuilder<'a> {
     pub(super) document: &'a NativeDocument,
     pub(super) boxes: Vec<NativeLayoutBox>,
@@ -26,6 +44,9 @@ pub(super) struct LayoutBuilder<'a> {
     pub(super) fixed: bool,
     pub(super) sticky_root: Option<usize>,
     pub(super) stacking_context: i32,
+    pub(super) text_width_cache: HashMap<NativeTextWidthCacheKey, HashMap<String, u32>>,
+    pub(super) text_width_cache_entries: usize,
+    pub(super) text_width_cache_hits: usize,
 }
 
 impl<'a> LayoutBuilder<'a> {
@@ -1113,7 +1134,7 @@ impl<'a> LayoutBuilder<'a> {
         })
     }
 
-    fn intrinsic_inline_width(&self, id: NativeNodeId, style: NativeComputedStyle) -> u32 {
+    fn intrinsic_inline_width(&mut self, id: NativeNodeId, style: NativeComputedStyle) -> u32 {
         let Some(node) = self.document.node(id) else {
             return 0;
         };
@@ -1145,7 +1166,7 @@ impl<'a> LayoutBuilder<'a> {
         }
     }
 
-    fn intrinsic_text_width(&self, id: NativeNodeId, style: NativeComputedStyle) -> u32 {
+    fn intrinsic_text_width(&mut self, id: NativeNodeId, style: NativeComputedStyle) -> u32 {
         let Some(value) = self.document.raw_text_for_layout(id) else {
             return 0;
         };
@@ -1154,24 +1175,73 @@ impl<'a> LayoutBuilder<'a> {
         match style.white_space() {
             WhiteSpaceValue::Normal | WhiteSpaceValue::NoWrap => {
                 let (value, _) = NativeDocument::collapse_text_for_layout(&value);
-                metrics.measure_text(&value, style.letter_spacing(), style.word_spacing())
+                self.measure_text_width(&metrics, style, &value)
             }
             WhiteSpaceValue::PreLine => value
                 .split(['\n', '\r'])
                 .map(|line| {
                     let (line, _) = NativeDocument::collapse_text_for_layout(line);
-                    metrics.measure_text(&line, style.letter_spacing(), style.word_spacing())
+                    self.measure_text_width(&metrics, style, &line)
                 })
                 .max()
                 .unwrap_or(0),
             WhiteSpaceValue::Pre | WhiteSpaceValue::PreWrap => value
                 .split(['\n', '\r'])
-                .map(|line| {
-                    metrics.measure_text(line, style.letter_spacing(), style.word_spacing())
-                })
+                .map(|line| self.measure_text_width(&metrics, style, line))
                 .max()
                 .unwrap_or(0),
         }
+    }
+
+    fn measure_text_width(
+        &mut self,
+        metrics: &NativeTextMetrics,
+        style: NativeComputedStyle,
+        text: &str,
+    ) -> u32 {
+        let cacheable = text.len() <= MAX_LAYOUT_TEXT_WIDTH_CACHE_TEXT_BYTES
+            && style.direction() == super::super::css::DirectionValue::Ltr
+            && style.font_variant_ligatures() == NativeFontVariantLigatures::default()
+            && style.font_variant_caps() == NativeFontVariantCaps::default()
+            && style.font_variant_position() == NativeFontVariantPosition::default()
+            && style.font_variant_alternates() == NativeFontVariantAlternates::default()
+            && style.font_language_override() == Default::default()
+            && style.font_variation_settings() == NativeFontVariationSettings::default()
+            && style.font_variant_east_asian() == NativeFontVariantEastAsian::default()
+            && style.font_variant_numeric() == NativeFontVariantNumeric::default()
+            && style.font_feature_settings() == Default::default()
+            && style.font_kerning() == NativeFontKerning::Auto
+            && style.font_optical_sizing() == NativeFontOpticalSizing::Auto;
+        if !cacheable {
+            return metrics.measure_text(text, style.letter_spacing(), style.word_spacing());
+        }
+        let key = NativeTextWidthCacheKey {
+            font_family: style.font_family(),
+            font_size: style.font_size(),
+            font_weight: style.font_weight(),
+            font_style: style.font_style(),
+            font_stretch: style.font_stretch().min,
+            letter_spacing: style.letter_spacing(),
+            word_spacing: style.word_spacing(),
+        };
+        if let Some(width) = self
+            .text_width_cache
+            .get(&key)
+            .and_then(|widths| widths.get(text))
+            .copied()
+        {
+            self.text_width_cache_hits = self.text_width_cache_hits.saturating_add(1);
+            return width;
+        }
+        let width = metrics.measure_text(text, style.letter_spacing(), style.word_spacing());
+        if self.text_width_cache_entries < MAX_LAYOUT_TEXT_WIDTH_CACHE_ENTRIES {
+            self.text_width_cache
+                .entry(key)
+                .or_default()
+                .insert(text.to_owned(), width);
+            self.text_width_cache_entries += 1;
+        }
+        width
     }
 
     fn intrinsic_inline_height(&self, id: NativeNodeId) -> u32 {
@@ -1390,5 +1460,120 @@ impl<'a> LayoutBuilder<'a> {
         } else {
             DisplayValue::Inline
         }
+    }
+}
+
+#[cfg(test)]
+mod text_width_cache_tests {
+    use super::*;
+    use crate::native_engine::NativeEngineLimits;
+
+    fn builder(document: &NativeDocument) -> LayoutBuilder<'_> {
+        let containing_block = super::super::PositionedContainingBlock {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        };
+        LayoutBuilder {
+            document,
+            boxes: Vec::new(),
+            text_runs: Vec::new(),
+            paint_order: Vec::new(),
+            sticky_ranges: Vec::new(),
+            initial_containing_block: containing_block,
+            containing_block,
+            fixed: false,
+            sticky_root: None,
+            stacking_context: 0,
+            text_width_cache: HashMap::new(),
+            text_width_cache_entries: 0,
+            text_width_cache_hits: 0,
+        }
+    }
+
+    fn element_with_id(document: &NativeDocument, id: &str) -> NativeNodeId {
+        document
+            .element_node_ids()
+            .find(|node_id| {
+                document
+                    .node(*node_id)
+                    .and_then(|node| node.attribute("id"))
+                    == Some(id)
+            })
+            .expect("fixture element exists")
+    }
+
+    #[test]
+    fn text_width_cache_reuses_only_identical_default_ltr_shaping_inputs() {
+        let document = NativeDocument::parse(
+            "<p id='first'>repeated label</p><p id='same'>repeated label</p><p id='spaced' style='letter-spacing:2px'>repeated label</p>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("fixture document parses");
+        let first_id = element_with_id(&document, "first");
+        let same_id = element_with_id(&document, "same");
+        let spaced_id = element_with_id(&document, "spaced");
+        let first_style = document.computed_style_for_layout(first_id);
+        let same_style = document.computed_style_for_layout(same_id);
+        let spaced_style = document.computed_style_for_layout(spaced_id);
+        let first_metrics = document.text_metrics_for_layout(first_id);
+        let spaced_metrics = document.text_metrics_for_layout(spaced_id);
+        let mut builder = builder(&document);
+
+        let expected = first_metrics.measure_text("repeated label", 0, 0);
+        assert_eq!(
+            builder.measure_text_width(&first_metrics, first_style, "repeated label"),
+            expected
+        );
+        assert_eq!(
+            builder.measure_text_width(&first_metrics, same_style, "repeated label"),
+            expected
+        );
+        assert_eq!(builder.text_width_cache_hits, 1);
+        assert_eq!(
+            builder.measure_text_width(&spaced_metrics, spaced_style, "repeated label"),
+            spaced_metrics.measure_text("repeated label", 2, 0)
+        );
+        assert_eq!(builder.text_width_cache_hits, 1);
+        assert_eq!(builder.text_width_cache_entries, 2);
+    }
+
+    #[test]
+    fn text_width_cache_stays_within_its_entry_budget() {
+        let document =
+            NativeDocument::parse("<p id='target'>x</p>", &NativeEngineLimits::default())
+                .expect("fixture document parses");
+        let target = element_with_id(&document, "target");
+        let style = document.computed_style_for_layout(target);
+        let metrics = document.text_metrics_for_layout(target);
+        let mut builder = builder(&document);
+
+        for index in 0..=MAX_LAYOUT_TEXT_WIDTH_CACHE_ENTRIES {
+            let text = format!("label-{index}");
+            builder.measure_text_width(&metrics, style, &text);
+        }
+
+        assert_eq!(
+            builder.text_width_cache_entries,
+            MAX_LAYOUT_TEXT_WIDTH_CACHE_ENTRIES
+        );
+    }
+
+    #[test]
+    fn repeated_inline_labels_reuse_cached_text_width_during_layout() {
+        let mut html = String::from("<div>");
+        for _ in 0..64 {
+            html.push_str("<span>Common repeated navigation label</span>");
+        }
+        html.push_str("</div>");
+        let document = NativeDocument::parse(&html, &NativeEngineLimits::default())
+            .expect("repeated-label fixture parses");
+        let mut builder = builder(&document);
+
+        let flow = builder.layout_children(document.root(), 0, 0, 800, 0);
+
+        assert!(flow.width > 0);
+        assert!(builder.text_width_cache_hits >= 63);
     }
 }

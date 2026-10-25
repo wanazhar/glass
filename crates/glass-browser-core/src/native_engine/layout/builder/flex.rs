@@ -1550,7 +1550,7 @@ impl<'a> LayoutBuilder<'a> {
     }
 
     pub(super) fn outer_width(
-        &self,
+        &mut self,
         id: NativeNodeId,
         style: NativeComputedStyle,
         is_block: bool,
@@ -1582,7 +1582,7 @@ impl<'a> LayoutBuilder<'a> {
     }
 
     pub(super) fn flex_item_base_width(
-        &self,
+        &mut self,
         id: NativeNodeId,
         style: NativeComputedStyle,
         available_width: u32,

@@ -337,6 +337,27 @@ fn content_wire_round_trips_user_interacted_state() {
 }
 
 #[test]
+fn content_wire_round_trips_background_images_resolved_from_custom_properties() {
+    let limits = NativeEngineLimits::default();
+    let document = NativeDocument::parse(
+        "<style>body { --hero: url('https://example.test/hero.png'); background-image: var(--hero); }</style><p>hero</p>",
+        &limits,
+    )
+    .unwrap();
+
+    let wire = document.to_content_wire();
+    let restored = NativeDocument::from_content_wire(wire, &limits, document.generation()).unwrap();
+    let body = restored.resolve_target("css=body").unwrap();
+    let source_id = restored.computed_style_for_layout(body).background_image();
+    assert!(source_id.is_some());
+    assert!(
+        restored
+            .background_image_sources
+            .contains_key(&source_id.unwrap())
+    );
+}
+
+#[test]
 fn document_generations_reject_old_node_ids() {
     let limits = NativeEngineLimits::default();
     let first = NativeDocument::parse_with_generation("<p>first</p>", &limits, 1).unwrap();

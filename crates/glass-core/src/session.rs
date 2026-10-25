@@ -38,7 +38,6 @@ pub enum Record {
     },
     Reasoning(String),
     Bash {
-        #[allow(dead_code)]
         call_id: Option<String>,
         command: String,
         output: String,
@@ -656,9 +655,6 @@ pub(crate) type CommitObserver = dyn Fn(&[Record]) -> std::io::Result<()>;
 
 pub struct Session {
     pub id: String,
-    /// Kept so `resume` can report where a session lives and so a future
-    /// `export` has a source without re-deriving it.
-    #[allow(dead_code)]
     pub path: PathBuf,
     file: Option<File>,
     _writer_lock: Option<WriterLock>,
@@ -684,8 +680,7 @@ pub struct Session {
     state_revision: RefCell<String>,
     write_error: Option<String>,
     commit_observer: Option<std::rc::Rc<CommitObserver>>,
-    /// Number of user turns replayed or started, used by jump-to-turn.
-    #[allow(dead_code)]
+    /// Number of user turns in the current projection, displayed by `sessions`.
     pub turn: usize,
 }
 
@@ -861,8 +856,8 @@ impl Session {
             raw_index: RefCell::new(Vec::new()),
             raw_stamp: RefCell::new((0, std::time::UNIX_EPOCH, 0, 0, 0, 0)),
             records: Vec::new(),
-            turn: 0,
             log_len: 0,
+            turn: 0,
             state_revision: RefCell::new(revision),
             write_error: None,
             commit_observer: None,
@@ -2935,8 +2930,8 @@ mod tests {
             raw_index: RefCell::new(Vec::new()),
             raw_stamp: RefCell::new((0, std::time::UNIX_EPOCH, 0, 0, 0, 0)),
             records: vec![],
-            turn: 0,
             log_len: 0,
+            turn: 0,
             state_revision: RefCell::new(state_receipts::revision_of(&[])),
             write_error: None,
             commit_observer: None,
@@ -3883,8 +3878,8 @@ mod tests {
             raw_index: RefCell::new(Vec::new()),
             raw_stamp: RefCell::new((0, std::time::UNIX_EPOCH, 0, 0, 0, 0)),
             records: vec![],
-            turn: 0,
             log_len: 0,
+            turn: 0,
             state_revision: RefCell::new(state_receipts::revision_of(&[])),
             write_error: None,
             commit_observer: None,

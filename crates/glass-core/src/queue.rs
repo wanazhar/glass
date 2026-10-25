@@ -298,14 +298,12 @@ impl Queue {
     }
 
     /// True when nothing is queued or pending.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty() && self.steer.is_none()
     }
 
     /// Human-readable summary. Kept for the status line and for tests that
     /// assert on ordering, which is the only way to observe queue state.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn describe(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(s) = &self.steer {

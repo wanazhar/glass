@@ -208,7 +208,6 @@ impl CallOutcome {
     /// Cancellation is never reported as a failure and a failure is never
     /// reported as a cancellation: the model is told which one it was, and
     /// whether the extension may still be running.
-    #[allow(dead_code)]
     pub fn describe(&self, subject: &str) -> String {
         match (&self.output, &self.stop) {
             (Some(output), _) => output.clone(),
@@ -554,7 +553,6 @@ impl Extension {
     }
 
     /// Ask this extension's current exchange to stop waiting.
-    #[allow(dead_code)]
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
@@ -1495,7 +1493,6 @@ impl Extension {
     /// cancel that only stops the host's waiting would otherwise leave a
     /// process burning CPU for the rest of the session. Reports which path
     /// was taken so the caller never has to guess whether the kill fired.
-    #[allow(dead_code)]
     pub fn force_stop(&mut self) -> CancelPath {
         if self.stopped {
             return CancelPath::Cooperative;

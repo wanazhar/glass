@@ -19,7 +19,7 @@ const MAX_ROBOTS_REDIRECTS: usize = 2;
 ///
 /// This is crate-visible so live smoke reporting can match policy outcomes
 /// without parsing human-readable error messages.
-#[allow(dead_code)]
+#[allow(dead_code)] // Includes successful navigation classifications not currently emitted by site smoke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PoliteNavigationClassification {
@@ -47,8 +47,8 @@ pub(crate) enum PoliteNavigationOutcome {
     },
 }
 
-#[allow(dead_code)]
 impl PoliteNavigationOutcome {
+    #[cfg(test)]
     pub(crate) const fn classification(self) -> PoliteNavigationClassification {
         match self {
             Self::NotApplicable => PoliteNavigationClassification::NotApplicable,

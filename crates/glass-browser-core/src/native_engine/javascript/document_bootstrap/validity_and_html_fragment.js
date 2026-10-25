@@ -360,112 +360,159 @@
       }},
     }});
   }};
-  const installCommonAttributeProperties = (element, state = {{}}, baseUrl = host.url) => {{
-    installReflectedAttributeProperties(element);
-    installTabIndexProperty(element);
+  const nativeElementSharedPrototype = Object.create(Object.prototype);
+  const sharedCommonAttributePrototypes = new WeakSet();
+  const sharedSpecialAttributeProperties = new WeakMap();
+  const defineSharedSpecialAttribute = (prototype, property, descriptor) => {{
+    let properties = sharedSpecialAttributeProperties.get(prototype);
+    if (!properties) {{
+      properties = new Set();
+      sharedSpecialAttributeProperties.set(prototype, properties);
+    }}
+    if (properties.has(property)) return;
+    Object.defineProperty(prototype, property, descriptor);
+    properties.add(property);
+  }};
+  const installSharedStringAttribute = (prototype, property, attribute) =>
+    defineSharedSpecialAttribute(prototype, property, {{
+      enumerable: true,
+      configurable: true,
+      get() {{ const value = this.getAttribute(attribute); return value === null ? "" : value; }},
+      set(next) {{ this.setAttribute(attribute, String(next)); }},
+    }});
+  const installSharedUrlAttribute = (prototype, property, attribute) =>
+    defineSharedSpecialAttribute(prototype, property, {{
+      enumerable: true,
+      configurable: true,
+      get() {{
+        const value = this.getAttribute(attribute);
+        if (value === null || value === "") return "";
+        try {{ return new URLNative(value, effectiveDocumentBaseUrl()).href; }} catch (_error) {{ return value; }}
+      }},
+      set(next) {{ this.setAttribute(attribute, String(next)); }},
+    }});
+  const installSharedReferrerPolicy = (prototype) =>
+    defineSharedSpecialAttribute(prototype, "referrerPolicy", {{
+      enumerable: true,
+      configurable: true,
+      get() {{
+        const value = this.getAttribute("referrerpolicy");
+        return value !== null && referrerPolicyAttributeValues.has(asciiLowercaseAttributeValue(value)) ? value : "";
+      }},
+      set(next) {{ this.setAttribute("referrerpolicy", String(next)); }},
+    }});
+  const installSharedCommonAttributeProperties = (prototype) => {{
+    if (sharedCommonAttributePrototypes.has(prototype)) return;
+    sharedCommonAttributePrototypes.add(prototype);
+    const reflectedString = (attribute) => ({{
+      enumerable: true,
+      configurable: true,
+      get() {{ const value = this.getAttribute(attribute); return value === null ? "" : value; }},
+      set(next) {{ this.setAttribute(attribute, String(next)); }},
+    }});
+    Object.defineProperties(prototype, {{
+      id: reflectedString("id"),
+      className: reflectedString("class"),
+      tabIndex: {{
+        enumerable: true,
+        configurable: true,
+        get() {{
+          const parsed = parsedNativeTabIndexAttribute(this.getAttribute("tabindex"));
+          return parsed === null ? defaultNativeTabIndex(this) : parsed;
+        }},
+        set(next) {{ this.setAttribute("tabindex", String((+next) | 0)); }},
+      }},
+    }});
     for (const [property, attribute] of [
       ["disabled", "disabled"], ["hidden", "hidden"], ["multiple", "multiple"],
-      ["inert", "inert"],
-      ["required", "required"], ["readOnly", "readonly"], ["autofocus", "autofocus"],
-      ["open", "open"], ["controls", "controls"], ["loop", "loop"],
-      ["muted", "muted"], ["autoplay", "autoplay"], ["reversed", "reversed"],
-      ["formNoValidate", "formnovalidate"], ["noValidate", "novalidate"],
-    ]) {{
-      installBooleanAttributeProperty(element, property, attribute,
-        state[property] || (() => element.hasAttribute(attribute)));
-    }}
+      ["inert", "inert"], ["required", "required"], ["readOnly", "readonly"],
+      ["autofocus", "autofocus"], ["open", "open"], ["controls", "controls"],
+      ["loop", "loop"], ["muted", "muted"], ["autoplay", "autoplay"],
+      ["reversed", "reversed"], ["formNoValidate", "formnovalidate"], ["noValidate", "novalidate"],
+    ]) Object.defineProperty(prototype, property, {{
+      enumerable: true,
+      configurable: true,
+      get() {{ return this.hasAttribute(attribute); }},
+      set(next) {{
+        if (Boolean(next)) this.setAttribute(attribute, "");
+        else this.removeAttribute(attribute);
+      }},
+    }});
     for (const [property, attribute] of [
       ["name", "name"], ["title", "title"], ["lang", "lang"], ["dir", "dir"],
       ["slot", "slot"], ["htmlFor", "for"], ["accept", "accept"], ["alt", "alt"],
       ["placeholder", "placeholder"], ["pattern", "pattern"], ["min", "min"],
       ["max", "max"], ["step", "step"], ["method", "method"],
       ["target", "target"], ["rel", "rel"], ["download", "download"],
-    ]) installStringAttributeProperty(element, property, attribute);
+    ]) Object.defineProperty(prototype, property, reflectedString(attribute));
+  }};
+  const installCommonAttributeProperties = (element, state = {{}}, baseUrl = host.url) => {{
+    const prototype = nativeElementSharedPrototype;
+    installSharedCommonAttributeProperties(prototype);
     if (element.namespaceURI === HTML_NAMESPACE && element.tagName === "META")
       installStringAttributeProperty(element, "content", "content");
     if (["A", "AREA", "BASE", "LINK"].includes(element.tagName))
-      installUrlAttributeProperty(element, "href", "href", baseUrl);
+      installSharedUrlAttribute(prototype, "href", "href");
     if (["IMG", "SCRIPT", "IFRAME", "FRAME", "EMBED", "SOURCE", "TRACK", "AUDIO", "VIDEO"].includes(element.tagName)) {{
-      const reset = element.tagName === "IMG"
-        ? (typeof state.imageReset === "function" ? (value) => state.imageReset(value === "") : null)
-        : (["AUDIO", "VIDEO"].includes(element.tagName) && typeof state.mediaReset === "function"
-          ? state.mediaReset
-          : null);
-      installUrlAttributeProperty(element, "src", "src", baseUrl, reset);
+      installSharedUrlAttribute(prototype, "src", "src");
     }}
     if (element.tagName === "VIDEO") {{
-      Object.defineProperty(element, "poster", {{
+      defineSharedSpecialAttribute(prototype, "poster", {{
         enumerable: true,
-        configurable: false,
+        configurable: true,
         get() {{
-          const value = element.getAttribute("poster");
+          const value = this.getAttribute("poster");
           if (value === null || value === "") return "";
           try {{ return new URLNative(value, effectiveDocumentBaseUrl()).href; }} catch (_error) {{ return ""; }}
         }},
-        set(next) {{ element.setAttribute("poster", String(next)); }},
+        set(next) {{ this.setAttribute("poster", String(next)); }},
       }});
     }}
     if (["LINK", "SCRIPT", "AUDIO", "VIDEO"].includes(element.tagName)) {{
-      installStringAttributeProperty(element, "integrity", "integrity");
-      installStringAttributeProperty(element, "crossOrigin", "crossorigin");
+      installSharedStringAttribute(prototype, "integrity", "integrity");
+      installSharedStringAttribute(prototype, "crossOrigin", "crossorigin");
     }}
     if (element.tagName === "FORM")
-      installUrlAttributeProperty(element, "action", "action", baseUrl);
+      installSharedUrlAttribute(prototype, "action", "action");
     if (["IMG", "SOURCE"].includes(element.tagName)) {{
-      installStringAttributeProperty(element, "srcset", "srcset");
-      installStringAttributeProperty(element, "sizes", "sizes");
+      installSharedStringAttribute(prototype, "srcset", "srcset");
+      installSharedStringAttribute(prototype, "sizes", "sizes");
     }}
     if (element.tagName === "SOURCE")
-      installStringAttributeProperty(element, "media", "media");
+      installSharedStringAttribute(prototype, "media", "media");
     if (element.tagName === "IMG") {{
-      installLimitedKnownValuesStringAttributeProperty(
-        element, "referrerPolicy", "referrerpolicy", referrerPolicyAttributeValues);
-      const imageState = () => ({{
-        complete: typeof state.imageComplete === "function"
-          ? Boolean(state.imageComplete())
-          : !element.hasAttribute("src"),
-        naturalWidth: typeof state.imageNaturalWidth === "function"
-          ? Number(state.imageNaturalWidth()) || 0
-          : 0,
-        naturalHeight: typeof state.imageNaturalHeight === "function"
-          ? Number(state.imageNaturalHeight()) || 0
-          : 0,
-      }});
-      Object.defineProperty(element, "complete", {{
-        enumerable: true,
-        configurable: false,
-        get() {{ return imageState().complete; }},
-      }});
-      Object.defineProperty(element, "naturalWidth", {{
-        enumerable: true,
-        configurable: false,
-        get() {{ return imageState().naturalWidth; }},
-      }});
-      Object.defineProperty(element, "naturalHeight", {{
-        enumerable: true,
-        configurable: false,
-        get() {{ return imageState().naturalHeight; }},
-      }});
-      Object.defineProperty(element, "currentSrc", {{
-        enumerable: true,
-        configurable: false,
+      installSharedReferrerPolicy(prototype);
+      defineSharedSpecialAttribute(prototype, "complete", {{
+        enumerable: true, configurable: true,
         get() {{
-          const selected = typeof state.imageCurrentSrc === "function"
-            ? String(state.imageCurrentSrc() || "")
-            : "";
-          const value = selected || element.getAttribute("src");
+          const entry = this.__glassEntry;
+          return entry.imageComplete === undefined ? !this.hasAttribute("src") : Boolean(entry.imageComplete);
+        }},
+      }});
+      defineSharedSpecialAttribute(prototype, "naturalWidth", {{
+        enumerable: true, configurable: true,
+        get() {{ return Number(this.__glassEntry.imageNaturalWidth) || 0; }},
+      }});
+      defineSharedSpecialAttribute(prototype, "naturalHeight", {{
+        enumerable: true, configurable: true,
+        get() {{ return Number(this.__glassEntry.imageNaturalHeight) || 0; }},
+      }});
+      defineSharedSpecialAttribute(prototype, "currentSrc", {{
+        enumerable: true, configurable: true,
+        get() {{
+          const entry = this.__glassEntry;
+          const selected = String(entry.imageCurrentSrc || "");
+          const value = selected || this.getAttribute("src");
           if (value === null || value === "") return "";
-          try {{ return new URLNative(value, baseUrl).href; }} catch (_error) {{ return value; }}
+          try {{ return new URLNative(value, effectiveDocumentBaseUrl()).href; }} catch (_error) {{ return value; }}
         }},
       }});
     }}
     if (element.tagName === "SCRIPT") {{
-      installLimitedKnownValuesStringAttributeProperty(
-        element, "referrerPolicy", "referrerpolicy", referrerPolicyAttributeValues);
+      installSharedReferrerPolicy(prototype);
     }}
     if (element.tagName === "LINK") {{
-      installLimitedKnownValuesStringAttributeProperty(
-        element, "referrerPolicy", "referrerpolicy", referrerPolicyAttributeValues);
+      installSharedReferrerPolicy(prototype);
     }}
     if (["AUDIO", "VIDEO"].includes(element.tagName)) {{
       const mediaState = () => ({{

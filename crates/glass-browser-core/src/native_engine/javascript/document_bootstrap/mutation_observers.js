@@ -97,7 +97,9 @@
   const mutationShadowChildren = reuseMutationShadow ? cachedMutationShadow.children : new Map();
   if (!reuseMutationShadow) {{
     for (const entry of Array.isArray(state.elements) ? state.elements : []) {{
-      mutationShadowAttributes.set(Number(entry.nodeIndex), {{ ...(entry.attributes || {{}}) }});
+      // Host snapshot attributes are immutable for this document generation.
+      // Keep the snapshot object until a mutation command touches this element.
+      mutationShadowAttributes.set(Number(entry.nodeIndex), entry.attributes || {{}});
     }}
     for (const entry of Array.isArray(state.nodes) ? state.nodes : []) {{
       const index = Number(entry.nodeIndex);
@@ -105,9 +107,10 @@
       if (entry.parentIndex !== null && entry.parentIndex !== undefined) {{
         mutationShadowParents.set(index, Number(entry.parentIndex));
       }}
-      mutationShadowChildren.set(index, Array.isArray(entry.children)
-        ? entry.children.map(Number)
-        : []);
+      // Child indexes are already normalized by the host serializer. Treat the
+      // snapshot array as immutable and replace it only when a command changes
+      // this parent's children.
+      mutationShadowChildren.set(index, Array.isArray(entry.children) ? entry.children : []);
     }}
   }}
   cachedMutationShadow = {{
@@ -296,7 +299,7 @@
     const target = mutationNode(nodeIndex);
     if (kind === "setAttribute") {{
       if (!target) return;
-      const attributes = mutationShadowAttributes.get(nodeIndex) || {{}};
+      const attributes = {{ ...(mutationShadowAttributes.get(nodeIndex) || {{}}) }};
       const name = String(command.name).toLowerCase();
       const oldValue = Object.prototype.hasOwnProperty.call(attributes, name) ? attributes[name] : null;
       const value = String(command.value);
@@ -307,7 +310,7 @@
     }}
     if (kind === "removeAttribute") {{
       if (!target) return;
-      const attributes = mutationShadowAttributes.get(nodeIndex) || {{}};
+      const attributes = {{ ...(mutationShadowAttributes.get(nodeIndex) || {{}}) }};
       const name = String(command.name).toLowerCase();
       const oldValue = Object.prototype.hasOwnProperty.call(attributes, name) ? attributes[name] : null;
       delete attributes[name];

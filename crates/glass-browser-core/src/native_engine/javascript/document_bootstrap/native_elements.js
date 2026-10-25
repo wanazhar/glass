@@ -93,17 +93,58 @@
     return HTML_NAMESPACE;
   }};
   let captureDynamicCspMetaPolicy = () => {{}};
+  let nativeElementBuildPhase = "idle";
+  const applyNativeElementScroll = (element, leftCandidate, topCandidate) => {{
+    const entry = element.__glassEntry;
+    if (!entry) return undefined;
+    const isRoot = entry.tagName.toLowerCase() === "html";
+    const geometry = geometryForNode(element);
+    const clientWidth = isRoot
+      ? Number(globalThis.innerWidth) || Number(geometry.clientWidth) || Number(geometry.width) || 0
+      : Number(geometry.clientWidth) || Number(geometry.width) || 0;
+    const clientHeight = isRoot
+      ? Number(globalThis.innerHeight) || Number(geometry.clientHeight) || Number(geometry.height) || 0
+      : Number(geometry.clientHeight) || Number(geometry.height) || 0;
+    const scrollWidth = isRoot ? Number(state.scrollWidth) || clientWidth : Number(geometry.scrollWidth) || clientWidth;
+    const scrollHeight = isRoot ? Number(state.scrollHeight) || clientHeight : Number(geometry.scrollHeight) || clientHeight;
+    const currentLeft = isRoot ? Number(state.scrollX) || 0 : Number(element.__glassScrollLeft) || 0;
+    const currentTop = isRoot ? Number(state.scrollY) || 0 : Number(element.__glassScrollTop) || 0;
+    const coordinate = (candidate, current) => {{
+      const numeric = Number(candidate === undefined ? current : candidate);
+      return Number.isFinite(numeric) ? Math.trunc(numeric) : 0;
+    }};
+    const left = Math.max(0, Math.min(Math.max(0, scrollWidth - clientWidth), coordinate(leftCandidate, currentLeft)));
+    const top = Math.max(0, Math.min(Math.max(0, scrollHeight - clientHeight), coordinate(topCandidate, currentTop)));
+    if (isRoot) {{
+      state.scrollX = left;
+      state.scrollY = top;
+      if (typeof globalThis.scrollX === "number") globalThis.scrollX = left;
+      if (typeof globalThis.scrollY === "number") globalThis.scrollY = top;
+      if (typeof globalThis.pageXOffset === "number") globalThis.pageXOffset = left;
+      if (typeof globalThis.pageYOffset === "number") globalThis.pageYOffset = top;
+    }} else {{
+      element.__glassScrollLeft = left;
+      element.__glassScrollTop = top;
+    }}
+    if (left !== currentLeft || top !== currentTop) {{
+      pushCommand({{ kind: "scrollTo", node_index: isRoot ? 0 : entry.nodeIndex, left, top }});
+    }}
+    return undefined;
+  }};
   const makeElement = (initialEntry, exactTextForNode = null) => {{
+    nativeElementBuildPhase = "initialize_entry";
     let entry = initialEntry;
     let textContent = snapshotElementTextContent(entry, exactTextForNode);
     let innerHtml = String(entry.innerHtml || "");
     let templateContent = null;
-    let value = entry.value === null
+    let value = entry.value == null
       ? (entry.tagName.toLowerCase() === "option"
-        ? (entry.attributes.value === undefined ? entry.text : entry.attributes.value)
+        ? (entry.attributes.value === undefined ? String(entry.text || "") : entry.attributes.value)
         : "")
       : entry.value;
-    let files = makeNativeFileList(entry.files);
+    let files = Array.isArray(entry.files) && entry.files.length > 0
+      ? makeNativeFileList(entry.files)
+      : null;
     let disabled = Boolean(entry.disabled);
     let hidden = Boolean(entry.hidden);
     let multiple = Object.prototype.hasOwnProperty.call(entry.attributes, "multiple");
@@ -123,12 +164,10 @@
       ? null
       : Number(entry.mediaError);
     let inlineStyleAllowed = entry.inlineStyleAllowed !== false;
-    const inlineAttributeHandlers = new Map();
+    let inlineAttributeHandlers = null;
     let computedStyle = entry.computedStyle && typeof entry.computedStyle === "object"
       ? entry.computedStyle
       : {{}};
-    let scrollLeft = Number(entry.scrollX) || 0;
-    let scrollTop = Number(entry.scrollY) || 0;
     const resetImageState = (complete = false) => {{
       imageComplete = complete;
       imageNaturalWidth = 0;
@@ -228,78 +267,39 @@
       }}
       reconcileNativeFormAssociatedAttribute(localName, namespaceURI);
     }};
-    let selectionStart = entry.selectionStart;
-    let selectionEnd = entry.selectionEnd;
+    let selectionStart = entry.selectionStart ?? null;
+    let selectionEnd = entry.selectionEnd ?? null;
     let selectionDirection = entry.selectionDirection || "none";
-    const selectionLength = () => Array.from(String(value)).length;
-    const selectionIndex = (candidate) => {{
-      const numeric = Number(candidate);
-      if (!Number.isFinite(numeric) || Math.trunc(numeric) !== numeric) {{
-        throw new TypeError("selection offset must be a finite integer");
-      }}
-      return Math.max(0, Math.min(selectionLength(), numeric));
-    }};
-    const applySelection = (start, end, direction) => {{
-      if (selectionStart == null || selectionEnd == null) {{
-        throw new TypeError("selection is unavailable on this element");
-      }}
-      const nextStart = selectionIndex(start);
-      const nextEnd = selectionIndex(end);
-      const normalizedDirection = String(direction).toLowerCase();
-      if (!["none", "forward", "backward"].includes(normalizedDirection)) {{
-        throw new TypeError("invalid selection direction");
-      }}
-      selectionStart = Math.min(nextStart, nextEnd);
-      selectionEnd = Math.max(nextStart, nextEnd);
-      selectionDirection = normalizedDirection;
-      pushCommand({{ kind: "setSelection", node_index: entry.nodeIndex, start: selectionStart, end: selectionEnd, direction: selectionDirection }});
-    }};
-    const scrollCoordinate = (candidate) => {{
-      const numeric = Number(candidate);
-      return Number.isFinite(numeric) ? Math.trunc(numeric) : 0;
-    }};
-    const applyScroll = (leftCandidate, topCandidate) => {{
-      const isRoot = entry.tagName.toLowerCase() === "html";
-      const geometry = geometryForNode(element);
-      const clientWidth = isRoot
-        ? Number(globalThis.innerWidth) || Number(geometry.clientWidth) || Number(geometry.width) || 0
-        : Number(geometry.clientWidth) || Number(geometry.width) || 0;
-      const clientHeight = isRoot
-        ? Number(globalThis.innerHeight) || Number(geometry.clientHeight) || Number(geometry.height) || 0
-        : Number(geometry.clientHeight) || Number(geometry.height) || 0;
-      const scrollWidth = isRoot
-        ? Number(state.scrollWidth) || clientWidth
-        : Number(geometry.scrollWidth) || clientWidth;
-      const scrollHeight = isRoot
-        ? Number(state.scrollHeight) || clientHeight
-        : Number(geometry.scrollHeight) || clientHeight;
-      const currentLeft = isRoot ? Number(state.scrollX) || 0 : scrollLeft;
-      const currentTop = isRoot ? Number(state.scrollY) || 0 : scrollTop;
-      const left = Math.max(0, Math.min(
-        Math.max(0, scrollWidth - clientWidth),
-        scrollCoordinate(leftCandidate === undefined ? currentLeft : leftCandidate),
-      ));
-      const top = Math.max(0, Math.min(
-        Math.max(0, scrollHeight - clientHeight),
-        scrollCoordinate(topCandidate === undefined ? currentTop : topCandidate),
-      ));
-      if (isRoot) {{
-        state.scrollX = left;
-        state.scrollY = top;
-        if (typeof globalThis.scrollX === "number") globalThis.scrollX = left;
-        if (typeof globalThis.scrollY === "number") globalThis.scrollY = top;
-        if (typeof globalThis.pageXOffset === "number") globalThis.pageXOffset = left;
-        if (typeof globalThis.pageYOffset === "number") globalThis.pageYOffset = top;
-        if (typeof element.__glassSetScrollState === "function") element.__glassSetScrollState(left, top);
-      }} else {{
-        scrollLeft = left;
-        scrollTop = top;
-      }}
-      if (left !== currentLeft || top !== currentTop) {{
-        pushCommand({{ kind: "scrollTo", node_index: isRoot ? 0 : entry.nodeIndex, left, top }});
-      }}
-      return undefined;
-    }};
+    const hasTextSelection = ["input", "textarea"].includes(String(entry.tagName).toLowerCase())
+      && selectionStart != null && selectionEnd != null;
+    let selectionLength = null;
+    let applySelection = null;
+    if (hasTextSelection) {{
+      selectionLength = () => Array.from(String(value)).length;
+      const selectionIndex = (candidate) => {{
+        const numeric = Number(candidate);
+        if (!Number.isFinite(numeric) || Math.trunc(numeric) !== numeric) {{
+          throw new TypeError("selection offset must be a finite integer");
+        }}
+        return Math.max(0, Math.min(selectionLength(), numeric));
+      }};
+      applySelection = (start, end, direction) => {{
+        if (selectionStart == null || selectionEnd == null) {{
+          throw new TypeError("selection is unavailable on this element");
+        }}
+        const nextStart = selectionIndex(start);
+        const nextEnd = selectionIndex(end);
+        const normalizedDirection = String(direction).toLowerCase();
+        if (!["none", "forward", "backward"].includes(normalizedDirection)) {{
+          throw new TypeError("invalid selection direction");
+        }}
+        selectionStart = Math.min(nextStart, nextEnd);
+        selectionEnd = Math.max(nextStart, nextEnd);
+        selectionDirection = normalizedDirection;
+        pushCommand({{ kind: "setSelection", node_index: entry.nodeIndex, start: selectionStart, end: selectionEnd, direction: selectionDirection }});
+      }};
+    }}
+    nativeElementBuildPhase = "create_element_object";
     const element = {{
       nodeIndex: entry.nodeIndex,
       parentIndex: entry.parentIndex,
@@ -311,143 +311,24 @@
         ? String(entry.tagName || "").toLowerCase()
         : String(entry.tagName || ""),
       namespaceURI: namespaceUriForEntry(entry),
-      id: entry.attributes.id || "",
-      className: entry.attributes.class || "",
-      value: entry.value === null
+      value: entry.value == null
         ? (entry.tagName.toLowerCase() === "option"
-          ? (entry.attributes.value === undefined ? entry.text : entry.attributes.value)
+          ? (entry.attributes.value === undefined ? String(entry.text || "") : entry.attributes.value)
           : "")
         : entry.value,
-      get files() {{ return files; }},
-      checked: entry.checked,
+      get files() {{ return files || (files = makeNativeFileList([])); }},
+      checked: Boolean(entry.checked),
       indeterminate: Boolean(entry.indeterminate),
-      selected: entry.selected,
+      selected: Boolean(entry.selected),
       multiple,
       disabled,
       hidden,
-      focused: entry.focused,
+      focused: Boolean(entry.focused),
       focusAnchorNodeIndex: entry.focusAnchorNodeIndex ?? null,
       hovered: entry.hovered === true,
       userInteracted: entry.userInteracted === true,
-      selectionEnd: entry.selectionEnd,
+      selectionEnd: entry.selectionEnd ?? null,
       selectionDirection: entry.selectionDirection,
-      get validity() {{ return validityFlags(entry); }},
-      get validationMessage() {{
-        return validationMessageFor(entry, validityFlags(entry));
-      }},
-      get willValidate() {{ return Boolean(entry.willValidate); }},
-      getBoundingClientRect() {{ return makeDomRect(geometryForNode(element)); }},
-      getClientRects() {{
-        const geometry = geometryForNode(element);
-        return geometry.width > 0 && geometry.height > 0
-          ? asNodeList([makeDomRect(geometry)])
-          : asNodeList([]);
-      }},
-      get clientWidth() {{
-        const geometry = geometryForNode(element);
-        return Number(geometry.clientWidth) || Number(geometry.width) || 0;
-      }},
-      get clientHeight() {{
-        const geometry = geometryForNode(element);
-        return Number(geometry.clientHeight) || Number(geometry.height) || 0;
-      }},
-      get offsetWidth() {{ return Number(geometryForNode(element).width) || 0; }},
-      get offsetHeight() {{ return Number(geometryForNode(element).height) || 0; }},
-      get scrollLeft() {{ return scrollLeft; }},
-      set scrollLeft(value) {{ applyScroll(value, scrollTop); }},
-      get scrollTop() {{ return scrollTop; }},
-      set scrollTop(value) {{ applyScroll(scrollLeft, value); }},
-      get scrollWidth() {{
-        const geometry = geometryForNode(element);
-        return Number(geometry.scrollWidth) || Number(geometry.width) || 0;
-      }},
-      get scrollHeight() {{
-        const geometry = geometryForNode(element);
-        return Number(geometry.scrollHeight) || Number(geometry.height) || 0;
-      }},
-      getAttribute(name) {{
-        const htmlElement = element.namespaceURI === HTML_NAMESPACE;
-        const key = htmlElement ? String(name).toLowerCase() : String(name);
-        for (const attr of Object.keys(entry.attributes)) {{
-          if (htmlElement ? attr.toLowerCase() === key : attr === key) return entry.attributes[attr];
-        }}
-        return null;
-      }},
-      getAttributeNS(namespace, name) {{
-        return namespacedAttributeValue(namespace, name);
-      }},
-      getAttributeNames() {{ return Object.keys(entry.attributes); }},
-      hasAttribute(name) {{ return this.getAttribute(name) !== null; }},
-      hasAttributeNS(namespace, name) {{ return this.getAttributeNS(namespace, name) !== null; }},
-      matches(selector) {{ return matchesSelector(element, selector); }},
-      closest(selector) {{
-        let current = element;
-        while (current) {{
-          if (matchesSelector(current, selector)) return current;
-          current = current.parentElement;
-        }}
-        return null;
-      }},
-      querySelector(selector) {{
-        return descendantsInTree(element, (candidate) => matchesSelector(candidate, selector, element))[0] || null;
-      }},
-      querySelectorAll(selector) {{
-        return asNodeList(descendantsInTree(element, (candidate) => matchesSelector(candidate, selector, element)));
-      }},
-      getElementsByTagName(name) {{
-        const value = String(name).toLowerCase();
-        return asHtmlCollection(descendantsInTree(element, (candidate) =>
-          value === "*" || candidate.tagName.toLowerCase() === value));
-      }},
-      getElementsByClassName(name) {{
-        const value = String(name).trim();
-        if (!value) return asHtmlCollection([]);
-        const tokens = value.split(/\s+/);
-        return asHtmlCollection(descendantsInTree(element, (candidate) =>
-          tokens.every((token) => String(candidate.className).split(/\s+/).includes(token))));
-      }},
-      addEventListener(type, callback, options) {{
-        addListener(ownerFor(element), type, callback, options);
-      }},
-      removeEventListener(type, callback, options) {{
-        removeListener(ownerFor(element), type, callback, options);
-      }},
-      dispatchEvent(event) {{
-        return dispatchTarget(this, event);
-      }},
-      focus() {{
-        if (this.disabled || this.hidden || nativeFormAssociatedDisabledForFocus(this)
-            || nativeInertForFocus(this)) return;
-        setLocalFocus(this);
-      }},
-      blur() {{
-        if (!this.focused) return;
-        this.focused = false;
-        pushCommand({{ kind: "blur", node_index: entry.nodeIndex }});
-        dispatchTarget(this, createFocusEvent("blur", {{ relatedTarget: null }}));
-        dispatchTarget(this, createFocusEvent("focusout", {{ bubbles: true, relatedTarget: null }}));
-      }},
-      scrollTo(leftOrOptions = 0, top = 0) {{
-        if (leftOrOptions && typeof leftOrOptions === "object") {{
-          applyScroll(leftOrOptions.left, leftOrOptions.top);
-        }} else {{
-          applyScroll(leftOrOptions, top);
-        }}
-      }},
-      scrollBy(leftOrOptions = 0, top = 0) {{
-        if (leftOrOptions && typeof leftOrOptions === "object") {{
-          applyScroll(scrollLeft + scrollCoordinate(leftOrOptions.left), scrollTop + scrollCoordinate(leftOrOptions.top));
-        }} else {{
-          applyScroll(scrollLeft + scrollCoordinate(leftOrOptions), scrollTop + scrollCoordinate(top));
-        }}
-      }},
-      scroll(leftOrOptions = 0, top = 0) {{ return this.scrollTo(leftOrOptions, top); }},
-      setSelectionRange(start, end, direction = "none") {{
-        applySelection(start, end, direction);
-      }},
-      select() {{
-        applySelection(0, selectionLength(), "forward");
-      }},
       click() {{
         if (this.disabled || this.hidden) return;
         this.focus();
@@ -460,39 +341,6 @@
         }}
         pushCommand({{ kind: "click", node_index: entry.nodeIndex }});
         nativeActivateResetButton(this, pushCommand);
-      }},
-      submit() {{
-        if (this.tagName !== "FORM") throw new TypeError("submit requires a form");
-        pushCommand({{ kind: "submitForm", node_index: entry.nodeIndex }});
-      }},
-      requestSubmit() {{
-        if (this.tagName !== "FORM") throw new TypeError("requestSubmit requires a form");
-        const submitter = arguments.length === 0 ? null : arguments[0];
-        if (submitter !== null && (typeof submitter !== "object" || typeof submitter.nodeIndex !== "number")) {{
-          throw new TypeError("requestSubmit submitter must be an element");
-        }}
-        pushCommand({{ kind: "requestSubmitForm", node_index: entry.nodeIndex, submitter_index: submitter === null ? null : submitter.nodeIndex }});
-      }},
-      reset() {{
-        return nativeFormReset(this, pushCommand);
-      }},
-      checkValidity() {{
-        const valid = validityFlags(entry).valid;
-        if (!valid) pushCommand({{ kind: "checkValidity", node_index: entry.nodeIndex }});
-        return valid;
-      }},
-      reportValidity() {{
-        const valid = validityFlags(entry).valid;
-        if (!valid) pushCommand({{ kind: "reportValidity", node_index: entry.nodeIndex }});
-        return valid;
-      }},
-      setCustomValidity(message) {{
-        const value = String(message);
-        entry.customValidity = value;
-        if (!entry.validity) entry.validity = {{}};
-        entry.validity.customError = value.length > 0;
-        entry.validity.valid = validityFlags(entry).valid;
-        pushCommand({{ kind: "setCustomValidity", node_index: entry.nodeIndex, message: value }});
       }},
       setAttribute(name, value) {{
         const key = String(name).toLowerCase();
@@ -602,168 +450,19 @@
       removeAttributeNS(namespace, name) {{
         removeNamespacedAttribute(namespace, name);
       }},
-      appendChild(child) {{
-        if (child && child.__glassFragment === true) {{
-          const children = child.__glassChildren.slice();
-          for (const fragmentChild of children) element.appendChild(fragmentChild);
-          child.__glassChildren = [];
-          return child;
-        }}
-        if (!child || typeof child.nodeIndex !== "number") throw new TypeError("child must be a native element");
-        if (child === element) throw new TypeError("a node cannot contain itself");
-        const wasConnected = nodeIsConnected(child);
-        let ancestor = element;
-        while (ancestor) {{
-          if (ancestor === child) throw new TypeError("a node cannot contain one of its ancestors");
-          ancestor = ancestor.__glassParent || null;
-        }}
-        const oldParent = child.__glassParent || null;
-        if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
-          queueFragmentChildRemoval(oldParent, child);
-          oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
-          if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
-        }}
-        element.__glassChildren = element.__glassChildren.filter(candidate => candidate !== child);
-        element.__glassChildren.push(child);
-        child.__glassParent = element;
-        child.parentIndex = element.nodeIndex;
-        element.__glassSyncContent();
-        if (child.localName === "source"
-            && (element.tagName === "AUDIO" || element.tagName === "VIDEO")) resetMediaState();
-        pushCommand({{ kind: "appendChild", parent_index: entry.nodeIndex, child_index: child.nodeIndex }});
-        if (typeof globalThis.__glassRunNativeCustomElementInsertionReactions === "function") {{
-          globalThis.__glassRunNativeCustomElementInsertionReactions(child, wasConnected, nodeIsConnected(element));
-        }}
-        if (nodeIsConnected(element)) executeInsertedScripts(child);
-        return child;
-      }},
-      insertBefore(child, before) {{
-        if (child && child.__glassFragment === true) {{
-          const children = child.__glassChildren.slice();
-          for (const fragmentChild of children) element.insertBefore(fragmentChild, before);
-          child.__glassChildren = [];
-          return child;
-        }}
-        if (before == null) return this.appendChild(child);
-        if (!child || typeof child.nodeIndex !== "number"
-            || typeof before.nodeIndex !== "number") {{
-          throw new TypeError("insertBefore requires native elements");
-        }}
-        if (before.__glassParent !== element) throw new TypeError("reference node is not a child");
-        if (child === before) return child;
-        const wasConnected = nodeIsConnected(child);
-        let ancestor = element;
-        while (ancestor) {{
-          if (ancestor === child) throw new TypeError("a node cannot contain one of its ancestors");
-          ancestor = ancestor.__glassParent || null;
-        }}
-        const oldParent = child.__glassParent || null;
-        if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
-          queueFragmentChildRemoval(oldParent, child);
-          oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
-          if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
-        }}
-        element.__glassChildren = element.__glassChildren.filter(candidate => candidate !== child);
-        const index = element.__glassChildren.indexOf(before);
-        element.__glassChildren.splice(index < 0 ? element.__glassChildren.length : index, 0, child);
-        child.__glassParent = element;
-        child.parentIndex = element.nodeIndex;
-        element.__glassSyncContent();
-        if (child.localName === "source"
-            && (element.tagName === "AUDIO" || element.tagName === "VIDEO")) resetMediaState();
-        pushCommand({{
-          kind: "insertBefore",
-          parent_index: entry.nodeIndex,
-          child_index: child.nodeIndex,
-          before_index: before.nodeIndex,
-        }});
-        if (typeof globalThis.__glassRunNativeCustomElementInsertionReactions === "function") {{
-          globalThis.__glassRunNativeCustomElementInsertionReactions(child, wasConnected, nodeIsConnected(element));
-        }}
-        if (nodeIsConnected(element)) executeInsertedScripts(child);
-        return child;
-      }},
-      remove() {{
-        const parent = element.__glassParent || null;
-        if (!parent && element.parentIndex === null) return;
-        const wasConnected = nodeIsConnected(element);
-        const commitRemoval = !element.__glassCreated || element.parentIndex !== null;
-        queueFragmentChildRemoval(parent, element);
-        if (parent && Array.isArray(parent.__glassChildren)) {{
-          parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== element);
-        }}
-        element.__glassParent = null;
-        element.parentIndex = null;
-        if (parent && typeof parent.__glassSyncContent === "function") parent.__glassSyncContent(true);
-        if (commitRemoval) pushCommand({{ kind: "removeNode", node_index: entry.nodeIndex }});
-        if (wasConnected && typeof globalThis.__glassRunNativeCustomElementRemovalReactions === "function") {{
-          globalThis.__glassRunNativeCustomElementRemovalReactions(element);
-        }}
-      }},
-      removeChild(child) {{
-        if (!child || child.__glassParent !== element) {{
-          throw new TypeError("child is not contained by this element");
-        }}
-        child.remove();
-        return child;
-      }},
-      append(...items) {{
-        for (const item of items) element.appendChild(
-          item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
-            ? item
-            : makeDetachedText(String(item)),
-        );
-      }},
-      prepend(...items) {{
-        const before = element.__glassChildren[0] || null;
-        for (const item of items) element.insertBefore(
-          item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
-            ? item
-            : makeDetachedText(String(item)),
-          before,
-        );
-      }},
-      before(...items) {{
-        const parent = element.__glassParent;
-        if (!parent || typeof parent.insertBefore !== "function") return;
-        for (const item of items) parent.insertBefore(
-          item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
-            ? item
-            : makeDetachedText(String(item)),
-          element,
-        );
-      }},
-      after(...items) {{
-        const parent = element.__glassParent;
-        if (!parent || typeof parent.insertBefore !== "function") return;
-        const before = element.nextSibling;
-        for (const item of items) parent.insertBefore(
-          item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
-            ? item
-            : makeDetachedText(String(item)),
-          before,
-        );
-      }},
-      replaceWith(...items) {{
-        const parent = element.__glassParent;
-        if (!parent || typeof parent.insertBefore !== "function") return;
-        for (const item of items) parent.insertBefore(
-          item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
-            ? item
-            : makeDetachedText(String(item)),
-          element,
-        );
-        element.remove();
-      }},
-      replaceChildren(...items) {{
-        for (const child of element.__glassChildren.slice()) child.remove();
-        element.append(...items);
-      }}
     }};
-    Object.defineProperty(element, "__glassEventOwner", {{
+    nativeElementBuildPhase = "bind_entry_and_handlers";
+    Object.defineProperty(element, "__glassEntry", {{
       enumerable: false,
       configurable: false,
-      get() {{ return "node:" + element.nodeIndex; }},
+      writable: true,
+      value: entry,
+    }});
+    Object.defineProperty(element, "__glassScrollLeft", {{
+      enumerable: false, configurable: false, writable: true, value: Number(entry.scrollX) || 0,
+    }});
+    Object.defineProperty(element, "__glassScrollTop", {{
+      enumerable: false, configurable: false, writable: true, value: Number(entry.scrollY) || 0,
     }});
     Object.defineProperty(element, "__glassCustomElementIs", {{
       enumerable: false,
@@ -773,6 +472,17 @@
         ? String(entry.attributes.is)
         : null,
     }});
+    Object.defineProperty(element, "__glassSetNativeIndex", {{
+      enumerable: false,
+      configurable: false,
+      value(nextIndex) {{
+        const index = Number(nextIndex);
+        if (!Number.isSafeInteger(index) || index < 0) throw new TypeError("native node index is invalid");
+        entry = {{ ...entry, nodeIndex: index }};
+        element.nodeIndex = index;
+      }},
+    }});
+    nativeElementBuildPhase = "install_inline_event_helpers";
     const inlineEventType = (name) => {{
       const value = String(name).toLowerCase();
       if (!value.startsWith("on") || value.length <= 2 || !/^[a-z][a-z0-9]*$/.test(value.slice(2))) return null;
@@ -791,7 +501,7 @@
     const removeInlineAttributeHandler = (name, deactivateShared = true) => {{
       const type = inlineEventType(name);
       if (!type) return;
-      const record = inlineAttributeHandlers.get(type);
+      const record = inlineAttributeHandlers && inlineAttributeHandlers.get(type);
       const owner = inlineAttributeOwner();
       const stableKey = listenerKey(owner, type);
       const persisted = inlineAttributeListeners.get(stableKey);
@@ -806,14 +516,14 @@
         if (deactivateShared && target) setEventHandlerValue(target, type, null, false);
       }}
       inlineAttributeListeners.delete(stableKey);
-      inlineAttributeHandlers.delete(type);
+      if (inlineAttributeHandlers) inlineAttributeHandlers.delete(type);
     }};
     const installInlineAttributeHandler = (name, source) => {{
       const type = inlineEventType(name);
       if (!type) return;
       const value = String(source === null || source === undefined ? "" : source);
       const target = inlineAttributeWindowTarget(name, type);
-      const previous = inlineAttributeHandlers.get(type);
+      const previous = inlineAttributeHandlers && inlineAttributeHandlers.get(type);
       if (target) {{
         let allowed = true;
         if (typeof globalThis.__glassAllowsInlineEventHandler === "function") {{
@@ -829,6 +539,7 @@
             setEventHandlerValue(previous.target, type, null, false);
           else if (!previous && eventHandlerStateFor(target, type).state?.contentAttribute)
             setEventHandlerValue(target, type, null, false);
+          if (!inlineAttributeHandlers) inlineAttributeHandlers = new Map();
           inlineAttributeHandlers.set(type, {{
             source: value,
             shared: true,
@@ -844,6 +555,7 @@
             : Function("event", value);
         }} catch (_error) {{
           setEventHandlerValue(target, type, null, false);
+          if (!inlineAttributeHandlers) inlineAttributeHandlers = new Map();
           inlineAttributeHandlers.set(type, {{ source: value, shared: true, target, handler: null }});
           return;
         }}
@@ -855,6 +567,7 @@
         if (previous && previous.shared && previous.target !== target)
           setEventHandlerValue(previous.target, type, null, false);
         setEventHandlerValue(target, type, handler, true);
+        if (!inlineAttributeHandlers) inlineAttributeHandlers = new Map();
         inlineAttributeHandlers.set(type, {{ source: value, shared: true, target, handler }});
         return;
       }}
@@ -878,12 +591,13 @@
         }} catch (_error) {{}}
       }};
       const owner = inlineAttributeOwner();
+      if (!inlineAttributeHandlers) inlineAttributeHandlers = new Map();
       inlineAttributeHandlers.set(type, {{ source: value, shared: false, owner, registered }});
       inlineAttributeListeners.set(listenerKey(owner, type), {{ source: value, owner, registered }});
       addListener(owner, type, registered, false);
     }};
     const clearInlineAttributeHandlers = () => {{
-      for (const [type, record] of inlineAttributeHandlers) {{
+      for (const [type, record] of inlineAttributeHandlers || []) {{
         if (!record.shared) {{
           const owner = inlineAttributeOwner();
           removeListener(owner, type, record.registered, false);
@@ -896,25 +610,32 @@
         removeListener(record.owner, key.slice(owner.length + 1), record.registered, false);
         inlineAttributeListeners.delete(key);
       }}
-      inlineAttributeHandlers.clear();
+      if (inlineAttributeHandlers) inlineAttributeHandlers.clear();
+      inlineAttributeHandlers = null;
     }};
     const refreshInlineAttributeHandlers = () => {{
-      const attributes = new Map();
-      for (const [name, value] of Object.entries(entry.attributes || {{}})) {{
+      const attributes = entry.attributes || {{}};
+      if (inlineAttributeHandlers) for (const type of inlineAttributeHandlers.keys()) {{
+        let found = false;
+        for (const name in attributes) {{
+          if (!Object.prototype.hasOwnProperty.call(attributes, name)) continue;
+          if (inlineEventType(name) === type) {{ found = true; break; }}
+        }}
+        if (!found) removeInlineAttributeHandler("on" + type);
+      }}
+      for (const name in attributes) {{
+        if (!Object.prototype.hasOwnProperty.call(attributes, name)) continue;
+        const value = attributes[name];
         const type = inlineEventType(name);
-        if (type) attributes.set(type, {{ name, value: String(value) }});
-      }}
-      for (const type of inlineAttributeHandlers.keys()) {{
-        if (!attributes.has(type)) removeInlineAttributeHandler("on" + type);
-      }}
-      for (const [type, attribute] of attributes) {{
-        const target = inlineAttributeWindowTarget(attribute.name, type);
-        const record = inlineAttributeHandlers.get(type);
+        if (!type) continue;
+        const attributeValue = String(value);
+        const target = inlineAttributeWindowTarget(name, type);
+        const record = inlineAttributeHandlers && inlineAttributeHandlers.get(type);
         if (record
-            && record.source === attribute.value
+            && record.source === attributeValue
             && record.shared === Boolean(target)
             && (!target || record.target === target)) continue;
-        installInlineAttributeHandler(attribute.name, attribute.value);
+        installInlineAttributeHandler(name, attributeValue);
       }}
     }};
     Object.defineProperty(element, "__glassChildren", {{
@@ -993,34 +714,6 @@
         for (const child of fragment.__glassChildren.slice()) owner.insertBefore(child, element);
         element.remove();
       }},
-    }});
-    Object.defineProperty(element, "parentElement", {{
-      enumerable: false,
-      configurable: false,
-      get() {{
-        if (element.__glassParent) return element.__glassParent.nodeType === 1 ? element.__glassParent : null;
-        if (element.__glassCreated) return null;
-        if (element.parentIndex === null) return null;
-        const current = globalThis.__glassHostElements;
-        if (!(current instanceof Map) || current.get(element.nodeIndex) !== element) return null;
-        return current.get(element.parentIndex) || null;
-      }},
-    }});
-    Object.defineProperty(element, "parentNode", {{
-      enumerable: false,
-      configurable: false,
-      get() {{
-        if (element.__glassParent) return element.__glassParent;
-        const owner = globalThis.document;
-        return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(element)
-          ? owner
-          : null;
-      }},
-    }});
-    Object.defineProperty(element, "ownerDocument", {{
-      enumerable: false,
-      configurable: false,
-      get() {{ return templateContentsOwnerDocumentForNode(element); }},
     }});
     installAttributeNodeSurface(element, () => globalThis.document || null);
     installCommonAttributeProperties(element, {{
@@ -1232,32 +925,31 @@
         pushCommand({{ kind: "setValue", node_index: entry.nodeIndex, value }});
       }}
     }});
-    Object.defineProperty(element, "selectionStart", {{
-      enumerable: true,
-      configurable: false,
-      get() {{ return selectionStart ?? entry.selectionStart ?? null; }},
-      set(next) {{
-        if (selectionStart == null) throw new TypeError("selection is unavailable on this element");
-        applySelection(next, selectionEnd, selectionDirection);
-      }},
-    }});
-    Object.defineProperty(element, "selectionEnd", {{
-      enumerable: true,
-      configurable: false,
-      get() {{ return selectionEnd ?? entry.selectionEnd ?? null; }},
-      set(next) {{
-        if (selectionEnd == null) throw new TypeError("selection is unavailable on this element");
-        applySelection(selectionStart, next, selectionDirection);
-      }},
-    }});
-    Object.defineProperty(element, "selectionDirection", {{
-      enumerable: true,
-      configurable: false,
-      get() {{ return selectionDirection ?? entry.selectionDirection ?? "none"; }},
-      set(next) {{
-        applySelection(selectionStart, selectionEnd, next);
-      }},
-    }});
+    if (hasTextSelection) {{
+      Object.defineProperty(element, "__glassApplySelection", {{
+        enumerable: false,
+        configurable: false,
+        value: applySelection,
+      }});
+      Object.defineProperty(element, "selectionStart", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return selectionStart ?? entry.selectionStart ?? null; }},
+        set(next) {{ applySelection(next, selectionEnd, selectionDirection); }},
+      }});
+      Object.defineProperty(element, "selectionEnd", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return selectionEnd ?? entry.selectionEnd ?? null; }},
+        set(next) {{ applySelection(selectionStart, next, selectionDirection); }},
+      }});
+      Object.defineProperty(element, "selectionDirection", {{
+        enumerable: true,
+        configurable: false,
+        get() {{ return selectionDirection ?? entry.selectionDirection ?? "none"; }},
+        set(next) {{ applySelection(selectionStart, selectionEnd, next); }},
+      }});
+    }}
     let checked = element.checked;
     Object.defineProperty(element, "checked", {{
       enumerable: true,
@@ -1302,29 +994,13 @@
         if (selectionDirection !== null) selectionDirection = "none";
       }},
     }});
-    Object.defineProperty(element, "__glassSetScrollState", {{
-      enumerable: false,
-      configurable: false,
-      value(nextLeft, nextTop) {{
-        scrollLeft = Number(nextLeft) || 0;
-        scrollTop = Number(nextTop) || 0;
-      }},
-    }});
-    Object.defineProperty(element, "__glassComputedStyle", {{
-      enumerable: false,
-      configurable: false,
-      value() {{ return computedStyle; }},
-    }});
-    Object.defineProperty(element, "__glassInlineStyleAllowed", {{
-      enumerable: false,
-      configurable: false,
-      value() {{ return inlineStyleAllowed; }},
-    }});
+    nativeElementBuildPhase = "install_refresh_method";
     Object.defineProperty(element, "__glassRefresh", {{
       enumerable: false,
       configurable: false,
       value(nextEntry, nextExactTextForNode = exactTextForNode) {{
         entry = nextEntry;
+        element.__glassEntry = nextEntry;
         computedStyle = nextEntry.computedStyle && typeof nextEntry.computedStyle === "object"
           ? nextEntry.computedStyle
           : {{}};
@@ -1354,7 +1030,9 @@
         checked = nextEntry.checked;
         indeterminate = Boolean(nextEntry.indeterminate);
         selected = nextEntry.selected;
-        files = makeNativeFileList(nextEntry.files);
+        files = Array.isArray(nextEntry.files) && nextEntry.files.length > 0
+          ? makeNativeFileList(nextEntry.files)
+          : files && files.length === 0 ? files : null;
         imageComplete = nextEntry.imageComplete === undefined
           ? !Object.prototype.hasOwnProperty.call(nextEntry.attributes, "src")
           : Boolean(nextEntry.imageComplete);
@@ -1370,23 +1048,360 @@
         mediaError = nextEntry.mediaError === null || nextEntry.mediaError === undefined
           ? null
           : Number(nextEntry.mediaError);
-        scrollLeft = Number(nextEntry.scrollX) || 0;
-        scrollTop = Number(nextEntry.scrollY) || 0;
+        element.__glassScrollLeft = Number(nextEntry.scrollX) || 0;
+        element.__glassScrollTop = Number(nextEntry.scrollY) || 0;
         refreshInlineAttributeHandlers();
         if (typeof element.__glassSyncAttributeNodes === "function") element.__glassSyncAttributeNodes();
       }}
     }});
-    Object.defineProperty(element, "__glassSetNativeIndex", {{
-      enumerable: false,
-      configurable: false,
-      value(nextIndex) {{
-        const index = Number(nextIndex);
-        if (!Number.isSafeInteger(index) || index < 0) throw new TypeError("native node index is invalid");
-        entry = {{ ...entry, nodeIndex: index }};
-        element.nodeIndex = index;
-      }},
-    }});
+    nativeElementBuildPhase = "complete";
     return element;
   }};
+  const nativeElementSharedMethodProperties = {{
+    getAttribute: {{ configurable: true, writable: true, value(name) {{
+      const entry = this.__glassEntry;
+      const htmlElement = this.namespaceURI === HTML_NAMESPACE;
+      const key = htmlElement ? String(name).toLowerCase() : String(name);
+      for (const attr of Object.keys(entry.attributes || {{}})) {{
+        if (htmlElement ? attr.toLowerCase() === key : attr === key) return entry.attributes[attr];
+      }}
+      return null;
+    }} }},
+    getAttributeNS: {{ configurable: true, writable: true, value(namespace, name) {{
+      const entry = this.__glassEntry;
+      const namespaceURI = normalizeAttributeNamespace(namespace);
+      const localName = String(name);
+      for (const key of Object.keys(entry.attributes || {{}})) {{
+        const keyNamespace = attributeNamespaceForEntry(entry, key);
+        if (storedAttributeLocalName(key, keyNamespace) === localName
+            && keyNamespace === namespaceURI) return entry.attributes[key];
+      }}
+      return null;
+    }} }},
+    getAttributeNames: {{ configurable: true, writable: true, value() {{
+      return Object.keys(this.__glassEntry.attributes || {{}});
+    }} }},
+    hasAttribute: {{ configurable: true, writable: true, value(name) {{
+      return this.getAttribute(name) !== null;
+    }} }},
+    hasAttributeNS: {{ configurable: true, writable: true, value(namespace, name) {{
+      return this.getAttributeNS(namespace, name) !== null;
+    }} }},
+    matches: {{ configurable: true, writable: true, value(selector) {{
+      return matchesSelector(this, selector);
+    }} }},
+    closest: {{ configurable: true, writable: true, value(selector) {{
+      let current = this;
+      while (current) {{
+        if (matchesSelector(current, selector)) return current;
+        current = current.parentElement;
+      }}
+      return null;
+    }} }},
+    querySelector: {{ configurable: true, writable: true, value(selector) {{
+      return descendantsInTree(this, (candidate) => matchesSelector(candidate, selector, this))[0] || null;
+    }} }},
+    querySelectorAll: {{ configurable: true, writable: true, value(selector) {{
+      return asNodeList(descendantsInTree(this, (candidate) => matchesSelector(candidate, selector, this)));
+    }} }},
+    getElementsByTagName: {{ configurable: true, writable: true, value(name) {{
+      const value = String(name).toLowerCase();
+      return asHtmlCollection(descendantsInTree(this, (candidate) =>
+        value === "*" || candidate.tagName.toLowerCase() === value));
+    }} }},
+    getElementsByClassName: {{ configurable: true, writable: true, value(name) {{
+      const value = String(name).trim();
+      if (!value) return asHtmlCollection([]);
+      const tokens = value.split(/\s+/);
+      return asHtmlCollection(descendantsInTree(this, (candidate) =>
+        tokens.every((token) => String(candidate.className).split(/\s+/).includes(token))));
+    }} }},
+    setSelectionRange: {{ configurable: true, writable: true, value(start, end, direction = "none") {{
+      if (typeof this.__glassApplySelection !== "function")
+        throw new TypeError("selection is unavailable on this element");
+      return this.__glassApplySelection(start, end, direction);
+    }} }},
+    select: {{ configurable: true, writable: true, value() {{
+      if (typeof this.__glassApplySelection !== "function")
+        throw new TypeError("selection is unavailable on this element");
+      return this.__glassApplySelection(0, Array.from(String(this.value || "")).length, "forward");
+    }} }},
+    getBoundingClientRect: {{ configurable: true, writable: true, value() {{
+      return makeDomRect(geometryForNode(this));
+    }} }},
+    getClientRects: {{ configurable: true, writable: true, value() {{
+      const geometry = geometryForNode(this);
+      return geometry.width > 0 && geometry.height > 0
+        ? asNodeList([makeDomRect(geometry)])
+        : asNodeList([]);
+    }} }},
+    clientWidth: {{ configurable: true, get() {{
+      const geometry = geometryForNode(this);
+      return Number(geometry.clientWidth) || Number(geometry.width) || 0;
+    }} }},
+    clientHeight: {{ configurable: true, get() {{
+      const geometry = geometryForNode(this);
+      return Number(geometry.clientHeight) || Number(geometry.height) || 0;
+    }} }},
+    offsetWidth: {{ configurable: true, get() {{ return Number(geometryForNode(this).width) || 0; }} }},
+    offsetHeight: {{ configurable: true, get() {{ return Number(geometryForNode(this).height) || 0; }} }},
+    scrollWidth: {{ configurable: true, get() {{
+      const geometry = geometryForNode(this);
+      return Number(geometry.scrollWidth) || Number(geometry.width) || 0;
+    }} }},
+    scrollHeight: {{ configurable: true, get() {{
+      const geometry = geometryForNode(this);
+      return Number(geometry.scrollHeight) || Number(geometry.height) || 0;
+    }} }},
+    addEventListener: {{ configurable: true, writable: true, value(type, callback, options) {{
+      addListener(ownerFor(this), type, callback, options);
+    }} }},
+    removeEventListener: {{ configurable: true, writable: true, value(type, callback, options) {{
+      removeListener(ownerFor(this), type, callback, options);
+    }} }},
+    dispatchEvent: {{ configurable: true, writable: true, value(event) {{
+      return dispatchTarget(this, event);
+    }} }},
+    focus: {{ configurable: true, writable: true, value() {{
+      if (this.disabled || this.hidden || nativeFormAssociatedDisabledForFocus(this)
+          || nativeInertForFocus(this)) return;
+      setLocalFocus(this);
+    }} }},
+    blur: {{ configurable: true, writable: true, value() {{
+      if (!this.focused) return;
+      this.focused = false;
+      pushCommand({{ kind: "blur", node_index: this.__glassEntry.nodeIndex }});
+      dispatchTarget(this, createFocusEvent("blur", {{ relatedTarget: null }}));
+      dispatchTarget(this, createFocusEvent("focusout", {{ bubbles: true, relatedTarget: null }}));
+    }} }},
+    submit: {{ configurable: true, writable: true, value() {{
+      if (this.tagName !== "FORM") throw new TypeError("submit requires a form");
+      pushCommand({{ kind: "submitForm", node_index: this.__glassEntry.nodeIndex }});
+    }} }},
+    requestSubmit: {{ configurable: true, writable: true, value() {{
+      if (this.tagName !== "FORM") throw new TypeError("requestSubmit requires a form");
+      const submitter = arguments.length === 0 ? null : arguments[0];
+      if (submitter !== null && (typeof submitter !== "object" || typeof submitter.nodeIndex !== "number"))
+        throw new TypeError("requestSubmit submitter must be an element");
+      pushCommand({{ kind: "requestSubmitForm", node_index: this.__glassEntry.nodeIndex, submitter_index: submitter === null ? null : submitter.nodeIndex }});
+    }} }},
+    reset: {{ configurable: true, writable: true, value() {{ return nativeFormReset(this, pushCommand); }} }},
+    checkValidity: {{ configurable: true, writable: true, value() {{
+      const valid = validityFlags(this.__glassEntry).valid;
+      if (!valid) pushCommand({{ kind: "checkValidity", node_index: this.__glassEntry.nodeIndex }});
+      return valid;
+    }} }},
+    reportValidity: {{ configurable: true, writable: true, value() {{
+      const valid = validityFlags(this.__glassEntry).valid;
+      if (!valid) pushCommand({{ kind: "reportValidity", node_index: this.__glassEntry.nodeIndex }});
+      return valid;
+    }} }},
+    setCustomValidity: {{ configurable: true, writable: true, value(message) {{
+      const entry = this.__glassEntry;
+      const value = String(message);
+      entry.customValidity = value;
+      if (!entry.validity) entry.validity = {{}};
+      entry.validity.customError = value.length > 0;
+      entry.validity.valid = validityFlags(entry).valid;
+      pushCommand({{ kind: "setCustomValidity", node_index: entry.nodeIndex, message: value }});
+    }} }},
+    appendChild: {{ configurable: true, writable: true, value(child) {{
+      if (child && child.__glassFragment === true) {{
+        const children = child.__glassChildren.slice();
+        for (const fragmentChild of children) this.appendChild(fragmentChild);
+        child.__glassChildren = [];
+        return child;
+      }}
+      if (!child || typeof child.nodeIndex !== "number") throw new TypeError("child must be a native element");
+      if (child === this) throw new TypeError("a node cannot contain itself");
+      const wasConnected = nodeIsConnected(child);
+      let ancestor = this;
+      while (ancestor) {{
+        if (ancestor === child) throw new TypeError("a node cannot contain one of its ancestors");
+        ancestor = ancestor.__glassParent || null;
+      }}
+      const oldParent = child.__glassParent || null;
+      if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+        queueFragmentChildRemoval(oldParent, child);
+        oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
+        if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
+      }}
+      this.__glassChildren = this.__glassChildren.filter(candidate => candidate !== child);
+      this.__glassChildren.push(child);
+      child.__glassParent = this;
+      child.parentIndex = this.nodeIndex;
+      this.__glassSyncContent();
+      if (child.localName === "source" && (this.tagName === "AUDIO" || this.tagName === "VIDEO")
+          && typeof this.__glassMediaReset === "function") this.__glassMediaReset();
+      pushCommand({{ kind: "appendChild", parent_index: this.__glassEntry.nodeIndex, child_index: child.nodeIndex }});
+      if (typeof globalThis.__glassRunNativeCustomElementInsertionReactions === "function")
+        globalThis.__glassRunNativeCustomElementInsertionReactions(child, wasConnected, nodeIsConnected(this));
+      if (nodeIsConnected(this)) executeInsertedScripts(child);
+      return child;
+    }} }},
+    insertBefore: {{ configurable: true, writable: true, value(child, before) {{
+      if (child && child.__glassFragment === true) {{
+        const children = child.__glassChildren.slice();
+        for (const fragmentChild of children) this.insertBefore(fragmentChild, before);
+        child.__glassChildren = [];
+        return child;
+      }}
+      if (before == null) return this.appendChild(child);
+      if (!child || typeof child.nodeIndex !== "number" || typeof before.nodeIndex !== "number")
+        throw new TypeError("insertBefore requires native elements");
+      if (before.__glassParent !== this) throw new TypeError("reference node is not a child");
+      if (child === before) return child;
+      const wasConnected = nodeIsConnected(child);
+      let ancestor = this;
+      while (ancestor) {{
+        if (ancestor === child) throw new TypeError("a node cannot contain one of its ancestors");
+        ancestor = ancestor.__glassParent || null;
+      }}
+      const oldParent = child.__glassParent || null;
+      if (oldParent && Array.isArray(oldParent.__glassChildren)) {{
+        queueFragmentChildRemoval(oldParent, child);
+        oldParent.__glassChildren = oldParent.__glassChildren.filter(candidate => candidate !== child);
+        if (typeof oldParent.__glassSyncContent === "function") oldParent.__glassSyncContent(true);
+      }}
+      this.__glassChildren = this.__glassChildren.filter(candidate => candidate !== child);
+      const index = this.__glassChildren.indexOf(before);
+      this.__glassChildren.splice(index < 0 ? this.__glassChildren.length : index, 0, child);
+      child.__glassParent = this;
+      child.parentIndex = this.nodeIndex;
+      this.__glassSyncContent();
+      if (child.localName === "source" && (this.tagName === "AUDIO" || this.tagName === "VIDEO")
+          && typeof this.__glassMediaReset === "function") this.__glassMediaReset();
+      pushCommand({{ kind: "insertBefore", parent_index: this.__glassEntry.nodeIndex,
+        child_index: child.nodeIndex, before_index: before.nodeIndex }});
+      if (typeof globalThis.__glassRunNativeCustomElementInsertionReactions === "function")
+        globalThis.__glassRunNativeCustomElementInsertionReactions(child, wasConnected, nodeIsConnected(this));
+      if (nodeIsConnected(this)) executeInsertedScripts(child);
+      return child;
+    }} }},
+    remove: {{ configurable: true, writable: true, value() {{
+      const parent = this.__glassParent || null;
+      if (!parent && this.parentIndex === null) return;
+      const wasConnected = nodeIsConnected(this);
+      const commitRemoval = !this.__glassCreated || this.parentIndex !== null;
+      queueFragmentChildRemoval(parent, this);
+      if (parent && Array.isArray(parent.__glassChildren))
+        parent.__glassChildren = parent.__glassChildren.filter(candidate => candidate !== this);
+      this.__glassParent = null;
+      this.parentIndex = null;
+      if (parent && typeof parent.__glassSyncContent === "function") parent.__glassSyncContent(true);
+      if (commitRemoval) pushCommand({{ kind: "removeNode", node_index: this.__glassEntry.nodeIndex }});
+      if (wasConnected && typeof globalThis.__glassRunNativeCustomElementRemovalReactions === "function")
+        globalThis.__glassRunNativeCustomElementRemovalReactions(this);
+    }} }},
+    removeChild: {{ configurable: true, writable: true, value(child) {{
+      if (!child || child.__glassParent !== this) throw new TypeError("child is not contained by this element");
+      child.remove();
+      return child;
+    }} }},
+    append: {{ configurable: true, writable: true, value(...items) {{
+      for (const item of items) this.appendChild(
+        item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
+          ? item : makeDetachedText(String(item)));
+    }} }},
+    prepend: {{ configurable: true, writable: true, value(...items) {{
+      const before = this.__glassChildren[0] || null;
+      for (const item of items) this.insertBefore(
+        item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
+          ? item : makeDetachedText(String(item)), before);
+    }} }},
+    before: {{ configurable: true, writable: true, value(...items) {{
+      const parent = this.__glassParent;
+      if (!parent || typeof parent.insertBefore !== "function") return;
+      for (const item of items) parent.insertBefore(
+        item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
+          ? item : makeDetachedText(String(item)), this);
+    }} }},
+    after: {{ configurable: true, writable: true, value(...items) {{
+      const parent = this.__glassParent;
+      if (!parent || typeof parent.insertBefore !== "function") return;
+      const before = this.nextSibling;
+      for (const item of items) parent.insertBefore(
+        item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
+          ? item : makeDetachedText(String(item)), before);
+    }} }},
+    replaceWith: {{ configurable: true, writable: true, value(...items) {{
+      const parent = this.__glassParent;
+      if (!parent || typeof parent.insertBefore !== "function") return;
+      for (const item of items) parent.insertBefore(
+        item && (item.nodeType === 1 || item.nodeType === 3 || item.nodeType === 8 || item.__glassFragment === true)
+          ? item : makeDetachedText(String(item)), this);
+      this.remove();
+    }} }},
+    replaceChildren: {{ configurable: true, writable: true, value(...items) {{
+      for (const child of this.__glassChildren.slice()) child.remove();
+      this.append(...items);
+    }} }},
+  }};
+  const installNativeElementSharedMethods = (prototype) =>
+    Object.defineProperties(prototype, nativeElementSharedMethodProperties);
+  Object.defineProperties(nativeElementSharedPrototype, {{
+    validity: {{ configurable: true, get() {{
+      return validityFlags(this.__glassEntry);
+    }} }},
+    validationMessage: {{ configurable: true, get() {{
+      const entry = this.__glassEntry;
+      return validationMessageFor(entry, validityFlags(entry));
+    }} }},
+    willValidate: {{ configurable: true, get() {{
+      return Boolean(this.__glassEntry?.willValidate);
+    }} }},
+    scrollLeft: {{ configurable: true, get() {{
+      return this.__glassEntry?.tagName?.toLowerCase() === "html"
+        ? Number(state.scrollX) || 0 : Number(this.__glassScrollLeft) || 0;
+    }}, set(value) {{ applyNativeElementScroll(this, value, this.scrollTop); }} }},
+    scrollTop: {{ configurable: true, get() {{
+      return this.__glassEntry?.tagName?.toLowerCase() === "html"
+        ? Number(state.scrollY) || 0 : Number(this.__glassScrollTop) || 0;
+    }}, set(value) {{ applyNativeElementScroll(this, this.scrollLeft, value); }} }},
+    scrollTo: {{ configurable: true, writable: true, value(leftOrOptions = 0, top = 0) {{
+      if (leftOrOptions && typeof leftOrOptions === "object")
+        applyNativeElementScroll(this, leftOrOptions.left, leftOrOptions.top);
+      else applyNativeElementScroll(this, leftOrOptions, top);
+    }} }},
+    scrollBy: {{ configurable: true, writable: true, value(leftOrOptions = 0, top = 0) {{
+      const coordinate = (candidate) => {{
+        const numeric = Number(candidate);
+        return Number.isFinite(numeric) ? Math.trunc(numeric) : 0;
+      }};
+      if (leftOrOptions && typeof leftOrOptions === "object")
+        applyNativeElementScroll(this, this.scrollLeft + coordinate(leftOrOptions.left), this.scrollTop + coordinate(leftOrOptions.top));
+      else applyNativeElementScroll(this, this.scrollLeft + coordinate(leftOrOptions), this.scrollTop + coordinate(top));
+    }} }},
+    scroll: {{ configurable: true, writable: true, value(leftOrOptions = 0, top = 0) {{
+      return this.scrollTo(leftOrOptions, top);
+    }} }},
+    __glassEventOwner: {{ configurable: true, get() {{ return "node:" + this.nodeIndex; }} }},
+    __glassComputedStyle: {{ configurable: true, value() {{
+      return this.__glassEntry.computedStyle && typeof this.__glassEntry.computedStyle === "object"
+        ? this.__glassEntry.computedStyle
+        : {{}};
+    }} }},
+    __glassInlineStyleAllowed: {{ configurable: true, value() {{
+      return this.__glassEntry.inlineStyleAllowed !== false;
+    }} }},
+    parentElement: {{ configurable: true, get() {{
+      if (this.__glassParent) return this.__glassParent.nodeType === 1 ? this.__glassParent : null;
+      if (this.__glassCreated || this.parentIndex === null) return null;
+      const current = globalThis.__glassHostElements;
+      if (!(current instanceof Map) || current.get(this.nodeIndex) !== this) return null;
+      return current.get(this.parentIndex) || null;
+    }} }},
+    parentNode: {{ configurable: true, get() {{
+      if (this.__glassParent) return this.__glassParent;
+      const owner = globalThis.document;
+      return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(this)
+        ? owner
+        : null;
+    }} }},
+    ownerDocument: {{ configurable: true, get() {{
+      return templateContentsOwnerDocumentForNode(this);
+    }} }},
+  }});
+  installNativeElementSharedMethods(nativeElementSharedPrototype);
   if (typeof globalThis.__glassNativeHostViewMark === "function")
     globalThis.__glassNativeHostViewMark("module_native_elements");

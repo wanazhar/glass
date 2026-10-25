@@ -38,6 +38,10 @@ def classify(message: str, timed_out: bool = False) -> str:
 
 def error_kind(message: str, timed_out: bool = False) -> str:
     text = message.lower()
+    if ("host view" in text or "javascript host snapshot" in text) and (
+        "interrupted" in text or "deadline" in text
+    ):
+        return "native_host_view_deadline"
     if "out of memory" in text:
         return "quickjs_out_of_memory"
     if "null\"null\"" in text:

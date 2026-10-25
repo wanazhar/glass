@@ -16,8 +16,14 @@
   let cachedCanvasResources = null;
   let cachedCanvasImageResourceSource = null;
   let cachedCanvasImageResources = null;
+  const nativeElementClassListCache = new WeakMap();
+  const nativeElementStyleCache = new WeakMap();
+  const nativeElementDatasetCache = new WeakMap();
   return (__glassHostViewJson) => {{
   const host = JSON.parse(__glassHostViewJson);
+  // Do not keep the large wire string alive while the object graph and host
+  // wrappers are being materialized.
+  __glassHostViewJson = "";
   if (host.reuse_state) {{
     if (cachedHostState === null) throw new Error("native host snapshot reuse has no prior state");
     host.state = cachedHostState;
@@ -59,9 +65,11 @@
     }}
   }}
   const createSnapshotTextContentResolver = (snapshots) => {{
-    const nodes = new Map((Array.isArray(snapshots) ? snapshots : [])
-      .filter((entry) => entry && Number.isSafeInteger(Number(entry.nodeIndex)))
-      .map((entry) => [Number(entry.nodeIndex), entry]));
+    const nodes = new Map();
+    if (Array.isArray(snapshots)) for (const entry of snapshots) {{
+      if (entry && Number.isSafeInteger(Number(entry.nodeIndex)))
+        nodes.set(Number(entry.nodeIndex), entry);
+    }}
     const cached = new Map();
     const resolve = (nodeIndex, active) => {{
       const index = Number(nodeIndex);

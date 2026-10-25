@@ -3102,6 +3102,11 @@
         },
         {
           "level": "2",
+          "title": "Native video capability boundary",
+          "anchor": "native-video-capability-boundary"
+        },
+        {
+          "level": "2",
           "title": "Coverage map",
           "anchor": "coverage-map"
         }

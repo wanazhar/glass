@@ -346,6 +346,7 @@ impl NativeJavaScriptRuntime {
                             "module_event_listeners" => "javascript_host_view_module_event_listeners",
                             "module_event_objects_encoding" => "javascript_host_view_module_event_objects_encoding",
                             "module_mutation_observers" => "javascript_host_view_module_mutation_observers",
+                            "node_sync_element_accessors" => "javascript_host_view_node_sync_element_accessors",
                             "module_validity_html_fragment" => "javascript_host_view_module_validity_html_fragment",
                             "module_attribute_nodes" => "javascript_host_view_module_attribute_nodes",
                             "module_native_elements" => "javascript_host_view_module_native_elements",
@@ -745,12 +746,28 @@ impl NativeJavaScriptRuntime {
             }
         }
         if std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").is_some() {
+            let memory_usage = self.runtime.memory_usage();
             let memory_stage = crate::native_engine::content_process::ContentLoadStage::begin(
                 0,
                 "javascript_heap_usage_bytes",
             );
-            let used_bytes = self.runtime.memory_usage().memory_used_size;
-            memory_stage.finish(Some(usize::try_from(used_bytes).unwrap_or(usize::MAX)));
+            memory_stage.finish(Some(
+                usize::try_from(memory_usage.memory_used_size).unwrap_or(usize::MAX),
+            ));
+            let allocator_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+                0,
+                "javascript_heap_allocator_bytes",
+            );
+            allocator_stage.finish(Some(
+                usize::try_from(memory_usage.malloc_size).unwrap_or(usize::MAX),
+            ));
+            let limit_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+                0,
+                "javascript_heap_allocator_limit_bytes",
+            );
+            limit_stage.finish(Some(
+                usize::try_from(memory_usage.malloc_limit).unwrap_or(usize::MAX),
+            ));
         }
         if let Some(stage) = evaluation_stage {
             stage.finish(None);

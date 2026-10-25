@@ -3596,6 +3596,9 @@ mod native_selector_tests;
 #[path = "javascript/tests/native_service_worker_client_tests.rs"]
 mod native_service_worker_client_tests;
 #[cfg(test)]
+#[path = "javascript/tests/native_shared_element_methods_tests.rs"]
+mod native_shared_element_methods_tests;
+#[cfg(test)]
 #[path = "javascript/tests/native_timer_probe_tests.rs"]
 mod native_timer_probe_tests;
 #[cfg(test)]

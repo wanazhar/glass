@@ -160,6 +160,11 @@
   for (const name of Object.keys(elementConstructors)) {{
     elementConstructors[name] = ensureNativeConstructor(name, elementConstructors[name]);
   }}
+  installNativeElementSharedMethods(ElementNative.prototype);
+  Object.defineProperties(
+    ElementNative.prototype,
+    Object.getOwnPropertyDescriptors(nativeElementSharedPrototype),
+  );
   for (const name of ["HTMLBodyElement", "HTMLFrameSetElement"]) {{
     const prototype = elementConstructors[name].prototype;
     for (const type of nativeWindowEventHandlerTypes) {{

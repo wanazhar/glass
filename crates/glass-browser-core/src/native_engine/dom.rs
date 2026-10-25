@@ -832,64 +832,98 @@ pub(crate) struct NativeScriptNodeSnapshot {
 pub struct NativeScriptElementSnapshot {
     pub node_index: u32,
     pub(crate) parent_index: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub(crate) template_content_index: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) form_owner_index: Option<u32>,
     pub(crate) tag_name: String,
     #[serde(default)]
     pub(crate) namespace_uri: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     #[serde(default)]
     pub(crate) attribute_namespaces: BTreeMap<String, String>,
     pub(crate) attributes: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub(crate) text: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     #[serde(default)]
     pub(crate) inner_html: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) value: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     #[serde(default)]
     pub(crate) files: Vec<NativeFile>,
+    #[serde(skip_serializing_if = "is_false")]
     pub(crate) checked: bool,
+    #[serde(skip_serializing_if = "is_false")]
     #[serde(default)]
     pub(crate) indeterminate: bool,
+    #[serde(skip_serializing_if = "is_false")]
     pub(crate) selected: bool,
+    #[serde(skip_serializing_if = "is_false")]
     pub(crate) disabled: bool,
+    #[serde(skip_serializing_if = "is_false")]
     pub(crate) hidden: bool,
+    #[serde(skip_serializing_if = "is_false")]
     pub(crate) focused: bool,
     #[serde(default)]
     pub(crate) focus_anchor_node_index: Option<u32>,
+    #[serde(skip_serializing_if = "is_false")]
     #[serde(default)]
     pub(crate) hovered: bool,
+    #[serde(skip_serializing_if = "is_false")]
     #[serde(default)]
     pub(crate) user_interacted: bool,
+    #[serde(skip_serializing_if = "is_default_snapshot_value")]
     pub(crate) validity: NativeValiditySnapshot,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub(crate) validation_message: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub(crate) custom_validity: String,
+    #[serde(skip_serializing_if = "is_false")]
     pub(crate) will_validate: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) selection_start: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) selection_end: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) selection_direction: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
     #[serde(default)]
     pub(crate) image_complete: bool,
+    #[serde(skip_serializing_if = "is_default_snapshot_value")]
     #[serde(default)]
     pub(crate) image_natural_width: u32,
+    #[serde(skip_serializing_if = "is_default_snapshot_value")]
     #[serde(default)]
     pub(crate) image_natural_height: u32,
+    #[serde(skip_serializing_if = "String::is_empty")]
     #[serde(default)]
     pub(crate) image_current_src: String,
+    #[serde(skip_serializing_if = "is_default_snapshot_value")]
     #[serde(default)]
     pub(crate) media_ready_state: u8,
+    #[serde(skip_serializing_if = "is_default_snapshot_value")]
     #[serde(default)]
     pub(crate) media_network_state: u8,
+    #[serde(skip_serializing_if = "String::is_empty")]
     #[serde(default)]
     pub(crate) media_current_src: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub(crate) media_duration_millis: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub(crate) media_error: Option<u16>,
+    #[serde(skip_serializing_if = "is_default_snapshot_value")]
     #[serde(default)]
     pub(crate) scroll_x: u32,
+    #[serde(skip_serializing_if = "is_default_snapshot_value")]
     #[serde(default)]
     pub(crate) scroll_y: u32,
     #[serde(default = "default_inline_style_allowed")]
+    #[serde(skip_serializing_if = "is_true")]
     pub(crate) inline_style_allowed: bool,
     /// The layout owner's computed style for this element.  Keeping this in
     /// the same snapshot as attributes and geometry lets one JavaScript turn
@@ -897,6 +931,18 @@ pub struct NativeScriptElementSnapshot {
     /// CSS from inline attributes alone.
     #[serde(default)]
     pub(crate) computed_style: NativeComputedStyle,
+}
+
+fn is_default_snapshot_value<T: Default + PartialEq>(value: &T) -> bool {
+    value == &T::default()
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 fn default_inline_style_allowed() -> bool {

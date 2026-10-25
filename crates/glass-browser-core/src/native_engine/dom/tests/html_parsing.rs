@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn content_wire_accepts_large_data_attributes_and_rejects_oversized_values() {
+    let limits = NativeEngineLimits::default();
+    let value = "x".repeat(64 * 1024);
+    let source = format!("<div id='payload' data-state='{value}'></div>");
+    let document = NativeDocument::parse(&source, &limits).unwrap();
+    let payload = document.find_element_by_id("payload").unwrap();
+    assert_eq!(
+        document.node(payload).unwrap().attribute("data-state"),
+        Some(value.as_str())
+    );
+
+    let value = "x".repeat(64 * 1024 + 1);
+    let source = format!("<div id='payload' data-state='{value}'></div>");
+    let document = NativeDocument::parse(&source, &limits).unwrap();
+    assert!(
+        NativeDocument::from_content_wire(
+            document.to_content_wire(),
+            &limits,
+            document.generation()
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn parses_title_entities_and_visible_text() {
     let limits = NativeEngineLimits::default();
     let document = NativeDocument::parse(

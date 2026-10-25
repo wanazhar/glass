@@ -985,11 +985,12 @@ impl NativeContentProcess {
             .map(|kind| event_kind_text(*kind))
             .collect::<Vec<_>>();
         let id = self.next_id();
-        self.mutate_with_request_kind(
+        self.mutate_with_request_kind_timeout(
             id,
             "mutate_lifecycle_events",
             json!({"events": event_names}),
             parent_loader,
+            CONTENT_PROCESS_LIFECYCLE_TIMEOUT,
         )
         .await
     }
@@ -1745,6 +1746,24 @@ impl NativeContentProcess {
         action: Value,
         parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentMutation, NativeEngineError> {
+        self.mutate_with_request_kind_timeout(
+            id,
+            request_kind,
+            action,
+            parent_loader,
+            CONTENT_PROCESS_MUTATION_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn mutate_with_request_kind_timeout(
+        &mut self,
+        id: u64,
+        request_kind: &str,
+        action: Value,
+        parent_loader: &mut NativeResourceLoader,
+        operation_timeout: Duration,
+    ) -> Result<NativeContentMutation, NativeEngineError> {
         let mutation_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE")
             .map(|_| ContentLoadStage::begin(id, "content_process_mutation"));
         let owner = NativeContentCookieOwner {
@@ -1787,7 +1806,7 @@ impl NativeContentProcess {
                 "action": action,
                 }),
                 "content process mutation",
-                CONTENT_PROCESS_MUTATION_TIMEOUT,
+                operation_timeout,
                 Some(parent_loader),
             )
             .await?;

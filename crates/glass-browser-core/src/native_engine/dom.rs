@@ -85,7 +85,10 @@ use forms::*;
 mod locators;
 use locators::*;
 
-const MAX_ATTRIBUTE_BYTES: usize = 1024;
+// Real sites use longer `data-*` values for embedded state and client hints.
+// Keep each attribute bounded while allowing those values through the parser
+// and the content-process wire validation.
+const MAX_ATTRIBUTE_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_NATIVE_VIDEO_POSTERS: usize = 64;
 const MAX_LOCATOR_BYTES: usize = crate::limits::MAX_TEXT_BYTES;
 const MAX_FORM_CONTROLS: usize = 128;

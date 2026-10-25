@@ -17,7 +17,7 @@ const MAX_REGIONS: usize = 64;
 const MAX_EVIDENCE_ITEMS: usize = 8;
 const MAX_EVIDENCE_BYTES: usize = 128;
 const MAX_ID_BYTES: usize = 128;
-const MAX_LABEL_BYTES: usize = 256;
+pub(crate) const MAX_LABEL_BYTES: usize = 256;
 const MAX_TITLE_BYTES: usize = 1_024;
 const MAX_URL_BYTES: usize = 2_048;
 const MAX_TARGETS: usize = 32;
@@ -25,7 +25,7 @@ const MAX_CHANGE_ITEMS: usize = 128;
 const MAX_STRUCTURED_RECORDS: usize = 256;
 const MAX_STRUCTURED_FIELDS: usize = 32;
 const MAX_STRUCTURED_BYTES: usize = 64 * 1024;
-const MAX_ROLE_BYTES: usize = 64;
+pub(crate) const MAX_ROLE_BYTES: usize = 64;
 const MAX_VISIBLE_TEXT_BYTES: usize = 8 * 1024;
 
 /// Amount of semantic structure requested by a caller.
@@ -1776,7 +1776,7 @@ fn classify_page(
     )
 }
 
-fn bounded_semantic_text(value: &str, maximum: usize) -> String {
+pub(crate) fn bounded_semantic_text(value: &str, maximum: usize) -> String {
     if value.len() <= maximum {
         return value.to_string();
     }

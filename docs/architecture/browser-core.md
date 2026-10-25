@@ -66,8 +66,10 @@ native CLI connect/command/close phases and the parent-brokered document fetch.
 Each page script realm has a 256 MiB QuickJS memory cap. Host-view installation
 has a separate 15-second execution budget; page script execution retains its
 5-second budget. The native snapshot interns equal computed styles and passes
-the serialized host state as JSON text, avoiding a large JavaScript object
-literal parse tree. A deterministic 2,586-element fixture verifies DOM and
+the serialized host state to QuickJS as a temporary runtime string, then
+parses and deletes it before page scripts execute. This avoids compiling the
+large host snapshot as part of the JavaScript source. A deterministic
+2,586-element fixture verifies DOM and
 computed-style access within those bounds. It is a local capacity regression,
 not evidence of broad public-site compatibility; larger or more dynamic pages
 can still exceed the bounded load deadline.
@@ -94,6 +96,14 @@ and one machine; they must not be added to the overall command time. The
 duplicated font initialization and event-triggered layout costs are localized
 but not optimized yet. This does not establish general browser parity or a
 latency guarantee.
+
+After host-state JSON moved out of generated JavaScript source and into a
+temporary QuickJS runtime string, a polite incognito Wikipedia batch completed
+native navigation, observation, a 400-pixel scroll, and a second observation
+in about 53 seconds. Eleven host-view installs completed; the slowest took
+4.01 seconds, and the final recorded retained QuickJS heap was 128.3 MiB under
+the unchanged 256 MiB cap. The batch saw 2,764 content-wire nodes and 1,195
+element snapshots. This is one read-only observation path, not broad parity.
 
 ## Validation
 

@@ -5,6 +5,11 @@
 
 use super::*;
 
+pub(super) struct NativeDocumentBootstrap {
+    pub(super) source: String,
+    pub(super) host_state_json: String,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn document_bootstrap(
     document: &NativeDocument,
@@ -33,7 +38,7 @@ pub(super) fn document_bootstrap(
     run_timers: bool,
     include_layout: bool,
     environment: &NativeEnvironmentOverrides,
-) -> Result<String, NativeEngineError> {
+) -> Result<NativeDocumentBootstrap, NativeEngineError> {
     let random_seed_stage = crate::native_engine::content_process::ContentLoadStage::begin(
         0,
         "javascript_bootstrap_crypto_seed",
@@ -165,15 +170,10 @@ pub(super) fn document_bootstrap(
         reason: "native JavaScript host view could not be serialized".into(),
     })?;
     serialization_stage.finish(Some(serialized.len()));
-    // Keep large host snapshots as one JavaScript string literal and let the
-    // engine's JSON parser build the object graph. Embedding the same snapshot
-    // as a JavaScript object literal creates a retained AST node for every DOM
-    // field before those objects are allocated, exceeding the fixed QuickJS
-    // heap on ordinary multi-thousand-node pages.
-    let serialized = serde_json::to_string(&serialized).map_err(|_| NativeEngineError::Worker {
-        operation: "encode JavaScript host view literal".into(),
-        reason: "native JavaScript host view could not be encoded".into(),
-    })?;
+    // Pass the large snapshot into QuickJS as a runtime string. Embedding it
+    // in the generated JavaScript makes the parser retain a large string
+    // literal and its syntax tree at the same time as JSON.parse allocates the
+    // object graph. The evaluator deletes this temporary global after parsing.
     let ready_state =
         serde_json::to_string(ready_state).map_err(|_| NativeEngineError::Worker {
             operation: "serialize document ready state".into(),
@@ -213,7 +213,6 @@ pub(super) fn document_bootstrap(
             include_str!("document_bootstrap/frame_documents.js"),
             include_str!("document_bootstrap/window_events.js"),
         ),
-        serialized = serialized,
         native_file_bytes = native_file_bytes,
         native_form_body_bytes = native_form_body_bytes,
         javascript_mime_type_essences = javascript_mime_type_essences,
@@ -267,5 +266,8 @@ pub(super) fn document_bootstrap(
     );
     bootstrap.push_str(NATIVE_DYNAMIC_IMPORT_OPTIONS_BOOTSTRAP);
     assembly_stage.finish(Some(bootstrap.len()));
-    Ok(bootstrap)
+    Ok(NativeDocumentBootstrap {
+        source: bootstrap,
+        host_state_json: serialized,
+    })
 }

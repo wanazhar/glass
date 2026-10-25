@@ -3174,6 +3174,23 @@ fn build_native_semantic_observation(
         url: native.snapshot.url.clone(),
     };
     let revision = native_aggregate_revision(frames);
+    let target_labels_truncated = frames.iter().any(|frame| {
+        frame
+            .inspection
+            .nodes
+            .iter()
+            .filter(|node| native_semantic_node_is_interactive(node))
+            .take(NATIVE_SEMANTIC_TARGET_LIMIT)
+            .any(|node| {
+                node.name_truncated
+                    || node.name.len() > super::session::MAX_LABEL_BYTES
+                    || node.role.len() > super::session::MAX_ROLE_BYTES
+                    || node
+                        .input_type
+                        .as_ref()
+                        .is_some_and(|input_type| input_type.len() > super::session::MAX_ROLE_BYTES)
+            })
+    });
     let mut omitted_targets = 0usize;
     let regions = frames
         .iter()
@@ -3255,6 +3272,7 @@ fn build_native_semantic_observation(
                 frame.inspection.snapshot.title_truncated
                     || frame.inspection.snapshot.text_truncated
             }) || omitted_targets > 0
+                || target_labels_truncated
                 || (native_level_includes_text(level) && text_truncated)
                 || (native_level_includes_accessibility(level)
                     && native_accessibility_node_count(frames)
@@ -3373,9 +3391,11 @@ fn native_semantic_target(
     super::session::SemanticTarget {
         reference: node.reference.clone(),
         frame_id: Some(frame_id.to_owned()),
-        role: node.role.clone(),
-        name: node.name.clone(),
-        input_type: node.input_type.clone(),
+        role: super::session::bounded_semantic_text(&node.role, super::session::MAX_ROLE_BYTES),
+        name: super::session::bounded_semantic_text(&node.name, super::session::MAX_LABEL_BYTES),
+        input_type: node.input_type.as_deref().map(|input_type| {
+            super::session::bounded_semantic_text(input_type, super::session::MAX_ROLE_BYTES)
+        }),
         disabled: Some(node.disabled),
         read_only: Some(node.read_only),
         required: Some(node.required),
@@ -3456,6 +3476,39 @@ mod public_session_tests {
     };
     use crate::browser_backend::BrowserBackendError;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn native_semantic_targets_bound_long_multibyte_names_and_roles() {
+        let document = crate::browser::native_engine::NativeDocument::parse(
+            "<button>target</button>",
+            &crate::browser::native_engine::NativeEngineLimits::default(),
+        )
+        .expect("local semantic fixture must parse");
+        let node = crate::browser::native_engine::NativeSemanticNode {
+            node_id: document.root(),
+            reference: "r1:n0".into(),
+            tag_name: "button".into(),
+            role: "button".into(),
+            name: "界".repeat(200),
+            name_truncated: true,
+            input_type: Some("x".repeat(100)),
+            empty: Some(false),
+            checked: None,
+            selected: None,
+            hidden: false,
+            disabled: false,
+            read_only: false,
+            required: false,
+            focused: false,
+        };
+
+        let target = super::native_semantic_target(&node, "frame-1");
+        assert!(target.name.len() <= crate::browser::session::MAX_LABEL_BYTES);
+        assert!(target.name.ends_with("…[truncated]"));
+        assert!(
+            target.input_type.as_ref().unwrap().len() <= crate::browser::session::MAX_ROLE_BYTES
+        );
+    }
 
     #[tokio::test]
     async fn canonical_browser_session_starts_native_without_cdp_fallback() {

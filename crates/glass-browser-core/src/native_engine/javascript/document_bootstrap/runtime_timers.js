@@ -1,5 +1,6 @@
 (() => {{
-  const host = JSON.parse({serialized});
+  const host = JSON.parse(globalThis.__glassHostViewJson);
+  delete globalThis.__glassHostViewJson;
   const documentContextId = String(host.context_id || "native");
   const documentGeneration = Number(host.generation) || 0;
   const initialDocumentReferrerPolicy = String(

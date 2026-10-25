@@ -127,7 +127,9 @@ pub use knowledge_store::{
     default_knowledge_store_path_for_workspace,
 };
 pub use retry::{RetryPolicy, RetryPredicate};
-pub(crate) use semantic::find_region_node;
+pub(crate) use semantic::{
+    MAX_LABEL_BYTES, MAX_ROLE_BYTES, bounded_semantic_text, find_region_node,
+};
 pub use semantic::{
     SEMANTIC_OBSERVATION_SCHEMA_VERSION, SemanticAccessibilityNode, SemanticChangeKind,
     SemanticChangeSet, SemanticConfidence, SemanticContinuity, SemanticExpansionHandle,

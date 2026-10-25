@@ -524,13 +524,16 @@ impl NativeNodeSubtreeTransfer {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeNodeWire {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) parent: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) children: Vec<u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) template_content: Option<u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) template_host: Option<u32>,
     pub(crate) kind: NativeNodeKindWire,
+    #[serde(default, skip_serializing_if = "is_default_snapshot_value")]
     pub(crate) state: NativeElementStateWire,
 }
 
@@ -553,35 +556,37 @@ pub(crate) enum NativeNodeKindWire {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeElementStateWire {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) namespace_uri: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) attribute_namespaces: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) value: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) files: Vec<NativeFile>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub(crate) checked: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub(crate) indeterminate: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub(crate) focused: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) focus_anchor_node_index: Option<u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub(crate) hovered: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub(crate) user_interacted: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub(crate) selected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) form_associated_disabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) custom_validity: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) selection_start: Option<usize>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) selection_end: Option<usize>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) selection_direction: Option<String>,
 }
 

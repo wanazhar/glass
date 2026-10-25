@@ -2,6 +2,9 @@ pub(in crate::native_engine::javascript) const NATIVE_CANVAS_SCRIPT: &str = r###
   const nativeCanvasByteLimit = 4 * 1024 * 1024;
   const nativeCanvasPixelLimit = 1024 * 1024;
   const nativeCanvasDimensionLimit = 4096;
+  const nativeCanvasPixelArray = (pixels) => Array.isArray(pixels)
+    ? pixels.slice()
+    : ArrayBuffer.isView(pixels) ? Array.from(pixels) : [];
   const nativeCanvasSurfaces = globalThis.__glassCanvasSurfaces instanceof Map
     ? globalThis.__glassCanvasSurfaces
     : new Map();
@@ -39,7 +42,7 @@ pub(in crate::native_engine::javascript) const NATIVE_CANVAS_SCRIPT: &str = r###
           || width < 1 || height < 1 || width > nativeCanvasDimensionLimit
           || height > nativeCanvasDimensionLimit || width * height > nativeCanvasPixelLimit) continue;
       try {
-        const pixels = decodeBase64(String(resource.pixels_base64 || ""), nativeCanvasByteLimit);
+        const pixels = decodeBase64(String(resource.pixels_base64 || ""), nativeCanvasByteLimit, true);
         if (pixels.length === width * height * 4) {
           cachedCanvasResources.set(Number(resource.node_index), {
             width,
@@ -60,7 +63,7 @@ pub(in crate::native_engine::javascript) const NATIVE_CANVAS_SCRIPT: &str = r###
     publicCanvasResources.set(nodeIndex, {
       get width() { return resource.width; },
       get height() { return resource.height; },
-      get pixels() { return resource.pixels.slice(); },
+      get pixels() { return nativeCanvasPixelArray(resource.pixels); },
       get originClean() { return resource.originClean; },
     });
   }
@@ -80,33 +83,51 @@ pub(in crate::native_engine::javascript) const NATIVE_CANVAS_SCRIPT: &str = r###
           || width < 1 || height < 1 || width > nativeCanvasDimensionLimit
           || height > nativeCanvasDimensionLimit || width * height > nativeCanvasPixelLimit) continue;
       try {
-        const pixels = decodeBase64(String(resource.pixelsBase64 || ""), nativeCanvasByteLimit);
-        if (pixels.length === width * height * 4) {
-          const frames = [];
-          for (const frame of Array.isArray(resource.frames) ? resource.frames : []) {
-            const delayMs = Number(frame && frame.delayMs);
-            if (!Number.isSafeInteger(delayMs) || delayMs < 1 || delayMs > 60000) continue;
-            try {
-              const framePixels = decodeBase64(String(frame.pixelsBase64 || ""), nativeCanvasByteLimit);
-              if (framePixels.length === width * height * 4) frames.push({ delayMs, pixels: framePixels });
-            } catch (_error) {}
-          }
-          const animationElapsedMs = Number(resource.animationElapsedMs);
-          cachedCanvasImageResources.set(Number(resource.nodeIndex), {
-            width,
-            height,
-            pixels,
-            source: String(resource.source || ""),
-            frames,
-            loopCount: resource.loopCount !== null && resource.loopCount !== undefined
-              && Number.isSafeInteger(Number(resource.loopCount)) && Number(resource.loopCount) >= 0
-              ? Number(resource.loopCount)
-              : null,
-            animationOriginNowMs: Number.isSafeInteger(animationElapsedMs)
-              ? Number(host.now_ms) - animationElapsedMs
-              : null,
+        const expectedBytes = width * height * 4;
+        const decodePixels = (encoded) => {
+          const pixels = decodeBase64(encoded, nativeCanvasByteLimit, true);
+          return pixels.length === expectedBytes ? pixels : new Uint8Array(0);
+        };
+        const source = String(resource.pixelsBase64 || "");
+        const frames = [];
+        for (const frame of Array.isArray(resource.frames) ? resource.frames : []) {
+          const delayMs = Number(frame && frame.delayMs);
+          if (!Number.isSafeInteger(delayMs) || delayMs < 1 || delayMs > 60000) continue;
+          const frameSource = String(frame.pixelsBase64 || "");
+          frames.push({
+            delayMs,
+            pixels: null,
+            getPixels() {
+              if (this.pixels === null) {
+                try { this.pixels = decodePixels(frameSource); }
+                catch (_error) { this.pixels = new Uint8Array(0); }
+              }
+              return this.pixels;
+            },
           });
         }
+        const animationElapsedMs = Number(resource.animationElapsedMs);
+        cachedCanvasImageResources.set(Number(resource.nodeIndex), {
+          width,
+          height,
+          pixels: null,
+          getPixels() {
+            if (this.pixels === null) {
+              try { this.pixels = decodePixels(source); }
+              catch (_error) { this.pixels = new Uint8Array(0); }
+            }
+            return this.pixels;
+          },
+          source: String(resource.source || ""),
+          frames,
+          loopCount: resource.loopCount !== null && resource.loopCount !== undefined
+            && Number.isSafeInteger(Number(resource.loopCount)) && Number(resource.loopCount) >= 0
+            ? Number(resource.loopCount)
+            : null,
+          animationOriginNowMs: Number.isSafeInteger(animationElapsedMs)
+            ? Number(host.now_ms) - animationElapsedMs
+            : null,
+        });
       } catch (_error) {}
     }
   }
@@ -119,10 +140,10 @@ pub(in crate::native_engine::javascript) const NATIVE_CANVAS_SCRIPT: &str = r###
     publicCanvasImageResources.set(nodeIndex, {
       get width() { return resource.width; },
       get height() { return resource.height; },
-      get pixels() { return resource.pixels.slice(); },
+      get pixels() { return nativeCanvasPixelArray(resource.getPixels()); },
       get source() { return resource.source; },
       get frames() {
-        return resource.frames.map((frame) => ({ delayMs: frame.delayMs, pixels: frame.pixels.slice() }));
+        return resource.frames.map((frame) => ({ delayMs: frame.delayMs, pixels: nativeCanvasPixelArray(frame.getPixels()) }));
       },
       get loopCount() { return resource.loopCount; },
       get animationOriginNowMs() { return resource.animationOriginNowMs; },
@@ -155,7 +176,7 @@ pub(in crate::native_engine::javascript) const NATIVE_CANVAS_SCRIPT: &str = r###
     }
     const resource = nativeCanvasResources.get(nodeIndex);
     const pixels = resource && resource.width === dimensions.width && resource.height === dimensions.height
-      ? resource.pixels.slice()
+      ? nativeCanvasPixelArray(resource.pixels)
       : nativeCanvasBlankPixels(dimensions.width, dimensions.height);
     const surface = {
       width: dimensions.width,
@@ -963,21 +984,21 @@ pub(in crate::native_engine::javascript) const NATIVE_CANVAS_SCRIPT: &str = r###
   const nativeCanvasContextSurface = (context) => nativeCanvasContextSurfaceFor(context.__glassCanvas);
   const nativeCanvasImagePixels = (resource) => {
     if (!resource || !Array.isArray(resource.frames) || resource.frames.length === 0
-        || !Number.isFinite(Number(resource.animationOriginNowMs))) return resource.pixels;
+        || !Number.isFinite(Number(resource.animationOriginNowMs))) return resource.getPixels();
     const elapsed = Math.max(0, Math.floor(Number(host.now_ms) - Number(resource.animationOriginNowMs)));
     const cycleMs = resource.frames.reduce((total, frame) => total + frame.delayMs, 0);
-    if (cycleMs <= 0) return resource.frames[0].pixels;
+    if (cycleMs <= 0) return resource.frames[0].getPixels();
     if (resource.loopCount !== null) {
       const totalMs = cycleMs * (resource.loopCount + 1);
-      if (elapsed >= totalMs) return resource.frames[resource.frames.length - 1].pixels;
+      if (elapsed >= totalMs) return resource.frames[resource.frames.length - 1].getPixels();
     }
     const position = elapsed % cycleMs;
     let consumed = 0;
     for (const frame of resource.frames) {
       consumed += frame.delayMs;
-      if (position < consumed) return frame.pixels;
+      if (position < consumed) return frame.getPixels();
     }
-    return resource.frames[resource.frames.length - 1].pixels;
+    return resource.frames[resource.frames.length - 1].getPixels();
   };
   const nativeCanvasImageOriginClean = (source) => {
     const current = String(source && (source.currentSrc || source.src) || "");

@@ -212,12 +212,12 @@
   base64Digits[43] = 62;
   base64Digits[47] = 63;
   base64Digits[61] = -2;
-  const decodeBase64 = (encoded, maxBytes = storageValueLimit) => {{
+  const decodeBase64 = (encoded, maxBytes = storageValueLimit, typedArray = false) => {{
     if (typeof encoded !== "string" || encoded.length % 4 !== 0) throw new TypeError("native response bytes are not valid base64");
     const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
     const byteLength = encoded.length / 4 * 3 - padding;
     if (byteLength > maxBytes) throw new RangeError("native binary payload exceeds its limit");
-    const bytes = new Array(byteLength);
+    const bytes = typedArray ? new Uint8Array(byteLength) : new Array(byteLength);
     let outputIndex = 0;
     for (let index = 0; index < encoded.length; index += 4) {{
       const firstCode = encoded.charCodeAt(index);

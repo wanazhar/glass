@@ -201,6 +201,8 @@
       const oldValue = Object.prototype.hasOwnProperty.call(entry.attributes, qualified)
         ? String(entry.attributes[qualified])
         : null;
+      entry.attributes = {{ ...entry.attributes }};
+      entry.attributeNamespaces = {{ ...entry.attributeNamespaces }};
       entry.attributes[qualified] = value;
       if (namespaceURI === null) delete entry.attributeNamespaces[qualified];
       else entry.attributeNamespaces[qualified] = namespaceURI;
@@ -247,6 +249,8 @@
       }});
       if (key === undefined) return;
       const oldValue = String(entry.attributes[key]);
+      entry.attributes = {{ ...entry.attributes }};
+      entry.attributeNamespaces = {{ ...entry.attributeNamespaces }};
       delete entry.attributes[key];
       delete entry.attributeNamespaces[key];
       element.__glassSyncContent();
@@ -348,6 +352,8 @@
         const oldValue = Object.prototype.hasOwnProperty.call(entry.attributes, key)
           ? String(entry.attributes[key])
           : null;
+        entry.attributes = {{ ...entry.attributes }};
+        entry.attributeNamespaces = {{ ...entry.attributeNamespaces }};
         entry.attributes[key] = stringValue;
         delete entry.attributeNamespaces[key];
         installInlineAttributeHandler(key, stringValue);
@@ -380,6 +386,8 @@
         const oldValue = Object.prototype.hasOwnProperty.call(entry.attributes, qualifiedName)
           ? String(entry.attributes[qualifiedName])
           : null;
+        entry.attributes = {{ ...entry.attributes }};
+        entry.attributeNamespaces = {{ ...entry.attributeNamespaces }};
         entry.attributes[qualifiedName] = stringValue;
         if (namespaceURI === null) delete entry.attributeNamespaces[qualifiedName];
         else entry.attributeNamespaces[qualifiedName] = namespaceURI;
@@ -425,6 +433,8 @@
         const oldValue = Object.prototype.hasOwnProperty.call(entry.attributes, key)
           ? String(entry.attributes[key])
           : null;
+        entry.attributes = {{ ...entry.attributes }};
+        entry.attributeNamespaces = {{ ...entry.attributeNamespaces }};
         delete entry.attributes[key];
         delete entry.attributeNamespaces[key];
         removeInlineAttributeHandler(key, oldValue !== null);

@@ -7,6 +7,7 @@ use super::dom::{
 use super::error::NativeEngineError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 use url::Url;
 
 mod background_values;
@@ -1568,7 +1569,7 @@ pub(crate) struct NativeFontPaletteOverride {
     pub(crate) color: NativeColor,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum FontWeightValue {
     #[default]
     Normal,
@@ -1668,7 +1669,7 @@ pub(crate) fn format_font_weight_range(range: NativeFontWeightRange) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum FontStyleValue {
     #[default]
     Normal,
@@ -1683,7 +1684,7 @@ enum FontStyleDeclarationValue {
     CustomPropertyFallback(u64, FontStyleValue),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum NativeGenericFontFamily {
     SansSerif,
     Serif,
@@ -1693,7 +1694,7 @@ pub(crate) enum NativeGenericFontFamily {
     SystemUi,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub(crate) enum NativeFontFamilyValue {
     /// Preserve the legacy fixed-cell path when no native font declaration
     /// has opted the element into real-font metrics yet.
@@ -1721,6 +1722,15 @@ impl PartialEq for NativeFontFamilyList {
 }
 
 impl Eq for NativeFontFamilyList {}
+
+impl Hash for NativeFontFamilyList {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.len.hash(state);
+        for family in self.values.iter().take(usize::from(self.len)) {
+            family.hash(state);
+        }
+    }
+}
 
 impl Default for NativeFontFamilyList {
     fn default() -> Self {

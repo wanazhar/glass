@@ -4,8 +4,8 @@ use super::*;
 fn content_process_navigation_budget_matches_bounded_browser_callers() {
     assert_eq!(
         CONTENT_PROCESS_LOAD_TIMEOUT,
-        Duration::from_secs(60),
-        "the content owner must not time out before a caller's explicit 60s navigation budget"
+        Duration::from_secs(120),
+        "the content owner must not time out before a caller's bounded 120s navigation budget"
     );
     assert_eq!(
         CONTENT_PROCESS_ASYNC_EFFECT_TIMEOUT,

@@ -62,6 +62,48 @@ fn viewport_invalidation_clears_cache_and_clones_are_isolated() {
 }
 
 #[test]
+fn layout_snapshot_cache_matches_fresh_layout_and_invalidates_style_and_viewport_changes() {
+    let limits = NativeEngineLimits::default();
+    let source =
+        "<style>.active{width:240px} p{height:32px}</style><main><p id=target>text</p></main>";
+    let mut document = NativeDocument::parse(source, &limits).unwrap();
+    let target = document.find_element_by_id("target").unwrap();
+    let viewport = Viewport::default();
+
+    let initial = document.layout(viewport).unwrap();
+    assert_eq!(document.layout(viewport).unwrap(), initial);
+    assert!(document.layout_style_cache.2.lock().unwrap().is_some());
+    let clone = document.clone();
+    assert_eq!(clone.layout(viewport).unwrap(), initial);
+
+    document
+        .apply_script_attribute(target.index(), "class", "active", None, &BTreeMap::new())
+        .unwrap();
+    assert!(document.layout_style_cache.2.lock().unwrap().is_none());
+    assert!(clone.layout_style_cache.2.lock().unwrap().is_some());
+    let styled = document.layout(viewport).unwrap();
+    let fresh_styled = NativeDocument::parse(
+        "<style>.active{width:240px} p{height:32px}</style><main><p id=target class=active>text</p></main>",
+        &limits,
+    )
+    .unwrap();
+    assert_eq!(styled, fresh_styled.layout(viewport).unwrap());
+    assert_ne!(initial, styled);
+
+    let next_viewport = Viewport {
+        width: 640,
+        height: 480,
+        device_scale_factor_milli: 1000,
+    };
+    document.set_viewport(next_viewport).unwrap();
+    assert!(document.layout_style_cache.2.lock().unwrap().is_none());
+    let resized = document.layout(next_viewport).unwrap();
+    let mut fresh_resized = fresh_styled;
+    fresh_resized.set_viewport(next_viewport).unwrap();
+    assert_eq!(resized, fresh_resized.layout(next_viewport).unwrap());
+}
+
+#[test]
 fn script_style_mutation_invalidates_cached_cascade() {
     let limits = NativeEngineLimits::default();
     let mut document = NativeDocument::parse(NESTED_STYLES, &limits).unwrap();

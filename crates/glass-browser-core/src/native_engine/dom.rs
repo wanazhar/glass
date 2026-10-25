@@ -1054,6 +1054,7 @@ pub struct NativeDocument {
 struct NativeLayoutStyleCache(
     Mutex<HashMap<NativeNodeId, NativeComputedStyle>>,
     Mutex<HashMap<NativeNodeId, Arc<BTreeMap<u64, String>>>>,
+    Mutex<Option<NativeLayoutSnapshot>>,
 );
 
 impl Clone for NativeLayoutStyleCache {
@@ -1068,7 +1069,16 @@ impl Clone for NativeLayoutStyleCache {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        Self(Mutex::new(styles), Mutex::new(custom_properties))
+        let layout = self
+            .2
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        Self(
+            Mutex::new(styles),
+            Mutex::new(custom_properties),
+            Mutex::new(layout),
+        )
     }
 }
 
@@ -1090,6 +1100,26 @@ impl NativeLayoutStyleCache {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        *self
+            .2
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    fn layout(&self, revision: u64, viewport: Viewport) -> Option<NativeLayoutSnapshot> {
+        self.2
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .filter(|layout| layout.revision == revision && layout.viewport == viewport)
+            .cloned()
+    }
+
+    fn cache_layout(&self, layout: NativeLayoutSnapshot) {
+        *self
+            .2
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(layout);
     }
 }
 

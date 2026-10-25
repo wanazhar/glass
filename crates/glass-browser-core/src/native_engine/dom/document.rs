@@ -1289,7 +1289,12 @@ impl NativeDocument {
 
     /// Derive the current document's bounded integer-pixel layout.
     pub fn layout(&self, viewport: Viewport) -> Result<NativeLayoutSnapshot, NativeEngineError> {
-        NativeLayoutSnapshot::compute(self, viewport)
+        if let Some(layout) = self.layout_style_cache.layout(self.revision, viewport) {
+            return Ok(layout);
+        }
+        let layout = NativeLayoutSnapshot::compute(self, viewport)?;
+        self.layout_style_cache.cache_layout(layout.clone());
+        Ok(layout)
     }
 
     /// Hit test one point in the supplied viewport without scrolling or

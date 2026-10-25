@@ -356,16 +356,55 @@ impl Drop for Trace {
             "text_bytes":self.text_bytes,"reasoning_bytes":self.reasoning_bytes,"tool_calls":self.calls,"transport_retries":self.retries,"outcome":self.outcome,
             "usage":usage,"context_delta":self.delta,"prefix_fingerprint":self.snapshot.prefix,
             "cache_note":"Prefix fingerprint is not a provider cache key. Missing usage cannot establish cache behavior."});
-        let result = (|| -> Result<(), String> {
-            append(&self.path.with_extension("requests.jsonl"), &report)?;
+        let summary_started = Instant::now();
+        diagnostic_phase(
+            self.trace_id,
+            self.workflow,
+            "request_summary_append_begin",
+            None,
+            self.runtime_turn_hash.as_deref(),
+        );
+        let summary_result = append(&self.path.with_extension("requests.jsonl"), &report);
+        diagnostic_phase(
+            self.trace_id,
+            self.workflow,
+            if summary_result.is_ok() {
+                "request_summary_append_complete"
+            } else {
+                "request_summary_append_error"
+            },
+            Some(summary_started.elapsed().as_micros()),
+            self.runtime_turn_hash.as_deref(),
+        );
+        let result = summary_result.and_then(|()| {
             if self.background || self.workflow == "compaction" {
                 return Ok(());
             }
-            crate::auth::secure_write(
+            let snapshot_started = Instant::now();
+            diagnostic_phase(
+                self.trace_id,
+                self.workflow,
+                "request_snapshot_write_begin",
+                None,
+                self.runtime_turn_hash.as_deref(),
+            );
+            let snapshot_result = crate::auth::secure_write(
                 &self.path.with_extension("request-last.json"),
                 &serde_json::to_vec(&self.snapshot).map_err(|e| e.to_string())?,
-            )
-        })();
+            );
+            diagnostic_phase(
+                self.trace_id,
+                self.workflow,
+                if snapshot_result.is_ok() {
+                    "request_snapshot_write_complete"
+                } else {
+                    "request_snapshot_write_error"
+                },
+                Some(snapshot_started.elapsed().as_micros()),
+                self.runtime_turn_hash.as_deref(),
+            );
+            snapshot_result
+        });
         if result.is_err() {
             eprintln!("request diagnostics could not be saved; session output is unaffected");
         }

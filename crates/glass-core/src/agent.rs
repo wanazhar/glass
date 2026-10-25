@@ -2618,7 +2618,28 @@ impl<'a> Agent<'a> {
                 .unwrap_or(serde_json::Value::Null),
         })
         .to_string();
-        Some(crate::hooks_shell::run(hook, &call_json))
+        let matched = crate::hooks_shell::matches(hook, &call.name);
+        let started = std::time::Instant::now();
+        if matched && let Some(trace_id) = self.active_trace_id {
+            crate::requests::diagnostic_phase(
+                trace_id,
+                "agent",
+                "pre_tool_hook_begin",
+                None,
+                self.runtime_turn_hash.as_deref(),
+            );
+        }
+        let verdict = crate::hooks_shell::run(hook, &call_json);
+        if matched && let Some(trace_id) = self.active_trace_id {
+            crate::requests::diagnostic_phase(
+                trace_id,
+                "agent",
+                "pre_tool_hook_complete",
+                Some(started.elapsed().as_micros()),
+                self.runtime_turn_hash.as_deref(),
+            );
+        }
+        Some(verdict)
     }
 
     fn run_tool(&mut self, call: &ToolCall) {

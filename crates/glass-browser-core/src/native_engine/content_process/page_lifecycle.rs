@@ -377,6 +377,7 @@ pub(super) fn validate_content_history_state(state: &Value) -> Result<(), Native
 }
 
 pub(super) fn mutate_before_unload(
+    request_id: u64,
     current: &NativeDocument,
     runtime: &NativeJavaScriptRuntime,
     document_url: &mut String,
@@ -391,6 +392,45 @@ pub(super) fn mutate_before_unload(
                 reason: "beforeunload event batch was empty".into(),
             }
         })?;
+    let event_types = event_batch
+        .iter()
+        .map(|event| event.event_type.clone())
+        .collect::<Vec<_>>();
+    let listener_lookup = ContentLoadStage::begin(request_id, "beforeunload_listener_lookup");
+    let has_listeners = runtime.has_host_event_listeners(&event_types)?;
+    listener_lookup.finish(Some(usize::from(has_listeners.unwrap_or(true))));
+    let has_inline_handler = event_types
+        .iter()
+        .any(|event_type| current.has_inline_event_handler(event_type));
+    if has_listeners == Some(false) && !has_inline_handler {
+        return Ok((
+            current.clone(),
+            NativeContentMutation {
+                document: NativeDocumentWire {
+                    native_document_state_replayable: true,
+                    ..NativeDocumentWire::default()
+                },
+                navigate_to_sources: None,
+                events: vec![NativeContentEvent {
+                    node_index: u32::MAX,
+                    kind: NativeEventKind::BeforeUnload,
+                }],
+                navigation: None,
+                csp_violations: Vec::new(),
+                allowed: true,
+                history: Vec::new(),
+                scroll_commands: Vec::new(),
+                storage_events: Vec::new(),
+                indexed_db_changes: Vec::new(),
+                dialogs: Vec::new(),
+                popups: Vec::new(),
+                post_messages: Vec::new(),
+                window_closes: Vec::new(),
+                window_navigations: Vec::new(),
+                window_name: String::new(),
+            },
+        ));
+    }
     let evaluation = runtime.evaluate_with_host_events(
         &event_batch,
         current,
@@ -407,7 +447,9 @@ pub(super) fn mutate_before_unload(
             operation: "content process beforeunload".into(),
             reason: "beforeunload event result was invalid".into(),
         })?;
+    let state_clone_stage = ContentLoadStage::begin(request_id, "beforeunload_document_clone");
     let mut next = current.clone();
+    state_clone_stage.finish(None);
     let mut history = Vec::new();
     let mut events = vec![(
         NativeNodeId::from_parts(current.generation(), u32::MAX),
@@ -453,10 +495,13 @@ pub(super) fn mutate_before_unload(
             events.len(),
         ));
     }
+    let wire_stage = ContentLoadStage::begin(request_id, "beforeunload_document_wire_projection");
+    let document = next.to_content_wire();
+    wire_stage.finish(None);
     Ok((
         next.clone(),
         NativeContentMutation {
-            document: next.to_content_wire(),
+            document,
             navigate_to_sources: None,
             events: events
                 .into_iter()

@@ -100,7 +100,7 @@
         {"id":"assert-repository-content","action":"assert","expression":"document.title.toLowerCase().includes('rust') && document.body.innerText.includes('rust-lang/rust')"},
         {"id":"open-observed-library","action":"clickObserved","role":"link","nameContains":"library","targetSource":"fresh-observation"},
         {"id":"observe-library","action":"observe"},
-        {"id":"assert-library-content","action":"assert","expression":"location.pathname === '/rust-lang/rust/tree/master/library' && document.body.innerText.toLowerCase().includes('core')"}
+        {"id":"assert-library-content","action":"assert","expression":"location.pathname === '/rust-lang/rust/tree/main/library' && document.body.innerText.toLowerCase().includes('core')"}
       ]
     },
     {

@@ -280,6 +280,7 @@ impl NativeDocument {
             })
             .collect();
         let wire = NativeDocumentWire {
+            native_document_state_replayable: false,
             nodes,
             computed_styles,
             viewport: self.viewport,
@@ -332,6 +333,12 @@ impl NativeDocument {
         limits: &NativeEngineLimits,
         generation: u32,
     ) -> Result<Self, NativeEngineError> {
+        if wire.native_document_state_replayable {
+            return Err(NativeEngineError::Parse {
+                offset: 0,
+                reason: "unchanged content-process document cannot be decoded as a snapshot".into(),
+            });
+        }
         let viewport = wire.viewport;
         let quirks_mode = wire.quirks_mode;
         let document_referrer_policy =

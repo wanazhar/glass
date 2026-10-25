@@ -203,15 +203,20 @@ impl NativeEngine {
         let dialogs = mutation.dialogs.clone();
         let scroll_commands = std::mem::take(&mut mutation.scroll_commands);
         let generation = self.document.generation();
-        let mut document = match NativeDocument::from_content_wire(
-            mutation.document,
-            &self.config.limits,
-            generation,
-        ) {
-            Ok(document) => document,
-            Err(error) => {
-                self.content_process.take();
-                return Err(error);
+        let native_document_state_replayable = mutation.document.native_document_state_replayable;
+        let mut document = if native_document_state_replayable {
+            self.document.clone()
+        } else {
+            match NativeDocument::from_content_wire(
+                mutation.document,
+                &self.config.limits,
+                generation,
+            ) {
+                Ok(document) => document,
+                Err(error) => {
+                    self.content_process.take();
+                    return Err(error);
+                }
             }
         };
         document.set_css_target_from_url(&self.url)?;

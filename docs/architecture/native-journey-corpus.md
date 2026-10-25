@@ -16,7 +16,10 @@ the native integration suite. It resolves link and scroll targets from the
 current document and binds actions to that observation revision. Additional
 local journeys open an observed image link and assert decoded dimensions plus
 painted pixels, and use a disclosure and GET search form to reach and verify a
-result page before checking browser history. The repository's broader authored fixture coverage remains grouped under
+result page before checking browser history. A responsive duplicate-link
+fixture also proves that the native engine resolves one destination-specific
+link from two small/large-screen copies, binds it to the observed revision, and
+reaches the asserted subpage. The repository's broader authored fixture coverage remains grouped under
 `tests/native_engine_tests/`; this corpus is an acceptance entry point, not a
 replacement for those focused regressions.
 
@@ -29,8 +32,20 @@ temporary directory with owner-only permissions; pass `--output PATH` to
 choose a different private location. A failed journey returns a nonzero exit
 code while preserving the report.
 
-The public entries cover a deep MDN reference and a Wikipedia article that
-follows an observed link to a second article. The latest bounded Wikipedia
+The public entries cover a deep MDN reference, a Wikipedia article that
+follows an observed link to a second article, and a GitHub repository journey
+that follows an observed link into the Rust repository's `library` directory.
+The GitHub journey checks repository identity and directory content before
+reporting success. The early selectors either assumed the stale `master` branch,
+failed to resolve the accessible name, or matched two elements after locating
+the current `main` branch. Inspection of the public markup found the duplicate
+links in responsive small-screen and large-screen cells of the same directory
+row. The runner classifies missing and ambiguous targets as product failures.
+Scoping to the large-screen cell resolved exactly one target, but its click
+exceeded the existing five-second content-process operation deadline while
+updating the document. The report records `content_process_deadline`; the
+subpage was not observed, so GitHub is not a full journey pass.
+The latest bounded Wikipedia
 journey on 25 October did not reach its first observation: navigation hit its
 120-second deadline. It ran 12 host-view installs, with the slowest at 8.03 s,
 under the unchanged 15-second per-install limit. Lazy image-pixel decoding
@@ -108,6 +123,8 @@ not infer support from a recognized MIME type or successful metadata parse.
 | Observed nested scroll container | Versioned local journey | Explicit `scrollTarget`; arbitrary-pane fallback is unsupported |
 | Image gallery to full image | `versioned_native_image_journey_opens_and_paints_full_image` | Local fixture asserts observed link navigation, decode completion, intrinsic dimensions, and actual raster pixels |
 | Search, disclosure, and GET form | `versioned_native_disclosure_search_form_and_history_journey` | Local fixture asserts disclosure state, typed query, result URL/content, and back navigation |
+| Responsive duplicate links | `versioned_native_journey_selects_observed_responsive_duplicate_by_region` | Pass: region-scoped selector resolves one of two identical destination links and follows its revision-bound target to asserted content |
+| Public repository subpage | `public-github-repository-and-observed-directory` | Observed and asserted the repository page; responsive-cell link resolved, but click exceeded the 5-second content-process operation deadline before the directory could be observed |
 | Video decoding and playback | `native_video_reports_decoder_absence_and_does_not_claim_playback` | Explicitly unsupported; poster rendering is separate |
 | Dynamic disclosure, search form, and result history | `versioned_native_disclosure_search_form_and_history_journey` | Pass: click an observed disclosure control, verify hidden-state/content update, type a GET query, verify result URL/content, and go back |
 | Menus, frames, SPA routes, and additional form patterns | Focused authored fixture tests under `tests/native_engine_tests/` | Add journeys where a measured gap is demonstrated |

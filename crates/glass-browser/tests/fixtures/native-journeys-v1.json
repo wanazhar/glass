@@ -51,6 +51,18 @@
       ]
     },
     {
+      "id": "local-responsive-duplicate-link",
+      "backend": "native",
+      "scope": "local-fixture",
+      "capabilities": ["navigation", "semantic-targeting", "responsive-duplicate-controls"],
+      "timeoutMs": 10000,
+      "steps": [
+        {"id":"repository-fixture","action":"navigate","url":"fixture://journey-responsive.test/"},
+        {"id":"choose-large-screen-library-link","action":"click","target":"css=td.react-directory-row-name-cell-large-screen a[href='fixture://journey-responsive.test/library']","targetSource":"fresh-observation"},
+        {"id":"assert-library-page","action":"assert","expression":"document.title === 'Rust library' && document.querySelector('#core').textContent.includes('Core library')"}
+      ]
+    },
+    {
       "id": "public-documentation-deep-page",
       "backend": "native",
       "scope": "public-read-only",
@@ -74,6 +86,21 @@
         {"id":"choose-observed-subpage","action":"click","target":"css=a[href='/wiki/Computer_science']","targetSource":"fresh-observation"},
         {"id":"observe-subpage","action":"observe"},
         {"id":"assert-subpage","action":"assert","condition":"url-prefix=https://en.wikipedia.org/wiki/Computer_science"}
+      ]
+    },
+    {
+      "id": "public-github-repository-and-observed-directory",
+      "backend": "native",
+      "scope": "public-read-only",
+      "capabilities": ["navigation", "observation", "semantic-targeting", "subpage-navigation", "repository-content"],
+      "timeoutMs": 120000,
+      "steps": [
+        {"id":"repository","action":"navigate","url":"https://github.com/rust-lang/rust"},
+        {"id":"observe-repository","action":"observe"},
+        {"id":"assert-repository-content","action":"assert","expression":"document.title.toLowerCase().includes('rust') && document.body.innerText.includes('rust-lang/rust')"},
+        {"id":"open-observed-library","action":"click","target":"css=td.react-directory-row-name-cell-large-screen a[href='/rust-lang/rust/tree/main/library']","targetSource":"fresh-observation"},
+        {"id":"observe-library","action":"observe"},
+        {"id":"assert-library-content","action":"assert","expression":"location.pathname === '/rust-lang/rust/tree/master/library' && document.body.innerText.toLowerCase().includes('core')"}
       ]
     },
     {

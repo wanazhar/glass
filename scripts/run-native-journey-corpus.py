@@ -23,6 +23,8 @@ DEFAULT_CORPUS = ROOT / "crates/glass-browser/tests/fixtures/native-journeys-v1.
 
 def classify(message: str, timed_out: bool = False) -> str:
     text = message.lower()
+    if "native action target was not found" in text or "native action target matched" in text:
+        return "product_bug"
     if "content-process document snapshot" in text and "exceeds limit" in text:
         return "resource_limit"
     if any(word in text for word in ("unsupported", "not supported", "not implemented")):
@@ -40,6 +42,10 @@ def classify(message: str, timed_out: bool = False) -> str:
 
 def error_kind(message: str, timed_out: bool = False) -> str:
     text = message.lower()
+    if "native action target was not found" in text:
+        return "native_target_not_found"
+    if "native action target matched" in text:
+        return "native_target_ambiguous"
     if "content-process document snapshot" in text and "exceeds limit" in text:
         return "native_snapshot_budget_exceeded"
     if ("host view" in text or "javascript host snapshot" in text) and (

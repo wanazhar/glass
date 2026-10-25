@@ -320,7 +320,19 @@ fn content_wire_round_trips_user_interacted_state() {
     let required = document.resolve_target("id=required").unwrap();
     document.apply_click(required).unwrap();
     let wire = document.to_content_wire();
-    let restored = NativeDocument::from_content_wire(wire, &limits, document.generation()).unwrap();
+    let encoded = serde_json::to_vec(&wire).unwrap();
+    let decoded: NativeDocumentWire = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded, wire);
+    assert!(
+        serde_json::to_value(NativeComputedStyle::default())
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .is_empty(),
+        "default computed styles should omit all default fields"
+    );
+    let restored =
+        NativeDocument::from_content_wire(decoded, &limits, document.generation()).unwrap();
     assert_eq!(restored.css_user_validity(required), Some(false));
 }
 

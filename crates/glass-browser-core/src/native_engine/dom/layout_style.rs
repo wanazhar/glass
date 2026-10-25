@@ -1,7 +1,32 @@
 use super::*;
 
+thread_local! {
+    static LAYOUT_TEXT_METRICS_DIAGNOSTIC: std::cell::Cell<(usize, u128)> = const {
+        std::cell::Cell::new((0, 0))
+    };
+}
+
+pub(crate) fn reset_layout_text_metrics_diagnostic() {
+    LAYOUT_TEXT_METRICS_DIAGNOSTIC.with(|diagnostic| diagnostic.set((0, 0)));
+}
+
+pub(crate) fn take_layout_text_metrics_diagnostic() -> (usize, u128) {
+    LAYOUT_TEXT_METRICS_DIAGNOSTIC.with(|diagnostic| diagnostic.replace((0, 0)))
+}
+
 impl NativeDocument {
+    #[track_caller]
     pub(super) fn invalidate_layout_styles(&mut self) {
+        if crate::native_engine::content_process::runtime_diagnostic_trace_enabled() {
+            let caller = std::panic::Location::caller();
+            crate::native_engine::content_process::ContentLoadStage::begin_with_resource(
+                0,
+                "layout_styles_invalidated",
+                Some(caller.line() as usize),
+                Some(caller.file()),
+            )
+            .finish(None);
+        }
         self.computed_styles = None;
         self.layout_style_cache.clear();
     }
@@ -15,6 +40,21 @@ impl NativeDocument {
                 .get(id.index as usize)
                 .copied()
                 .unwrap_or_default();
+        }
+        // The per-node cache is invalidated with every style-affecting
+        // mutation. Return a valid hit before walking ancestors: host snapshot
+        // export and repeated layout passes revisit each node after its style
+        // has already been computed, and rebuilding inherited state there is
+        // redundant.
+        if let Some(style) = self
+            .layout_style_cache
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&id)
+            .copied()
+        {
+            return style;
         }
         let mut chain = Vec::new();
         let mut current = Some(id);
@@ -327,6 +367,9 @@ impl NativeDocument {
     }
 
     pub(crate) fn text_metrics_for_layout(&self, id: NativeNodeId) -> NativeTextMetrics {
+        let diagnostic_started =
+            crate::native_engine::content_process::runtime_diagnostic_trace_enabled()
+                .then(std::time::Instant::now);
         let style = self.computed_style_for_layout(id);
         let metrics = if style
             .font_family()
@@ -374,10 +417,18 @@ impl NativeDocument {
             )
         };
         let palette = style.font_palette();
-        metrics
+        let metrics = metrics
             .with_optical_sizing(style.font_optical_sizing())
             .with_palette(self.stylesheet.resolve_font_palette(palette))
-            .with_palette_overrides(self.stylesheet.resolve_font_palette_overrides(palette))
+            .with_palette_overrides(self.stylesheet.resolve_font_palette_overrides(palette));
+        if let Some(started) = diagnostic_started {
+            let elapsed_us = started.elapsed().as_micros();
+            LAYOUT_TEXT_METRICS_DIAGNOSTIC.with(|diagnostic| {
+                let (calls, total_us) = diagnostic.get();
+                diagnostic.set((calls.saturating_add(1), total_us.saturating_add(elapsed_us)));
+            });
+        }
+        metrics
     }
 
     pub(crate) fn text_line_height_for_layout(&self, id: NativeNodeId) -> u32 {

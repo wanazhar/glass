@@ -1140,6 +1140,7 @@ impl NativeDocument {
                         .ok_or(NativeEngineError::DetachedTarget)?;
                     node.state.files.clear();
                     node.state.value = Some(String::new());
+                    self.invalidate_layout_styles();
                 }
                 NativeScriptCommand::SetValue { node_index, value } => {
                     self.apply_script_value(*node_index, value, &script_nodes)?;

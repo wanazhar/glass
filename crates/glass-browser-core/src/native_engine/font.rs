@@ -19,6 +19,7 @@ use crate::native_engine::css::{
 };
 use catalog::*;
 use color_glyphs::*;
+use std::cell::Cell;
 use std::fmt;
 use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
@@ -26,6 +27,20 @@ use std::sync::{Arc, OnceLock};
 use woff::normalize_font_bytes;
 #[cfg(test)]
 use woff::{read_u16_be, read_u32_be, supported_woff_flavor, write_u16_be, write_u32_be};
+
+thread_local! {
+    static LAYOUT_TEXT_WIDTH_DIAGNOSTIC: Cell<(usize, u128)> = const {
+        Cell::new((0, 0))
+    };
+}
+
+pub(crate) fn reset_layout_text_width_diagnostic() {
+    LAYOUT_TEXT_WIDTH_DIAGNOSTIC.with(|diagnostic| diagnostic.set((0, 0)));
+}
+
+pub(crate) fn take_layout_text_width_diagnostic() -> (usize, u128) {
+    LAYOUT_TEXT_WIDTH_DIAGNOSTIC.with(|diagnostic| diagnostic.replace((0, 0)))
+}
 #[cfg(test)]
 type TestLocalFontSource = OnceLock<std::sync::Mutex<Option<(String, Vec<u8>)>>>;
 #[cfg(test)]
@@ -1410,9 +1425,25 @@ impl NativeTextMetrics {
     }
 
     pub(crate) fn measure_text(&self, value: &str, letter_spacing: u32, word_spacing: u32) -> u32 {
-        if let Some(shaped) = self.shape(value, letter_spacing, word_spacing) {
-            return shaped.width;
+        let diagnostic_started =
+            crate::native_engine::content_process::runtime_diagnostic_trace_enabled()
+                .then(std::time::Instant::now);
+        let width = if let Some(shaped) = self.shape(value, letter_spacing, word_spacing) {
+            shaped.width
+        } else {
+            self.measure_text_fallback(value, letter_spacing, word_spacing)
+        };
+        if let Some(started) = diagnostic_started {
+            let elapsed_us = started.elapsed().as_micros();
+            LAYOUT_TEXT_WIDTH_DIAGNOSTIC.with(|diagnostic| {
+                let (calls, total_us) = diagnostic.get();
+                diagnostic.set((calls.saturating_add(1), total_us.saturating_add(elapsed_us)));
+            });
         }
+        width
+    }
+
+    fn measure_text_fallback(&self, value: &str, letter_spacing: u32, word_spacing: u32) -> u32 {
         let mut width = 0u32;
         let mut previous = None;
         let mut previous_face_index = None;

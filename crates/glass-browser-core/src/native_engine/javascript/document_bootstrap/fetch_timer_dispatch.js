@@ -120,3 +120,5 @@
       }}
     }}
   }};
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("module_fetch_timer_dispatch");

@@ -1285,3 +1285,5 @@
     if (descriptor.byte_mode === true) source.type = "bytes";
     return new ReadableStreamNative(source);
   }};
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("module_fetch_streams");

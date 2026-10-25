@@ -888,25 +888,24 @@
     : new Map();
   const snapshotNodes = Array.isArray(state.nodes) ? state.nodes : [];
   const snapshotElements = Array.isArray(state.elements) ? state.elements : [];
-  const existingElementMapCoversSnapshot = previousElements.size === snapshotElements.length
-    && snapshotElements.every((entry) => {{
-      const index = Number(entry && entry.nodeIndex);
-      const existing = scriptNodeAliasesByIndex.get(index) || previousElements.get(index);
-      return Number.isSafeInteger(index)
-        && existing
-        && typeof existing.__glassRefresh === "function";
-    }});
-  const existingNodeMapCoversSnapshot = snapshotNodes.every((entry) => {{
-    const index = Number(entry && entry.nodeIndex);
-    if (!Number.isSafeInteger(index)) return false;
-    if (Number(entry.nodeType) === 9) return index === 0;
-    return previousNodes.has(index) || scriptNodeAliasesByIndex.has(index);
-  }});
-  const reuseExistingHostTree = Boolean(
+  // The native exact-state key plus these private closure references prove
+  // the cached collections match. Public maps are fresh copies below, so
+  // page code cannot mutate the private maps and force an O(nodes) admission
+  // scan on every unchanged host install.
+  const cachedCollectionsMatchCurrentView = Boolean(
     reuseCachedHostSnapshotState
-      && existingElementMapCoversSnapshot
-      && existingNodeMapCoversSnapshot,
+      && cachedHostCollections
+      && cachedHostCollections.elementsByIndexView === previousElements
+      && cachedHostCollections.nodesByIndexView === previousNodes
+      && Array.isArray(cachedHostCollections.elements)
+      && Array.isArray(cachedHostCollections.textNodes)
+      && Array.isArray(cachedHostCollections.commentNodes)
+      && Array.isArray(cachedHostCollections.documentTypeNodes)
+      && Array.isArray(cachedHostCollections.fragmentNodes),
   );
+  const reuseExistingHostTree = cachedCollectionsMatchCurrentView;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("tree_admission_checked");
   const belongsToDetachedCreatedSubtree = (node) => {{
     let current = node;
     for (let depth = 0; current && depth <= {max_commands}; depth += 1) {{
@@ -917,8 +916,10 @@
     }}
     return false;
   }};
-  const snapshotTextContentForNode = createSnapshotTextContentResolver(snapshotNodes);
-  const elements = snapshotElements.map((entry) => {{
+  const snapshotTextContentForNode = reuseExistingHostTree
+    ? null
+    : createSnapshotTextContentResolver(snapshotNodes);
+  const elements = reuseExistingHostTree ? cachedHostCollections.elements : snapshotElements.map((entry) => {{
     const existing = scriptNodeAliasesByIndex.get(entry.nodeIndex) || previousElements.get(entry.nodeIndex);
     if (existing && typeof existing.__glassRefresh === "function") {{
       if (!reuseExistingHostTree && !belongsToDetachedCreatedSubtree(existing)) {{
@@ -928,8 +929,10 @@
     }}
     return makeElement(entry, snapshotTextContentForNode);
   }});
-  const elementsByIndex = new Map(elements.map((element) => [element.nodeIndex, element]));
-  const textNodes = snapshotNodes
+  const elementsByIndex = reuseExistingHostTree
+    ? cachedHostCollections.elementsByIndex
+    : new Map(elements.map((element) => [element.nodeIndex, element]));
+  const textNodes = reuseExistingHostTree ? cachedHostCollections.textNodes : snapshotNodes
     .filter((entry) => entry && Number(entry.nodeType) === 3)
     .map((entry) => {{
       const existing = previousNodes.get(entry.nodeIndex);
@@ -941,7 +944,7 @@
       }}
       return makeSnapshotText(entry);
     }});
-  const commentNodes = snapshotNodes
+  const commentNodes = reuseExistingHostTree ? cachedHostCollections.commentNodes : snapshotNodes
     .filter((entry) => entry && Number(entry.nodeType) === 8)
     .map((entry) => {{
       const existing = previousNodes.get(entry.nodeIndex);
@@ -953,7 +956,7 @@
       }}
       return makeSnapshotText(entry);
     }});
-  const documentTypeNodes = snapshotNodes
+  const documentTypeNodes = reuseExistingHostTree ? cachedHostCollections.documentTypeNodes : snapshotNodes
     .filter((entry) => entry && Number(entry.nodeType) === 10)
     .map((entry) => {{
       const existing = scriptNodeAliasesByIndex.get(entry.nodeIndex) || previousNodes.get(entry.nodeIndex);
@@ -1035,7 +1038,7 @@
   const templateContentsCache = globalThis.__glassTemplateContents instanceof Map
     ? globalThis.__glassTemplateContents
     : (globalThis.__glassTemplateContents = new Map());
-  const fragmentNodes = snapshotNodes
+  const fragmentNodes = reuseExistingHostTree ? cachedHostCollections.fragmentNodes : snapshotNodes
     .filter((entry) => entry && Number(entry.nodeType) === 11)
     .map((entry) => {{
       const hostIndex = entry.templateHostIndex == null ? null : Number(entry.templateHostIndex);
@@ -1048,13 +1051,15 @@
       if (hostIndex != null) templateContentsCache.set(hostIndex, fragment);
       return fragment;
     }});
-  const nodesByIndex = new Map([
-    ...elements.map((element) => [element.nodeIndex, element]),
-    ...textNodes.map((text) => [text.nodeIndex, text]),
-    ...commentNodes.map((comment) => [comment.nodeIndex, comment]),
-    ...documentTypeNodes.map((documentType) => [documentType.nodeIndex, documentType]),
-    ...fragmentNodes.map((fragment) => [fragment.nodeIndex, fragment]),
-  ]);
+  const nodesByIndex = reuseExistingHostTree
+    ? cachedHostCollections.nodesByIndex
+    : new Map([
+        ...elements.map((element) => [element.nodeIndex, element]),
+        ...textNodes.map((text) => [text.nodeIndex, text]),
+        ...commentNodes.map((comment) => [comment.nodeIndex, comment]),
+        ...documentTypeNodes.map((documentType) => [documentType.nodeIndex, documentType]),
+        ...fragmentNodes.map((fragment) => [fragment.nodeIndex, fragment]),
+      ]);
   // Script-created detached nodes are not in the document snapshot. Keep
   // their objects addressable across realm refreshes so detached subtrees
   // retain their children and can later be inserted into the live document.
@@ -1064,8 +1069,23 @@
       nodesByIndex.set(nodeIndex, node);
     }}
   }}
-  globalThis.__glassHostElements = elementsByIndex;
-  globalThis.__glassHostNodes = nodesByIndex;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("collections_ready");
+  const elementsByIndexView = new Map(elementsByIndex);
+  const nodesByIndexView = new Map(nodesByIndex);
+  globalThis.__glassHostElements = elementsByIndexView;
+  globalThis.__glassHostNodes = nodesByIndexView;
+  cachedHostCollections = {{
+    elements,
+    textNodes,
+    commentNodes,
+    documentTypeNodes,
+    fragmentNodes,
+    elementsByIndex,
+    nodesByIndex,
+    elementsByIndexView,
+    nodesByIndexView,
+  }};
   if (!reuseExistingHostTree) {{
     for (const element of elements) {{
       if (belongsToDetachedCreatedSubtree(element)) continue;
@@ -1113,6 +1133,8 @@
       }}
     }}
   }}
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("tree_linking_ready");
   globalThis.__glassApplyNativeCommand = (command) => {{
     if (!command || typeof command !== "object") throw new TypeError("native frame command must be an object");
     const current = globalThis.__glassHostNodes;
@@ -1211,6 +1233,7 @@
     }}
     return true;
   }};
+  if (!reuseExistingHostTree) {{
   for (const element of elements) {{
     if (!Object.prototype.hasOwnProperty.call(element, "parentElement")) {{
       Object.defineProperty(element, "parentElement", {{
@@ -1270,3 +1293,6 @@
       }});
     }}
   }}
+  }}
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("tree_accessors_ready");

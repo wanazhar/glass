@@ -2506,3 +2506,5 @@
   }})();
   globalThis.__glassDOMExceptionConstructor = DOMExceptionNative;
   globalThis.DOMException = DOMExceptionNative;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("document_apis_ready");

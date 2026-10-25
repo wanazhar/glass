@@ -1,5 +1,12 @@
 use super::*;
 
+static RUNTIME_DIAGNOSTIC_TRACE_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub(crate) fn runtime_diagnostic_trace_enabled() -> bool {
+    *RUNTIME_DIAGNOSTIC_TRACE_ENABLED
+        .get_or_init(|| std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").is_some())
+}
+
 /// Opt-in, privacy-safe timings for the content-process load pipeline. The
 /// trace intentionally records only the local IPC request number, fixed stage
 /// names, item counts and elapsed time; it never records a URL, response body,
@@ -56,6 +63,18 @@ fn trace_content_load_stage(
         bytes.push(b'\n');
         let _ = std::io::Write::write_all(&mut file, &bytes);
     }
+}
+
+pub(crate) fn record_content_load_measurement(name: &'static str, elapsed_us: u128, items: usize) {
+    trace_content_load_stage(
+        0,
+        name,
+        "complete",
+        Some(elapsed_us),
+        Some(items),
+        None,
+        None,
+    );
 }
 
 pub(crate) struct ContentLoadStage {

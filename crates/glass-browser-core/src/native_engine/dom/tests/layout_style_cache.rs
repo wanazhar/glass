@@ -33,6 +33,53 @@ fn layout_style_cache_reuses_cascade_and_matches_fresh_document() {
 }
 
 #[test]
+fn clear_file_input_invalidates_cached_validity_styles() {
+    let limits = NativeEngineLimits::default();
+    let source = "<style>input:valid{color:#123456} input:invalid{color:#abcdef}</style><input id=upload type=file required>";
+    let mut cached = NativeDocument::parse(source, &limits).unwrap();
+    let upload = cached.find_element_by_id("upload").unwrap();
+    {
+        let node = cached.node_mut(upload).unwrap();
+        node.state.value = Some(r"C:\fakepath\a.txt".into());
+        node.state.files.push(NativeFile {
+            name: "a.txt".into(),
+            media_type: "text/plain".into(),
+            last_modified: 0,
+            bytes: vec![1],
+        });
+    }
+    let valid_style = cached.computed_style_for_layout(upload);
+    assert_eq!(
+        valid_style.color(),
+        Some(NativeColor {
+            red: 0x12,
+            green: 0x34,
+            blue: 0x56,
+            alpha: u8::MAX,
+        })
+    );
+
+    cached
+        .apply_script_commands(&[NativeScriptCommand::ClearFileInput {
+            node_index: upload.index(),
+        }])
+        .unwrap();
+    let cleared_style = cached.computed_style_for_layout(upload);
+    let fresh = NativeDocument::parse(source, &limits).unwrap();
+    let fresh_upload = fresh.find_element_by_id("upload").unwrap();
+    assert_eq!(cleared_style, fresh.computed_style_for_layout(fresh_upload));
+    assert_eq!(
+        cleared_style.color(),
+        Some(NativeColor {
+            red: 0xab,
+            green: 0xcd,
+            blue: 0xef,
+            alpha: u8::MAX,
+        })
+    );
+}
+
+#[test]
 fn viewport_invalidation_clears_cache_and_clones_are_isolated() {
     let limits = NativeEngineLimits::default();
     let mut document = NativeDocument::parse(NESTED_STYLES, &limits).unwrap();

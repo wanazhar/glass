@@ -488,8 +488,8 @@ async fn refresh_health_detects_an_exited_content_worker() {
     let error = process
         .exchange(serde_json::json!({"kind":"health","id":1}))
         .await
-        .expect_err("an exited worker must report its exit status on the next exchange");
-    assert!(error.to_string().contains("content worker exit status"));
+        .expect_err("an exited worker must not receive another IPC request");
+    assert!(error.to_string().contains("already unhealthy"));
     assert_eq!(
         process.failure_kind(),
         Some(NativeWorkerFailureKind::Exited)

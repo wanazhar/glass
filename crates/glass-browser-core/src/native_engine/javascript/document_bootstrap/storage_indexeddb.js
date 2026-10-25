@@ -1041,3 +1041,5 @@
   globalThis.cancelAnimationFrame = cancelAnimationFrameNative;
   globalThis.requestIdleCallback = requestIdleCallbackNative;
   globalThis.cancelIdleCallback = cancelIdleCallbackNative;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("module_storage_indexeddb");

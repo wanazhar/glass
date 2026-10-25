@@ -4,13 +4,28 @@ use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
 pub(in crate::native_engine::content_process) fn encode_document_snapshot_base64(
     bytes: &[u8],
 ) -> String {
+    crate::native_engine::content_process::record_content_load_measurement(
+        "document_snapshot_raw_bytes",
+        0,
+        bytes.len(),
+    );
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
     if encoder.write_all(bytes).is_ok()
         && let Ok(compressed) = encoder.finish()
         && compressed.len() < bytes.len()
     {
+        crate::native_engine::content_process::record_content_load_measurement(
+            "document_snapshot_compressed_bytes",
+            0,
+            compressed.len(),
+        );
         return base64::engine::general_purpose::STANDARD.encode(compressed);
     }
+    crate::native_engine::content_process::record_content_load_measurement(
+        "document_snapshot_uncompressed_bytes",
+        0,
+        bytes.len(),
+    );
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
@@ -18,12 +33,22 @@ pub(in crate::native_engine::content_process) fn decode_document_snapshot_base64
     encoded: &str,
     operation: &str,
 ) -> Result<Vec<u8>, NativeEngineError> {
+    crate::native_engine::content_process::record_content_load_measurement(
+        "document_snapshot_base64_chars",
+        0,
+        encoded.len(),
+    );
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .map_err(|_| NativeEngineError::Worker {
             operation: operation.into(),
             reason: "content process returned an invalid document snapshot".into(),
         })?;
+    crate::native_engine::content_process::record_content_load_measurement(
+        "document_snapshot_transport_bytes",
+        0,
+        bytes.len(),
+    );
     let is_zlib = bytes.get(..2).is_some_and(|header| {
         header[0] == 0x78 && u16::from_be_bytes([header[0], header[1]]) % 31 == 0
     });
@@ -35,6 +60,11 @@ pub(in crate::native_engine::content_process) fn decode_document_snapshot_base64
                 bytes.len(),
             ));
         }
+        crate::native_engine::content_process::record_content_load_measurement(
+            "document_snapshot_decoded_bytes",
+            0,
+            bytes.len(),
+        );
         return Ok(bytes);
     }
 
@@ -49,12 +79,22 @@ pub(in crate::native_engine::content_process) fn decode_document_snapshot_base64
             reason: "content process returned a malformed compressed document snapshot".into(),
         })?;
     if decoded.len() > MAX_CONTENT_DOCUMENT_WIRE_BYTES {
+        crate::native_engine::content_process::record_content_load_measurement(
+            "document_snapshot_decoded_bytes",
+            0,
+            decoded.len(),
+        );
         return Err(NativeEngineError::limit(
             "content-process document snapshot",
             MAX_CONTENT_DOCUMENT_WIRE_BYTES,
             decoded.len(),
         ));
     }
+    crate::native_engine::content_process::record_content_load_measurement(
+        "document_snapshot_decoded_bytes",
+        0,
+        decoded.len(),
+    );
     Ok(decoded)
 }
 

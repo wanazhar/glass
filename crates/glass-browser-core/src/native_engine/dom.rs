@@ -74,6 +74,9 @@ mod forms;
 mod forms_api;
 #[path = "dom/layout_style.rs"]
 mod layout_style;
+pub(crate) use layout_style::{
+    reset_layout_text_metrics_diagnostic, take_layout_text_metrics_diagnostic,
+};
 #[path = "dom/parser.rs"]
 mod parser;
 #[path = "dom/script_mutations.rs"]

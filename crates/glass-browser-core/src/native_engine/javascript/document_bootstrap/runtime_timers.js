@@ -3,6 +3,19 @@
   let cachedGeometrySnapshot = null;
   let cachedGeometryMap = null;
   let cachedMutationShadow = null;
+  // Kept in the installer closure so page script cannot replace the cached
+  // node collections. Reuse still requires the native exact-state key and
+  // host-map coverage checks in detached_nodes_and_snapshots.js.
+  let cachedHostCollections = null;
+  // Canvas resource snapshots can contain base64 encoded image pixels. Keep
+  // their decoded representations private to the installer and reuse them
+  // while the immutable snapshot arrays are unchanged.
+  let cachedCanvasLiveIndexSource = null;
+  let cachedCanvasLiveIndexes = null;
+  let cachedCanvasResourceSource = null;
+  let cachedCanvasResources = null;
+  let cachedCanvasImageResourceSource = null;
+  let cachedCanvasImageResources = null;
   return (__glassHostViewJson) => {{
   const host = JSON.parse(__glassHostViewJson);
   if (host.reuse_state) {{
@@ -31,6 +44,8 @@
   globalThis.__glassMessageRealmKey = "page:" + String(host.context_id || "native");
   const initialPageCryptoBytes = bootstrapParams.initialPageCryptoBytes;
   const state = host.state;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("json_state_parsed");
   const reuseCachedHostSnapshotState = Boolean(
     host.reuse_state && cachedHostState !== null && state === cachedHostState,
   );
@@ -443,3 +458,5 @@
   const cancelIdleCallbackNative = (id) => {{
     idleCallbacks.delete(Number(id));
   }};
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("module_runtime_timers");

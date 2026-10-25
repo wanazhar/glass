@@ -412,3 +412,5 @@
       && typeof globalThis.XMLHttpRequest.prototype === "object") {{
     try {{ Object.setPrototypeOf(globalThis.XMLHttpRequest.prototype, EventTargetNative.prototype); }} catch (_error) {{}}
   }}
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("module_event_objects_encoding");

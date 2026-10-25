@@ -357,7 +357,27 @@ impl NativeLayoutSnapshot {
             0,
             "native_layout_tree_build",
         );
+        super::dom::reset_layout_text_metrics_diagnostic();
+        super::font::reset_layout_text_width_diagnostic();
         let flow = builder.layout_children(document.root(), 0, 0, viewport.width, 0);
+        let (text_metrics_calls, text_metrics_elapsed_us) =
+            super::dom::take_layout_text_metrics_diagnostic();
+        if text_metrics_calls > 0 {
+            crate::native_engine::content_process::record_content_load_measurement(
+                "native_layout_text_metrics",
+                text_metrics_elapsed_us,
+                text_metrics_calls,
+            );
+        }
+        let (text_width_calls, text_width_elapsed_us) =
+            super::font::take_layout_text_width_diagnostic();
+        if text_width_calls > 0 {
+            crate::native_engine::content_process::record_content_load_measurement(
+                "native_layout_text_width",
+                text_width_elapsed_us,
+                text_width_calls,
+            );
+        }
         build_stage.finish(Some(builder.boxes.len()));
         let boxes_by_node = builder
             .boxes

@@ -2556,3 +2556,5 @@
       ? snapshotElementFromEntry(frameContext.frameElement)
       : null;
   }}
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("frames_ready");

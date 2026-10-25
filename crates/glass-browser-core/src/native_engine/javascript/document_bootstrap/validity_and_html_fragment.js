@@ -751,3 +751,5 @@
   if (!Number.isSafeInteger(globalThis.__glassNextTemporaryNodeIndex)) {{
     globalThis.__glassNextTemporaryNodeIndex = 4294967294;
   }}
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("module_validity_html_fragment");

@@ -1094,3 +1094,5 @@
   globalThis.__glassFetchRequests = fetchRequests;
   globalThis.__glassNextFetchRequestId = nextFetchRequestId;
   globalThis.fetch = fetchNative;
+  if (typeof globalThis.__glassNativeHostViewMark === "function")
+    globalThis.__glassNativeHostViewMark("module_response_xhr");

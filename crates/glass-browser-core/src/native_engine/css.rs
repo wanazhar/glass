@@ -2391,105 +2391,196 @@ impl NativeAutoEdges {
     }
 }
 
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    value == &T::default()
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub(crate) struct NativeComputedStyle {
+    #[serde(skip_serializing_if = "is_default")]
     display: DisplayValue,
+    #[serde(skip_serializing_if = "is_default")]
     position: NativePositionValue,
+    #[serde(skip_serializing_if = "is_default")]
     z_index: NativeZIndexValue,
+    #[serde(skip_serializing_if = "is_default")]
     pointer_events: NativePointerEventsValue,
+    #[serde(skip_serializing_if = "is_default")]
     top: NativePositionOffset,
+    #[serde(skip_serializing_if = "is_default")]
     right: NativePositionOffset,
+    #[serde(skip_serializing_if = "is_default")]
     bottom: NativePositionOffset,
+    #[serde(skip_serializing_if = "is_default")]
     left: NativePositionOffset,
+    #[serde(skip_serializing_if = "is_default")]
     grid_template_columns: NativeGridTrackList,
+    #[serde(skip_serializing_if = "is_default")]
     grid_template_rows: NativeGridTrackList,
+    #[serde(skip_serializing_if = "is_default")]
     visibility_hidden: bool,
+    #[serde(skip_serializing_if = "is_default")]
     opacity: Option<u8>,
+    #[serde(skip_serializing_if = "is_default")]
     white_space: WhiteSpaceValue,
+    #[serde(skip_serializing_if = "is_default")]
     text_align: TextAlignValue,
+    #[serde(skip_serializing_if = "is_default")]
     text_align_last: TextAlignLastValue,
+    #[serde(skip_serializing_if = "is_default")]
     text_justify: TextJustifyValue,
+    #[serde(skip_serializing_if = "is_default")]
     justify_content: JustifyContentValue,
+    #[serde(skip_serializing_if = "is_default")]
     align_items: AlignItemsValue,
+    #[serde(skip_serializing_if = "is_default")]
     align_self: AlignSelfValue,
+    #[serde(skip_serializing_if = "is_default")]
     align_content: AlignContentValue,
+    #[serde(skip_serializing_if = "is_default")]
     flex_direction: FlexDirectionValue,
+    #[serde(skip_serializing_if = "is_default")]
     direction: DirectionValue,
+    #[serde(skip_serializing_if = "is_default")]
     flex_wrap: FlexWrapValue,
+    #[serde(skip_serializing_if = "is_default")]
     flex_item_order: NativeOrderValue,
+    #[serde(skip_serializing_if = "is_default")]
     flex_grow: u32,
+    #[serde(skip_serializing_if = "is_default")]
     flex_shrink: u32,
+    #[serde(skip_serializing_if = "is_default")]
     flex_basis: FlexBasisValue,
+    #[serde(skip_serializing_if = "is_default")]
     text_decoration: TextDecorationValue,
+    #[serde(skip_serializing_if = "is_default")]
     text_decoration_style: NativeTextDecorationStyle,
+    #[serde(skip_serializing_if = "is_default")]
     text_decoration_skip_ink: NativeTextDecorationSkipInk,
+    #[serde(skip_serializing_if = "is_default")]
     text_decoration_skip_spaces: NativeTextDecorationSkipSpaces,
+    #[serde(skip_serializing_if = "is_default")]
     text_decoration_thickness: u32,
+    #[serde(skip_serializing_if = "is_default")]
     text_underline_offset: i32,
+    #[serde(skip_serializing_if = "is_default")]
     text_decoration_color: Option<NativeColor>,
+    #[serde(skip_serializing_if = "is_default")]
     text_transform: TextTransformValue,
     #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
     font_variant_ligatures: NativeFontVariantLigatures,
     #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
     font_variant_caps: NativeFontVariantCaps,
     #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
     font_variant_position: NativeFontVariantPosition,
     #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
     font_variant_alternates: NativeFontVariantAlternates,
     #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
     font_language_override: NativeFontLanguageOverride,
     #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
     font_variation_settings: NativeFontVariationSettings,
     #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
     font_variant_east_asian: NativeFontVariantEastAsian,
     #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
     font_variant_numeric: NativeFontVariantNumeric,
     #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
     font_feature_settings: NativeFontFeatureSettings,
     #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
     font_kerning: NativeFontKerning,
     #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
     font_optical_sizing: NativeFontOpticalSizing,
     #[serde(default)]
+    #[serde(skip_serializing_if = "is_default")]
     font_palette: NativeFontPalette,
+    #[serde(skip_serializing_if = "is_default")]
     font_weight: FontWeightValue,
+    #[serde(skip_serializing_if = "is_default")]
     font_style: FontStyleValue,
+    #[serde(skip_serializing_if = "is_default")]
     font_stretch: NativeFontStretchRange,
+    #[serde(skip_serializing_if = "is_default")]
     font_family: NativeFontFamilyList,
+    #[serde(skip_serializing_if = "is_default")]
     font_size: u32,
+    #[serde(skip_serializing_if = "is_default")]
     word_break: WordBreakValue,
+    #[serde(skip_serializing_if = "is_default")]
     text_overflow: TextOverflowValue,
+    #[serde(skip_serializing_if = "is_default")]
     vertical_align: VerticalAlignValue,
+    #[serde(skip_serializing_if = "is_default")]
     text_indent: u32,
+    #[serde(skip_serializing_if = "is_default")]
     word_spacing: u32,
+    #[serde(skip_serializing_if = "is_default")]
     letter_spacing: u32,
+    #[serde(skip_serializing_if = "is_default")]
     gap: u32,
+    #[serde(skip_serializing_if = "is_default")]
     row_gap: u32,
+    #[serde(skip_serializing_if = "is_default")]
     width: Option<u32>,
+    #[serde(skip_serializing_if = "is_default")]
     height: Option<u32>,
+    #[serde(skip_serializing_if = "is_default")]
     min_width: Option<u32>,
+    #[serde(skip_serializing_if = "is_default")]
     max_width: Option<u32>,
+    #[serde(skip_serializing_if = "is_default")]
     min_height: Option<u32>,
+    #[serde(skip_serializing_if = "is_default")]
     max_height: Option<u32>,
+    #[serde(skip_serializing_if = "is_default")]
     line_height: Option<u32>,
+    #[serde(skip_serializing_if = "is_default")]
     background_color: Option<NativeColor>,
+    #[serde(skip_serializing_if = "is_default")]
     background_image: Option<u32>,
+    #[serde(skip_serializing_if = "is_default")]
     background_repeat: NativeBackgroundRepeat,
+    #[serde(skip_serializing_if = "is_default")]
     background_position: NativeBackgroundPosition,
+    #[serde(skip_serializing_if = "is_default")]
     background_size: NativeBackgroundSize,
+    #[serde(skip_serializing_if = "is_default")]
     border: Option<NativeBorder>,
+    #[serde(skip_serializing_if = "is_default")]
     border_colors: Option<[NativeColor; 4]>,
+    #[serde(skip_serializing_if = "is_default")]
     border_widths: [u32; 4],
+    #[serde(skip_serializing_if = "is_default")]
     border_styles: [NativeBorderStyleValue; 4],
+    #[serde(skip_serializing_if = "is_default")]
     border_radius: NativeBorderRadius,
+    #[serde(skip_serializing_if = "is_default")]
     padding: NativeBoxEdges,
+    #[serde(skip_serializing_if = "is_default")]
     margin: NativeBoxEdges,
+    #[serde(skip_serializing_if = "is_default")]
     margin_auto: NativeAutoEdges,
+    #[serde(skip_serializing_if = "is_default")]
     box_sizing: NativeBoxSizing,
+    #[serde(skip_serializing_if = "is_default")]
     color: Option<NativeColor>,
+    #[serde(skip_serializing_if = "is_default")]
     overflow_x: OverflowValue,
+    #[serde(skip_serializing_if = "is_default")]
     overflow_y: OverflowValue,
+    #[serde(skip_serializing_if = "is_default")]
     overflow_clip_x: bool,
+    #[serde(skip_serializing_if = "is_default")]
     overflow_clip_y: bool,
 }
 

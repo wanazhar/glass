@@ -237,6 +237,8 @@ pub struct Agent<'a> {
     /// no credentials, so the warmer is injected rather than built.
     pub warmer: Option<&'a Warmer>,
     stream_factory: Option<crate::warmer::ProviderFactory>,
+    active_trace_id: Option<u64>,
+    runtime_turn_hash: Option<String>,
     recovering: bool,
     read_only: bool,
     automatic_memory: bool,
@@ -390,6 +392,8 @@ impl<'a> Agent<'a> {
             reads: readguard::ReadSet::new(),
             warmer: None,
             stream_factory: None,
+            active_trace_id: None,
+            runtime_turn_hash: None,
             recovering: false,
             read_only: false,
             automatic_memory: true,
@@ -492,6 +496,11 @@ impl<'a> Agent<'a> {
     }
     pub fn with_stream_factory(mut self, factory: crate::warmer::ProviderFactory) -> Self {
         self.stream_factory = Some(factory);
+        self
+    }
+
+    pub(crate) fn with_runtime_turn(mut self, turn: &serde_json::Value) -> Self {
+        self.runtime_turn_hash = Some(crate::hashing::sha256(turn.to_string().as_bytes()));
         self
     }
 
@@ -738,6 +747,15 @@ impl<'a> Agent<'a> {
         &mut self,
         mut pump: impl FnMut(&mut Option<String>),
     ) -> Result<TurnOutput, provider::Error> {
+        let trace_id = crate::requests::next_trace_id();
+        let preparation_started = std::time::Instant::now();
+        crate::requests::diagnostic_phase(
+            trace_id,
+            "agent",
+            "provider_request_prepare_begin",
+            None,
+            self.runtime_turn_hash.as_deref(),
+        );
         if let Some(error) = &self.checklist_error {
             return Err(provider::Error::Config(error.clone()));
         }
@@ -831,7 +849,20 @@ impl<'a> Agent<'a> {
             ))
         })?;
 
-        let mut trace = crate::requests::Trace::begin(self.session, &req);
+        crate::requests::diagnostic_phase(
+            trace_id,
+            "agent",
+            "provider_request_prepare_complete",
+            Some(preparation_started.elapsed().as_micros()),
+            self.runtime_turn_hash.as_deref(),
+        );
+        let mut trace = crate::requests::Trace::begin_correlated(
+            self.session,
+            &req,
+            trace_id,
+            self.runtime_turn_hash.clone(),
+        );
+        self.active_trace_id = Some(trace.trace_id());
         trace.pricing(self.provider.rate_card());
         self.emit(Progress::Waiting);
         // Durable coordinate for the retries of this request. Captured before
@@ -1044,6 +1075,12 @@ impl<'a> Agent<'a> {
                     None => break,
                 }
             };
+            if let Some(event) = ev.as_ref() {
+                // This is when the Agent consumes a provider stream item. For
+                // the worker-backed path it includes bounded-channel queue
+                // time, but excludes input pumping and event handling below.
+                trace.stream_event_received(event);
+            }
             // Drain input on every event: streaming is the one place the loop
             // is busy but not blocked, so it is the right place to notice a
             // steer without spinning when there is nothing to read.
@@ -1458,6 +1495,7 @@ impl<'a> Agent<'a> {
 
             // Validation is separate from execution errors: reject a malformed
             // batch before any side effect, resolve every call, then re-ask.
+            let tool_validation_started = std::time::Instant::now();
             let schemas = repair_tools.get_or_insert_with(|| {
                 let mut tools = self.tool_set();
                 for (name, description, schema) in self.extensions.declared_tools().0 {
@@ -1480,6 +1518,15 @@ impl<'a> Agent<'a> {
                 .iter()
                 .map(|call| crate::tool_repair::validate(call, schemas).err())
                 .collect();
+            if let Some(trace_id) = self.active_trace_id {
+                crate::requests::diagnostic_phase(
+                    trace_id,
+                    "agent",
+                    "tool_validation_complete",
+                    Some(tool_validation_started.elapsed().as_micros()),
+                    self.runtime_turn_hash.as_deref(),
+                );
+            }
             if errors.iter().any(Option::is_some) {
                 repairs += 1;
                 let exhausted = repairs > crate::tool_repair::MAX_REPAIRS;
@@ -1531,6 +1578,16 @@ impl<'a> Agent<'a> {
             // plan, not from hope: same-path writes are serialized, destructive
             // commands run alone, and results are reassembled in call order so
             // the transcript is identical to a sequential run.
+            let tool_intent_started = std::time::Instant::now();
+            if let Some(trace_id) = self.active_trace_id {
+                crate::requests::diagnostic_phase(
+                    trace_id,
+                    "agent",
+                    "tool_intent_recording_begin",
+                    None,
+                    self.runtime_turn_hash.as_deref(),
+                );
+            }
             let mut executable = Vec::new();
             for call in &out.tool_calls {
                 let cached = if recovery_results.is_empty() {
@@ -1573,11 +1630,39 @@ impl<'a> Agent<'a> {
                     executable.push(executable_call);
                 }
             }
+            if let Some(trace_id) = self.active_trace_id {
+                crate::requests::diagnostic_phase(
+                    trace_id,
+                    "agent",
+                    "tool_intent_recording_complete",
+                    Some(tool_intent_started.elapsed().as_micros()),
+                    self.runtime_turn_hash.as_deref(),
+                );
+            }
             // Beyond this first valid batch, identical calls are intentional
             // fresh reads/checks and must observe current workspace state.
             recovery_results.clear();
             self.recovering = false;
+            let tool_batch_started = std::time::Instant::now();
+            if let Some(trace_id) = self.active_trace_id {
+                crate::requests::diagnostic_phase(
+                    trace_id,
+                    "agent",
+                    "tool_batch_begin",
+                    None,
+                    self.runtime_turn_hash.as_deref(),
+                );
+            }
             self.run_tool_batch(&executable, &mut |slot| pump(slot));
+            if let Some(trace_id) = self.active_trace_id {
+                crate::requests::diagnostic_phase(
+                    trace_id,
+                    "agent",
+                    "tool_batch_complete",
+                    Some(tool_batch_started.elapsed().as_micros()),
+                    self.runtime_turn_hash.as_deref(),
+                );
+            }
             if self.steer.is_none() {
                 for record in std::mem::take(&mut self.host_attachments) {
                     self.session.append(record);

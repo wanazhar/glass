@@ -7,8 +7,56 @@ use serde::{Deserialize, Serialize};
 use std::{
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::Instant,
 };
+
+static NEXT_TRACE_ID: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn next_trace_id() -> u64 {
+    NEXT_TRACE_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+pub(crate) fn diagnostic_phase(
+    trace_id: u64,
+    workflow: &str,
+    phase: &str,
+    elapsed_us: Option<u128>,
+    runtime_turn_hash: Option<&str>,
+) {
+    let Some(trace_path) = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE") else {
+        return;
+    };
+    let trace_path = PathBuf::from(trace_path).with_extension("provider.jsonl");
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&trace_path)
+    else {
+        return;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = file.metadata() {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o600);
+            let _ = file.set_permissions(permissions);
+        }
+    }
+    let record = serde_json::json!({
+        "component": "core_provider",
+        "phase": phase,
+        "trace_id": trace_id,
+        "elapsed_us": elapsed_us,
+        "workflow": workflow
+    });
+    let mut record = record;
+    if let Some(runtime_turn_hash) = runtime_turn_hash {
+        record["runtime_turn_hash"] = serde_json::json!(runtime_turn_hash);
+    }
+    let _ = writeln!(file, "{record}");
+}
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     model: String,
@@ -144,6 +192,8 @@ impl Snapshot {
     }
 }
 pub struct Trace {
+    trace_id: u64,
+    runtime_turn_hash: Option<String>,
     path: PathBuf,
     background: bool,
     workflow: &'static str,
@@ -163,27 +213,57 @@ pub struct Trace {
 }
 impl Trace {
     pub fn begin(session: &Session, req: &Request<'_>) -> Self {
-        Self::at(&session.path, req, false)
+        Self::at(&session.path, req, false, "agent", next_trace_id(), None)
+    }
+    pub(crate) fn begin_correlated(
+        session: &Session,
+        req: &Request<'_>,
+        trace_id: u64,
+        runtime_turn_hash: Option<String>,
+    ) -> Self {
+        Self::at(
+            &session.path,
+            req,
+            false,
+            "agent",
+            trace_id,
+            runtime_turn_hash,
+        )
     }
     pub fn compaction(session: &Session, req: &Request<'_>) -> Self {
-        let mut trace = Self::at(&session.path, req, false);
-        trace.workflow = "compaction";
+        let mut trace = Self::at(
+            &session.path,
+            req,
+            false,
+            "compaction",
+            next_trace_id(),
+            None,
+        );
         trace.raw_record = Some(session.log_len());
         trace
     }
     pub fn background(path: &Path, req: &Request<'_>) -> Self {
-        Self::at(path, req, true)
+        Self::at(path, req, true, "cache_warmer", next_trace_id(), None)
     }
-    fn at(path: &Path, req: &Request<'_>, background: bool) -> Self {
+    fn at(
+        path: &Path,
+        req: &Request<'_>,
+        background: bool,
+        workflow: &'static str,
+        trace_id: u64,
+        runtime_turn_hash: Option<String>,
+    ) -> Self {
         let snapshot = Snapshot::capture(req);
         let previous = bounded(&path.with_extension("request-last.json"), 256 * 1024)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Snapshot>(&bytes).ok());
         let delta = snapshot.delta(previous.as_ref());
         Self {
+            trace_id,
+            runtime_turn_hash,
             path: path.to_owned(),
             background,
-            workflow: if background { "cache_warmer" } else { "agent" },
+            workflow,
             raw_record: None,
             rate: None,
             serving_model: None,
@@ -198,6 +278,20 @@ impl Trace {
             snapshot,
             delta,
         }
+        .with_diagnostic_start()
+    }
+    fn with_diagnostic_start(self) -> Self {
+        diagnostic_phase(
+            self.trace_id,
+            self.workflow,
+            "provider_request_begin",
+            None,
+            self.runtime_turn_hash.as_deref(),
+        );
+        self
+    }
+    pub fn trace_id(&self) -> u64 {
+        self.trace_id
     }
     pub fn pricing(&mut self, rate: Option<crate::pricing::RateCard>) {
         self.rate = rate;
@@ -210,8 +304,7 @@ impl Trace {
         self.retries += 1;
     }
     pub fn event(&mut self, event: &Event) {
-        self.first_event
-            .get_or_insert_with(|| self.started.elapsed().as_millis());
+        self.stream_event_received(event);
         match event {
             Event::Text(t) => self.text_bytes += t.len(),
             Event::Reasoning(t) => self.reasoning_bytes += t.len(),
@@ -223,6 +316,27 @@ impl Trace {
             Event::Error(e) => self.outcome = crate::live::sanitize_provider_detail(e),
             _ => {}
         }
+        if matches!(event, Event::Done) {
+            diagnostic_phase(
+                self.trace_id,
+                self.workflow,
+                "provider_stream_complete",
+                Some(self.started.elapsed().as_micros()),
+                self.runtime_turn_hash.as_deref(),
+            );
+        }
+    }
+    pub fn stream_event_received(&mut self, _event: &Event) {
+        if self.first_event.is_none() {
+            self.first_event = Some(self.started.elapsed().as_millis());
+            diagnostic_phase(
+                self.trace_id,
+                self.workflow,
+                "provider_first_stream_event",
+                Some(self.started.elapsed().as_micros()),
+                self.runtime_turn_hash.as_deref(),
+            );
+        }
     }
     pub fn outcome(&mut self, outcome: &str) {
         self.outcome = outcome.into();
@@ -230,6 +344,13 @@ impl Trace {
 }
 impl Drop for Trace {
     fn drop(&mut self) {
+        diagnostic_phase(
+            self.trace_id,
+            self.workflow,
+            "provider_request_complete",
+            Some(self.started.elapsed().as_micros()),
+            self.runtime_turn_hash.as_deref(),
+        );
         let usage=self.usage.map(|u|serde_json::json!({"input":u.input,"cache_read":u.cache_read,"cache_write":u.cache_write,"output":u.output}));
         let report = serde_json::json!({"kind":self.workflow,"raw_record_at_request":self.raw_record,"cost_usd":self.rate.zip(self.usage).map(|(rate,usage)|rate.cost(&usage)),"model_requested":self.snapshot.model,"model_served":self.serving_model,"elapsed_ms":self.started.elapsed().as_millis(),"first_event_ms":self.first_event,
             "text_bytes":self.text_bytes,"reasoning_bytes":self.reasoning_bytes,"tool_calls":self.calls,"transport_retries":self.retries,"outcome":self.outcome,

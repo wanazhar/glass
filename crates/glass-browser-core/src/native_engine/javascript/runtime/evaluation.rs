@@ -236,6 +236,8 @@ impl NativeJavaScriptRuntime {
                     "javascript_host_view_eval",
                 )
             });
+            let host_view_phase_markers =
+                crate::native_engine::content_process::runtime_diagnostic_trace_enabled();
             if let Ok(mut current) = self.deadline.lock() {
                 *current = Some(Instant::now() + NATIVE_HOST_VIEW_TIMEOUT);
             }
@@ -279,7 +281,67 @@ impl NativeJavaScriptRuntime {
                         installer
                     }
                 };
-                installer
+                if host_view_phase_markers {
+                    let last = Arc::new(Mutex::new(Instant::now()));
+                    let marker = Function::new(ctx.clone(), move |phase: String| -> bool {
+                        let stage = match phase.as_str() {
+                            "json_state_parsed" => "javascript_host_view_phase_json_state",
+                            "tree_admission_checked" => "javascript_host_view_phase_tree_admission",
+                            "collections_ready" => "javascript_host_view_phase_collections",
+                            "tree_linking_ready" => "javascript_host_view_phase_tree_linking",
+                            "tree_accessors_ready" => "javascript_host_view_phase_tree_accessors",
+                            "document_apis_ready" => "javascript_host_view_phase_document_apis",
+                            "custom_elements_ready" => "javascript_host_view_phase_custom_elements",
+                            "frames_ready" => "javascript_host_view_phase_frames",
+                            "installer_complete" => "javascript_host_view_phase_complete",
+                            "module_runtime_timers" => "javascript_host_view_module_runtime_timers",
+                            "module_storage_indexeddb" => "javascript_host_view_module_storage_indexeddb",
+                            "module_fetch_requests" => "javascript_host_view_module_fetch_requests",
+                            "module_fetch_streams" => "javascript_host_view_module_fetch_streams",
+                            "module_response_xhr" => "javascript_host_view_module_response_xhr",
+                            "module_websocket_eventsource" => "javascript_host_view_module_websocket_eventsource",
+                            "module_fetch_timer_dispatch" => "javascript_host_view_module_fetch_timer_dispatch",
+                            "module_event_listeners" => "javascript_host_view_module_event_listeners",
+                            "module_event_objects_encoding" => "javascript_host_view_module_event_objects_encoding",
+                            "module_mutation_observers" => "javascript_host_view_module_mutation_observers",
+                            "module_validity_html_fragment" => "javascript_host_view_module_validity_html_fragment",
+                            "module_attribute_nodes" => "javascript_host_view_module_attribute_nodes",
+                            "module_native_elements" => "javascript_host_view_module_native_elements",
+                            "fetch_phase_forms" => "javascript_host_view_fetch_phase_forms",
+                            "fetch_phase_search_params" => "javascript_host_view_fetch_phase_search_params",
+                            "fetch_phase_url" => "javascript_host_view_fetch_phase_url",
+                            "fetch_phase_headers" => "javascript_host_view_fetch_phase_headers",
+                            "fetch_phase_request" => "javascript_host_view_fetch_phase_request",
+                            "fetch_phase_abort" => "javascript_host_view_fetch_phase_abort",
+                            "fetch_phase_dispatch" => "javascript_host_view_fetch_phase_dispatch",
+                            "canvas_phase_live_indexes" => "javascript_host_view_canvas_phase_live_indexes",
+                            "canvas_phase_canvas_resources" => "javascript_host_view_canvas_phase_canvas_resources",
+                            "canvas_phase_image_resources" => "javascript_host_view_canvas_phase_image_resources",
+                            _ => return false,
+                        };
+                        let Ok(mut previous) = last.lock() else {
+                            return false;
+                        };
+                        let now = Instant::now();
+                        let elapsed_us = now.duration_since(*previous).as_micros();
+                        *previous = now;
+                        crate::native_engine::content_process::record_content_load_measurement(
+                            stage, elapsed_us, 1,
+                        );
+                        true
+                    })
+                    .map_err(|_| NativeEngineError::Worker {
+                        operation: "install native host-view diagnostic".into(),
+                        reason: "native host-view diagnostic callback could not be installed".into(),
+                    })?;
+                    ctx.globals()
+                        .set("__glassNativeHostViewMark", marker)
+                        .map_err(|_| NativeEngineError::Worker {
+                            operation: "publish native host-view diagnostic".into(),
+                            reason: "native host-view diagnostic callback could not be published".into(),
+                        })?;
+                }
+                let installation = installer
                     .call::<_, ()>((bootstrap.host_state_json.as_str(),))
                     .map_err(|error| NativeEngineError::Worker {
                         operation: "install JavaScript host snapshot".into(),
@@ -287,7 +349,13 @@ impl NativeJavaScriptRuntime {
                             "native JavaScript host snapshot could not be installed: {}",
                             CaughtError::from_error(&ctx, error)
                         ),
-                    })
+                    });
+                if host_view_phase_markers {
+                    let _ = ctx
+                        .globals()
+                        .remove("__glassNativeHostViewMark");
+                }
+                installation
             })();
             if let Some(stage) = host_view_stage {
                 if host_view_result.is_ok() {
@@ -314,10 +382,34 @@ impl NativeJavaScriptRuntime {
                 dispatch_page_payload(ctx.clone(), dispatch)?;
             }
             let mut top_level_await_pending = false;
-            let (value, async_evaluation): (Value, bool) = match ctx.eval::<Value, _>(source) {
+            let page_source_eval_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE")
+                .map(|_| {
+                    crate::native_engine::content_process::ContentLoadStage::begin(
+                        0,
+                        "javascript_page_source_eval",
+                    )
+                });
+            let page_source_evaluation = ctx.eval::<Value, _>(source);
+            if let Some(stage) = page_source_eval_stage {
+                stage.finish(Some(source.len()));
+            }
+            let (value, async_evaluation): (Value, bool) = match page_source_evaluation {
                 Ok(value) => (value, false),
                 Err(_) if contains_await_token(source) => {
-                    let promise = ctx.eval_promise(source).map_err(|error| {
+                    let page_promise_eval_stage = std::env::var_os(
+                        "GLASS_RUNTIME_DIAGNOSTIC_TRACE",
+                    )
+                    .map(|_| {
+                        crate::native_engine::content_process::ContentLoadStage::begin(
+                            0,
+                            "javascript_page_promise_eval",
+                        )
+                    });
+                    let promise_evaluation = ctx.eval_promise(source);
+                    if let Some(stage) = page_promise_eval_stage {
+                        stage.finish(Some(source.len()));
+                    }
+                    let promise = promise_evaluation.map_err(|error| {
                         NativeEngineError::Worker {
                             operation: "evaluate JavaScript".into(),
                             reason: format!(
@@ -375,10 +467,24 @@ impl NativeJavaScriptRuntime {
                     // the bounded QuickJS job queue once before classifying
                     // it as genuinely host-pending; network-backed promises
                     // remain pending and continue through the host loop.
+                    let pending_job_stage = std::env::var_os(
+                        "GLASS_RUNTIME_DIAGNOSTIC_TRACE",
+                    )
+                    .map(|_| {
+                        crate::native_engine::content_process::ContentLoadStage::begin(
+                            0,
+                            "javascript_page_await_pending_jobs",
+                        )
+                    });
+                    let mut pending_job_count: usize = 0;
                     for _ in 0..MAX_NATIVE_MODULE_IMPORTS {
                         if !ctx.execute_pending_job() {
                             break;
                         }
+                        pending_job_count = pending_job_count.saturating_add(1);
+                    }
+                    if let Some(stage) = pending_job_stage {
+                        stage.finish(Some(pending_job_count));
                     }
                     match promise.finish::<Value>() {
                         Ok(value) => (value, true),
@@ -431,10 +537,21 @@ impl NativeJavaScriptRuntime {
                 operation: "queue native intersection observers".into(),
                 reason: "native intersection observers could not be scheduled".into(),
             })?;
+            let pending_job_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+                crate::native_engine::content_process::ContentLoadStage::begin(
+                    0,
+                    "javascript_page_pending_jobs",
+                )
+            });
+            let mut pending_job_count: usize = 0;
             for _ in 0..MAX_NATIVE_MODULE_IMPORTS {
                 if !ctx.execute_pending_job() {
                     break;
                 }
+                pending_job_count = pending_job_count.saturating_add(1);
+            }
+            if let Some(stage) = pending_job_stage {
+                stage.finish(Some(pending_job_count));
             }
             for (event_type, cancelable, reasons) in [
                 (

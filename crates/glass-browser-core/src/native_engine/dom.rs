@@ -1050,11 +1050,15 @@ pub struct NativeDocument {
 
 /// Per-document memo of cascade results for layout queries. It is derived
 /// state: clones get an independent copy, while document equality ignores it.
+type CachedNativeScriptSnapshot = (u64, u64, usize, Viewport, NativeScriptDocumentSnapshot);
+
 #[derive(Debug, Default)]
 struct NativeLayoutStyleCache(
     Mutex<HashMap<NativeNodeId, NativeComputedStyle>>,
     Mutex<HashMap<NativeNodeId, Arc<BTreeMap<u64, String>>>>,
     Mutex<Option<NativeLayoutSnapshot>>,
+    Mutex<u64>,
+    Mutex<Option<CachedNativeScriptSnapshot>>,
 );
 
 impl Clone for NativeLayoutStyleCache {
@@ -1074,10 +1078,16 @@ impl Clone for NativeLayoutStyleCache {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
+        let snapshot_generation = *self
+            .3
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         Self(
             Mutex::new(styles),
             Mutex::new(custom_properties),
             Mutex::new(layout),
+            Mutex::new(snapshot_generation),
+            Mutex::new(None),
         )
     }
 }
@@ -1104,6 +1114,62 @@ impl NativeLayoutStyleCache {
             .2
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        self.invalidate_script_snapshot();
+    }
+
+    fn invalidate_script_snapshot(&self) {
+        let mut generation = self
+            .3
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *generation = generation.wrapping_add(1);
+        *self
+            .4
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    fn script_snapshot(
+        &self,
+        revision: u64,
+        max_text_bytes: usize,
+        viewport: Viewport,
+    ) -> Option<NativeScriptDocumentSnapshot> {
+        let generation = *self
+            .3
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.4
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .filter(
+                |(cached_revision, cached_generation, cached_limit, cached_viewport, _)| {
+                    *cached_revision == revision
+                        && *cached_generation == generation
+                        && *cached_limit == max_text_bytes
+                        && *cached_viewport == viewport
+                },
+            )
+            .map(|(_, _, _, _, snapshot)| snapshot.clone())
+    }
+
+    fn cache_script_snapshot(
+        &self,
+        revision: u64,
+        max_text_bytes: usize,
+        viewport: Viewport,
+        snapshot: NativeScriptDocumentSnapshot,
+    ) {
+        let generation = *self
+            .3
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *self
+            .4
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some((revision, generation, max_text_bytes, viewport, snapshot));
     }
 
     fn layout(&self, revision: u64, viewport: Viewport) -> Option<NativeLayoutSnapshot> {

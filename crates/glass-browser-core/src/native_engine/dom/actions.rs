@@ -2,7 +2,10 @@ use super::*;
 
 impl NativeDocument {
     pub(crate) fn set_revision(&mut self, revision: u64) {
-        self.revision = revision;
+        if self.revision != revision {
+            self.revision = revision;
+            self.layout_style_cache.invalidate_script_snapshot();
+        }
     }
 
     /// Apply a bounded semantic click after the engine has resolved the target.

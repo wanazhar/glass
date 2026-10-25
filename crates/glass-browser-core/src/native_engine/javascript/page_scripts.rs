@@ -592,6 +592,12 @@ pub(crate) fn execute_page_scripts(
             | NativePageScript::Module { node_index, .. } => *node_index,
             NativePageScript::ModuleDependency { .. } | NativePageScript::ImportMap(_) => None,
         };
+        let script_source_bytes = match source {
+            NativePageScript::Classic { source, .. } | NativePageScript::Module { source, .. } => {
+                source.len()
+            }
+            NativePageScript::ModuleDependency { .. } | NativePageScript::ImportMap(_) => 0,
+        };
         let script_stage = trace_request_id.map(|request_id| {
             crate::native_engine::content_process::ContentLoadStage::begin_with_resource(
                 request_id,
@@ -632,7 +638,9 @@ pub(crate) fn execute_page_scripts(
             }
         };
         if let Some(stage) = script_stage {
-            stage.finish(None);
+            // Keep source content private while making it possible to separate
+            // expensive script execution from repeated host-view installation.
+            stage.finish(Some(script_source_bytes));
         }
         let evaluation = match evaluation {
             Ok(evaluation) => evaluation,

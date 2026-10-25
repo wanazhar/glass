@@ -306,6 +306,12 @@ impl NativeLayoutSnapshot {
         );
         let flow = builder.layout_children(document.root(), 0, 0, viewport.width, 0);
         build_stage.finish(Some(builder.boxes.len()));
+        let boxes_by_node = builder
+            .boxes
+            .iter()
+            .enumerate()
+            .map(|(index, layout_box)| (layout_box.node_id, index))
+            .collect::<HashMap<_, _>>();
         let scroll_stage = crate::native_engine::content_process::ContentLoadStage::begin(
             0,
             "native_layout_scroll_containers",
@@ -358,17 +364,30 @@ impl NativeLayoutSnapshot {
                     ),
                 height: document.text_line_height_for_layout(text_run.node_id),
             };
-            let visible_rect = overflow_clip_for(document, &builder.boxes, text_run.node_id)
-                .map_or(text_rect, |clip| intersect_rect(text_rect, clip));
+            let visible_rect =
+                overflow_clip_for(document, &builder.boxes, &boxes_by_node, text_run.node_id)
+                    .map_or(text_rect, |clip| intersect_rect(text_rect, clip));
             if visible_rect.width > 0 && visible_rect.height > 0 {
                 max_text_right = max_text_right.max(visible_rect.right());
             }
         }
         extent_stage.finish(Some(builder.text_runs.len()));
+        let overflow_clip_map = overflow_clip_map_for_layout(
+            document,
+            &builder.boxes,
+            &boxes_by_node,
+            None,
+            &mut HashMap::new(),
+        );
         let overflow_clips = builder
             .boxes
             .iter()
-            .map(|layout_box| overflow_clip_for(document, &builder.boxes, layout_box.node_id))
+            .map(|layout_box| {
+                overflow_clip_map
+                    .get(&layout_box.node_id)
+                    .copied()
+                    .flatten()
+            })
             .collect();
         let content_height = viewport.height.max(flow.height).max(max_box_bottom);
         let content_width = viewport
@@ -381,15 +400,18 @@ impl NativeLayoutSnapshot {
             .iter()
             .filter_map(|range| {
                 let root = builder.boxes.get(range.root_box)?;
-                let containing_block =
-                    nearest_layout_ancestor_rect(document, &builder.boxes, root.node_id).unwrap_or(
-                        NativeRect {
-                            x: 0,
-                            y: 0,
-                            width: content_width,
-                            height: content_height,
-                        },
-                    );
+                let containing_block = nearest_layout_ancestor_rect(
+                    document,
+                    &builder.boxes,
+                    &boxes_by_node,
+                    root.node_id,
+                )
+                .unwrap_or(NativeRect {
+                    x: 0,
+                    y: 0,
+                    width: content_width,
+                    height: content_height,
+                });
                 Some(NativeStickyProjection {
                     box_start: range.root_box,
                     box_end: range.box_end,
@@ -412,7 +434,12 @@ impl NativeLayoutSnapshot {
         let projected_overflow_clips = builder
             .boxes
             .iter()
-            .map(|layout_box| overflow_clip_for(document, &builder.boxes, layout_box.node_id))
+            .map(|layout_box| {
+                overflow_clip_map
+                    .get(&layout_box.node_id)
+                    .copied()
+                    .flatten()
+            })
             .collect();
         Ok(Self {
             revision: document.revision(),
@@ -539,6 +566,12 @@ impl NativeLayoutSnapshot {
         scroll_offset: NativePoint,
         nested_scroll_offsets: &BTreeMap<u32, NativePoint>,
     ) -> Result<Self, NativeEngineError> {
+        let boxes_by_node = self
+            .boxes
+            .iter()
+            .enumerate()
+            .map(|(index, layout_box)| (layout_box.node_id, index))
+            .collect::<HashMap<_, _>>();
         let max_scroll = self.max_scroll_offset();
         if scroll_offset.x > max_scroll.x {
             return Err(NativeEngineError::invalid(
@@ -627,11 +660,34 @@ impl NativeLayoutSnapshot {
                 text_run.origin.y = shift_coordinate(text_run.origin.y, delta_y);
             }
         }
+        let overflow_clip_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "native_layout_scroll_overflow_clips",
+        );
+        let mut nested_scroll_offset_cache =
+            HashMap::with_capacity(document.node_count().min(self.boxes.len()));
+        let overflow_clip_map = overflow_clip_map_for_layout(
+            document,
+            &self.boxes,
+            &boxes_by_node,
+            Some(&self.nested_scroll_offsets),
+            &mut nested_scroll_offset_cache,
+        );
         self.overflow_clips = self
             .boxes
             .iter()
-            .map(|layout_box| overflow_clip_for(document, &self.boxes, layout_box.node_id))
+            .map(|layout_box| {
+                overflow_clip_map
+                    .get(&layout_box.node_id)
+                    .copied()
+                    .flatten()
+            })
             .collect();
+        overflow_clip_stage.finish(Some(self.overflow_clips.len()));
+        let projected_box_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "native_layout_scroll_projected_boxes",
+        );
         self.projected_boxes = self
             .boxes
             .iter()
@@ -642,26 +698,38 @@ impl NativeLayoutSnapshot {
                     project_rect_for_node(
                         document,
                         &self.boxes,
+                        &boxes_by_node,
                         &self.nested_scroll_offsets,
+                        &mut nested_scroll_offset_cache,
                         layout_box.node_id,
                         layout_box.rect,
-                        false,
                     )
                 }
             })
             .collect();
+        projected_box_stage.finish(Some(self.projected_boxes.len()));
+        let projected_clip_stage = crate::native_engine::content_process::ContentLoadStage::begin(
+            0,
+            "native_layout_scroll_projected_clips",
+        );
+        let projected_overflow_clip_map = overflow_clip_map_for_layout(
+            document,
+            &self.boxes,
+            &boxes_by_node,
+            Some(&self.nested_scroll_offsets),
+            &mut nested_scroll_offset_cache,
+        );
         self.projected_overflow_clips = self
             .boxes
             .iter()
             .map(|layout_box| {
-                overflow_clip_for_projected(
-                    document,
-                    &self.boxes,
-                    &self.nested_scroll_offsets,
-                    layout_box.node_id,
-                )
+                projected_overflow_clip_map
+                    .get(&layout_box.node_id)
+                    .copied()
+                    .flatten()
             })
             .collect();
+        projected_clip_stage.finish(Some(self.projected_overflow_clips.len()));
         self.scroll_offset = scroll_offset;
         Ok(self)
     }
@@ -899,20 +967,62 @@ fn nested_scroll_offset_for_node(
     offset
 }
 
+fn cached_nested_scroll_offset_for_node(
+    document: &NativeDocument,
+    node_id: NativeNodeId,
+    offsets: &BTreeMap<u32, NativePoint>,
+    cache: &mut HashMap<NativeNodeId, NativePoint>,
+) -> NativePoint {
+    let Some(parent_id) = document.node(node_id).and_then(|node| node.parent()) else {
+        return NativePoint { x: 0, y: 0 };
+    };
+    if let Some(offset) = cache.get(&parent_id) {
+        return *offset;
+    }
+
+    let mut path = Vec::new();
+    let mut current = Some(parent_id);
+    let mut offset = NativePoint { x: 0, y: 0 };
+    while let Some(current_id) = current {
+        if let Some(cached) = cache.get(&current_id) {
+            offset = *cached;
+            break;
+        }
+        path.push(current_id);
+        current = document.node(current_id).and_then(|node| node.parent());
+    }
+    for current_id in path.into_iter().rev() {
+        if is_scroll_container(document, current_id)
+            && let Some(current_offset) = offsets.get(&current_id.index())
+        {
+            offset.x = offset.x.saturating_add(current_offset.x);
+            offset.y = offset.y.saturating_add(current_offset.y);
+        }
+        cache.insert(current_id, offset);
+    }
+    offset
+}
+
 fn project_rect_for_node(
     document: &NativeDocument,
     boxes: &[NativeLayoutBox],
+    boxes_by_node: &HashMap<NativeNodeId, usize>,
     offsets: &BTreeMap<u32, NativePoint>,
+    nested_scroll_offset_cache: &mut HashMap<NativeNodeId, NativePoint>,
     node_id: NativeNodeId,
     rect: NativeRect,
-    include_self: bool,
 ) -> NativeRect {
-    let nested_offset = boxes
-        .iter()
-        .find(|layout_box| layout_box.node_id == node_id)
+    let nested_offset = boxes_by_node
+        .get(&node_id)
+        .and_then(|index| boxes.get(*index))
         .filter(|layout_box| !layout_box.fixed)
         .map_or(NativePoint { x: 0, y: 0 }, |_| {
-            nested_scroll_offset_for_node(document, node_id, offsets, include_self)
+            cached_nested_scroll_offset_for_node(
+                document,
+                node_id,
+                offsets,
+                nested_scroll_offset_cache,
+            )
         });
     let left = i64::from(rect.x).saturating_sub(i64::from(nested_offset.x));
     let top = i64::from(rect.y).saturating_sub(i64::from(nested_offset.y));
@@ -1059,11 +1169,144 @@ mod scroll_ancestor_cache_tests {
             }
         }
     }
+
+    #[test]
+    fn cached_nested_scroll_offsets_match_uncached_with_mixed_offsets() {
+        let document = NativeDocument::parse(
+            "<main><section style='overflow:auto'><div><p>text</p><aside style='overflow:hidden'><b>nested</b></aside></div></section><footer>tail</footer></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("fixture document parses");
+        let mut nodes = vec![document.root()];
+        let mut index = 0;
+        while index < nodes.len() {
+            if let Some(node) = document.node(nodes[index]) {
+                nodes.extend_from_slice(node.children());
+            }
+            index += 1;
+        }
+        let offsets = nodes
+            .iter()
+            .enumerate()
+            .filter(|(index, node_id)| {
+                document.node(**node_id).is_some_and(|node| {
+                    node.attributes()
+                        .iter()
+                        .any(|attributes| attributes.contains_key("style"))
+                }) && index % 2 == 0
+            })
+            .map(|(index, node_id)| {
+                (
+                    (*node_id).index(),
+                    NativePoint {
+                        x: (index as u32 + 1) * 3,
+                        y: (index as u32 + 1) * 5,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut cache = HashMap::new();
+        for node_id in nodes {
+            assert_eq!(
+                cached_nested_scroll_offset_for_node(&document, node_id, &offsets, &mut cache,),
+                nested_scroll_offset_for_node(&document, node_id, &offsets, false),
+                "nested offset mismatch for node {}",
+                node_id.index(),
+            );
+        }
+    }
+
+    #[test]
+    fn batched_overflow_clips_match_ancestor_walk_for_nested_fixed_and_svg_nodes() {
+        let document = NativeDocument::parse(
+            "<main style='overflow:auto'><section style='overflow:hidden;height:80px'><div style='height:240px'><svg width='40' height='30'><svg width='20' height='15'><rect width='80' height='60'/></svg></svg></div></section><aside style='position:fixed;overflow:auto;height:50px'><b style='height:90px'>fixed</b></aside></main>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("fixture document parses");
+        let layout = NativeLayoutSnapshot::compute(
+            &document,
+            Viewport {
+                width: 320,
+                height: 240,
+                device_scale_factor_milli: 1000,
+            },
+        )
+        .expect("fixture layout computes");
+        let boxes_by_node = layout
+            .boxes
+            .iter()
+            .enumerate()
+            .map(|(index, layout_box)| (layout_box.node_id, index))
+            .collect::<HashMap<_, _>>();
+        let batched = overflow_clip_map_for_layout(
+            &document,
+            &layout.boxes,
+            &boxes_by_node,
+            None,
+            &mut HashMap::new(),
+        );
+        for layout_box in &layout.boxes {
+            assert_eq!(
+                batched.get(&layout_box.node_id).copied().flatten(),
+                overflow_clip_for(&document, &layout.boxes, &boxes_by_node, layout_box.node_id),
+                "unscrolled clip mismatch for node {}",
+                layout_box.node_id.index(),
+            );
+        }
+
+        let offsets = layout
+            .scroll_containers
+            .iter()
+            .filter_map(|container| {
+                let maximum = container.max_scroll_offset();
+                (maximum.x > 0 || maximum.y > 0).then_some((
+                    container.node_id.index(),
+                    NativePoint {
+                        x: u32::from(maximum.x > 0),
+                        y: u32::from(maximum.y > 0),
+                    },
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let scrolled = layout
+            .clone()
+            .with_scroll_offset(&document, NativePoint { x: 0, y: 0 }, &offsets)
+            .expect("nested scroll offsets are within bounds");
+        let projected = overflow_clip_map_for_layout(
+            &document,
+            &scrolled.boxes,
+            &boxes_by_node,
+            Some(&scrolled.nested_scroll_offsets),
+            &mut HashMap::new(),
+        );
+        for layout_box in &scrolled.boxes {
+            let mut nested_scroll_offset_cache = HashMap::new();
+            let expected = overflow_clip_for_with_offsets(
+                &document,
+                &scrolled.boxes,
+                &boxes_by_node,
+                layout_box.node_id,
+                Some(&scrolled.nested_scroll_offsets),
+                Some(&mut nested_scroll_offset_cache),
+            );
+            assert_eq!(
+                projected.get(&layout_box.node_id).copied().flatten(),
+                expected,
+                "projected clip mismatch for node {} {:?} fixed={}",
+                layout_box.node_id.index(),
+                document
+                    .node(layout_box.node_id)
+                    .and_then(|node| node.element_name()),
+                layout_box.fixed,
+            );
+        }
+    }
 }
 
 fn fixed_layout_root(
     document: &NativeDocument,
     boxes: &[NativeLayoutBox],
+    boxes_by_node: &HashMap<NativeNodeId, usize>,
     node_id: NativeNodeId,
 ) -> Option<NativeNodeId> {
     let mut current = Some(node_id);
@@ -1072,9 +1315,9 @@ fn fixed_layout_root(
         let Some(current_id) = current else {
             break;
         };
-        if boxes
-            .iter()
-            .find(|layout_box| layout_box.node_id == current_id)
+        if boxes_by_node
+            .get(&current_id)
+            .and_then(|index| boxes.get(*index))
             .is_some_and(|layout_box| layout_box.fixed)
         {
             root = Some(current_id);
@@ -1087,27 +1330,104 @@ fn fixed_layout_root(
 fn overflow_clip_for(
     document: &NativeDocument,
     boxes: &[NativeLayoutBox],
+    boxes_by_node: &HashMap<NativeNodeId, usize>,
     node_id: NativeNodeId,
 ) -> Option<NativeRect> {
-    overflow_clip_for_with_offsets(document, boxes, node_id, None)
+    overflow_clip_for_with_offsets(document, boxes, boxes_by_node, node_id, None, None)
 }
 
-fn overflow_clip_for_projected(
+fn overflow_clip_map_for_layout(
     document: &NativeDocument,
     boxes: &[NativeLayoutBox],
-    offsets: &BTreeMap<u32, NativePoint>,
-    node_id: NativeNodeId,
-) -> Option<NativeRect> {
-    overflow_clip_for_with_offsets(document, boxes, node_id, Some(offsets))
+    boxes_by_node: &HashMap<NativeNodeId, usize>,
+    offsets: Option<&BTreeMap<u32, NativePoint>>,
+    nested_scroll_offset_cache: &mut HashMap<NativeNodeId, NativePoint>,
+) -> HashMap<NativeNodeId, Option<NativeRect>> {
+    let mut clips = HashMap::with_capacity(document.node_count());
+    let mut pending = vec![(document.root(), None, None, None)];
+    while let Some((node_id, inherited_clip, inherited_svg_clip, inherited_fixed_root)) =
+        pending.pop()
+    {
+        let layout_box = boxes_by_node
+            .get(&node_id)
+            .and_then(|index| boxes.get(*index));
+        let starts_fixed_root =
+            inherited_fixed_root.is_none() && layout_box.is_some_and(|layout_box| layout_box.fixed);
+        let fixed_root = inherited_fixed_root.or_else(|| starts_fixed_root.then_some(node_id));
+        let mut clip = if starts_fixed_root {
+            None
+        } else {
+            inherited_clip
+        };
+        let mut svg_clip = inherited_svg_clip;
+        if let Some(layout_box) = layout_box {
+            let style = document.computed_style_for_layout(node_id);
+            let mut projected_rect = || match offsets {
+                Some(offsets) => project_rect_for_node(
+                    document,
+                    boxes,
+                    boxes_by_node,
+                    offsets,
+                    nested_scroll_offset_cache,
+                    node_id,
+                    layout_box.rect,
+                ),
+                None => layout_box.rect,
+            };
+            if style.overflow_clip_x() || style.overflow_clip_y() {
+                let rect = projected_rect();
+                let axis_clip = NativeRect {
+                    x: if style.overflow_clip_x() { rect.x } else { 0 },
+                    y: if style.overflow_clip_y() { rect.y } else { 0 },
+                    width: if style.overflow_clip_x() {
+                        rect.width
+                    } else {
+                        u32::MAX
+                    },
+                    height: if style.overflow_clip_y() {
+                        rect.height
+                    } else {
+                        u32::MAX
+                    },
+                };
+                clip = Some(match clip {
+                    Some(existing) => intersect_rect(existing, axis_clip),
+                    None => axis_clip,
+                });
+            }
+            if document.node(node_id).and_then(|node| node.element_name()) == Some("svg") {
+                let rect = projected_rect();
+                svg_clip = Some(match svg_clip {
+                    Some(existing) => intersect_rect(existing, rect),
+                    None => rect,
+                });
+            }
+        }
+        clips.insert(
+            node_id,
+            match (clip, inherited_svg_clip) {
+                (Some(first), Some(second)) => Some(intersect_rect(first, second)),
+                (first, second) => first.or(second),
+            },
+        );
+        if let Some(node) = document.node(node_id) {
+            for &child_id in node.children().iter().rev() {
+                pending.push((child_id, clip, svg_clip, fixed_root));
+            }
+        }
+    }
+    clips
 }
 
 fn overflow_clip_for_with_offsets(
     document: &NativeDocument,
     boxes: &[NativeLayoutBox],
+    boxes_by_node: &HashMap<NativeNodeId, usize>,
     node_id: NativeNodeId,
     offsets: Option<&BTreeMap<u32, NativePoint>>,
+    mut nested_scroll_offset_cache: Option<&mut HashMap<NativeNodeId, NativePoint>>,
 ) -> Option<NativeRect> {
-    let fixed_root = fixed_layout_root(document, boxes, node_id);
+    let fixed_root = fixed_layout_root(document, boxes, boxes_by_node, node_id);
     let mut current = Some(node_id);
     let mut clip = None;
     for _ in 0..=MAX_NATIVE_DOM_DEPTH {
@@ -1116,19 +1436,21 @@ fn overflow_clip_for_with_offsets(
         };
         let style = document.computed_style_for_layout(current_id);
         if (style.overflow_clip_x() || style.overflow_clip_y())
-            && let Some(rect) = boxes
-                .iter()
-                .find(|layout_box| layout_box.node_id == current_id)
-                .map(|layout_box| {
-                    offsets.map_or(layout_box.rect, |offsets| {
-                        project_rect_for_node(
+            && let Some(rect) = boxes_by_node
+                .get(&current_id)
+                .and_then(|index| boxes.get(*index))
+                .and_then(|layout_box| {
+                    Some(match offsets {
+                        Some(offsets) => project_rect_for_node(
                             document,
                             boxes,
+                            boxes_by_node,
                             offsets,
+                            nested_scroll_offset_cache.as_deref_mut()?,
                             current_id,
                             layout_box.rect,
-                            false,
-                        )
+                        ),
+                        None => layout_box.rect,
                     })
                 })
         {
@@ -1158,7 +1480,14 @@ fn overflow_clip_for_with_offsets(
     }
     match (
         clip,
-        svg_viewport_clip_for_with_offsets(document, boxes, node_id, offsets),
+        svg_viewport_clip_for_with_offsets(
+            document,
+            boxes,
+            boxes_by_node,
+            node_id,
+            offsets,
+            nested_scroll_offset_cache,
+        ),
     ) {
         (Some(first), Some(second)) => Some(intersect_rect(first, second)),
         (first, second) => first.or(second),
@@ -1168,8 +1497,10 @@ fn overflow_clip_for_with_offsets(
 fn svg_viewport_clip_for_with_offsets(
     document: &NativeDocument,
     boxes: &[NativeLayoutBox],
+    boxes_by_node: &HashMap<NativeNodeId, usize>,
     node_id: NativeNodeId,
     offsets: Option<&BTreeMap<u32, NativePoint>>,
+    mut nested_scroll_offset_cache: Option<&mut HashMap<NativeNodeId, NativePoint>>,
 ) -> Option<NativeRect> {
     let mut current = document.node(node_id).and_then(|node| node.parent());
     let mut clip = None;
@@ -1181,19 +1512,21 @@ fn svg_viewport_clip_for_with_offsets(
             .node(current_id)
             .and_then(|node| node.element_name())
             == Some("svg")
-            && let Some(rect) = boxes
-                .iter()
-                .find(|layout_box| layout_box.node_id == current_id)
-                .map(|layout_box| {
-                    offsets.map_or(layout_box.rect, |offsets| {
-                        project_rect_for_node(
+            && let Some(rect) = boxes_by_node
+                .get(&current_id)
+                .and_then(|index| boxes.get(*index))
+                .and_then(|layout_box| {
+                    Some(match offsets {
+                        Some(offsets) => project_rect_for_node(
                             document,
                             boxes,
+                            boxes_by_node,
                             offsets,
+                            nested_scroll_offset_cache.as_deref_mut()?,
                             current_id,
                             layout_box.rect,
-                            false,
-                        )
+                        ),
+                        None => layout_box.rect,
                     })
                 })
         {
@@ -1280,14 +1613,15 @@ fn sticky_axis_delta(
 fn nearest_layout_ancestor_rect(
     document: &NativeDocument,
     boxes: &[NativeLayoutBox],
+    boxes_by_node: &HashMap<NativeNodeId, usize>,
     node_id: NativeNodeId,
 ) -> Option<NativeRect> {
     let mut current = document.node(node_id).and_then(|node| node.parent());
     for _ in 0..=MAX_NATIVE_DOM_DEPTH {
         let current_id = current?;
-        if let Some(layout_box) = boxes
-            .iter()
-            .find(|layout_box| layout_box.node_id == current_id)
+        if let Some(layout_box) = boxes_by_node
+            .get(&current_id)
+            .and_then(|index| boxes.get(*index))
         {
             return Some(layout_box.rect);
         }

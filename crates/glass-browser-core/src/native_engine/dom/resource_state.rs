@@ -82,11 +82,16 @@ impl NativeDocument {
             return Ok(false);
         }
         self.preloaded_image_resources.insert(url, image);
+        self.layout_style_cache.invalidate_script_snapshot();
         Ok(true)
     }
 
     pub(crate) fn take_preloaded_image_resource(&mut self, url: &str) -> Option<NativeImage> {
-        self.preloaded_image_resources.remove(url)
+        let removed = self.preloaded_image_resources.remove(url);
+        if removed.is_some() {
+            self.layout_style_cache.invalidate_script_snapshot();
+        }
+        removed
     }
 
     pub(crate) fn has_preloaded_image_resource(&self, url: &str) -> bool {
@@ -354,13 +359,20 @@ impl NativeDocument {
                 reason: "media load state does not match its media element".into(),
             });
         }
-        self.media_resources.remove(&node_index);
-        self.media_errors.remove(&node_index);
-        self.media_loads.insert(node_index, source);
+        let removed_resource = self.media_resources.remove(&node_index).is_some();
+        let removed_error = self.media_errors.remove(&node_index).is_some();
+        let previous_source = self.media_loads.insert(node_index, source.clone());
+        let changed = removed_resource
+            || removed_error
+            || previous_source.as_deref() != Some(source.as_str());
+        if changed {
+            self.layout_style_cache.invalidate_script_snapshot();
+        }
         Ok(())
     }
 
     pub(crate) fn refresh_media_loads(&mut self) {
+        let mut changed = false;
         let retained_loads = self
             .media_loads
             .iter()
@@ -372,7 +384,10 @@ impl NativeDocument {
                 .then(|| (*node_index, source.clone()))
             })
             .collect();
-        self.media_loads = retained_loads;
+        if self.media_loads != retained_loads {
+            self.media_loads = retained_loads;
+            changed = true;
+        }
         let retained_errors = self
             .media_errors
             .iter()
@@ -384,12 +399,21 @@ impl NativeDocument {
                 .then(|| (*node_index, source.clone()))
             })
             .collect();
-        self.media_errors = retained_errors;
+        if self.media_errors != retained_errors {
+            self.media_errors = retained_errors;
+            changed = true;
+        }
         self.media_resources.retain(|node_index, resource| {
-            self.media_loads
+            let retain = self
+                .media_loads
                 .get(node_index)
-                .is_some_and(|source| source == &resource.source)
+                .is_some_and(|source| source == &resource.source);
+            changed |= !retain;
+            retain
         });
+        if changed {
+            self.layout_style_cache.invalidate_script_snapshot();
+        }
     }
 
     pub(crate) fn has_media_resource_for_node(&self, node_id: NativeNodeId) -> bool {
@@ -448,6 +472,7 @@ impl NativeDocument {
                 duration_millis: metadata.duration_millis,
             },
         );
+        self.layout_style_cache.invalidate_script_snapshot();
         Ok(())
     }
 
@@ -469,6 +494,7 @@ impl NativeDocument {
         }
         self.media_resources.remove(&node_index);
         self.media_errors.insert(node_index, source);
+        self.layout_style_cache.invalidate_script_snapshot();
         Ok(())
     }
 
@@ -594,7 +620,10 @@ impl NativeDocument {
                 reason: "image load state does not match its image element".into(),
             });
         }
-        self.image_loads.insert(node_index, source);
+        let previous_source = self.image_loads.insert(node_index, source.clone());
+        if previous_source.as_deref() != Some(source.as_str()) {
+            self.layout_style_cache.invalidate_script_snapshot();
+        }
         Ok(())
     }
 
@@ -611,7 +640,10 @@ impl NativeDocument {
                 .then(|| (*node_index, source.clone()))
             })
             .collect();
-        self.image_loads = retained;
+        if self.image_loads != retained {
+            self.image_loads = retained;
+            self.layout_style_cache.invalidate_script_snapshot();
+        }
     }
 
     pub(super) fn selected_video_poster_source(&self, node_id: NativeNodeId) -> Option<String> {

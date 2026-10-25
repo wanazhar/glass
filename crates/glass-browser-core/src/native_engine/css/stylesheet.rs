@@ -199,9 +199,19 @@ impl NativeStylesheet {
         let Some(node) = document.node(node_id) else {
             return BTreeMap::new();
         };
-        self.custom_properties_for_node_with_matcher(node, viewport, |selector| {
+        let stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+            crate::native_engine::content_process::ContentLoadStage::begin(
+                0,
+                "native_css_custom_property_compute",
+            )
+        });
+        let values = self.custom_properties_for_node_with_matcher(node, viewport, |selector| {
             selector.matches_in_document(document, node_id)
-        })
+        });
+        if let Some(stage) = stage {
+            stage.finish(Some(values.len()));
+        }
+        values
     }
 
     #[cfg(test)]

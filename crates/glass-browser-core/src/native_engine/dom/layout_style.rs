@@ -142,6 +142,12 @@ impl NativeDocument {
             let style = if let Some(style) = cached_style {
                 style
             } else {
+                let style_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+                    crate::native_engine::content_process::ContentLoadStage::begin(
+                        0,
+                        "native_css_style_compute",
+                    )
+                });
                 let style = self
                     .stylesheet
                     .computed_for_in_document_with_inheritance_and_custom_properties(
@@ -221,6 +227,9 @@ impl NativeDocument {
                         &custom_properties,
                         self.viewport,
                     );
+                if let Some(stage) = style_stage {
+                    stage.finish(None);
+                }
                 self.layout_style_cache
                     .0
                     .lock()

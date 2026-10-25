@@ -1036,14 +1036,22 @@
     return node;
   }};
   defineTreeAccessorsForNativeFragments = defineTreeAccessors;
-  for (const element of elements) defineTreeAccessors(element);
-  for (const text of textNodes) defineTreeAccessors(text);
-  for (const fragment of fragmentNodes) defineTreeAccessors(fragment);
+  if (!reuseExistingHostTree) {{
+    for (const element of elements) defineTreeAccessors(element);
+    for (const text of textNodes) defineTreeAccessors(text);
+    for (const fragment of fragmentNodes) defineTreeAccessors(fragment);
+    for (const comment of commentNodes) {{
+      defineTreeAccessors(comment);
+    }}
+    for (const documentType of documentTypeNodes) {{
+      defineTreeAccessors(documentType);
+    }}
+  }}
+  // Page code can mutate prototypes even though defineMissing's own properties
+  // are non-configurable. Preserve the previous per-bootstrap prototype repair.
   for (const comment of commentNodes) {{
-    defineTreeAccessors(comment);
     try {{ Object.setPrototypeOf(comment, CommentNative.prototype); }} catch (_error) {{}}
   }}
   for (const documentType of documentTypeNodes) {{
-    defineTreeAccessors(documentType);
     try {{ Object.setPrototypeOf(documentType, DocumentTypeNative.prototype); }} catch (_error) {{}}
   }}

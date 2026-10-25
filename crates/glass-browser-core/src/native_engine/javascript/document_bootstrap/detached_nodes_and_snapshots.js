@@ -886,9 +886,26 @@
   const previousNodes = globalThis.__glassHostNodes instanceof Map
     ? globalThis.__glassHostNodes
     : new Map();
+  const snapshotNodes = Array.isArray(state.nodes) ? state.nodes : [];
+  const snapshotElements = Array.isArray(state.elements) ? state.elements : [];
+  const existingElementMapCoversSnapshot = previousElements.size === snapshotElements.length
+    && snapshotElements.every((entry) => {{
+      const index = Number(entry && entry.nodeIndex);
+      const existing = scriptNodeAliasesByIndex.get(index) || previousElements.get(index);
+      return Number.isSafeInteger(index)
+        && existing
+        && typeof existing.__glassRefresh === "function";
+    }});
+  const existingNodeMapCoversSnapshot = snapshotNodes.every((entry) => {{
+    const index = Number(entry && entry.nodeIndex);
+    if (!Number.isSafeInteger(index)) return false;
+    if (Number(entry.nodeType) === 9) return index === 0;
+    return previousNodes.has(index) || scriptNodeAliasesByIndex.has(index);
+  }});
   const reuseExistingHostTree = Boolean(
-    host.reuse_state
-      && previousElements.size === (Array.isArray(state.elements) ? state.elements.length : 0),
+    reuseCachedHostSnapshotState
+      && existingElementMapCoversSnapshot
+      && existingNodeMapCoversSnapshot,
   );
   const belongsToDetachedCreatedSubtree = (node) => {{
     let current = node;
@@ -900,9 +917,8 @@
     }}
     return false;
   }};
-  const snapshotNodes = Array.isArray(state.nodes) ? state.nodes : [];
   const snapshotTextContentForNode = createSnapshotTextContentResolver(snapshotNodes);
-  const elements = state.elements.map((entry) => {{
+  const elements = snapshotElements.map((entry) => {{
     const existing = scriptNodeAliasesByIndex.get(entry.nodeIndex) || previousElements.get(entry.nodeIndex);
     if (existing && typeof existing.__glassRefresh === "function") {{
       if (!reuseExistingHostTree && !belongsToDetachedCreatedSubtree(existing)) {{

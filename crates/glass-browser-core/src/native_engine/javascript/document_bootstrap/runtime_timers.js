@@ -1,5 +1,8 @@
 (() => {{
   let cachedHostState = null;
+  let cachedGeometrySnapshot = null;
+  let cachedGeometryMap = null;
+  let cachedMutationShadow = null;
   return (__glassHostViewJson) => {{
   const host = JSON.parse(__glassHostViewJson);
   if (host.reuse_state) {{
@@ -28,12 +31,17 @@
   globalThis.__glassMessageRealmKey = "page:" + String(host.context_id || "native");
   const initialPageCryptoBytes = bootstrapParams.initialPageCryptoBytes;
   const state = host.state;
+  const reuseCachedHostSnapshotState = Boolean(
+    host.reuse_state && cachedHostState !== null && state === cachedHostState,
+  );
   const snapshotComputedStyles = Array.isArray(state.computedStyles) ? state.computedStyles : [];
-  for (const element of Array.isArray(state.elements) ? state.elements : []) {{
-    if (!element || !Number.isSafeInteger(Number(element.computedStyleIndex))) continue;
-    const styleIndex = Number(element.computedStyleIndex);
-    element.computedStyle = snapshotComputedStyles[styleIndex] || {{}};
-    delete element.computedStyleIndex;
+  if (!reuseCachedHostSnapshotState) {{
+    for (const element of Array.isArray(state.elements) ? state.elements : []) {{
+      if (!element || !Number.isSafeInteger(Number(element.computedStyleIndex))) continue;
+      const styleIndex = Number(element.computedStyleIndex);
+      element.computedStyle = snapshotComputedStyles[styleIndex] || {{}};
+      delete element.computedStyleIndex;
+    }}
   }}
   const createSnapshotTextContentResolver = (snapshots) => {{
     const nodes = new Map((Array.isArray(snapshots) ? snapshots : [])
@@ -61,13 +69,25 @@
     }};
     return (nodeIndex) => resolve(nodeIndex, new Set());
   }};
-  const geometryByIndex = globalThis.__glassHostGeometry instanceof Map
-    ? globalThis.__glassHostGeometry
-    : new Map();
-  geometryByIndex.clear();
-  for (const entry of Array.isArray(state.geometry) ? state.geometry : []) {{
-    if (!entry || entry.nodeIndex === undefined) continue;
-    geometryByIndex.set(Number(entry.nodeIndex), entry);
+  const snapshotGeometry = Array.isArray(state.geometry) ? state.geometry : [];
+  const cachedGeometryStillMatchesSnapshot = Boolean(
+    cachedGeometryMap instanceof Map
+      && cachedGeometryMap.size === snapshotGeometry.filter((entry) => entry && entry.nodeIndex !== undefined).length
+      && snapshotGeometry.every((entry) => !entry || entry.nodeIndex === undefined
+        || cachedGeometryMap.get(Number(entry.nodeIndex)) === entry),
+  );
+  const reuseCachedGeometry = Boolean(
+    reuseCachedHostSnapshotState
+      && cachedGeometrySnapshot === state.geometry
+      && cachedGeometryStillMatchesSnapshot
+      && globalThis.__glassHostGeometry === cachedGeometryMap,
+  );
+  const geometryByIndex = reuseCachedGeometry ? cachedGeometryMap : new Map();
+  if (!reuseCachedGeometry) {{
+    for (const entry of snapshotGeometry) {{
+      if (!entry || entry.nodeIndex === undefined) continue;
+      geometryByIndex.set(Number(entry.nodeIndex), entry);
+    }}
   }}
   globalThis.__glassHostGeometry = geometryByIndex;
   const zeroGeometry = () => ({{

@@ -186,13 +186,15 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
     for install in 0..6 {
         let (source, expected) = if install == 0 {
             (
-                "(() => { const first = document.body.children[0].children[0].children[0]; globalThis.__glassHeldHostElement = first; first.__glassReuseMarker = 42; return [document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(first).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView')]; })()",
-                serde_json::json!(["BODY", ELEMENTS, "bold", "normal", false]),
+                "(() => { const first = document.body.children[0].children[0].children[0]; globalThis.__glassHeldHostElement = first; globalThis.__glassHeldDocument = document; globalThis.__glassDocumentObserver = new MutationObserver(() => {}); globalThis.__glassDocumentObserver.observe(document, { attributes: true, subtree: true }); first.__glassReuseMarker = 42; return [document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(first).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView'), document.documentElement.parentNode === document, document.documentElement.getRootNode() === document]; })()",
+                serde_json::json!(["BODY", ELEMENTS, "bold", "normal", false, true, true]),
             )
         } else {
             (
-                "[document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(document.body.children[0].children[0].children[0]).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView'), globalThis.__glassHeldHostElement === document.body.children[0].children[0].children[0], globalThis.__glassHeldHostElement.__glassReuseMarker]",
-                serde_json::json!(["BODY", ELEMENTS, "bold", "normal", false, true, 42]),
+                "[document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(document.body.children[0].children[0].children[0]).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView'), globalThis.__glassHeldHostElement === document.body.children[0].children[0].children[0], globalThis.__glassHeldHostElement.__glassReuseMarker, document.documentElement.parentNode === document, document.documentElement.getRootNode() === document, globalThis.__glassHeldDocument !== document]",
+                serde_json::json!([
+                    "BODY", ELEMENTS, "bold", "normal", false, true, 42, true, true, true
+                ]),
             )
         };
         let evaluation = runtime
@@ -207,6 +209,39 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
 
         assert_eq!(evaluation.value, expected);
     }
+    let observer_evaluation = runtime
+        .evaluate(
+            "(() => { document.body.setAttribute('data-observed', 'yes'); const records = globalThis.__glassDocumentObserver.takeRecords(); return [document.documentElement.parentNode === document, document.documentElement.getRootNode() === document, records.length, records[0] && records[0].target === document.body]; })()",
+            &document,
+            "fixture://large-host-view.test/observer",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+        )
+        .expect("document subtree observers must survive an unchanged host bootstrap");
+    assert_eq!(
+        observer_evaluation.value,
+        serde_json::json!([true, true, 1, true])
+    );
+    let changed_markup = markup.replacen(
+        "id='item-0' class='content-row accent'",
+        "id='item-0' class='content-row changed'",
+        1,
+    );
+    let changed_document = NativeDocument::parse(&changed_markup, &NativeEngineLimits::default())
+        .expect("changed fixture document must parse");
+    let changed_evaluation = runtime
+        .evaluate(
+            "(() => { const first = document.getElementById('item-0'); return [first.className, getComputedStyle(first).fontWeight, globalThis.__glassHeldHostElement === first, globalThis.__glassHeldHostElement.__glassReuseMarker]; })()",
+            &changed_document,
+            "fixture://large-host-view.test/changed",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+        )
+        .expect("a changed document key must perform a complete host refresh");
+    assert_eq!(
+        changed_evaluation.value,
+        serde_json::json!(["content-row changed", "normal", true, 42])
+    );
     let second_runtime = NativeJavaScriptRuntime::new_with_context_id("second-large-host-view")
         .expect("second native JavaScript runtime must construct");
     let second_runtime_evaluation = second_runtime

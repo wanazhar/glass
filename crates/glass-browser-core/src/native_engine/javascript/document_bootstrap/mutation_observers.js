@@ -84,23 +84,39 @@
     scriptNodeAliasesByIndex.set(nodeIndex, object);
   }}
   globalThis.__glassScriptNodeIndexesByTemporary = scriptNodeIndexesByTemporary;
-  const mutationShadowAttributes = new Map();
-  for (const entry of Array.isArray(state.elements) ? state.elements : []) {{
-    mutationShadowAttributes.set(Number(entry.nodeIndex), {{ ...(entry.attributes || {{}}) }});
-  }}
-  const mutationShadowText = new Map();
-  const mutationShadowParents = new Map();
-  const mutationShadowChildren = new Map();
-  for (const entry of Array.isArray(state.nodes) ? state.nodes : []) {{
-    const index = Number(entry.nodeIndex);
-    if ([3, 8].includes(Number(entry.nodeType))) mutationShadowText.set(index, String(entry.nodeValue || ""));
-    if (entry.parentIndex !== null && entry.parentIndex !== undefined) {{
-      mutationShadowParents.set(index, Number(entry.parentIndex));
+  const reuseMutationShadow = Boolean(
+    reuseCachedHostSnapshotState
+      && cachedMutationShadow !== null
+      && cachedMutationShadow.state === state,
+  );
+  const mutationShadowAttributes = reuseMutationShadow
+    ? cachedMutationShadow.attributes
+    : new Map();
+  const mutationShadowText = reuseMutationShadow ? cachedMutationShadow.text : new Map();
+  const mutationShadowParents = reuseMutationShadow ? cachedMutationShadow.parents : new Map();
+  const mutationShadowChildren = reuseMutationShadow ? cachedMutationShadow.children : new Map();
+  if (!reuseMutationShadow) {{
+    for (const entry of Array.isArray(state.elements) ? state.elements : []) {{
+      mutationShadowAttributes.set(Number(entry.nodeIndex), {{ ...(entry.attributes || {{}}) }});
     }}
-    mutationShadowChildren.set(index, Array.isArray(entry.children)
-      ? entry.children.map(Number)
-      : []);
+    for (const entry of Array.isArray(state.nodes) ? state.nodes : []) {{
+      const index = Number(entry.nodeIndex);
+      if ([3, 8].includes(Number(entry.nodeType))) mutationShadowText.set(index, String(entry.nodeValue || ""));
+      if (entry.parentIndex !== null && entry.parentIndex !== undefined) {{
+        mutationShadowParents.set(index, Number(entry.parentIndex));
+      }}
+      mutationShadowChildren.set(index, Array.isArray(entry.children)
+        ? entry.children.map(Number)
+        : []);
+    }}
   }}
+  cachedMutationShadow = {{
+    state,
+    attributes: mutationShadowAttributes,
+    text: mutationShadowText,
+    parents: mutationShadowParents,
+    children: mutationShadowChildren,
+  }};
   const mutationNode = (nodeIndex) => {{
     const index = Number(nodeIndex);
     if (index === 0 && globalThis.__glassHostDocument) return globalThis.__glassHostDocument;

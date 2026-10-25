@@ -136,7 +136,10 @@ impl BackBuffer {
         let tail = next.len().saturating_sub(common);
         begin_sync();
         for (i, line) in next.iter().enumerate().skip(common) {
-            move_to(i as u16, 0);
+            let Ok(row) = u16::try_from(i) else {
+                break;
+            };
+            move_to(row, 0);
             print!("\x1b[2K{line}");
         }
         end_sync();

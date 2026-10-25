@@ -25,6 +25,14 @@ const MAX_FRAME: usize = 1024 * 1024;
 const MAX_PENDING: usize = 32;
 type Schemas = Vec<(String, String, String)>;
 
+fn session_turn_index(through: u64) -> Result<usize, &'static str> {
+    checked_unsigned_index(through).ok_or("throughTurn exceeds platform capacity")
+}
+
+fn checked_unsigned_index<T: TryFrom<u64>>(value: u64) -> Option<T> {
+    T::try_from(value).ok()
+}
+
 /// Optional privacy-safe timing trace for diagnosing a stalled host runtime.
 /// Records only fixed frame classes, byte counts, and write durations.
 fn trace_runtime_frame(
@@ -384,7 +392,7 @@ impl Wire {
             let result = match m["method"].as_str() {
                 Some("durable/changes") => Some(store.borrow().changes(
                     p["cursor"].as_u64().unwrap_or(0),
-                    p["limit"].as_u64().unwrap_or(25) as usize,
+                    p["limit"].as_u64().unwrap_or(25).clamp(1, 256) as usize,
                 )),
                 Some("durable/taskGraph") => Some(Ok(store.borrow().task_graph())),
                 Some("durable/abort") => Some((|| {
@@ -1251,7 +1259,9 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                     "completion/request" => completion(c, &wire, &id, p),
                     "session/inspect" => {
                         let records = c.session.history_records();
-                        let offset = p.get("cursor").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        let offset = p.get("cursor").and_then(Value::as_u64).unwrap_or(0);
+                        let offset = checked_unsigned_index::<usize>(offset)
+                            .ok_or("cursor exceeds platform capacity")?;
                         let limit = p
                             .get("limit")
                             .and_then(Value::as_u64)
@@ -1336,7 +1346,7 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                         }
                         let fork = c
                             .session
-                            .branch(dir, through as usize)
+                            .branch(dir, session_turn_index(through).map_err(str::to_string)?)
                             .map_err(|e| e.to_string())?;
                         let mut manifest = support::read_manifest(dir, sid)?;
                         manifest["sessionId"] = json!(fork.id);
@@ -1356,8 +1366,8 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                     "session/rewind" => {
                         let through = p["throughTurn"]
                             .as_u64()
-                            .ok_or("throughTurn must be an unsigned integer")?
-                            as usize;
+                            .ok_or("throughTurn must be an unsigned integer")?;
+                        let through = session_turn_index(through).map_err(str::to_string)?;
                         let turns = c.session.raw_turns().map_err(|e| e.to_string())?;
                         if through > turns {
                             return Err("throughTurn exceeds session turn count".into());
@@ -1712,7 +1722,9 @@ fn model_page(
     current_model: &str,
 ) -> Result<Value, String> {
     let models = catalog.as_array().ok_or("invalid cached catalog")?;
-    let cursor = p.get("cursor").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let cursor = p.get("cursor").and_then(Value::as_u64).unwrap_or(0);
+    let cursor =
+        checked_unsigned_index::<usize>(cursor).ok_or("model cursor exceeds platform capacity")?;
     if cursor > models.len() {
         return Err("model cursor exceeds catalog".into());
     }
@@ -1859,6 +1871,19 @@ fn completion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_turn_index_rejects_wrapping_u64_values() {
+        let beyond_32_bit = (u32::MAX as u64) + 1;
+        assert_eq!(checked_unsigned_index::<u32>(beyond_32_bit), None);
+        if usize::BITS == 32 {
+            assert_eq!(
+                session_turn_index(beyond_32_bit),
+                Err("throughTurn exceeds platform capacity")
+            );
+        }
+    }
+
     #[test]
     fn host_schemas_are_exclusive_and_validated() {
         assert_eq!(

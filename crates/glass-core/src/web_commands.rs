@@ -372,7 +372,8 @@ pub fn execute(
         return inspect(name, s, cfg);
     }
     if matches!(name, "quote" | "branch" | "rewrite") && v.get("source_record").is_some() {
-        let index = v["source_record"].as_u64().ok_or("Invalid source record")? as usize;
+        let index = v["source_record"].as_u64().ok_or("Invalid source record")?;
+        let index = usize::try_from(index).map_err(|_| "Invalid source record")?;
         let records = s.history_records();
         let source = match records.get(index) {
             Some(crate::session::Record::User(t) | crate::session::Record::Assistant(t)) => t,

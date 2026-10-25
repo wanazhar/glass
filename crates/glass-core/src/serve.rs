@@ -271,6 +271,10 @@ fn replay_from(session: &Session, since: Option<usize>) -> (Vec<Value>, usize, b
     (entries, cursor, reset || clipped)
 }
 
+fn cursor_index(value: u64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
 /// Retain recent entries within a wire-size budget. Clipped text remains UTF-8;
 /// each entry tells clients explicitly when the full transcript is needed.
 fn bound_replay(entries: Vec<Value>) -> (Vec<Value>, bool) {
@@ -853,7 +857,7 @@ pub fn serve(
                 let since = message
                     .get("since")
                     .and_then(Value::as_u64)
-                    .map(|n| n as usize)
+                    .map(cursor_index)
                     .filter(|_| !wrong_session);
                 let (entries, cursor, reset) = replay_from(&session, since);
                 to_origin(json!({
@@ -2113,6 +2117,16 @@ mod tests {
         assert_eq!(entries.len(), 3, "and gets the full window");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cursor_conversion_rejects_values_outside_platform_usize() {
+        assert_eq!(cursor_index(0), 0);
+        assert_eq!(
+            cursor_index(u64::MAX),
+            usize::try_from(u64::MAX).unwrap_or(usize::MAX),
+            "the conversion follows the actual platform pointer width"
+        );
     }
 
     #[test]

@@ -46,7 +46,9 @@ pub fn fetch(arguments: &Value) -> Result<String, String> {
         .get("max_chars")
         .and_then(Value::as_u64)
         .unwrap_or(DEFAULT_FETCH_CHARS as u64)
-        .clamp(1, MAX_FETCH_CHARS as u64) as usize;
+        .clamp(1, MAX_FETCH_CHARS as u64)
+        .try_into()
+        .unwrap_or(MAX_FETCH_CHARS);
 
     let deadline = Instant::now() + REQUEST_TIMEOUT;
     let mut final_url = url;
@@ -200,7 +202,7 @@ fn exa_search_at(
     if text.is_empty() {
         return Err("Exa MCP returned empty search content".into());
     }
-    let text = format_exa_search_results(&text, count as usize);
+    let text = format_exa_search_results(&text, usize::try_from(count).unwrap_or(usize::MAX));
     let character_count = text.chars().count();
     let mut output: String = text.chars().take(32_000).collect();
     if character_count > 32_000 {
@@ -468,7 +470,8 @@ fn mcp_error(tool: &str, value: &Value) -> String {
 }
 
 fn html_to_text(source: &str) -> String {
-    let mut output = String::with_capacity(source.len().min(MAX_FETCH_BYTES as usize));
+    let max_capacity = usize::try_from(MAX_FETCH_BYTES).unwrap_or(usize::MAX);
+    let mut output = String::with_capacity(source.len().min(max_capacity));
     let mut chars = source.chars().peekable();
     let mut in_tag = false;
     let mut tag = String::new();

@@ -1574,7 +1574,12 @@ flowchart TD
         );
         let chart = parse(source).unwrap();
         for width in [16, 18, 20, 34, 40, 60, 88] {
-            let rows = render(&chart, width).unwrap();
+            let Some(rows) = render(&chart, width) else {
+                // This source declares a horizontal flowchart. Keep it as
+                // source until the renderer can preserve that orientation.
+                assert_eq!(chart.direction, Direction::Right);
+                continue;
+            };
             assert!(
                 rows.iter().all(|row| glass_tui::text::width(row) <= width),
                 "width {width}"

@@ -210,23 +210,29 @@ fn limit_values(
     mut round_limit: usize,
 ) -> Result<(u32, Option<u32>, usize), String> {
     if let Some(value) = req.get("output") {
-        output_limit = value
+        let value = value
             .as_u64()
             .filter(|n| (256..=128_000).contains(n))
-            .ok_or("output must be 256–128000 tokens")? as u32;
+            .ok_or("output must be 256–128000 tokens")?;
+        output_limit = u32::try_from(value).map_err(|_| "output token count does not fit u32")?;
     }
     if let Some(value) = req.get("reasoning") {
         let n = value
             .as_u64()
             .filter(|n| *n <= 128_000)
             .ok_or("reasoning must be 0–128000; 0 uses provider default")?;
-        reasoning_limit = if n == 0 { None } else { Some(n as u32) };
+        reasoning_limit = if n == 0 {
+            None
+        } else {
+            Some(u32::try_from(n).map_err(|_| "reasoning token count does not fit u32")?)
+        };
     }
     if let Some(value) = req.get("rounds") {
-        round_limit = value
+        let value = value
             .as_u64()
             .filter(|n| (1..=128).contains(n))
-            .ok_or("rounds must be 1–128")? as usize;
+            .ok_or("rounds must be 1–128")?;
+        round_limit = usize::try_from(value).map_err(|_| "round limit does not fit usize")?;
     }
     if reasoning_limit.is_some_and(|n| n >= output_limit) {
         return Err("reasoning must leave room for an answer within output allowance".into());
@@ -1055,7 +1061,9 @@ impl Provider for Meter {
                     i.reserved_tokens
                 )));
             }
-            let max_tokens = u64::from(req.max_tokens).min(remaining - estimated_input) as u32;
+            let max_tokens =
+                u32::try_from(u64::from(req.max_tokens).min(remaining - estimated_input))
+                    .unwrap_or(u32::MAX);
             if req.reasoning.is_some_and(|n| n >= max_tokens) {
                 let _ = self.hub.persist(i);
                 return Err(provider::Error::Config(format!(

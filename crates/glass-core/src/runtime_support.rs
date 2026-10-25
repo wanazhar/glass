@@ -2,6 +2,10 @@
 use crate::session::{Record, Session};
 use base64::Engine;
 use serde_json::{Value, json};
+
+pub(crate) fn checked_u64_index<T: TryFrom<u64>>(value: u64) -> Option<T> {
+    T::try_from(value).ok()
+}
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -178,7 +182,8 @@ pub fn entry(session: &Session, p: &Value) -> Result<Value, String> {
         .get(field)
         .and_then(Value::as_str)
         .ok_or("field is not a string")?;
-    let offset = p.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let offset = p.get("offset").and_then(Value::as_u64).unwrap_or(0);
+    let offset = checked_u64_index::<usize>(offset).ok_or("offset exceeds platform capacity")?;
     if offset > text.len() || !text.is_char_boundary(offset) {
         return Err("offset must be a UTF-8 byte boundary".into());
     }
@@ -424,6 +429,17 @@ pub fn interrupted(session: &Session) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn checked_index_rejects_values_above_platform_index_type() {
+        assert_eq!(
+            checked_u64_index::<u32>(u64::from(u32::MAX)),
+            Some(u32::MAX)
+        );
+        assert_eq!(checked_u64_index::<u32>(u64::from(u32::MAX) + 1), None);
+        if usize::BITS == 32 {
+            assert_eq!(checked_u64_index::<usize>(u64::from(u32::MAX) + 1), None);
+        }
+    }
     #[test]
     fn typed_context_does_not_accept_instructions() {
         assert!(

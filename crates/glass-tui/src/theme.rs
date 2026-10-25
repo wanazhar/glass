@@ -20,7 +20,7 @@ const GROW: [&str; 8] = ["▁", "▂", "▄", "▆", "█", "▆", "▄", "▂"]
 const BLINK: [&str; 4] = ["○", "◌", "●", "◌"];
 pub fn select_animation(index: usize) {
     ANIMATION.store(
-        index.min(ANIMATION_NAMES.len() - 1) as u8,
+        u8::try_from(index.min(ANIMATION_NAMES.len() - 1)).unwrap_or(u8::MAX),
         Ordering::Relaxed,
     );
 }
@@ -60,7 +60,10 @@ pub fn is_activity_glyph(glyph: char) -> bool {
 }
 pub const NAMES: [&str; 5] = ["Aurora", "Amber", "Monochrome", "Orchid", "Ocean"];
 pub fn select(index: usize) {
-    ACTIVE.store(index.min(NAMES.len() - 1) as u8, Ordering::Relaxed);
+    ACTIVE.store(
+        u8::try_from(index.min(NAMES.len() - 1)).unwrap_or(u8::MAX),
+        Ordering::Relaxed,
+    );
 }
 pub fn current() -> usize {
     ACTIVE.load(Ordering::Relaxed) as usize

@@ -254,7 +254,10 @@ impl Editor {
         if self.hist_idx.is_none() && delta < 0 {
             self.draft = self.buf.clone();
         }
-        let next = (current as isize + delta).clamp(0, len as isize) as usize;
+        let current = isize::try_from(current).unwrap_or(isize::MAX);
+        let signed_len = isize::try_from(len).unwrap_or(isize::MAX);
+        let next =
+            usize::try_from(current.saturating_add(delta).clamp(0, signed_len)).unwrap_or_default();
         self.hist_idx = if next >= len { None } else { Some(next) };
         self.buf = match self.hist_idx {
             Some(i) => self.history[i].clone(),
@@ -286,7 +289,10 @@ impl Editor {
         let goal = self.goal_col.unwrap_or(col);
         self.goal_col = Some(goal);
 
-        let target = (cur as isize + delta).clamp(0, starts.len() as isize - 1) as usize;
+        let cur = isize::try_from(cur).unwrap_or(isize::MAX);
+        let last_line = isize::try_from(starts.len() - 1).unwrap_or(isize::MAX);
+        let target =
+            usize::try_from(cur.saturating_add(delta).clamp(0, last_line)).unwrap_or_default();
         let line_start = starts[target];
         let line_end = if target + 1 < starts.len() {
             starts[target + 1] - 1
@@ -343,8 +349,9 @@ impl Editor {
         let capacity = usize::from(terminal_height - base_row + 1).clamp(1, rows.clamp(1, 5));
         let start = (cursor_row as usize).saturating_sub(capacity - 1);
         (
-            base_row + cursor_row.saturating_sub(start as u16),
-            (usize::from(cursor_col) + prefix + 1).min(usize::from(width.max(1))) as u16,
+            base_row + cursor_row.saturating_sub(u16::try_from(start).unwrap_or(u16::MAX)),
+            u16::try_from((usize::from(cursor_col) + prefix + 1).min(usize::from(width.max(1))))
+                .unwrap_or(u16::MAX),
         )
     }
 
@@ -385,7 +392,11 @@ impl Editor {
             } else {
                 "  "
             };
-            write!(io, "\x1b[{};1H\x1b[2K", base_row + i as u16)?;
+            write!(
+                io,
+                "\x1b[{};1H\x1b[2K",
+                base_row + u16::try_from(i).unwrap_or_default()
+            )?;
             if i < visible {
                 if start + i == 0 && prefix > 0 {
                     write!(io, "{}{marker}{chunk}", crate::theme::accent())?;
@@ -407,12 +418,12 @@ impl Editor {
             write!(
                 io,
                 "\x1b[{};{}H\x1b[?25h",
-                base_row + cursor_row.saturating_sub(start as u16),
+                base_row + cursor_row.saturating_sub(u16::try_from(start).unwrap_or(u16::MAX)),
                 (usize::from(cursor_col) + prefix + 1).min(usize::from(width.max(1)))
             )?;
         }
         io.flush()?;
-        Ok(visible as u16)
+        Ok(u16::try_from(visible).unwrap_or(u16::MAX))
     }
 }
 
@@ -505,7 +516,10 @@ fn cursor_position(buf: &str, cursor: usize, width: usize) -> (u16, u16) {
         row += 1;
         col = 0;
     }
-    (row as u16, col as u16)
+    (
+        u16::try_from(row).unwrap_or(u16::MAX),
+        u16::try_from(col).unwrap_or(u16::MAX),
+    )
 }
 
 /// Redraw the prompt region, clearing rows that shrank.

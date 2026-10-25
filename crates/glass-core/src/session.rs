@@ -134,6 +134,17 @@ pub enum Record {
     },
 }
 
+fn json_usize_or_zero(value: &serde_json::Value, key: &str) -> Option<usize> {
+    match value.get(key).and_then(serde_json::Value::as_u64) {
+        Some(number) => checked_unsigned_index(number),
+        None => Some(0),
+    }
+}
+
+fn checked_unsigned_index<T: TryFrom<u64>>(value: u64) -> Option<T> {
+    T::try_from(value).ok()
+}
+
 impl Record {
     pub(crate) fn to_json(&self) -> serde_json::Value {
         use serde_json::json;
@@ -218,7 +229,10 @@ impl Record {
                 call_id: s("id"),
                 command: s("cmd").unwrap_or_default(),
                 output: s("out").unwrap_or_default(),
-                exit_code: v.get("code").and_then(|x| x.as_i64()).map(|x| x as i32),
+                exit_code: v
+                    .get("code")
+                    .and_then(|x| x.as_i64())
+                    .and_then(|code| i32::try_from(code).ok()),
                 truncated: v.get("trunc").and_then(|x| x.as_bool()).unwrap_or(false),
                 spill: s("spill"),
             },
@@ -244,15 +258,15 @@ impl Record {
                 data: s("data")?,
             },
             "edit" => Record::ContextEdit {
-                turn: v.get("turn").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+                turn: json_usize_or_zero(v, "turn")?,
                 mode: s("mode")?,
                 text: s("text"),
             },
             "compacted" => Record::Compacted {
-                kept: v.get("kept").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
-                dropped: v.get("dropped").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+                kept: json_usize_or_zero(v, "kept")?,
+                dropped: json_usize_or_zero(v, "dropped")?,
                 summary: s("sum"),
-                tail_start: v.get("tail").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+                tail_start: json_usize_or_zero(v, "tail")?,
                 system: s("sys"),
             },
             "custom" => Record::Custom {
@@ -265,7 +279,7 @@ impl Record {
             },
             "checkpoint" => Record::Checkpoint {
                 label: s("label")?,
-                log_len: v.get("log").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+                log_len: json_usize_or_zero(v, "log")?,
                 rewind_summary: s("rew"),
             },
             _ => return None,
@@ -2319,12 +2333,16 @@ fn apply_checkpoint_projection(mut records: Vec<Record>) -> Vec<Record> {
 }
 
 /// Sortable session id: base-36 millis, process ID, and a per-process counter.
+fn duration_millis_u64(duration: std::time::Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
 fn new_id() -> String {
     use std::sync::atomic::{AtomicU32, Ordering};
     static SEQ: AtomicU32 = AtomicU32::new(0);
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
+        .map(duration_millis_u64)
         .unwrap_or(0);
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     let mut id = String::new();
@@ -2859,6 +2877,51 @@ mod tests {
                 assert!(truncated);
             }
             other => panic!("wrong kind: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_record_rejects_out_of_range_exit_codes() {
+        let record = Record::from_json(&serde_json::json!({
+            "k": "bash",
+            "code": i64::MAX
+        }))
+        .expect("malformed optional exit code does not invalidate the record");
+        assert!(matches!(
+            record,
+            Record::Bash {
+                exit_code: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn persisted_session_indices_reject_values_outside_usize() {
+        let too_large = (u32::MAX as u64) + 1;
+        assert_eq!(checked_unsigned_index::<u32>(too_large), None);
+        if usize::BITS == 32 {
+            assert!(
+                json_usize_or_zero(&serde_json::json!({ "turn": too_large }), "turn").is_none()
+            );
+            assert!(
+                Record::from_json(&serde_json::json!({
+                    "k": "edit", "turn": too_large, "mode": "hide"
+                }))
+                .is_none()
+            );
+            assert!(
+                Record::from_json(&serde_json::json!({
+                    "k": "compacted", "kept": too_large
+                }))
+                .is_none()
+            );
+            assert!(
+                Record::from_json(&serde_json::json!({
+                    "k": "checkpoint", "label": "x", "log": too_large
+                }))
+                .is_none()
+            );
         }
     }
 
@@ -3907,6 +3970,14 @@ mod tests {
         assert_eq!(ids, original, "ids must be monotonic");
         ids.dedup();
         assert_eq!(ids.len(), 50);
+    }
+
+    #[test]
+    fn id_millisecond_timestamp_saturates_at_u64_max() {
+        assert_eq!(
+            duration_millis_u64(std::time::Duration::new(u64::MAX, 999_999_999)),
+            u64::MAX
+        );
     }
 
     /// Apply a `state` write the way the agent loop does: `State::apply`

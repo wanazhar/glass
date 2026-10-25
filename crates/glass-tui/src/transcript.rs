@@ -170,26 +170,35 @@ impl Transcript {
         let max = self
             .layout
             .total_lines()
-            .saturating_sub(height.max(1) as usize);
+            .saturating_sub(usize::from(height.max(1)));
         self.scroll = self.scroll.min(max);
     }
 
     /// Scroll by whole lines.
     pub fn step(&mut self, delta: isize, height: u16) {
-        self.scroll = (self.scroll as isize + delta).max(0) as usize;
+        self.scroll_by(delta, 1, height);
+    }
+
+    /// Scroll by half a viewport for the fullscreen transcript.
+    pub fn page(&mut self, delta: isize, height: u16) {
+        let step = (usize::from(height.max(1)) / 2).max(1);
+        self.scroll_by(delta, step, height);
+    }
+
+    fn scroll_by(&mut self, delta: isize, multiplier: usize, height: u16) {
+        let distance = delta.unsigned_abs().saturating_mul(multiplier);
+        self.scroll = if delta < 0 {
+            self.scroll.saturating_sub(distance)
+        } else {
+            self.scroll.saturating_add(distance)
+        };
         self.clamp(height);
         self.follow = delta >= 0
             && self.scroll
                 == self
                     .layout
                     .total_lines()
-                    .saturating_sub(height.max(1) as usize);
-    }
-
-    /// Scroll by half a viewport for the fullscreen transcript.
-    pub fn page(&mut self, delta: isize, height: u16) {
-        let step = (height as isize / 2).max(1);
-        self.step(delta * step, height);
+                    .saturating_sub(usize::from(height.max(1)));
     }
 
     /// Jump to the first line of a turn.
@@ -321,7 +330,7 @@ impl Transcript {
         self.scroll = self
             .layout
             .total_lines()
-            .saturating_sub(height.max(1) as usize);
+            .saturating_sub(usize::from(height.max(1)));
         self.clamp(height);
     }
 
@@ -458,7 +467,9 @@ impl Transcript {
             m.on_render(&mut overlay, (view.width, view.height));
         }
         if !overlay.lines.is_empty() {
-            let h = (overlay.lines.len() as u16).min(chunks[1].height);
+            let h = u16::try_from(overlay.lines.len())
+                .unwrap_or(u16::MAX)
+                .min(chunks[1].height);
             let rect = Rect {
                 x: view.x,
                 y: chunks[1].y,
@@ -691,6 +702,28 @@ mod tests {
         assert_eq!(t.scroll, 0);
         t.step(100_000, H);
         assert!(t.scroll <= t.layout.total_lines().saturating_sub(1));
+    }
+
+    #[test]
+    fn extreme_scroll_deltas_saturate_without_signed_overflow() {
+        let mut t = Transcript::new(entries(50));
+        t.top();
+        t.step(isize::MIN, H);
+        assert_eq!(t.scroll, 0);
+        t.step(isize::MAX, H);
+        assert_eq!(
+            t.scroll,
+            t.layout.total_lines().saturating_sub(usize::from(H))
+        );
+
+        t.top();
+        t.page(isize::MAX, u16::MAX);
+        assert_eq!(
+            t.scroll,
+            t.layout.total_lines().saturating_sub(usize::from(u16::MAX))
+        );
+        t.page(isize::MIN, u16::MAX);
+        assert_eq!(t.scroll, 0);
     }
 
     #[test]

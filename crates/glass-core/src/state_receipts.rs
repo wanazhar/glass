@@ -93,12 +93,16 @@ impl Receipt {
     /// replay, and everything else is reporting detail.
     pub fn from_json(value: &Value) -> Option<Receipt> {
         let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
+        let usize_field = |key: &str| match value.get(key).and_then(Value::as_u64) {
+            Some(count) => usize::try_from(count).ok(),
+            None => Some(0),
+        };
         Some(Receipt {
             request_id: text("request")?,
             revision: text("revision").unwrap_or_default(),
             base_revision: text("base").unwrap_or_default(),
-            items: value.get("items").and_then(Value::as_u64).unwrap_or(0) as usize,
-            bytes: value.get("bytes").and_then(Value::as_u64).unwrap_or(0) as usize,
+            items: usize_field("items")?,
+            bytes: usize_field("bytes")?,
             actor: text("actor").unwrap_or_default(),
             applied_at: value.get("at").and_then(Value::as_u64).unwrap_or(0),
         })
@@ -343,6 +347,19 @@ mod tests {
         assert_eq!(restored.request_id, "req-2");
         assert_eq!(restored.revision, "");
         assert_eq!(restored.actor, "");
+    }
+
+    #[test]
+    fn receipt_counts_reject_values_that_exceed_platform_usize() {
+        let value = json!({ "request": "req-wide", "items": u64::MAX, "bytes": 1 });
+        if usize::BITS < 64 {
+            assert!(Receipt::from_json(&value).is_none());
+        } else {
+            assert_eq!(
+                Receipt::from_json(&value).unwrap().items,
+                usize::try_from(u64::MAX).unwrap()
+            );
+        }
     }
 
     #[test]

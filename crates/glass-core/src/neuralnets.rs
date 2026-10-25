@@ -540,6 +540,11 @@ pub fn refresh_context(mut system: String, current: Option<&str>) -> String {
 }
 
 /// Human memory browser, sharing the agent and CLI storage contract.
+fn has_next_page(offset: usize, page_len: usize, total: u64) -> bool {
+    let total = usize::try_from(total).unwrap_or(usize::MAX);
+    offset.saturating_add(page_len) < total
+}
+
 pub fn view(keys: &crate::input::KeyReader, root: &Path) {
     let mut offset = 0usize;
     loop {
@@ -562,7 +567,7 @@ pub fn view(keys: &crate::input::KeyReader, root: &Path) {
                 )
             })
             .collect::<Vec<_>>();
-        let next = offset + entries.len() < value["total"].as_u64().unwrap_or(0) as usize;
+        let next = has_next_page(offset, entries.len(), value["total"].as_u64().unwrap_or(0));
         if next {
             rows.push("Next page →".into());
         }
@@ -746,6 +751,14 @@ fn view_facts(keys: &crate::input::KeyReader, root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_page_count_conversion_does_not_wrap_or_overflow() {
+        assert!(has_next_page(0, 1, u64::MAX));
+        assert!(!has_next_page(usize::MAX, 1, u64::MAX));
+        assert!(!has_next_page(5, 5, 10));
+    }
+
     #[test]
     fn relevant_recall_beats_recency_and_fills_budget() {
         let mut store = Store {

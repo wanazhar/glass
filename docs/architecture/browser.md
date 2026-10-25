@@ -138,7 +138,8 @@ is not left with a stuck button.
 
 `CdpBrowserSession::wait` accepts one typed condition and an explicit deadline.
 Public string forms are `lifecycle=<load|domcontentloaded|complete>`,
-`url=<exact URL>`, `url-prefix=<prefix>`, `target-attached=<locator>`,
+`url=<exact URL>`, `url-prefix=<prefix>`, `title-contains=<fragment>`,
+`target-attached=<locator>`,
 `target-visible=<locator>`, `target-hidden=<locator>`,
 `target-enabled=<locator>`, `target-stable=<locator>`, `text=<visible substring>`,
 `js=<predicate>`, and `network-quiet=<milliseconds>`. JavaScript predicates

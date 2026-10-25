@@ -13,6 +13,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const SEMANTIC_OBSERVATION_SCHEMA_VERSION: u32 = 1;
+pub const MAX_SEMANTIC_SCROLL_TARGETS: usize = 64;
 const MAX_REGIONS: usize = 64;
 const MAX_EVIDENCE_ITEMS: usize = 8;
 const MAX_EVIDENCE_BYTES: usize = 128;
@@ -280,6 +281,8 @@ pub struct SemanticObservationLimits {
     pub truncated: bool,
     pub omitted_regions: usize,
     #[serde(default)]
+    pub omitted_scroll_targets: usize,
+    #[serde(default)]
     pub omitted_targets: usize,
     #[serde(default)]
     pub omitted_structured_records: usize,
@@ -320,6 +323,10 @@ pub struct SemanticObservation {
     pub route: SemanticRouteIdentity,
     pub page: SemanticPage,
     pub regions: Vec<SemanticRegion>,
+    /// Fresh revision-bound native overflow containers that can be selected
+    /// explicitly for a targeted scroll action.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scroll_targets: Vec<SemanticScrollTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -329,6 +336,21 @@ pub struct SemanticObservation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changes: Option<SemanticChangeSet>,
     pub limits: SemanticObservationLimits,
+}
+
+/// One native scroll container observed in the same revision as the page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticScrollTarget {
+    pub reference: String,
+    pub frame_id: String,
+    pub tag_name: String,
+    pub role: String,
+    pub name: String,
+    pub scroll_x: u32,
+    pub scroll_y: u32,
+    pub max_scroll_x: u32,
+    pub max_scroll_y: u32,
 }
 
 impl SemanticObservation {
@@ -444,6 +466,7 @@ impl SemanticObservation {
                 evidence,
             },
             regions,
+            scroll_targets: Vec::new(),
             text: bounded_text.clone(),
             accessibility: level.includes_accessibility().then(|| {
                 context
@@ -472,6 +495,7 @@ impl SemanticObservation {
                         .is_some_and(|text| text.ends_with("[truncated]")),
                 omitted_regions: 0,
                 omitted_targets: context.accessibility.omitted_count,
+                omitted_scroll_targets: 0,
                 omitted_structured_records,
                 structured_bytes: level.includes_text().then_some(structured_bytes),
                 omitted_bytes: None,
@@ -704,6 +728,47 @@ impl SemanticObservation {
             ));
         }
         validate_level_payload(self)?;
+        if self.scroll_targets.len() > MAX_SEMANTIC_SCROLL_TARGETS {
+            return Err(SemanticObservationError::new(
+                "scrollTargets",
+                format!("contains more than {MAX_SEMANTIC_SCROLL_TARGETS} targets"),
+            ));
+        }
+        for (index, target) in self.scroll_targets.iter().enumerate() {
+            let path = format!("scrollTargets[{index}]");
+            validate_text(
+                &format!("{path}.reference"),
+                &target.reference,
+                MAX_ID_BYTES,
+                false,
+            )?;
+            validate_text(
+                &format!("{path}.frameId"),
+                &target.frame_id,
+                MAX_ID_BYTES,
+                false,
+            )?;
+            validate_text(
+                &format!("{path}.tagName"),
+                &target.tag_name,
+                MAX_ROLE_BYTES,
+                false,
+            )?;
+            validate_text(&format!("{path}.role"), &target.role, MAX_ROLE_BYTES, true)?;
+            validate_text(&format!("{path}.name"), &target.name, MAX_LABEL_BYTES, true)?;
+            if target.max_scroll_x == 0 && target.max_scroll_y == 0 {
+                return Err(SemanticObservationError::new(
+                    path,
+                    "target has no scrollable axis",
+                ));
+            }
+            if target.scroll_x > target.max_scroll_x || target.scroll_y > target.max_scroll_y {
+                return Err(SemanticObservationError::new(
+                    path,
+                    "scroll offset exceeds its observed maximum",
+                ));
+            }
+        }
         if let Some(changes) = &self.changes {
             validate_change_set(changes)?;
             if changes.to_revision != self.revision || changes.route != self.route {
@@ -1913,6 +1978,7 @@ mod tests {
                     route: route.clone(),
                 }),
             }],
+            scroll_targets: Vec::new(),
             text: None,
             accessibility: None,
             raw_accessibility: None,

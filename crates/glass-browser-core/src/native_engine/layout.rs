@@ -172,6 +172,14 @@ pub(crate) struct NativeScrollContainer {
     pub(crate) scroll_offset: NativePoint,
 }
 
+/// Layout-only scroll state used to build an inspection snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeScrollMetrics {
+    pub(crate) node_id: NativeNodeId,
+    pub(crate) scroll_offset: NativePoint,
+    pub(crate) max_scroll_offset: NativePoint,
+}
+
 impl NativeScrollContainer {
     pub(crate) const fn max_scroll_offset(self) -> NativePoint {
         NativePoint {
@@ -575,6 +583,17 @@ impl NativeLayoutSnapshot {
             .iter()
             .find(|container| container.node_id == node_id)
             .copied()
+    }
+
+    pub(crate) fn observed_scroll_targets(&self) -> Vec<NativeScrollMetrics> {
+        self.scroll_containers
+            .iter()
+            .map(|container| NativeScrollMetrics {
+                node_id: container.node_id,
+                scroll_offset: container.scroll_offset,
+                max_scroll_offset: container.max_scroll_offset(),
+            })
+            .collect()
     }
 
     pub(crate) fn nested_scroll_offset_for(

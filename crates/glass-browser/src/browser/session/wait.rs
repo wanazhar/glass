@@ -263,6 +263,11 @@ impl CdpBrowserSession {
                 let page = self.page_info().await?;
                 Ok((page.url.starts_with(prefix), page.url, None))
             }
+            WaitCondition::TitleContains(fragment) => {
+                let page = self.page_info().await?;
+                let matched = page.title.to_lowercase().contains(&fragment.to_lowercase());
+                Ok((matched, page.title, None))
+            }
             WaitCondition::Text(expected) => {
                 let expression = visible_text_contains_expression(expected)?;
                 let value = self.evaluate_value(&expression).await?;

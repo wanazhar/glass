@@ -3026,6 +3026,15 @@ impl BrowserRuntimeSession {
                     None,
                 ))
             }
+            WaitCondition::TitleContains(fragment) => {
+                let observation = self.native_semantic_observation().await?;
+                let matched = observation
+                    .page
+                    .title
+                    .to_lowercase()
+                    .contains(&fragment.to_lowercase());
+                Ok((matched, format!("title={}", observation.page.title), None))
+            }
             WaitCondition::Text(expected) => {
                 let observation = self.native_semantic_observation().await?;
                 let text = observation.text.unwrap_or_default();
@@ -3329,6 +3338,7 @@ fn build_native_semantic_observation(
         })
         .collect::<Vec<_>>();
     let (text, text_truncated) = bounded_native_semantic_text(frames);
+    let (scroll_targets, omitted_scroll_targets) = native_scroll_targets(frames);
     let viewport = native.layout.viewport;
     let scroll_offset = native.layout.scroll_offset;
     let observation = super::session::SemanticObservation {
@@ -3346,6 +3356,7 @@ fn build_native_semantic_observation(
             evidence: vec!["native page snapshot".into()],
         },
         regions,
+        scroll_targets,
         text: native_level_includes_text(level).then_some(text.clone()),
         accessibility: native_level_includes_accessibility(level)
             .then(|| native_accessibility_nodes(frames)),
@@ -3357,6 +3368,7 @@ fn build_native_semantic_observation(
                 frame.inspection.snapshot.title_truncated
                     || frame.inspection.snapshot.text_truncated
             }) || omitted_targets > 0
+                || omitted_scroll_targets > 0
                 || target_labels_truncated
                 || (native_level_includes_text(level) && text_truncated)
                 || (native_level_includes_accessibility(level)
@@ -3364,6 +3376,7 @@ fn build_native_semantic_observation(
                         > NATIVE_SEMANTIC_ACCESSIBILITY_LIMIT),
             omitted_regions: 0,
             omitted_targets,
+            omitted_scroll_targets,
             omitted_structured_records: 0,
             structured_bytes: native_level_includes_text(level).then_some(0),
             omitted_bytes: None,
@@ -3381,6 +3394,51 @@ fn build_native_semantic_observation(
     };
     observation.validate()?;
     Ok(observation)
+}
+
+#[cfg(feature = "native-engine")]
+fn native_scroll_targets(
+    frames: &[NativeFrameInspectionSnapshot],
+) -> (Vec<super::session::SemanticScrollTarget>, usize) {
+    const MAX_SCROLL_TARGETS: usize = super::session::MAX_SEMANTIC_SCROLL_TARGETS;
+    let targets = frames
+        .iter()
+        .flat_map(|frame| {
+            frame
+                .inspection
+                .scroll_targets
+                .iter()
+                .filter_map(move |scroll| {
+                    if scroll.max_scroll_offset.x == 0 && scroll.max_scroll_offset.y == 0 {
+                        return None;
+                    }
+                    if scroll.tag_name.is_empty() {
+                        return None;
+                    }
+                    Some(super::session::SemanticScrollTarget {
+                        reference: scroll.reference.clone(),
+                        frame_id: frame.frame_id.clone(),
+                        tag_name: scroll.tag_name.clone(),
+                        role: "scrollContainer".into(),
+                        name: scroll
+                            .label
+                            .as_deref()
+                            .or(scroll.id.as_deref())
+                            .unwrap_or_default()
+                            .to_owned(),
+                        scroll_x: scroll.scroll_offset.x,
+                        scroll_y: scroll.scroll_offset.y,
+                        max_scroll_x: scroll.max_scroll_offset.x,
+                        max_scroll_y: scroll.max_scroll_offset.y,
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    let omitted = targets.len().saturating_sub(MAX_SCROLL_TARGETS);
+    (
+        targets.into_iter().take(MAX_SCROLL_TARGETS).collect(),
+        omitted,
+    )
 }
 
 #[cfg(feature = "native-engine")]

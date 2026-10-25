@@ -973,6 +973,7 @@ async fn execute_pagination_collect(
                 evidence: Vec::new(),
             },
             regions: Vec::new(),
+            scroll_targets: Vec::new(),
             text: None,
             accessibility: None,
             raw_accessibility: None,

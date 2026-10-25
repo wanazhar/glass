@@ -298,6 +298,90 @@ async fn execute_step(
             )
             .await
         }
+        BatchStep::ScrollTargetObserved {
+            name_contains,
+            tag_name,
+            frame_id,
+            dx,
+            dy,
+        } => {
+            let (delta_x, delta_y) = scroll_deltas(*dx, *dy)?;
+            let name_contains = name_contains
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_lowercase);
+            let tag_name = tag_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_lowercase);
+            if name_contains.is_none() && tag_name.is_none() {
+                return Err("scrollTargetObserved requires nameContains or tagName".into());
+            }
+            if delta_x == 0 && delta_y == 0 {
+                return Err("scrollTargetObserved requires a nonzero scroll delta".into());
+            }
+            let observation = session.native_observe().await?;
+            if expected_revision.is_some_and(|expected| expected != observation.revision) {
+                return Err(
+                    "batch revision changed before observed scroll target selection".into(),
+                );
+            }
+            let mut matches = observation.scroll_targets.iter().filter(|target| {
+                name_contains
+                    .as_ref()
+                    .is_none_or(|name| target.name.to_lowercase().contains(name))
+                    && tag_name
+                        .as_ref()
+                        .is_none_or(|tag| target.tag_name.eq_ignore_ascii_case(tag))
+                    && frame_id
+                        .as_deref()
+                        .is_none_or(|frame| target.frame_id == frame)
+                    && (delta_x == 0
+                        || (delta_x > 0 && target.max_scroll_x > target.scroll_x)
+                        || (delta_x < 0 && target.scroll_x > 0))
+                    && (delta_y == 0
+                        || (delta_y > 0 && target.max_scroll_y > target.scroll_y)
+                        || (delta_y < 0 && target.scroll_y > 0))
+            });
+            let target = matches.next().ok_or_else(|| {
+                let available = observation
+                    .scroll_targets
+                    .iter()
+                    .take(8)
+                    .map(|target| {
+                        let name = target.name.chars().take(64).collect::<String>();
+                        if name.is_empty() {
+                            target.tag_name.clone()
+                        } else {
+                            format!("{}[{}]", target.tag_name, name)
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let suffix = if available.is_empty() {
+                    "none".to_owned()
+                } else {
+                    available.join(", ")
+                };
+                format!(
+                    "fresh observation has no matching scroll target; available targets: {suffix}"
+                )
+            })?;
+            if matches.next().is_some() {
+                return Err("fresh observation has ambiguous scroll targets".into());
+            }
+            execute_action(
+                session,
+                SemanticAction::ScrollTarget {
+                    target: target.reference.clone(),
+                    delta_x,
+                    delta_y,
+                },
+                Some(observation.revision),
+            )
+            .await
+        }
         BatchStep::Wait {
             condition,
             timeout_ms,
@@ -377,11 +461,22 @@ async fn execute_action(
     action: SemanticAction,
     expected_revision: Option<u64>,
 ) -> BrowserResult<(Option<usize>, Option<u64>, Option<String>)> {
+    let viewport_scroll = matches!(action, SemanticAction::Scroll { .. });
     let result = match expected_revision {
         Some(revision) => session.action_with_revision(action, revision).await?,
         None => session.action(action).await?,
     };
     if !result.accepted {
+        if viewport_scroll {
+            let observation = session.native_observe().await?;
+            if let Some(viewport) = observation.limits.viewport {
+                return Err(format!(
+                    "native viewport scroll produced no movement (scrollY={}, documentHeight={}, viewportHeight={})",
+                    viewport.scroll_y, viewport.document_height, viewport.height
+                )
+                .into());
+            }
+        }
         return Err("native batch action was not accepted".into());
     }
     Ok((
@@ -415,6 +510,7 @@ fn action_name(step: &BatchStep) -> String {
         BatchStep::Clear { .. } => "clear",
         BatchStep::Scroll { .. } => "scroll",
         BatchStep::ScrollTarget { .. } => "scrollTarget",
+        BatchStep::ScrollTargetObserved { .. } => "scrollTargetObserved",
         BatchStep::Wait { .. } => "wait",
         BatchStep::Observe { .. } => "observe",
         BatchStep::Screenshot => "screenshot",

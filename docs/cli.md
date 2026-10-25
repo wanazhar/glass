@@ -172,7 +172,8 @@ to dismissal. Page-provided text is escaped before display. Non-interactive
 native commands retain non-modal behavior and do not wait for terminal input.
 This host path does not yet cover persistent-session commands or MCP clients.
 
-Native `wait` supports `lifecycle=`, `url=`, `url-prefix=`, `text=`,
+Native `wait` supports `lifecycle=`, `url=`, `url-prefix=`,
+`title-contains=`, `text=`,
 `semantic-region=`, `js=` boolean, and target-state conditions. Native
 `verify` accepts the same JSON predicate forms used by the full session for
 URL, title, visibility, text, revision, and bounded composition. Both use

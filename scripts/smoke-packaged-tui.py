@@ -9,6 +9,7 @@ import signal
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
 import time
 
@@ -30,12 +31,18 @@ def main() -> None:
     if not binary.is_file() or not os.access(binary, os.X_OK):
         fail(f"packaged artifact is not executable: {binary}")
 
+    temporary_home = tempfile.TemporaryDirectory(prefix="glass-packaged-tui-home-")
     master_fd, slave_fd = os.openpty()
     try:
         environment = os.environ.copy()
+        environment["HOME"] = temporary_home.name
+        environment["XDG_CONFIG_HOME"] = str(pathlib.Path(temporary_home.name) / "config")
+        environment["XDG_DATA_HOME"] = str(pathlib.Path(temporary_home.name) / "data")
+        environment["XDG_CACHE_HOME"] = str(pathlib.Path(temporary_home.name) / "cache")
+        environment["XDG_STATE_HOME"] = str(pathlib.Path(temporary_home.name) / "state")
         environment.setdefault("TERM", "xterm-256color")
         child = subprocess.Popen(
-            [str(binary), "tui"],
+            [str(binary)],
             stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,
@@ -60,9 +67,15 @@ def main() -> None:
         # SGR mouse, bracketed paste, ordinary keys, and bounded shutdown.
         fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 64, 0, 0))
         os.write(master_fd, b"\x1b[I\x1b[<64;4;4M\x1b[<64;4;4m")
-        os.write(master_fd, b":\x1b[200~help\x1b[201~\r")
+        os.write(master_fd, b"?")
         time.sleep(0.1)
-        os.write(master_fd, b"q")
+        os.write(master_fd, b"\x1b[200~help\x1b[201~\x1b")
+        time.sleep(0.1)
+        # The current CLI starts the TUI with no subcommand. Ctrl-C opens the
+        # explicit quit confirmation; Enter confirms without sending a prompt.
+        os.write(master_fd, b"\x03")
+        time.sleep(0.1)
+        os.write(master_fd, b"\r")
         while child.poll() is None and time.monotonic() < deadline:
             readable, _, _ = select.select([master_fd], [], [], 0.05)
             if readable:
@@ -87,6 +100,7 @@ def main() -> None:
             output.extend(chunk)
     finally:
         os.close(master_fd)
+        temporary_home.cleanup()
 
     if child.returncode != 0:
         fail(f"exited unsuccessfully: {child.returncode}")

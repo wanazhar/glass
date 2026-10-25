@@ -93,6 +93,41 @@ async fn explicit_scroll_target_moves_only_the_observed_nested_container() {
 }
 
 #[tokio::test]
+async fn percentage_height_shell_keeps_long_article_in_document_extent() {
+    let article = (0..48)
+        .map(|index| format!("<p>Paragraph {index}: detailed documentation content.</p>"))
+        .collect::<String>();
+    let html = format!(
+        "<style>html,body{{width:100%;height:100%}}body{{margin:0}}main{{height:100%;position:relative}}.container{{flex-direction:column;display:flex}}.page{{padding:32px}}</style><main><div class='container'><div class='page content'><h1>Overview</h1>{article}</div></div></main>"
+    );
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://percentage-shell.test/")
+        .with_fixture("fixture://percentage-shell.test/", html)
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let layout = engine.layout().unwrap();
+    assert!(
+        layout.content_height > layout.viewport.height,
+        "long article extent {} should exceed viewport {}",
+        layout.content_height,
+        layout.viewport.height
+    );
+    assert!(
+        engine
+            .action_async(NativeAction::Scroll {
+                delta_x: 0,
+                delta_y: 120
+            })
+            .await
+            .unwrap()
+            .accepted
+    );
+    engine.close_async().await.unwrap();
+}
+
+#[tokio::test]
 async fn asynchronous_effect_turn_rejects_a_different_context_or_frame() {
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://async-effect-owner")

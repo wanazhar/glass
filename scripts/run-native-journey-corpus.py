@@ -32,6 +32,8 @@ def classify(message: str, timed_out: bool = False) -> str:
             "observed target is ambiguous",
             "no visible target matches",
             "multiple visible targets match",
+            "fresh observation has no matching scroll target",
+            "fresh observation has ambiguous scroll targets",
         )
     ):
         return "product_bug"
@@ -64,6 +66,12 @@ def error_kind(message: str, timed_out: bool = False) -> str:
         return "native_target_not_found"
     if "multiple visible targets match" in text:
         return "native_target_ambiguous"
+    if "fresh observation has no matching scroll target" in text:
+        return "native_scroll_target_not_found"
+    if "fresh observation has ambiguous scroll targets" in text:
+        return "native_scroll_target_ambiguous"
+    if "native viewport scroll produced no movement" in text:
+        return "native_viewport_scroll_unavailable"
     if "content-process document snapshot" in text and "exceeds limit" in text:
         return "native_snapshot_budget_exceeded"
     if ("host view" in text or "javascript host snapshot" in text) and (
@@ -97,8 +105,39 @@ def observed_click_step(step: dict) -> dict:
     return {"action": "clickObserved", "role": role, "nameContains": name_contains}
 
 
+def observed_scroll_step(step: dict) -> dict:
+    if step.get("targetSource") != "fresh-observation":
+        raise ValueError("scrollTargetObserved requires targetSource=fresh-observation")
+    name_contains = step.get("nameContains")
+    tag_name = step.get("tagName")
+    if not (isinstance(name_contains, str) and name_contains.strip()) and not (
+        isinstance(tag_name, str) and tag_name.strip()
+    ):
+        raise ValueError("scrollTargetObserved requires nonempty nameContains or tagName")
+    result = {"action": "scrollTargetObserved", "dx": step.get("dx", 0), "dy": step.get("dy", 0)}
+    if isinstance(name_contains, str) and name_contains.strip():
+        result["nameContains"] = name_contains
+    if isinstance(tag_name, str) and tag_name.strip():
+        result["tagName"] = tag_name
+    if isinstance(step.get("frameId"), str) and step["frameId"].strip():
+        result["frameId"] = step["frameId"]
+    return result
+
+
+def observed_viewport_scroll_step(step: dict, previous_action: str | None) -> dict:
+    if step.get("targetSource") != "observed-viewport":
+        raise ValueError("scroll requires targetSource=observed-viewport")
+    if previous_action != "observe":
+        raise ValueError("scroll requires a fresh observe step immediately before it")
+    result = {"action": "scroll", "dx": step.get("dx", 0), "dy": step.get("dy", 0)}
+    if result["dx"] == 0 and result["dy"] == 0:
+        raise ValueError("observed viewport scroll requires a nonzero delta")
+    return result
+
+
 def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
     steps = []
+    previous_action = None
     for step in journey["steps"]:
         action = step["action"]
         if action == "navigate":
@@ -112,6 +151,16 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
                 steps.append(observed_click_step(step))
             except ValueError as error:
                 return {"id": journey["id"], "classification": "product_bug", "message": str(error)}
+        elif action == "scrollTargetObserved":
+            try:
+                steps.append(observed_scroll_step(step))
+            except ValueError as error:
+                return {"id": journey["id"], "classification": "product_bug", "message": str(error)}
+        elif action == "scroll":
+            try:
+                steps.append(observed_viewport_scroll_step(step, previous_action))
+            except ValueError as error:
+                return {"id": journey["id"], "classification": "product_bug", "message": str(error)}
         elif action == "assert":
             condition = step["condition"] if "condition" in step else f"js={step['expression']}"
             steps.append({"action": "wait", "condition": condition, "timeout_ms": step.get("timeoutMs", 5000)})
@@ -121,6 +170,7 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
             steps.append({"action": "wait", "condition": "js=document.createElement('video').canPlayType('video/mp4') === ''", "timeout_ms": 1000})
         else:
             return {"id": journey["id"], "classification": "unsupported", "message": f"runner does not implement step action {action}"}
+        previous_action = action
 
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="glass-native-journey-") as temp_dir:

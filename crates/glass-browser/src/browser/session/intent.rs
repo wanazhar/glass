@@ -1920,6 +1920,7 @@ mod tests {
             route,
             page,
             regions: vec![region],
+            scroll_targets: Vec::new(),
             text: None,
             accessibility: None,
             raw_accessibility: None,

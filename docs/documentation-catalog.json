@@ -3106,6 +3106,11 @@
           "anchor": "native-video-capability-boundary"
         },
         {
+          "level": "3",
+          "title": "Current dependency and output audit",
+          "anchor": "current-dependency-and-output-audit"
+        },
+        {
           "level": "2",
           "title": "Coverage map",
           "anchor": "coverage-map"

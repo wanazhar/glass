@@ -134,6 +134,32 @@ license review, and a separate audio output design. The implementation must
 choose and package a narrow initial matrix before reporting support; it must
 not infer support from a recognized MIME type or successful metadata parse.
 
+### Current dependency and output audit
+
+The 25 October 2026 workspace audit found no video demuxer/decoder or audio
+sink in `Cargo.toml`/`Cargo.lock`; `symphonia`, FFmpeg bindings, GStreamer,
+`cpal`, and `rodio` are absent. The system `ffmpeg` executable available in
+this development environment reports a GPL build with GPL-enabled codecs,
+including `libx264`; it is not an acceptable implicit runtime dependency or
+redistributable decoder choice for the existing native binaries. FFmpeg's
+own [license guidance](https://www.ffmpeg.org/legal.html) distinguishes its
+LGPL build from optional GPL components and documents the dynamic-linking and
+corresponding-source requirements for redistribution. The host has runtime
+libav shared libraries, but `pkg-config` cannot locate `libavformat` development
+metadata. `aplay -l` reports no sound cards. The project CI builds across
+Ubuntu, macOS, and Windows, so these local packages do not establish a
+cross-platform build or playback path.
+
+This leaves an explicit implementation blocker: maintainers must select the
+initial container/codec and its license-compatible packaging route, and decide
+how a native browser session supplies audio output (including a deliberate
+silent-video mode if no device is available). The decoder must also expose
+bounded decoded frames to the existing paint path and a clock/event contract
+to the media element. Until those choices are made and that path is tested,
+`canPlayType()` remains empty and `play()` rejects with `NotSupportedError`.
+Symphonia 0.6 is not a video-decoding shortcut: its [upstream release notes](https://github.com/pdeljanov/Symphonia/releases)
+state that video and subtitle decoders are not yet supported.
+
 ## Coverage map
 
 | Journey surface | Evidence source | Current status |

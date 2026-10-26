@@ -165,6 +165,45 @@ fn both_cli_help_paths_exit_successfully() {
 }
 
 #[test]
+fn glass_only_help_omits_inherited_browser_options_without_hiding_browser_help() {
+    let glass = glass_binary();
+    for arguments in [
+        vec!["workspace", "--help"],
+        vec!["workspace", "list", "--policy", "hardened", "--help"],
+        vec!["agent", "--help"],
+        vec!["agent", "status", "--help"],
+        vec!["daemon", "status", "--help"],
+        vec!["project", "--help"],
+        vec!["logs", "--help"],
+        vec!["mcp-config", "--help"],
+    ] {
+        let output = Command::new(&glass)
+            .args(&arguments)
+            .output()
+            .expect("Glass-only command help should run");
+        assert!(
+            output.status.success(),
+            "help failed for {arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let help = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !help.contains("--policy <POLICY>") && !help.contains("--browser-runtime"),
+            "irrelevant Browser options leaked into {arguments:?}:\n{help}"
+        );
+    }
+
+    let browser_help = Command::new(&glass)
+        .args(["navigate", "--help"])
+        .output()
+        .expect("Browser command help should run");
+    assert!(browser_help.status.success());
+    let browser_help = String::from_utf8_lossy(&browser_help.stdout);
+    assert!(browser_help.contains("--policy <POLICY>"));
+    assert!(browser_help.contains("--browser-runtime"));
+}
+
+#[test]
 fn cli_project_and_agent_paths_are_browser_free() {
     let root = temp_project();
     let binary = glass_binary();

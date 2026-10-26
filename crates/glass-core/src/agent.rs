@@ -309,6 +309,11 @@ pub struct Agent<'a> {
     loop_window: crate::loop_detect::LoopWindow,
     /// Count of tool calls run in this turn, for the read-staleness hint.
     tool_call_index: u64,
+    /// Hashed schema identities for the exact provider tool catalogue in the
+    /// current request; included in local diagnostics only after a failure.
+    active_tool_catalog: Option<serde_json::Value>,
+    /// Backend from the most recent successful browser tool result.
+    browser_backend: Option<String>,
     /// The cancellation token every extension tool call this turn runs
     /// under. Tripped when the user steers, so a slow extension stops
     /// waiting for results the turn no longer needs.
@@ -458,6 +463,8 @@ impl<'a> Agent<'a> {
             live: None,
             loop_window: crate::loop_detect::LoopWindow::new(),
             tool_call_index: 0,
+            active_tool_catalog: None,
+            browser_backend: None,
             turn_cancel: crate::ext::Cancel::new(),
         }
     }
@@ -846,6 +853,10 @@ impl<'a> Agent<'a> {
             }
         }
         let provider_tool_names = provider_tool_aliases(&mut tools);
+        self.active_tool_catalog = Some(crate::session_diagnostics::provider_tool_catalog(
+            &tools,
+            &provider_tool_names,
+        ));
         if !diff.added.is_empty() || !diff.removed.is_empty() {
             let mut note = String::from("tool set frozen for prompt-cache stability");
             if !diff.added.is_empty() {
@@ -2990,6 +3001,30 @@ impl<'a> Agent<'a> {
     /// Record a tool result and notify mods. The single path every tool
     /// outcome takes, including the ones blocked by a guard.
     fn finish_tool(&mut self, call: &ToolCall, outcome: tools::Outcome) {
+        if call.name.starts_with("glass.browser.")
+            && outcome.exit_code == Some(0)
+            && let Ok(result) = serde_json::from_str::<serde_json::Value>(&outcome.body)
+            && let Some(backend) = result.get("backend").and_then(serde_json::Value::as_str)
+            && matches!(backend, "native" | "chromium")
+        {
+            self.browser_backend = Some(backend.to_owned());
+        }
+        if outcome.exit_code.is_none() {
+            let backend = if matches!(call.name.as_str(), "web_search" | "web_fetch") {
+                Some("core")
+            } else {
+                self.browser_backend.as_deref()
+            };
+            crate::session_diagnostics::record_tool_failure(
+                self.workspace,
+                &self.session.id,
+                &call.id,
+                &call.name,
+                backend,
+                &outcome.body,
+                self.active_tool_catalog.as_ref(),
+            );
+        }
         self.approved_calls.remove(&call.id);
         if let Some(live) = self.live.as_mut() {
             live.tool_done();
@@ -3485,6 +3520,115 @@ mod warm_integration {
         assert!(tools[2].1.starts_with(
             "Glass route: glass.workspace.list. Invoke this using the advertised tool name."
         ));
+    }
+
+    #[test]
+    fn provider_schema_rejection_writes_private_diagnostic_with_actual_catalog_fingerprint() {
+        struct InvalidSchemaProvider(AtomicU64);
+        impl Provider for InvalidSchemaProvider {
+            fn id(&self) -> &str {
+                "diagnostic-provider-fixture"
+            }
+            fn stream(
+                &self,
+                request: &Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+                let attempt = self.0.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    let (wire_name, _, _) = request
+                        .tools
+                        .iter()
+                        .find(|(_, description, _)| {
+                            description.starts_with("Glass route: glass.browser.start.")
+                        })
+                        .expect("provider request advertises the browser start route");
+                    Ok(Box::new(
+                        vec![
+                            Event::ToolCall {
+                                id: "call-diagnostics".into(),
+                                name: wire_name.clone(),
+                                arguments: r#"{"headed":"enabled"}"#.into(),
+                            },
+                            Event::Done,
+                        ]
+                        .into_iter(),
+                    ))
+                } else {
+                    Ok(Box::new(
+                        vec![Event::Text("finished".into()), Event::Done].into_iter(),
+                    ))
+                }
+            }
+            fn context_window(&self) -> u32 {
+                200_000
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "gc-tool-diagnostics-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let schema = r#"{"type":"object","properties":{"headed":{"type":"boolean"}}}"#;
+        let provider = InvalidSchemaProvider(AtomicU64::new(0));
+        let mut session = Session::create(&root).unwrap();
+        session.append(Record::User("open the local page".into()));
+        let mut state = State::new();
+        let mods = Vec::new();
+        let mut extensions = Registry::empty();
+        let mut agent = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &root,
+        )
+        .with_mixed_host_tools(
+            vec![(
+                "glass.browser.start".into(),
+                "Start the Glass browser".into(),
+                schema.into(),
+            )],
+            Box::new(|_, _, _| panic!("rejected schema must not reach host dispatch")),
+        );
+        let (_, stop) = agent.run_turn(no_pump).unwrap();
+        assert_eq!(stop, Stop::Finished);
+        drop(agent);
+        let path = root.join(".glass/diagnostics.jsonl");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("enabled"));
+        assert!(!text.contains("arguments"));
+        let record: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(record["toolName"], "glass.browser.start");
+        assert_eq!(record["errorClass"], "tool_validation");
+        assert_eq!(record["status"], "error");
+        assert_eq!(record["toolCatalog"]["count"].as_u64().unwrap(), 10);
+        assert_eq!(record["toolCatalog"]["sha256"].as_str().unwrap().len(), 64);
+        let offered = record["toolCatalog"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["routeName"] == "glass.browser.start")
+            .expect("the exact route schema fingerprint is retained");
+        assert!(
+            offered["wireName"]
+                .as_str()
+                .unwrap()
+                .starts_with("glass_tool_")
+        );
+        assert_eq!(
+            offered["schemaSha256"],
+            crate::hashing::sha256(schema.as_bytes())
+        );
+        assert_eq!(record["sessionHash"].as_str().unwrap().len(), 64);
+        assert_eq!(record["correlationHash"].as_str().unwrap().len(), 64);
+        drop(session);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -244,6 +244,16 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
             dispatch_doctor(&cli, &policy, *json).await?;
             return Ok(());
         }
+        Some(Commands::Logs {
+            root,
+            limit,
+            json,
+            catalog,
+        }) => {
+            crate::diagnostics::print_local(root, *limit, *json, *catalog)
+                .map_err(|error| error.to_string())?;
+            return Ok(());
+        }
         Some(Commands::McpConfig { client, print }) => {
             dispatch_mcp_config(*client, *print)?;
             return Ok(());
@@ -3866,6 +3876,7 @@ async fn run_command(
         | Commands::Capabilities
         | Commands::Daemon { .. }
         | Commands::Doctor { .. }
+        | Commands::Logs { .. }
         | Commands::McpConfig { .. }
         | Commands::Result { .. }
         | Commands::Certify { .. }

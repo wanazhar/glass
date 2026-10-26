@@ -916,6 +916,7 @@ exports are authoritative for individual items.
 | `cli` | Clap argument definitions and browser command dispatch |
 | `connection` | Independent connection environment, presentation profiles, policy reasons, and observatory metrics |
 | `daemon` | Local socket, isolated MCP sessions, leases, and recovery |
+| `diagnostics` | Bounded reader for the local redacted Core tool-error journal |
 | `extensions` | Manifest, permission, registry, sandbox, and guarded-action boundary |
 | `extraction` | Strict source-labelled evidence extraction |
 | `mcp` | JSON-RPC/MCP stdio server, prompts, resources, and tool dispatch |

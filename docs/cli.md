@@ -360,6 +360,7 @@ The following forms are the public Clap routes. `FILE`, `PATH`, `ID`, and
 | `install-chromium` | `[--update]` |
 | `capabilities` | no positional arguments |
 | `doctor` | `[--json]` |
+| `logs` | `[--root .] [--limit 50] [--json] [--catalog]` |
 | `mcp-config` | `[--client generic\|claude-code\|codex]` (default `generic`), `[--print]` |
 | `delete-profile` | `NAME` |
 | `browser` | optional `tui` |
@@ -455,8 +456,8 @@ interaction, audit, trace, and extension flags on each command that needs them;
 these client settings are not inherited from the owner's process.
 
 Top-level utility routes are `update`, `install-chromium`, `capabilities`,
-`doctor`, `mcp-config`, `delete-profile`, `help`, and `tui`. With no command or
-prompt, `glass` opens the development TUI in an interactive terminal; with
+`doctor`, `logs`, `mcp-config`, `delete-profile`, `help`, and `tui`. With no
+command or prompt, `glass` opens the development TUI in an interactive terminal; with
 redirected stdin/stdout it prints its start-here message instead. `--mcp`
 starts the MCP stdio server and must be supplied as a top-level option. The
 `glass-browser` executable is the browser-only binary; use its own
@@ -596,11 +597,23 @@ glass daemon doctor
 glass daemon logs
 glass daemon stop
 glass doctor
+glass logs --root . --limit 50
 ```
 
 `capabilities` prints the negotiated capability manifest without starting
 Chrome. `doctor` prints bounded browser, daemon, profile, policy, store, and
 extension-loader status. It does not start Chrome or load extensions.
+
+`logs` reads the selected workspace's `.glass/diagnostics.jsonl` and its one
+rotated predecessor. It shows timestamped tool failures with a classified
+reason and hashed session/call correlation IDs. `--catalog` adds the provider
+tool wire names, routed Glass names, and schema fingerprints captured for that
+request; `--json` prints the same sanitized fields as JSON. The journal is
+local, created as mode 0600 on Unix, and capped at two 512 KiB log files. It
+omits prompts, tool arguments, page data, URLs, raw provider errors, and
+credentials. Core
+keeps raw tool results in the session transcript, which remains separately
+available only through the existing session storage.
 
 The daemon is local-only. Read [Local daemon](daemon.md).
 

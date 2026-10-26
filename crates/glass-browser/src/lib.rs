@@ -181,6 +181,8 @@
 //!   multiplexer, presentation-policy, and observatory contracts.
 //! - [`daemon`] — local Unix-socket lifecycle, isolated MCP children, leases,
 //!   logs, and interrupted-run recovery.
+//! - [`diagnostics`] — bounded reader for the local redacted Core tool-error
+//!   journal.
 //! - [`extensions`] — bounded manifests, permissions, registry, sandbox, and
 //!   guarded action boundary.
 //! - [`extraction`] — strict bounded evidence requests and source-labelled facts.
@@ -225,6 +227,8 @@ pub mod cli;
 pub mod connection;
 /// Local Unix-socket daemon lifecycle and MCP bridge.
 pub mod daemon;
+/// Read local, redacted Glass Core tool-failure diagnostics.
+pub mod diagnostics;
 /// Validated extension metadata and permission boundaries.
 pub mod extensions;
 /// Experimental bounded browser-evidence extraction contracts.

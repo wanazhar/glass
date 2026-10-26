@@ -364,7 +364,7 @@ fn render(topic: &str, width: usize, color: bool) -> Result<String, String> {
             p.section("Web research and browsing", WEB_TOOLS);
             p.text.push('\n');
             p.row(
-                "Standalone Core does not attach to Chrome or substitute Playwright. Check `command -v glass-browser` for native browser availability.",
+                "Use glass-browser for native visual browsing. CDP attachment is explicit; Core does not silently substitute Playwright. Check `command -v glass-browser` for availability.",
                 Tone::Body,
                 false,
                 0,

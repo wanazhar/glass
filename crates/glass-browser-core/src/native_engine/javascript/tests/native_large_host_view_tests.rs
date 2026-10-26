@@ -187,6 +187,18 @@ fn initial_inner_html_and_text_content_follow_projected_child_identity() {
             "replacement & text"
         ])
     );
+    assert!(
+        evaluation
+            .commands
+            .iter()
+            .any(|command| matches!(command, NativeScriptCommand::SetInnerHtml { .. }))
+    );
+    assert!(
+        !evaluation
+            .commands
+            .iter()
+            .any(|command| matches!(command, NativeScriptCommand::AppendChild { .. }))
+    );
 }
 
 #[test]

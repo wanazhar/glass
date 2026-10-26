@@ -1847,7 +1847,7 @@ fn agent_scrollback_controls_render_in_compact_and_desktop_pty() {
         return;
     }
     let fake_core = fake_core_binary_with_mode("mixed");
-    for (cols, rows) in [(80, 24), (140, 40)] {
+    for (cols, rows) in [(58, 24), (80, 24), (120, 36)] {
         let root = workspace_root();
         let fixture_state = root.join(".glass");
         std::fs::create_dir_all(&fixture_state).unwrap();
@@ -1874,6 +1874,16 @@ fn agent_scrollback_controls_render_in_compact_and_desktop_pty() {
         assert!(session.visible_output().contains("live"));
         assert!(!session.visible_output().contains("Ctrl-X abort"));
         assert!(!session.visible_output().contains("Ctrl-D follow-up"));
+
+        if let Some(capture_dir) = std::env::var_os("GLASS_PTY_CAPTURE_DIR") {
+            let capture_dir = std::path::PathBuf::from(capture_dir);
+            std::fs::create_dir_all(&capture_dir).unwrap();
+            std::fs::write(
+                capture_dir.join(format!("agent-transcript-{cols}x{rows}.ansi")),
+                &session.buffer,
+            )
+            .expect("save synthetic conversation PTY evidence");
+        }
 
         session.clear_output();
         session.send(b"\x1b[5~"); // PageUp

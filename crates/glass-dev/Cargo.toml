@@ -28,7 +28,7 @@ all-features = true
 [dependencies]
 glass-browser = { version = "=0.3.14", path = "../glass-browser", features = ["native-engine"] }
 glass-tui.workspace = true
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "wrap_help"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing = "0.1"

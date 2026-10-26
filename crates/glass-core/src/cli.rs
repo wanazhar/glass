@@ -96,13 +96,12 @@ impl Page {
             .next()
             .map(|first| format!("{}{}", first.to_uppercase(), &title[first.len_utf8()..]))
             .unwrap_or_default();
-        let heading = match frontend {
-            CliFrontend::Glass => format!("Glass · {title}"),
-            CliFrontend::GlassCore => format!("Glass Core · {title}"),
-            CliFrontend::Standalone => format!("glass-core · {title}"),
-        };
-        page.row(&heading, Tone::Accent, true, 0);
-        page.row(&"─".repeat(width.min(100)), Tone::Border, false, 0);
+        page.text.push_str(&glass_tui::cli::heading(
+            product_name_for(frontend),
+            &title,
+            width,
+            color,
+        ));
         page
     }
     pub fn body(&mut self, body: &str) {

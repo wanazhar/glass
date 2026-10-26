@@ -5,6 +5,7 @@
 //! bounded viewport layout, and transcript controller. Inline and fullscreen
 //! readers share anchors, search, paging, and follow state without a scrollbar.
 
+pub mod cli;
 pub mod conversation;
 pub mod editor;
 pub mod layout;

@@ -177,7 +177,23 @@ fn start_here_message() -> &'static str {
 }
 
 fn print_start_here() {
-    println!("{}", start_here_message());
+    if std::io::stdout().is_terminal() {
+        print_human_cli_report(
+            "Browser",
+            "ready",
+            &[
+                (
+                    "Next",
+                    "glass \"navigate to https://example.com\"".to_string(),
+                ),
+                ("Health", "glass doctor".to_string()),
+                ("Help", "glass --help".to_string()),
+                ("Interactive", "glass tui".to_string()),
+            ],
+        );
+    } else {
+        println!("{}", start_here_message());
+    }
 }
 
 /// Top-level command-line entry point: parses CLI arguments and dispatches
@@ -224,7 +240,15 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
         }
         Some(Commands::InstallChromium { update }) => {
             let path = crate::browser::chrome::download_chromium(*update).await?;
-            println!("Chrome for Testing installed at {}", path.display());
+            if std::io::stdout().is_terminal() {
+                print_human_cli_report(
+                    "Browser runtime",
+                    "installed",
+                    &[("Chromium", path.display().to_string())],
+                );
+            } else {
+                println!("Chrome for Testing installed at {}", path.display());
+            }
             return Ok(());
         }
         Some(Commands::Capabilities) => {
@@ -270,7 +294,11 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
         Some(Commands::DeleteProfile { name }) => {
             policy.require(PolicyCapability::PersistentProfile)?;
             profile_manager_for_cli(&cli).delete_profile(name)?;
-            println!("deleted profile {name}");
+            if std::io::stdout().is_terminal() {
+                print_human_cli_report("Browser profiles", "deleted", &[("Profile", name.clone())]);
+            } else {
+                println!("deleted profile {name}");
+            }
             return Ok(());
         }
         Some(Commands::Knowledge { action }) => {
@@ -2622,6 +2650,32 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> Brows
     });
     if json {
         print_json(&report)?;
+    } else if std::io::stdout().is_terminal() {
+        let mut rows = vec![
+            (
+                "Version".to_string(),
+                report["version"].as_str().unwrap_or("unknown").to_string(),
+            ),
+            (
+                "Platform".to_string(),
+                report["platform"].as_str().unwrap_or("unknown").to_string(),
+            ),
+        ];
+        for finding in report["findings"].as_array().into_iter().flatten() {
+            let code = finding["code"].as_str().unwrap_or("runtime.unknown");
+            let severity = finding["severity"].as_str().unwrap_or("info");
+            let label = doctor_finding_label(code, severity);
+            let mut message = finding["message"]
+                .as_str()
+                .unwrap_or("No details available")
+                .to_string();
+            if let Some(remediation) = finding["remediation"].as_str() {
+                message.push_str(" · Next: ");
+                message.push_str(remediation);
+            }
+            rows.push((label, message));
+        }
+        print_human_cli_report("Doctor", status, &rows);
     } else {
         println!("Glass doctor: {status}");
         for finding in report["findings"].as_array().into_iter().flatten() {
@@ -2634,6 +2688,26 @@ async fn dispatch_doctor(cli: &Cli, policy: &BrowserPolicy, json: bool) -> Brows
         }
     }
     Ok(())
+}
+
+fn doctor_finding_label(code: &str, severity: &str) -> String {
+    let label = match code {
+        "runtime.executable" => "Executable",
+        "browser.found" | "browser.missing" => "Browser",
+        "browser.version" | "browser.versionUnavailable" => "Browser version",
+        "runtime.profileWritable" | "runtime.profileNotWritable" => "Profile directory",
+        "runtime.artifactStoreWritable" | "runtime.artifactStoreNotWritable" => "Artifact store",
+        "runtime.configWritable" | "runtime.configNotWritable" => "Configuration",
+        "mcp.stdoutClean" => "MCP output",
+        "mcp.initialized" | "mcp.initializationFailed" => "MCP service",
+        "capability.manifest" => "Capabilities",
+        _ => code,
+    };
+    match severity {
+        "warning" => format!("Warning · {label}"),
+        "error" => format!("Error · {label}"),
+        _ => label.to_string(),
+    }
 }
 
 fn path_is_writable(path: Option<&Path>) -> bool {
@@ -2815,7 +2889,25 @@ fn dispatch_profiles(cli: &Cli, action: Option<&ProfileCommand>) -> BrowserResul
     match action {
         None | Some(ProfileCommand::List) => {
             let profiles = manager.list_profiles()?;
-            if profiles.is_empty() {
+            if std::io::stdout().is_terminal() {
+                let rows = if profiles.is_empty() {
+                    vec![("Profiles", "No saved browser profiles".to_string())]
+                } else {
+                    profiles
+                        .iter()
+                        .map(|profile| ("Profile", profile.clone()))
+                        .collect()
+                };
+                print_human_cli_report(
+                    "Browser profiles",
+                    if profiles.is_empty() {
+                        "none saved"
+                    } else {
+                        "ready"
+                    },
+                    &rows,
+                );
+            } else if profiles.is_empty() {
                 println!("no saved profiles");
             } else {
                 for profile in profiles {
@@ -2825,14 +2917,36 @@ fn dispatch_profiles(cli: &Cli, action: Option<&ProfileCommand>) -> BrowserResul
         }
         Some(ProfileCommand::Create { name }) => {
             manager.create_profile(name)?;
-            println!("created profile {name}");
+            if std::io::stdout().is_terminal() {
+                print_human_cli_report("Browser profiles", "created", &[("Profile", name.clone())]);
+            } else {
+                println!("created profile {name}");
+            }
         }
         Some(ProfileCommand::Delete { name }) => {
             manager.delete_profile(name)?;
-            println!("deleted profile {name}");
+            if std::io::stdout().is_terminal() {
+                print_human_cli_report("Browser profiles", "deleted", &[("Profile", name.clone())]);
+            } else {
+                println!("deleted profile {name}");
+            }
         }
     }
     Ok(())
+}
+
+fn print_human_cli_report<L: AsRef<str>>(title: &str, status: &str, rows: &[(L, String)]) {
+    let width = glass_tui::crossterm::terminal::size()
+        .map(|(width, _)| usize::from(width))
+        .unwrap_or(80)
+        .clamp(24, 120);
+    let color = !glass_tui::theme::no_color() && std::env::var("TERM").as_deref() != Ok("dumb");
+    let refs = rows
+        .iter()
+        .map(|(label, value)| (label.as_ref(), value.clone()))
+        .collect::<Vec<_>>();
+    let rendered = glass_tui::cli::report("Glass", title, status, &refs, width, color);
+    let _ = std::io::stdout().lock().write_all(rendered.as_bytes());
 }
 
 fn dispatch_certify(action: &CertifyCommand) -> BrowserResult<()> {
@@ -4675,6 +4789,22 @@ fn compact_json<T: Serialize + ?Sized>(value: &T) -> BrowserResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doctor_labels_are_readable_and_keep_warning_severity() {
+        assert_eq!(
+            doctor_finding_label("runtime.profileWritable", "info"),
+            "Profile directory"
+        );
+        assert_eq!(
+            doctor_finding_label("browser.missing", "warning"),
+            "Warning · Browser"
+        );
+        assert_eq!(
+            doctor_finding_label("mcp.initialized", "info"),
+            "MCP service"
+        );
+    }
 
     #[test]
     fn native_persistent_owner_reports_unsupported_chromium_settings() {

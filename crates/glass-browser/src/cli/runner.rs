@@ -61,7 +61,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 #[cfg(feature = "native-engine")]
 use std::future::Future;
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -99,6 +99,26 @@ fn trace_native_cli_phase(stage: &'static str, elapsed: Duration) {
         bytes.push(b'\n');
         let _ = std::io::Write::write_all(&mut file, &bytes);
     }
+}
+
+#[cfg(feature = "native-engine")]
+fn append_native_batch_progress(event: Value) {
+    let Some(path) = std::env::var_os("GLASS_BROWSER_BATCH_PROGRESS_PATH") else {
+        return;
+    };
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    let Ok(mut encoded) = serde_json::to_vec(&event) else {
+        return;
+    };
+    encoded.push(b'\n');
+    let _ = file.write_all(&encoded);
+    let _ = file.flush();
 }
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -1193,7 +1213,13 @@ async fn run_alternative_runtime_command(
                 crate::browser::native_batch::check_policy(policy, &steps).await?;
                 alternative_json_output(
                     &session
-                        .native_run_batch(&steps, *atomic, *mode, *expected_revision)
+                        .native_run_batch_with_progress(
+                            &steps,
+                            *atomic,
+                            *mode,
+                            *expected_revision,
+                            append_native_batch_progress,
+                        )
                         .await?,
                     response_mode,
                 )

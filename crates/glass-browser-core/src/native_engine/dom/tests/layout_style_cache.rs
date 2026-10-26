@@ -33,6 +33,72 @@ fn layout_style_cache_reuses_cascade_and_matches_fresh_document() {
 }
 
 #[test]
+fn cached_parent_style_fast_path_matches_fallback_on_mixed_large_document() {
+    use std::time::Instant;
+
+    let mut source = String::from(
+        "<!doctype html><style>html{font-size:18px;color:#123456;line-height:1.4} body{--accent:#345678;font-family:Arial} main{font-size:1.25em} article.entry{margin:2px;padding:1px} article > a{color:var(--accent)} .detail{font-size:1.1em;white-space:normal} .muted{color:#777}</style><main><section>",
+    );
+    for index in 0..1_000 {
+        source.push_str(&format!(
+            "<article class=entry><a href='/item/{index}'>item {index}</a><p><span class=detail>details {index}</span><span class='detail muted'>more {index}</span></p></article>"
+        ));
+    }
+    source.push_str("</section></main>");
+
+    let limits = NativeEngineLimits::default();
+    let mut document = NativeDocument::parse(&source, &limits).unwrap();
+    let target = document
+        .nodes
+        .iter()
+        .rfind(|node| node.element_name() == Some("span"))
+        .unwrap()
+        .id();
+
+    // First capture the legacy full-chain result, then invalidate derived
+    // state and prime only the target's ancestors. The second lookup must use
+    // its cached parent and produce exactly the same complete computed style.
+    let fallback = document.computed_style_for_layout(target);
+    document.invalidate_layout_styles();
+    let mut ancestors = Vec::new();
+    let mut current = document.node(target).and_then(NativeNode::parent);
+    while let Some(id) = current {
+        ancestors.push(id);
+        current = document.node(id).and_then(NativeNode::parent);
+    }
+    for ancestor in ancestors.into_iter().rev() {
+        document.computed_style_for_layout(ancestor);
+    }
+    let fast = document.computed_style_for_layout(target);
+    assert_eq!(fast, fallback);
+
+    document.invalidate_layout_styles();
+    let started = Instant::now();
+    let mut fast_styles = Vec::with_capacity(document.nodes.len());
+    for node in &document.nodes {
+        fast_styles.push(document.computed_style_for_layout(node.id()));
+    }
+    let fast_elapsed = started.elapsed();
+    assert!(document.layout_style_cache.0.lock().unwrap().len() >= 4_000);
+
+    let fallback_document = NativeDocument::parse(&source, &limits).unwrap();
+    let fallback_started = Instant::now();
+    let fallback_styles = fallback_document
+        .nodes
+        .iter()
+        .map(|node| fallback_document.computed_style_for_layout_without_parent_cache(node.id()))
+        .collect::<Vec<_>>();
+    let fallback_elapsed = fallback_started.elapsed();
+    assert_eq!(fast_styles, fallback_styles);
+    eprintln!(
+        "large mixed native DOM preorder styles: {} nodes, cached-parent={} ms, full-chain={} ms",
+        document.nodes.len(),
+        fast_elapsed.as_millis(),
+        fallback_elapsed.as_millis()
+    );
+}
+
+#[test]
 fn clear_file_input_invalidates_cached_validity_styles() {
     let limits = NativeEngineLimits::default();
     let source = "<style>input:valid{color:#123456} input:invalid{color:#abcdef}</style><input id=upload type=file required>";

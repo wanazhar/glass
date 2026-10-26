@@ -32,6 +32,22 @@ impl NativeDocument {
     }
 
     pub(crate) fn computed_style_for_layout(&self, id: NativeNodeId) -> NativeComputedStyle {
+        self.computed_style_for_layout_internal(id, true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn computed_style_for_layout_without_parent_cache(
+        &self,
+        id: NativeNodeId,
+    ) -> NativeComputedStyle {
+        self.computed_style_for_layout_internal(id, false)
+    }
+
+    fn computed_style_for_layout_internal(
+        &self,
+        id: NativeNodeId,
+        use_cached_parent: bool,
+    ) -> NativeComputedStyle {
         if self.node(id).is_none() {
             return NativeComputedStyle::default();
         }
@@ -136,9 +152,144 @@ impl NativeDocument {
         let mut inherited_letter_spacing = 0;
         let mut inherited_pointer_events = NativePointerEventsValue::Auto;
         let mut inherited_custom_properties = Arc::new(BTreeMap::new());
+        macro_rules! inherit_from_style {
+            ($style:expr) => {{
+                let style = $style;
+                inherited_color = style.color().or(inherited_color);
+                inherited_background_color = style.background_color();
+                inherited_text_decoration_color = style
+                    .text_decoration_color()
+                    .unwrap_or(style.color().unwrap_or(NativeColor::BLACK));
+                inherited_border_color = style.border_colors();
+                inherited_border_width = style.border_widths();
+                inherited_border_style = style.border_styles();
+                inherited_border_radius = style.border_radius();
+                inherited_padding = [
+                    style.padding().top(),
+                    style.padding().right(),
+                    style.padding().bottom(),
+                    style.padding().left(),
+                ];
+                inherited_margin = style.margin_values();
+                inherited_box_sizing = style.box_sizing();
+                inherited_width = style.width();
+                inherited_height = style.height();
+                inherited_min_width = style.min_width();
+                inherited_max_width = style.max_width();
+                inherited_min_height = style.min_height();
+                inherited_max_height = style.max_height();
+                inherited_justify_content = style.justify_content();
+                inherited_align_items = style.align_items();
+                inherited_align_self = style.align_self();
+                inherited_align_content = style.align_content();
+                inherited_flex_direction = style.flex_direction();
+                inherited_flex_wrap = style.flex_wrap();
+                inherited_flex_item_order = style.flex_item_order();
+                inherited_row_gap = style.row_gap();
+                inherited_column_gap = style.column_gap();
+                inherited_direction = style.direction();
+                inherited_flex_grow = style.flex_grow();
+                inherited_flex_shrink = style.flex_shrink();
+                inherited_flex_basis = style.flex_basis();
+                inherited_white_space = style.white_space();
+                inherited_line_height = style.line_height().or(inherited_line_height);
+                inherited_text_align = style.text_align();
+                inherited_text_align_last = style.text_align_last();
+                inherited_text_justify = style.text_justify();
+                inherited_text_decoration = style.text_decoration();
+                inherited_text_decoration_style = style.text_decoration_style();
+                inherited_text_decoration_skip_ink = style.text_decoration_skip_ink();
+                inherited_text_decoration_skip_spaces = style.text_decoration_skip_spaces();
+                inherited_text_decoration_thickness = style.text_decoration_thickness();
+                inherited_text_underline_offset = style.text_underline_offset();
+                inherited_text_transform = style.text_transform();
+                inherited_font_variant_ligatures = style.font_variant_ligatures();
+                inherited_font_variant_caps = style.font_variant_caps();
+                inherited_font_variant_position = style.font_variant_position();
+                inherited_font_variant_alternates = style.font_variant_alternates();
+                inherited_font_language_override = style.font_language_override();
+                inherited_font_variation_settings = style.font_variation_settings();
+                inherited_font_variant_east_asian = style.font_variant_east_asian();
+                inherited_font_variant_numeric = style.font_variant_numeric();
+                inherited_font_feature_settings = style.font_feature_settings();
+                inherited_font_kerning = style.font_kerning();
+                inherited_font_optical_sizing = style.font_optical_sizing();
+                inherited_font_palette = style.font_palette();
+                inherited_font_weight = style.font_weight();
+                inherited_font_style = style.font_style();
+                inherited_font_stretch = style.font_stretch();
+                inherited_font_family = style.font_family();
+                inherited_font_size = style.font_size();
+                inherited_word_break = style.word_break();
+                inherited_text_overflow = style.text_overflow();
+                inherited_overflow_x = style.overflow_x();
+                inherited_overflow_y = style.overflow_y();
+                inherited_vertical_align = style.vertical_align();
+                inherited_text_indent = style.text_indent();
+                inherited_word_spacing = style.word_spacing();
+                inherited_letter_spacing = style.letter_spacing();
+                inherited_pointer_events = style.pointer_events();
+            }};
+        }
         // Reuse the rule-index scratch across the ancestor chain. Each node's
         // style and custom-property cascade share the same matching candidates.
         let mut rule_candidates = Vec::new();
+        // Snapshot transfer walks the arena in preorder. When the target's
+        // parent already has both cached style and inherited variables, start
+        // at the target directly instead of rebuilding the entire ancestor
+        // chain for every subsequent node. Arbitrary query orders still use
+        // the complete fallback chain below.
+        let cached_parent = use_cached_parent
+            .then(|| {
+                self.node(id)
+                    .and_then(NativeNode::parent)
+                    .and_then(|parent_id| {
+                        let style = self
+                            .layout_style_cache
+                            .0
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .get(&parent_id)
+                            .copied()?;
+                        let custom_properties = self
+                            .layout_style_cache
+                            .1
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .get(&parent_id)
+                            .cloned()?;
+                        Some((parent_id, style, custom_properties))
+                    })
+            })
+            .flatten();
+        if let Some((parent_id, parent_style, custom_properties)) = cached_parent {
+            let root_element = self.node(self.root).and_then(|root| {
+                root.children().iter().find_map(|child| {
+                    self.node(*child)
+                        .filter(|node| node.element_name().is_some())
+                        .map(NativeNode::id)
+                })
+            });
+            if root_element == Some(parent_id) {
+                inherited_root_font_size = parent_style.font_size();
+                root_element_seen = true;
+            } else if let Some(root_element) = root_element
+                && let Some(root_style) = self
+                    .layout_style_cache
+                    .0
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get(&root_element)
+                    .copied()
+            {
+                inherited_root_font_size = root_style.font_size();
+                root_element_seen = true;
+            }
+            inherit_from_style!(parent_style);
+            inherited_custom_properties = custom_properties;
+            chain.clear();
+            chain.push(id);
+        }
         for current_id in chain.into_iter().rev() {
             let Some(_) = self.node(current_id) else {
                 continue;
@@ -295,80 +446,7 @@ impl NativeDocument {
                 inherited_root_font_size = style.font_size();
                 root_element_seen = true;
             }
-            inherited_color = style.color().or(inherited_color);
-            inherited_background_color = style.background_color();
-            inherited_text_decoration_color = style
-                .text_decoration_color()
-                .unwrap_or(style.color().unwrap_or(NativeColor::BLACK));
-            inherited_border_color = style.border_colors();
-            inherited_border_width = style.border_widths();
-            inherited_border_style = style.border_styles();
-            inherited_border_radius = style.border_radius();
-            inherited_padding = [
-                style.padding().top(),
-                style.padding().right(),
-                style.padding().bottom(),
-                style.padding().left(),
-            ];
-            inherited_margin = style.margin_values();
-            inherited_box_sizing = style.box_sizing();
-            inherited_width = style.width();
-            inherited_height = style.height();
-            inherited_min_width = style.min_width();
-            inherited_max_width = style.max_width();
-            inherited_min_height = style.min_height();
-            inherited_max_height = style.max_height();
-            inherited_justify_content = style.justify_content();
-            inherited_align_items = style.align_items();
-            inherited_align_self = style.align_self();
-            inherited_align_content = style.align_content();
-            inherited_flex_direction = style.flex_direction();
-            inherited_flex_wrap = style.flex_wrap();
-            inherited_flex_item_order = style.flex_item_order();
-            inherited_row_gap = style.row_gap();
-            inherited_column_gap = style.column_gap();
-            inherited_direction = style.direction();
-            inherited_flex_grow = style.flex_grow();
-            inherited_flex_shrink = style.flex_shrink();
-            inherited_flex_basis = style.flex_basis();
-            inherited_white_space = style.white_space();
-            inherited_line_height = style.line_height().or(inherited_line_height);
-            inherited_text_align = style.text_align();
-            inherited_text_align_last = style.text_align_last();
-            inherited_text_justify = style.text_justify();
-            inherited_text_decoration = style.text_decoration();
-            inherited_text_decoration_style = style.text_decoration_style();
-            inherited_text_decoration_skip_ink = style.text_decoration_skip_ink();
-            inherited_text_decoration_skip_spaces = style.text_decoration_skip_spaces();
-            inherited_text_decoration_thickness = style.text_decoration_thickness();
-            inherited_text_underline_offset = style.text_underline_offset();
-            inherited_text_transform = style.text_transform();
-            inherited_font_variant_ligatures = style.font_variant_ligatures();
-            inherited_font_variant_caps = style.font_variant_caps();
-            inherited_font_variant_position = style.font_variant_position();
-            inherited_font_variant_alternates = style.font_variant_alternates();
-            inherited_font_language_override = style.font_language_override();
-            inherited_font_variation_settings = style.font_variation_settings();
-            inherited_font_variant_east_asian = style.font_variant_east_asian();
-            inherited_font_variant_numeric = style.font_variant_numeric();
-            inherited_font_feature_settings = style.font_feature_settings();
-            inherited_font_kerning = style.font_kerning();
-            inherited_font_optical_sizing = style.font_optical_sizing();
-            inherited_font_palette = style.font_palette();
-            inherited_font_weight = style.font_weight();
-            inherited_font_style = style.font_style();
-            inherited_font_stretch = style.font_stretch();
-            inherited_font_family = style.font_family();
-            inherited_font_size = style.font_size();
-            inherited_word_break = style.word_break();
-            inherited_text_overflow = style.text_overflow();
-            inherited_overflow_x = style.overflow_x();
-            inherited_overflow_y = style.overflow_y();
-            inherited_vertical_align = style.vertical_align();
-            inherited_text_indent = style.text_indent();
-            inherited_word_spacing = style.word_spacing();
-            inherited_letter_spacing = style.letter_spacing();
-            inherited_pointer_events = style.pointer_events();
+            inherit_from_style!(style);
             if current_id == id {
                 return style;
             }

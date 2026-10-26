@@ -103,6 +103,30 @@ capabilities, and product bugs as distinct outcomes. A successfully fetched
 video poster is not video playback; playback evidence must show decoded frame
 progression and pause/seek behavior.
 
+## Wikipedia style-cache follow-up (2026-10-26)
+
+Two bounded native article-to-subpage attempts after the selector and text
+width cache work remained inconclusive. The first completed navigation in
+96.343 seconds and timed out during its first observation at the 130.978
+second outer deadline. Its trace showed 55,135 style-compute calls totaling
+34.58 seconds and six document-wire style projections totaling 37.94 seconds.
+Review of the same trace found 48 full style invalidations, including 36
+decoded image arrivals. Commit `b612c105` narrows image and video-poster
+arrival invalidation to layout and script projections; a local 36-image test
+proves that each new image updates intrinsic geometry while retaining cached
+computed styles and custom properties.
+
+A second run against that source completed navigation in 95.697 seconds, then
+its first observation was interrupted by the same outer deadline. The trace
+recorded 36 resource-only invalidations and 10 full style invalidations; style
+computation measured 31.88 seconds across 52,028 calls, and document-wire
+style projection took 34.85 seconds. The preceding trace measured 34.58 and
+37.94 seconds respectively, but the live response varies between runs, so
+this is not a controlled end-to-end comparison. Neither attempt observed the
+article or reached the semantic subpage; Wikipedia remains an open native
+acceptance gap. Reports contain step outcomes and artifact references without
+retaining page dumps or user data.
+
 ## Native video capability boundary
 
 The native engine currently supports a narrow silent-video path for WebM files

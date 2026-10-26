@@ -34,6 +34,8 @@ static NEXT_BROWSER_TOOL: AtomicU64 = AtomicU64::new(1);
 static NEXT_CHAT_MESSAGE: AtomicU64 = AtomicU64::new(1);
 const MAX_CODE_PROMPT_CONTEXT_BYTES: usize = 64 * 1024;
 const MAX_CODE_CONTEXT_FILES: usize = 8;
+const MAX_LSP_WORKSPACE_EDIT_FILES: usize = 16;
+const MAX_LSP_WORKSPACE_EDIT_EDITS: usize = 16_384;
 const MAX_NATIVE_GC_UI_OUTPUT_BYTES: usize = 64 * 1024;
 pub(super) const BROWSER_RECOVERY_STATUS: &str =
     "Browser recovery available · current surface preserved";
@@ -54,7 +56,7 @@ fn bounded_native_gc_ui_output(text: &str) -> String {
 }
 
 fn apply_lsp_text_edits(original: &str, edits: &[serde_json::Value]) -> Result<String, String> {
-    if edits.len() > 16_384 {
+    if edits.len() > MAX_LSP_WORKSPACE_EDIT_EDITS {
         return Err("LSP formatter returned too many edits".into());
     }
     let mut resolved = Vec::with_capacity(edits.len());
@@ -84,6 +86,74 @@ fn apply_lsp_text_edits(original: &str, edits: &[serde_json::Value]) -> Result<S
         proposed.replace_range(start..end, &new_text);
     }
     Ok(proposed)
+}
+
+fn lsp_workspace_edit_entries(
+    value: &serde_json::Value,
+) -> Result<Vec<(String, Vec<serde_json::Value>)>, String> {
+    let edit = value.get("result").unwrap_or(value);
+    if edit.is_null() {
+        return Ok(Vec::new());
+    }
+    let changes = edit.get("changes").and_then(serde_json::Value::as_object);
+    let document_changes = edit
+        .get("documentChanges")
+        .and_then(serde_json::Value::as_array);
+    if changes.is_some() && document_changes.is_some() {
+        return Err("LSP workspace edit ambiguously contains changes and documentChanges".into());
+    }
+    let mut entries = Vec::new();
+    if let Some(changes) = changes {
+        entries.extend(
+            changes
+                .iter()
+                .map(|(uri, edits)| {
+                    Ok((
+                        uri.clone(),
+                        edits.as_array().cloned().ok_or_else(|| {
+                            "LSP workspace edit changes must be TextEdit arrays".to_string()
+                        })?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+        );
+    } else if let Some(document_changes) = document_changes {
+        for change in document_changes {
+            if change.get("kind").is_some() {
+                return Err("LSP file create, rename, and delete operations need explicit Code review support".into());
+            }
+            let text_document = change
+                .get("textDocument")
+                .ok_or_else(|| "LSP document change omitted textDocument".to_string())?;
+            let uri = text_document
+                .get("uri")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "LSP document change omitted its URI".to_string())?;
+            let edits = change
+                .get("edits")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .ok_or_else(|| "LSP document change omitted its TextEdit array".to_string())?;
+            entries.push((uri.to_string(), edits));
+        }
+    } else {
+        return Err("LSP result did not contain a workspace edit".into());
+    }
+    if entries.len() > MAX_LSP_WORKSPACE_EDIT_FILES {
+        return Err(format!(
+            "LSP workspace edit exceeds the {MAX_LSP_WORKSPACE_EDIT_FILES} file preview limit"
+        ));
+    }
+    let mut total_edits = 0usize;
+    for (_, edits) in &entries {
+        total_edits = total_edits.saturating_add(edits.len());
+        if total_edits > MAX_LSP_WORKSPACE_EDIT_EDITS {
+            return Err(format!(
+                "LSP workspace edit exceeds the {MAX_LSP_WORKSPACE_EDIT_EDITS} edit limit"
+            ));
+        }
+    }
+    Ok(entries)
 }
 
 fn lsp_position_byte_offset(text: &str, position: &serde_json::Value) -> Result<usize, String> {
@@ -4226,6 +4296,96 @@ impl DevTuiState {
         self.status = format!(
             "LSP formatting preview · {} · inspect diff, then Ctrl-K editor accept {} or editor reject {}",
             proposal.path, proposal.id, proposal.id
+        );
+        Ok(true)
+    }
+
+    fn preview_lsp_workspace_edit(&mut self, value: &serde_json::Value) -> Result<bool, String> {
+        let entries = lsp_workspace_edit_entries(value)?;
+        if entries.is_empty() {
+            self.status = "LSP workspace edit made no changes".into();
+            return Ok(true);
+        }
+
+        let plans = {
+            let workspace = self.ws()?;
+            let root = workspace.project().root().to_path_buf();
+            let mut plans = Vec::with_capacity(entries.len());
+            let mut seen_paths = std::collections::BTreeSet::new();
+            for (uri, edits) in entries {
+                let parsed = url::Url::parse(&uri).map_err(|_| {
+                    "LSP workspace edit contains an invalid document URI".to_string()
+                })?;
+                if parsed.scheme() != "file" {
+                    return Err("LSP workspace edit may only target local file URIs".into());
+                }
+                let absolute_path = parsed
+                    .to_file_path()
+                    .map_err(|()| "LSP workspace edit contains an invalid file URI".to_string())?;
+                let relative_path = absolute_path.strip_prefix(&root).map_err(|_| {
+                    "LSP workspace edit targets a file outside this project".to_string()
+                })?;
+                let relative_path = relative_path
+                    .to_str()
+                    .ok_or_else(|| "LSP workspace edit path is not valid UTF-8".to_string())?
+                    .replace(std::path::MAIN_SEPARATOR, "/");
+                let path = workspace
+                    .project()
+                    .normalize_existing_file_path(&relative_path)
+                    .map_err(|error| error.to_string())?;
+                if !seen_paths.insert(path.clone()) {
+                    return Err(format!(
+                        "LSP workspace edit addresses {path} more than once"
+                    ));
+                }
+                let original = workspace
+                    .project()
+                    .buffer_or_file_content(&path)
+                    .map_err(|error| error.to_string())?;
+                let proposed = apply_lsp_text_edits(&original, &edits)?;
+                if proposed != original {
+                    plans.push((path, original, proposed));
+                }
+            }
+            plans
+        };
+        if plans.is_empty() {
+            self.status = "LSP workspace edit made no changes".into();
+            return Ok(true);
+        }
+
+        let first_path = plans[0].0.clone();
+        let mut proposals = Vec::with_capacity(plans.len());
+        for (path, original, proposed) in plans {
+            let proposal = self
+                .ws_mut()?
+                .project_mut()
+                .propose_editor_change(
+                    &path,
+                    original,
+                    proposed,
+                    "LSP workspace edit preview".into(),
+                    crate::development::Actor::local(),
+                )
+                .map_err(|error| error.to_string())?;
+            proposals.push(proposal);
+        }
+
+        self.selected_editor_proposal_id = proposals.first().map(|proposal| proposal.id.clone());
+        for proposal in &proposals {
+            if !self.files.iter().any(|path| path == &proposal.path) {
+                self.files.push(proposal.path.clone());
+            }
+        }
+        if let Some(index) = self.files.iter().position(|path| path == &first_path) {
+            self.selected_file = index;
+        }
+        self.surface = DevSurface::Code;
+        self.refresh_editor_projection();
+        self.refresh_editor_hunks();
+        self.status = format!(
+            "LSP workspace edit preview · {} files · review each diff, then accept or reject its proposal",
+            proposals.len()
         );
         Ok(true)
     }
@@ -8385,7 +8545,10 @@ impl DevTuiState {
                     } else {
                         super::projection::first_meaningful(&value)
                     };
-                    if result.tool == "glass.lsp.formatting" {
+                    if matches!(
+                        result.tool.as_str(),
+                        "glass.lsp.formatting" | "glass.lsp.range_formatting"
+                    ) {
                         match self.preview_lsp_formatting(&value) {
                             Ok(true) => {}
                             Ok(false) => {
@@ -8393,6 +8556,18 @@ impl DevTuiState {
                             }
                             Err(error) => {
                                 self.status = format!("LSP formatting preview failed · {error}");
+                            }
+                        }
+                    }
+                    if result.tool == "glass.lsp.rename" {
+                        match self.preview_lsp_workspace_edit(&value) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                self.status = "LSP workspace edit result received".into();
+                            }
+                            Err(error) => {
+                                self.status =
+                                    format!("LSP workspace edit preview failed · {error}");
                             }
                         }
                     }
@@ -8412,13 +8587,18 @@ impl DevTuiState {
                         | "glass.debug.stack"
                         | "glass.debug.scopes"
                         | "glass.debug.variables"
-                ) && result.tool != "glass.lsp.formatting"
-                {
+                ) && !matches!(
+                    result.tool.as_str(),
+                    "glass.lsp.formatting" | "glass.lsp.range_formatting" | "glass.lsp.rename"
+                ) {
                     self.status = format!("Completed {} · workspace refreshed", result.tool);
                 }
             }
             Err(error) => {
-                if result.tool == "glass.lsp.formatting" {
+                if matches!(
+                    result.tool.as_str(),
+                    "glass.lsp.formatting" | "glass.lsp.range_formatting"
+                ) {
                     self.pending_lsp_format_baselines.pop_front();
                 }
                 if matches!(
@@ -15270,8 +15450,315 @@ mod tests {
                 .content,
             "let x = 1;\n"
         );
+
+        state
+            .remember_lsp_format_baseline("src/main.rs")
+            .expect("capture range-format request buffer");
+        let range_result = serde_json::json!({
+            "method": "textDocument/rangeFormatting",
+            "result": [{
+                "range": {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 5}},
+                "newText": "y"
+            }]
+        });
+        assert!(state.preview_lsp_formatting(&range_result).unwrap());
+        assert_eq!(
+            state
+                .ws()
+                .unwrap()
+                .project()
+                .buffer("src/main.rs")
+                .unwrap()
+                .content,
+            "let x = 1;\n",
+            "range formatting must leave the buffer unchanged until accepted"
+        );
+        let range_proposal_id = state
+            .editor_proposals
+            .iter()
+            .find(|proposal| proposal.state == crate::development::EditorProposalState::Pending)
+            .expect("pending range-format proposal")
+            .id
+            .clone();
+        state
+            .accept_review_proposal(Some(&range_proposal_id))
+            .expect("accept the range-format preview explicitly");
+        assert_eq!(
+            state
+                .ws()
+                .unwrap()
+                .project()
+                .buffer("src/main.rs")
+                .unwrap()
+                .content,
+            "let y = 1;\n"
+        );
         drop(state);
         std::fs::remove_dir_all(root).expect("remove fixture workspace");
+    }
+
+    #[test]
+    fn lsp_workspace_rename_previews_each_file_before_explicit_acceptance() {
+        let root =
+            std::env::temp_dir().join(format!("glass-lsp-workspace-edit-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source fixture");
+        std::fs::write(root.join("src/first.rs"), "fn old_name() {}\n")
+            .expect("write first source fixture");
+        std::fs::write(root.join("src/second.rs"), "old_name();\n")
+            .expect("write second source fixture");
+        let first_uri = url::Url::from_file_path(root.join("src/first.rs"))
+            .expect("make first file URI")
+            .to_string();
+        let second_uri = url::Url::from_file_path(root.join("src/second.rs"))
+            .expect("make second file URI")
+            .to_string();
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open fixture workspace");
+        state.surface = DevSurface::Code;
+        for path in ["src/first.rs", "src/second.rs"] {
+            state
+                .ws_mut()
+                .unwrap()
+                .project_mut()
+                .open_buffer(path, crate::development::Actor::local())
+                .unwrap();
+        }
+        state.refresh_editor_projection();
+
+        let result = serde_json::json!({
+            "method": "textDocument/rename",
+            "result": {
+                "changes": {
+                    (first_uri): [{
+                        "range": {"start":{"line":0,"character":3},"end":{"line":0,"character":11}},
+                        "newText": "new_name"
+                    }],
+                    (second_uri): [{
+                        "range": {"start":{"line":0,"character":0},"end":{"line":0,"character":8}},
+                        "newText": "new_name"
+                    }]
+                }
+            }
+        });
+        assert!(state.preview_lsp_workspace_edit(&result).unwrap());
+        assert!(state.status.contains("2 files"));
+        assert_eq!(state.editor_engine.hunks.len(), 1);
+        assert_eq!(
+            state
+                .ws()
+                .unwrap()
+                .project()
+                .buffer("src/first.rs")
+                .unwrap()
+                .content,
+            "fn old_name() {}\n",
+            "workspace edit preview must leave the first buffer unchanged"
+        );
+        assert_eq!(
+            state
+                .ws()
+                .unwrap()
+                .project()
+                .buffer("src/second.rs")
+                .unwrap()
+                .content,
+            "old_name();\n",
+            "workspace edit preview must leave the second buffer unchanged"
+        );
+        let proposal_ids = state
+            .editor_proposals
+            .iter()
+            .filter(|proposal| proposal.state == crate::development::EditorProposalState::Pending)
+            .map(|proposal| proposal.id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(proposal_ids.len(), 2);
+        for id in proposal_ids {
+            state
+                .accept_review_proposal(Some(&id))
+                .expect("accept each reviewed file proposal explicitly");
+        }
+        assert_eq!(
+            state
+                .ws()
+                .unwrap()
+                .project()
+                .buffer("src/first.rs")
+                .unwrap()
+                .content,
+            "fn new_name() {}\n"
+        );
+        assert_eq!(
+            state
+                .ws()
+                .unwrap()
+                .project()
+                .buffer("src/second.rs")
+                .unwrap()
+                .content,
+            "new_name();\n"
+        );
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn lsp_workspace_edit_rejects_outside_project_before_proposing_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-lsp-workspace-boundary-{}",
+            std::process::id()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "glass-lsp-workspace-outside-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create project fixture");
+        std::fs::write(&outside, "private\n").expect("write outside fixture");
+        let outside_uri = url::Url::from_file_path(&outside)
+            .expect("make outside file URI")
+            .to_string();
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open fixture workspace");
+        let result = serde_json::json!({
+            "result": {"changes": {(outside_uri): [{
+                "range": {"start":{"line":0,"character":0},"end":{"line":0,"character":7}},
+                "newText": "changed"
+            }]}}
+        });
+        let error = state.preview_lsp_workspace_edit(&result).unwrap_err();
+        assert!(error.contains("outside this project"));
+        assert!(state.editor_proposals.is_empty());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "private\n");
+        drop(state);
+        std::fs::remove_file(outside).expect("remove outside fixture");
+        std::fs::remove_dir_all(root).expect("remove project fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lsp_rename_transport_previews_and_accepts_multifile_workspace_edits() {
+        let python = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|directory| directory.join("python3"))
+            .find(|candidate| candidate.is_file());
+        let Some(python) = python else {
+            return;
+        };
+        let root =
+            std::env::temp_dir().join(format!("glass-lsp-rename-transport-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create LSP workspace fixture");
+        std::fs::write(root.join("src/first.rs"), "fn old_name() {}\n")
+            .expect("write first source fixture");
+        std::fs::write(root.join("src/second.rs"), "old_name();\n")
+            .expect("write second source fixture");
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_lsp_workspace_edit.py");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open LSP workspace");
+        state.surface = DevSurface::Code;
+        state
+            .ws_mut()
+            .unwrap()
+            .language()
+            .start(
+                "fixture",
+                &crate::lsp::LanguageServerConfig {
+                    command: python.display().to_string(),
+                    arguments: vec![fixture.display().to_string()],
+                },
+            )
+            .expect("start local fake LSP transport");
+        for (path, unsaved) in [
+            ("src/first.rs", "// unsaved first\nfn old_name() {}\n"),
+            ("src/second.rs", "// unsaved second\nold_name();\n"),
+        ] {
+            state
+                .ws_mut()
+                .unwrap()
+                .project_mut()
+                .open_buffer(path, crate::development::Actor::local())
+                .unwrap();
+            state
+                .ws_mut()
+                .unwrap()
+                .project_mut()
+                .edit_buffer(path, unsaved.into(), crate::development::Actor::local())
+                .unwrap();
+        }
+        let open_documents = state
+            .ws()
+            .unwrap()
+            .project()
+            .buffers()
+            .map(|buffer| (buffer.path.clone(), buffer.content.clone()))
+            .collect::<Vec<_>>();
+        for (path, content) in &open_documents {
+            state
+                .ws_mut()
+                .unwrap()
+                .language()
+                .sync_document_content("fixture", path, content)
+                .expect("sync unsaved editor buffer to LSP");
+        }
+        let first_content = open_documents
+            .iter()
+            .find(|(path, _)| path == "src/first.rs")
+            .unwrap()
+            .1
+            .clone();
+        let response = state
+            .ws_mut()
+            .unwrap()
+            .language()
+            .rename_with_content(
+                "fixture",
+                "human",
+                "src/first.rs",
+                crate::development::DiagnosticPosition {
+                    line: 2,
+                    character: 4,
+                },
+                "new_name",
+                &first_content,
+            )
+            .expect("read workspace rename edit over LSP stdio");
+        let response = serde_json::to_value(response).expect("serialize LSP response");
+        assert!(state.preview_lsp_workspace_edit(&response).unwrap());
+        assert!(state.status.contains("2 files"));
+        assert_eq!(
+            state
+                .ws()
+                .unwrap()
+                .project()
+                .buffer_or_file_content("src/first.rs")
+                .unwrap(),
+            "// unsaved first\nfn old_name() {}\n",
+            "receiving a workspace edit must not mutate the unsaved source"
+        );
+        let pending = state
+            .editor_proposals
+            .iter()
+            .filter(|proposal| proposal.state == crate::development::EditorProposalState::Pending)
+            .map(|proposal| proposal.id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(pending.len(), 2);
+        for proposal in pending {
+            state
+                .accept_review_proposal(Some(&proposal))
+                .expect("accept the reviewed file proposal");
+        }
+        for path in ["src/first.rs", "src/second.rs"] {
+            assert!(
+                state
+                    .ws()
+                    .unwrap()
+                    .project()
+                    .buffer_or_file_content(path)
+                    .unwrap()
+                    .contains("new_name")
+            );
+        }
+        state.ws_mut().unwrap().language().stop("fixture").unwrap();
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove LSP workspace fixture");
     }
 
     fn native_gc_ui_snapshot(

@@ -263,27 +263,40 @@ impl LanguageService {
         })
     }
 
-    pub fn formatting(
+    pub fn formatting_with_content(
         &mut self,
         name: &str,
         actor: &str,
         path: &str,
+        content: &str,
     ) -> DevelopmentResult<LanguageResponse> {
         self.position_request(name, actor, "formatting", path, |client| {
-            client.formatting(path)
+            client.formatting_with_content(path, content)
         })
     }
 
-    pub fn range_formatting(
+    pub(crate) fn sync_document_content(
+        &mut self,
+        name: &str,
+        path: &str,
+        content: &str,
+    ) -> DevelopmentResult<()> {
+        self.client_mut(name)?
+            .sync_document_with_content(path, content)
+            .map(|_| ())
+    }
+
+    pub fn range_formatting_with_content(
         &mut self,
         name: &str,
         actor: &str,
         path: &str,
         start: DiagnosticPosition,
         end: DiagnosticPosition,
+        content: &str,
     ) -> DevelopmentResult<LanguageResponse> {
         self.position_request(name, actor, "rangeFormatting", path, |client| {
-            client.range_formatting(path, start, end)
+            client.range_formatting_with_content(path, start, end, content)
         })
     }
 
@@ -298,17 +311,17 @@ impl LanguageService {
         })
     }
 
-    pub fn rename(
+    pub fn rename_with_content(
         &mut self,
         name: &str,
         actor: &str,
         path: &str,
-        line: u32,
-        character: u32,
+        position: DiagnosticPosition,
         new_name: &str,
+        content: &str,
     ) -> DevelopmentResult<LanguageResponse> {
         self.position_request(name, actor, "rename", path, |client| {
-            client.rename(path, line, character, new_name)
+            client.rename_with_content(path, position.line, position.character, new_name, content)
         })
     }
 

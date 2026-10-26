@@ -216,11 +216,25 @@ payload bound. The chips identify attached paths, and `Ctrl-Shift-X` removes
 the focused attached file or toggles the focused file context. The ordinary
 Agent composer never attaches the last viewed file.
 
-The Code command `lsp format SERVER PATH` translates LSP UTF-16 ranges against
-the captured buffer and creates an exact-base editor proposal. It opens the
-diff for review without changing the buffer or disk. The user accepts or
-rejects the proposal through the existing editor-review commands; edits with
-invalid, overlapping, or surrogate-splitting ranges fail closed.
+The Code command `lsp format SERVER PATH` sends the current buffer contents,
+including unsaved edits, to the language server. Returned UTF-16 ranges are
+translated against that captured buffer into an exact-base editor proposal. It
+opens the diff for review without changing the buffer or disk. The user accepts
+or rejects the proposal through the existing editor-review commands; edits
+with invalid, overlapping, or surrogate-splitting ranges fail closed.
+
+The command `lsp range-format SERVER` uses the selected range in the focused
+Code buffer and also sends the unsaved buffer contents. Its returned edits use
+the same exact-base diff and explicit acceptance flow.
+
+The Code command `lsp rename SERVER PATH LINE CHARACTER NAME` turns returned
+LSP `WorkspaceEdit` text edits into separate per-file proposals. It first
+sends every open unsaved buffer to the language server, bounded to 128
+documents and 16 MiB of text. It then accepts only existing `file:` targets
+inside the project, caps one edit at 16 files and 16,384 total edits, and opens
+the first file's diff. Each file must be reviewed and accepted separately;
+create, rename, and delete resource operations are reported unsupported and
+never applied. This is not an atomic multi-file transaction.
 
 `/` at an empty composer opens a live catalogue: GC entries come from the
 selected Core session and Glass entries describe workspace actions. The menu

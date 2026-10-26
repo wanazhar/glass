@@ -206,12 +206,29 @@ impl LspClient {
 
     /// Open a document once, then publish monotonic full-text changes.
     pub fn sync_document(&mut self, path: &str) -> DevelopmentResult<LanguageDocument> {
-        let (absolute, normalized) = self.resolve_document(path)?;
+        let (absolute, _) = self.resolve_document(path)?;
         let text = read_bounded_utf8(&absolute, super::MAX_BUFFER_BYTES, "language document")?;
+        self.sync_document_with_content(path, &text)
+    }
+
+    /// Sync the exact in-memory editor contents instead of rereading the file.
+    pub fn sync_document_with_content(
+        &mut self,
+        path: &str,
+        text: &str,
+    ) -> DevelopmentResult<LanguageDocument> {
+        if text.len() > super::MAX_BUFFER_BYTES {
+            return Err(DevelopmentError::InvalidInput(format!(
+                "language document exceeds the {} byte limit",
+                super::MAX_BUFFER_BYTES
+            )));
+        }
+        let (absolute, normalized) = self.resolve_document(path)?;
+        let text = text.to_string();
         if let Some(document) = self.documents.get_mut(&normalized) {
             if document.text != text {
                 document.version = document.version.saturating_add(1);
-                document.text = text;
+                document.text.clone_from(&text);
                 let notification = serde_json::json!({
                     "jsonrpc": "2.0", "method": "textDocument/didChange",
                     "params": {"textDocument": {"uri": document.uri, "version": document.version},
@@ -415,18 +432,23 @@ impl LspClient {
         )
     }
 
-    pub fn formatting(&mut self, path: &str) -> DevelopmentResult<LanguageResponse> {
-        let uri = self.sync_document(path)?.uri.clone();
+    pub fn formatting_with_content(
+        &mut self,
+        path: &str,
+        content: &str,
+    ) -> DevelopmentResult<LanguageResponse> {
+        let uri = self.sync_document_with_content(path, content)?.uri;
         self.request_result("textDocument/formatting", serde_json::json!({"textDocument":{"uri":uri},"options":{"tabSize":4,"insertSpaces":true}}))
     }
 
-    pub fn range_formatting(
+    pub fn range_formatting_with_content(
         &mut self,
         path: &str,
         start: DiagnosticPosition,
         end: DiagnosticPosition,
+        content: &str,
     ) -> DevelopmentResult<LanguageResponse> {
-        let uri = self.sync_document(path)?.uri.clone();
+        let uri = self.sync_document_with_content(path, content)?.uri;
         self.request_result(
             "textDocument/rangeFormatting",
             serde_json::json!({
@@ -487,24 +509,27 @@ impl LspClient {
         })
     }
 
-    pub fn rename(
+    pub fn rename_with_content(
         &mut self,
         path: &str,
         line: u32,
         character: u32,
         new_name: &str,
+        content: &str,
     ) -> DevelopmentResult<LanguageResponse> {
         if new_name.is_empty() || new_name.len() > 256 {
             return Err(DevelopmentError::InvalidInput(
                 "rename target must be 1 to 256 bytes".into(),
             ));
         }
-        self.position_request(
+        let uri = self.sync_document_with_content(path, content)?.uri;
+        self.request_result(
             "textDocument/rename",
-            path,
-            line,
-            character,
-            serde_json::json!({"newName":new_name}),
+            serde_json::json!({
+                "textDocument":{"uri":uri},
+                "position":{"line":line.saturating_sub(1),"character":character.saturating_sub(1)},
+                "newName":new_name
+            }),
         )
     }
 

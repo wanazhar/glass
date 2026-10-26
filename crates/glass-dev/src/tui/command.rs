@@ -2626,6 +2626,27 @@ fn execute_lsp(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
             };
             (tool, json!({"server":server.ok_or("missing SERVER")?,"path":path}), false)
         }
+        "range-format" => {
+            if state.focused_editor_path.is_empty() {
+                return Err("lsp range-format requires an open Code buffer".into());
+            }
+            let selection = state
+                .focused_editor_selection
+                .as_ref()
+                .filter(|selection| !selection.is_empty())
+                .ok_or("lsp range-format requires a selected Code range")?;
+            let (start, end) = selection.ordered();
+            (
+                "glass.lsp.range_formatting",
+                json!({
+                    "server":server.ok_or("lsp range-format requires SERVER")?,
+                    "path":state.focused_editor_path.clone(),
+                    "start":{"line":start.line,"character":start.column},
+                    "end":{"line":end.line,"character":end.column}
+                }),
+                false,
+            )
+        }
         "workspace-symbols" => ("glass.lsp.workspace_symbols", json!({"server":server.ok_or("lsp workspace-symbols requires SERVER QUERY")?,"query":parts.get(2..).unwrap_or_default().join(" ")}), false),
         "hover" | "complete" | "definition" | "declaration" | "implementation" | "references" | "signature" => {
             let tool = match action {
@@ -2640,9 +2661,9 @@ fn execute_lsp(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
             (tool, json!({"server":server.ok_or("lsp position action requires SERVER PATH LINE CHARACTER")?,"path":parts.get(2).ok_or("missing PATH")?,"line":parse_u64(parts.get(3), "LINE")?,"character":parse_u64(parts.get(4), "CHARACTER")?}), false)
         }
         "rename" => ("glass.lsp.rename", json!({"server":server.ok_or("lsp rename requires SERVER PATH LINE CHARACTER NAME")?,"path":parts.get(2).ok_or("missing PATH")?,"line":parse_u64(parts.get(3), "LINE")?,"character":parse_u64(parts.get(4), "CHARACTER")?,"newName":parts.get(5).ok_or("missing NAME")?}), false),
-        _ => return Err("lsp actions: start, stop, list, events, diagnostics, hover, complete, definition, declaration, implementation, references, symbols, workspace-symbols, inlay, signature, format, tokens, rename".into()),
+        _ => return Err("lsp actions: start, stop, list, events, diagnostics, hover, complete, definition, declaration, implementation, references, symbols, workspace-symbols, inlay, signature, format, range-format, tokens, rename".into()),
     };
-    if tool == "glass.lsp.formatting"
+    if matches!(tool, "glass.lsp.formatting" | "glass.lsp.range_formatting")
         && let Some(path) = arguments.get("path").and_then(Value::as_str)
     {
         state.remember_lsp_format_baseline(path)?;
@@ -2650,7 +2671,7 @@ fn execute_lsp(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
     let result = match run_tool(state, tool, arguments, mutating) {
         Ok(result) => result,
         Err(error) => {
-            if tool == "glass.lsp.formatting" {
+            if matches!(tool, "glass.lsp.formatting" | "glass.lsp.range_formatting") {
                 state.forget_lsp_format_baseline();
             }
             return Err(error);
@@ -3933,6 +3954,39 @@ mod tests {
         assert_eq!(call.name, "glass.lsp.inlay_hints");
         assert_eq!(call.arguments["server"], "rust-analyzer");
         assert_eq!(call.arguments["path"], "src/lib.rs");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lsp_range_format_routes_the_selected_unsaved_range_for_review() {
+        let (mut state, root) = test_state("lsp-range-format");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn old_name() {}\n").unwrap();
+        state.surface = DevSurface::Code;
+        state.focused_editor_path = "src/lib.rs".into();
+        state.focused_editor_content = "fn old_name() {}\n".into();
+        state.focused_editor_selection = Some(crate::development::TextSelection {
+            anchor: crate::development::TextPosition { line: 1, column: 4 },
+            active: crate::development::TextPosition {
+                line: 1,
+                column: 12,
+            },
+        });
+        execute(&mut state, "lsp range-format rust").expect("queue range format");
+        let (call, _) = state
+            .queued_tool_request
+            .take()
+            .expect("range-format request");
+        assert_eq!(call.name, "glass.lsp.range_formatting");
+        assert_eq!(call.arguments["path"], "src/lib.rs");
+        assert_eq!(
+            call.arguments["start"],
+            serde_json::json!({"line":1,"character":4})
+        );
+        assert_eq!(
+            call.arguments["end"],
+            serde_json::json!({"line":1,"character":12})
+        );
         let _ = fs::remove_dir_all(root);
     }
 

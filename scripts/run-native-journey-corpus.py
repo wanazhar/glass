@@ -68,6 +68,44 @@ def classify(message: str, timed_out: bool = False) -> str:
     return "product_bug"
 
 
+def compile_public_steps(journey: dict) -> list[dict]:
+    """Compile authored public-journey steps into the native batch protocol."""
+    steps = []
+    previous_action = None
+    for step in journey["steps"]:
+        action = step["action"]
+        if action == "navigate":
+            steps.append({"action": "navigate", "url": step["url"], "timeout_ms": step.get("timeoutMs", journey["timeoutMs"])})
+        elif action == "observe":
+            steps.append({"action": "observe"})
+        elif action == "click":
+            steps.append({"action": "click", "target": step["target"]})
+        elif action == "clickObserved":
+            steps.append(observed_click_step(step))
+        elif action == "scrollTargetObserved":
+            steps.append(observed_scroll_step(step))
+        elif action == "scroll":
+            steps.append(observed_viewport_scroll_step(step, previous_action))
+        elif action == "assert":
+            condition = step["condition"] if "condition" in step else f"js={step['expression']}"
+            steps.append({"action": "wait", "condition": condition, "timeout_ms": step.get("timeoutMs", 5000)})
+        elif action == "capability":
+            # Explicit negative capability assertion, evaluated in-page without
+            # attempting playback or fetching additional media.
+            steps.append({"action": "wait", "condition": "js=document.createElement('video').canPlayType('video/mp4') === ''", "timeout_ms": 1000})
+        elif action == "evaluate":
+            expression = step.get("expression")
+            if not isinstance(expression, str) or not expression.strip() or len(expression) > 4096:
+                raise ValueError("evaluate requires a nonempty expression of at most 4096 characters")
+            steps.append({"action": "evaluate", "expression": expression})
+        elif action == "screenshot":
+            steps.append({"action": "screenshot"})
+        else:
+            raise ValueError(f"runner does not implement step action {action}")
+        previous_action = action
+    return steps
+
+
 def error_kind(message: str, timed_out: bool = False) -> str:
     text = message.lower()
     if "native action target was not found" in text:
@@ -200,8 +238,12 @@ def run_process_group(command: list[str], *, cwd: Path, env: dict, timeout: floa
         return stdout, stderr, process.returncode, True
 
 
-def progress_step_results(progress_path: Path, total: int) -> list[dict]:
-    """Recover completed batch steps and the step interrupted by the runner deadline."""
+def progress_step_results(
+    progress_path: Path,
+    total: int,
+    interruption_kind: str = "runner_deadline",
+) -> list[dict]:
+    """Recover completed steps after either a deadline or an early process exit."""
     events = []
     try:
         lines = progress_path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -227,13 +269,19 @@ def progress_step_results(progress_path: Path, total: int) -> list[dict]:
         event = finished.get(index)
         if event is not None:
             status = event.get("status")
+            reported_error_kind = event.get("errorKind")
+            if (
+                not isinstance(reported_error_kind, str)
+                or not re.fullmatch(r"[a-z_]{1,64}", reported_error_kind)
+            ):
+                reported_error_kind = "batch_step_error"
             results.append({
                 "index": index,
                 "action": event.get("action"),
                 "status": status,
                 "elapsedMs": event.get("elapsedMs"),
-                "errorKind": "batch_step_error" if status == "error" else None,
-                "message": "completed step reported an error" if status == "error" else "",
+                "errorKind": reported_error_kind if status == "error" else None,
+                "message": "batch step reported an error" if status == "error" else "",
             })
         elif index in starts:
             results.append({
@@ -241,8 +289,12 @@ def progress_step_results(progress_path: Path, total: int) -> list[dict]:
                 "action": starts[index].get("action"),
                 "status": "interrupted",
                 "elapsedMs": None,
-                "errorKind": "runner_deadline",
-                "message": "runner deadline expired during this step",
+                "errorKind": interruption_kind,
+                "message": (
+                    "runner deadline expired during this step"
+                    if interruption_kind == "runner_deadline"
+                    else "runner process exited during this step"
+                ),
             })
             break
         else:
@@ -253,8 +305,12 @@ def progress_step_results(progress_path: Path, total: int) -> list[dict]:
             "action": "batch_setup",
             "status": "interrupted",
             "elapsedMs": None,
-            "errorKind": "runner_deadline",
-            "message": "runner deadline expired before the first step started",
+            "errorKind": interruption_kind,
+            "message": (
+                "runner deadline expired before the first step started"
+                if interruption_kind == "runner_deadline"
+                else "runner process exited before the first step started"
+            ),
         })
     return results
 
@@ -262,43 +318,9 @@ def progress_step_results(progress_path: Path, total: int) -> list[dict]:
 def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
     try:
         outer_timeout_ms = journey_outer_timeout_ms(journey)
+        steps = compile_public_steps(journey)
     except ValueError as error:
         return {"id": journey["id"], "classification": "product_bug", "message": str(error)}
-    steps = []
-    previous_action = None
-    for step in journey["steps"]:
-        action = step["action"]
-        if action == "navigate":
-            steps.append({"action": "navigate", "url": step["url"], "timeout_ms": step.get("timeoutMs", journey["timeoutMs"])})
-        elif action == "observe":
-            steps.append({"action": "observe"})
-        elif action == "click":
-            steps.append({"action": "click", "target": step["target"]})
-        elif action == "clickObserved":
-            try:
-                steps.append(observed_click_step(step))
-            except ValueError as error:
-                return {"id": journey["id"], "classification": "product_bug", "message": str(error)}
-        elif action == "scrollTargetObserved":
-            try:
-                steps.append(observed_scroll_step(step))
-            except ValueError as error:
-                return {"id": journey["id"], "classification": "product_bug", "message": str(error)}
-        elif action == "scroll":
-            try:
-                steps.append(observed_viewport_scroll_step(step, previous_action))
-            except ValueError as error:
-                return {"id": journey["id"], "classification": "product_bug", "message": str(error)}
-        elif action == "assert":
-            condition = step["condition"] if "condition" in step else f"js={step['expression']}"
-            steps.append({"action": "wait", "condition": condition, "timeout_ms": step.get("timeoutMs", 5000)})
-        elif action == "capability":
-            # Explicit negative capability assertion, evaluated in-page without
-            # attempting playback or fetching additional media.
-            steps.append({"action": "wait", "condition": "js=document.createElement('video').canPlayType('video/mp4') === ''", "timeout_ms": 1000})
-        else:
-            return {"id": journey["id"], "classification": "unsupported", "message": f"runner does not implement step action {action}"}
-        previous_action = action
 
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="glass-native-journey-") as temp_dir:
@@ -317,7 +339,11 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
             env=environment,
             timeout=outer_timeout_ms / 1000,
         )
-        progress_results = progress_step_results(progress_source, len(steps))
+        progress_results = progress_step_results(
+            progress_source,
+            len(steps),
+            "runner_deadline" if timed_out else "process_exit",
+        )
         stderr = stderr[:512] if not timed_out else "native journey process exceeded its outer deadline"
 
         trace_source = trace_base.with_suffix(".native_load.jsonl")
@@ -362,15 +388,20 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
             "errorKind": error_kind(message_text) if item.get("status") == "error" else None,
             "message": message_text,
         })
-    if timed_out and not step_results:
+    if not step_results and progress_results:
         step_results = progress_results
     failed_steps = [step for step in step_results if step.get("status") not in ("ok", "success", "completed")]
     message = failed_steps[0].get("message", "") if failed_steps else stderr
+    error_kind_value = (
+        failed_steps[0].get("errorKind") or error_kind(message, timed_out)
+        if failed_steps
+        else error_kind(message, timed_out)
+    )
     return {
         "id": journey["id"],
         "backend": "native",
         "classification": "pass" if passed else classify(message, timed_out),
-        "errorKind": None if passed else error_kind(message, timed_out),
+        "errorKind": None if passed else error_kind_value,
         "elapsedMs": elapsed_ms,
         "outerTimeoutMs": outer_timeout_ms,
         "returnCode": return_code,

@@ -123,6 +123,29 @@
       ]
     },
     {
+      "id": "public-mdn-cc0-webm-playback",
+      "backend": "native",
+      "scope": "public-read-only",
+      "capabilities": ["video/webm", "vp8-decode", "decoded-dimensions", "playback-clock", "pause", "screenshot"],
+      "asset": {
+        "url": "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.webm",
+        "license": "CC0-1.0",
+        "sourcePage": "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/video"
+      },
+      "timeoutMs": 30000,
+      "runnerTimeoutMs": 90000,
+      "steps": [
+        {"id":"video-demo","action":"navigate","url":"https://interactive-examples.mdn.mozilla.net/pages/tabbed/video.html"},
+        {"id":"observe-demo","action":"observe"},
+        {"id":"assert-video-resource","action":"assert","timeoutMs":15000,"expression":"(() => { const video = document.querySelector('video'); return !!video && video.currentSrc.includes('flower.webm') && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0 && video.duration > 0; })()"},
+        {"id":"play-muted-video","action":"evaluate","expression":"(() => { const video = document.querySelector('video'); if (!video || !video.currentSrc.includes('flower.webm')) throw new Error('expected observed MDN WebM sample'); video.muted = true; video.play(); return true; })()"},
+        {"id":"verify-decoded-playback-progress","action":"assert","timeoutMs":10000,"expression":"(() => { const video = document.querySelector('video'); return !!video && !video.paused && video.currentTime >= 0.25 && video.videoWidth > 0 && video.videoHeight > 0; })()"},
+        {"id":"pause-video","action":"evaluate","expression":"(() => { const video = document.querySelector('video'); if (!video) throw new Error('video element disappeared'); video.pause(); return video.paused; })()"},
+        {"id":"verify-paused-playback","action":"assert","expression":"(() => { const video = document.querySelector('video'); return !!video && video.paused && video.currentTime >= 0.25; })()"},
+        {"id":"capture-rendered-video","action":"screenshot"}
+      ]
+    },
+    {
       "id": "local-audio-wav-decode-and-client-playback",
       "backend": "native",
       "scope": "local-fixture",

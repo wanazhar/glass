@@ -5,12 +5,13 @@
 //! processes, which keeps revision chaining and the persistent-session owner
 //! on one browser runtime.
 
+use super::native_engine::NativeEngineError;
 use super::native_engine::NativePreflightAction;
 use super::runtime::BrowserRuntimeSession;
 use crate::browser::policy::{BrowserPolicy, PolicyCapability};
 use crate::browser::session::{
     BatchMode, BatchOutcome, BatchStep, BatchStepOutcome, BrowserResult, MAX_BATCH_STEPS,
-    WaitCondition,
+    WaitCondition, WaitTimeout,
 };
 use crate::browser_backend::{PromptDecision, SemanticAction};
 use base64::Engine as _;
@@ -167,7 +168,7 @@ pub(crate) async fn run_with_progress(
                     execution_id: None,
                 });
                 progress(
-                    json!({"event":"step_finished","index":index,"action":action,"status":"error","elapsedMs":elapsed_ms}),
+                    json!({"event":"step_finished","index":index,"action":action,"status":"error","elapsedMs":elapsed_ms,"errorKind":batch_step_error_kind(error.as_ref())}),
                 );
                 failed += 1;
                 break;
@@ -193,6 +194,16 @@ pub(crate) async fn run_with_progress(
         total: steps.len(),
         success: failed == 0,
     })
+}
+
+fn batch_step_error_kind(error: &(dyn std::error::Error + 'static)) -> &'static str {
+    if error.downcast_ref::<WaitTimeout>().is_some() {
+        return "wait_timeout";
+    }
+    if let Some(error) = error.downcast_ref::<NativeEngineError>() {
+        return error.diagnostic_class();
+    }
+    "batch_step_error"
 }
 
 async fn execute_step(
@@ -619,7 +630,9 @@ const NATIVE_SENSITIVE_FORM_VALUES_SCRIPT: &str = r#"(() => {
 
 #[cfg(test)]
 mod tests {
-    use super::scroll_deltas;
+    use super::{batch_step_error_kind, scroll_deltas};
+    use crate::browser::native_engine::NativeEngineError;
+    use crate::browser::session::WaitTimeout;
 
     #[test]
     fn rejects_fractional_or_non_finite_scroll_deltas() {
@@ -627,5 +640,25 @@ mod tests {
         assert!(scroll_deltas(f64::NAN, 0.0).is_err());
         assert!(scroll_deltas(f64::from(i32::MAX) + 1.0, 0.0).is_err());
         assert_eq!(scroll_deltas(-4.0, 7.0).unwrap(), (-4, 7));
+    }
+
+    #[test]
+    fn progress_error_class_is_static_and_preserves_native_worker_type() {
+        let wait_timeout = WaitTimeout {
+            condition: "js=private page expression".into(),
+            deadline_ms: 250,
+            last_state: "false".into(),
+            observed_page: None,
+            reason: "deadline_exceeded",
+        };
+        assert_eq!(batch_step_error_kind(&wait_timeout), "wait_timeout");
+
+        let worker_error = NativeEngineError::Worker {
+            operation: "runtime".into(),
+            reason: "private worker details".into(),
+        };
+        assert_eq!(batch_step_error_kind(&worker_error), "worker");
+        let unknown_error = std::io::Error::other("private unknown error");
+        assert_eq!(batch_step_error_kind(&unknown_error), "batch_step_error");
     }
 }

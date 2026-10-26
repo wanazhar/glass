@@ -16,6 +16,28 @@ SPEC.loader.exec_module(corpus)
 
 
 class JourneyFailureClassificationTests(unittest.TestCase):
+    def test_outer_deadline_is_distinct_from_per_step_timeout(self):
+        self.assertEqual(corpus.journey_outer_timeout_ms({"timeoutMs": 120000}), 130000)
+        self.assertEqual(
+            corpus.journey_outer_timeout_ms(
+                {"timeoutMs": 120000, "runnerTimeoutMs": 360000}
+            ),
+            360000,
+        )
+        for invalid in [True, "360000", 999, 600001]:
+            with self.assertRaises(ValueError):
+                corpus.journey_outer_timeout_ms({"runnerTimeoutMs": invalid})
+
+    def test_wikipedia_outer_deadline_allows_the_multi_step_read_only_journey(self):
+        journeys = json.loads(corpus.DEFAULT_CORPUS.read_text(encoding="utf-8"))["journeys"]
+        journey = next(
+            item
+            for item in journeys
+            if item["id"] == "public-wikipedia-article-and-observed-subpage"
+        )
+        self.assertEqual(journey["timeoutMs"], 120000)
+        self.assertEqual(corpus.journey_outer_timeout_ms(journey), 360000)
+
     def test_wikipedia_journey_uses_observed_link_and_asserts_both_articles(self):
         import json
 
@@ -35,7 +57,7 @@ class JourneyFailureClassificationTests(unittest.TestCase):
         click = next(step for step in steps if step["id"] == "choose-observed-subpage")
         self.assertEqual(
             corpus.observed_click_step(click),
-            {"action": "clickObserved", "role": "link", "nameContains": "computer science"},
+            {"action": "clickObserved", "role": "link", "nameEquals": "Computer science"},
         )
         self.assertIn("title-contains=Computer science", conditions)
         self.assertIn(
@@ -49,6 +71,20 @@ class JourneyFailureClassificationTests(unittest.TestCase):
             ),
             {"action": "clickObserved", "role": "link", "nameContains": "library"},
         )
+
+    def test_observed_click_supports_exact_name_and_rejects_mixed_or_missing_name(self):
+        self.assertEqual(
+            corpus.observed_click_step(
+                {"targetSource": "fresh-observation", "role": "link", "nameEquals": "Computer science"}
+            ),
+            {"action": "clickObserved", "role": "link", "nameEquals": "Computer science"},
+        )
+        for step in (
+            {"targetSource": "fresh-observation", "role": "link"},
+            {"targetSource": "fresh-observation", "role": "link", "nameContains": "computer", "nameEquals": "Computer"},
+        ):
+            with self.assertRaisesRegex(ValueError, "exactly one"):
+                corpus.observed_click_step(step)
 
     def test_observed_click_rejects_blind_selector_metadata(self):
         with self.assertRaisesRegex(ValueError, "fresh-observation"):
@@ -161,7 +197,7 @@ class JourneyFailureClassificationTests(unittest.TestCase):
                 [sys.executable, "-c", code, str(child_pid_path)],
                 cwd=Path(directory),
                 env=os.environ.copy(),
-                timeout=0.1,
+                timeout=1.0,
             )
             self.assertTrue(timed_out)
             self.assertNotEqual(return_code, None)
@@ -193,7 +229,7 @@ class JourneyFailureClassificationTests(unittest.TestCase):
                 [sys.executable, "-c", code, str(child_pid_path)],
                 cwd=Path(directory),
                 env=os.environ.copy(),
-                timeout=0.1,
+                timeout=1.0,
             )
             self.assertTrue(timed_out)
             self.assertEqual(return_code, 0)

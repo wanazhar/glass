@@ -57,8 +57,10 @@ use super::{
     },
 };
 use base64::Engine as _;
+use flate2::read::ZlibDecoder;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::Read;
 use std::sync::Arc;
 use std::sync::Mutex;
 use url::Url;
@@ -323,7 +325,14 @@ pub(crate) struct NativeDocumentWire {
     #[serde(default)]
     pub(crate) native_document_state_replayable: bool,
     pub(crate) nodes: Vec<NativeNodeWire>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) computed_styles: Vec<NativeComputedStyle>,
+    /// Interned computed styles keep repeated per-node CSS projections bounded
+    /// without changing the decoded document representation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) computed_style_table: Vec<NativeComputedStyle>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) computed_style_indices: Vec<u32>,
     #[serde(default)]
     pub(crate) quirks_mode: super::html_parser::HtmlParsedQuirksMode,
     #[serde(default)]
@@ -463,6 +472,10 @@ pub(crate) struct NativeImageResourceWire {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) pixels_base64: String,
+    /// Losslessly compressed RGBA data used when it is smaller than the raw
+    /// base64 payload. Older peers continue to send `pixels_base64`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) pixels_zlib_base64: String,
     #[serde(default)]
     pub(crate) frames: Vec<NativeImageFrameWire>,
     #[serde(default)]
@@ -473,6 +486,8 @@ pub(crate) struct NativeImageResourceWire {
 pub(crate) struct NativeImageFrameWire {
     pub(crate) delay_ms: u32,
     pub(crate) pixels_base64: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) pixels_zlib_base64: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1455,6 +1470,52 @@ fn default_true() -> bool {
     true
 }
 
+fn decode_content_image_pixels(
+    raw_base64: &str,
+    zlib_base64: &str,
+    expected_bytes: usize,
+    label: &str,
+) -> Result<Vec<u8>, NativeEngineError> {
+    if raw_base64.is_empty() == zlib_base64.is_empty() {
+        return Err(NativeEngineError::Parse {
+            offset: 0,
+            reason: format!("content process returned ambiguous {label}"),
+        });
+    }
+    let encoded = base64::engine::general_purpose::STANDARD
+        .decode(if zlib_base64.is_empty() {
+            raw_base64
+        } else {
+            zlib_base64
+        })
+        .map_err(|_| NativeEngineError::Parse {
+            offset: 0,
+            reason: format!("content process returned invalid {label}"),
+        })?;
+    let decoded = if zlib_base64.is_empty() {
+        encoded
+    } else {
+        let mut decoder = ZlibDecoder::new(encoded.as_slice());
+        let mut decoded = Vec::with_capacity(expected_bytes);
+        decoder
+            .by_ref()
+            .take(expected_bytes.saturating_add(1) as u64)
+            .read_to_end(&mut decoded)
+            .map_err(|_| NativeEngineError::Parse {
+                offset: 0,
+                reason: format!("content process returned malformed compressed {label}"),
+            })?;
+        decoded
+    };
+    if decoded.len() != expected_bytes {
+        return Err(NativeEngineError::Parse {
+            offset: 0,
+            reason: format!("content process returned {label} with the wrong dimensions"),
+        });
+    }
+    Ok(decoded)
+}
+
 pub(crate) fn image_from_wire(
     resource: &NativeImageResourceWire,
     max_encoded_bytes: usize,
@@ -1476,10 +1537,15 @@ pub(crate) fn image_from_wire(
         ));
     }
     let encoded_bytes = resource
-        .frames
-        .iter()
-        .try_fold(resource.pixels_base64.len(), |total, frame| {
-            total.checked_add(frame.pixels_base64.len())
+        .pixels_base64
+        .len()
+        .checked_add(resource.pixels_zlib_base64.len())
+        .and_then(|total| {
+            resource.frames.iter().try_fold(total, |total, frame| {
+                total
+                    .checked_add(frame.pixels_base64.len())
+                    .and_then(|total| total.checked_add(frame.pixels_zlib_base64.len()))
+            })
         })
         .ok_or_else(|| NativeEngineError::limit("content-process image payload", 0, usize::MAX))?;
     if encoded_bytes > max_encoded_bytes {
@@ -1496,18 +1562,12 @@ pub(crate) fn image_from_wire(
             resource.frames.len(),
         ));
     }
-    let pixels = base64::engine::general_purpose::STANDARD
-        .decode(&resource.pixels_base64)
-        .map_err(|_| NativeEngineError::Parse {
-            offset: 0,
-            reason: "content process returned invalid image pixels".into(),
-        })?;
-    if pixels.len() != expected_bytes {
-        return Err(NativeEngineError::Parse {
-            offset: 0,
-            reason: "content process returned image pixels with the wrong dimensions".into(),
-        });
-    }
+    let pixels = decode_content_image_pixels(
+        &resource.pixels_base64,
+        &resource.pixels_zlib_base64,
+        expected_bytes,
+        "image pixels",
+    )?;
     if resource.frames.is_empty() {
         if resource.loop_count.is_some() {
             return Err(NativeEngineError::Parse {
@@ -1525,19 +1585,12 @@ pub(crate) fn image_from_wire(
                 reason: "content process returned an invalid image frame delay".into(),
             });
         }
-        let frame_pixels = base64::engine::general_purpose::STANDARD
-            .decode(&frame.pixels_base64)
-            .map_err(|_| NativeEngineError::Parse {
-                offset: 0,
-                reason: "content process returned invalid image frame pixels".into(),
-            })?;
-        if frame_pixels.len() != expected_bytes {
-            return Err(NativeEngineError::Parse {
-                offset: 0,
-                reason: "content process returned image frame pixels with the wrong dimensions"
-                    .into(),
-            });
-        }
+        let frame_pixels = decode_content_image_pixels(
+            &frame.pixels_base64,
+            &frame.pixels_zlib_base64,
+            expected_bytes,
+            "image frame pixels",
+        )?;
         frames.push(NativeImageFrame {
             delay_ms: frame.delay_ms,
             pixels: frame_pixels,

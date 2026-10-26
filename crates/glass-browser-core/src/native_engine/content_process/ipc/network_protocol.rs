@@ -1230,6 +1230,7 @@ pub(in crate::native_engine::content_process) fn parent_image_response_payload(
                 width: image.width,
                 height: image.height,
                 pixels_base64: base64::engine::general_purpose::STANDARD.encode(&image.pixels),
+                pixels_zlib_base64: String::new(),
                 frames: image
                     .frames
                     .iter()
@@ -1237,6 +1238,7 @@ pub(in crate::native_engine::content_process) fn parent_image_response_payload(
                         delay_ms: frame.delay_ms,
                         pixels_base64: base64::engine::general_purpose::STANDARD
                             .encode(&frame.pixels),
+                        pixels_zlib_base64: String::new(),
                     })
                     .collect(),
                 loop_count: image.loop_count,

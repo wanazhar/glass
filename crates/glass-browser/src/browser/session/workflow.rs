@@ -2290,9 +2290,18 @@ fn resolve_batch_step(
         BatchStep::ClickObserved {
             role,
             name_contains,
+            name_equals,
         } => BatchStep::ClickObserved {
             role: resolve("role", role, 64)?,
-            name_contains: resolve("nameContains", name_contains, MAX_TARGET_BYTES)?,
+            name_contains: if name_contains.is_empty() {
+                String::new()
+            } else {
+                resolve("nameContains", name_contains, MAX_TARGET_BYTES)?
+            },
+            name_equals: name_equals
+                .as_deref()
+                .map(|value| resolve("nameEquals", value, MAX_TARGET_BYTES))
+                .transpose()?,
         },
         BatchStep::Type { text, target } => BatchStep::Type {
             text: resolve("text", text, MAX_TEXT_BYTES)?,
@@ -2833,14 +2842,27 @@ fn validate_batch_step(action: &BatchStep, path: &str) -> Result<(), WorkflowVal
         BatchStep::ClickObserved {
             role,
             name_contains,
+            name_equals,
         } => {
             validate_bytes(&format!("{path}.role"), role, 1, 64)?;
-            validate_bytes(
-                &format!("{path}.nameContains"),
-                name_contains,
-                1,
-                MAX_TARGET_BYTES,
-            )?;
+            let contains_is_set = !name_contains.trim().is_empty();
+            if contains_is_set == name_equals.is_some() {
+                return Err(WorkflowValidationError::new(
+                    path,
+                    "requires exactly one of nameContains or nameEquals",
+                ));
+            }
+            if contains_is_set {
+                validate_bytes(
+                    &format!("{path}.nameContains"),
+                    name_contains,
+                    1,
+                    MAX_TARGET_BYTES,
+                )?;
+            }
+            if let Some(name) = name_equals {
+                validate_bytes(&format!("{path}.nameEquals"), name, 1, MAX_TARGET_BYTES)?;
+            }
         }
         BatchStep::Type { text, target } => {
             validate_bytes(&format!("{path}.text"), text, 0, MAX_TEXT_BYTES)?;

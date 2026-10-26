@@ -1244,10 +1244,18 @@ impl BrowserRuntimeSession {
         &self,
         role: &str,
         name_contains: &str,
+        name_equals: Option<&str>,
     ) -> BrowserResult<(u64, super::session::SemanticTarget)> {
         self.require_native_operation("resolve_observed_target")?;
-        if role.trim().is_empty() || name_contains.trim().is_empty() {
-            return Err("observed target role and nameContains must be nonempty".into());
+        if role.trim().is_empty()
+            || (name_contains.trim().is_empty()
+                && name_equals.is_none_or(|name| name.trim().is_empty()))
+            || (!name_contains.trim().is_empty() && name_equals.is_some())
+        {
+            return Err(
+                "observed target requires a role and exactly one of nameContains or nameEquals"
+                    .into(),
+            );
         }
         let _operation = self.operation_lock.lock().await;
         let frames = self.native_inspection_snapshots_unlocked().await?;
@@ -1270,12 +1278,16 @@ impl BrowserRuntimeSession {
             })
             .collect::<Vec<_>>();
         let folded_name = name_contains.to_lowercase();
+        let folded_exact_name = name_equals.map(str::to_lowercase);
         let matches = nodes
             .iter()
             .filter(|(_, node)| {
                 native_semantic_node_is_interactive(node)
                     && !node.name_truncated
-                    && node.name.to_lowercase().contains(&folded_name)
+                    && folded_exact_name.as_ref().map_or_else(
+                        || node.name.to_lowercase().contains(&folded_name),
+                        |name| node.name.to_lowercase() == *name,
+                    )
             })
             .collect::<Vec<_>>();
         let Some((frame, node)) = matches.first().copied() else {
@@ -1287,13 +1299,16 @@ impl BrowserRuntimeSession {
                 .iter()
                 .filter(|(_, node)| {
                     native_semantic_node_is_interactive(node)
-                        && node.name.to_lowercase().contains(&folded_name)
+                        && folded_exact_name.as_ref().map_or_else(
+                            || node.name.to_lowercase().contains(&folded_name),
+                            |name| node.name.to_lowercase() == *name,
+                        )
                 })
                 .count();
             return Err(super::session::SemanticObservationError::new(
                 "target",
                 format!(
-                    "no visible target matches role={role:?}, nameContains={name_contains:?}; roleTargets={}, hiddenPartial={hidden_partial}, visiblePartial={partial_visible}",
+                    "no visible target matches role={role:?}, nameContains={name_contains:?}, nameEquals={name_equals:?}; roleTargets={}, hiddenPartial={hidden_partial}, visiblePartial={partial_visible}",
                     nodes.len(),
                 ),
             )
@@ -1313,7 +1328,7 @@ impl BrowserRuntimeSession {
             return Err(super::session::SemanticObservationError::new(
                 "target",
                 format!(
-                    "multiple visible targets match role={role:?}, nameContains={name_contains:?}"
+                    "multiple visible targets match role={role:?}, nameContains={name_contains:?}, nameEquals={name_equals:?}"
                 ),
             )
             .into());

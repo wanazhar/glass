@@ -25,7 +25,12 @@ against a fresh native semantic source
 snapshot and dispatches its reference with that revision. Repeated visible
 links collapse to one action only when each candidate has the same
 privacy-safe destination fingerprint; different destinations remain an
-ambiguity error.
+ambiguity error. When a fragment matches multiple visible targets, callers may
+provide `nameEquals` to require a case-insensitive exact accessible name from
+that same fresh observation; the resolver still reports ambiguity if
+multiple exact-name targets point to different destinations. The public
+Wikipedia journey uses this selector after its article observation exposed
+multiple links containing “computer science.”
 The repository's broader authored fixture coverage remains grouped under
 `tests/native_engine_tests/`; this corpus is an acceptance entry point, not a
 replacement for those focused regressions.
@@ -38,6 +43,18 @@ and per-step timings and outcomes. The default report is placed in the system
 temporary directory with owner-only permissions; pass `--output PATH` to
 choose a different private location. A failed journey returns a nonzero exit
 code while preserving the report.
+
+`timeoutMs` bounds an individual navigation step. A journey may set
+`runnerTimeoutMs` for its total owned process-group deadline (1–600 seconds);
+the default remains `timeoutMs + 10 seconds`. This distinction matters for
+multi-step pages whose navigation succeeds near its limit but still need time
+for observation and semantic actions. The runner keeps completed step results
+and marks an interrupted active step when the outer deadline expires, then
+terminates and reaps only the process group it launched. The Wikipedia
+article-to-subpage journey uses a 360-second outer bound for its seven
+read-only steps while retaining its 120-second per-navigation budget. This
+gives the complete journey room to run; it does not assert that the native
+engine can meet that deadline or convert an interrupted step into a pass.
 
 The public entries cover a deep MDN reference, a Wikipedia article that
 asserts the first article title, follows the freshly observed

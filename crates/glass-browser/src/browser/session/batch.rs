@@ -222,6 +222,7 @@ async fn execute_batch_step(
         BatchStep::ClickObserved {
             role,
             name_contains,
+            name_equals,
         } => {
             let context = session.observe().await?;
             let observation = SemanticObservation::from_page_context(
@@ -232,19 +233,24 @@ async fn execute_batch_step(
                 return Err("batch revision changed before observed target selection".into());
             }
             let name_fragment = name_contains.to_lowercase();
+            let exact_name = name_equals.as_deref().map(str::to_lowercase);
             let mut matches = observation
                 .regions
                 .iter()
                 .flat_map(|region| region.targets.iter())
                 .filter(|target| {
-                    target.role == *role && target.name.to_lowercase().contains(&name_fragment)
+                    target.role == *role
+                        && exact_name.as_ref().map_or_else(
+                            || target.name.to_lowercase().contains(&name_fragment),
+                            |name| target.name.to_lowercase() == *name,
+                        )
                 });
             let target = matches.next().ok_or_else(|| {
-                format!("observed target not found: role={role:?}, nameContains={name_contains:?}")
+                format!("observed target not found: role={role:?}, nameContains={name_contains:?}, nameEquals={name_equals:?}")
             })?;
             if matches.next().is_some() {
                 return Err(format!(
-                    "observed target is ambiguous: role={role:?}, nameContains={name_contains:?}"
+                    "observed target is ambiguous: role={role:?}, nameContains={name_contains:?}, nameEquals={name_equals:?}"
                 )
                 .into());
             }

@@ -81,11 +81,12 @@
       "scope": "public-read-only",
       "capabilities": ["navigation", "observation", "semantic-targeting", "subpage-navigation"],
       "timeoutMs": 120000,
+      "runnerTimeoutMs": 360000,
       "steps": [
         {"id":"article","action":"navigate","url":"https://en.wikipedia.org/wiki/Computer"},
         {"id":"observe-article","action":"observe"},
         {"id":"assert-article-identity","action":"assert","condition":"title-contains=Computer"},
-        {"id":"choose-observed-subpage","action":"clickObserved","role":"link","nameContains":"computer science","targetSource":"fresh-observation"},
+        {"id":"choose-observed-subpage","action":"clickObserved","role":"link","nameEquals":"Computer science","targetSource":"fresh-observation"},
         {"id":"observe-subpage","action":"observe"},
         {"id":"assert-subpage","action":"assert","condition":"url-prefix=https://en.wikipedia.org/wiki/Computer_science"},
         {"id":"assert-subpage-identity","action":"assert","condition":"title-contains=Computer science"}

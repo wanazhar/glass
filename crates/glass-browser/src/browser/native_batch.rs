@@ -231,9 +231,10 @@ async fn execute_step(
         BatchStep::ClickObserved {
             role,
             name_contains,
+            name_equals,
         } => {
             let (revision, target) = session
-                .native_resolve_observed_target(role, name_contains)
+                .native_resolve_observed_target(role, name_contains, name_equals.as_deref())
                 .await?;
             if expected_revision.is_some_and(|expected| expected != revision) {
                 return Err("batch revision changed before observed target selection".into());

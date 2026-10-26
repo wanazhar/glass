@@ -2233,6 +2233,12 @@ fn read_web_storage_profile(
             profile_bytes,
         ));
     }
+    // A newly created or interrupted zero-byte profile contains no stored
+    // state to recover. Treat it like a missing profile; keep rejecting
+    // nonempty malformed files so callers do not silently lose saved data.
+    if profile_bytes == 0 {
+        return Ok(None);
+    }
     let bytes = fs::read(path).map_err(|_| NativeEngineError::Worker {
         operation: "load native Web Storage profile".into(),
         reason: "native Web Storage profile cannot be read".into(),

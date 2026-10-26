@@ -20,6 +20,21 @@ from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CORPUS = ROOT / "crates/glass-browser/tests/fixtures/native-journeys-v1.json"
+MAX_JOURNEY_OUTER_TIMEOUT_MS = 600_000
+
+
+def journey_outer_timeout_ms(journey: dict) -> int:
+    """Return the bounded process-group deadline, distinct from step budgets."""
+    explicit = journey.get("runnerTimeoutMs")
+    if explicit is None:
+        explicit = int(journey.get("timeoutMs", 20_000)) + 10_000
+    if isinstance(explicit, bool) or not isinstance(explicit, int):
+        raise ValueError("runnerTimeoutMs must be an integer")
+    if not 1_000 <= explicit <= MAX_JOURNEY_OUTER_TIMEOUT_MS:
+        raise ValueError(
+            f"runnerTimeoutMs must be between 1000 and {MAX_JOURNEY_OUTER_TIMEOUT_MS}"
+        )
+    return explicit
 
 
 def classify(message: str, timed_out: bool = False) -> str:
@@ -101,9 +116,14 @@ def observed_click_step(step: dict) -> dict:
         raise ValueError("clickObserved requires targetSource=fresh-observation")
     role = step.get("role")
     name_contains = step.get("nameContains")
-    if not isinstance(role, str) or not role or not isinstance(name_contains, str) or not name_contains:
-        raise ValueError("clickObserved requires nonempty role and nameContains")
-    return {"action": "clickObserved", "role": role, "nameContains": name_contains}
+    name_equals = step.get("nameEquals")
+    if not isinstance(role, str) or not role:
+        raise ValueError("clickObserved requires a nonempty role")
+    if isinstance(name_contains, str) and name_contains and name_equals is None:
+        return {"action": "clickObserved", "role": role, "nameContains": name_contains}
+    if isinstance(name_equals, str) and name_equals and name_contains is None:
+        return {"action": "clickObserved", "role": role, "nameEquals": name_equals}
+    raise ValueError("clickObserved requires exactly one of nonempty nameContains or nameEquals")
 
 
 def observed_scroll_step(step: dict) -> dict:
@@ -240,6 +260,10 @@ def progress_step_results(progress_path: Path, total: int) -> list[dict]:
 
 
 def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
+    try:
+        outer_timeout_ms = journey_outer_timeout_ms(journey)
+    except ValueError as error:
+        return {"id": journey["id"], "classification": "product_bug", "message": str(error)}
     steps = []
     previous_action = None
     for step in journey["steps"]:
@@ -291,7 +315,7 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
             command,
             cwd=ROOT,
             env=environment,
-            timeout=(journey.get("timeoutMs", 20000) / 1000) + 10,
+            timeout=outer_timeout_ms / 1000,
         )
         progress_results = progress_step_results(progress_source, len(steps))
         stderr = stderr[:512] if not timed_out else "native journey process exceeded its outer deadline"
@@ -348,6 +372,7 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
         "classification": "pass" if passed else classify(message, timed_out),
         "errorKind": None if passed else error_kind(message, timed_out),
         "elapsedMs": elapsed_ms,
+        "outerTimeoutMs": outer_timeout_ms,
         "returnCode": return_code,
         "finalRevision": result.get("finalRevision"),
         "finalUrl": result.get("finalUrl"),

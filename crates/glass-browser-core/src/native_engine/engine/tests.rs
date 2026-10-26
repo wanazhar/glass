@@ -325,6 +325,69 @@ async fn failed_first_content_load_restarts_owner_before_next_navigation() {
 }
 
 #[tokio::test]
+async fn stalled_outgoing_unload_discards_worker_and_allows_navigation_to_recover() {
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let request = String::from_utf8_lossy(&request);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or_default();
+            let body = match path {
+                "/start" => {
+                    "<title>Start</title><script>addEventListener('unload', () => { while (true) {} });</script><main>start page</main>"
+                }
+                "/next" => "<title>Next</title><main>navigation recovered</main>",
+                other => panic!("unexpected lifecycle test request path: {other}"),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let start_url = format!("http://{address}/start");
+    let next_url = format!("http://{address}/next");
+    let config = NativeEngineConfig::default().with_initial_url(start_url);
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    let snapshot = engine
+        .navigate_request_async_with_lifecycle_timeout(
+            NativeNavigationRequest::get(next_url.clone()),
+            0,
+            true,
+            None,
+            std::time::Duration::from_millis(250),
+        )
+        .await
+        .expect("a timed-out outgoing unload must not strand the next document");
+
+    assert_eq!(snapshot.url, next_url);
+    assert!(snapshot.visible_text.contains("navigation recovered"));
+    engine.close_async().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn native_content_process_worker_timer_fetch_uses_parent_cookie_authority() {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},

@@ -1,5 +1,16 @@
 use super::*;
 
+fn is_outgoing_lifecycle_timeout(error: &NativeEngineError) -> bool {
+    matches!(
+        error,
+        NativeEngineError::WorkerFailure {
+            operation,
+            kind: NativeWorkerFailureKind::Timeout,
+            ..
+        } if operation == "content process mutation"
+    )
+}
+
 impl NativeEngine {
     pub(super) fn allows_frame_navigation(
         &self,
@@ -596,6 +607,24 @@ impl NativeEngine {
         dispatch_lifecycle: bool,
         cancellation: Option<NativeNavigationCancellation>,
     ) -> Result<NativeEngineSnapshot, NativeEngineError> {
+        self.navigate_request_async_with_lifecycle_timeout(
+            navigation,
+            page_navigation_handoffs,
+            dispatch_lifecycle,
+            cancellation,
+            CONTENT_PROCESS_LIFECYCLE_TIMEOUT,
+        )
+        .await
+    }
+
+    pub(super) async fn navigate_request_async_with_lifecycle_timeout(
+        &mut self,
+        navigation: NativeNavigationRequest,
+        page_navigation_handoffs: usize,
+        dispatch_lifecycle: bool,
+        cancellation: Option<NativeNavigationCancellation>,
+        lifecycle_timeout: std::time::Duration,
+    ) -> Result<NativeEngineSnapshot, NativeEngineError> {
         self.require_running("navigate")?;
         let same_document = self.is_same_document_navigation(&navigation.url);
         let allowed = self
@@ -626,8 +655,9 @@ impl NativeEngine {
             return Ok(self.snapshot_unchecked());
         }
         if !same_document && dispatch_lifecycle {
-            let (allowed, lifecycle_navigation) =
-                self.dispatch_navigation_lifecycle_async().await?;
+            let (allowed, lifecycle_navigation) = self
+                .dispatch_navigation_lifecycle_async_with_timeout(lifecycle_timeout)
+                .await?;
             if !allowed {
                 return Ok(self.snapshot_unchecked());
             }
@@ -639,11 +669,12 @@ impl NativeEngine {
                         page_navigation_handoffs.saturating_add(1),
                     ));
                 }
-                return Box::pin(self.navigate_request_async_with_lifecycle(
+                return Box::pin(self.navigate_request_async_with_lifecycle_timeout(
                     lifecycle_navigation,
                     page_navigation_handoffs + 1,
                     false,
                     cancellation,
+                    lifecycle_timeout,
                 ))
                 .await;
             }
@@ -1322,6 +1353,14 @@ impl NativeEngine {
     pub(super) async fn dispatch_navigation_lifecycle_async(
         &mut self,
     ) -> Result<(bool, Option<NativeNavigationRequest>), NativeEngineError> {
+        self.dispatch_navigation_lifecycle_async_with_timeout(CONTENT_PROCESS_LIFECYCLE_TIMEOUT)
+            .await
+    }
+
+    pub(super) async fn dispatch_navigation_lifecycle_async_with_timeout(
+        &mut self,
+        lifecycle_timeout: std::time::Duration,
+    ) -> Result<(bool, Option<NativeNavigationRequest>), NativeEngineError> {
         let (canceled, sticky_activation, mut navigation) =
             self.dispatch_before_unload_for_navigation().await?;
         let allowed = if !canceled || !sticky_activation {
@@ -1332,7 +1371,10 @@ impl NativeEngine {
         if !allowed {
             return Ok((false, None));
         }
-        if let Some(next_navigation) = self.dispatch_unload_for_navigation().await? {
+        if let Some(next_navigation) = self
+            .dispatch_unload_for_navigation_with_timeout(lifecycle_timeout)
+            .await?
+        {
             if navigation.is_some() {
                 return Err(NativeEngineError::TargetNotActionable {
                     reason: "multiple outgoing lifecycle navigations are not supported".into(),
@@ -1371,13 +1413,36 @@ impl NativeEngine {
     pub async fn dispatch_unload_for_navigation(
         &mut self,
     ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
+        self.dispatch_unload_for_navigation_with_timeout(CONTENT_PROCESS_LIFECYCLE_TIMEOUT)
+            .await
+    }
+
+    async fn dispatch_unload_for_navigation_with_timeout(
+        &mut self,
+        lifecycle_timeout: std::time::Duration,
+    ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         let events = [NativeEventKind::PageHide, NativeEventKind::Unload];
         let navigation = if self
             .content_process
             .as_mut()
             .is_some_and(NativeContentProcess::refresh_health)
         {
-            self.dispatch_content_events_async(&events, true).await?
+            match self
+                .dispatch_content_events_async_with_timeout(&events, true, lifecycle_timeout)
+                .await
+            {
+                Ok(navigation) => navigation,
+                Err(error) if is_outgoing_lifecycle_timeout(&error) => {
+                    tracing::warn!(
+                        target: "glass_browser_core::native_navigation",
+                        event = "outgoing_lifecycle_timeout",
+                        "outgoing pagehide/unload handler exceeded its bounded deadline; discarding the stalled content worker and continuing navigation"
+                    );
+                    self.content_process.take();
+                    None
+                }
+                Err(error) => return Err(error),
+            }
         } else if self.javascript.is_some() {
             self.dispatch_local_navigation_lifecycle()?
         } else {
@@ -1428,6 +1493,20 @@ impl NativeEngine {
         events: &[NativeEventKind],
         outgoing_lifecycle: bool,
     ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
+        self.dispatch_content_events_async_with_timeout(
+            events,
+            outgoing_lifecycle,
+            CONTENT_PROCESS_LIFECYCLE_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn dispatch_content_events_async_with_timeout(
+        &mut self,
+        events: &[NativeEventKind],
+        outgoing_lifecycle: bool,
+        timeout: std::time::Duration,
+    ) -> Result<Option<NativeNavigationRequest>, NativeEngineError> {
         let mutation = {
             let Some(process) = self.content_process.as_mut() else {
                 return Ok(None);
@@ -1436,7 +1515,7 @@ impl NativeEngine {
                 return Ok(None);
             }
             process
-                .dispatch_lifecycle_events(events, &mut self.loader)
+                .dispatch_lifecycle_events_with_timeout(events, &mut self.loader, timeout)
                 .await?
         };
         let navigation = mutation

@@ -129,6 +129,26 @@ fn temp_project() -> std::path::PathBuf {
 }
 
 #[test]
+fn missing_development_daemon_status_has_a_direct_recovery_message() {
+    let root = temp_project();
+    let output = Command::new(glass_binary())
+        .args(["daemon", "status", "--socket"])
+        .arg(root.join("glassd.sock"))
+        .arg("--status")
+        .arg(root.join("missing/glassd.json"))
+        .output()
+        .expect("Glass daemon status should run");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Glass development daemon is not running; start it with `glass daemon start`\n"
+    );
+    std::fs::remove_dir_all(root).expect("remove temporary status fixture");
+}
+
+#[test]
 fn both_cli_help_paths_exit_successfully() {
     for binary in [glass_binary(), glass_browser_binary()] {
         let output = Command::new(binary)

@@ -172,6 +172,58 @@ impl Drop for StreamWorker {
     }
 }
 
+/// Send provider updates through the bounded queue without leaving the reader
+/// thread stuck in `SyncSender::send` after its consumer is cancelled or
+/// dropped. A slow consumer still applies backpressure; the producer checks
+/// cancellation while waiting for capacity.
+fn send_stream_update(
+    tx: &std::sync::mpsc::SyncSender<StreamUpdate>,
+    cancel: &std::sync::atomic::AtomicBool,
+    mut update: StreamUpdate,
+    trace_id: u64,
+    runtime_turn_hash: Option<&str>,
+) -> bool {
+    let mut blocked_at: Option<std::time::Instant> = None;
+    loop {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            if trace_id != 0
+                && let Some(started) = blocked_at
+            {
+                crate::requests::diagnostic_phase(
+                    trace_id,
+                    "agent",
+                    "provider_stream_queue_wait_cancelled",
+                    Some(started.elapsed().as_micros()),
+                    runtime_turn_hash,
+                );
+            }
+            return false;
+        }
+        match tx.try_send(update) {
+            Ok(()) => {
+                if trace_id != 0
+                    && let Some(started) = blocked_at
+                {
+                    crate::requests::diagnostic_phase(
+                        trace_id,
+                        "agent",
+                        "provider_stream_queue_wait_complete",
+                        Some(started.elapsed().as_micros()),
+                        runtime_turn_hash,
+                    );
+                }
+                return true;
+            }
+            Err(std::sync::mpsc::TrySendError::Full(returned)) => {
+                update = returned;
+                blocked_at.get_or_insert_with(std::time::Instant::now);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return false,
+        }
+    }
+}
+
 pub type HostExecutor<'a> =
     Box<dyn FnMut(&ToolCall, &mut dyn FnMut(&mut Option<String>), u64) -> HostToolOutcome + 'a>;
 
@@ -881,11 +933,21 @@ impl<'a> Agent<'a> {
             let tools = tools.clone();
             let max_tokens = self.max_tokens;
             let reasoning = req.reasoning;
+            let stream_trace_id = trace_id;
+            let stream_turn_hash = self.runtime_turn_hash.clone();
             std::thread::spawn(move || {
                 let notice_tx = tx.clone();
+                let notice_cancel = worker_cancel.clone();
+                let notice_turn_hash = stream_turn_hash.clone();
                 let result = provider::with_pacing_notice(
                     move |notice| {
-                        let _ = notice_tx.send(StreamUpdate::Event(Event::Warning(notice)));
+                        let _ = send_stream_update(
+                            &notice_tx,
+                            &notice_cancel,
+                            StreamUpdate::Event(Event::Warning(notice)),
+                            stream_trace_id,
+                            notice_turn_hash.as_deref(),
+                        );
                     },
                     || {
                         provider::with_request_cancel(
@@ -916,14 +978,17 @@ impl<'a> Agent<'a> {
                                                 .copied()
                                                 .unwrap_or(0);
                                             attempt += 1;
-                                            if tx
-                                                .send(StreamUpdate::Retry {
+                                            if !send_stream_update(
+                                                &tx,
+                                                &worker_cancel,
+                                                StreamUpdate::Retry {
                                                     attempt,
                                                     delay_s,
                                                     reason: e.to_string(),
-                                                })
-                                                .is_err()
-                                            {
+                                                },
+                                                stream_trace_id,
+                                                stream_turn_hash.as_deref(),
+                                            ) {
                                                 return Ok(());
                                             }
                                             let deadline = std::time::Instant::now()
@@ -942,13 +1007,16 @@ impl<'a> Agent<'a> {
                                         Err(e) => return Err(e.to_string()),
                                     }
                                 };
-                                if tx
-                                    .send(StreamUpdate::Pricing(
+                                if !send_stream_update(
+                                    &tx,
+                                    &worker_cancel,
+                                    StreamUpdate::Pricing(
                                         provider.model().to_owned(),
                                         provider.rate_card(),
-                                    ))
-                                    .is_err()
-                                {
+                                    ),
+                                    stream_trace_id,
+                                    stream_turn_hash.as_deref(),
+                                ) {
                                     return Ok(());
                                 }
                                 let mut completed = false;
@@ -957,15 +1025,25 @@ impl<'a> Agent<'a> {
                                         completed = true;
                                         break;
                                     }
-                                    if worker_cancel.load(std::sync::atomic::Ordering::Acquire)
-                                        || tx.send(StreamUpdate::Event(event)).is_err()
-                                    {
+                                    if !send_stream_update(
+                                        &tx,
+                                        &worker_cancel,
+                                        StreamUpdate::Event(event),
+                                        stream_trace_id,
+                                        stream_turn_hash.as_deref(),
+                                    ) {
                                         return Ok(());
                                     }
                                 }
                                 // Dropping the stream commits metered usage before the UI observes Done.
                                 if completed {
-                                    let _ = tx.send(StreamUpdate::Event(Event::Done));
+                                    let _ = send_stream_update(
+                                        &tx,
+                                        &worker_cancel,
+                                        StreamUpdate::Event(Event::Done),
+                                        stream_trace_id,
+                                        stream_turn_hash.as_deref(),
+                                    );
                                 }
                                 Ok(())
                             },
@@ -973,7 +1051,13 @@ impl<'a> Agent<'a> {
                     },
                 );
                 if let Err(e) = result {
-                    let _ = tx.send(StreamUpdate::Event(Event::Error(e)));
+                    let _ = send_stream_update(
+                        &tx,
+                        &worker_cancel,
+                        StreamUpdate::Event(Event::Error(e)),
+                        stream_trace_id,
+                        stream_turn_hash.as_deref(),
+                    );
                 }
             });
             Some(StreamWorker {
@@ -3291,6 +3375,73 @@ mod warm_integration {
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn bounded_provider_stream_send_resumes_after_drain_and_exits_on_cancel() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        tx.try_send(StreamUpdate::Pricing("occupied".into(), None))
+            .unwrap();
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let producer_cancel = cancelled.clone();
+        let (sent_tx, sent_rx) = std::sync::mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            let delivered = send_stream_update(
+                &tx,
+                &producer_cancel,
+                StreamUpdate::Event(Event::Text("queued".into())),
+                0,
+                None,
+            );
+            sent_tx.send(delivered).unwrap();
+        });
+
+        assert!(
+            sent_rx
+                .recv_timeout(std::time::Duration::from_millis(30))
+                .is_err(),
+            "a full bounded queue must apply backpressure"
+        );
+        assert!(matches!(rx.recv().unwrap(), StreamUpdate::Pricing(_, _)));
+        assert_eq!(
+            sent_rx.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(true),
+            "the queued update must arrive when the consumer drains"
+        );
+        assert!(
+            matches!(rx.recv().unwrap(), StreamUpdate::Event(Event::Text(text)) if text == "queued")
+        );
+        producer.join().unwrap();
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        tx.try_send(StreamUpdate::Pricing("occupied".into(), None))
+            .unwrap();
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let producer_cancel = cancelled.clone();
+        let (sent_tx, sent_rx) = std::sync::mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            let delivered = send_stream_update(
+                &tx,
+                &producer_cancel,
+                StreamUpdate::Event(Event::Text("private".into())),
+                0,
+                None,
+            );
+            sent_tx.send(delivered).unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        cancelled.store(true, Ordering::Release);
+        assert_eq!(
+            sent_rx.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(false),
+            "cancellation must release the producer even with a full queue"
+        );
+        producer.join().unwrap();
+        assert!(matches!(rx.recv().unwrap(), StreamUpdate::Pricing(_, _)));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
+    }
 
     #[test]
     fn provider_tool_aliases_keep_host_namespaces_round_trippable() {

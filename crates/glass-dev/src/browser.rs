@@ -135,6 +135,8 @@ pub struct BrowserRuntimeState {
     pub policy_preset: PolicyPreset,
     /// Whether a browser session is connected.
     pub connected: bool,
+    /// Whether the most recent disconnect came from an explicit stop request.
+    pub stopped_by_request: bool,
     /// Backend serving the resident session. Normal starts are native;
     /// explicit attach requests report Chromium.
     pub browser_backend: Option<String>,
@@ -581,6 +583,7 @@ struct BrowserWorker {
     last_workflow: Option<(WorkflowDefinition, WorkflowRunResult)>,
     last_config: Option<BrowserStartConfig>,
     remote_view: Option<RemoteView>,
+    stopped_by_request: bool,
 }
 
 impl BrowserWorker {
@@ -599,6 +602,7 @@ impl BrowserWorker {
             last_workflow: None,
             last_config: None,
             remote_view: None,
+            stopped_by_request: false,
         }
     }
 
@@ -606,6 +610,7 @@ impl BrowserWorker {
         BrowserRuntimeState {
             policy_preset: self.policy.preset(),
             connected: self.session.is_some(),
+            stopped_by_request: self.stopped_by_request,
             browser_backend: self
                 .session
                 .as_ref()
@@ -796,6 +801,7 @@ impl BrowserWorker {
             }
         });
         self.session = Some(session);
+        self.stopped_by_request = false;
         self.last_config = Some(config);
         serde_json::to_value(self.state()).map_err(Into::into)
     }
@@ -819,6 +825,7 @@ impl BrowserWorker {
             }
             BrowserCommand::Stop => {
                 self.shutdown().await;
+                self.stopped_by_request = true;
                 serde_json::to_value(self.state()).map_err(Into::into)
             }
             BrowserCommand::State => serde_json::to_value(self.state()).map_err(Into::into),
@@ -1643,6 +1650,11 @@ mod tests {
 
         let stopped = service.stop().unwrap();
         assert_eq!(stopped["connected"], false);
+        assert_eq!(stopped["stoppedByRequest"], true);
+        let restarted = service.start(BrowserStartConfig::default()).unwrap();
+        assert_eq!(restarted["connected"], true);
+        assert_eq!(restarted["stoppedByRequest"], false);
+        service.stop().unwrap();
     }
 
     #[test]

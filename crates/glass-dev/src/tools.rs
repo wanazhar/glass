@@ -2468,7 +2468,7 @@ fn browser_tool_details(name: &str) -> Option<(&'static str, serde_json::Value)>
             }),
         ),
         "glass.browser.state" => (
-            "Read the resident Glass browser connection and its actual backend provenance (native or chromium).",
+            "Read the resident Glass browser connection and its actual backend provenance (native or chromium). When disconnected, stoppedByRequest distinguishes an explicit stop from an unexpected disconnect.",
             object.clone(),
         ),
         "glass.browser.observe" => (

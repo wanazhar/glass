@@ -72,7 +72,11 @@
   const ownerFor = (target) => {{
     if (target && typeof target.__glassEventOwner === "string") return target.__glassEventOwner;
     if (target === globalThis) return "window";
-    if (target === document) return "document";
+    // Read the node type from the target itself instead of consulting the
+    // lexical/global document binding. Snapshot elements are constructed
+    // before document_apis.js publishes that binding, so even reading it can
+    // hit the realm's temporal dead zone.
+    if (target && target.nodeType === 9) return "document";
     return "node:" + target.nodeIndex;
   }};
   const eventHandlerKeyFor = (target, type) => listenerKey(ownerFor(target), type);

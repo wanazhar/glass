@@ -135,6 +135,24 @@ const TOOLS: &[Item] = &[
         "Send a message to another running session.",
     ),
 ];
+const WEB_TOOLS: &[Item] = &[
+    (
+        "web_search(query)",
+        "Built-in Core tool that searches through the configured Exa MCP endpoint.",
+    ),
+    (
+        "web_fetch(url)",
+        "Built-in Core tool that reads a bounded public HTTP page; it is not a visual browser.",
+    ),
+    (
+        "glass-browser",
+        "Separate native visual browser executable; availability depends on the installed build.",
+    ),
+    (
+        "glass.browser.*",
+        "Glass-host tools offered to Core only when the host advertises those capabilities.",
+    ),
+];
 const CONNECT: &[Item] = &[
     (
         "gc settings [--json]",
@@ -257,6 +275,7 @@ fn render(topic: &str, width: usize, color: bool) -> Result<String, String> {
                     "Explore",
                     &[
                         ("gc help commands", "Browse all command groups."),
+                        ("gc help tools", "Review native research and browser tools."),
                         ("gc help run", "Headless options and examples."),
                         ("gc help keys", "Keyboard shortcuts for the interactive UI."),
                         (
@@ -274,6 +293,7 @@ fn render(topic: &str, width: usize, color: bool) -> Result<String, String> {
             } else {
                 p.section("Conversations", SESSIONS);
                 p.section("Tools and teammates", TOOLS);
+                p.section("Web research", WEB_TOOLS);
                 p.section("Connections and extensions", CONNECT);
                 p.section("Editors and remote sessions", INTEGRATE);
                 p.section(
@@ -340,6 +360,23 @@ fn render(topic: &str, width: usize, color: bool) -> Result<String, String> {
                 ],
             );
         }
+        "tools" | "web" => {
+            p.section("Web research and browsing", WEB_TOOLS);
+            p.text.push('\n');
+            p.row(
+                "These are different routes: Core sends search and fetch through its built-in provider tools; visual browsing uses the native glass-browser executable. Glass mixed mode offers its host browser tools only when the Glass host advertises them.",
+                Tone::Body,
+                false,
+                0,
+            );
+            p.text.push('\n');
+            p.row(
+                "Check `command -v glass-browser` and `glass-browser --help` for the installed browser capabilities. Core does not silently attach to Chrome or replace native browsing with Playwright.",
+                Tone::Muted,
+                false,
+                0,
+            );
+        }
         "run" => {
             p.section(
                 "Usage",
@@ -369,8 +406,9 @@ fn render(topic: &str, width: usize, color: bool) -> Result<String, String> {
         }
         _ => {
             return Err(format!(
-                "unknown topic `{}`; use {} help, {} help commands, {} help run or {} help keys",
+                "unknown topic `{}`; use {} help, {} help commands, {} help tools, {} help run or {} help keys",
                 glass_tui::markdown::sanitize(topic),
+                crate::cli::command_prefix(),
                 crate::cli::command_prefix(),
                 crate::cli::command_prefix(),
                 crate::cli::command_prefix(),
@@ -384,7 +422,7 @@ pub fn show(args: &[String]) -> Result<(), String> {
     let topic = args.first().map(String::as_str).unwrap_or("");
     if args.len() > 1 {
         return Err(format!(
-            "use {} help [commands|run|keys|all|COMMAND]",
+            "use {} help [commands|tools|run|keys|all|COMMAND]",
             crate::cli::command_prefix()
         ));
     }
@@ -394,8 +432,10 @@ pub fn show(args: &[String]) -> Result<(), String> {
     if topic == "file" {
         return crate::files::command(&["--help".into()]);
     }
-    if !matches!(topic, "" | "commands" | "run" | "keys" | "all")
-        && crate::cli::command_help(&[topic.into(), "--help".into()])?
+    if !matches!(
+        topic,
+        "" | "commands" | "tools" | "web" | "run" | "keys" | "all"
+    ) && crate::cli::command_help(&[topic.into(), "--help".into()])?
     {
         return Ok(());
     }
@@ -415,11 +455,13 @@ pub fn show(args: &[String]) -> Result<(), String> {
 }
 /// Shared human and model command discovery.
 pub fn catalogue() -> Vec<Item> {
-    [START, SESSIONS, TOOLS, CONNECT, INTEGRATE, KEYS, RUN]
-        .into_iter()
-        .flatten()
-        .copied()
-        .collect()
+    [
+        START, SESSIONS, TOOLS, WEB_TOOLS, CONNECT, INTEGRATE, KEYS, RUN,
+    ]
+    .into_iter()
+    .flatten()
+    .copied()
+    .collect()
 }
 
 #[cfg(test)]
@@ -427,7 +469,7 @@ mod tests {
     use super::*;
     #[test]
     fn pages_fit_narrow_terminals_and_cover_current_features() {
-        for topic in ["", "commands", "run", "keys", "all"] {
+        for topic in ["", "commands", "tools", "web", "run", "keys", "all"] {
             for width in [8, 20, 40, 80, 100] {
                 let text = render(topic, width, false).unwrap();
                 assert!(
@@ -450,5 +492,10 @@ mod tests {
             assert!(commands.contains(name));
         }
         assert!(render("missing", 80, false).is_err());
+        let web = render("tools", 80, false).unwrap();
+        assert!(web.contains("web_search"));
+        assert!(web.contains("web_fetch"));
+        assert!(web.contains("glass-browser"));
+        assert!(web.contains("Glass host advertises"));
     }
 }

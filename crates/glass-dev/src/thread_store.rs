@@ -2,15 +2,18 @@
 
 use crate::development::{DevelopmentError, DevelopmentResult};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const VERSION: u32 = 1;
 const MAX_BYTES: u64 = 256 * 1024;
 const MAX_THREADS: usize = 256;
 const MAX_SEND_ATTEMPTS: usize = 32;
 const MAX_SEND_ATTEMPT_TEXT_BYTES: usize = 16 * 1024;
+const REGISTRY_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+const REGISTRY_LOCK_RETRY: Duration = Duration::from_millis(20);
 #[cfg(unix)]
 const MAX_DRAFT_BYTES: usize = 64 * 1024;
 #[cfg(unix)]
@@ -597,7 +600,7 @@ impl ThreadStore {
             use std::os::unix::fs::PermissionsExt;
             lock.set_permissions(fs::Permissions::from_mode(0o600))?;
         }
-        fs2::FileExt::lock_exclusive(&lock)?;
+        acquire_registry_lock(&lock)?;
         let result = (|| {
             let mut doc = self.load()?;
             f(&mut doc)?;
@@ -685,6 +688,30 @@ impl ThreadStore {
         replace_then_sync(&temporary, &self.path, parent, sync_directory)?;
         Ok(())
     }
+}
+
+fn acquire_registry_lock(lock: &File) -> std::io::Result<()> {
+    let deadline = Instant::now() + REGISTRY_LOCK_TIMEOUT;
+    loop {
+        match fs2::FileExt::try_lock_exclusive(lock) {
+            Ok(()) => return Ok(()),
+            Err(error) if registry_lock_is_contended(&error) => {
+                if Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "thread registry lock remained busy beyond 2 seconds",
+                    ));
+                }
+                std::thread::sleep(REGISTRY_LOCK_RETRY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn registry_lock_is_contended(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::WouldBlock
+        || (cfg!(windows) && error.raw_os_error() == Some(33))
 }
 
 fn create_temporary(path: &Path) -> DevelopmentResult<(PathBuf, fs::File)> {
@@ -1100,6 +1127,38 @@ mod tests {
         let text = String::from_utf8(bytes).unwrap();
         assert!(!text.contains("agent-"));
         assert!(!text.contains("job"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mutation_returns_a_timed_error_when_registry_lock_is_held() {
+        use fs2::FileExt;
+
+        let root = root();
+        let store = ThreadStore::open(&root).unwrap();
+        fs::create_dir_all(root.join(".glass/threads")).unwrap();
+        let lock_path = root.join(".glass/threads/registry.lock");
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .unwrap();
+        lock.lock_exclusive().unwrap();
+
+        let started = Instant::now();
+        let error = store.create(record()).unwrap_err();
+        let elapsed = started.elapsed();
+        FileExt::unlock(&lock).unwrap();
+
+        assert!(
+            error
+                .to_string()
+                .contains("thread registry lock remained busy")
+        );
+        assert!(elapsed >= REGISTRY_LOCK_TIMEOUT);
+        assert!(elapsed < REGISTRY_LOCK_TIMEOUT + Duration::from_secs(1));
         let _ = fs::remove_dir_all(root);
     }
 

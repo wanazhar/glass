@@ -2905,9 +2905,9 @@ pub(crate) const MAX_NATIVE_DOCUMENT_VIDEO_BYTES: usize = 4 * 1024 * 1024;
 fn decode_bounded_vp8_webm(bytes: &[u8]) -> Result<Vec<NativeVideoFrame>, NativeEngineError> {
     use std::io::Cursor;
     use zvidlib_core::{
-        CancellationToken, Codec, CodecProfile, ColorRange, EncodedVideoSample, FrameIndex,
-        HardwarePreference, Limits, PixelFormat, VideoDecoderConfig, VideoDecoderFactory,
-        VideoDimensions,
+        CancellationToken, Codec, CodecProfile, ColorRange, EncodedVideoSample, ErrorKind,
+        FrameIndex, HardwarePreference, Limits, PixelFormat, VideoDecoderConfig,
+        VideoDecoderFactory, VideoDimensions,
     };
     use zvidlib_vp8::native_vp8_video_decoder_factory;
 
@@ -2975,16 +2975,23 @@ fn decode_bounded_vp8_webm(bytes: &[u8]) -> Result<Vec<NativeVideoFrame>, Native
         if output.len() >= MAX_NATIVE_VIDEO_FRAME_COUNT {
             return Ok(Vec::new());
         }
-        let decoded = decoder
-            .submit(
-                &EncodedVideoSample {
-                    presentation_index: FrameIndex(index),
-                    random_access: frame.is_keyframe.unwrap_or(index == 0),
-                    data: frame.data.clone(),
-                },
-                &CancellationToken::new(),
-            )
-            .map_err(|error| NativeEngineError::invalid("native VP8 decode", error.to_string()))?;
+        let decoded = match decoder.submit(
+            &EncodedVideoSample {
+                presentation_index: FrameIndex(index),
+                random_access: frame.is_keyframe.unwrap_or(index == 0),
+                data: frame.data.clone(),
+            },
+            &CancellationToken::new(),
+        ) {
+            Ok(decoded) => decoded,
+            Err(error) if error.kind() == ErrorKind::ResourceLimit => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(NativeEngineError::invalid(
+                    "native VP8 decode",
+                    error.to_string(),
+                ));
+            }
+        };
         let timestamp_millis = frame.timestamp.saturating_mul(timestamp_scale) / 1_000_000;
         for decoded_frame in decoded {
             let plane = decoded_frame.frame.planes.first().ok_or_else(|| {

@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const RESULT_LIMIT: usize = 512 * 1024;
+const MAX_LSP_RENAME_OPEN_DOCUMENTS: usize = 128;
+const MAX_LSP_RENAME_OPEN_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct DevelopmentToolContext {
@@ -970,31 +972,79 @@ impl DevelopmentToolRouter {
                 position(call, "end")?,
                 value_array_or_empty(call, "diagnostics")?,
             )),
-            "glass.lsp.formatting" => map_service(workspace.language().formatting(
-                string("server")?,
-                &actor,
-                string("path")?,
-            )),
-            "glass.lsp.range_formatting" => map_service(workspace.language().range_formatting(
-                string("server")?,
-                &actor,
-                string("path")?,
-                position(call, "start")?,
-                position(call, "end")?,
-            )),
+            "glass.lsp.formatting" => {
+                let path = workspace
+                    .project()
+                    .normalize_existing_file_path(string("path")?)?;
+                let content = workspace.project().buffer_or_file_content(&path)?;
+                map_service(workspace.language().formatting_with_content(
+                    string("server")?,
+                    &actor,
+                    &path,
+                    &content,
+                ))
+            }
+            "glass.lsp.range_formatting" => {
+                let path = workspace
+                    .project()
+                    .normalize_existing_file_path(string("path")?)?;
+                let content = workspace.project().buffer_or_file_content(&path)?;
+                map_service(workspace.language().range_formatting_with_content(
+                    string("server")?,
+                    &actor,
+                    &path,
+                    position(call, "start")?,
+                    position(call, "end")?,
+                    &content,
+                ))
+            }
             "glass.lsp.semantic_tokens" => map_service(workspace.language().semantic_tokens(
                 string("server")?,
                 &actor,
                 string("path")?,
             )),
-            "glass.lsp.rename" => map_service(workspace.language().rename(
-                string("server")?,
-                &actor,
-                string("path")?,
-                u32_value(call, "line")?,
-                u32_value(call, "character")?,
-                string("newName")?,
-            )),
+            "glass.lsp.rename" => {
+                let server = string("server")?;
+                let path = workspace
+                    .project()
+                    .normalize_existing_file_path(string("path")?)?;
+                let content = workspace.project().buffer_or_file_content(&path)?;
+                let mut documents = workspace
+                    .project()
+                    .buffers()
+                    .map(|buffer| (buffer.path.clone(), buffer.content.clone()))
+                    .collect::<Vec<_>>();
+                if !documents.iter().any(|(open_path, _)| open_path == &path) {
+                    documents.push((path.clone(), content.clone()));
+                }
+                let total_bytes = documents
+                    .iter()
+                    .fold(0usize, |total, (_, text)| total.saturating_add(text.len()));
+                if documents.len() > MAX_LSP_RENAME_OPEN_DOCUMENTS
+                    || total_bytes > MAX_LSP_RENAME_OPEN_DOCUMENT_BYTES
+                {
+                    return Err(DevelopmentError::InvalidInput(format!(
+                        "LSP rename context exceeds {} open documents or {} bytes",
+                        MAX_LSP_RENAME_OPEN_DOCUMENTS, MAX_LSP_RENAME_OPEN_DOCUMENT_BYTES
+                    )));
+                }
+                for (open_path, text) in documents {
+                    workspace
+                        .language()
+                        .sync_document_content(server, &open_path, &text)?;
+                }
+                map_service(workspace.language().rename_with_content(
+                    server,
+                    &actor,
+                    &path,
+                    crate::development::DiagnosticPosition {
+                        line: u32_value(call, "line")?,
+                        character: u32_value(call, "character")?,
+                    },
+                    string("newName")?,
+                    &content,
+                ))
+            }
             "glass.debug.start" => {
                 let session = string("session")?;
                 let configured = workspace.customization().config().dap.get(session).cloned();
@@ -3203,6 +3253,103 @@ mod tests {
             expected_generation: workspace.generation(),
             expected_project_revision: workspace.project().revision(),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lsp_rename_synchronizes_unsaved_open_buffers_before_workspace_edit() {
+        let Some(python) = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|directory| directory.join("python3"))
+            .find(|candidate| candidate.is_file())
+        else {
+            return;
+        };
+        let mut workspace = workspace();
+        let root = workspace.project().root().to_path_buf();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/first.rs"), "fn old_name() {}\n").unwrap();
+        std::fs::write(root.join("src/second.rs"), "old_name();\n").unwrap();
+        for (path, content) in [
+            ("src/first.rs", "// unsaved first\nfn old_name() {}\n"),
+            ("src/second.rs", "// unsaved second\nold_name();\n"),
+        ] {
+            workspace
+                .project_mut()
+                .open_buffer(path, Actor::local())
+                .unwrap();
+            workspace
+                .project_mut()
+                .edit_buffer(path, content.into(), Actor::local())
+                .unwrap();
+        }
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_lsp_workspace_edit.py");
+        let router = DevelopmentToolRouter::default();
+        let start = ToolCall {
+            id: "lsp-start".into(),
+            name: "glass.lsp.start".into(),
+            arguments: json!({
+                "server":"fixture",
+                "command":python.display().to_string(),
+                "arguments":[fixture.display().to_string()]
+            }),
+        };
+        let start_context = context(&workspace, true);
+        router
+            .execute(&mut workspace, &start, &start_context)
+            .expect("start local LSP fixture");
+        let rename = ToolCall {
+            id: "lsp-rename".into(),
+            name: "glass.lsp.rename".into(),
+            arguments: json!({
+                "server":"fixture",
+                "path":"src/first.rs",
+                "line":2,
+                "character":4,
+                "newName":"new_name"
+            }),
+        };
+        let rename_context = context(&workspace, false);
+        let result = router
+            .execute(&mut workspace, &rename, &rename_context)
+            .expect("rename should use every open unsaved buffer");
+        assert_eq!(
+            result["result"]["documentChanges"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            workspace.project().buffer("src/first.rs").unwrap().content,
+            "// unsaved first\nfn old_name() {}\n"
+        );
+        let range_format = ToolCall {
+            id: "lsp-range-format".into(),
+            name: "glass.lsp.range_formatting".into(),
+            arguments: json!({
+                "server":"fixture",
+                "path":"src/first.rs",
+                "start":{"line":2,"character":4},
+                "end":{"line":2,"character":12}
+            }),
+        };
+        let range_context = context(&workspace, false);
+        let formatted = router
+            .execute(&mut workspace, &range_format, &range_context)
+            .expect("range format should use the selected unsaved buffer");
+        assert_eq!(formatted["result"][0]["newText"], "formatted");
+        let stop = ToolCall {
+            id: "lsp-stop".into(),
+            name: "glass.lsp.stop".into(),
+            arguments: json!({"server":"fixture"}),
+        };
+        let stop_context = context(&workspace, true);
+        router
+            .execute(&mut workspace, &stop, &stop_context)
+            .expect("stop local LSP fixture");
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -91,6 +91,10 @@ fn should_retry(policy: &RetryPolicy, error: &(dyn std::error::Error + 'static))
             .is_none_or(|predicate| predicate(error))
 }
 
+fn effective_max_attempts(policy: &RetryPolicy) -> usize {
+    policy.max_attempts.max(1)
+}
+
 impl CdpBrowserSession {
     /// Click one element. Retries are limited to typed, pre-dispatch
     /// failures that explicitly opt into safe recovery.
@@ -100,11 +104,12 @@ impl CdpBrowserSession {
         target: &str,
         policy: &RetryPolicy,
     ) -> BrowserResult<ActionOutcome> {
-        for attempt in 1..=policy.max_attempts {
+        let max_attempts = effective_max_attempts(policy);
+        for attempt in 1..=max_attempts {
             match self.click(target).await {
                 Ok(outcome) => return Ok(outcome),
                 Err(error) => {
-                    if !should_retry(policy, error.as_ref()) || attempt == policy.max_attempts {
+                    if !should_retry(policy, error.as_ref()) || attempt == max_attempts {
                         return Err(error);
                     }
                     tracing::debug!(attempt, ?policy.backoff, "click retry");
@@ -122,11 +127,12 @@ impl CdpBrowserSession {
         url: &str,
         policy: &RetryPolicy,
     ) -> BrowserResult<PageInfo> {
-        for attempt in 1..=policy.max_attempts {
+        let max_attempts = effective_max_attempts(policy);
+        for attempt in 1..=max_attempts {
             match self.navigate(url).await {
                 Ok(page) => return Ok(page),
                 Err(error) => {
-                    if !should_retry(policy, error.as_ref()) || attempt == policy.max_attempts {
+                    if !should_retry(policy, error.as_ref()) || attempt == max_attempts {
                         return Err(error);
                     }
                     tracing::debug!(attempt, ?policy.backoff, "navigate retry");
@@ -153,6 +159,16 @@ mod tests {
     fn retry_policy_new_clamps_min_attempts() {
         let policy = RetryPolicy::new(0, Duration::from_millis(100));
         assert_eq!(policy.max_attempts, 1);
+    }
+
+    #[test]
+    fn retry_execution_clamps_a_direct_zero_attempt_field() {
+        let policy = RetryPolicy {
+            max_attempts: 0,
+            backoff: Duration::ZERO,
+            predicate: None,
+        };
+        assert_eq!(effective_max_attempts(&policy), 1);
     }
 
     #[test]

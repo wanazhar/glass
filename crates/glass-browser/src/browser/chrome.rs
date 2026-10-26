@@ -936,19 +936,36 @@ pub async fn is_port_occupied(port: u16) -> bool {
 /// Kill processes listening on a debugging port.
 pub async fn kill_chrome(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new("lsof")
-        .args(["-ti", &format!(":{port}")])
+        .args(["-Fpc", "+c", "0", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
         .output()
         .await?;
 
-    if output.status.success() {
-        for pid in String::from_utf8_lossy(&output.stdout).lines() {
-            #[cfg(unix)]
-            if let Some(pid_num) = parse_kill_pid(pid) {
-                warn!(pid = pid_num, "killing Chrome process");
-                // SAFETY: `parse_kill_pid` rejects zero, negative and
-                // unrepresentable process IDs, so this targets one PID.
-                unsafe {
-                    libc::kill(pid_num, libc::SIGTERM);
+    if !output.status.success() {
+        if output.stdout.is_empty() && output.stderr.is_empty() {
+            // lsof exits with status 1 when no process matches.
+            return Ok(());
+        }
+        return Err(format!(
+            "lsof could not inspect TCP listener port {port}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+
+    #[cfg(unix)]
+    for process in parse_chrome_listeners(&String::from_utf8_lossy(&output.stdout)) {
+        warn!(pid = process, "killing Chrome process");
+        // SAFETY: `parse_chrome_listeners` validates a positive, representable
+        // PID and the lsof command name is restricted to a Chrome/Chromium
+        // listener. This is still best-effort; owned sessions should use
+        // `ChromeProcess::shutdown` to signal the exact child they launched.
+        unsafe {
+            if libc::kill(process, libc::SIGTERM) != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(
+                        format!("could not signal Chrome listener {process}: {error}").into(),
+                    );
                 }
             }
         }
@@ -960,6 +977,50 @@ pub async fn kill_chrome(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 fn parse_kill_pid(value: &str) -> Option<libc::pid_t> {
     let pid = value.trim().parse::<libc::pid_t>().ok()?;
     (pid > 0).then_some(pid)
+}
+
+#[cfg(unix)]
+fn parse_chrome_listeners(output: &str) -> Vec<libc::pid_t> {
+    fn is_chrome_name(value: &str) -> bool {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "chrome"
+                | "chromium"
+                | "chromium-browser"
+                | "google-chrome"
+                | "google-chrome-stable"
+                | "google chrome"
+                | "google chrome for testing"
+        )
+    }
+
+    let mut processes = Vec::new();
+    let mut pid = None;
+    let mut command = None;
+    let push_current = |pid: Option<libc::pid_t>, command: Option<&str>, processes: &mut Vec<_>| {
+        if let (Some(pid), Some(command)) = (pid, command)
+            && is_chrome_name(command)
+            && !processes.contains(&pid)
+        {
+            processes.push(pid);
+        }
+    };
+    for line in output.lines() {
+        let Some((kind, value)) = line.split_at_checked(1) else {
+            continue;
+        };
+        match kind {
+            "p" => {
+                push_current(pid, command, &mut processes);
+                pid = parse_kill_pid(value);
+                command = None;
+            }
+            "c" => command = Some(value),
+            _ => {}
+        }
+    }
+    push_current(pid, command, &mut processes);
+    processes
 }
 
 /// A page target advertised by Chrome's HTTP DevTools endpoint.
@@ -1118,6 +1179,21 @@ mod tests {
         assert_eq!(parse_kill_pid("0"), None);
         assert_eq!(parse_kill_pid("-1"), None);
         assert_eq!(parse_kill_pid("2147483648"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chrome_listener_parser_excludes_other_services_and_non_listeners() {
+        let records = concat!(
+            "p101\ncchrome\n",
+            "p202\ncpython3\n",
+            "p303\ncGoogle Chrome for Testing\n",
+            "p404\ncchromium\n",
+            "p0\ncchrome\n",
+            "p2147483648\ncchrome\n",
+            "p101\ncchrome\n",
+        );
+        assert_eq!(parse_chrome_listeners(records), vec![101, 303, 404]);
     }
 
     use std::sync::atomic::{AtomicU64, Ordering};

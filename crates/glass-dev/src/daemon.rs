@@ -2119,7 +2119,19 @@ fn validate_identifier(value: &str, description: &str) -> Result<(), String> {
 }
 
 fn read_status(path: &Path) -> Result<DevelopmentDaemonStatus, Box<dyn std::error::Error>> {
-    let bytes = std::fs::read(path)?;
+    let bytes = std::fs::read(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Glass development daemon is not running; start it with `glass daemon start`",
+            )
+        } else {
+            std::io::Error::new(
+                error.kind(),
+                format!("could not read Glass daemon status: {error}"),
+            )
+        }
+    })?;
     if bytes.len() > 64 * 1024 {
         return Err("daemon status exceeds the size limit".into());
     }

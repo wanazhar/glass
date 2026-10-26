@@ -8,14 +8,21 @@ type MainResult = Result<(), Box<dyn std::error::Error>>;
 const RUNTIME_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024;
 const MAIN_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
 
-fn main() -> MainResult {
-    std::thread::Builder::new()
+fn main() {
+    let outcome = std::thread::Builder::new()
         .name("glass-main".into())
         .stack_size(MAIN_THREAD_STACK_SIZE)
-        .spawn(|| run().map_err(|error| error.to_string()))?
-        .join()
-        .map_err(|_| std::io::Error::other("Glass main thread panicked"))?
-        .map_err(|error| std::io::Error::other(error).into())
+        .spawn(|| run().map_err(|error| error.to_string()));
+    let error = match outcome {
+        Ok(thread) => match thread.join() {
+            Ok(Ok(())) => return,
+            Ok(Err(error)) => error,
+            Err(_) => "Glass main thread panicked".to_owned(),
+        },
+        Err(error) => format!("could not start Glass CLI: {error}"),
+    };
+    eprintln!("Error: {error}");
+    std::process::exit(1);
 }
 
 fn run() -> MainResult {

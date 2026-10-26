@@ -2,6 +2,8 @@ use clap::{CommandFactory, FromArgMatches};
 use glass_browser::cli::args::Cli;
 use std::ffi::OsString;
 use std::io;
+use std::io::IsTerminal;
+use std::io::Write;
 use std::process::Command;
 
 type MainResult = Result<(), Box<dyn std::error::Error>>;
@@ -21,8 +23,24 @@ fn main() {
         },
         Err(error) => format!("could not start Glass CLI: {error}"),
     };
-    eprintln!("Error: {error}");
+    write_cli_error(&error);
     std::process::exit(1);
+}
+
+fn write_cli_error(error: &str) {
+    let stderr = std::io::stderr();
+    let mut stderr = stderr.lock();
+    if stderr.is_terminal() {
+        let width = glass_tui::crossterm::terminal::size()
+            .map(|(width, _)| usize::from(width))
+            .unwrap_or(80)
+            .clamp(24, 120);
+        let color = !glass_tui::theme::no_color() && std::env::var("TERM").as_deref() != Ok("dumb");
+        let report = glass_tui::cli::error("Glass", error, width, color);
+        let _ = stderr.write_all(report.as_bytes());
+    } else {
+        let _ = writeln!(stderr, "Error: {error}");
+    }
 }
 
 fn run() -> MainResult {

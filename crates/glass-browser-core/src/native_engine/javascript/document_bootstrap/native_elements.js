@@ -775,7 +775,16 @@
           textContent = "";
           suppressHostCommands += 1;
           try {{
-            if (value) element.appendChild(makeDetachedText(value));
+            if (value) {{
+              // Keep the new text node in the local tree without going through
+              // the host-emitting appendChild method. SetTextContent below is
+              // the authoritative native mutation; emitting a second append
+              // can outlive this suppression scope during async continuations.
+              const child = makeDetachedText(value);
+              element.__glassChildren.push(child);
+              child.__glassParent = element;
+              child.parentIndex = entry.nodeIndex;
+            }}
           }} finally {{
             suppressHostCommands -= 1;
           }}

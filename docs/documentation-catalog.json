@@ -107,6 +107,11 @@
           "anchor": "issue-65-workspace-unsafe-inventory"
         },
         {
+          "level": "3",
+          "title": "Issue #65 process-ID follow-up (2026-10-26)",
+          "anchor": "issue-65-process-id-follow-up-2026-10-26"
+        },
+        {
           "level": "2",
           "title": "Issue #65 policy and sandbox path dispositions",
           "anchor": "issue-65-policy-and-sandbox-path-dispositions"

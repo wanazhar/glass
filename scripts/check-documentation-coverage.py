@@ -15,7 +15,10 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 COMMANDS_RE = re.compile(r"^Commands:\s*$\n(?P<body>.*?)(?:\n\n|\nArguments:|\nOptions:)", re.MULTILINE | re.DOTALL)
 COMMAND_RE = re.compile(
-    r"^ {2,}(?P<name>[a-z][a-z0-9-]*)(?:[ \t]{2,}.*)?$", re.MULTILINE
+    # Clap wraps long descriptions at terminal width. Root command rows begin
+    # at exactly two spaces; deeper-indented continuation lines may begin with
+    # a command-like word and must not become phantom inventory entries.
+    r"^ {2}(?P<name>[a-z][a-z0-9-]*)(?:[ \t]{2,}.*)?$", re.MULTILINE
 )
 MODULE_RE = re.compile(r"^pub mod ([a-z][a-z0-9_]*);", re.MULTILINE)
 

@@ -858,6 +858,18 @@
       set(next) {{ element.setAttribute("type", String(next)); }},
     }});
   }};
+  // Resource attributes must be inherited by dynamically created nodes too.
+  // The native element constructors copy these shared descriptors later in
+  // custom_elements.js, after the initial host snapshot is created. Without
+  // eager installation, an image, script, or link created on a page that has
+  // no static element of that kind gets an ordinary JS property instead of a
+  // reflected URL attribute.
+  for (const tagName of ["IMG", "SCRIPT", "LINK"]) {{
+    installCommonAttributeProperties({{
+      namespaceURI: HTML_NAMESPACE,
+      tagName,
+    }});
+  }}
   if (!Number.isSafeInteger(globalThis.__glassNextTemporaryNodeIndex)) {{
     globalThis.__glassNextTemporaryNodeIndex = 4294967294;
   }}

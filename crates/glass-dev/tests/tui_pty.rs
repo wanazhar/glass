@@ -3988,7 +3988,45 @@ fn gc_palette_commands_use_owned_surfaces_and_return_to_the_composer_in_pty() {
         session.send(b"\x1b");
         session.send(b"\x7f\x7f\x7f\x7f\x7f\x7f");
 
-        for command in ["settings", "history", "todo"] {
+        let settings_start = session.output().len();
+        session.send(b"/");
+        session.send(b"settings");
+        session.send(b"\r");
+        assert!(
+            session.wait_for_output_after(
+                settings_start,
+                "provider anthropic · model",
+                Duration::from_secs(8)
+            ),
+            "Core /settings did not open the provider settings panel at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        let settings_frame = session.visible_output_from(settings_start);
+        assert!(settings_frame.contains("claude-opus-4"), "{settings_frame}");
+        assert!(
+            settings_frame.contains("Choose a model below"),
+            "Core settings details were not presented at {width}x{height}\n{settings_frame}"
+        );
+        assert!(
+            session.wait_for_output_after(
+                settings_start,
+                "tool mode: mixed",
+                Duration::from_secs(8)
+            ),
+            "Core session details did not arrive through the settings RPC at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        let settings_frame = session.visible_output_from(settings_start);
+        assert!(
+            !settings_frame.contains("must-not-be-copied"),
+            "private session metadata leaked into the settings panel"
+        );
+        capture_pty_frame("settings", width, height, &session.buffer);
+
+        session.send(b"\x1b");
+        session.send(b"\x1b");
+        session.send(b"\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f");
+        for command in ["history", "todo"] {
             let unsupported_start = session.output().len();
             session.send(b"\x1b");
             session.send(b"/");
@@ -4013,9 +4051,12 @@ fn gc_palette_commands_use_owned_surfaces_and_return_to_the_composer_in_pty() {
                     .visible_output_from(unsupported_start)
                     .contains("No action was run")
             );
-            if command == "settings" {
-                capture_pty_frame("unsupported", width, height, &session.buffer);
-            }
+            capture_pty_frame(
+                &format!("unsupported-{command}"),
+                width,
+                height,
+                &session.buffer,
+            );
         }
 
         let error_start = session.output().len();

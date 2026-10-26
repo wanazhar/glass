@@ -497,7 +497,7 @@ def main() -> None:
                 {"name": "help", "description": "Show Core commands", "runtimeMode": "runtime", "presentationKind": "catalogue"},
                 {"name": "compact", "description": "Compact the current session", "runtimeMode": "runtime", "presentationKind": "result"},
                 {"name": "model", "description": "Select model", "runtimeMode": "interactive", "presentationKind": "picker"},
-                {"name": "settings", "description": "Effective settings", "runtimeMode": "interactive", "presentationKind": "unsupported"},
+                {"name": "settings", "description": "Effective settings", "runtimeMode": "interactive", "presentationKind": "picker"},
                 {"name": "history", "description": "Review session history", "runtimeMode": "interactive", "presentationKind": "unsupported"},
                 {"name": "todo", "description": "Inspect task checklist", "runtimeMode": "interactive", "presentationKind": "unsupported"},
                 {"name": "error", "description": "Fixture command error", "runtimeMode": "runtime", "presentationKind": "result"},

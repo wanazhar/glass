@@ -907,7 +907,7 @@ fn runtime_command_catalogue() -> Value {
             "help" => "catalogue",
             "status" => "status",
             "compact" => "result",
-            "model" => "picker",
+            "model" | "settings" => "picker",
             _ => "unsupported",
         };
         json!({"name":command.name,"hint":command.hint,"description":command.description,"aliases":command.aliases,"requiredArgs":command.required_args,"runtimeMode":mode,"presentationKind":presentation})
@@ -2097,7 +2097,7 @@ mod tests {
                 "help" => "catalogue",
                 "status" => "status",
                 "compact" => "result",
-                "model" => "picker",
+                "model" | "settings" => "picker",
                 _ => "unsupported",
             };
             assert_eq!(command["presentationKind"], expected_kind, "/{name}");

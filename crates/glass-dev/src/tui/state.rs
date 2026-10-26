@@ -7252,10 +7252,14 @@ impl DevTuiState {
         let arguments = query.strip_prefix(&name).unwrap_or("").trim().to_string();
         let interactive =
             item.get("runtimeMode").and_then(serde_json::Value::as_str) == Some("interactive");
+        let disposition = item
+            .get("presentationKind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unsupported");
         self.gc_command_menu_open = false;
         self.composer_gc_command_completion = false;
         if interactive {
-            if name == "model" {
+            if disposition == "picker" && name == "model" {
                 self.gc_model_menu_open = true;
                 self.gc_settings_view = false;
                 self.gc_command_menu_open = true;
@@ -7274,6 +7278,8 @@ impl DevTuiState {
                     self.status =
                         "Choose a provider model · Enter applies it to this Core session".into();
                 }
+            } else if disposition == "picker" && name == "settings" {
+                self.open_gc_model_settings(worker);
             } else {
                 self.gc_command_query.clear();
                 self.gc_command_menu_open = false;
@@ -7283,10 +7289,6 @@ impl DevTuiState {
                         .get("description")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("Core command");
-                    let disposition = item
-                        .get("presentationKind")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("unsupported");
                     self.open_native_gc_ui_notice(
                         owner,
                         &name,
@@ -16176,6 +16178,33 @@ mod tests {
         assert!(!state.gc_settings_view);
         assert!(!state.gc_model_menu_open);
         assert!(state.status.contains("openai/gpt-next"));
+        drop(worker);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn typed_core_settings_picker_uses_the_existing_in_glass_settings_panel() {
+        let (mut state, root) = routed_state("typed-core-settings-picker");
+        let agent = crate::AgentId::parse("agent-0001").unwrap();
+        state.selected_agent = Some(agent);
+        state.gc_command_items = vec![serde_json::json!({
+            "name":"settings",
+            "description":"Effective settings",
+            "runtimeMode":"interactive",
+            "presentationKind":"picker"
+        })];
+        state.gc_command_query = "settings".into();
+        state.gc_command_menu_open = true;
+        let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);
+
+        state.submit_gc_command_selection(&mut worker);
+
+        assert!(state.gc_settings_view);
+        assert!(state.gc_model_menu_open);
+        assert!(state.gc_command_menu_open);
+        assert!(state.gc_command_loading);
+        assert!(!state.gc_settings_jobs.is_empty());
+        assert!(state.native_gc_ui_panel.is_none());
         drop(worker);
         std::fs::remove_dir_all(root).expect("remove test workspace");
     }

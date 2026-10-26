@@ -51,7 +51,7 @@ pub fn curriculum_help(surface: DevSurface) -> String {
             "AGENT · COMPOSER READY\n  type to talk · Enter sends · / commands\n  Ctrl-Tab surfaces · Ctrl-Shift-T project threads\n  Ctrl-K Glass actions · Ctrl-F fork · Ctrl-R rewind\n  Ctrl-E edit last · Ctrl-O expand transcript"
         }
         DevSurface::Code => {
-            "CODE\n  ↑/↓ preview · Enter opens · Ctrl-L ask with this buffer · Ctrl-Shift-X remove context"
+            "CODE\n  ↑/↓ preview · Enter opens · Ctrl-O symbols · Ctrl-L ask with this buffer · Ctrl-Shift-A attach a buffer/range · Ctrl-Shift-X remove context"
         }
         DevSurface::App => {
             "BROWSER / PREVIEW\n  connected page, native-first · / browser actions · g source"

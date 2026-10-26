@@ -219,6 +219,14 @@ Unsaved buffers still ask: `S` save, `D` discard, `Q` discard-and-quit, or
 the unsaved-exit prompt is already open, its save/discard/stay choices take
 priority.
 
+From Code, `Ctrl-L` opens the composer with the focused file or selected range.
+Use `Ctrl-Shift-A` on an open buffer to attach another file or its selected
+range; up to eight additional buffers can be attached, with a 64 KiB total
+context bound. The composer chips show attached paths. `Ctrl-Shift-X` removes
+the focused attached file, or toggles context for the current file when it is
+not attached. Attachments are explicit and do not follow you into the ordinary
+Agent composer.
+
 The Code `REVIEW` panel exposes anchored comments, proposals, and checkpoints.
 Use the general command palette (`Ctrl-K`) for `editor comment-selection
 TEXT`, `editor comment PATH START END TEXT`, `editor comment-resolve ID`,
@@ -227,6 +235,10 @@ TEXT`, `editor comment PATH START END TEXT`, `editor comment-resolve ID`,
 and `editor replace-selection TEXT`.
 Proposals are exact-base and become stale on conflicting edits; resident
 buffers change only until `editor save PATH` in the palette or `Ctrl-S`.
+`lsp format SERVER PATH` in the command palette converts the returned
+UTF-16-positioned edits into an exact-base Code proposal. Inspect the diff and
+choose `editor accept ID` or `editor reject ID`; formatting never writes the
+file by itself.
 
 The resident process owns editor buffers, PTYs, language services, browser,
 agent, and event state. Browser recovery leaves project, process, editor, and

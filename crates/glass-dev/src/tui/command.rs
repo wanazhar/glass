@@ -2642,7 +2642,20 @@ fn execute_lsp(state: &mut DevTuiState, parts: Vec<&str>) -> Result<String, Stri
         "rename" => ("glass.lsp.rename", json!({"server":server.ok_or("lsp rename requires SERVER PATH LINE CHARACTER NAME")?,"path":parts.get(2).ok_or("missing PATH")?,"line":parse_u64(parts.get(3), "LINE")?,"character":parse_u64(parts.get(4), "CHARACTER")?,"newName":parts.get(5).ok_or("missing NAME")?}), false),
         _ => return Err("lsp actions: start, stop, list, events, diagnostics, hover, complete, definition, declaration, implementation, references, symbols, workspace-symbols, inlay, signature, format, tokens, rename".into()),
     };
-    let result = run_tool(state, tool, arguments, mutating)?;
+    if tool == "glass.lsp.formatting"
+        && let Some(path) = arguments.get("path").and_then(Value::as_str)
+    {
+        state.remember_lsp_format_baseline(path)?;
+    }
+    let result = match run_tool(state, tool, arguments, mutating) {
+        Ok(result) => result,
+        Err(error) => {
+            if tool == "glass.lsp.formatting" {
+                state.forget_lsp_format_baseline();
+            }
+            return Err(error);
+        }
+    };
     state.editor = if tool == "glass.lsp.diagnostics" {
         projection::lsp(Some(&result))
     } else {

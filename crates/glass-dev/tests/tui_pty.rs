@@ -568,10 +568,14 @@ impl Session {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             self.settle(Duration::from_millis(200));
+            // The TUI redraws the cursor after each typed cell. Removing that
+            // marker from the captured stream reconstructs the visible line
+            // without requiring the test to mistake the cursor for user text.
             if self
                 .visible_output()
+                .replace('▌', "")
                 .lines()
-                .any(|line| line.contains(probe) && line.contains('▌'))
+                .any(|line| line.contains(probe))
             {
                 return true;
             }
@@ -1726,6 +1730,118 @@ fn fresh_start_first_composer_send_works_without_implicit_file_context() {
 }
 
 #[test]
+fn code_composer_sends_only_explicit_multifile_context() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    let _root_guard = TemporaryProjectGuard(root.clone());
+    std::fs::write(root.join("context-api.rs"), "pub fn api_marker() {}\n")
+        .expect("write first context fixture");
+    std::fs::write(root.join("context-model.rs"), "pub struct ModelMarker;\n")
+        .expect("write second context fixture");
+    let fixture_state = root.join(".glass");
+    std::fs::create_dir_all(&fixture_state).unwrap();
+    std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+    let launcher_dir = root.join("launcher");
+    std::fs::create_dir_all(&launcher_dir).unwrap();
+    let launcher = launcher_dir.join("glass");
+    std::fs::hard_link(std::path::Path::new(&binary()), &launcher)
+        .expect("link the exact Glass binary into the fixture launcher directory");
+    let fake_core = fake_core_binary(&root);
+    let adjacent_core = launcher_dir.join("glass-core");
+    std::fs::copy(&fake_core, &adjacent_core).expect("install fake Core beside Glass");
+    let mut permissions = std::fs::metadata(&adjacent_core).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&adjacent_core, permissions).unwrap();
+    let mut core_guard =
+        FixtureChildGuard::new(root.join(".glass/agent-sessions/fixture-runtime-pid"));
+    let mut session = Session::start(&launcher.display().to_string(), &root, 100, 28);
+    session.wait_for_agent_surface();
+    // The resident runtime is lazy. Opening the command catalogue performs a
+    // harmless protocol request and proves this isolated launcher selected
+    // the adjacent fake Core before any prompt can be sent.
+    session.send(b"/");
+    assert!(
+        session.wait_for("/status", Duration::from_secs(8)),
+        "Core command catalogue did not load before the prompt\n{}",
+        session.output_tail()
+    );
+    session.send(b"status\r");
+    assert!(
+        session.wait_for("fixture-session", Duration::from_secs(8)),
+        "safe Core status request did not complete before the prompt\n{}",
+        session.output_tail()
+    );
+    assert!(
+        root.join(".glass/agent-sessions/fixture-runtime-pid")
+            .is_file(),
+        "adjacent fake Core did not start; refusing to send the PTY prompt"
+    );
+    session.send(b"\x1b");
+
+    send_alt_digit(&mut session, b'2');
+    assert!(session.wait_for("FILES", Duration::from_secs(5)));
+    session.send(b":open context-api.rs\r");
+    assert!(session.wait_for("api_marker", Duration::from_secs(5)));
+    send_ctrl_shift_a(&mut session);
+    assert!(
+        session.wait_for("Attached context-api.rs", Duration::from_secs(5)),
+        "Ctrl-Shift-A did not attach the focused file\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x1b");
+
+    session.send(b":open context-model.rs\r");
+    assert!(session.wait_for("ModelMarker", Duration::from_secs(5)));
+    send_ctrl_shift_a(&mut session);
+    assert!(
+        session.wait_for("Attached context-model.rs", Duration::from_secs(5)),
+        "Ctrl-Shift-A did not attach the second file\n{}",
+        session.output_tail()
+    );
+    session.send(b"\x0c"); // Ctrl-L asks with the attached Code context.
+    assert!(session.wait_for("▌", Duration::from_secs(3)));
+    session.send_slowly(b"explain the relationship", Duration::from_millis(20));
+    session.send(b"\r");
+    let requests_path = fixture_state.join("e2e-core-requests.jsonl");
+    let deadline = Instant::now() + Duration::from_secs(12);
+    let mut request_log = String::new();
+    while Instant::now() < deadline {
+        session.settle(Duration::from_millis(100));
+        request_log = std::fs::read_to_string(&requests_path).unwrap_or_default();
+        if request_log.contains("\"method\":\"turn/prompt\"") {
+            break;
+        }
+    }
+    assert!(
+        request_log.contains("\"method\":\"turn/prompt\""),
+        "Code composer did not send the prompt to the isolated Core fixture\n{}",
+        session.output_tail()
+    );
+
+    let prompt = request_log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|request| request["method"] == "turn/prompt")
+        .expect("Core received the Code prompt");
+    let code = &prompt["params"]["context"][0]["value"]["code"];
+    assert_eq!(code["schemaVersion"], "glass.code-context.v1");
+    let files = code["files"].as_array().expect("two-file context");
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0]["path"], "context-api.rs");
+    assert_eq!(files[0]["content"], "pub fn api_marker() {}\n");
+    assert_eq!(files[1]["path"], "context-model.rs");
+    assert_eq!(files[1]["content"], "pub struct ModelMarker;\n");
+    let serialized = serde_json::to_string(code).unwrap();
+    assert!(!serialized.contains("README.md"));
+
+    session.kill();
+    core_guard.terminate();
+    let _ = std::fs::remove_file(fake_core);
+}
+
+#[test]
 fn agent_scrollback_controls_render_in_compact_and_desktop_pty() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;
@@ -1908,18 +2024,39 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
         return;
     }
     let root = workspace_root();
+    let _root_guard = TemporaryProjectGuard(root.clone());
     let fixture_state = root.join(".glass");
     std::fs::create_dir_all(&fixture_state).unwrap();
     std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
     let fake_core = fake_core_binary(&root);
-    let mut session = Session::start_with_core_binary(&binary(), &root, 80, 24, Some(&fake_core));
+    let launcher_dir = root.join("launcher");
+    std::fs::create_dir_all(&launcher_dir).unwrap();
+    let launcher = launcher_dir.join("glass");
+    std::fs::hard_link(std::path::Path::new(&binary()), &launcher)
+        .expect("link the exact Glass binary into the fixture launcher directory");
+    let adjacent_core = launcher_dir.join("glass-core");
+    std::fs::copy(&fake_core, &adjacent_core).expect("install fake Core beside Glass");
+    let mut permissions = std::fs::metadata(&adjacent_core).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&adjacent_core, permissions).unwrap();
+    let mut core_guard =
+        FixtureChildGuard::new(root.join(".glass/agent-sessions/fixture-runtime-pid"));
+    let mut session = Session::start(&launcher.display().to_string(), &root, 80, 24);
     assert!(session.wait_for("GLASS", Duration::from_secs(8)));
     session.wait_for_agent_surface();
     assert!(session.wait_for("Core available", Duration::from_secs(8)));
 
     start_core_conversation(&mut session, "assistant", "offline task");
+    let request_log =
+        std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl")).unwrap_or_default();
     assert!(
-        session.wait_for("Spawned agent-0001", Duration::from_secs(5)),
+        root.join(".glass/agent-sessions/fixture-runtime-pid")
+            .is_file()
+            && !request_log.contains("\"method\":\"turn/prompt\""),
+        "isolated fake Core must be live, with no prompt sent, before conversation rendering\n{request_log}"
+    );
+    assert!(
+        session.wait_for_visible("agent-0002", Duration::from_secs(5)),
         "agent command did not create the resident session\n{}",
         session.output_tail()
     );
@@ -1933,8 +2070,6 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
     session.send(b"\r");
     assert!(session.wait_for("CONVERSATION", Duration::from_secs(5)));
     session.clear_output();
-    session.send(b"\r");
-    assert!(session.wait_for("▌", Duration::from_secs(5)));
     session.send_slowly(b"offline prompt round trip", Duration::from_millis(5));
     assert!(
         session.wait_for_composer_text("offline prompt round trip", Duration::from_secs(5)),
@@ -1959,8 +2094,7 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
         "final transcript did not render the submitted body as a user bubble\n{transcript}"
     );
     assert!(
-        transcript.contains("GLASS AGENT")
-            && transcript.contains("handled offline prompt round trip"),
+        transcript.contains("CORE") && transcript.contains("handled offline prompt round trip"),
         "final transcript did not coalesce streamed deltas into one assistant response\n{transcript}"
     );
     assert!(
@@ -2024,8 +2158,8 @@ fn spawned_resident_agent_dispatches_an_offline_prompt_from_the_composer() {
             .contains("offline prompt round trip")
     );
     session.kill();
+    core_guard.terminate();
     let _ = std::fs::remove_file(fake_core);
-    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

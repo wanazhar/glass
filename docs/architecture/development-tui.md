@@ -210,14 +210,23 @@ not change which file is open or which pane owns keyboard focus. File preview,
 full-screen editing, and Agent context attachment are separate explicit
 actions. Opening the composer from Code shows a removable file-context chip; the
 selected range takes priority, and the unsaved buffer is sent as a bounded
-snapshot only from that Code composer. `Ctrl-Shift-X` removes or restores the
-chip. The ordinary Agent composer never attaches the last viewed file.
+snapshot only from that Code composer. `Ctrl-Shift-A` attaches another open
+buffer or its selected range; up to eight additional files share a 64 KiB
+payload bound. The chips identify attached paths, and `Ctrl-Shift-X` removes
+the focused attached file or toggles the focused file context. The ordinary
+Agent composer never attaches the last viewed file.
+
+The Code command `lsp format SERVER PATH` translates LSP UTF-16 ranges against
+the captured buffer and creates an exact-base editor proposal. It opens the
+diff for review without changing the buffer or disk. The user accepts or
+rejects the proposal through the existing editor-review commands; edits with
+invalid, overlapping, or surrogate-splitting ranges fail closed.
 
 `/` at an empty composer opens a live catalogue: GC entries come from the
 selected Core session and Glass entries describe workspace actions. The menu
 labels the owner of each command. Up/Down filters and selects, Tab completes,
-Enter runs the selected runtime-safe command or hands off to the native Core UI
-when the command is interactive, and Esc returns to the unchanged composer.
+Enter runs a runtime-safe command inside Glass; commands without an in-Glass
+control are marked unavailable, and Esc returns to the unchanged composer.
 Typing a slash after other draft text remains literal text; paths and messages
 are not parsed as commands. The catalogue is available before the first prompt
 by initializing a Core session without sending provider input. Glass workspace
@@ -299,6 +308,7 @@ mouse, paste, or surface input while a higher-priority overlay is active.
 | `Enter` on Agent | submit the ready composer; empty input stays in the conversation |
 | `Enter` on Code | open the selected file for full-screen edit; preview queues if the workspace is busy |
 | `Ctrl-L` on Code | open the composer with the viewed file/range attached as removable context |
+| `Ctrl-Shift-A` on Code | attach the focused buffer or selected range to the Code composer |
 | `Ctrl-Shift-X` in the Code composer | remove or restore the selected Code context chip |
 | `[` / `]` | cycle Agent session or Code buffer |
 | `T` on Browser | queue browser target picker; Browser Enter activates selected semantic entity |

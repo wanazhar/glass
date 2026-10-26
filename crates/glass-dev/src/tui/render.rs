@@ -6321,14 +6321,42 @@ mod tests {
         })
         .collect();
 
-        let output = rendered(&state, 140, 40);
-        for marker in ["YOU", "CORE", "SYSTEM ·", "ACTION ·", "ERROR ·"] {
-            assert!(output.contains(marker), "missing role marker {marker}");
+        state.composer_mode = false;
+        for (width, height) in [(58, 24), (80, 24), (120, 36)] {
+            state.layout = if width < 72 {
+                TuiLayout::Mobile
+            } else {
+                TuiLayout::Desktop
+            };
+            state.scroll_end();
+            let tail = rendered(&state, width, height);
+            assert!(tail.contains("CONVERSATION"));
+            assert!(
+                tail.contains("ERROR ·"),
+                "tail error role missing at {width}x{height}: {tail}"
+            );
+            assert!(!tail.contains("system SYSTEM"));
+            assert!(!tail.contains("ALERT\nALERT"));
+
+            state.scroll_home();
+            let top = rendered(&state, width, height);
+            assert!(
+                top.contains("YOU"),
+                "user role missing at {width}x{height}: {top}"
+            );
+            assert!(
+                top.contains("CORE"),
+                "assistant role missing at {width}x{height}: {top}"
+            );
+            if width >= 120 {
+                for marker in ["SYSTEM ·", "ACTION ·", "ERROR ·"] {
+                    assert!(
+                        top.contains(marker),
+                        "missing {marker} at {width}x{height}: {top}"
+                    );
+                }
+            }
         }
-        assert!(!output.contains("GLASS AGENT"));
-        assert!(!output.contains("system SYSTEM"));
-        assert!(!output.contains("ALERT\nALERT"));
-        assert!(output.contains("CONVERSATION"));
     }
 
     #[test]

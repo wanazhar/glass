@@ -26,12 +26,14 @@ use glass_browser::tui::live_view::AnsiPane;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_BROWSER_TOOL: AtomicU64 = AtomicU64::new(1);
 static NEXT_CHAT_MESSAGE: AtomicU64 = AtomicU64::new(1);
 const MAX_CODE_PROMPT_CONTEXT_BYTES: usize = 64 * 1024;
+const MAX_CODE_CONTEXT_FILES: usize = 8;
 const MAX_NATIVE_GC_UI_OUTPUT_BYTES: usize = 64 * 1024;
 pub(super) const BROWSER_RECOVERY_STATUS: &str =
     "Browser recovery available · current surface preserved";
@@ -49,6 +51,80 @@ fn bounded_native_gc_ui_output(text: &str) -> String {
         &text[..end],
         MAX_NATIVE_GC_UI_OUTPUT_BYTES
     )
+}
+
+fn apply_lsp_text_edits(original: &str, edits: &[serde_json::Value]) -> Result<String, String> {
+    if edits.len() > 16_384 {
+        return Err("LSP formatter returned too many edits".into());
+    }
+    let mut resolved = Vec::with_capacity(edits.len());
+    for edit in edits {
+        let range = edit
+            .get("range")
+            .ok_or_else(|| "LSP TextEdit omitted its range".to_string())?;
+        let start = lsp_position_byte_offset(original, &range["start"])?;
+        let end = lsp_position_byte_offset(original, &range["end"])?;
+        if start > end {
+            return Err("LSP TextEdit range ends before it starts".into());
+        }
+        let new_text = edit
+            .get("newText")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "LSP TextEdit omitted newText".to_string())?;
+        resolved.push((start, end, new_text.to_string()));
+    }
+    resolved.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+    for pair in resolved.windows(2) {
+        if pair[1].1 > pair[0].0 || pair[1].0 == pair[0].0 {
+            return Err("LSP formatter returned overlapping edits".into());
+        }
+    }
+    let mut proposed = original.to_string();
+    for (start, end, new_text) in resolved {
+        proposed.replace_range(start..end, &new_text);
+    }
+    Ok(proposed)
+}
+
+fn lsp_position_byte_offset(text: &str, position: &serde_json::Value) -> Result<usize, String> {
+    let line = position
+        .get("line")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| "LSP position has no numeric line".to_string())?;
+    let character = position
+        .get("character")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| "LSP position has no numeric character".to_string())?;
+    let line = usize::try_from(line).map_err(|_| "LSP line exceeds platform limits".to_string())?;
+    let character = usize::try_from(character)
+        .map_err(|_| "LSP character exceeds platform limits".to_string())?;
+    let mut line_start = 0usize;
+    for _ in 0..line {
+        let newline = text[line_start..]
+            .find('\n')
+            .ok_or_else(|| "LSP position line is outside the document".to_string())?;
+        line_start += newline + 1;
+    }
+    let line_end = text[line_start..]
+        .find('\n')
+        .map(|offset| line_start + offset)
+        .unwrap_or(text.len());
+    let line_text = &text[line_start..line_end];
+    let mut utf16_offset = 0usize;
+    for (byte_offset, character_at) in line_text.char_indices() {
+        if utf16_offset == character {
+            return Ok(line_start + byte_offset);
+        }
+        utf16_offset += character_at.len_utf16();
+        if utf16_offset > character {
+            return Err("LSP position splits a UTF-16 surrogate pair".into());
+        }
+    }
+    if utf16_offset == character {
+        Ok(line_end)
+    } else {
+        Err("LSP position character is outside the line".into())
+    }
 }
 
 pub struct PendingConfirmation {
@@ -70,6 +146,20 @@ pub struct NativeGcUiPanel {
     pub searching: bool,
     pub pending: bool,
     requested_after_sequence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeContextAttachment {
+    pub path: String,
+    pub selection: Option<crate::development::TextSelection>,
+    content: String,
+    dirty: bool,
+}
+
+#[derive(Debug, Clone)]
+struct LspEditBaseline {
+    path: String,
+    content: String,
 }
 
 impl NativeGcUiPanel {
@@ -1512,6 +1602,9 @@ pub struct DevTuiState {
     pub composer_steer: bool,
     /// Attach the explicitly viewed Code buffer to sends from the Code dock.
     pub composer_code_context_enabled: bool,
+    /// Additional open buffers explicitly attached to the next Code prompt.
+    pub code_context_attachments: Vec<CodeContextAttachment>,
+    pending_lsp_format_baselines: VecDeque<LspEditBaseline>,
     pub last_app_comment: Option<String>,
     pub session_todos: crate::SessionTodoList,
     pub composer_history: Vec<String>,
@@ -1908,6 +2001,8 @@ impl DevTuiState {
             composer_cursor: 0,
             composer_steer: false,
             composer_code_context_enabled: false,
+            code_context_attachments: Vec::new(),
+            pending_lsp_format_baselines: VecDeque::new(),
             last_app_comment: None,
             session_todos: crate::SessionTodoList::default(),
             composer_history: Vec::new(),
@@ -3949,7 +4044,7 @@ impl DevTuiState {
             && !self.focused_editor_path.is_empty()
         {
             chips.push(format!(
-                "file {}{} · Ctrl-Shift-X remove",
+                "file {}{} · Ctrl-Shift-X remove · Ctrl-Shift-A attach",
                 self.focused_editor_path,
                 if self.focused_editor_dirty {
                     " (unsaved)"
@@ -3963,6 +4058,33 @@ impl DevTuiState {
             && self.focused_editor_selection.is_some()
         {
             chips.push("selection".into());
+        }
+        if !self.code_context_attachments.is_empty() {
+            let shown = self.code_context_attachments.len().min(3);
+            let paths = self.code_context_attachments[..shown]
+                .iter()
+                .map(|attachment| {
+                    format!(
+                        "{}{}",
+                        attachment.path,
+                        if attachment.selection.is_some() {
+                            " [range]"
+                        } else {
+                            ""
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more = self.code_context_attachments.len().saturating_sub(shown);
+            chips.push(format!(
+                "context {paths}{} · Ctrl-Shift-X removes focused file",
+                if more > 0 {
+                    format!(", +{more} more")
+                } else {
+                    String::new()
+                }
+            ));
         }
         if let Some(entity) = self.browser_workspace.state().selected() {
             chips.push(format!("app {}", entity.name));
@@ -3982,6 +4104,19 @@ impl DevTuiState {
             self.status = "Code context is available while asking from an open Code buffer".into();
             return;
         }
+        if let Some(index) = self
+            .code_context_attachments
+            .iter()
+            .position(|attachment| attachment.path == self.focused_editor_path)
+        {
+            self.code_context_attachments.remove(index);
+            self.composer_code_context_enabled = false;
+            self.status = format!(
+                "Code context removed · {} will not be sent",
+                self.focused_editor_path
+            );
+            return;
+        }
         self.composer_code_context_enabled = !self.composer_code_context_enabled;
         self.status = if self.composer_code_context_enabled {
             format!(
@@ -3991,6 +4126,108 @@ impl DevTuiState {
         } else {
             "Code context removed · your message will be sent without the buffer".into()
         };
+    }
+
+    pub fn attach_focused_code_context(&mut self) {
+        if self.surface != DevSurface::Code || self.focused_editor_path.is_empty() {
+            self.status = "Open a Code buffer before attaching it to the composer".into();
+            return;
+        }
+        if self
+            .code_context_attachments
+            .iter()
+            .any(|attachment| attachment.path == self.focused_editor_path)
+        {
+            self.status = format!(
+                "{} is already attached · Ctrl-Shift-X removes it",
+                self.focused_editor_path
+            );
+            return;
+        }
+        if self.code_context_attachments.len() >= MAX_CODE_CONTEXT_FILES {
+            self.status =
+                format!("Code context holds up to {MAX_CODE_CONTEXT_FILES} additional files");
+            return;
+        }
+        self.code_context_attachments.push(CodeContextAttachment {
+            path: self.focused_editor_path.clone(),
+            selection: self.focused_editor_selection.clone(),
+            content: self.focused_editor_content.clone(),
+            dirty: self.focused_editor_dirty,
+        });
+        self.status = format!(
+            "Attached {}{} to the composer · context is bounded to 64 KiB",
+            self.focused_editor_path,
+            if self.focused_editor_selection.is_some() {
+                " selection"
+            } else {
+                ""
+            }
+        );
+    }
+
+    pub(crate) fn remember_lsp_format_baseline(&mut self, path: &str) -> Result<(), String> {
+        if !self.pending_lsp_format_baselines.is_empty() {
+            return Err("an LSP formatting preview is already in flight".into());
+        }
+        let workspace = self.ws()?;
+        let path = workspace
+            .project()
+            .normalize_existing_file_path(path)
+            .map_err(|error| error.to_string())?;
+        let content = workspace
+            .project()
+            .buffer_or_file_content(&path)
+            .map_err(|error| error.to_string())?;
+        drop(workspace);
+        self.pending_lsp_format_baselines
+            .push_back(LspEditBaseline { path, content });
+        Ok(())
+    }
+
+    pub(crate) fn forget_lsp_format_baseline(&mut self) {
+        self.pending_lsp_format_baselines.pop_back();
+    }
+
+    fn preview_lsp_formatting(&mut self, value: &serde_json::Value) -> Result<bool, String> {
+        let Some(baseline) = self.pending_lsp_format_baselines.pop_front() else {
+            return Ok(false);
+        };
+        let edits = value
+            .get("result")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| "LSP formatter returned no TextEdit array".to_string())?;
+        let proposed = apply_lsp_text_edits(&baseline.content, edits)?;
+        if proposed == baseline.content {
+            self.status = format!("LSP formatting made no changes · {}", baseline.path);
+            return Ok(true);
+        }
+        let proposal = self
+            .ws_mut()?
+            .project_mut()
+            .propose_editor_change(
+                &baseline.path,
+                baseline.content,
+                proposed,
+                "LSP formatting preview".into(),
+                crate::development::Actor::local(),
+            )
+            .map_err(|error| error.to_string())?;
+        self.selected_editor_proposal_id = Some(proposal.id.clone());
+        if !self.files.iter().any(|path| path == &proposal.path) {
+            self.files.push(proposal.path.clone());
+        }
+        if let Some(index) = self.files.iter().position(|path| path == &proposal.path) {
+            self.selected_file = index;
+        }
+        self.surface = DevSurface::Code;
+        self.refresh_editor_projection();
+        self.refresh_editor_hunks();
+        self.status = format!(
+            "LSP formatting preview · {} · inspect diff, then Ctrl-K editor accept {} or editor reject {}",
+            proposal.path, proposal.id, proposal.id
+        );
+        Ok(true)
     }
 
     pub fn agent_chrome_line(&self) -> String {
@@ -7268,11 +7505,10 @@ impl DevTuiState {
             serde_json::Value::Null
         };
         if self.surface == DevSurface::Code
-            && self.composer_code_context_enabled
             && let Some(code) = self.code_prompt_context()
         {
             if context.is_null() {
-                context = serde_json::json!({});
+                context = serde_json::json!({"schemaVersion":"glass.agent-context.v1"});
             }
             context["code"] = code;
         }
@@ -7440,39 +7676,63 @@ impl DevTuiState {
     }
 
     fn code_prompt_context(&self) -> Option<serde_json::Value> {
-        if self.focused_editor_path.is_empty() {
+        let mut sources = self.code_context_attachments.clone();
+        if self.composer_code_context_enabled
+            && !self.focused_editor_path.is_empty()
+            && !sources
+                .iter()
+                .any(|attachment| attachment.path == self.focused_editor_path)
+        {
+            sources.push(CodeContextAttachment {
+                path: self.focused_editor_path.clone(),
+                selection: self.focused_editor_selection.clone(),
+                content: self.focused_editor_content.clone(),
+                dirty: self.focused_editor_dirty,
+            });
+        }
+        if sources.is_empty() {
             return None;
         }
-        let full_content = self.focused_editor_content.as_str();
-        let selection = self
-            .focused_editor_selection
-            .as_ref()
-            .and_then(|selection| {
+
+        // Leave room for the typed metadata and path/range descriptions within
+        // the resident agent's hard 64 KiB context-attachment limit.
+        let mut remaining = MAX_CODE_PROMPT_CONTEXT_BYTES.saturating_sub(16 * 1024);
+        let mut files = Vec::with_capacity(sources.len());
+        for source_file in sources {
+            let full_content = source_file.content.as_str();
+            let selection = source_file.selection.as_ref().and_then(|selection| {
                 crate::development::editor::selection_offsets(full_content, selection)
             });
-        let (source, selected_only) = selection
-            .filter(|(start, end)| start < end)
-            .map(|(start, end)| (&full_content[start..end], true))
-            .unwrap_or((full_content, false));
-        let truncated = source.len() > MAX_CODE_PROMPT_CONTEXT_BYTES;
-        let content = if truncated {
-            let mut boundary = MAX_CODE_PROMPT_CONTEXT_BYTES;
-            while !source.is_char_boundary(boundary) {
-                boundary = boundary.saturating_sub(1);
+            let (source, selected_only) = selection
+                .filter(|(start, end)| start < end)
+                .map(|(start, end)| (&full_content[start..end], true))
+                .unwrap_or((full_content, false));
+            let mut content_end = source.len().min(remaining);
+            while !source.is_char_boundary(content_end) {
+                content_end = content_end.saturating_sub(1);
             }
-            &source[..boundary]
+            let truncated = content_end < source.len();
+            let content = &source[..content_end];
+            remaining = remaining.saturating_sub(content.len());
+            let language = super::file_view::classify(&source_file.path).label();
+            files.push(serde_json::json!({
+                "path": source_file.path.clone(),
+                "language": language,
+                "unsaved": source_file.dirty,
+                "selectedOnly": selected_only,
+                "selection": source_file.selection,
+                "truncated": truncated,
+                "content": content,
+            }));
+        }
+        if files.len() == 1 {
+            files.into_iter().next()
         } else {
-            source
-        };
-        Some(serde_json::json!({
-            "path": self.focused_editor_path,
-            "language": super::file_view::classify(&self.focused_editor_path).label(),
-            "unsaved": self.focused_editor_dirty,
-            "selectedOnly": selected_only,
-            "selection": self.focused_editor_selection,
-            "truncated": truncated,
-            "content": content,
-        }))
+            Some(serde_json::json!({
+                "schemaVersion": "glass.code-context.v1",
+                "files": files,
+            }))
+        }
     }
 
     pub fn approve_confirmation_async(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
@@ -8125,6 +8385,17 @@ impl DevTuiState {
                     } else {
                         super::projection::first_meaningful(&value)
                     };
+                    if result.tool == "glass.lsp.formatting" {
+                        match self.preview_lsp_formatting(&value) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                self.status = "LSP formatting result received".into();
+                            }
+                            Err(error) => {
+                                self.status = format!("LSP formatting preview failed · {error}");
+                            }
+                        }
+                    }
                 }
                 if !matches!(
                     result.tool.as_str(),
@@ -8141,11 +8412,15 @@ impl DevTuiState {
                         | "glass.debug.stack"
                         | "glass.debug.scopes"
                         | "glass.debug.variables"
-                ) {
+                ) && result.tool != "glass.lsp.formatting"
+                {
                     self.status = format!("Completed {} · workspace refreshed", result.tool);
                 }
             }
             Err(error) => {
+                if result.tool == "glass.lsp.formatting" {
+                    self.pending_lsp_format_baselines.pop_front();
+                }
                 if matches!(
                     result.tool.as_str(),
                     "glass.agent.commands" | "glass.agent.command"
@@ -9520,6 +9795,12 @@ impl DevTuiState {
                 )
             })
             .unwrap_or_default();
+        for attachment in &mut self.code_context_attachments {
+            if let Some(buffer) = buffers.iter().find(|buffer| buffer.path == attachment.path) {
+                attachment.content.clone_from(&buffer.content);
+                attachment.dirty = buffer.dirty;
+            }
+        }
         self.editor_comments = comments;
         self.editor_proposals = proposals;
         self.reconcile_selected_editor_proposal();
@@ -14879,6 +15160,120 @@ fn editor_offset(content: &str, line: u32, column: u32) -> usize {
 mod tests {
     use super::*;
 
+    #[test]
+    fn lsp_text_edits_use_utf16_positions_and_descending_application() {
+        let original = "a😀b\nlast\n";
+        let edits = vec![
+            serde_json::json!({
+                "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 4}},
+                "newText": "done"
+            }),
+            serde_json::json!({
+                "range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 4}},
+                "newText": "B"
+            }),
+        ];
+        assert_eq!(
+            apply_lsp_text_edits(original, &edits).unwrap(),
+            "a😀B\ndone\n"
+        );
+    }
+
+    #[test]
+    fn lsp_text_edits_reject_surrogate_splits_and_overlaps() {
+        let split_surrogate = vec![serde_json::json!({
+            "range": {"start": {"line": 0, "character": 2}, "end": {"line": 0, "character": 3}},
+            "newText": "x"
+        })];
+        assert!(
+            apply_lsp_text_edits("a😀b", &split_surrogate)
+                .unwrap_err()
+                .contains("surrogate")
+        );
+
+        let overlap = vec![
+            serde_json::json!({
+                "range": {"start": {"line": 0, "character": 1}, "end": {"line": 0, "character": 4}},
+                "newText": "x"
+            }),
+            serde_json::json!({
+                "range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 5}},
+                "newText": "y"
+            }),
+        ];
+        assert!(
+            apply_lsp_text_edits("abcdef", &overlap)
+                .unwrap_err()
+                .contains("overlapping")
+        );
+    }
+
+    #[test]
+    fn lsp_formatting_creates_a_preview_that_requires_explicit_acceptance() {
+        let root = std::env::temp_dir().join(format!("glass-lsp-preview-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).expect("create source fixture");
+        std::fs::write(root.join("src/main.rs"), "let x=1;\n").expect("write source fixture");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open fixture workspace");
+        state.surface = DevSurface::Code;
+        state.files.push("src/main.rs".into());
+        state.selected_file = state.files.len() - 1;
+        state
+            .ws_mut()
+            .unwrap()
+            .project_mut()
+            .open_buffer("src/main.rs", crate::development::Actor::local())
+            .unwrap();
+        state.refresh_editor_projection();
+        state
+            .remember_lsp_format_baseline("src/main.rs")
+            .expect("capture exact request document");
+
+        let result = serde_json::json!({
+            "method": "textDocument/formatting",
+            "result": [{
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 8}},
+                "newText": "let x = 1;"
+            }]
+        });
+        assert!(state.preview_lsp_formatting(&result).unwrap());
+        assert!(state.status.contains("LSP formatting preview"));
+        assert_eq!(
+            state
+                .ws()
+                .unwrap()
+                .project()
+                .buffer("src/main.rs")
+                .unwrap()
+                .content,
+            "let x=1;\n",
+            "preview must leave the buffer unchanged"
+        );
+        assert_eq!(state.editor_engine.hunks.len(), 1);
+        let proposal_id = state
+            .editor_proposals
+            .iter()
+            .find(|proposal| proposal.state == crate::development::EditorProposalState::Pending)
+            .expect("pending formatting proposal")
+            .id
+            .clone();
+        state
+            .accept_review_proposal(Some(&proposal_id))
+            .expect("accept the preview explicitly");
+        assert_eq!(
+            state
+                .ws()
+                .unwrap()
+                .project()
+                .buffer("src/main.rs")
+                .unwrap()
+                .content,
+            "let x = 1;\n"
+        );
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove fixture workspace");
+    }
+
     fn native_gc_ui_snapshot(
         owner: crate::AgentId,
         sequence: u64,
@@ -18569,6 +18964,7 @@ mod tests {
         state.focused_editor_path = "src/main.rs".into();
         state.focused_editor_content = "fn selected() {}\nfn hidden() {}\n".into();
         state.focused_editor_dirty = true;
+        state.composer_code_context_enabled = true;
         state.focused_editor_selection = Some(TextSelection {
             anchor: crate::development::TextPosition { line: 1, column: 4 },
             active: crate::development::TextPosition {
@@ -18598,6 +18994,70 @@ mod tests {
         assert!(!serialized.contains("src/main.rs"));
         assert!(!serialized.contains("fn hidden"));
 
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn code_context_attaches_multiple_unsaved_buffers_and_selected_ranges() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-multifile-code-context-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create temporary workspace");
+        let mut state =
+            DevTuiState::open_for_tui(&root, TuiLayout::Desktop).expect("open workspace");
+        state.show_surface(DevSurface::Code);
+        state.focused_editor_path = "src/api.rs".into();
+        state.focused_editor_content = "fn public_api() {}\nfn hidden_api() {}\n".into();
+        state.focused_editor_dirty = true;
+        state.focused_editor_selection = Some(TextSelection {
+            anchor: crate::development::TextPosition { line: 1, column: 4 },
+            active: crate::development::TextPosition {
+                line: 1,
+                column: 14,
+            },
+        });
+        state.attach_focused_code_context();
+
+        state.focused_editor_path = "src/model.rs".into();
+        state.focused_editor_content = "struct Selected {}\nstruct Hidden {}\n".into();
+        state.focused_editor_dirty = true;
+        state.focused_editor_selection = Some(TextSelection {
+            anchor: crate::development::TextPosition { line: 1, column: 8 },
+            active: crate::development::TextPosition {
+                line: 1,
+                column: 16,
+            },
+        });
+        state.attach_focused_code_context();
+        state.composer_code_context_enabled = false;
+
+        let context = state.code_prompt_context().expect("attached Code context");
+        let files = context["files"].as_array().expect("multifile context");
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["path"], "src/api.rs");
+        assert_eq!(files[0]["content"], "public_api");
+        assert_eq!(files[0]["selectedOnly"], true);
+        assert_eq!(files[0]["unsaved"], true);
+        assert_eq!(files[1]["path"], "src/model.rs");
+        assert_eq!(files[1]["content"], "Selected");
+        assert_eq!(files[1]["selectedOnly"], true);
+        assert!(
+            state
+                .composer_context_chips()
+                .contains("src/api.rs [range]")
+        );
+        assert!(
+            state
+                .composer_context_chips()
+                .contains("src/model.rs [range]")
+        );
+
+        state.toggle_composer_code_context();
+        assert_eq!(state.code_context_attachments.len(), 1);
+        assert_eq!(state.code_context_attachments[0].path, "src/api.rs");
+        let remaining = state.code_prompt_context().expect("remaining attachment");
+        assert_eq!(remaining["path"], "src/api.rs");
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
     }
 

@@ -859,6 +859,20 @@ pub(crate) fn run_with_browser_policy(
                         }
                     } else if active_overlay == Some(overlay::ActiveOverlay::FullscreenEditor) {
                         match (key.code, key.modifiers) {
+                            (KeyCode::Char('a' | 'A'), value)
+                                if state.surface == DevSurface::Code
+                                    && value.contains(KeyModifiers::CONTROL)
+                                    && value.contains(KeyModifiers::SHIFT) =>
+                            {
+                                state.attach_focused_code_context();
+                            }
+                            (KeyCode::Char('x' | 'X'), value)
+                                if state.surface == DevSurface::Code
+                                    && value.contains(KeyModifiers::CONTROL)
+                                    && value.contains(KeyModifiers::SHIFT) =>
+                            {
+                                state.toggle_composer_code_context();
+                            }
                             (KeyCode::Char('l'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>
                             {
@@ -1005,12 +1019,19 @@ pub(crate) fn run_with_browser_policy(
                             {
                                 state.navigate_composer_history(false);
                             }
-                            (KeyCode::Char('x'), value)
+                            (KeyCode::Char('x' | 'X'), value)
                                 if state.surface == DevSurface::Code
                                     && value.contains(KeyModifiers::CONTROL)
                                     && value.contains(KeyModifiers::SHIFT) =>
                             {
                                 state.toggle_composer_code_context();
+                            }
+                            (KeyCode::Char('a' | 'A'), value)
+                                if state.surface == DevSurface::Code
+                                    && value.contains(KeyModifiers::CONTROL)
+                                    && value.contains(KeyModifiers::SHIFT) =>
+                            {
+                                state.attach_focused_code_context();
                             }
                             (KeyCode::Char('x'), value)
                                 if value.contains(KeyModifiers::CONTROL) =>

@@ -138,19 +138,19 @@ const TOOLS: &[Item] = &[
 const WEB_TOOLS: &[Item] = &[
     (
         "web_search(query)",
-        "Built-in Core tool that searches through the configured Exa MCP endpoint.",
+        "Built-in Core search via the configured Exa MCP endpoint.",
     ),
     (
         "web_fetch(url)",
-        "Built-in Core tool that reads a bounded public HTTP page; it is not a visual browser.",
+        "Built-in bounded HTTP text fetch; not a visual browser.",
     ),
     (
         "glass-browser",
-        "Separate native visual browser executable; availability depends on the installed build.",
+        "Native visual browser CLI, when installed.",
     ),
     (
         "glass.browser.*",
-        "Glass-host tools offered to Core only when the host advertises those capabilities.",
+        "Glass-host tools, only when the host advertises them.",
     ),
 ];
 const CONNECT: &[Item] = &[
@@ -364,15 +364,8 @@ fn render(topic: &str, width: usize, color: bool) -> Result<String, String> {
             p.section("Web research and browsing", WEB_TOOLS);
             p.text.push('\n');
             p.row(
-                "These are different routes: Core sends search and fetch through its built-in provider tools; visual browsing uses the native glass-browser executable. Glass mixed mode offers its host browser tools only when the Glass host advertises them.",
+                "Standalone Core does not attach to Chrome or substitute Playwright. Check `command -v glass-browser` for native browser availability.",
                 Tone::Body,
-                false,
-                0,
-            );
-            p.text.push('\n');
-            p.row(
-                "Check `command -v glass-browser` and `glass-browser --help` for the installed browser capabilities. Core does not silently attach to Chrome or replace native browsing with Playwright.",
-                Tone::Muted,
                 false,
                 0,
             );
@@ -496,6 +489,12 @@ mod tests {
         assert!(web.contains("web_search"));
         assert!(web.contains("web_fetch"));
         assert!(web.contains("glass-browser"));
-        assert!(web.contains("Glass host advertises"));
+        assert!(web.contains("host advertises them"));
+        let compact_web = render("tools", 58, false).unwrap();
+        assert!(compact_web.lines().count() <= 24, "{compact_web}");
+        assert!(
+            compact_web.starts_with(&format!("glass-core {}", env!("CARGO_PKG_VERSION"))),
+            "{compact_web}"
+        );
     }
 }

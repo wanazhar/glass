@@ -1204,23 +1204,23 @@ where
         #[cfg(feature = "native-engine")]
         let persistent_dialog_host = task_persistent_native_session.is_some();
         #[cfg(feature = "native-engine")]
-        let task_elicitation = (native_runtime
-            && (client_supports_form_elicitation || persistent_dialog_host))
-            .then(|| McpElicitationClient {
-                transport: server_transport.clone(),
-                format,
-                parent_cancellation: Arc::clone(
-                    task_elicitation_cancellation
-                        .as_ref()
-                        .expect("native request has a cancellation notifier"),
-                ),
-                parent_cancelled: Arc::clone(
-                    task_parent_cancelled
-                        .as_ref()
-                        .expect("native request has a cancellation state"),
-                ),
-                supports_form: client_supports_form_elicitation,
-            });
+        let task_elicitation =
+            if native_runtime && (client_supports_form_elicitation || persistent_dialog_host) {
+                task_elicitation_cancellation
+                    .as_ref()
+                    .zip(task_parent_cancelled.as_ref())
+                    .map(
+                        |(parent_cancellation, parent_cancelled)| McpElicitationClient {
+                            transport: server_transport.clone(),
+                            format,
+                            parent_cancellation: Arc::clone(parent_cancellation),
+                            parent_cancelled: Arc::clone(parent_cancelled),
+                            supports_form: client_supports_form_elicitation,
+                        },
+                    )
+            } else {
+                None
+            };
         #[cfg(not(feature = "native-engine"))]
         let task_elicitation: Option<McpElicitationClient> = None;
         let native_session_owned = Arc::new(AtomicBool::new(false));
@@ -6306,7 +6306,9 @@ async fn ensure_native_session<'a>(
             BrowserRuntimeSession::connect_native(config).await?
         });
     }
-    Ok(session.as_mut().expect("native session initialized"))
+    session
+        .as_mut()
+        .ok_or_else(|| "native session initialization did not produce a session".into())
 }
 
 #[cfg(feature = "native-engine")]
@@ -6368,7 +6370,9 @@ async fn ensure_session<'a>(
                 .await?,
         );
     }
-    Ok(session.as_mut().expect("session initialized"))
+    session
+        .as_mut()
+        .ok_or_else(|| "browser session initialization did not produce a session".into())
 }
 
 fn tools() -> Vec<Tool> {

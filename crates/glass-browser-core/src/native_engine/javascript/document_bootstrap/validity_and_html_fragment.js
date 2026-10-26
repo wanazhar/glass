@@ -94,6 +94,36 @@
     createComment,
     contextElement = fragment,
   ) => {{
+    // Parser output is already a complete, detached tree. Link it into the
+    // JavaScript mirror directly instead of calling the public appendChild
+    // methods: some native element implementations have additional insertion
+    // effects (and may enqueue host commands) even while host-command
+    // suppression is active. The later SetInnerHtml + identity-bind pair is
+    // the single authoritative native mutation for this tree.
+    const appendParsedChild = (parent, child) => {{
+      if (!parent || !Array.isArray(parent.__glassChildren)
+          || !child || typeof child !== "object") {{
+        throw new Error("native HTML fragment parser could not attach a node");
+      }}
+      const previousSibling = parent.__glassChildren.length > 0
+        ? parent.__glassChildren[parent.__glassChildren.length - 1]
+        : null;
+      parent.__glassChildren.push(child);
+      child.__glassParent = parent;
+      child.parentIndex = parent.nodeIndex !== null && parent.nodeIndex !== undefined
+          && Number.isSafeInteger(Number(parent.nodeIndex))
+        ? Number(parent.nodeIndex)
+        : null;
+      if (typeof parent.__glassSyncContent === "function") parent.__glassSyncContent();
+      queueMutation({{
+        type: "childList",
+        target: parent,
+        addedNodes: [child],
+        removedNodes: [],
+        previousSibling,
+        nextSibling: null,
+      }});
+    }};
     const source = String(markup);
     if (source.length > storageValueLimit) {{
       throw new RangeError("native HTML fragment exceeds its source limit");
@@ -204,13 +234,15 @@
         }}
         templateContentChildren = templateContents.children;
       }}
-      for (const childIndex of childIndices) element.appendChild(buildNode(childIndex));
+      for (const childIndex of childIndices) appendParsedChild(element, buildNode(childIndex));
       if (templateContentChildren) {{
-        for (const childIndex of templateContentChildren) element.content.appendChild(buildNode(childIndex));
+        for (const childIndex of templateContentChildren) {{
+          appendParsedChild(element.content, buildNode(childIndex));
+        }}
       }}
       return element;
     }};
-    for (const childIndex of root.children) fragment.appendChild(buildNode(childIndex));
+    for (const childIndex of root.children) appendParsedChild(fragment, buildNode(childIndex));
   }};
 
   const installReflectedAttributeProperties = (element) => {{
@@ -401,6 +433,10 @@
       }},
       set(next) {{ this.setAttribute("referrerpolicy", String(next)); }},
     }});
+  // ElementNative's interface prototypes copy the shared descriptors during
+  // bootstrap. Install this reflected attribute before those prototypes are
+  // constructed so created SCRIPT/LINK/IMG nodes inherit the setter.
+  installSharedReferrerPolicy(nativeElementSharedPrototype);
   const installSharedCommonAttributeProperties = (prototype) => {{
     if (sharedCommonAttributePrototypes.has(prototype)) return;
     sharedCommonAttributePrototypes.add(prototype);
@@ -481,7 +517,6 @@
     if (element.tagName === "SOURCE")
       installSharedStringAttribute(prototype, "media", "media");
     if (element.tagName === "IMG") {{
-      installSharedReferrerPolicy(prototype);
       defineSharedSpecialAttribute(prototype, "complete", {{
         enumerable: true, configurable: true,
         get() {{
@@ -507,12 +542,6 @@
           try {{ return new URLNative(value, effectiveDocumentBaseUrl()).href; }} catch (_error) {{ return value; }}
         }},
       }});
-    }}
-    if (element.tagName === "SCRIPT") {{
-      installSharedReferrerPolicy(prototype);
-    }}
-    if (element.tagName === "LINK") {{
-      installSharedReferrerPolicy(prototype);
     }}
     if (["AUDIO", "VIDEO"].includes(element.tagName)) {{
       const mediaState = () => ({{

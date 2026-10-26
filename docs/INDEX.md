@@ -82,7 +82,8 @@ matrix.
   `glass core ...` namespace to the monorepo Core binary; this does not resolve
   the independent GCN product. In the workspace, the slash palette's Core
   model picker uses the resident runtime, and unsupported interactive commands
-  do not open a second TUI.
+  do not open a second TUI. Forwarded human CLI headings and command guidance
+  identify whether the caller used `glass`, `glass core`, or standalone `gc`.
 - [Glass Core documentation index](../products/glass-core/docs/INDEX.md) —
   product setup, terminal workflow, provider configuration, permissions,
   integrations, runtime, and development records.

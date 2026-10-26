@@ -137,6 +137,7 @@ fn emit_json(value: serde_json::Value) {
 }
 
 fn main() {
+    cli::initialize_frontend();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let _job_cleanup = jobs::Cleanup;
 
@@ -510,7 +511,10 @@ fn main() {
         Some("search") => {
             match args.get(1).map(String::as_str) {
                 Some(pattern) => search_sessions(pattern),
-                None => cli::line("usage: gc search <pattern>"),
+                None => cli::line(&format!(
+                    "usage: {} search <pattern>",
+                    cli::command_prefix()
+                )),
             }
             return;
         }
@@ -523,7 +527,7 @@ fn main() {
         {
             emit_json(serde_json::json!({"status":"error","error":e,"text":""}));
         }
-        cli::error("glass-core", &glass_tui::markdown::sanitize(&e));
+        cli::error(cli::product_name(), &glass_tui::markdown::sanitize(&e));
         jobs::finish_all();
         std::process::exit(if let Some(code) = signals::exit_code() {
             code
@@ -889,7 +893,10 @@ fn run(args: &[String]) -> Result<(), String> {
                 .iter()
                 .any(|a| !matches!(a.as_str(), "--all" | "--browse"))
             {
-                return Err("usage: gc resume [ID | --all | --browse]".into());
+                return Err(format!(
+                    "usage: {} resume [ID | --all | --browse]",
+                    cli::command_prefix()
+                ));
             }
             return match resume_picker::choose(&cfg.workspace, all, browse)? {
                 Some(pick) => {
@@ -904,7 +911,10 @@ fn run(args: &[String]) -> Result<(), String> {
             };
         }
         if args.len() != 2 || args[1].starts_with('-') {
-            return Err("usage: gc resume [ID | --all | --browse]".into());
+            return Err(format!(
+                "usage: {} resume [ID | --all | --browse]",
+                cli::command_prefix()
+            ));
         }
     }
     if args.first().is_some_and(|a| a == "doctor") && !args.iter().any(|a| a == "--probe") {
@@ -1008,10 +1018,10 @@ fn run(args: &[String]) -> Result<(), String> {
         .is_some_and(|a| matches!(a.as_str(), "runtime" | "durable"))
     {
         if args.len() != 1 {
-            return Err(
-                "usage: gc runtime (configuration is supplied through initialize and session/new)"
-                    .into(),
-            );
+            return Err(format!(
+                "usage: {} runtime (configuration is supplied through initialize and session/new)",
+                cli::command_prefix()
+            ));
         }
         return runtime::serve(cfg);
     }

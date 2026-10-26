@@ -99,7 +99,10 @@ pub fn command(args: &[String]) -> Result<(), String> {
         _ => return Err("gc policy [shell COMMAND | explain COMMAND | extension SPEC | provider KIND ENDPOINT] [--json]".into()),
     };
     if args.len() != expected {
-        return Err("Incorrect policy arguments; use gc policy --help".into());
+        return Err(format!(
+            "Incorrect policy arguments; use {} policy --help",
+            crate::cli::command_prefix()
+        ));
     }
     let p = load()?;
     let value = match args.first().map(String::as_str) {

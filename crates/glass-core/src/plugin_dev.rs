@@ -41,11 +41,11 @@ pub fn command(args: &[String]) -> Result<(), String> {
             crate::auth::secure_write(&directory.join("skills/example/SKILL.md"),b"---\nname: example\ndescription: A reviewed project workflow.\n---\n\n1. Inspect the requested scope.\n2. Make the agreed changes.\n3. Verify and report actual results.\n")?;
             crate::cli::text(
                 "Plugin scaffold",
-                &format!(
+                &crate::cli::present_command_references(&format!(
                     "Created {}\nValidate: gc plugin validate {}\nNo code was executed or installed.",
                     directory.display(),
                     directory.display()
-                ),
+                )),
             );
         }
         Some("validate") => {

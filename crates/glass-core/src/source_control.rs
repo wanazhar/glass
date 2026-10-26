@@ -215,14 +215,20 @@ pub fn request(root: &Path, args: &[String]) -> Result<Value, String> {
         let value = plan(root, &args[1..])?;
         if action == "create" {
             if !args.iter().any(|s| s == "--publish") {
-                return Err("Publication requires --publish; use gc pr preview first".into());
+                return Err(format!(
+                    "Publication requires --publish; use {} pr preview first",
+                    crate::cli::command_prefix()
+                ));
             }
             let expected = args
                 .iter()
                 .position(|s| s == "--expect-hash")
                 .and_then(|i| args.get(i + 1));
             if expected.map(String::as_str) != value["preview_fingerprint"].as_str() {
-                return Err("Run gc pr preview, review it, then pass --expect-hash PREVIEW_FINGERPRINT; nothing published".into());
+                return Err(format!(
+                    "Run {} pr preview, review it, then pass --expect-hash PREVIEW_FINGERPRINT; nothing published",
+                    crate::cli::command_prefix()
+                ));
             }
             publish(root, &value, &AtomicBool::new(false))?
         } else {
@@ -238,7 +244,10 @@ pub fn request(root: &Path, args: &[String]) -> Result<Value, String> {
 }
 pub fn command(args: &[String]) -> Result<(), String> {
     if args.is_empty() || args.iter().any(|s| s == "--help") {
-        crate::cli::text("Pull requests", HELP);
+        crate::cli::text(
+            "Pull requests",
+            &crate::cli::present_command_references(HELP),
+        );
         return Ok(());
     }
     let root = std::env::current_dir().map_err(|e| e.to_string())?;

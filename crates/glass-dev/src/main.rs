@@ -22,7 +22,8 @@ fn run() -> MainResult {
     let args = std::env::args_os().collect::<Vec<_>>();
     let command = Cli::command();
     if let Some(core_args) = core_cli_forward_args(&args, &command) {
-        return forward_core_cli(&core_args);
+        let presentation = core_cli_presentation(&args);
+        return forward_core_cli(&core_args, presentation);
     }
     let command = command.after_help(
         "Glass Core commands are also available as `glass <core-command> ...` when the name does not conflict with a Glass command. Use `glass core <args...>` as the complete, exact Core CLI escape hatch; `glass core --help` shows Core's own commands and options.",
@@ -99,15 +100,27 @@ fn parse_glass_args(command: clap::Command, args: Vec<OsString>) -> Result<Box<C
         })?
 }
 
-/// Replace Glass with Core so arguments, terminal streams, signals, and exit
-/// status retain Core's native CLI semantics.
-fn forward_core_cli(args: &[OsString]) -> MainResult {
+/// Replace Glass with Core while passing the human-facing invocation namespace
+/// as a one-shot presentation marker; arguments and process streams remain exact.
+fn core_cli_presentation(args: &[OsString]) -> Option<&'static str> {
+    match args.get(1).and_then(|arg| arg.to_str())? {
+        "core" => Some("glass core"),
+        _ => Some("glass"),
+    }
+}
+
+fn forward_core_cli(args: &[OsString], presentation: Option<&str>) -> MainResult {
     let binary = glass_dev::core_runtime::resolve_core_binary(None)
         .map_err(|error| io::Error::new(io::ErrorKind::NotFound, error.to_string()))?;
+    let mut command = Command::new(&binary);
+    command.args(args).env_remove("GLASS_CORE_CLI_PRESENTATION");
+    if let Some(presentation) = presentation {
+        command.env("GLASS_CORE_CLI_PRESENTATION", presentation);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        let error = Command::new(&binary).args(args).exec();
+        let error = command.exec();
         Err(io::Error::other(format!(
             "could not start Glass Core CLI {}: {error}",
             binary.display()
@@ -116,7 +129,7 @@ fn forward_core_cli(args: &[OsString]) -> MainResult {
     }
     #[cfg(not(unix))]
     {
-        let status = Command::new(&binary).args(args).status()?;
+        let status = command.status()?;
         std::process::exit(status.code().unwrap_or(1));
     }
 }
@@ -133,7 +146,7 @@ fn uses_interactive_tui(cli: &glass_browser::cli::args::Cli) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{core_cli_forward_args, uses_interactive_tui};
+    use super::{core_cli_forward_args, core_cli_presentation, uses_interactive_tui};
     use clap::{CommandFactory, Parser};
     use glass_browser::cli::args::Cli;
     use std::ffi::OsString;
@@ -179,6 +192,22 @@ mod tests {
                 assert_eq!(
                     core_cli_forward_args(&args(&["glass", "core"]), &command),
                     Some(args(&["--help"]))
+                );
+                assert_eq!(
+                    core_cli_presentation(&args(&["glass", "connect", "status"])),
+                    Some("glass")
+                );
+                assert_eq!(
+                    core_cli_presentation(&args(&["glass", "core", "connect", "stop"])),
+                    Some("glass core")
+                );
+                assert_eq!(
+                    core_cli_presentation(&args(&["glass", "status", "--json"])),
+                    Some("glass")
+                );
+                assert_eq!(
+                    core_cli_presentation(&args(&["glass", "core", "browser", "status"])),
+                    None
                 );
                 assert_eq!(
                     core_cli_forward_args(&args(&["glass", "browser", "status"]), &command),

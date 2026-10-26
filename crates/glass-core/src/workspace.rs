@@ -836,7 +836,7 @@ pub fn request(root: &Path, args: &[String]) -> Result<serde_json::Value, String
 }
 pub fn command(args: &[String]) -> Result<(), String> {
     if args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
-        crate::cli::text("Workspace", HELP);
+        crate::cli::text("Workspace", &crate::cli::present_command_references(HELP));
         return Ok(());
     }
     let root = std::env::current_dir().map_err(|e| e.to_string())?;

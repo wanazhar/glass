@@ -2,9 +2,11 @@
 use glass_tui::theme::Tone;
 use serde_json::Value;
 use std::io::{self, IsTerminal, Write};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static HEADED: AtomicBool = AtomicBool::new(false);
+static CLI_FRONTEND: OnceLock<CliFrontend> = OnceLock::new();
 
 pub fn styled() -> bool {
     io::stdout().is_terminal()
@@ -80,6 +82,10 @@ impl Page {
 }
 impl Page {
     pub fn new(title: &str, width: usize, color: bool) -> Self {
+        Self::new_with_frontend(title, width, color, current_frontend())
+    }
+
+    fn new_with_frontend(title: &str, width: usize, color: bool, frontend: CliFrontend) -> Self {
         let mut page = Self {
             width: width.max(1),
             color,
@@ -90,7 +96,12 @@ impl Page {
             .next()
             .map(|first| format!("{}{}", first.to_uppercase(), &title[first.len_utf8()..]))
             .unwrap_or_default();
-        page.row(&format!("glass-core · {title}"), Tone::Accent, true, 0);
+        let heading = match frontend {
+            CliFrontend::Glass => format!("Glass · {title}"),
+            CliFrontend::GlassCore => format!("Glass Core · {title}"),
+            CliFrontend::Standalone => format!("glass-core · {title}"),
+        };
+        page.row(&heading, Tone::Accent, true, 0);
         page.row(&"─".repeat(width.min(100)), Tone::Border, false, 0);
         page
     }
@@ -234,6 +245,221 @@ impl Page {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CliFrontend {
+    Standalone,
+    Glass,
+    GlassCore,
+}
+
+fn cli_frontend(value: Option<&str>) -> CliFrontend {
+    match value {
+        Some("glass") => CliFrontend::Glass,
+        Some("glass core") => CliFrontend::GlassCore,
+        _ => CliFrontend::Standalone,
+    }
+}
+
+fn current_frontend() -> CliFrontend {
+    *CLI_FRONTEND
+        .get_or_init(|| cli_frontend(std::env::var("GLASS_CORE_CLI_PRESENTATION").ok().as_deref()))
+}
+
+pub(crate) fn initialize_frontend() {
+    let frontend = cli_frontend(std::env::var("GLASS_CORE_CLI_PRESENTATION").ok().as_deref());
+    let _ = CLI_FRONTEND.set(frontend);
+    // Glass sets a non-sensitive one-shot presentation marker for this Core
+    // process. Remove it before Core can start user commands or provider
+    // workers so child processes never inherit the private CLI handshake.
+    unsafe { std::env::remove_var("GLASS_CORE_CLI_PRESENTATION") };
+}
+
+fn present_error_label(label: &str, frontend: CliFrontend) -> String {
+    if let Some(suffix) = label.strip_prefix("gc ") {
+        let prefix = match frontend {
+            CliFrontend::Glass => "glass",
+            CliFrontend::GlassCore => "glass core",
+            CliFrontend::Standalone => "gc",
+        };
+        return format!("{prefix} {suffix}");
+    }
+    if label == "glass-core" || label.starts_with("glass-core ") {
+        let prefix = match frontend {
+            CliFrontend::Glass => "Glass",
+            CliFrontend::GlassCore => "Glass Core",
+            CliFrontend::Standalone => "glass-core",
+        };
+        return format!("{prefix}{}", &label["glass-core".len()..]);
+    }
+    label.to_string()
+}
+
+pub(crate) fn product_name() -> &'static str {
+    product_name_for(current_frontend())
+}
+
+fn product_name_for(frontend: CliFrontend) -> &'static str {
+    match frontend {
+        CliFrontend::Glass => "Glass",
+        CliFrontend::GlassCore => "Glass Core",
+        CliFrontend::Standalone => "glass-core",
+    }
+}
+
+pub(crate) fn product_tagline() -> &'static str {
+    match current_frontend() {
+        CliFrontend::Glass => "Glass workspace · Core-powered agent and tools",
+        CliFrontend::GlassCore => "Glass Core · standalone agent and permission authority",
+        CliFrontend::Standalone => "AI coding harness · gc is the short command",
+    }
+}
+
+pub(crate) fn product_short_name() -> &'static str {
+    product_short_name_for(current_frontend())
+}
+
+fn product_short_name_for(frontend: CliFrontend) -> &'static str {
+    match frontend {
+        CliFrontend::Glass => "Glass",
+        CliFrontend::GlassCore => "Glass Core",
+        CliFrontend::Standalone => "GC",
+    }
+}
+
+pub(crate) fn command_prefix() -> &'static str {
+    match current_frontend() {
+        CliFrontend::Glass => "glass",
+        CliFrontend::GlassCore => "glass core",
+        CliFrontend::Standalone => "gc",
+    }
+}
+
+pub(crate) fn connect_product_name() -> &'static str {
+    connect_product_name_for(current_frontend())
+}
+
+fn connect_product_name_for(frontend: CliFrontend) -> &'static str {
+    match frontend {
+        CliFrontend::Glass => "Glass Connect",
+        CliFrontend::GlassCore => "Glass Core Connect",
+        CliFrontend::Standalone => "GC Connect",
+    }
+}
+
+pub(crate) fn connect_command() -> &'static str {
+    connect_command_for(current_frontend())
+}
+
+fn connect_command_for(frontend: CliFrontend) -> &'static str {
+    match frontend {
+        CliFrontend::Glass => "glass connect",
+        CliFrontend::GlassCore => "glass core connect",
+        CliFrontend::Standalone => "gc connect",
+    }
+}
+
+pub(crate) fn present_command_references(text: &str) -> String {
+    present_command_references_with_prefix(text, command_prefix())
+}
+
+fn present_command_references_with_prefix(text: &str, prefix: &str) -> String {
+    if prefix == "gc" {
+        return text.to_string();
+    }
+    const ROOTS: &[&str] = &[
+        "acp",
+        "agent",
+        "attach",
+        "attention",
+        "blobs",
+        "capture",
+        "checkpoint",
+        "completions",
+        "companion",
+        "config",
+        "connect",
+        "context",
+        "contract",
+        "details",
+        "diagnostics",
+        "doctor",
+        "export",
+        "extensions",
+        "file",
+        "guidance",
+        "handoff",
+        "help",
+        "history",
+        "hub",
+        "init",
+        "inspect",
+        "keys",
+        "list",
+        "memory",
+        "models",
+        "neuralnets",
+        "plugin",
+        "policy",
+        "prewalk",
+        "profiles",
+        "pr",
+        "pwd",
+        "requests",
+        "resume",
+        "respawn",
+        "runtime",
+        "review",
+        "run",
+        "search",
+        "send",
+        "serve",
+        "sessions",
+        "settings",
+        "skill",
+        "structure",
+        "status",
+        "stop",
+        "team",
+        "transaction",
+        "tools",
+        "usage",
+        "worktree",
+        "workspace",
+    ];
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len() + prefix.len());
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let is_gc = bytes[cursor..].starts_with(b"gc")
+            && (cursor == 0
+                || !bytes[cursor - 1].is_ascii_alphanumeric() && bytes[cursor - 1] != b'_')
+            && (cursor + 2 == bytes.len()
+                || !bytes[cursor + 2].is_ascii_alphanumeric() && bytes[cursor + 2] != b'_');
+        if !is_gc {
+            let ch = text[cursor..].chars().next().expect("cursor is in bounds");
+            out.push(ch);
+            cursor += ch.len_utf8();
+            continue;
+        }
+        let mut end = cursor + 2;
+        while end < bytes.len() && bytes[end].is_ascii_whitespace() {
+            end += 1;
+        }
+        let command_end = (end..bytes.len())
+            .find(|index| !bytes[*index].is_ascii_alphanumeric() && bytes[*index] != b'-')
+            .unwrap_or(bytes.len());
+        let command = text.get(end..command_end).unwrap_or_default();
+        if ROOTS.contains(&command) {
+            out.push_str(prefix);
+            cursor += 2;
+            continue;
+        }
+        out.push_str("gc");
+        cursor += 2;
+    }
+    out
+}
 fn scalar(v: &Value) -> String {
     glass_tui::markdown::sanitize(&match v {
         Value::String(s) => s.clone(),
@@ -373,6 +599,9 @@ pub fn agent(value: &Value) {
     }
 }
 pub fn error(label: &str, error: &str) {
+    let frontend = current_frontend();
+    let label = present_error_label(label, frontend);
+    let error = present_command_references(error);
     if !io::stderr().is_terminal() {
         eprintln!("{label}: {error}");
         return;
@@ -384,7 +613,7 @@ pub fn error(label: &str, error: &str) {
         text: String::new(),
     };
     p.row(&format!("{label} · Error"), Tone::Error, true, 0);
-    for line in glass_tui::markdown::sanitize(error).lines() {
+    for line in glass_tui::markdown::sanitize(&error).lines() {
         p.row(line, Tone::Error, false, 2);
     }
     let _ = io::stderr().lock().write_all(p.text.as_bytes());
@@ -642,19 +871,24 @@ python3 examples/runtime_host.py --storage /tmp/gc-host-demo 'Read README.md'",
     let mut p = Page::new(command, width, color);
     p.text.push('\n');
     p.row("Usage", Tone::Secondary, true, 0);
-    for row in usage.lines() {
+    for row in present_command_references(usage).lines() {
         p.row(row, Tone::Secondary, false, 2);
     }
     p.text.push('\n');
-    p.row(description, Tone::Body, false, 2);
+    p.row(
+        &present_command_references(description),
+        Tone::Body,
+        false,
+        2,
+    );
     p.text.push('\n');
     p.row("Examples", Tone::Secondary, true, 0);
-    for row in examples.lines() {
+    for row in present_command_references(examples).lines() {
         p.row(row, Tone::Body, false, 2);
     }
     p.text.push('\n');
     p.row(
-        "gc help commands · Browse every command",
+        &present_command_references("gc help commands · Browse every command"),
         Tone::Muted,
         false,
         0,
@@ -708,6 +942,102 @@ mod tests {
         assert!(p.text.contains("1 |     nested    value"));
         assert!(p.text.contains("+    added    value"));
         assert!(p.text.contains("2 |    indented"));
+    }
+    #[test]
+    fn frontend_context_changes_human_command_examples_only() {
+        let authored_help =
+            "Usage: gc status [--json]\nRun gc doctor first; gc is the legacy short command.";
+        let glass = present_command_references_with_prefix(authored_help, "glass");
+        assert!(glass.contains("Usage: glass status [--json]"));
+        assert!(glass.contains("Run glass doctor first; gc is the legacy short command."));
+        let glass_core = present_command_references_with_prefix(authored_help, "glass core");
+        assert!(glass_core.contains("Usage: glass core status [--json]"));
+        assert!(
+            glass_core.contains("Run glass core doctor first; gc is the legacy short command.")
+        );
+        assert_eq!(
+            present_command_references_with_prefix(authored_help, "gc"),
+            authored_help
+        );
+        assert_eq!(cli_frontend(Some("glass")), CliFrontend::Glass);
+        assert_eq!(cli_frontend(Some("glass core")), CliFrontend::GlassCore);
+        assert_eq!(cli_frontend(None), CliFrontend::Standalone);
+        assert!(
+            Page::new_with_frontend("Status", 80, false, CliFrontend::Glass)
+                .text
+                .contains("Glass · Status")
+        );
+        assert!(
+            Page::new_with_frontend("Doctor", 80, false, CliFrontend::GlassCore)
+                .text
+                .contains("Glass Core · Doctor")
+        );
+        assert!(
+            Page::new_with_frontend("Config", 80, false, CliFrontend::Standalone)
+                .text
+                .contains("glass-core · Config")
+        );
+        assert_eq!(
+            present_error_label("glass-core", CliFrontend::Glass),
+            "Glass"
+        );
+        assert_eq!(
+            present_error_label("gc doctor", CliFrontend::GlassCore),
+            "glass core doctor"
+        );
+        assert_eq!(
+            present_command_references_with_prefix(
+                "Role is not configured; use gc workspace role set reviewer",
+                "glass"
+            ),
+            "Role is not configured; use glass workspace role set reviewer"
+        );
+        assert_eq!(product_name_for(CliFrontend::Glass), "Glass");
+        assert_eq!(product_name_for(CliFrontend::GlassCore), "Glass Core");
+        assert_eq!(product_name_for(CliFrontend::Standalone), "glass-core");
+        assert_eq!(product_short_name_for(CliFrontend::Glass), "Glass");
+        assert_eq!(product_short_name_for(CliFrontend::GlassCore), "Glass Core");
+        assert_eq!(product_short_name_for(CliFrontend::Standalone), "GC");
+        assert_eq!(
+            connect_product_name_for(CliFrontend::Glass),
+            "Glass Connect"
+        );
+        assert_eq!(connect_command_for(CliFrontend::Glass), "glass connect");
+        assert_eq!(
+            connect_product_name_for(CliFrontend::GlassCore),
+            "Glass Core Connect"
+        );
+        assert_eq!(
+            connect_command_for(CliFrontend::GlassCore),
+            "glass core connect"
+        );
+        assert_eq!(
+            connect_product_name_for(CliFrontend::Standalone),
+            "GC Connect"
+        );
+        assert_eq!(connect_command_for(CliFrontend::Standalone), "gc connect");
+        let roots = [
+            "connect", "serve", "runtime", "run", "resume", "models", "status", "doctor",
+            "settings", "config",
+        ];
+        for (frontend, prefix) in [
+            (CliFrontend::Standalone, "gc"),
+            (CliFrontend::Glass, "glass"),
+            (CliFrontend::GlassCore, "glass core"),
+        ] {
+            for root in roots {
+                let source = format!("Usage: gc {root} [--help]");
+                let displayed = present_command_references_with_prefix(&source, prefix);
+                assert_eq!(displayed, format!("Usage: {prefix} {root} [--help]"));
+                let heading = Page::new_with_frontend(root, 80, false, frontend);
+                let brand = match frontend {
+                    CliFrontend::Standalone => "glass-core",
+                    CliFrontend::Glass => "Glass",
+                    CliFrontend::GlassCore => "Glass Core",
+                };
+                assert!(heading.text.starts_with(&format!("{brand} · ")));
+            }
+        }
     }
     #[test]
     fn shared_reports_fit_and_sanitize() {

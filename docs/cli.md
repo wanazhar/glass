@@ -686,10 +686,13 @@ glass core --help                # show the installed Core command tree
 
 Existing Glass command names take precedence; use `glass core ...` to reach a
 Core command with the same name. Direct Core aliases and the `core` namespace
-resolve the monorepo `glass-core` executable through `GLASS_CORE_BINARY` or
-`glass-core` on `PATH`. Glass does not fall back to the independent GCN `gcn`
-executable. Arguments, standard streams, exit status, and Unix signals are
-passed through to Core. See [Glass Core resident harness](glass-core-harness.md)
+prefer a version-matched `glass-core` executable beside Glass, then use
+`GLASS_CORE_BINARY` or `glass-core` on `PATH`. Glass does not fall back to the
+independent GCN `gcn` executable. Arguments, standard streams, exit status, and
+Unix signals are passed through to Core. Human-facing Core CLI headings, help examples, errors,
+and Connect follow-up commands identify the invoked Glass namespace; direct
+`gc` output keeps the standalone Core identity. JSON and runtime protocol data
+keep their Core schemas. See [Glass Core resident harness](glass-core-harness.md)
 for runtime ownership and binary selection.
 
 From any workspace surface, `/` opens a compact palette with common Glass Core

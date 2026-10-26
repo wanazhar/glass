@@ -185,8 +185,8 @@ pub struct CoreRuntimeOptions {
     pub resume_session_id: Option<String>,
     /// Session id to fork from, when the caller wants a branch.
     pub fork_from: Option<PathBuf>,
-    /// Explicit `glass-core` executable. `GLASS_CORE_BINARY` and `PATH` are
-    /// used when this is unset.
+    /// Explicit compatible `glass-core` executable. If unset, Glass checks
+    /// `GLASS_CORE_BINARY`, its adjacent Core package binary, then `PATH`.
     pub binary: Option<PathBuf>,
     /// Extra argv passed before the `runtime` subcommand.
     pub binary_args: Vec<String>,
@@ -1619,34 +1619,67 @@ fn read_frames(mut stream: impl std::io::Read, sender: mpsc::SyncSender<Result<V
 
 /// Resolve the `glass-core` executable for a resident session.
 pub fn resolve_core_binary(explicit: Option<&Path>) -> DevelopmentResult<PathBuf> {
+    let configured = std::env::var_os(GLASS_CORE_BINARY_ENV).map(PathBuf::from);
+    let adjacent = std::env::current_exe()
+        .ok()
+        .and_then(|executable| adjacent_core_binary(&executable));
+    let on_path = GLASS_CORE_BINARY_CANDIDATES
+        .iter()
+        .find_map(|candidate| search_path(candidate));
+    resolve_core_binary_candidates(explicit, configured, adjacent, on_path)
+}
+
+fn adjacent_core_binary(executable: &Path) -> Option<PathBuf> {
+    executable
+        .parent()
+        .map(|directory| directory.join(format!("glass-core{}", std::env::consts::EXE_SUFFIX)))
+        .filter(|candidate| candidate.is_file())
+}
+
+fn resolve_core_binary_candidates(
+    explicit: Option<&Path>,
+    configured: Option<PathBuf>,
+    adjacent: Option<PathBuf>,
+    on_path: Option<PathBuf>,
+) -> DevelopmentResult<PathBuf> {
     if let Some(path) = explicit {
-        if path.is_file() {
-            return Ok(path.to_path_buf());
-        }
-        return Err(DevelopmentError::NotFound(format!(
-            "Glass Core executable {} does not exist",
-            path.display()
-        )));
+        return validate_core_binary(path, "the explicit Glass Core binary");
     }
-    if let Some(configured) = std::env::var_os(GLASS_CORE_BINARY_ENV) {
-        let path = PathBuf::from(configured);
-        if path.is_file() {
-            return Ok(path);
-        }
-        return Err(DevelopmentError::NotFound(format!(
-            "{GLASS_CORE_BINARY_ENV} points at {}, which does not exist",
-            path.display()
-        )));
+    if let Some(path) = adjacent {
+        return validate_core_binary(&path, "the Core binary adjacent to Glass");
     }
-    for candidate in GLASS_CORE_BINARY_CANDIDATES {
-        if let Some(path) = search_path(candidate) {
-            return Ok(path);
-        }
+    if let Some(path) = configured {
+        return validate_core_binary(&path, GLASS_CORE_BINARY_ENV);
+    }
+    if let Some(path) = on_path {
+        return validate_core_binary(&path, "the `glass-core` found on PATH");
     }
     Err(DevelopmentError::NotFound(format!(
-        "no {} executable on PATH; install glass-core or set {GLASS_CORE_BINARY_ENV}",
-        GLASS_CORE_BINARY_CANDIDATES.join(" or ")
+        "no compatible Glass Core executable was found beside Glass or on PATH; build Core with `cargo build -p glass-core --bin glass-core` or set {GLASS_CORE_BINARY_ENV}"
     )))
+}
+
+fn validate_core_binary(path: &Path, source: &str) -> DevelopmentResult<PathBuf> {
+    if !path.is_file() {
+        return Err(DevelopmentError::NotFound(format!(
+            "{source} points at {}, which does not exist",
+            path.display()
+        )));
+    }
+    let expected = env!("CARGO_PKG_VERSION");
+    let actual = core_version(path, &[]).ok_or_else(|| {
+        DevelopmentError::Process(format!(
+            "cannot verify the Glass Core binary at {} with `--version`; rebuild it or set {GLASS_CORE_BINARY_ENV} to a compatible executable",
+            path.display()
+        ))
+    })?;
+    if actual != expected {
+        return Err(DevelopmentError::Process(format!(
+            "{source} at {} reports Glass Core {actual}, but this Glass build requires {expected}; rebuild the monorepo Core binary or set {GLASS_CORE_BINARY_ENV} to a matching version",
+            path.display()
+        )));
+    }
+    Ok(path.to_path_buf())
 }
 
 /// Start Core's standalone interactive UI in a workspace, with inherited
@@ -1947,6 +1980,92 @@ mod tests {
     use super::*;
     use crate::resident_harness::ResidentSessionRequest;
     use std::sync::Arc;
+
+    #[cfg(unix)]
+    fn write_core_version_fixture(root: &Path, name: &str, version: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(root).unwrap();
+        let path = root.join(name);
+        fs::write(
+            &path,
+            format!("#!/bin/sh\nprintf 'glass-core {version}\\n'\n"),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn core_resolution_prefers_explicit_and_adjacent_matching_packages() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-core-resolver-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let valid = write_core_version_fixture(&root, "matching-core", env!("CARGO_PKG_VERSION"));
+        let old = write_core_version_fixture(&root, "separate-gcn", "0.1.0");
+        assert_eq!(
+            resolve_core_binary_candidates(
+                Some(&valid),
+                Some(old.clone()),
+                Some(old.clone()),
+                Some(old.clone())
+            )
+            .unwrap(),
+            valid
+        );
+        assert_eq!(
+            resolve_core_binary_candidates(None, None, Some(valid.clone()), Some(old.clone()))
+                .unwrap(),
+            valid
+        );
+        let valid = write_core_version_fixture(&root, "matching-core", env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            resolve_core_binary_candidates(None, Some(old.clone()), Some(valid.clone()), None)
+                .unwrap(),
+            valid
+        );
+        let error = resolve_core_binary_candidates(None, Some(old.clone()), None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reports Glass Core 0.1.0"));
+        assert!(error.contains("requires"));
+        assert!(
+            resolve_core_binary_candidates(None, None, None, Some(old))
+                .unwrap_err()
+                .to_string()
+                .contains("0.1.0")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn glass_binary_adjacent_core_path_uses_the_platform_executable_suffix() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-adjacent-core-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let glass = root.join(format!("glass{}", std::env::consts::EXE_SUFFIX));
+        let core = write_core_version_fixture(
+            &root,
+            &format!("glass-core{}", std::env::consts::EXE_SUFFIX),
+            env!("CARGO_PKG_VERSION"),
+        );
+        assert_eq!(adjacent_core_binary(&glass), Some(core));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn browser_host_tool_timeout_respects_core_timeout_without_retrying() {

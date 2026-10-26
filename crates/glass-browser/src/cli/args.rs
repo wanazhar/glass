@@ -502,6 +502,22 @@ pub enum Commands {
         json: bool,
     },
 
+    /// Read the current workspace's local, privacy-safe tool error log.
+    Logs {
+        /// Project root whose `.glass/diagnostics.jsonl` should be read.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Maximum number of recent entries to print (1..=256).
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Print machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+        /// Include provider wire names, Glass routes, and schema fingerprints.
+        #[arg(long)]
+        catalog: bool,
+    },
+
     /// Print deterministic MCP configuration for a supported client.
     McpConfig {
         #[arg(long, value_enum, default_value_t = McpClient::Generic)]

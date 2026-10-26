@@ -4,7 +4,7 @@
     "glass": [
       "update", "install-chromium", "certify", "workspace", "project", "agent", "harness",
       "memory", "surfaces", "backend", "daemon", "replay", "capabilities",
-      "doctor", "mcp-config", "profiles", "knowledge", "result",
+      "doctor", "logs", "mcp-config", "profiles", "knowledge", "result",
       "delete-profile", "navigate", "recover", "click", "preflight", "click-at",
       "click-expect-popup", "double-click", "hover", "drag", "type", "key",
       "key-down", "key-up", "shortcut", "clear", "check", "uncheck",
@@ -21,7 +21,7 @@
     ],
     "glass-browser": [
       "update", "install-chromium", "certify", "workspace", "harness", "memory", "surfaces",
-      "backend", "daemon", "replay", "capabilities", "doctor", "mcp-config",
+      "backend", "daemon", "replay", "capabilities", "doctor", "logs", "mcp-config",
       "profiles", "knowledge", "result", "delete-profile", "navigate", "recover",
       "click", "preflight", "click-at", "click-expect-popup", "double-click",
       "hover", "drag", "type", "key", "key-down", "key-up", "shortcut",

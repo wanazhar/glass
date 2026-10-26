@@ -140,6 +140,108 @@ fn dynamically_created_img_link_and_script_keep_reflected_url_and_policy_propert
 }
 
 #[test]
+fn initial_inner_html_and_text_content_follow_projected_child_identity() {
+    let document = NativeDocument::parse(
+        "<body><div id='root'><p>Hello <span>world</span><!-- hidden --></p><script>const marker = 1;</script><select><option>Option &amp; text</option></select></div></body>",
+        &NativeEngineLimits::default(),
+    )
+    .expect("content projection fixture must parse");
+    let runtime = NativeJavaScriptRuntime::new_with_context_id("derived-initial-content")
+        .expect("native JavaScript runtime must construct");
+    let evaluation = runtime
+        .evaluate(
+            r#"(() => {
+                const root = document.getElementById("root");
+                const paragraph = root.children[0];
+                const script = root.children[1];
+                const option = root.children[2].children[0];
+                const replacement = document.createElement("div");
+                replacement.innerHTML = "<b>replacement</b> &amp; text";
+                return [
+                    root.textContent,
+                    paragraph.innerHTML,
+                    paragraph.outerHTML,
+                    script.textContent,
+                    option.textContent,
+                    option.value,
+                    replacement.innerHTML,
+                    replacement.textContent,
+                ];
+            })()"#,
+            &document,
+            "https://fixture.test/content",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+        )
+        .expect("content getters must derive from the installed host child tree");
+    assert_eq!(
+        evaluation.value,
+        serde_json::json!([
+            "Hello worldconst marker = 1;Option & text",
+            "Hello <span>world</span><!-- hidden -->",
+            "<p>Hello <span>world</span><!-- hidden --></p>",
+            "const marker = 1;",
+            "Option & text",
+            "Option & text",
+            "<b>replacement</b> &amp; text",
+            "replacement & text"
+        ])
+    );
+}
+
+#[test]
+fn same_origin_frame_content_getters_derive_from_projected_child_nodes() {
+    let parent = NativeDocument::parse(
+        "<body><iframe id='frame'></iframe></body>",
+        &NativeEngineLimits::default(),
+    )
+    .expect("frame parent fixture must parse");
+    let child = NativeDocument::parse(
+        "<body><article id='article'><p>Frame <span>content</span></p><!-- ignored --></article></body>",
+        &NativeEngineLimits::default(),
+    )
+    .expect("frame child fixture must parse");
+    let runtime = NativeJavaScriptRuntime::new_with_context_id("frame-lazy-child-content")
+        .expect("native JavaScript runtime must construct");
+    runtime.set_frame_script_bindings(vec![NativeFrameScriptBinding {
+        node_index: parent
+            .element_node_ids()
+            .find(|id| {
+                parent
+                    .node(*id)
+                    .is_some_and(|node| node.element_name() == Some("iframe"))
+            })
+            .expect("frame parent element must exist")
+            .index(),
+        frame_id: "lazy-content-child".into(),
+        url: "https://fixture.test/child".into(),
+        origin: "https://fixture.test".into(),
+        generation: 1,
+        revision: 1,
+        same_origin: true,
+        document: child.script_snapshot_for_viewport(1 << 20, Viewport::default()),
+        children: Vec::new(),
+    }]);
+    let evaluation = runtime
+        .evaluate(
+            "(() => { const article = document.getElementById('frame').contentDocument.getElementById('article'); return [article.textContent, article.innerHTML, article.firstChild.textContent]; })()",
+            &parent,
+            "https://fixture.test/parent",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+        )
+        .expect("same-origin frame content getters must reflect the projected child tree");
+    assert_eq!(
+        evaluation.value,
+        serde_json::json!([
+            "Frame content",
+            "<p>Frame <span>content</span></p><!-- ignored -->",
+            "Frame content"
+        ])
+    );
+}
+
+#[test]
 fn repeated_host_views_reuse_decoded_canvas_image_resources_and_repair_public_map() {
     let mut document = NativeDocument::parse(
         "<img id='source' src='/pixel.png'><canvas id='target' width='1' height='1'></canvas>",
@@ -397,8 +499,12 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
     // Eight and a half thousand mixed elements plus text nodes and scaffolding
     // exercise the 16,384-node parser ceiling without raising that limit.
     const ELEMENTS: usize = 8_500;
+    const NESTED_WRAPPERS: usize = 20;
     let mut markup = String::with_capacity(ELEMENTS * 96);
     markup.push_str("<style>.accent { font-weight: 700; }</style><main><section>");
+    for _ in 0..NESTED_WRAPPERS {
+        markup.push_str("<div class='nested'>");
+    }
     for index in 0..ELEMENTS {
         let class = if index % 2 == 0 { "row accent" } else { "row" };
         let tag = [
@@ -406,17 +512,20 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
         ][index % 8];
         if tag == "img" {
             markup.push_str(&format!(
-                "<img id='item-{index}' class='{class}' data-index='{index}' aria-label='image {index}' src='/image/{index}.png' alt='preview'>"
+                "<img id='item-{index}' class='{class}' data-index='{index}' aria-label='image {index}' style='color:#{index:06x}' src='/image/{index}.png' alt='preview'>"
             ));
         } else if tag == "a" {
             markup.push_str(&format!(
-                "<a id='item-{index}' class='{class}' data-index='{index}' aria-label='link {index}' href='/item/{index}'>x</a>"
+                "<a id='item-{index}' class='{class}' data-index='{index}' aria-label='link {index}' style='color:#{index:06x}' href='/item/{index}'>x</a>"
             ));
         } else {
             markup.push_str(&format!(
-                "<{tag} id='item-{index}' class='{class}' data-index='{index}' aria-label='row {index}'>x</{tag}>"
+                "<{tag} id='item-{index}' class='{class}' data-index='{index}' aria-label='row {index}' style='color:#{index:06x}'>x</{tag}>"
             ));
         }
+    }
+    for _ in 0..NESTED_WRAPPERS {
+        markup.push_str("</div>");
     }
     markup.push_str("</section></main>");
 
@@ -427,12 +536,12 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
     for install in 0..6 {
         let (source, expected) = if install == 0 {
             (
-                "(() => { const first = document.body.children[0].children[0].children[0]; globalThis.__glassHeldHostElement = first; globalThis.__glassHeldHostElements = globalThis.__glassHostElements; globalThis.__glassHeldElementMapSize = globalThis.__glassHostElements.size; globalThis.__glassHeldNodeMapSize = globalThis.__glassHostNodes.size; globalThis.__glassHostElements.set(-1, null); globalThis.__glassHostNodes.clear(); globalThis.__glassHeldDocument = document; globalThis.__glassDocumentObserver = new MutationObserver(() => {}); globalThis.__glassDocumentObserver.observe(document, { attributes: true, subtree: true }); first.__glassReuseMarker = 42; return [document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(first).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView'), document.documentElement.parentNode === document, document.documentElement.getRootNode() === document]; })()",
+                "(() => { const first = document.getElementById('item-0'); globalThis.__glassHeldHostElement = first; globalThis.__glassHeldHostElements = globalThis.__glassHostElements; globalThis.__glassHeldElementMapSize = globalThis.__glassHostElements.size; globalThis.__glassHeldNodeMapSize = globalThis.__glassHostNodes.size; globalThis.__glassHostElements.set(-1, null); globalThis.__glassHostNodes.clear(); globalThis.__glassHeldDocument = document; globalThis.__glassDocumentObserver = new MutationObserver(() => {}); globalThis.__glassDocumentObserver.observe(document, { attributes: true, subtree: true }); first.__glassReuseMarker = 42; return [document.body.tagName, document.getElementsByClassName('row').length, getComputedStyle(first).fontWeight, getComputedStyle(document.getElementById('item-1')).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView'), document.documentElement.parentNode === document, document.documentElement.getRootNode() === document]; })()",
                 serde_json::json!(["BODY", ELEMENTS, "bold", "normal", false, true, true]),
             )
         } else {
             (
-                "[document.body.tagName, document.body.children[0].children[0].children.length, getComputedStyle(document.body.children[0].children[0].children[0]).fontWeight, getComputedStyle(document.body.children[0].children[0].children[1]).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView'), globalThis.__glassHeldHostElement === document.body.children[0].children[0].children[0], globalThis.__glassHeldHostElement.__glassReuseMarker, document.documentElement.parentNode === document, document.documentElement.getRootNode() === document, globalThis.__glassHeldDocument !== document, globalThis.__glassHeldHostElements !== globalThis.__glassHostElements, globalThis.__glassHostElements.size === globalThis.__glassHeldElementMapSize, globalThis.__glassHostNodes.size === globalThis.__glassHeldNodeMapSize, !globalThis.__glassHostElements.has(-1), globalThis.__glassHostNodes.size > 0]",
+                "[document.body.tagName, document.getElementsByClassName('row').length, getComputedStyle(document.getElementById('item-0')).fontWeight, getComputedStyle(document.getElementById('item-1')).fontWeight, Object.prototype.hasOwnProperty.call(globalThis, '__glassInstallNativeHostView'), globalThis.__glassHeldHostElement === document.getElementById('item-0'), globalThis.__glassHeldHostElement.__glassReuseMarker, document.documentElement.parentNode === document, document.documentElement.getRootNode() === document, globalThis.__glassHeldDocument !== document, globalThis.__glassHeldHostElements !== globalThis.__glassHostElements, globalThis.__glassHostElements.size === globalThis.__glassHeldElementMapSize, globalThis.__glassHostNodes.size === globalThis.__glassHeldNodeMapSize, !globalThis.__glassHostElements.has(-1), globalThis.__glassHostNodes.size > 0]",
                 serde_json::json!([
                     "BODY", ELEMENTS, "bold", "normal", false, true, 42, true, true, true, true,
                     true, true, true, true
@@ -488,7 +597,7 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
         .expect("second native JavaScript runtime must construct");
     let second_runtime_evaluation = second_runtime
         .evaluate(
-            "[document.body.children[0].children[0].children.length, document.body.children[0].children[0].children[0].id]",
+            "[document.getElementsByClassName('row').length, document.getElementById('item-0').id]",
             &document,
             "fixture://large-host-view.test/",
             &NativeOrigin::Opaque,

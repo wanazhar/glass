@@ -729,7 +729,9 @@ impl NativeJavaScriptRuntime {
                 worker_script_error: None,
             })
         });
-        let heap_used_bytes = self.runtime.memory_usage().memory_used_size;
+        let memory_usage = self.runtime.memory_usage();
+        let heap_used_bytes = memory_usage.memory_used_size;
+        let allocator_used_bytes = memory_usage.malloc_size;
         if let Some(stage) = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
             crate::native_engine::content_process::ContentLoadStage::begin(
                 0,
@@ -738,7 +740,21 @@ impl NativeJavaScriptRuntime {
         }) {
             stage.finish(Some(usize::try_from(heap_used_bytes).unwrap_or(usize::MAX)));
         }
-        if heap_used_bytes > (NATIVE_SCRIPT_MEMORY_BYTES / 2) as i64 {
+        if let Some(stage) = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+            crate::native_engine::content_process::ContentLoadStage::begin(
+                0,
+                "javascript_heap_pre_gc_allocator_bytes",
+            )
+        }) {
+            stage.finish(Some(
+                usize::try_from(allocator_used_bytes).unwrap_or(usize::MAX),
+            ));
+        }
+        let allocator_pressure = allocator_used_bytes
+            > (NATIVE_SCRIPT_MEMORY_BYTES.saturating_mul(3) / 4) as i64
+            && allocator_used_bytes.saturating_sub(heap_used_bytes)
+                > (NATIVE_SCRIPT_MEMORY_BYTES / 8) as i64;
+        if heap_used_bytes > (NATIVE_SCRIPT_MEMORY_BYTES / 2) as i64 || allocator_pressure {
             let gc_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
                 crate::native_engine::content_process::ContentLoadStage::begin(
                     0,

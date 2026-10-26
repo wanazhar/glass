@@ -1089,6 +1089,7 @@ impl NativeDocument {
         depth
     }
 
+    #[cfg(test)]
     pub(super) fn element_inner_html(&self, id: NativeNodeId, max_bytes: usize) -> String {
         let mut output = String::new();
         let mut truncated = false;
@@ -1121,6 +1122,7 @@ impl NativeDocument {
         output
     }
 
+    #[cfg(test)]
     pub(super) fn append_serialized_node(
         &self,
         id: NativeNodeId,

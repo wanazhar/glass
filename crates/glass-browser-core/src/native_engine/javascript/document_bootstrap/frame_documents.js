@@ -633,7 +633,12 @@
       Object.defineProperty(projected, "__glassTextValue", {{
         enumerable: false,
         configurable: false,
-        get() {{ return textContent; }},
+        get() {{
+          const children = projected.__glassChildren;
+          return children.length > 0
+            ? children.map(child => child.__glassTextValue || "").join("")
+            : textContent;
+        }},
       }});
       Object.defineProperty(projected, "__glassMarkup", {{
         enumerable: false,
@@ -711,7 +716,7 @@
         Object.defineProperty(projected, property, {{
             enumerable: true,
             configurable: false,
-            get() {{ return textContent; }},
+            get() {{ return projected.__glassTextValue; }},
             set(next) {{
               const value = String(next);
               if (value.length > storageValueLimit) throw new RangeError("native frame element textContent exceeds its limit");
@@ -737,7 +742,11 @@
       Object.defineProperty(projected, "innerHTML", {{
         enumerable: true,
         configurable: false,
-        get() {{ return projected.localName === "template" ? projected.content.innerHTML : innerHtml; }},
+        get() {{
+          if (projected.localName === "template") return projected.content.innerHTML;
+          if (innerHtml) return innerHtml;
+          return projected.__glassChildren.map(child => child.__glassMarkup || "").join("");
+        }},
         set(next) {{
           const value = String(next);
           if (value.length > storageValueLimit) throw new RangeError("native frame element innerHTML exceeds its limit");
@@ -1479,7 +1488,16 @@
           if (typeof projected.__glassSyncAttributeNodes === "function") projected.__glassSyncAttributeNodes();
         }},
       }});
-      Object.defineProperty(projected, "__glassTextValue", {{ enumerable: false, configurable: false, get() {{ return textContent; }} }});
+      Object.defineProperty(projected, "__glassTextValue", {{
+        enumerable: false,
+        configurable: false,
+        get() {{
+          const children = projected.__glassChildren;
+          return children.length > 0
+            ? children.map(child => child.__glassTextValue || "").join("")
+            : textContent;
+        }},
+      }});
       Object.defineProperty(projected, "__glassMarkup", {{
         enumerable: false,
         configurable: false,
@@ -1514,7 +1532,7 @@
         Object.defineProperty(projected, property, {{
           enumerable: true,
           configurable: false,
-          get() {{ return textContent; }},
+          get() {{ return projected.__glassTextValue; }},
           set(next) {{
             const value = String(next);
             if (value.length > storageValueLimit) throw new RangeError("native frame element textContent exceeds its limit");
@@ -1536,7 +1554,11 @@
       Object.defineProperty(projected, "innerHTML", {{
         enumerable: true,
         configurable: false,
-        get() {{ return projected.localName === "template" ? projected.content.innerHTML : innerHtml; }},
+        get() {{
+          if (projected.localName === "template") return projected.content.innerHTML;
+          if (innerHtml) return innerHtml;
+          return projected.__glassChildren.map(child => child.__glassMarkup || "").join("");
+        }},
         set(next) {{
           const value = String(next);
           if (value.length > storageValueLimit) throw new RangeError("native frame element innerHTML exceeds its limit");

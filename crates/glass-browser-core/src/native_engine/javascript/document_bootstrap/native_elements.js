@@ -687,7 +687,12 @@
     Object.defineProperty(element, "__glassTextValue", {{
       enumerable: false,
       configurable: false,
-      get() {{ return textContent; }},
+      get() {{
+        const children = element.__glassChildren;
+        return children.length > 0
+          ? children.map(child => child.__glassTextValue || "").join("")
+          : textContent;
+      }},
     }});
     Object.defineProperty(element, "__glassMarkup", {{
       enumerable: false,
@@ -764,7 +769,7 @@
       Object.defineProperty(element, property, {{
         enumerable: true,
         configurable: false,
-        get() {{ return textContent; }},
+        get() {{ return element.__glassTextValue; }},
         set(next) {{
           const value = String(next);
           if (value.length > storageValueLimit) throw new RangeError("native element textContent exceeds its limit");
@@ -827,7 +832,11 @@
     Object.defineProperty(element, "innerHTML", {{
       enumerable: true,
       configurable: false,
-      get() {{ return element.localName === "template" ? element.content.innerHTML : innerHtml; }},
+      get() {{
+        if (element.localName === "template") return element.content.innerHTML;
+        if (innerHtml) return innerHtml;
+        return element.__glassChildren.map(child => child.__glassMarkup || "").join("");
+      }},
       set(next) {{
         const value = String(next);
         if (value.length > storageValueLimit) throw new RangeError("native element innerHTML exceeds its limit");

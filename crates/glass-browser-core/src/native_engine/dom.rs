@@ -102,6 +102,7 @@ const MAX_IMAGE_DENSITY_MILLI: u32 = 64_000;
 pub(crate) const MAX_NATIVE_DOCUMENT_PRELOAD_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const MAX_NATIVE_DOCUMENT_PRELOAD_IMAGES: usize = 64;
 
+#[cfg(test)]
 fn is_html_literal_text_element(name: &str) -> bool {
     matches!(
         name,
@@ -109,6 +110,7 @@ fn is_html_literal_text_element(name: &str) -> bool {
     )
 }
 
+#[cfg(test)]
 fn is_void_element(name: &str) -> bool {
     matches!(
         name,

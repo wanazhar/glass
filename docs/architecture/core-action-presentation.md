@@ -35,6 +35,7 @@ against every current built-in entry:
 | `status` | Command panel | Shows current Core session status |
 | `compact` | Command panel | Shows the compaction receipt after Core completes it |
 | `model` | Glass provider/model picker | Loads the Core model catalogue; selection applies to the current Core session |
+| `settings` | Glass Core settings and model panel | Loads the selected session settings and Core model catalogue; selecting a model applies through Core's session configuration API |
 | Other interactive Core commands | Unsupported command panel | Explains that this workspace has no control and confirms that no action ran |
 
 The classification comes from Core's catalogue and typed result contract, not

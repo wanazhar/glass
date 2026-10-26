@@ -96,6 +96,28 @@ fn load() -> Result<Settings, String> {
     serde_json::from_slice(&crate::requests::bounded(&state_path(), 16384)?)
         .map_err(|e| e.to_string())
 }
+fn load_status() -> Result<Option<Settings>, String> {
+    parse_status_settings(crate::requests::bounded_optional(&state_path(), 16384)?)
+}
+fn parse_status_settings(bytes: Option<Vec<u8>>) -> Result<Option<Settings>, String> {
+    bytes
+        .map(|bytes| serde_json::from_slice(&bytes).map_err(|e| e.to_string()))
+        .transpose()
+}
+fn status_output(settings: Option<&Settings>, product: &str) -> String {
+    match settings {
+        Some(settings) => format!(
+            "{product} · {}\n{}",
+            if alive(settings) {
+                "running"
+            } else {
+                "stopped"
+            },
+            web_url(settings).split('#').next().unwrap()
+        ),
+        None => format!("{product} · stopped"),
+    }
+}
 fn save(settings: &Settings) -> Result<(), String> {
     crate::auth::secure_write(
         &state_path(),
@@ -300,12 +322,9 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
     match args.first().map(String::as_str) {
         Some("_serve") => return gateway(cfg, load()?),
         Some("status") => {
-            let s = load()?;
             crate::cli_println!(
-                "{} · {}\n{}",
-                crate::cli::connect_product_name(),
-                if alive(&s) { "running" } else { "stopped" },
-                web_url(&s).split('#').next().unwrap()
+                "{}",
+                status_output(load_status()?.as_ref(), crate::cli::connect_product_name())
             );
             return Ok(());
         }
@@ -2136,6 +2155,23 @@ mod tests {
             assets: PathBuf::from("/tmp"),
             security: Value::Null,
         }
+    }
+    #[test]
+    fn missing_connect_state_is_a_stopped_status_with_invocation_identity() {
+        assert!(parse_status_settings(None).unwrap().is_none());
+        assert_eq!(
+            status_output(None, "Glass Connect"),
+            "Glass Connect · stopped"
+        );
+        assert_eq!(
+            status_output(None, "Glass Core Connect"),
+            "Glass Core Connect · stopped"
+        );
+        assert_eq!(status_output(None, "GC Connect"), "GC Connect · stopped");
+    }
+    #[test]
+    fn malformed_connect_status_state_remains_an_error() {
+        assert!(parse_status_settings(Some(b"{".to_vec())).is_err());
     }
     #[test]
     fn identity_and_origin_are_both_required() {

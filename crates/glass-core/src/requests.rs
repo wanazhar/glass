@@ -432,6 +432,35 @@ pub fn bounded(path: &Path, cap: usize) -> Result<Vec<u8>, String> {
     }
     Ok(bytes)
 }
+
+/// Read a regular file under a strict byte cap, returning `None` only when the
+/// path itself does not exist. Other I/O failures remain visible to callers.
+pub fn bounded_optional(path: &Path, cap: usize) -> Result<Option<Vec<u8>>, String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("Choose a regular file".into());
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(&mut file)
+        .take(cap as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > cap {
+        return Err(format!("File exceeds {cap} byte limit"));
+    }
+    Ok(Some(bytes))
+}
 fn append(path: &Path, value: &serde_json::Value) -> Result<(), String> {
     let mut options = std::fs::OpenOptions::new();
     options.append(true).create(true);
@@ -602,6 +631,31 @@ pub fn usage_summary(session: &Session) -> Result<serde_json::Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bounded_optional_only_suppresses_missing_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "gc-bounded-optional-{}-{}",
+            std::process::id(),
+            crate::loops::now()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let missing = root.join("missing.json");
+        assert!(bounded_optional(&missing, 16).unwrap().is_none());
+
+        let regular = root.join("state.json");
+        std::fs::write(&regular, b"{}").unwrap();
+        assert_eq!(
+            bounded_optional(&regular, 16).unwrap(),
+            Some(b"{}".to_vec())
+        );
+        #[cfg(unix)]
+        {
+            let link = root.join("link.json");
+            std::os::unix::fs::symlink(&regular, &link).unwrap();
+            assert!(bounded_optional(&link, 16).is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn allocation_changes_preserve_legacy_message_fingerprints() {
         use glass_mod_api::Message;

@@ -2036,6 +2036,7 @@ mod tests {
             browser_health: snapshot::BrowserHealth::Crashed {
                 last_process_id: Some(314),
                 last_revision: Some(42),
+                last_backend: Some("chromium".into()),
             },
             ..Default::default()
         };

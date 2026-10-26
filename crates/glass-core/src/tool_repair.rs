@@ -216,6 +216,11 @@ fn check(schema: &Value, value: &Value, path: &str, depth: usize) -> Result<(), 
                 .is_some_and(|ts| ts.iter().filter_map(Value::as_str).any(matches))
         });
         if !valid {
+            if types.as_str() == Some("boolean") && value.is_string() {
+                return Err(format!(
+                    "{path}: expected a JSON boolean (true or false), not a string"
+                ));
+            }
             return Err(format!("{path}: expected {types}"));
         }
     }
@@ -372,6 +377,24 @@ mod tests {
             "glass.browser.navigate: $.browserRevision: expected integer"
         );
         assert!(!summary.contains("private-value"));
+    }
+
+    #[test]
+    fn string_boolean_error_explains_the_json_type_without_echoing_value() {
+        let tools = vec![(
+            "glass.browser.start".into(),
+            serde_json::json!({
+                "type":"object",
+                "properties":{"headed":{"type":"boolean"}}
+            }),
+        )];
+        let bad = call("glass.browser.start", r#"{"headed":"enabled"}"#);
+        let error = validate(&bad, &tools).unwrap_err();
+        assert_eq!(
+            error,
+            "$.headed: expected a JSON boolean (true or false), not a string"
+        );
+        assert!(!error.contains("enabled"));
     }
 
     #[test]

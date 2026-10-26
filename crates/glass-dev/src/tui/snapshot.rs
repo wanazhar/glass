@@ -62,7 +62,15 @@ pub enum BrowserHealth {
     Crashed {
         last_process_id: Option<u32>,
         last_revision: Option<u64>,
+        last_backend: Option<String>,
     },
+}
+
+fn browser_backend_from_runtime_state(state: &serde_json::Value) -> Option<String> {
+    state
+        .pointer("/browserBackend")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 #[derive(Debug, Clone)]
@@ -626,7 +634,7 @@ fn worker_loop(
     let mut conversation_events = Vec::new();
     let mut conversation_tail = String::new();
     let mut github_probe = crate::github::GitHubProbeCache::default();
-    let mut last_browser: Option<(Option<u32>, Option<u64>)> = None;
+    let mut last_browser: Option<(Option<u32>, Option<u64>, Option<String>)> = None;
     let mut snapshot_version = 0u64;
     loop {
         let request = if seeded {
@@ -747,13 +755,15 @@ fn worker_loop(
                         let revision = state
                             .pointer("/browserRevision")
                             .and_then(serde_json::Value::as_u64);
+                        let backend = browser_backend_from_runtime_state(&state);
                         if connected {
-                            last_browser = Some((pid, revision));
+                            last_browser = Some((pid, revision, backend));
                             snapshot.browser_health = BrowserHealth::Connected;
                         } else if let Some(previous) = last_browser.take() {
                             snapshot.browser_health = BrowserHealth::Crashed {
                                 last_process_id: previous.0,
                                 last_revision: previous.1,
+                                last_backend: previous.2,
                             };
                         }
                     }
@@ -762,6 +772,7 @@ fn worker_loop(
                             snapshot.browser_health = BrowserHealth::Crashed {
                                 last_process_id: previous.0,
                                 last_revision: previous.1,
+                                last_backend: previous.2,
                             };
                         }
                     }
@@ -1337,6 +1348,27 @@ fn workspace_status_projection(workspace: &mut crate::DevelopmentWorkspace) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_health_reads_backend_from_the_runtime_state_contract() {
+        assert_eq!(
+            browser_backend_from_runtime_state(&serde_json::json!({
+                "browserBackend": "native",
+                "backend": "chromium"
+            })),
+            Some("native".into())
+        );
+        assert_eq!(
+            browser_backend_from_runtime_state(&serde_json::json!({
+                "browserBackend": "chromium"
+            })),
+            Some("chromium".into())
+        );
+        assert_eq!(
+            browser_backend_from_runtime_state(&serde_json::json!({}),),
+            None
+        );
+    }
 
     #[test]
     fn core_session_settings_keep_only_the_display_allowlist() {

@@ -169,6 +169,23 @@ fn decodes_bounded_declared_html_charsets() {
 }
 
 #[test]
+fn malformed_bytes_under_declared_utf8_use_replacement_without_mislabeling_charset() {
+    assert_eq!(
+        decode_html_body(b"before\xffafter", Some("utf-8"), 32).unwrap(),
+        "before\u{fffd}after"
+    );
+    // A server that labels Windows-1252 bytes as UTF-8 still has a supported
+    // charset; malformed bytes are replaced as specified by HTML decoding.
+    assert_eq!(
+        decode_html_body(b"caf\xe9", Some("utf-8"), 32).unwrap(),
+        "caf\u{fffd}"
+    );
+    let error = decode_html_body(b"text", Some("x-unknown"), 32).unwrap_err();
+    assert!(error.to_string().contains("x-unknown"));
+    assert!(decode_html_body(b"before\xffafter", Some("utf-8"), 8).is_err());
+}
+
+#[test]
 fn rooted_file_loader_reads_documents_and_denies_escape() {
     let root =
         std::env::temp_dir().join(format!("glass-native-file-loader-{}", std::process::id()));

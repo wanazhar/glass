@@ -1287,16 +1287,24 @@ impl Drop for ComposerDraftWriter {
 pub struct BrowserRecoveryOffer {
     pub reason: String,
     pub port: u16,
+    /// Native browser recovery must never direct a user to an external
+    /// Chromium binary or DevTools port.
+    pub native_backend: bool,
     /// A healthy Chrome CDP endpoint answered on the preferred port.
     pub compatible_endpoint: bool,
 }
 
 impl BrowserRecoveryOffer {
     pub fn from_error(error: &str, port: u16) -> Self {
+        Self::from_error_for_backend(error, port, false)
+    }
+
+    pub fn from_error_for_backend(error: &str, port: u16, native_backend: bool) -> Self {
         let lower = error.to_ascii_lowercase();
         Self {
             reason: error.to_string(),
             port,
+            native_backend,
             compatible_endpoint: ["attach", "devtools", "page target", "multiple page targets"]
                 .iter()
                 .any(|marker| lower.contains(marker)),
@@ -1304,7 +1312,12 @@ impl BrowserRecoveryOffer {
     }
 
     pub fn actions(&self) -> &'static [(&'static str, &'static str)] {
-        if self.compatible_endpoint {
+        if self.native_backend {
+            &[
+                ("1", "restart the native browser session"),
+                ("Esc", "dismiss"),
+            ]
+        } else if self.compatible_endpoint {
             &[
                 ("1", "attach after checking the running browser"),
                 ("2", "launch an isolated browser on an automatic free port"),
@@ -1322,12 +1335,14 @@ impl BrowserRecoveryOffer {
 
     pub fn guidance(&self) -> &'static str {
         let lower = self.reason.to_ascii_lowercase();
-        if self.compatible_endpoint {
+        if self.native_backend {
+            "The Glass native browser stopped responding. The agent and workspace remain available; dismiss this notice, then start a new native browser session from the composer."
+        } else if self.compatible_endpoint {
             "A DevTools endpoint answered. Attach only when its page is the intended browser; otherwise launch an isolated session."
         } else if lower.contains("occup") || lower.contains("address") || lower.contains("port") {
             "The preferred endpoint is busy or unavailable. Glass keeps the project and agent alive while you retry or move to an automatic free port."
         } else {
-            "The browser did not become usable. Check Chrome/Chromium availability, then retry; the workspace remains intact."
+            "The browser did not become usable. Check the selected browser backend, then retry; the workspace remains intact."
         }
     }
 }
@@ -11597,6 +11612,7 @@ impl DevTuiState {
         if let super::snapshot::BrowserHealth::Crashed {
             last_process_id,
             last_revision,
+            last_backend,
         } = &snapshot.browser_health
             && self.browser_recovery.is_none()
         {
@@ -11609,7 +11625,11 @@ impl DevTuiState {
             let reason = format!(
                 "browser endpoint crashed unexpectedly (pid {pid_label}, last revision {revision_label})"
             );
-            self.offer_browser_recovery(&reason, 9222);
+            self.offer_browser_recovery_for_backend(
+                &reason,
+                9222,
+                last_backend.as_deref() == Some("native"),
+            );
             browser_recovery_status = Some(self.status.clone());
         }
         self.harnesses = snapshot.harnesses.clone();
@@ -12518,6 +12538,9 @@ impl DevTuiState {
     }
 
     pub fn apply_browser_result(&mut self, tool: &str, result: &serde_json::Value) {
+        if let Some(backend) = result.get("backend").and_then(serde_json::Value::as_str) {
+            self.browser_workspace.state_mut().backend = Some(backend.to_owned());
+        }
         match tool {
             "glass.browser.observe" => {
                 let revision = result
@@ -12649,6 +12672,7 @@ impl DevTuiState {
             }
             "glass.browser.stop" => {
                 self.browser_workspace.state_mut().connection = BrowserConnectionPhase::Detached;
+                self.browser_workspace.state_mut().backend = None;
             }
             _ => {}
         }
@@ -13493,25 +13517,30 @@ impl DevTuiState {
         let lower = error.to_ascii_lowercase();
         if tool.contains("browser")
             && (lower.contains("occupied")
-                || lower.contains("attach")
-                || lower.contains("connect")
-                || lower.contains("launch")
-                || lower.contains("timeout")
+                || lower.contains("address already in use")
+                || lower.contains("connection refused")
+                || lower.contains("endpoint crashed")
+                || lower.contains("launch failure")
+                || lower.contains("timed out")
                 || lower.contains("devtools"))
         {
+            let native_backend =
+                self.browser_workspace.state().backend.as_deref() == Some("native");
             let port = self
                 .browser_recovery
                 .as_ref()
                 .map_or(9222, |offer| offer.port);
-            self.offer_browser_recovery(error, port);
+            self.offer_browser_recovery_for_backend(error, port, native_backend);
             true
         } else {
             false
         }
     }
 
-    fn offer_browser_recovery(&mut self, reason: &str, port: u16) {
-        self.browser_recovery = Some(BrowserRecoveryOffer::from_error(reason, port));
+    fn offer_browser_recovery_for_backend(&mut self, reason: &str, port: u16, native: bool) {
+        self.browser_recovery = Some(BrowserRecoveryOffer::from_error_for_backend(
+            reason, port, native,
+        ));
         self.browser_workspace
             .disconnected(reason.to_string(), true);
         self.browser_workspace.state_mut().frame_revision = None;
@@ -13537,6 +13566,29 @@ impl DevTuiState {
         let Some(offer) = self.browser_recovery.take() else {
             return;
         };
+        if offer.native_backend {
+            if choice != 0 {
+                self.status = "Recovery dismissed · project and agent remain available".into();
+                return;
+            }
+            let request = self.tool_request(
+                "glass.browser.start",
+                serde_json::json!({"backend":"native"}),
+                true,
+            );
+            match request.and_then(|(call, context)| {
+                worker
+                    .submit_tool(call, context)
+                    .map_err(|error| error.to_string())
+            }) {
+                Ok(id) => {
+                    self.running_tool_job = Some(id);
+                    self.status = "Recovering the native browser in background…".into();
+                }
+                Err(error) => self.status = format!("Could not queue native recovery: {error}"),
+            }
+            return;
+        }
         let (port, attach) = match (offer.compatible_endpoint, choice) {
             (true, 0) => (offer.port, true),
             (true, 1) | (false, 0) => (free_local_port().unwrap_or(0), false),
@@ -16413,6 +16465,62 @@ mod tests {
         assert!(attach.compatible_endpoint);
         assert_eq!(attach.actions().len(), 4);
         assert!(attach.guidance().contains("Attach"));
+
+        let native = BrowserRecoveryOffer::from_error_for_backend(
+            "native browser process stopped",
+            9222,
+            true,
+        );
+        assert_eq!(native.actions().len(), 2);
+        assert!(native.guidance().contains("native browser session"));
+        assert!(!native.guidance().contains("Chrome"));
+        assert!(!native.guidance().contains("9222"));
+    }
+
+    #[test]
+    fn navigation_decoding_error_does_not_offer_process_recovery() {
+        let (mut state, root) = routed_state("browser-decode-failure");
+        assert!(!state.note_browser_failure(
+            "glass.browser.navigate",
+            "connection failure during content process load: HTTP document decoding"
+        ));
+        assert!(state.browser_recovery.is_none());
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn browser_failure_recovery_uses_the_backend_from_tool_evidence() {
+        let (mut state, root) = routed_state("browser-recovery-backend-evidence");
+        state.apply_browser_result(
+            "glass.browser.observe",
+            &serde_json::json!({"backend":"native"}),
+        );
+        assert!(state.note_browser_failure("glass.browser.start", "native browser launch failure"));
+        assert!(
+            state
+                .browser_recovery
+                .as_ref()
+                .expect("native recovery")
+                .native_backend
+        );
+
+        state.dismiss_browser_recovery();
+        state.apply_browser_result(
+            "glass.browser.observe",
+            &serde_json::json!({"backend":"chromium"}),
+        );
+        assert!(state.note_browser_failure(
+            "glass.browser.start",
+            "connection refused by browser endpoint"
+        ));
+        assert!(
+            !state
+                .browser_recovery
+                .as_ref()
+                .expect("Chromium recovery")
+                .native_backend
+        );
+        std::fs::remove_dir_all(root).expect("remove test workspace");
     }
 
     fn crashed_browser_snapshot(state: &DevTuiState) -> super::super::snapshot::DisplaySnapshot {
@@ -16421,9 +16529,34 @@ mod tests {
             browser_health: super::super::snapshot::BrowserHealth::Crashed {
                 last_process_id: Some(314),
                 last_revision: Some(9),
+                last_backend: Some("chromium".into()),
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn native_crash_recovery_does_not_suggest_chromium_or_devtools() {
+        let (mut state, root) = routed_state("native-browser-recovery-guidance");
+        let snapshot = super::super::snapshot::DisplaySnapshot {
+            root: state.snapshot_root.clone(),
+            browser_health: super::super::snapshot::BrowserHealth::Crashed {
+                last_process_id: None,
+                last_revision: Some(9),
+                last_backend: Some("native".into()),
+            },
+            ..Default::default()
+        };
+        state.apply_snapshot(&snapshot);
+        let offer = state
+            .browser_recovery
+            .as_ref()
+            .expect("native recovery offer");
+        assert!(offer.native_backend);
+        assert!(!offer.guidance().contains("Chrome"));
+        assert!(!offer.guidance().contains("9222"));
+        assert!(offer.actions()[0].1.contains("native"));
+        std::fs::remove_dir_all(root).expect("remove test workspace");
     }
 
     #[test]

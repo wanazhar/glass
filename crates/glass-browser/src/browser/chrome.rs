@@ -936,7 +936,7 @@ pub async fn is_port_occupied(port: u16) -> bool {
 /// Kill processes listening on a debugging port.
 pub async fn kill_chrome(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new("lsof")
-        .args(["-Fpc", "+c", "0", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
+        .args(["-Fpuc", "+c", "0", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
         .output()
         .await?;
 
@@ -953,7 +953,9 @@ pub async fn kill_chrome(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     #[cfg(unix)]
-    for process in parse_chrome_listeners(&String::from_utf8_lossy(&output.stdout)) {
+    for process in parse_chrome_listeners(&String::from_utf8_lossy(&output.stdout), unsafe {
+        libc::geteuid()
+    }) {
         warn!(pid = process, "killing Chrome process");
         // SAFETY: `parse_chrome_listeners` validates a positive, representable
         // PID and the lsof command name is restricted to a Chrome/Chromium
@@ -980,7 +982,7 @@ fn parse_kill_pid(value: &str) -> Option<libc::pid_t> {
 }
 
 #[cfg(unix)]
-fn parse_chrome_listeners(output: &str) -> Vec<libc::pid_t> {
+fn parse_chrome_listeners(output: &str, current_uid: libc::uid_t) -> Vec<libc::pid_t> {
     fn is_chrome_name(value: &str) -> bool {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
@@ -996,9 +998,14 @@ fn parse_chrome_listeners(output: &str) -> Vec<libc::pid_t> {
 
     let mut processes = Vec::new();
     let mut pid = None;
+    let mut uid = None;
     let mut command = None;
-    let push_current = |pid: Option<libc::pid_t>, command: Option<&str>, processes: &mut Vec<_>| {
-        if let (Some(pid), Some(command)) = (pid, command)
+    let push_current = |pid: Option<libc::pid_t>,
+                        uid: Option<libc::uid_t>,
+                        command: Option<&str>,
+                        processes: &mut Vec<_>| {
+        if let (Some(pid), Some(uid), Some(command)) = (pid, uid, command)
+            && uid == current_uid
             && is_chrome_name(command)
             && !processes.contains(&pid)
         {
@@ -1011,15 +1018,17 @@ fn parse_chrome_listeners(output: &str) -> Vec<libc::pid_t> {
         };
         match kind {
             "p" => {
-                push_current(pid, command, &mut processes);
+                push_current(pid, uid, command, &mut processes);
                 pid = parse_kill_pid(value);
+                uid = None;
                 command = None;
             }
+            "u" => uid = value.parse::<libc::uid_t>().ok(),
             "c" => command = Some(value),
             _ => {}
         }
     }
-    push_current(pid, command, &mut processes);
+    push_current(pid, uid, command, &mut processes);
     processes
 }
 
@@ -1185,15 +1194,16 @@ mod tests {
     #[test]
     fn chrome_listener_parser_excludes_other_services_and_non_listeners() {
         let records = concat!(
-            "p101\ncchrome\n",
-            "p202\ncpython3\n",
-            "p303\ncGoogle Chrome for Testing\n",
-            "p404\ncchromium\n",
-            "p0\ncchrome\n",
-            "p2147483648\ncchrome\n",
-            "p101\ncchrome\n",
+            "p101\nu1000\ncchrome\n",
+            "p202\nu1000\ncpython3\n",
+            "p303\nu1000\ncGoogle Chrome for Testing\n",
+            "p404\ncchromium\nu1000\n",
+            "p505\nu2000\ncchrome\n",
+            "p0\nu1000\ncchrome\n",
+            "p2147483648\nu1000\ncchrome\n",
+            "p101\nu1000\ncchrome\n",
         );
-        assert_eq!(parse_chrome_listeners(records), vec![101, 303, 404]);
+        assert_eq!(parse_chrome_listeners(records, 1000), vec![101, 303, 404]);
     }
 
     use std::sync::atomic::{AtomicU64, Ordering};

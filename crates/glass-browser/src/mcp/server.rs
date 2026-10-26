@@ -1123,14 +1123,15 @@ where
             .map(CancellationKey::Request)
             .unwrap_or_else(|| {
                 let key = CancellationKey::Internal(next_internal_cancellation_id);
-                next_internal_cancellation_id = next_internal_cancellation_id
-                    .checked_add(1)
-                    .expect("internal MCP cancellation ID exhausted");
+                // This is an internal fallback for requests without a usable
+                // JSON-RPC ID. Wrapping is safe: collisions are checked below
+                // against the bounded active-request map.
+                next_internal_cancellation_id = next_internal_cancellation_id.wrapping_add(1);
                 key
             });
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let duplicate = {
-            let mut active = cancellations.lock().expect("cancellation map poisoned");
+            let mut active = cancellation_map_lock(&cancellations);
             if active.contains_key(&cancellation_key) {
                 true
             } else {
@@ -1139,16 +1140,18 @@ where
             }
         };
         if duplicate {
-            send_response(
-                &outbound_tx,
-                error_response(
-                    request.id.response_value(),
-                    -32600,
-                    "duplicate active request id",
-                ),
-                format,
-            )
-            .await?;
+            if !request.id.is_notification() {
+                send_response(
+                    &outbound_tx,
+                    error_response(
+                        request.id.response_value(),
+                        -32600,
+                        "duplicate active request id",
+                    ),
+                    format,
+                )
+                .await?;
+            }
             continue;
         }
         let active_workflow_request = if local_daemon {
@@ -1426,10 +1429,19 @@ fn canonical_tool_request(request: &JsonRpcRequest) -> Result<GlassRequest, Stri
 }
 
 fn task_cancellations_remove(cancellations: &CancellationMap, key: &CancellationKey) {
+    cancellation_map_lock(cancellations).remove(key);
+}
+
+fn cancellation_map_lock(
+    cancellations: &CancellationMap,
+) -> std::sync::MutexGuard<'_, HashMap<CancellationKey, oneshot::Sender<()>>> {
+    // A panic while manipulating this map must not permanently disable request
+    // cancellation or cascade into a second panic during task cleanup. The map
+    // only contains independently cancellable senders, so retaining its state
+    // after poison recovery is safe.
     cancellations
         .lock()
-        .expect("cancellation map poisoned")
-        .remove(key);
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 async fn handle_lease_request(
@@ -1762,10 +1774,8 @@ fn cancel_request(request: &JsonRpcRequest, cancellations: &CancellationMap) {
     let Some(key) = request.params.get("requestId").and_then(request_id_key) else {
         return;
     };
-    if let Some(cancellation) = cancellations
-        .lock()
-        .expect("cancellation map poisoned")
-        .remove(&CancellationKey::Request(key))
+    if let Some(cancellation) =
+        cancellation_map_lock(cancellations).remove(&CancellationKey::Request(key))
     {
         let _ = cancellation.send(());
     }
@@ -7789,6 +7799,36 @@ fn encode_response(response: &JsonRpcResponse, limit: usize) -> io::Result<Strin
 mod tests {
     use super::*;
     use crate::browser::session::{ActionKind, ActionStatus, ActionVerificationEvidence};
+
+    #[test]
+    fn cancellation_map_poison_is_recovered_for_cleanup_and_cancellation() {
+        let cancellations: CancellationMap = Arc::new(StdMutex::new(HashMap::new()));
+        let poisoned_map = Arc::clone(&cancellations);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoned_map.lock().expect("initial cancellation map lock");
+            panic!("poison the cancellation map for regression coverage");
+        })
+        .join();
+
+        let key = CancellationKey::Request("1".into());
+        let (sender, mut receiver) = oneshot::channel();
+        cancellation_map_lock(&cancellations).insert(key.clone(), sender);
+        task_cancellations_remove(&cancellations, &key);
+        assert!(receiver.try_recv().is_err());
+
+        let (sender, mut receiver) = oneshot::channel();
+        cancellation_map_lock(&cancellations).insert(key, sender);
+        cancel_request(
+            &JsonRpcRequest {
+                jsonrpc: "2.0".into(),
+                id: RequestId::Present(Value::Null),
+                method: "$/cancelRequest".into(),
+                params: json!({"requestId": 1}),
+            },
+            &cancellations,
+        );
+        assert_eq!(receiver.try_recv(), Ok(()));
+    }
 
     #[test]
     fn daemon_lease_methods_without_context_return_an_error_instead_of_panicking() {

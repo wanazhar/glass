@@ -58,6 +58,8 @@ pub enum BrowserHealth {
     Unknown,
     /// Connected and healthy.
     Connected,
+    /// Disconnected after an explicit stop request.
+    Disconnected,
     /// Was connected earlier; the endpoint stopped responding.
     Crashed {
         last_process_id: Option<u32>,
@@ -71,6 +73,48 @@ fn browser_backend_from_runtime_state(state: &serde_json::Value) -> Option<Strin
         .pointer("/browserBackend")
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
+}
+
+type BrowserIdentity = (Option<u32>, Option<u64>, Option<String>);
+
+fn browser_health_from_runtime_state(
+    state: &serde_json::Value,
+    last_browser: &mut Option<BrowserIdentity>,
+) -> BrowserHealth {
+    let connected = state
+        .pointer("/connected")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if connected {
+        let process_id = state
+            .pointer("/browserProcessId")
+            .and_then(serde_json::Value::as_u64)
+            .map(|pid| pid as u32);
+        let revision = state
+            .pointer("/browserRevision")
+            .and_then(serde_json::Value::as_u64);
+        *last_browser = Some((
+            process_id,
+            revision,
+            browser_backend_from_runtime_state(state),
+        ));
+        BrowserHealth::Connected
+    } else if state
+        .pointer("/stoppedByRequest")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        last_browser.take();
+        BrowserHealth::Disconnected
+    } else if let Some(previous) = last_browser.take() {
+        BrowserHealth::Crashed {
+            last_process_id: previous.0,
+            last_revision: previous.1,
+            last_backend: previous.2,
+        }
+    } else {
+        BrowserHealth::Unknown
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -744,28 +788,8 @@ fn worker_loop(
                     .and_then(|locked| locked.browser().state().ok());
                 match state {
                     Some(state) => {
-                        let connected = state
-                            .pointer("/connected")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false);
-                        let pid = state
-                            .pointer("/browserProcessId")
-                            .and_then(serde_json::Value::as_u64)
-                            .map(|pid| pid as u32);
-                        let revision = state
-                            .pointer("/browserRevision")
-                            .and_then(serde_json::Value::as_u64);
-                        let backend = browser_backend_from_runtime_state(&state);
-                        if connected {
-                            last_browser = Some((pid, revision, backend));
-                            snapshot.browser_health = BrowserHealth::Connected;
-                        } else if let Some(previous) = last_browser.take() {
-                            snapshot.browser_health = BrowserHealth::Crashed {
-                                last_process_id: previous.0,
-                                last_revision: previous.1,
-                                last_backend: previous.2,
-                            };
-                        }
+                        snapshot.browser_health =
+                            browser_health_from_runtime_state(&state, &mut last_browser);
                     }
                     None => {
                         if let Some(previous) = last_browser.take() {
@@ -1368,6 +1392,36 @@ mod tests {
             browser_backend_from_runtime_state(&serde_json::json!({}),),
             None
         );
+    }
+
+    #[test]
+    fn intentional_browser_stop_does_not_become_a_recovery_offer() {
+        let mut last_browser = Some((None, Some(2), Some("native".into())));
+        assert_eq!(
+            browser_health_from_runtime_state(
+                &serde_json::json!({"connected":false,"stoppedByRequest":true}),
+                &mut last_browser,
+            ),
+            BrowserHealth::Disconnected
+        );
+        assert!(last_browser.is_none());
+    }
+
+    #[test]
+    fn unrequested_browser_disconnect_still_reports_crash_provenance() {
+        let mut last_browser = Some((None, Some(9), Some("native".into())));
+        assert_eq!(
+            browser_health_from_runtime_state(
+                &serde_json::json!({"connected":false,"stoppedByRequest":false}),
+                &mut last_browser,
+            ),
+            BrowserHealth::Crashed {
+                last_process_id: None,
+                last_revision: Some(9),
+                last_backend: Some("native".into()),
+            }
+        );
+        assert!(last_browser.is_none());
     }
 
     #[test]

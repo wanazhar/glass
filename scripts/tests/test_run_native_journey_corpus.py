@@ -1,5 +1,10 @@
 import importlib.util
+import json
+import os
 from pathlib import Path
+import sys
+import tempfile
+import time
 import unittest
 
 
@@ -119,6 +124,83 @@ class JourneyFailureClassificationTests(unittest.TestCase):
     def test_remote_challenge_is_denied(self):
         message = "remote site returned HTTP 403 access denied"
         self.assertEqual(corpus.classify(message), "denied")
+
+    def test_progress_file_preserves_completed_steps_and_identifies_interrupted_step(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "progress.jsonl"
+            path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"event": "batch_started", "total": 3}),
+                        json.dumps({"event": "step_started", "index": 0, "action": "navigate"}),
+                        json.dumps({"event": "step_finished", "index": 0, "action": "navigate", "status": "ok", "elapsedMs": 42}),
+                        json.dumps({"event": "step_started", "index": 1, "action": "observe"}),
+                        '{"event":"step_finished","index":',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            results = corpus.progress_step_results(path, 3)
+
+        self.assertEqual([item["status"] for item in results], ["ok", "interrupted"])
+        self.assertEqual(results[0]["elapsedMs"], 42)
+        self.assertEqual(results[1]["action"], "observe")
+        self.assertEqual(results[1]["errorKind"], "runner_deadline")
+
+    def test_timeout_kills_and_reaps_the_owned_process_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            child_pid_path = Path(directory) / "child.pid"
+            code = (
+                "import signal, subprocess, sys, time; "
+                "child = subprocess.Popen(['python3', '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)']); "
+                "open(sys.argv[1], 'w').write(str(child.pid)); "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"
+            )
+            stdout, _, return_code, timed_out = corpus.run_process_group(
+                [sys.executable, "-c", code, str(child_pid_path)],
+                cwd=Path(directory),
+                env=os.environ.copy(),
+                timeout=0.1,
+            )
+            self.assertTrue(timed_out)
+            self.assertNotEqual(return_code, None)
+            child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+            dead = False
+            for _ in range(100):
+                stat_path = Path(f"/proc/{child_pid}/stat")
+                try:
+                    state = stat_path.read_text(encoding="utf-8").split()[2]
+                except FileNotFoundError:
+                    dead = True
+                    break
+                if state == "Z":
+                    dead = True
+                    break
+                time.sleep(0.01)
+            self.assertTrue(dead, f"timed-out child remains live; stdout={stdout!r}")
+
+    def test_timeout_drains_pipes_after_the_direct_process_exits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            child_pid_path = Path(directory) / "child.pid"
+            code = (
+                "import signal, subprocess, sys, time; "
+                "child = subprocess.Popen(['python3', '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)']); "
+                "open(sys.argv[1], 'w').write(str(child.pid)); "
+                "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); time.sleep(30)"
+            )
+            _, _, return_code, timed_out = corpus.run_process_group(
+                [sys.executable, "-c", code, str(child_pid_path)],
+                cwd=Path(directory),
+                env=os.environ.copy(),
+                timeout=0.1,
+            )
+            self.assertTrue(timed_out)
+            self.assertEqual(return_code, 0)
+            child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+            stat_path = Path(f"/proc/{child_pid}/stat")
+            if stat_path.exists():
+                self.assertIn(stat_path.read_text(encoding="utf-8").split()[2], {"Z", "X"})
 
 
 if __name__ == "__main__":

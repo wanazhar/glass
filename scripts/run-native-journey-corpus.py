@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import signal
 from pathlib import Path
 import subprocess
 import shutil
@@ -135,6 +136,109 @@ def observed_viewport_scroll_step(step: dict, previous_action: str | None) -> di
     return result
 
 
+def _signal_process_group(process: subprocess.Popen, sig: int) -> None:
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def run_process_group(command: list[str], *, cwd: Path, env: dict, timeout: float) -> tuple[str, str, int | None, bool]:
+    """Run an owned CLI session and kill/reap its entire process group on timeout."""
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return stdout, stderr, process.returncode, False
+    except subprocess.TimeoutExpired as timeout_error:
+        partial_stdout = timeout_error.stdout or ""
+        partial_stderr = timeout_error.stderr or ""
+        _signal_process_group(process, signal.SIGTERM)
+        try:
+            stdout, stderr = process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            stdout = ""
+            stderr = ""
+        # The direct CLI may exit on SIGTERM while an owned worker still holds
+        # the output pipes. The isolated process group lets us stop those
+        # children too, then communicate() reaps the direct child.
+        _signal_process_group(process, signal.SIGKILL)
+        # Always drain and wait after killing the group. The direct child may
+        # already have exited while an inherited pipe kept communicate() open.
+        stdout, stderr = process.communicate()
+        if not stdout:
+            stdout = partial_stdout
+        if not stderr:
+            stderr = partial_stderr
+        return stdout, stderr, process.returncode, True
+
+
+def progress_step_results(progress_path: Path, total: int) -> list[dict]:
+    """Recover completed batch steps and the step interrupted by the runner deadline."""
+    events = []
+    try:
+        lines = progress_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    starts = {
+        event["index"]: event for event in events
+        if event.get("event") == "step_started" and isinstance(event.get("index"), int)
+    }
+    finished = {
+        event["index"]: event for event in events
+        if event.get("event") == "step_finished" and isinstance(event.get("index"), int)
+    }
+    results = []
+    for index in range(total):
+        event = finished.get(index)
+        if event is not None:
+            status = event.get("status")
+            results.append({
+                "index": index,
+                "action": event.get("action"),
+                "status": status,
+                "elapsedMs": event.get("elapsedMs"),
+                "errorKind": "batch_step_error" if status == "error" else None,
+                "message": "completed step reported an error" if status == "error" else "",
+            })
+        elif index in starts:
+            results.append({
+                "index": index,
+                "action": starts[index].get("action"),
+                "status": "interrupted",
+                "elapsedMs": None,
+                "errorKind": "runner_deadline",
+                "message": "runner deadline expired during this step",
+            })
+            break
+        else:
+            break
+    if not results and any(event.get("event") == "batch_started" for event in events):
+        results.append({
+            "index": None,
+            "action": "batch_setup",
+            "status": "interrupted",
+            "elapsedMs": None,
+            "errorKind": "runner_deadline",
+            "message": "runner deadline expired before the first step started",
+        })
+    return results
+
+
 def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
     steps = []
     previous_action = None
@@ -176,24 +280,25 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
     with tempfile.TemporaryDirectory(prefix="glass-native-journey-") as temp_dir:
         manifest = Path(temp_dir) / "batch.json"
         manifest.write_text(json.dumps({"steps": steps}), encoding="utf-8")
+        progress_source = Path(temp_dir) / "progress.jsonl"
+        progress_source.touch(mode=0o600)
         command = [binary, "--browser-runtime", "native", "--incognito", "--policy", "polite", "batch", "--mode", "unguarded", str(manifest)]
         trace_base = Path(temp_dir) / "native-trace"
         environment = os.environ.copy()
         environment["GLASS_RUNTIME_DIAGNOSTIC_TRACE"] = str(trace_base)
-        try:
-            completed = subprocess.run(command, cwd=ROOT, env=environment, text=True, capture_output=True, timeout=(journey.get("timeoutMs", 20000) / 1000) + 10, check=False)
-            timed_out = False
-            stdout = completed.stdout
-            stderr = completed.stderr[:512]
-            return_code = completed.returncode
-        except subprocess.TimeoutExpired as error:
-            timed_out = True
-            stdout = error.stdout.decode(errors="replace") if isinstance(error.stdout, bytes) else (error.stdout or "")
-            stderr = "native journey process exceeded its outer deadline"
-            return_code = None
+        environment["GLASS_BROWSER_BATCH_PROGRESS_PATH"] = str(progress_source)
+        stdout, stderr, return_code, timed_out = run_process_group(
+            command,
+            cwd=ROOT,
+            env=environment,
+            timeout=(journey.get("timeoutMs", 20000) / 1000) + 10,
+        )
+        progress_results = progress_step_results(progress_source, len(steps))
+        stderr = stderr[:512] if not timed_out else "native journey process exceeded its outer deadline"
 
         trace_source = trace_base.with_suffix(".native_load.jsonl")
         trace_target = artifact_dir / f"{journey['id']}.native_load.jsonl"
+        progress_target = artifact_dir / f"{journey['id']}.progress.jsonl"
         stage_time_us: dict[str, int] = {}
         failure_match = None
         if trace_source.exists():
@@ -212,6 +317,9 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
             )
             shutil.copyfile(trace_source, trace_target)
             trace_target.chmod(0o600)
+        if progress_source.exists() and progress_source.stat().st_size:
+            shutil.copyfile(progress_source, progress_target)
+            progress_target.chmod(0o600)
 
     elapsed_ms = round((time.monotonic() - started) * 1000)
     try:
@@ -230,6 +338,8 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
             "errorKind": error_kind(message_text) if item.get("status") == "error" else None,
             "message": message_text,
         })
+    if timed_out and not step_results:
+        step_results = progress_results
     failed_steps = [step for step in step_results if step.get("status") not in ("ok", "success", "completed")]
     message = failed_steps[0].get("message", "") if failed_steps else stderr
     return {
@@ -247,6 +357,7 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
         "failedSteps": failed_steps,
         "diagnosticResultId": (result.get("detailAvailability") or {}).get("resultId"),
         "diagnosticsArtifact": str(trace_target) if trace_target.exists() else None,
+        "progressArtifact": str(progress_target) if progress_target.exists() else None,
         "diagnosticStageTotalsMs": {stage: round(value / 1000, 2) for stage, value in stage_time_us.items()},
         "hostViewFailureStructure": (
             {"elementIndex": int(structure_match.group(1)), "tag": structure_match.group(2),

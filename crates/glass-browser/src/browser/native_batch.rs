@@ -83,6 +83,20 @@ pub(crate) async fn run(
     mode: BatchMode,
     expected_revision: Option<u64>,
 ) -> BrowserResult<BatchOutcome> {
+    run_with_progress(session, steps, atomic, mode, expected_revision, |_| {}).await
+}
+
+/// Execute a native batch and report privacy-safe step boundaries to an
+/// optional caller-owned progress sink. The event contains only the step
+/// index, action name, duration, and outcome status.
+pub(crate) async fn run_with_progress(
+    session: &BrowserRuntimeSession,
+    steps: &[BatchStep],
+    atomic: bool,
+    mode: BatchMode,
+    expected_revision: Option<u64>,
+    mut progress: impl FnMut(Value),
+) -> BrowserResult<BatchOutcome> {
     if steps.len() > MAX_BATCH_STEPS {
         return Err(format!(
             "batch exceeds max {MAX_BATCH_STEPS} steps (received {})",
@@ -93,6 +107,7 @@ pub(crate) async fn run(
     if matches!(mode, BatchMode::Fixed | BatchMode::Chain) && expected_revision.is_none() {
         return Err("batch mode fixed or chain requires expectedRevision".into());
     }
+    progress(json!({"event":"batch_started","total":steps.len()}));
 
     if atomic {
         for (index, step) in steps.iter().enumerate() {
@@ -123,28 +138,37 @@ pub(crate) async fn run(
         let action = action_name(step);
         let step_revision = chained_revision;
         let step_started = std::time::Instant::now();
+        progress(json!({"event":"step_started","index":index,"action":action}));
         match execute_step(session, step, step_revision).await {
             Ok((response_bytes, resulting_revision, execution_id)) => {
+                let elapsed_ms = step_started.elapsed().as_millis() as u64;
                 outcomes.push(BatchStepOutcome::Success {
                     index,
-                    action,
-                    elapsed_ms: step_started.elapsed().as_millis() as u64,
+                    action: action.clone(),
+                    elapsed_ms,
                     response_bytes,
                     execution_id,
                 });
+                progress(
+                    json!({"event":"step_finished","index":index,"action":action,"status":"ok","elapsedMs":elapsed_ms}),
+                );
                 completed += 1;
                 if mode == BatchMode::Chain {
                     chained_revision = resulting_revision.or(chained_revision);
                 }
             }
             Err(error) => {
+                let elapsed_ms = step_started.elapsed().as_millis() as u64;
                 outcomes.push(BatchStepOutcome::Error {
                     index,
-                    action,
-                    elapsed_ms: step_started.elapsed().as_millis() as u64,
+                    action: action.clone(),
+                    elapsed_ms,
                     message: bounded_text(&error.to_string(), 512),
                     execution_id: None,
                 });
+                progress(
+                    json!({"event":"step_finished","index":index,"action":action,"status":"error","elapsedMs":elapsed_ms}),
+                );
                 failed += 1;
                 break;
             }

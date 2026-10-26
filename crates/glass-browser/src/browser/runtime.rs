@@ -2395,6 +2395,26 @@ impl BrowserRuntimeSession {
         super::native_batch::run(self, steps, atomic, mode, expected_revision).await
     }
 
+    #[cfg(feature = "native-engine")]
+    pub(crate) async fn native_run_batch_with_progress(
+        &self,
+        steps: &[super::session::BatchStep],
+        atomic: bool,
+        mode: super::session::BatchMode,
+        expected_revision: Option<u64>,
+        progress: impl FnMut(serde_json::Value),
+    ) -> BrowserResult<super::session::BatchOutcome> {
+        super::native_batch::run_with_progress(
+            self,
+            steps,
+            atomic,
+            mode,
+            expected_revision,
+            progress,
+        )
+        .await
+    }
+
     /// Execute a declarative workflow through the native engine and its
     /// caller's policy boundary.
     #[cfg(feature = "native-engine")]

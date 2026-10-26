@@ -16929,8 +16929,19 @@ mod tests {
         assert!(state.quit_confirmation);
         assert!(!state.quit);
         assert!(state.composer_draft_discard_targets.contains_key(&agent));
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        state.poll_composer_draft_io();
+        let save_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < save_deadline {
+            state.poll_composer_draft_io();
+            if !state.composer_draft_save_failed
+                && store
+                    .composer_draft(&thread_id)
+                    .unwrap()
+                    .is_some_and(|draft| draft.text == "saved after timeout")
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(!state.composer_draft_save_failed);
         assert!(
             state.composer_draft_discard_targets.contains_key(&agent),
@@ -17046,7 +17057,17 @@ mod tests {
         // The worker completes generation two before Enter is handled. Polling
         // both success events must not let generation one's stale event clear
         // the captured owner/generation discard intent.
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        let save_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < save_deadline {
+            if store
+                .composer_draft(&thread_id)
+                .unwrap()
+                .is_some_and(|draft| draft.text == "save generation two")
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         state.poll_composer_draft_io();
         assert_eq!(
             state.composer_draft_discard_targets.get(&agent),

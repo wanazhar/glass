@@ -32,13 +32,62 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_BROWSER_TOOL: AtomicU64 = AtomicU64::new(1);
 static NEXT_CHAT_MESSAGE: AtomicU64 = AtomicU64::new(1);
 const MAX_CODE_PROMPT_CONTEXT_BYTES: usize = 64 * 1024;
+const MAX_NATIVE_GC_UI_OUTPUT_BYTES: usize = 64 * 1024;
 pub(super) const BROWSER_RECOVERY_STATUS: &str =
     "Browser recovery available · current surface preserved";
+
+fn bounded_native_gc_ui_output(text: &str) -> String {
+    if text.len() <= MAX_NATIVE_GC_UI_OUTPUT_BYTES {
+        return text.to_string();
+    }
+    let mut end = MAX_NATIVE_GC_UI_OUTPUT_BYTES;
+    while !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    format!(
+        "{}\n\n[Core UI output truncated at {} bytes]",
+        &text[..end],
+        MAX_NATIVE_GC_UI_OUTPUT_BYTES
+    )
+}
 
 pub struct PendingConfirmation {
     pub call: crate::development::ToolCall,
     pub context: crate::tools::DevelopmentToolContext,
     pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeGcUiPanel {
+    pub owner: crate::AgentId,
+    pub command: String,
+    pub scope: String,
+    pub title: String,
+    pub kind: String,
+    pub content: String,
+    pub query: String,
+    pub scroll: u16,
+    pub searching: bool,
+    pub pending: bool,
+    requested_after_sequence: u64,
+}
+
+impl NativeGcUiPanel {
+    pub fn visible_lines(&self) -> Vec<String> {
+        let query = self.query.trim().to_lowercase();
+        let title_matches = query.is_empty() || self.title.to_lowercase().contains(&query);
+        let mut lines = Vec::new();
+        if !self.pending && title_matches && !self.title.is_empty() {
+            lines.push(self.title.clone());
+        }
+        lines.extend(
+            self.content
+                .lines()
+                .filter(|line| query.is_empty() || line.to_lowercase().contains(&query))
+                .map(str::to_owned),
+        );
+        lines
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1453,6 +1502,9 @@ pub struct DevTuiState {
     pub menu_selection: usize,
     pub help_open: bool,
     pub help_scroll: u16,
+    /// Explicit Core-owned human UI output, kept out of the chat transcript.
+    pub native_gc_ui_panel: Option<NativeGcUiPanel>,
+    native_gc_ui_last_sequence: std::collections::BTreeMap<crate::AgentId, u64>,
     pub composer_mode: bool,
     pub pending_plan: Option<WorkspacePlan>,
     pub composer_input: String,
@@ -1846,6 +1898,8 @@ impl DevTuiState {
             menu_selection: 0,
             help_open: false,
             help_scroll: 0,
+            native_gc_ui_panel: None,
+            native_gc_ui_last_sequence: std::collections::BTreeMap::new(),
             // Agent is the landing workspace and its composer is immediately
             // ready for text, including digits and slash commands.
             composer_mode: true,
@@ -2466,6 +2520,316 @@ impl DevTuiState {
         self.help_scroll = i32::from(self.help_scroll)
             .saturating_add(delta)
             .clamp(0, max_scroll) as u16;
+    }
+
+    pub fn open_native_gc_ui_pending(&mut self, owner: crate::AgentId, command: &str) {
+        let command = command.trim_start_matches('/');
+        if command.is_empty() {
+            return;
+        }
+        let requested_after_sequence = self
+            .native_gc_ui_last_sequence
+            .get(&owner)
+            .copied()
+            .unwrap_or_default();
+        self.native_gc_ui_panel = Some(NativeGcUiPanel {
+            owner,
+            command: command.to_string(),
+            scope: "Core".into(),
+            title: format!("Glass Core /{command}"),
+            kind: "result".into(),
+            content: format!("Waiting for Glass Core /{command}…"),
+            query: String::new(),
+            scroll: 0,
+            searching: false,
+            pending: true,
+            requested_after_sequence,
+        });
+        self.status = format!("Glass Core /{command} · Esc closes · / searches");
+    }
+
+    pub fn open_native_gc_ui_notice(
+        &mut self,
+        owner: crate::AgentId,
+        command: &str,
+        title: &str,
+        content: &str,
+        kind: &str,
+    ) {
+        let command = command.trim_start_matches('/');
+        if command.is_empty() {
+            return;
+        }
+        let requested_after_sequence = self
+            .native_gc_ui_last_sequence
+            .get(&owner)
+            .copied()
+            .unwrap_or_default();
+        self.native_gc_ui_panel = Some(NativeGcUiPanel {
+            owner,
+            command: command.to_string(),
+            scope: "Core".into(),
+            title: title.to_string(),
+            kind: kind.to_string(),
+            content: bounded_native_gc_ui_output(content),
+            query: String::new(),
+            scroll: 0,
+            searching: false,
+            pending: false,
+            requested_after_sequence,
+        });
+        self.status = format!("Glass Core /{command} · Esc closes · / searches");
+    }
+
+    pub fn close_native_gc_ui_panel(&mut self) {
+        if self.native_gc_ui_panel.take().is_some() {
+            self.status = "Glass Core panel closed · conversation and draft preserved".into();
+        }
+    }
+
+    pub fn native_gc_ui_search_start(&mut self) {
+        if let Some(panel) = self.native_gc_ui_panel.as_mut() {
+            panel.searching = true;
+            panel.query.clear();
+            panel.scroll = 0;
+        }
+    }
+
+    pub fn native_gc_ui_search_char(&mut self, character: char) {
+        if !character.is_control()
+            && let Some(panel) = self.native_gc_ui_panel.as_mut()
+            && panel.searching
+            && panel.query.len().saturating_add(character.len_utf8()) <= 128
+        {
+            panel.query.push(character);
+            panel.scroll = 0;
+        }
+    }
+
+    pub fn native_gc_ui_search_backspace(&mut self) {
+        if let Some(panel) = self.native_gc_ui_panel.as_mut()
+            && panel.searching
+        {
+            panel.query.pop();
+            panel.scroll = 0;
+        }
+    }
+
+    pub fn native_gc_ui_search_clear(&mut self) {
+        if let Some(panel) = self.native_gc_ui_panel.as_mut() {
+            panel.query.clear();
+            panel.searching = false;
+            panel.scroll = 0;
+        }
+    }
+
+    pub fn native_gc_ui_search_finish(&mut self) {
+        if let Some(panel) = self.native_gc_ui_panel.as_mut() {
+            panel.searching = false;
+        }
+    }
+
+    pub fn scroll_native_gc_ui(&mut self, delta: i32) {
+        let Some(panel) = self.native_gc_ui_panel.as_mut() else {
+            return;
+        };
+        let visible_lines = panel
+            .visible_lines()
+            .len()
+            .saturating_sub(self.terminal_height.saturating_sub(6) as usize)
+            .min(u16::MAX as usize) as i32;
+        panel.scroll = i32::from(panel.scroll)
+            .saturating_add(delta)
+            .clamp(0, visible_lines) as u16;
+    }
+
+    fn project_native_gc_ui_outputs(
+        &mut self,
+        snapshot: &super::snapshot::DisplaySnapshot,
+        first_snapshot: bool,
+    ) {
+        let mut outputs = Vec::new();
+        let mut failures = Vec::new();
+        for (owner, conversation) in &snapshot.agent_conversations {
+            for entry in &conversation.items {
+                let Some(metadata) = super::projection::native_gc_ui_entry(entry) else {
+                    continue;
+                };
+                if metadata.error {
+                    failures.push((
+                        owner.clone(),
+                        metadata.sequence,
+                        metadata.command,
+                        metadata.title,
+                        entry.text.clone(),
+                    ));
+                    continue;
+                }
+                outputs.push((
+                    owner.clone(),
+                    metadata.sequence,
+                    metadata.command,
+                    metadata.scope,
+                    metadata.title,
+                    metadata.kind,
+                    entry.text.clone(),
+                ));
+            }
+        }
+        outputs.sort_by_key(|(owner, sequence, _, _, _, _, _)| (owner.clone(), *sequence));
+
+        failures.sort_by_key(|(owner, sequence, _, _, _)| (owner.clone(), *sequence));
+        for (owner, sequence, command, title, content) in failures {
+            let seen = self
+                .native_gc_ui_last_sequence
+                .get(&owner)
+                .copied()
+                .unwrap_or_default();
+            if sequence > seen
+                && self.native_gc_ui_panel.as_ref().is_some_and(|panel| {
+                    panel.owner == owner
+                        && panel.pending
+                        && sequence > panel.requested_after_sequence
+                })
+            {
+                if let Some(panel) = self.native_gc_ui_panel.as_mut() {
+                    if command != "command" {
+                        panel.command = command;
+                        panel.title = title;
+                    } else {
+                        panel.title = format!("Glass Core /{} failed", panel.command);
+                    }
+                    panel.kind = "error".into();
+                    panel.content = bounded_native_gc_ui_output(&content);
+                    panel.pending = false;
+                }
+                self.status = "Glass Core command failed · Esc closes · / searches".into();
+            }
+            self.native_gc_ui_last_sequence
+                .insert(owner, sequence.max(seen));
+        }
+
+        for (owner, sequence, command, scope, title, kind, content) in outputs {
+            let seen = self
+                .native_gc_ui_last_sequence
+                .get(&owner)
+                .copied()
+                .unwrap_or_default();
+            if sequence <= seen {
+                continue;
+            }
+            let matches_pending_panel = self.native_gc_ui_panel.as_ref().is_some_and(|panel| {
+                panel.owner == owner
+                    && panel.command == command
+                    && panel.pending
+                    && sequence > panel.requested_after_sequence
+            });
+            if matches_pending_panel {
+                let content = bounded_native_gc_ui_output(&content);
+                if let Some(panel) = self.native_gc_ui_panel.as_mut() {
+                    panel.scope = scope;
+                    panel.title = title;
+                    panel.kind = kind;
+                    panel.content = content;
+                    panel.scroll = 0;
+                    panel.pending = false;
+                }
+            }
+            self.native_gc_ui_last_sequence
+                .insert(owner.clone(), sequence);
+        }
+
+        // Ordinary command results stay in the conversation. Their explicit
+        // completion marker only dismisses the pending panel created when the
+        // command was submitted; it never opens a panel on its own.
+        let mut ordinary_completions = snapshot
+            .agent_conversations
+            .iter()
+            .flat_map(|(owner, conversation)| {
+                conversation
+                    .items
+                    .iter()
+                    .filter(|entry| super::projection::native_gc_ui_entry(entry).is_none())
+                    .filter_map(move |entry| match entry.kind {
+                        super::projection::ConversationKind::System => {
+                            let command =
+                                entry.tool_name.as_deref()?.strip_prefix("coreCommand/")?;
+                            let sequence = entry
+                                .entry_id
+                                .as_deref()?
+                                .strip_prefix("core-command:")?
+                                .parse::<u64>()
+                                .ok()?;
+                            Some((owner.clone(), sequence, Some(command.to_string())))
+                        }
+                        super::projection::ConversationKind::Error
+                            if entry.tool_name.as_deref() == Some("coreCommand") =>
+                        {
+                            let sequence = entry
+                                .entry_id
+                                .as_deref()?
+                                .strip_prefix("core-ui-error:")?
+                                .parse::<u64>()
+                                .ok()?;
+                            Some((owner.clone(), sequence, None))
+                        }
+                        _ => None,
+                    })
+            })
+            .collect::<Vec<_>>();
+        ordinary_completions.sort_by_key(|(owner, sequence, _)| (owner.clone(), *sequence));
+        for (owner, sequence, command) in ordinary_completions {
+            let seen = self
+                .native_gc_ui_last_sequence
+                .get(&owner)
+                .copied()
+                .unwrap_or_default();
+            let should_close = sequence > seen
+                && self.native_gc_ui_panel.as_ref().is_some_and(|panel| {
+                    panel.owner == owner
+                        && panel.pending
+                        && sequence > panel.requested_after_sequence
+                        && command
+                            .as_ref()
+                            .is_none_or(|command| panel.command == *command)
+                });
+            if should_close {
+                self.close_native_gc_ui_panel();
+            }
+            self.native_gc_ui_last_sequence
+                .insert(owner, sequence.max(seen));
+        }
+
+        if first_snapshot {
+            for (owner, conversation) in &snapshot.agent_conversations {
+                let sequence = conversation
+                    .items
+                    .iter()
+                    .filter_map(|entry| {
+                        super::projection::native_gc_ui_entry(entry)
+                            .map(|metadata| metadata.sequence)
+                            .or_else(|| {
+                                entry
+                                    .entry_id
+                                    .as_deref()
+                                    .and_then(|id| id.strip_prefix("core-ui-error:"))
+                                    .or_else(|| {
+                                        entry
+                                            .entry_id
+                                            .as_deref()
+                                            .and_then(|id| id.strip_prefix("core-command:"))
+                                    })
+                                    .and_then(|sequence| sequence.parse::<u64>().ok())
+                            })
+                    })
+                    .max()
+                    .unwrap_or_default();
+                self.native_gc_ui_last_sequence
+                    .entry(owner.clone())
+                    .and_modify(|seen| *seen = (*seen).max(sequence))
+                    .or_insert(sequence);
+            }
+        }
     }
 
     pub fn open_menu(&mut self) {
@@ -3568,6 +3932,7 @@ impl DevTuiState {
                 client_message_id: Some(message.message_id.clone()),
                 tool_name: None,
                 tool_card: None,
+                core_ui: None,
             });
         }
         Cow::Owned(entries)
@@ -5995,7 +6360,7 @@ impl DevTuiState {
         tool: &str,
         arguments: serde_json::Value,
         palette_discovery: bool,
-    ) {
+    ) -> bool {
         // Selecting a provider model in this menu is a direct human control
         // action. It changes Core-owned session configuration; the Core API
         // validates and applies it without a second Glass approval prompt.
@@ -6013,15 +6378,18 @@ impl DevTuiState {
                             self.gc_command_loading = true;
                         }
                     }
+                    true
                 }
                 Err(error) => {
                     self.gc_command_loading = false;
                     self.status = format!("Could not load GC commands: {error}");
+                    false
                 }
             },
             Err(error) => {
                 self.gc_command_loading = false;
                 self.status = format!("Could not load GC commands: {error}");
+                false
             }
         }
     }
@@ -6314,11 +6682,11 @@ impl DevTuiState {
                 format!("Asking Glass Core to use {provider}/{model_id} for this session");
             return;
         }
-        let core_matches = self.gc_palette_core_commands();
+        let core_command_count = self.gc_palette_core_commands().len();
         if let Some(action) = glass_actions
-            .get(self.gc_command_selected.saturating_sub(core_matches.len()))
+            .get(self.gc_command_selected.saturating_sub(core_command_count))
             .copied()
-            .filter(|_| self.gc_command_selected >= core_matches.len())
+            .filter(|_| self.gc_command_selected >= core_command_count)
         {
             self.gc_command_menu_open = false;
             self.gc_command_query.clear();
@@ -6337,7 +6705,11 @@ impl DevTuiState {
             }
             return;
         }
-        let Some(item) = core_matches.get(self.gc_command_selected).cloned() else {
+        let Some(item) = self
+            .gc_palette_core_commands()
+            .get(self.gc_command_selected)
+            .map(|value| (*value).clone())
+        else {
             self.status = "No matching Glass Core command".into();
             return;
         };
@@ -6380,22 +6752,43 @@ impl DevTuiState {
                 self.gc_command_query.clear();
                 self.gc_command_menu_open = false;
                 self.gc_model_menu_open = false;
-                self.status = format!(
-                    "/{name} is owned by Glass Core but has no in-Glass control yet · no action was run"
-                );
+                if let Some(owner) = self.selected_agent.clone() {
+                    let description = item
+                        .get("description")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("Core command");
+                    let disposition = item
+                        .get("presentationKind")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unsupported");
+                    self.open_native_gc_ui_notice(
+                        owner,
+                        &name,
+                        "Not available in this Glass workspace",
+                        &format!("/{name} · {description}\n\nNo action was run. This Core command does not have an in-workspace control yet."),
+                        disposition,
+                    );
+                } else {
+                    self.status = format!(
+                        "/{name} is not available in this Glass workspace · no action was run"
+                    );
+                }
             }
             return;
         }
-        let Some(agent) = self.selected_agent.as_ref() else {
+        let Some(agent) = self.selected_agent.clone() else {
             self.status = "Select a Glass Core session before running this command".into();
             return;
         };
-        self.queue_gc_command_tool(
+        let queued = self.queue_gc_command_tool(
             worker,
             "glass.agent.command",
             serde_json::json!({"agentId":agent.as_str(),"name":name,"arguments":arguments}),
             false,
         );
+        if queued {
+            self.open_native_gc_ui_pending(agent, &name);
+        }
         self.gc_command_query.clear();
     }
 
@@ -11601,6 +11994,7 @@ impl DevTuiState {
     pub fn apply_snapshot(&mut self, snapshot: &super::snapshot::DisplaySnapshot) {
         self.remember_row_selection_identity();
         let was_waiting_for_snapshot = !self.snapshot_ready;
+        self.project_native_gc_ui_outputs(snapshot, was_waiting_for_snapshot);
         let had_agent_lifecycle_notice = is_agent_lifecycle_notice(&self.status);
         let mut browser_recovery_status = None;
         self.snapshot_ready = true;
@@ -11664,6 +12058,23 @@ impl DevTuiState {
         self.editor_proposals = snapshot.editor_proposals.clone();
         self.reconcile_selected_editor_proposal();
         self.agent_conversations = snapshot.agent_conversations.clone();
+        for conversation in self.agent_conversations.values_mut() {
+            let has_core_ui_output = conversation
+                .items
+                .iter()
+                .any(|entry| super::projection::native_gc_ui_entry(entry).is_some());
+            conversation
+                .items
+                .retain(|entry| super::projection::native_gc_ui_entry(entry).is_none());
+            if has_core_ui_output {
+                conversation.text = conversation
+                    .items
+                    .iter()
+                    .map(super::projection::ConversationEntry::render)
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+            }
+        }
         if self.selected_agent.is_none()
             && let Some(chrome) = snapshot
                 .agent_chrome
@@ -11675,7 +12086,7 @@ impl DevTuiState {
         if let Some(conversation) = self
             .selected_agent
             .as_ref()
-            .and_then(|id| snapshot.agent_conversations.get(id))
+            .and_then(|id| self.agent_conversations.get(id))
         {
             self.agent_conversation = conversation.text.clone();
             self.conversation_items = conversation.items.clone();
@@ -14008,6 +14419,7 @@ fn conversation_entry_from_lines(
         client_message_id: None,
         tool_name: None,
         tool_card: None,
+        core_ui: None,
     }
 }
 
@@ -14466,6 +14878,219 @@ fn editor_offset(content: &str, line: u32, column: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn native_gc_ui_snapshot(
+        owner: crate::AgentId,
+        sequence: u64,
+        content: &str,
+    ) -> super::super::snapshot::DisplaySnapshot {
+        let mut snapshot = super::super::snapshot::DisplaySnapshot::default();
+        let marker = super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::System,
+            text: content.into(),
+            streaming: false,
+            entry_id: Some(format!("core-ui:{sequence}")),
+            client_message_id: None,
+            tool_name: Some("glass-core.native-ui/help/Core".into()),
+            tool_card: None,
+            core_ui: None,
+        };
+        let assistant = super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::Assistant,
+            text: "A normal assistant reply".into(),
+            streaming: false,
+            entry_id: Some("assistant-1".into()),
+            client_message_id: None,
+            tool_name: None,
+            tool_card: None,
+            core_ui: None,
+        };
+        let items = vec![assistant, marker.clone()];
+        snapshot.agent_conversations.insert(
+            owner,
+            super::super::snapshot::AgentConversation {
+                text: "A normal assistant reply".into(),
+                items,
+                ..Default::default()
+            },
+        );
+        snapshot
+    }
+
+    #[test]
+    fn native_gc_help_panel_is_owner_scoped_and_never_reopens_after_close() {
+        let (mut state, root) = routed_state("native-gc-help-panel");
+        let owner = crate::AgentId::parse("agent-0001").unwrap();
+        state.selected_agent = Some(owner.clone());
+        state.composer_mode = true;
+        state.composer_input = "keep this draft".into();
+        state.composer_cursor = 7;
+        state.apply_snapshot(&super::super::snapshot::DisplaySnapshot::default());
+        state.open_native_gc_ui_pending(owner.clone(), "help");
+        let snapshot = native_gc_ui_snapshot(
+            owner.clone(),
+            7,
+            "/status  Show status [native GC UI]\n/help  Show commands [native GC UI]",
+        );
+        state.apply_snapshot(&snapshot);
+
+        let panel = state.native_gc_ui_panel.as_ref().expect("help panel open");
+        assert_eq!(panel.owner, owner);
+        assert_eq!(panel.scope, "Core");
+        assert!(!panel.pending);
+        assert!(panel.content.contains("/status"));
+        assert_eq!(state.composer_input, "keep this draft");
+        assert_eq!(state.composer_cursor, 7);
+        assert_eq!(state.conversation_items.len(), 1);
+        assert!(!state.conversation_view().contains("Show commands"));
+        assert!(
+            state
+                .conversation_view()
+                .contains("A normal assistant reply")
+        );
+
+        state.native_gc_ui_search_start();
+        state.native_gc_ui_search_char('s');
+        state.native_gc_ui_search_char('t');
+        assert!(
+            state
+                .native_gc_ui_panel
+                .as_ref()
+                .unwrap()
+                .visible_lines()
+                .iter()
+                .all(|line| line.to_lowercase().contains("st"))
+        );
+        state.close_native_gc_ui_panel();
+        state.apply_snapshot(&snapshot);
+        assert!(state.native_gc_ui_panel.is_none());
+        assert_eq!(state.conversation_items.len(), 1);
+        assert_eq!(state.composer_input, "keep this draft");
+        assert_eq!(state.composer_cursor, 7);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn ordinary_core_command_result_fills_its_panel_and_stays_out_of_chat() {
+        let (mut state, root) = routed_state("native-gc-ordinary-command");
+        let owner = crate::AgentId::parse("agent-0001").unwrap();
+        state.selected_agent = Some(owner.clone());
+        state.apply_snapshot(&super::super::snapshot::DisplaySnapshot::default());
+        state.open_native_gc_ui_pending(owner.clone(), "status");
+        let mut snapshot = super::super::snapshot::DisplaySnapshot::default();
+        let entry = super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::System,
+            text: "Core session is ready".into(),
+            streaming: false,
+            entry_id: Some("core-command:3".into()),
+            client_message_id: None,
+            tool_name: Some("coreCommand/status".into()),
+            tool_card: None,
+            core_ui: Some(super::super::projection::CoreUiPresentation {
+                version: 1,
+                surface: "panel".into(),
+                kind: "status".into(),
+                title: "Glass Core status".into(),
+                command: "status".into(),
+                content: "Core session is ready".into(),
+                sequence: 3,
+                error: false,
+            }),
+        };
+        snapshot.agent_conversations.insert(
+            owner,
+            super::super::snapshot::AgentConversation {
+                text: "SYSTEM\nCore session is ready".into(),
+                items: vec![entry],
+                ..Default::default()
+            },
+        );
+        state.apply_snapshot(&snapshot);
+        let panel = state
+            .native_gc_ui_panel
+            .as_ref()
+            .expect("command panel remains open");
+        assert!(!panel.pending);
+        assert_eq!(panel.title, "Glass Core status");
+        assert_eq!(panel.content, "Core session is ready");
+        assert!(!state.conversation_view().contains("Core session is ready"));
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn failed_core_command_keeps_error_in_its_owner_scoped_panel() {
+        let (mut state, root) = routed_state("native-gc-command-error");
+        let owner = crate::AgentId::parse("agent-0001").unwrap();
+        state.selected_agent = Some(owner.clone());
+        state.apply_snapshot(&super::super::snapshot::DisplaySnapshot::default());
+        state.open_native_gc_ui_pending(owner.clone(), "help");
+        let mut snapshot = super::super::snapshot::DisplaySnapshot::default();
+        let entry = super::super::projection::ConversationEntry {
+            kind: super::super::projection::ConversationKind::Error,
+            text: "provider unavailable".into(),
+            streaming: false,
+            entry_id: Some("core-ui-error:9".into()),
+            client_message_id: None,
+            tool_name: Some("coreCommand".into()),
+            tool_card: None,
+            core_ui: Some(super::super::projection::CoreUiPresentation {
+                version: 1,
+                surface: "panel".into(),
+                kind: "error".into(),
+                title: "Glass Core /help failed".into(),
+                command: "help".into(),
+                content: "provider unavailable".into(),
+                sequence: 9,
+                error: true,
+            }),
+        };
+        snapshot.agent_conversations.insert(
+            owner,
+            super::super::snapshot::AgentConversation {
+                text: "ERROR\nprovider unavailable".into(),
+                items: vec![entry],
+                ..Default::default()
+            },
+        );
+        state.apply_snapshot(&snapshot);
+        let panel = state
+            .native_gc_ui_panel
+            .as_ref()
+            .expect("error stays in panel");
+        assert!(!panel.pending);
+        assert_eq!(panel.kind, "error");
+        assert_eq!(panel.content, "provider unavailable");
+        assert!(!state.conversation_view().contains("provider unavailable"));
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[test]
+    fn unsupported_core_palette_command_has_a_truthful_panel_and_runs_nothing() {
+        let (mut state, root) = routed_state("native-gc-unsupported-command");
+        let owner = crate::AgentId::parse("agent-0001").unwrap();
+        state.selected_agent = Some(owner.clone());
+        state.open_native_gc_ui_notice(
+            owner,
+            "history",
+            "Not available in this Glass workspace",
+            "/history · Review compaction receipts\n\nNo action was run.",
+            "unsupported",
+        );
+        let panel = state
+            .native_gc_ui_panel
+            .as_ref()
+            .expect("unsupported command panel");
+        assert_eq!(panel.command, "history");
+        assert_eq!(panel.kind, "unsupported");
+        assert!(!panel.pending);
+        assert!(panel.content.contains("No action was run"));
+        assert!(!state.conversation_view().contains("No action was run"));
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
 
     #[test]
     fn slash_palette_starts_focused_and_searches_the_full_core_catalogue() {
@@ -16876,6 +17501,7 @@ mod tests {
             agent_id.clone(),
             super::super::snapshot::CoreCommandCatalogue {
                 commands: vec![serde_json::json!({"name":"help","description":"Show help"})],
+                presentation_version: 1,
                 error: None,
             },
         );
@@ -16891,6 +17517,7 @@ mod tests {
             agent_id,
             super::super::snapshot::CoreCommandCatalogue {
                 commands: Vec::new(),
+                presentation_version: 0,
                 error: Some("late discovery failure".into()),
             },
         );
@@ -18296,6 +18923,7 @@ mod tests {
             client_message_id: Some(format!("chat-{id}")),
             tool_name: None,
             tool_card: None,
+            core_ui: None,
         };
         state.agent_conversations.insert(
             agent_a.clone(),
@@ -18437,6 +19065,7 @@ mod tests {
             client_message_id: Some(message_id.into()),
             tool_name: None,
             tool_card: None,
+            core_ui: None,
         }];
         state.pending_chat_messages.push(PendingChatMessage {
             agent_id: state.selected_agent.clone(),
@@ -18648,6 +19277,7 @@ mod tests {
             client_message_id: Some("chat-inspect-1".into()),
             tool_name: None,
             tool_card: None,
+            core_ui: None,
         }];
 
         let view = state.conversation_view();
@@ -18671,6 +19301,7 @@ mod tests {
             client_message_id: None,
             tool_name: None,
             tool_card: None,
+            core_ui: None,
         }];
 
         let view = state.conversation_entries_cow();
@@ -18704,6 +19335,7 @@ mod tests {
             client_message_id: Some(message_id.into()),
             tool_name: None,
             tool_card: None,
+            core_ui: None,
         };
         state.conversation_items = vec![user_entry("chat-1")];
 
@@ -18936,6 +19568,7 @@ mod tests {
             client_message_id: None,
             tool_name: None,
             tool_card: None,
+            core_ui: None,
         }];
         state.transcript_selection = 0;
         let mut worker = super::super::snapshot::SnapshotWorker::spawn(&state);

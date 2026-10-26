@@ -230,6 +230,7 @@ mod tests {
             client_message_id: None,
             tool_name: None,
             tool_card: None,
+            core_ui: None,
         }
     }
 
@@ -253,6 +254,7 @@ mod tests {
             client_message_id: Some("glass-message".into()),
             tool_name: None,
             tool_card: None,
+            core_ui: None,
         };
         let shared = transcript_entry(&entry, 7, false);
         assert_eq!(shared.role, glass_tui::Role::Assistant);

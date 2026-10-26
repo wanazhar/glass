@@ -296,6 +296,8 @@ current user instructions.
 - [Terminal UI](architecture/tui.md), [Development TUI](architecture/development-tui.md),
   and [remote cockpit](architecture/mobile-cockpit.md) — layouts, interaction,
   workers, phone states, live frames, and SDK orchestration.
+- [Core command presentation](architecture/core-action-presentation.md) —
+  versioned Core result metadata, command destinations, and transcript routing.
 - [Canonical Browser Workspace](architecture/browser-workspace.md) and
   [Glass Product Workspace](architecture/product-workspace.md) — the shared
   browser/App controller, direct Agent/Code/App UX, focus, desktop, and phone

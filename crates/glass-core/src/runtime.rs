@@ -903,9 +903,20 @@ fn metadata(
 fn runtime_command_catalogue() -> Value {
     let commands = crate::actions::catalogue().into_iter().map(|command| {
         let mode = if matches!(command.name.as_str(), "help" | "status" | "compact") { "runtime" } else { "interactive" };
-        json!({"name":command.name,"hint":command.hint,"description":command.description,"aliases":command.aliases,"requiredArgs":command.required_args,"runtimeMode":mode})
+        let presentation = match command.name.as_str() {
+            "help" => "catalogue",
+            "status" => "status",
+            "compact" => "result",
+            "model" => "picker",
+            _ => "unsupported",
+        };
+        json!({"name":command.name,"hint":command.hint,"description":command.description,"aliases":command.aliases,"requiredArgs":command.required_args,"runtimeMode":mode,"presentationKind":presentation})
     }).collect::<Vec<_>>();
-    json!({"source":"glass-core","scope":"built-in actions","completeBuiltinCatalogue":true,"commands":commands})
+    json!({"source":"glass-core","scope":"built-in actions","completeBuiltinCatalogue":true,"commandPresentationVersion":1,"commands":commands})
+}
+
+fn command_presentation(name: &str, kind: &str, title: &str, content: &str) -> Value {
+    json!({"version":1,"surface":"panel","kind":kind,"title":title,"command":name,"content":{"type":"text","text":content},"actions":["close","search","scroll"]})
 }
 
 fn runtime_command_help() -> String {
@@ -1234,10 +1245,21 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                             return Err("command arguments exceed 16 KiB".into());
                         }
                         match command.name.as_str() {
-                            "help" => Ok(json!({"name":"help","text":runtime_command_help()})),
-                            "status" => Ok(
-                                json!({"name":"status","text":format!("Glass Core · {} · {} · session {}", c.cfg.provider, c.cfg.model, c.session.id),"provider":c.cfg.provider,"model":c.cfg.model,"sessionId":c.session.id}),
-                            ),
+                            "help" => {
+                                let text = runtime_command_help();
+                                Ok(
+                                    json!({"name":"help","text":text,"presentation":command_presentation("help","catalogue","Glass Core commands",&text)}),
+                                )
+                            }
+                            "status" => {
+                                let text = format!(
+                                    "Glass Core · {} · {} · session {}",
+                                    c.cfg.provider, c.cfg.model, c.session.id
+                                );
+                                Ok(
+                                    json!({"name":"status","text":text,"provider":c.cfg.provider,"model":c.cfg.model,"sessionId":c.session.id,"presentation":command_presentation("status","status","Glass Core status",&text)}),
+                                )
+                            }
                             "compact" => {
                                 let provider = provider(&c.cfg, &c.session)?;
                                 let (kept, dropped) = crate::compact::run_manual(
@@ -1246,13 +1268,34 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
                                     &c.state,
                                     (!arguments.trim().is_empty()).then_some(arguments),
                                 )?;
+                                let text =
+                                    format!("Compacted session · kept {kept}, dropped {dropped}");
                                 Ok(
-                                    json!({"name":"compact","text":format!("Compacted session · kept {kept}, dropped {dropped}"),"kept":kept,"dropped":dropped}),
+                                    json!({"name":"compact","text":text,"kept":kept,"dropped":dropped,"presentation":command_presentation("compact","result","Session compacted",&text)}),
                                 )
                             }
-                            _ => Ok(
-                                json!({"name":command.name,"requiresInteractive":true,"message":format!("/{0} is available in the standalone Glass Core interface. Glass Dev does not currently provide this command.", command.name)}),
-                            ),
+                            _ => {
+                                let (kind, title, text) = if command.name == "model" {
+                                    (
+                                        "picker",
+                                        "Choose a provider model",
+                                        "Select a provider model in the Glass workspace picker."
+                                            .to_string(),
+                                    )
+                                } else {
+                                    (
+                                        "unsupported",
+                                        "Not available in this Glass workspace",
+                                        format!(
+                                            "/{0} is available in the standalone Glass Core interface. Glass does not currently provide this command in its workspace.",
+                                            command.name
+                                        ),
+                                    )
+                                };
+                                Ok(
+                                    json!({"name":command.name,"requiresInteractive":true,"message":text,"presentation":command_presentation(&command.name,kind,title,&text)}),
+                                )
+                            }
                         }
                     }
                     "session/entries" => support::entries(&c.session, p),
@@ -2022,6 +2065,7 @@ mod tests {
         let catalogue = runtime_command_catalogue();
         assert_eq!(catalogue["source"], "glass-core");
         assert_eq!(catalogue["completeBuiltinCatalogue"], true);
+        assert_eq!(catalogue["commandPresentationVersion"], 1);
         let commands = catalogue["commands"].as_array().unwrap();
         assert!(
             commands
@@ -2038,6 +2082,33 @@ mod tests {
                 .iter()
                 .all(|command| command.get("description").is_some())
         );
+        assert!(commands.iter().all(|command| matches!(
+            command["presentationKind"].as_str(),
+            Some("catalogue" | "status" | "result" | "picker" | "unsupported")
+        )));
+    }
+
+    #[test]
+    fn command_presentation_is_typed_for_each_palette_disposition() {
+        let catalogue = runtime_command_catalogue();
+        for command in catalogue["commands"].as_array().unwrap() {
+            let name = command["name"].as_str().unwrap();
+            let expected_kind = match name {
+                "help" => "catalogue",
+                "status" => "status",
+                "compact" => "result",
+                "model" => "picker",
+                _ => "unsupported",
+            };
+            assert_eq!(command["presentationKind"], expected_kind, "/{name}");
+            let presentation =
+                command_presentation(name, "unsupported", "Not available", "No action was run");
+            assert_eq!(presentation["version"], 1, "/{name}");
+            assert_eq!(presentation["surface"], "panel", "/{name}");
+            assert_eq!(presentation["command"], name, "/{name}");
+            assert_eq!(presentation["content"]["type"], "text", "/{name}");
+            assert!(presentation["actions"].as_array().is_some(), "/{name}");
+        }
     }
 
     #[test]

@@ -76,6 +76,7 @@
         "docs/INDEX.md"
       ],
       "dependencies": [
+        "docs/architecture/core-action-presentation.md",
         "docs/architecture/native-journey-corpus.md"
       ],
       "topicRoute": "docs/INDEX.md#workspace-operations",
@@ -1693,6 +1694,7 @@
         "docs/architecture/browser-workspace.md",
         "docs/architecture/browser.md",
         "docs/architecture/connection-presentation.md",
+        "docs/architecture/core-action-presentation.md",
         "docs/architecture/development-tui.md",
         "docs/architecture/experience.md",
         "docs/architecture/mobile-cockpit.md",
@@ -2468,6 +2470,50 @@
           "level": "2",
           "title": "Contract tests",
           "anchor": "contract-tests"
+        }
+      ]
+    },
+    {
+      "path": "docs/architecture/core-action-presentation.md",
+      "class": "current",
+      "topic": "workspace",
+      "audience": "glass-user",
+      "status": "current-source-guidance",
+      "recommendation": "KEEP_PUBLIC",
+      "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "BUG_HUNT_REPORT.md",
+        "docs/INDEX.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#workspace-operations",
+      "route": "docs/architecture/core-action-presentation.md#core-command-presentation-in-glass",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Core command presentation in Glass",
+          "anchor": "core-command-presentation-in-glass"
+        },
+        {
+          "level": "2",
+          "title": "Versioned Core contract",
+          "anchor": "versioned-core-contract"
+        },
+        {
+          "level": "2",
+          "title": "Core catalogue disposition",
+          "anchor": "core-catalogue-disposition"
+        },
+        {
+          "level": "2",
+          "title": "Glass-owned palette actions",
+          "anchor": "glass-owned-palette-actions"
+        },
+        {
+          "level": "2",
+          "title": "Verification",
+          "anchor": "verification"
         }
       ]
     },

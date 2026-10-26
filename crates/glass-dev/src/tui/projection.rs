@@ -406,6 +406,64 @@ pub struct ConversationEntry {
     pub tool_name: Option<String>,
     /// Shared Core tool details, including the stable runtime call ID.
     pub tool_card: Option<glass_tui::ToolCard>,
+    /// Core-owned presentation for a UI command; never rendered as transcript text.
+    pub(super) core_ui: Option<CoreUiPresentation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CoreUiPresentation {
+    pub version: u16,
+    pub surface: String,
+    pub kind: String,
+    pub title: String,
+    pub command: String,
+    pub content: String,
+    pub sequence: u64,
+    pub error: bool,
+}
+
+const NATIVE_GC_UI_TOOL_PREFIX: &str = "glass-core.native-ui/";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativeGcUiEntry {
+    pub sequence: u64,
+    pub command: String,
+    pub scope: String,
+    pub title: String,
+    pub kind: String,
+    pub error: bool,
+}
+
+pub(super) fn native_gc_ui_entry(entry: &ConversationEntry) -> Option<NativeGcUiEntry> {
+    if let Some(presentation) = &entry.core_ui {
+        return Some(NativeGcUiEntry {
+            sequence: presentation.sequence,
+            command: presentation.command.clone(),
+            scope: presentation.surface.clone(),
+            title: presentation.title.clone(),
+            kind: presentation.kind.clone(),
+            error: presentation.error,
+        });
+    }
+    let metadata = entry
+        .tool_name
+        .as_deref()?
+        .strip_prefix(NATIVE_GC_UI_TOOL_PREFIX)?;
+    let (command, scope) = metadata.split_once('/')?;
+    let sequence = entry
+        .entry_id
+        .as_deref()?
+        .strip_prefix("core-ui:")?
+        .parse()
+        .ok()?;
+    Some(NativeGcUiEntry {
+        sequence,
+        command: command.to_string(),
+        scope: scope.to_string(),
+        title: format!("Glass Core /{command}"),
+        kind: "result".into(),
+        error: false,
+    })
 }
 
 impl ConversationEntry {
@@ -422,6 +480,7 @@ impl ConversationEntry {
             client_message_id,
             tool_name: None,
             tool_card: None,
+            core_ui: None,
         }
     }
 
@@ -438,6 +497,7 @@ impl ConversationEntry {
             client_message_id: None,
             tool_name: None,
             tool_card: None,
+            core_ui: None,
         }
     }
 
@@ -450,6 +510,7 @@ impl ConversationEntry {
             client_message_id: None,
             tool_name,
             tool_card: None,
+            core_ui: None,
         }
     }
 
@@ -462,6 +523,7 @@ impl ConversationEntry {
             client_message_id: None,
             tool_name,
             tool_card: None,
+            core_ui: None,
         }
     }
 
@@ -935,17 +997,70 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                     shared.finish_streaming(&mut items);
                     let operation = event.payload["operation"].as_str().unwrap_or("coreCommand");
                     if event.payload.get("ok").and_then(Value::as_bool) == Some(false) {
+                        if operation != "coreCommand" {
+                            continue;
+                        }
                         let error = event
                             .payload
                             .pointer("/error/message")
                             .and_then(Value::as_str)
                             .or_else(|| event.payload.get("error").and_then(Value::as_str))
                             .unwrap_or("Core command request failed");
-                        items.push(ConversationEntry::error(
-                            format!("Glass Core command · {error}"),
+                        let mut entry = ConversationEntry::error(
+                            if operation == "coreCommand" {
+                                error.to_string()
+                            } else {
+                                format!("Glass Core {operation} failed · {error}")
+                            },
                             Some(operation.into()),
-                        ));
+                        );
+                        if operation == "coreCommand" {
+                            let command = event
+                                .payload
+                                .get("commandName")
+                                .and_then(Value::as_str)
+                                .or_else(|| {
+                                    event
+                                        .payload
+                                        .pointer("/request/name")
+                                        .and_then(Value::as_str)
+                                })
+                                .unwrap_or("command")
+                                .trim_start_matches('/')
+                                .to_string();
+                            entry.entry_id = Some(format!("core-ui-error:{}", event.sequence));
+                            entry.core_ui = Some(CoreUiPresentation {
+                                version: 1,
+                                surface: "panel".into(),
+                                kind: "error".into(),
+                                title: format!("Glass Core /{command} failed"),
+                                command,
+                                content: error.to_string(),
+                                sequence: event.sequence,
+                                error: true,
+                            });
+                        }
+                        items.push(entry);
                     } else if let Some(result) = event.payload.get("result") {
+                        if operation == "coreCommand" {
+                            let presentation = native_gc_ui_result(result, event.sequence);
+                            let command = presentation.command.clone();
+                            let mut entry = ConversationEntry::system(
+                                presentation.content.clone(),
+                                Some(format!(
+                                    "{NATIVE_GC_UI_TOOL_PREFIX}{command}/{}",
+                                    presentation.surface
+                                )),
+                            );
+                            entry.entry_id = Some(format!("core-ui:{}", event.sequence));
+                            entry.core_ui = Some(presentation);
+                            items.push(entry);
+                            continue;
+                        }
+                        // Task graph/abort responses are UI state, not transcript content.
+                        if matches!(operation, "coreTaskGraph" | "coreTaskAbort") {
+                            continue;
+                        }
                         let text = if operation == "coreTaskGraph" {
                             core_task_graph_text(result)
                         } else if operation == "coreTaskAbort" {
@@ -972,7 +1087,19 @@ pub fn conversation_entries(events: &[crate::AgentEvent]) -> Vec<ConversationEnt
                         } else {
                             text
                         };
-                        items.push(ConversationEntry::system(text, Some(operation.into())));
+                        let mut entry = if operation == "coreCommand" {
+                            let command = result
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown");
+                            ConversationEntry::system(text, Some(format!("coreCommand/{command}")))
+                        } else {
+                            ConversationEntry::system(text, Some(operation.into()))
+                        };
+                        if operation == "coreCommand" {
+                            entry.entry_id = Some(format!("core-command:{}", event.sequence));
+                        }
+                        items.push(entry);
                     }
                 } else if event.payload.get("ok").and_then(Value::as_bool) == Some(false)
                     && matches!(
@@ -1104,9 +1231,60 @@ pub fn conversation_reasoning(events: &[crate::AgentEvent]) -> String {
 pub fn conversation(events: &[crate::AgentEvent]) -> String {
     conversation_entries(events)
         .into_iter()
+        .filter(|item| native_gc_ui_entry(item).is_none())
         .map(|item| item.render())
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+fn native_gc_ui_result(result: &Value, sequence: u64) -> CoreUiPresentation {
+    let command = result
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("command");
+    let legacy_text = result
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| result.get("text").and_then(Value::as_str))
+        .map(str::to_owned)
+        .unwrap_or_else(|| result.to_string());
+    let wire = result.get("presentation");
+    let wire_version = wire.and_then(|p| p.get("version")).and_then(Value::as_u64);
+    let supported = wire_version == Some(1)
+        && wire.and_then(|p| p.get("surface")).and_then(Value::as_str) == Some("panel");
+    let title = if supported {
+        wire.and_then(|p| p.get("title"))
+            .and_then(Value::as_str)
+            .unwrap_or("Glass Core result")
+    } else {
+        "Glass Core result"
+    };
+    let kind = if supported {
+        wire.and_then(|p| p.get("kind"))
+            .and_then(Value::as_str)
+            .unwrap_or("result")
+    } else if result.get("requiresInteractive").and_then(Value::as_bool) == Some(true) {
+        "unsupported"
+    } else {
+        "result"
+    };
+    let content = if supported {
+        wire.and_then(|p| p.pointer("/content/text"))
+            .and_then(Value::as_str)
+            .unwrap_or(&legacy_text)
+    } else {
+        &legacy_text
+    };
+    CoreUiPresentation {
+        version: if supported { 1 } else { 0 },
+        surface: "panel".into(),
+        kind: kind.into(),
+        title: title.into(),
+        command: command.into(),
+        content: content.into(),
+        sequence,
+        error: false,
+    }
 }
 
 fn event_entry_id(event: &crate::AgentEvent) -> Option<String> {
@@ -1260,7 +1438,7 @@ mod tests {
     }
 
     #[test]
-    fn core_command_discovery_stays_out_of_chat_but_executed_results_remain_visible() {
+    fn core_command_discovery_and_all_command_results_stay_out_of_chat() {
         let agent_id = crate::AgentId::parse("agent-0002").unwrap();
         let events = [
             crate::AgentEvent {
@@ -1324,7 +1502,7 @@ mod tests {
                 agent_id,
                 timestamp_ms: 0,
                 kind: "response".into(),
-                payload: serde_json::json!({"operation":"coreCommand","ok":false,"error":{"message":"Core command failed"}}),
+                payload: serde_json::json!({"operation":"coreCommand","commandName":"status","ok":false,"error":{"message":"Core command failed"}}),
             },
         ];
         let rendered = conversation(&events);
@@ -1343,17 +1521,26 @@ mod tests {
             !rendered.contains("gpt-test"),
             "settings metadata is panel-only"
         );
-        assert!(rendered.contains("Core help output"), "{rendered}");
-        assert!(rendered.contains("Core did not run it"), "{rendered}");
         assert!(
-            rendered.contains("Use `glass core …` at the shell"),
-            "{rendered}"
+            !rendered.contains("Core help output"),
+            "help catalogue belongs in its owner-scoped panel: {rendered}"
         );
+        let items = conversation_entries(&events);
         assert!(
-            !rendered.contains("Opening the native Glass Core command UI"),
-            "{rendered}"
+            items
+                .iter()
+                .any(|entry| { native_gc_ui_entry(entry).is_some_and(|ui| ui.command == "help") })
         );
-        assert!(rendered.contains("Core command failed"), "{rendered}");
+        assert!(!rendered.contains("Core did not run it"), "{rendered}");
+        assert!(!rendered.contains("Core command failed"), "{rendered}");
+        assert_eq!(
+            items
+                .iter()
+                .filter(|entry| native_gc_ui_entry(entry).is_some())
+                .count(),
+            3,
+            "command outputs and errors are panel data"
+        );
         assert_eq!(
             conversation_entries(&events)
                 .iter()
@@ -1362,6 +1549,74 @@ mod tests {
             1,
             "catalogue discovery must not split a streaming assistant bubble"
         );
+    }
+
+    #[test]
+    fn every_core_command_result_is_typed_panel_data() {
+        let agent = crate::AgentId::parse("agent-0001").unwrap();
+        let event = |sequence, kind: &str, payload| crate::AgentEvent {
+            sequence,
+            agent_id: agent.clone(),
+            timestamp_ms: 0,
+            kind: kind.into(),
+            payload,
+        };
+        let events = [
+            event(
+                1,
+                "message_end",
+                serde_json::json!({"message":{"role":"assistant","content":[{"type":"text","text":"The string [native GC UI] here is ordinary assistant text."}]}}),
+            ),
+            event(
+                2,
+                "response",
+                serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"status","text":"Session is ready [local]"}}),
+            ),
+            event(
+                3,
+                "response",
+                serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"help","text":"/status Show status"}}),
+            ),
+            event(
+                4,
+                "response",
+                serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"compact","text":"Compacted session","presentation":{"version":1,"surface":"panel","kind":"result","title":"Session compacted","content":{"type":"text","text":"Compacted session"}}}}),
+            ),
+            event(
+                5,
+                "response",
+                serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"model","requiresInteractive":true,"message":"Choose a model","presentation":{"version":1,"surface":"panel","kind":"unsupported","title":"Unavailable","content":{"type":"text","text":"Choose a model"}}}}),
+            ),
+            event(
+                6,
+                "response",
+                serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"settings","requiresInteractive":true,"message":"No action was run","presentation":{"version":1,"surface":"panel","kind":"unsupported","title":"Unavailable","content":{"type":"text","text":"No action was run"}}}}),
+            ),
+            event(
+                7,
+                "response",
+                serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"history","requiresInteractive":true,"message":"No action was run","presentation":{"version":1,"surface":"panel","kind":"unsupported","title":"Unavailable","content":{"type":"text","text":"No action was run"}}}}),
+            ),
+            event(
+                8,
+                "response",
+                serde_json::json!({"operation":"coreCommand","ok":true,"result":{"name":"todo","requiresInteractive":true,"message":"No action was run","presentation":{"version":1,"surface":"panel","kind":"unsupported","title":"Unavailable","content":{"type":"text","text":"No action was run"}}}}),
+            ),
+        ];
+        let entries = conversation_entries(&events);
+        assert_eq!(entries.len(), 8);
+        assert_eq!(entries[0].kind, ConversationKind::Assistant);
+        assert!(
+            entries[1..]
+                .iter()
+                .all(|entry| native_gc_ui_entry(entry).is_some())
+        );
+        assert_eq!(native_gc_ui_entry(&entries[1]).unwrap().command, "status");
+        assert_eq!(native_gc_ui_entry(&entries[2]).unwrap().command, "help");
+        let rendered = conversation(&events);
+        assert!(rendered.contains("ordinary assistant text"));
+        assert!(!rendered.contains("Session is ready [local]"));
+        assert!(!rendered.contains("/status Show status"));
     }
 
     #[test]
@@ -1387,7 +1642,7 @@ mod tests {
     }
 
     #[test]
-    fn core_task_graph_rpc_response_is_visible_in_agent_transcript() {
+    fn core_task_graph_rpc_response_is_not_transcript_text() {
         let event = crate::AgentEvent {
             sequence: 1,
             agent_id: crate::AgentId::parse("agent-0002").unwrap(),
@@ -1399,8 +1654,10 @@ mod tests {
             }),
         };
         let rendered = conversation(&[event]);
-        assert!(rendered.contains("Glass Core durable task graph · sequence 3 · 1 live tasks"));
-        assert!(rendered.contains("generation-3 · gc.generation · running"));
+        assert!(
+            rendered.is_empty(),
+            "task graph belongs to the durable Tasks view"
+        );
     }
 
     #[test]

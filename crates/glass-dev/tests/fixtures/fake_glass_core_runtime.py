@@ -346,6 +346,8 @@ def main() -> None:
             STORAGE_DIR = params.get("storageDir")
             if STORAGE_DIR:
                 os.makedirs(STORAGE_DIR, exist_ok=True)
+                with open(os.path.join(STORAGE_DIR, "fixture-runtime-pid"), "w", encoding="utf-8") as marker:
+                    marker.write(str(os.getpid()))
             if mode == "legacy-v1":
                 send({
                     "jsonrpc": "2.0",
@@ -491,8 +493,14 @@ def main() -> None:
         elif method == "commands/list":
             assert params.get("sessionId") == SESSION_ID
             commands = [
-                {"name": "status", "description": "View session status", "runtimeMode": "runtime"},
-                {"name": "model", "description": "Select model", "runtimeMode": "interactive"},
+                {"name": "status", "description": "View session status", "runtimeMode": "runtime", "presentationKind": "status"},
+                {"name": "help", "description": "Show Core commands", "runtimeMode": "runtime", "presentationKind": "catalogue"},
+                {"name": "compact", "description": "Compact the current session", "runtimeMode": "runtime", "presentationKind": "result"},
+                {"name": "model", "description": "Select model", "runtimeMode": "interactive", "presentationKind": "picker"},
+                {"name": "settings", "description": "Effective settings", "runtimeMode": "interactive", "presentationKind": "unsupported"},
+                {"name": "history", "description": "Review session history", "runtimeMode": "interactive", "presentationKind": "unsupported"},
+                {"name": "todo", "description": "Inspect task checklist", "runtimeMode": "interactive", "presentationKind": "unsupported"},
+                {"name": "error", "description": "Fixture command error", "runtimeMode": "runtime", "presentationKind": "result"},
             ]
             if MODE == "many-commands":
                 commands = [
@@ -510,15 +518,20 @@ def main() -> None:
                 "source": "glass-core",
                 "scope": "built-in actions",
                 "completeBuiltinCatalogue": True,
+                "commandPresentationVersion": 1,
                 "commands": commands,
             })
         elif method == "commands/execute":
             assert params.get("sessionId") == SESSION_ID
             name = params.get("name")
             if name == "status":
-                reply(identifier, {"name": "status", "text": "Glass Core · fixture · fixture-model · session fixture-session"})
+                reply(identifier, {"name": "status", "text": "Glass Core · fixture · fixture-model · session fixture-session", "presentation": {"version": 1, "surface": "panel", "kind": "status", "title": "Glass Core status", "command": "status", "content": {"type": "text", "text": "Glass Core · fixture · fixture-model · session fixture-session"}, "actions": ["close", "search", "scroll"]}})
+            elif name == "help":
+                reply(identifier, {"name": "help", "text": "HELP_PANEL_MARKER\n/status  View session status\n/model  Select model", "presentation": {"version": 1, "surface": "panel", "kind": "catalogue", "title": "Glass Core commands", "command": "help", "content": {"type": "text", "text": "HELP_PANEL_MARKER\n/status  View session status\n/model  Select model"}, "actions": ["close", "search", "scroll"]}})
             elif name == "model":
-                reply(identifier, {"name": "model", "requiresInteractive": True, "message": "/model has no in-Glass runtime command"})
+                reply(identifier, {"name": "model", "requiresInteractive": True, "message": "Select a provider model in the Glass workspace picker.", "presentation": {"version": 1, "surface": "panel", "kind": "picker", "title": "Choose a provider model", "command": "model", "content": {"type": "text", "text": "Select a provider model in the Glass workspace picker."}, "actions": ["close", "search", "scroll"]}})
+            elif name == "error":
+                send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "fixture command failed"}})
             else:
                 send({"jsonrpc": "2.0", "id": identifier, "error": {"code": -32000, "message": "unknown Glass Core command"}})
         elif method == "durable/taskGraph":

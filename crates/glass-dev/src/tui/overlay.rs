@@ -24,6 +24,7 @@ pub(super) enum ActiveOverlay {
     ThreadPicker = 16,
     SendAttemptRetryConfirmation = 17,
     GcCommandMenu = 18,
+    NativeGcUiPanel = 19,
 }
 
 impl ActiveOverlay {
@@ -46,6 +47,8 @@ pub(super) fn active_overlay(state: &DevTuiState) -> Option<ActiveOverlay> {
         Some(ActiveOverlay::EditorExitPrompt)
     } else if state.browser_dialog.is_some() {
         Some(ActiveOverlay::BrowserDialog)
+    } else if state.native_gc_ui_panel.is_some() {
+        Some(ActiveOverlay::NativeGcUiPanel)
     } else if state.help_open {
         Some(ActiveOverlay::Help)
     } else if state.menu_open {
@@ -202,6 +205,19 @@ mod tests {
             active_overlay(&state),
             Some(ActiveOverlay::QuitConfirmation)
         );
+        drop(state);
+        std::fs::remove_dir_all(root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn native_core_ui_panel_owns_input_and_rendering_until_closed() {
+        let (mut state, root) = state();
+        let owner = crate::AgentId::parse("agent-0001").unwrap();
+        state.composer_mode = true;
+        state.open_native_gc_ui_pending(owner, "help");
+        assert_eq!(active_overlay(&state), Some(ActiveOverlay::NativeGcUiPanel));
+        state.close_native_gc_ui_panel();
+        assert_eq!(active_overlay(&state), Some(ActiveOverlay::Composer));
         drop(state);
         std::fs::remove_dir_all(root).expect("remove test workspace");
     }

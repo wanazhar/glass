@@ -117,14 +117,27 @@ impl NativeStylesheet {
         }
     }
 
+    #[cfg(test)]
+    #[cfg(test)]
     fn custom_properties_for_node_with_matcher(
         &self,
         node: &NativeNode,
         viewport: Viewport,
         matches: impl Fn(&NativeSelector) -> bool,
     ) -> BTreeMap<u64, String> {
+        let candidates = self.rule_index.candidates(node);
+        self.custom_properties_for_node_with_candidates(node, viewport, &candidates, matches)
+    }
+
+    fn custom_properties_for_node_with_candidates(
+        &self,
+        node: &NativeNode,
+        viewport: Viewport,
+        rule_indices: &[usize],
+        matches: impl Fn(&NativeSelector) -> bool,
+    ) -> BTreeMap<u64, String> {
         let mut candidates = BTreeMap::new();
-        for rule_index in self.rule_index.candidates(node) {
+        for rule_index in rule_indices.iter().copied() {
             let rule = &self.rules[rule_index];
             if rule
                 .media
@@ -190,11 +203,25 @@ impl NativeStylesheet {
         values
     }
 
-    pub(crate) fn custom_properties_for_node_in_document(
+    pub(crate) fn rule_candidates_for_node_in_document(
+        &self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+        candidates: &mut Vec<usize>,
+    ) {
+        if let Some(node) = document.node(node_id) {
+            self.rule_index.candidates_into(node, candidates);
+        } else {
+            candidates.clear();
+        }
+    }
+
+    pub(crate) fn custom_properties_for_node_in_document_with_candidates(
         &self,
         document: &NativeDocument,
         node_id: NativeNodeId,
         viewport: Viewport,
+        rule_indices: &[usize],
     ) -> BTreeMap<u64, String> {
         let Some(node) = document.node(node_id) else {
             return BTreeMap::new();
@@ -205,9 +232,12 @@ impl NativeStylesheet {
                 "native_css_custom_property_compute",
             )
         });
-        let values = self.custom_properties_for_node_with_matcher(node, viewport, |selector| {
-            selector.matches_in_document(document, node_id)
-        });
+        let values = self.custom_properties_for_node_with_candidates(
+            node,
+            viewport,
+            rule_indices,
+            |selector| selector.matches_in_document(document, node_id),
+        );
         if let Some(stage) = stage {
             stage.finish(Some(values.len()));
         }
@@ -265,12 +295,15 @@ impl NativeStylesheet {
         viewport: Viewport,
     ) -> NativeComputedStyle {
         let custom_properties = self.custom_properties_for_document(document, node_id, viewport);
+        let mut rule_candidates = Vec::new();
+        self.rule_candidates_for_node_in_document(document, node_id, &mut rule_candidates);
         self.computed_for_in_document_with_inheritance_and_custom_properties(
             document,
             node_id,
             inherited,
             &custom_properties,
             viewport,
+            &rule_candidates,
         )
     }
 
@@ -281,15 +314,17 @@ impl NativeStylesheet {
         inherited: NativeInheritedStyle,
         custom_properties: &BTreeMap<u64, String>,
         viewport: Viewport,
+        rule_indices: &[usize],
     ) -> NativeComputedStyle {
         let Some(node) = document.node(node_id) else {
             return NativeComputedStyle::default();
         };
-        self.computed_for_with_matcher_and_custom_properties(
+        self.computed_for_with_matcher_and_custom_properties_and_candidates(
             node,
             inherited,
             custom_properties,
             viewport,
+            rule_indices,
             |selector| selector.matches_in_document(document, node_id),
         )
     }
@@ -315,13 +350,36 @@ impl NativeStylesheet {
         )
     }
 
+    #[cfg(test)]
     #[allow(clippy::explicit_auto_deref, clippy::needless_borrow)]
+    #[cfg(test)]
     pub(super) fn computed_for_with_matcher_and_custom_properties(
         &self,
         node: &NativeNode,
         inherited: NativeInheritedStyle,
         custom_properties: &BTreeMap<u64, String>,
         viewport: Viewport,
+        matches: impl Fn(&NativeSelector) -> bool,
+    ) -> NativeComputedStyle {
+        let candidates = self.rule_index.candidates(node);
+        self.computed_for_with_matcher_and_custom_properties_and_candidates(
+            node,
+            inherited,
+            custom_properties,
+            viewport,
+            &candidates,
+            matches,
+        )
+    }
+
+    #[allow(clippy::explicit_auto_deref, clippy::needless_borrow)]
+    pub(super) fn computed_for_with_matcher_and_custom_properties_and_candidates(
+        &self,
+        node: &NativeNode,
+        inherited: NativeInheritedStyle,
+        custom_properties: &BTreeMap<u64, String>,
+        viewport: Viewport,
+        rule_indices: &[usize],
         matches: impl Fn(&NativeSelector) -> bool,
     ) -> NativeComputedStyle {
         let mut scratch = NativeCascadeScratch::new_boxed();
@@ -414,7 +472,7 @@ impl NativeStylesheet {
         let mut color = &mut scratch.color;
         let mut overflow_x = &mut scratch.overflow_x;
         let mut overflow_y = &mut scratch.overflow_y;
-        for rule_index in self.rule_index.candidates(node) {
+        for rule_index in rule_indices.iter().copied() {
             let rule = &self.rules[rule_index];
             if rule
                 .media

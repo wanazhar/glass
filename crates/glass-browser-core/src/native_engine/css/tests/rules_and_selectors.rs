@@ -1828,3 +1828,49 @@ fn native_four_thousand_rule_sheet_remains_bounded_and_computable() {
         style_started.elapsed()
     );
 }
+
+#[test]
+fn rule_index_candidate_scratch_reuses_storage_without_stale_or_duplicate_matches() {
+    let stylesheet = NativeStylesheet::from_sources(vec![
+        "* { color: black } #main { color: red } .notice { color: blue } article { display: block } main article { margin: 1px }".to_owned(),
+    ])
+    .unwrap();
+    let document = NativeDocument::parse(
+        "<main id=main><article class='notice extra'>first</article><article class=extra>second</article></main>",
+        &NativeEngineLimits::default(),
+    )
+    .unwrap();
+    let articles = (0..document.node_count())
+        .filter_map(|index| {
+            let id = NativeNodeId::from_parts(document.generation(), u32::try_from(index).ok()?);
+            document
+                .node(id)
+                .filter(|node| node.element_name() == Some("article"))
+        })
+        .collect::<Vec<_>>();
+    let mut scratch = Vec::new();
+
+    for article in articles {
+        let expected = stylesheet.rule_index.candidates(article);
+        stylesheet.rule_index.candidates_into(article, &mut scratch);
+        assert_eq!(scratch, expected);
+        assert!(scratch.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+    let warmed_capacity = scratch.capacity();
+    let second_article = (0..document.node_count())
+        .filter_map(|index| {
+            let id = NativeNodeId::from_parts(document.generation(), u32::try_from(index).ok()?);
+            document.node(id)
+        })
+        .find(|node| {
+            node.element_name() == Some("article") && node.attribute("class") == Some("extra")
+        })
+        .unwrap();
+    for _ in 0..8 {
+        stylesheet
+            .rule_index
+            .candidates_into(second_article, &mut scratch);
+        assert_eq!(scratch, stylesheet.rule_index.candidates(second_article));
+    }
+    assert_eq!(scratch.capacity(), warmed_capacity);
+}

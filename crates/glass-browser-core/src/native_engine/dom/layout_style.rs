@@ -136,6 +136,9 @@ impl NativeDocument {
         let mut inherited_letter_spacing = 0;
         let mut inherited_pointer_events = NativePointerEventsValue::Auto;
         let mut inherited_custom_properties = Arc::new(BTreeMap::new());
+        // Reuse the rule-index scratch across the ancestor chain. Each node's
+        // style and custom-property cascade share the same matching candidates.
+        let mut rule_candidates = Vec::new();
         for current_id in chain.into_iter().rev() {
             let Some(_) = self.node(current_id) else {
                 continue;
@@ -151,12 +154,29 @@ impl NativeDocument {
                     .get(&current_id)
                     .cloned()
             };
-            let custom_properties = cached_custom_properties.unwrap_or_else(|| {
-                let local = self.stylesheet.custom_properties_for_node_in_document(
+            let cached_style = self
+                .layout_style_cache
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&current_id)
+                .copied();
+            if cached_custom_properties.is_none() || cached_style.is_none() {
+                self.stylesheet.rule_candidates_for_node_in_document(
                     self,
                     current_id,
-                    self.viewport,
+                    &mut rule_candidates,
                 );
+            }
+            let custom_properties = cached_custom_properties.unwrap_or_else(|| {
+                let local = self
+                    .stylesheet
+                    .custom_properties_for_node_in_document_with_candidates(
+                        self,
+                        current_id,
+                        self.viewport,
+                        &rule_candidates,
+                    );
                 let values = if local.is_empty() {
                     Arc::clone(&inherited_custom_properties)
                 } else {
@@ -172,13 +192,6 @@ impl NativeDocument {
                 values
             });
             inherited_custom_properties = Arc::clone(&custom_properties);
-            let cached_style = self
-                .layout_style_cache
-                .0
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(&current_id)
-                .copied();
             let style = if let Some(style) = cached_style {
                 style
             } else {
@@ -266,6 +279,7 @@ impl NativeDocument {
                         },
                         &custom_properties,
                         self.viewport,
+                        &rule_candidates,
                     );
                 if let Some(stage) = style_stage {
                     stage.finish(None);

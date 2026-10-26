@@ -2277,6 +2277,7 @@ pub(super) fn append_word(output: &mut String, word: &str, max_bytes: usize, tru
     output.push_str(word);
 }
 
+#[cfg(test)]
 pub(super) fn escape_html_text(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -2284,6 +2285,7 @@ pub(super) fn escape_html_text(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
+#[cfg(test)]
 pub(super) fn escape_html_attribute(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -2292,6 +2294,7 @@ pub(super) fn escape_html_attribute(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
+#[cfg(test)]
 pub(super) fn append_bounded_markup(
     output: &mut String,
     value: &str,

@@ -269,9 +269,13 @@ impl NativeDocument {
                     return None;
                 }
                 let tag_name = node.element_name()?.to_owned();
-                let (text, _) = self
-                    .element_text(node.id(), max_text_bytes)
-                    .unwrap_or_default();
+                let text = if matches!(tag_name.as_str(), "option" | "script") {
+                    self.element_text(node.id(), max_text_bytes)
+                        .unwrap_or_default()
+                        .0
+                } else {
+                    String::new()
+                };
                 let (validity, validation_message, will_validate) =
                     self.script_validation_snapshot(node.id());
                 let (selection_start, selection_end, selection_direction) = self
@@ -306,7 +310,11 @@ impl NativeDocument {
                     attribute_namespaces: node.state.attribute_namespaces.clone(),
                     attributes: node.attributes()?.clone(),
                     text,
-                    inner_html: self.element_inner_html(node.id(), max_text_bytes),
+                    // The JavaScript host tree already carries each child
+                    // identity. Ordinary elements derive text and markup from
+                    // those linked children instead of serializing every
+                    // descendant again into each ancestor snapshot entry.
+                    inner_html: String::new(),
                     value: self.current_value(node.id()),
                     files: node.state.files.clone(),
                     checked: node.state.checked,

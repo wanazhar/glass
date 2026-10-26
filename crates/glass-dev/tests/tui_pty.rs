@@ -404,6 +404,19 @@ impl Drop for TemporaryProjectGuard {
     }
 }
 
+fn capture_pty_frame(label: &str, cols: u16, rows: u16, buffer: &[u8]) {
+    let Some(directory) = std::env::var_os("GLASS_PTY_CAPTURE_DIR") else {
+        return;
+    };
+    let directory = std::path::PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).expect("create PTY capture directory");
+    std::fs::write(
+        directory.join(format!("core-{label}-{cols}x{rows}.ansi")),
+        buffer,
+    )
+    .expect("save Core command PTY frame stream");
+}
+
 struct LiveCoreProcessGuard {
     pid_path: std::path::PathBuf,
     binary: std::path::PathBuf,
@@ -3938,6 +3951,7 @@ fn gc_palette_commands_use_owned_surfaces_and_return_to_the_composer_in_pty() {
             help.contains("/status"),
             "loaded Core help content missing at {width}x{height}: {help}"
         );
+        capture_pty_frame("help", width, height, &session.buffer);
 
         let close_start = session.output().len();
         session.send(b"\x1b");
@@ -3955,6 +3969,7 @@ fn gc_palette_commands_use_owned_surfaces_and_return_to_the_composer_in_pty() {
                 .contains("fixture-model"),
             "status panel omitted its typed payload"
         );
+        capture_pty_frame("status", width, height, &session.buffer);
 
         let model_start = session.output().len();
         session.send(b"\x1b");
@@ -3966,6 +3981,7 @@ fn gc_palette_commands_use_owned_surfaces_and_return_to_the_composer_in_pty() {
             "model command did not open the provider picker at {width}x{height}\n{}",
             session.output_tail()
         );
+        capture_pty_frame("model", width, height, &session.buffer);
         // The first Escape returns from the model picker to the Core palette;
         // the second closes the palette and preserves its query as a draft.
         session.send(b"\x1b");
@@ -3997,6 +4013,9 @@ fn gc_palette_commands_use_owned_surfaces_and_return_to_the_composer_in_pty() {
                     .visible_output_from(unsupported_start)
                     .contains("No action was run")
             );
+            if command == "settings" {
+                capture_pty_frame("unsupported", width, height, &session.buffer);
+            }
         }
 
         let error_start = session.output().len();
@@ -4030,6 +4049,7 @@ fn gc_palette_commands_use_owned_surfaces_and_return_to_the_composer_in_pty() {
             error_panel.contains("failed"),
             "error panel lost its status: {error_panel}"
         );
+        capture_pty_frame("error", width, height, &session.buffer);
 
         let close_start = session.output().len();
         session.send(b"\x1b");
@@ -4039,12 +4059,45 @@ fn gc_palette_commands_use_owned_surfaces_and_return_to_the_composer_in_pty() {
             "Esc did not return focus to the always-ready composer at {width}x{height}\n{}",
             session.output_tail()
         );
+        let composer_frame = session.visible_output_from(close_start);
         assert!(
-            !session
-                .visible_output_from(close_start)
-                .contains("Waiting for Glass Core /error"),
+            !composer_frame.contains("Waiting for Glass Core /error"),
             "closed command panel resumed a pending state at {width}x{height}"
         );
+        for panel_content in [
+            "HELP_PANEL_MARKER",
+            "fixture command failed",
+            "No action was run",
+        ] {
+            assert!(
+                !composer_frame.contains(panel_content),
+                "closed command content `{panel_content}` leaked into the composer frame at {width}x{height}\n{composer_frame}"
+            );
+        }
+
+        let request_records =
+            std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .collect::<Vec<_>>();
+        let executed_commands = request_records
+            .iter()
+            .filter(|request| request["method"] == "commands/execute")
+            .filter_map(|request| {
+                request
+                    .pointer("/params/name")
+                    .and_then(|name| name.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(executed_commands, ["help", "status", "error"]);
+        assert!(
+            request_records
+                .iter()
+                .all(|request| request["method"] != "turn/prompt"),
+            "palette commands or unsupported routes created an agent turn"
+        );
+        capture_pty_frame("composer", width, height, &session.buffer);
 
         session.kill();
         core_guard.terminate();

@@ -88,6 +88,58 @@ fn host_view_cache_key_tracks_resource_projection_invalidations() {
 }
 
 #[test]
+fn dynamically_created_img_link_and_script_keep_reflected_url_and_policy_properties() {
+    let document = NativeDocument::parse(
+        "<body><main id='mount'></main></body>",
+        &NativeEngineLimits::default(),
+    )
+    .expect("dynamic element fixture must parse");
+    let runtime = NativeJavaScriptRuntime::new_with_context_id("dynamic-reflected-elements")
+        .expect("native JavaScript runtime must construct");
+    let evaluation = runtime
+        .evaluate(
+            r#"(() => {
+                const image = document.createElement("img");
+                const link = document.createElement("link");
+                const script = document.createElement("script");
+                image.src = "/pixel.png";
+                link.href = "/site.css";
+                script.src = "/app.js";
+                script.referrerPolicy = "no-referrer";
+                return [
+                    image.src, image.getAttribute("src"), image.complete,
+                    image.currentSrc, image.naturalWidth, image.naturalHeight,
+                    link.href, link.getAttribute("href"),
+                    script.src, script.getAttribute("src"),
+                    script.referrerPolicy, script.getAttribute("referrerpolicy"),
+                ];
+            })()"#,
+            &document,
+            "https://fixture.test/article",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+        )
+        .expect("dynamic reflected properties must be available before static resource tags");
+    assert_eq!(
+        evaluation.value,
+        serde_json::json!([
+            "https://fixture.test/pixel.png",
+            "/pixel.png",
+            false,
+            "https://fixture.test/pixel.png",
+            0,
+            0,
+            "https://fixture.test/site.css",
+            "/site.css",
+            "https://fixture.test/app.js",
+            "/app.js",
+            "no-referrer",
+            "no-referrer"
+        ])
+    );
+}
+
+#[test]
 fn repeated_host_views_reuse_decoded_canvas_image_resources_and_repair_public_map() {
     let mut document = NativeDocument::parse(
         "<img id='source' src='/pixel.png'><canvas id='target' width='1' height='1'></canvas>",
@@ -342,18 +394,29 @@ fn host_view_covers_representative_html_svg_mathml_and_custom_element_categories
 
 #[test]
 fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
-    const ELEMENTS: usize = 2_586;
+    // Eight and a half thousand mixed elements plus text nodes and scaffolding
+    // exercise the 16,384-node parser ceiling without raising that limit.
+    const ELEMENTS: usize = 8_500;
     let mut markup = String::with_capacity(ELEMENTS * 96);
     markup.push_str("<style>.accent { font-weight: 700; }</style><main><section>");
     for index in 0..ELEMENTS {
-        let class = if index % 2 == 0 {
-            "content-row accent"
+        let class = if index % 2 == 0 { "row accent" } else { "row" };
+        let tag = [
+            "div", "span", "p", "a", "button", "article", "section", "img",
+        ][index % 8];
+        if tag == "img" {
+            markup.push_str(&format!(
+                "<img id='item-{index}' class='{class}' data-index='{index}' aria-label='image {index}' src='/image/{index}.png' alt='preview'>"
+            ));
+        } else if tag == "a" {
+            markup.push_str(&format!(
+                "<a id='item-{index}' class='{class}' data-index='{index}' aria-label='link {index}' href='/item/{index}'>x</a>"
+            ));
         } else {
-            "content-row"
-        };
-        markup.push_str(&format!(
-            "<div id='item-{index}' class='{class}' data-index='{index}'>Text item {index}</div>"
-        ));
+            markup.push_str(&format!(
+                "<{tag} id='item-{index}' class='{class}' data-index='{index}' aria-label='row {index}'>x</{tag}>"
+            ));
+        }
     }
     markup.push_str("</section></main>");
 
@@ -402,8 +465,8 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
         serde_json::json!([true, true, 1, true])
     );
     let changed_markup = markup.replacen(
-        "id='item-0' class='content-row accent'",
-        "id='item-0' class='content-row changed'",
+        "id='item-0' class='row accent'",
+        "id='item-0' class='row changed'",
         1,
     );
     let changed_document = NativeDocument::parse(&changed_markup, &NativeEngineLimits::default())
@@ -419,7 +482,7 @@ fn repeated_large_host_views_stay_within_the_bounded_quickjs_heap() {
         .expect("a changed document key must perform a complete host refresh");
     assert_eq!(
         changed_evaluation.value,
-        serde_json::json!(["content-row changed", "normal", true, 42, false, false])
+        serde_json::json!(["row changed", "normal", true, 42, false, false])
     );
     let second_runtime = NativeJavaScriptRuntime::new_with_context_id("second-large-host-view")
         .expect("second native JavaScript runtime must construct");

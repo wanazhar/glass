@@ -730,6 +730,14 @@ impl NativeJavaScriptRuntime {
             })
         });
         let heap_used_bytes = self.runtime.memory_usage().memory_used_size;
+        if let Some(stage) = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
+            crate::native_engine::content_process::ContentLoadStage::begin(
+                0,
+                "javascript_heap_pre_gc_usage_bytes",
+            )
+        }) {
+            stage.finish(Some(usize::try_from(heap_used_bytes).unwrap_or(usize::MAX)));
+        }
         if heap_used_bytes > (NATIVE_SCRIPT_MEMORY_BYTES / 2) as i64 {
             let gc_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
                 crate::native_engine::content_process::ContentLoadStage::begin(

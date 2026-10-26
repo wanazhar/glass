@@ -203,10 +203,10 @@ pub fn command(args: &[String]) -> Result<(), String> {
             std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
             let checkout = root.join(name);
             if checkout.exists() {
-                return Err(
-                    "Worktree already exists; use gc worktree show NAME to inspect and reuse it"
-                        .into(),
-                );
+                return Err(format!(
+                    "Worktree already exists; use {} worktree show NAME to inspect and reuse it",
+                    crate::cli::command_prefix()
+                ));
             }
             let mut command = Command::new("git");
             command.arg("-C").arg(&workspace).args(["worktree", "add"]);

@@ -215,7 +215,10 @@ fn http_alias(settings: &Settings, add: bool) -> Result<(), String> {
             return Err(format!("Cannot update GC HTTP IP route: HTTP {status}"));
         }
     }
-    Err("Tailscale routes changed concurrently; retry gc connect".into())
+    Err(format!(
+        "Tailscale routes changed concurrently; retry {}",
+        crate::cli::connect_command()
+    ))
 }
 fn port_available(port: u16) -> bool {
     match TcpListener::bind(("0.0.0.0", port)) {
@@ -299,7 +302,8 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
         Some("status") => {
             let s = load()?;
             crate::cli_println!(
-                "GC Connect · {}\n{}",
+                "{} · {}\n{}",
+                crate::cli::connect_product_name(),
                 if alive(&s) { "running" } else { "stopped" },
                 web_url(&s).split('#').next().unwrap()
             );
@@ -333,15 +337,19 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
             }
             let _ = std::fs::remove_file(state_path());
             crate::cli_println!(
-                "GC Connect · stopped\nSession workers and running tasks are preserved."
+                "{} · stopped\nSession workers and running tasks are preserved.",
+                crate::cli::connect_product_name()
             );
             return Ok(());
         }
         None | Some("--local" | "--http") => {}
         _ => {
-            return Err(
-                "usage: gc connect [--local | --http] | gc connect status | gc connect stop".into(),
-            );
+            return Err(format!(
+                "usage: {} [--local | --http] | {} status | {} stop",
+                crate::cli::connect_command(),
+                crate::cli::connect_command(),
+                crate::cli::connect_command()
+            ));
         }
     }
     if args.len() > 1 {
@@ -351,9 +359,17 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
         && alive(&s)
     {
         if args.first().is_some_and(|a| a == "--http") && s.http == 0 {
-            return Err("Remote access is already running. Run gc connect stop, then gc connect --http. Served tasks continue.".into());
+            return Err(format!(
+                "Remote access is already running. Run {} stop, then {} --http. Served tasks continue.",
+                crate::cli::connect_command(),
+                crate::cli::connect_command()
+            ));
         }
-        crate::cli_println!("GC Connect · ready\n{}", web_url(&s));
+        crate::cli_println!(
+            "{} · ready\n{}",
+            crate::cli::connect_product_name(),
+            web_url(&s)
+        );
         return Ok(());
     }
     let local = args.first().is_some_and(|s| s == "--local");
@@ -510,8 +526,11 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
     }
     http_alias(&settings, true)?;
     crate::cli_println!(
-        "GC Connect · ready\n{}\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\ngc connect status · gc connect stop",
-        web_url(&settings)
+        "{} · ready\n{}\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\n{} status · {} stop",
+        crate::cli::connect_product_name(),
+        web_url(&settings),
+        crate::cli::connect_command(),
+        crate::cli::connect_command()
     );
     Ok(())
 }

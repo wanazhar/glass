@@ -436,8 +436,12 @@ impl Hub {
                         return Err("Unknown agent role".into());
                     }
                     Some(
-                        crate::workspace::role(&self.workspace, name)
-                            .ok_or("Role is not configured; use gc workspace role set")?,
+                        crate::workspace::role(&self.workspace, name).ok_or_else(|| {
+                            format!(
+                                "Role is not configured; use {} workspace role set",
+                                crate::cli::command_prefix()
+                            )
+                        })?,
                     )
                 } else {
                     None
@@ -1346,7 +1350,7 @@ pub fn enabled(owner: &str) -> bool {
 const HELP: &str = "gc agent [--session MAIN_ID] ACTION\n  create NAME TASK [--model ID] [--tokens N] [--output N] [--reasoning N] [--rounds N] [--role executor|reviewer|research] [--schema FILE.json] [--write] [--worktree]\n  handoff FILE.json (validate and notify parent)\n  checkpoint changes|completion (explicit, read-only, configured reviewer budget)\n  list | inspect ID | transcript ID [--before BYTE] | interactions [--before BYTE]\n  send ID MESSAGE | resume ID MESSAGE | wait ID [SECONDS]\n  limits ID [--output N] [--reasoning N] [--rounds N] (next worker turn)\n  interrupt ID | archive ID | discard ID | budget ID TOKENS\nDefault: read-only, two active workers, 100000 cumulative tokens (repeated inputs count), 16000 output/response, 24 rounds. Limits are configurable; provider context/output ceilings still apply.\nFollow-ups retain context. Complete transcripts are fetched only on demand.\nReceipts show remaining allowance, last input estimate, context window, output/round limits and recovery.\nBudget counts cumulative input + output (including repeated/cached inputs); context window is per request.\nAt 20% remaining, the parent receives one warning. No automatic budget increases or blind output-limit retries.\nReasoning is a provider-dependent hint; 0 uses its default, not disabled thinking.\nThe default model is pinned when the main session opens; --model overrides it.\nIdle workers consume no model requests. --session selects a running owner from another shell.\n";
 pub fn command(args: &[String]) -> Result<(), String> {
     if args.is_empty() || args.iter().any(|s| s == "--help" || s == "-h") {
-        crate::cli::text("Teammates", HELP);
+        crate::cli::text("Teammates", &crate::cli::present_command_references(HELP));
         return Ok(());
     }
     let mut args = args.to_vec();

@@ -237,20 +237,21 @@ fn render(topic: &str, width: usize, color: bool) -> Result<String, String> {
         text: String::new(),
     };
     p.row(
-        &format!("glass-core {}", env!("CARGO_PKG_VERSION")),
+        &format!(
+            "{} {}",
+            crate::cli::product_name(),
+            env!("CARGO_PKG_VERSION")
+        ),
         Tone::Accent,
         true,
         0,
     );
-    p.row(
-        "AI coding harness · gc is the short command",
-        Tone::Muted,
-        false,
-        0,
-    );
+    p.row(crate::cli::product_tagline(), Tone::Muted, false, 0);
     match topic {
         "" | "commands" | "all" => {
-            p.section("Start here", START);
+            let mut start = START.to_vec();
+            start[0].0 = crate::cli::command_prefix();
+            p.section("Start here", &start);
             if topic.is_empty() {
                 p.section(
                     "Explore",
@@ -307,7 +308,15 @@ fn render(topic: &str, width: usize, color: bool) -> Result<String, String> {
                 ],
             );
             p.text.push('\n');
-            p.row("Inside GC: /help opens help, /login connects a provider, /security reviews permissions.",Tone::Muted,false,0);
+            p.row(
+                &format!(
+                    "Inside {}: /help opens help, /login connects a provider, /security reviews permissions.",
+                    crate::cli::product_short_name()
+                ),
+                Tone::Muted,
+                false,
+                0,
+            );
             if topic == "all" {
                 p.section("Keyboard shortcuts", KEYS);
                 p.section("Headless options", RUN);
@@ -360,17 +369,24 @@ fn render(topic: &str, width: usize, color: bool) -> Result<String, String> {
         }
         _ => {
             return Err(format!(
-                "unknown topic `{}`; use gc help, gc help commands, gc help run or gc help keys",
-                glass_tui::markdown::sanitize(topic)
+                "unknown topic `{}`; use {} help, {} help commands, {} help run or {} help keys",
+                glass_tui::markdown::sanitize(topic),
+                crate::cli::command_prefix(),
+                crate::cli::command_prefix(),
+                crate::cli::command_prefix(),
+                crate::cli::command_prefix()
             ));
         }
     }
-    Ok(p.text)
+    Ok(crate::cli::present_command_references(&p.text))
 }
 pub fn show(args: &[String]) -> Result<(), String> {
     let topic = args.first().map(String::as_str).unwrap_or("");
     if args.len() > 1 {
-        return Err("use gc help [commands|run|keys|all|COMMAND]".into());
+        return Err(format!(
+            "use {} help [commands|run|keys|all|COMMAND]",
+            crate::cli::command_prefix()
+        ));
     }
     if topic == "agent" {
         return crate::team::command(&["--help".into()]);

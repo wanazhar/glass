@@ -267,6 +267,28 @@ fn native_webm_vp8_decodes_bounded_real_rgba_frames() {
 }
 
 #[test]
+fn native_webm_vp8_rejects_video_over_frame_and_dimension_caps() {
+    let too_many_frames =
+        include_bytes!("../../../tests/fixtures/native-media/sixty-one-frames-vp8.webm");
+    let over_limit_dimensions =
+        include_bytes!("../../../tests/fixtures/native-media/over-limit-dimensions-vp8.webm");
+    let over_resource_byte_budget =
+        include_bytes!("../../../tests/fixtures/native-media/over-resource-byte-budget-vp8.webm");
+
+    for bytes in [
+        too_many_frames.as_slice(),
+        over_limit_dimensions.as_slice(),
+        over_resource_byte_budget.as_slice(),
+    ] {
+        let metadata = media_metadata_from_bytes(Some("video/webm"), bytes)
+            .unwrap()
+            .expect("the valid WebM fixture should be recognized");
+        assert!(metadata.video_frames.is_empty());
+        assert_eq!(metadata.duration_millis, None);
+    }
+}
+
+#[test]
 fn data_media_decodes_bounded_binary_payloads() {
     let url = Url::parse(
         "data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA",

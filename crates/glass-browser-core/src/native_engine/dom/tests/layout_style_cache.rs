@@ -671,9 +671,18 @@ fn script_snapshot_cache_skips_animated_images_and_oversized_file_payloads() {
 fn decoded_image_arrival_invalidates_cached_intrinsic_layout() {
     let limits = NativeEngineLimits::default();
     let viewport = Viewport::default();
-    let mut document = NativeDocument::parse("<img id='image' src='/image.png'>", &limits).unwrap();
+    let mut document = NativeDocument::parse(
+        "<style>img { color: #123456; --resource-state: loaded }</style><img id='image' src='/image.png'>",
+        &limits,
+    )
+    .unwrap();
     let image_id = document.find_element_by_id("image").unwrap();
     let before = document.layout(viewport).unwrap();
+    let image_style = document.computed_style_for_layout(image_id);
+    let cached_style_count = document.layout_style_cache.0.lock().unwrap().len();
+    let cached_custom_property_count = document.layout_style_cache.1.lock().unwrap().len();
+    assert!(cached_style_count > 0);
+    assert!(cached_custom_property_count > 0);
     assert_eq!(
         before.box_for(image_id),
         Some(NativeRect {
@@ -697,6 +706,15 @@ fn decoded_image_arrival_invalidates_cached_intrinsic_layout() {
         .unwrap();
 
     assert!(document.layout_style_cache.2.lock().unwrap().is_none());
+    assert_eq!(
+        document.layout_style_cache.0.lock().unwrap().len(),
+        cached_style_count
+    );
+    assert_eq!(
+        document.layout_style_cache.1.lock().unwrap().len(),
+        cached_custom_property_count
+    );
+    assert_eq!(document.computed_style_for_layout(image_id), image_style);
     let after = document.layout(viewport).unwrap();
     assert_eq!(
         after.box_for(image_id),
@@ -717,6 +735,8 @@ fn decoded_video_poster_arrival_invalidates_cached_intrinsic_layout() {
         NativeDocument::parse("<video id='video' poster='/poster.png'></video>", &limits).unwrap();
     let video_id = document.find_element_by_id("video").unwrap();
     let before = document.layout(viewport).unwrap();
+    let video_style = document.computed_style_for_layout(video_id);
+    let cached_style_count = document.layout_style_cache.0.lock().unwrap().len();
     assert_eq!(
         before
             .box_for(video_id)
@@ -737,6 +757,11 @@ fn decoded_video_poster_arrival_invalidates_cached_intrinsic_layout() {
         .unwrap();
 
     assert!(document.layout_style_cache.2.lock().unwrap().is_none());
+    assert_eq!(
+        document.layout_style_cache.0.lock().unwrap().len(),
+        cached_style_count
+    );
+    assert_eq!(document.computed_style_for_layout(video_id), video_style);
     let after = document.layout(viewport).unwrap();
     assert_eq!(
         after
@@ -785,6 +810,60 @@ fn decoded_video_poster_arrival_invalidates_cached_intrinsic_layout() {
             .map(|rect| (rect.width, rect.height)),
         Some((8, 20))
     );
+}
+
+#[test]
+fn repeated_image_arrivals_reuse_styles_and_rebuild_geometry() {
+    let limits = NativeEngineLimits::default();
+    let viewport = Viewport::default();
+    let mut html =
+        String::from("<style>img { color: #123456; --resource-state: loaded }</style><main>");
+    for index in 0..36 {
+        html.push_str(&format!(
+            "<img id='image-{index}' src='/image-{index}.png'>"
+        ));
+    }
+    html.push_str("</main>");
+    let mut document = NativeDocument::parse(&html, &limits).unwrap();
+    document.layout(viewport).unwrap();
+    let cached_style_count = document.layout_style_cache.0.lock().unwrap().len();
+    let cached_custom_property_count = document.layout_style_cache.1.lock().unwrap().len();
+    assert!(cached_style_count >= 40);
+    assert!(cached_custom_property_count >= 36);
+
+    for index in 0..36 {
+        let image = document
+            .find_element_by_id(&format!("image-{index}"))
+            .unwrap();
+        let before = document.computed_style_for_layout(image);
+        let source = document.image_current_src(image, viewport);
+        document
+            .mark_image_load(image.index(), source.clone(), viewport)
+            .unwrap();
+        document
+            .set_image_resource(
+                image.index(),
+                source,
+                NativeImage::new(4, 5, vec![0; 4 * 5 * 4]),
+            )
+            .unwrap();
+
+        assert!(document.layout_style_cache.2.lock().unwrap().is_none());
+        assert_eq!(
+            document.layout_style_cache.0.lock().unwrap().len(),
+            cached_style_count
+        );
+        assert_eq!(
+            document.layout_style_cache.1.lock().unwrap().len(),
+            cached_custom_property_count
+        );
+        assert_eq!(document.computed_style_for_layout(image), before);
+        let layout = document.layout(viewport).unwrap();
+        assert_eq!(
+            layout.box_for(image).map(|rect| (rect.width, rect.height)),
+            Some((4, 5))
+        );
+    }
 }
 
 #[test]

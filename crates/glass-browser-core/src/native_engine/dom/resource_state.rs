@@ -780,7 +780,7 @@ impl NativeDocument {
         let removed_resource = self.video_poster_resources.remove(&node_index).is_some();
         self.video_poster_loads.insert(node_index, source);
         if removed_resource {
-            self.invalidate_layout_styles();
+            self.invalidate_layout_for_resource_change();
         }
         Ok(true)
     }
@@ -806,7 +806,7 @@ impl NativeDocument {
         self.video_poster_resources.clear();
         self.video_poster_loads.clear();
         if had_resources {
-            self.invalidate_layout_styles();
+            self.invalidate_layout_for_resource_change();
         }
     }
 
@@ -874,7 +874,7 @@ impl NativeDocument {
         }
         self.video_poster_resources
             .insert(node_index, NativeImageResource { source, image });
-        self.invalidate_layout_styles();
+        self.invalidate_layout_for_resource_change();
         Ok(())
     }
 
@@ -1008,7 +1008,7 @@ impl NativeDocument {
         }
         self.image_resources
             .insert(node_index, NativeImageResource { source, image });
-        self.invalidate_layout_styles();
+        self.invalidate_layout_for_resource_change();
         Ok(())
     }
 

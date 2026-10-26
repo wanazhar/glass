@@ -1209,6 +1209,10 @@ impl NativeLayoutStyleCache {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        self.invalidate_layout_snapshot();
+    }
+
+    fn invalidate_layout_snapshot(&self) {
         *self
             .2
             .lock()

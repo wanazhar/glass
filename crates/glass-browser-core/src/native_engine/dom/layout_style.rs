@@ -31,6 +31,24 @@ impl NativeDocument {
         self.layout_style_cache.clear();
     }
 
+    /// Invalidate geometry and host projections when a decoded resource
+    /// changes intrinsic dimensions or script-visible resource state. The
+    /// CSS cascade itself is unchanged, so retain computed styles and custom
+    /// properties across image and video-poster arrivals.
+    pub(super) fn invalidate_layout_for_resource_change(&mut self) {
+        if crate::native_engine::content_process::runtime_diagnostic_trace_enabled() {
+            let caller = std::panic::Location::caller();
+            crate::native_engine::content_process::ContentLoadStage::begin_with_resource(
+                0,
+                "layout_resource_state_invalidated",
+                Some(caller.line() as usize),
+                Some(caller.file()),
+            )
+            .finish(Some(1));
+        }
+        self.layout_style_cache.invalidate_layout_snapshot();
+    }
+
     pub(crate) fn computed_style_for_layout(&self, id: NativeNodeId) -> NativeComputedStyle {
         self.computed_style_for_layout_internal(id, true)
     }

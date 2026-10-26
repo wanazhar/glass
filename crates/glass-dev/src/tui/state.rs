@@ -1675,6 +1675,8 @@ pub struct DevTuiState {
     /// Additional open buffers explicitly attached to the next Code prompt.
     pub code_context_attachments: Vec<CodeContextAttachment>,
     pending_lsp_format_baselines: VecDeque<LspEditBaseline>,
+    pending_lsp_preview_results: VecDeque<(String, serde_json::Value)>,
+    pending_editor_acceptances: VecDeque<String>,
     pub last_app_comment: Option<String>,
     pub session_todos: crate::SessionTodoList,
     pub composer_history: Vec<String>,
@@ -2073,6 +2075,8 @@ impl DevTuiState {
             composer_code_context_enabled: false,
             code_context_attachments: Vec::new(),
             pending_lsp_format_baselines: VecDeque::new(),
+            pending_lsp_preview_results: VecDeque::new(),
+            pending_editor_acceptances: VecDeque::new(),
             last_app_comment: None,
             session_todos: crate::SessionTodoList::default(),
             composer_history: Vec::new(),
@@ -4260,7 +4264,7 @@ impl DevTuiState {
     }
 
     fn preview_lsp_formatting(&mut self, value: &serde_json::Value) -> Result<bool, String> {
-        let Some(baseline) = self.pending_lsp_format_baselines.pop_front() else {
+        let Some(baseline) = self.pending_lsp_format_baselines.front().cloned() else {
             return Ok(false);
         };
         let edits = value
@@ -4269,6 +4273,7 @@ impl DevTuiState {
             .ok_or_else(|| "LSP formatter returned no TextEdit array".to_string())?;
         let proposed = apply_lsp_text_edits(&baseline.content, edits)?;
         if proposed == baseline.content {
+            self.pending_lsp_format_baselines.pop_front();
             self.status = format!("LSP formatting made no changes · {}", baseline.path);
             return Ok(true);
         }
@@ -4283,6 +4288,7 @@ impl DevTuiState {
                 crate::development::Actor::local(),
             )
             .map_err(|error| error.to_string())?;
+        self.pending_lsp_format_baselines.pop_front();
         self.selected_editor_proposal_id = Some(proposal.id.clone());
         if !self.files.iter().any(|path| path == &proposal.path) {
             self.files.push(proposal.path.clone());
@@ -4355,10 +4361,10 @@ impl DevTuiState {
         }
 
         let first_path = plans[0].0.clone();
+        let mut workspace = self.ws_mut()?;
         let mut proposals = Vec::with_capacity(plans.len());
         for (path, original, proposed) in plans {
-            let proposal = self
-                .ws_mut()?
+            let proposal = workspace
                 .project_mut()
                 .propose_editor_change(
                     &path,
@@ -4370,6 +4376,7 @@ impl DevTuiState {
                 .map_err(|error| error.to_string())?;
             proposals.push(proposal);
         }
+        drop(workspace);
 
         self.selected_editor_proposal_id = proposals.first().map(|proposal| proposal.id.clone());
         for proposal in &proposals {
@@ -4388,6 +4395,79 @@ impl DevTuiState {
             proposals.len()
         );
         Ok(true)
+    }
+
+    fn handle_lsp_preview_result(&mut self, tool: &str, value: &serde_json::Value) {
+        let result = match tool {
+            "glass.lsp.formatting" | "glass.lsp.range_formatting" => {
+                self.preview_lsp_formatting(value)
+            }
+            "glass.lsp.rename" => self.preview_lsp_workspace_edit(value),
+            _ => return,
+        };
+        match result {
+            Ok(true) => {}
+            Ok(false) => {
+                self.status = format!("{tool} result received");
+            }
+            Err(error) if Self::is_workspace_busy(&error) => {
+                if self.pending_lsp_preview_results.len() >= 8 {
+                    if matches!(tool, "glass.lsp.formatting" | "glass.lsp.range_formatting") {
+                        self.pending_lsp_format_baselines.pop_front();
+                    }
+                    self.status =
+                        "LSP preview queue is full · wait for the workspace and retry".into();
+                    return;
+                }
+                self.pending_lsp_preview_results
+                    .push_back((tool.to_string(), value.clone()));
+                self.status = "LSP preview queued · waiting for the workspace".into();
+            }
+            Err(error) => {
+                if matches!(tool, "glass.lsp.formatting" | "glass.lsp.range_formatting") {
+                    self.pending_lsp_format_baselines.pop_front();
+                    self.status = format!("LSP formatting preview failed · {error}");
+                } else {
+                    self.status = format!("LSP workspace edit preview failed · {error}");
+                }
+            }
+        }
+    }
+
+    fn flush_pending_lsp_preview_result(&mut self) -> bool {
+        let Some((tool, value)) = self.pending_lsp_preview_results.pop_front() else {
+            return false;
+        };
+        let result = match tool.as_str() {
+            "glass.lsp.formatting" | "glass.lsp.range_formatting" => {
+                self.preview_lsp_formatting(&value)
+            }
+            "glass.lsp.rename" => self.preview_lsp_workspace_edit(&value),
+            _ => return true,
+        };
+        match result {
+            Ok(true) => true,
+            Ok(false) => {
+                self.status = format!("{tool} result received");
+                true
+            }
+            Err(error) if Self::is_workspace_busy(&error) => {
+                self.pending_lsp_preview_results.push_front((tool, value));
+                false
+            }
+            Err(error) => {
+                if matches!(
+                    tool.as_str(),
+                    "glass.lsp.formatting" | "glass.lsp.range_formatting"
+                ) {
+                    self.pending_lsp_format_baselines.pop_front();
+                    self.status = format!("LSP formatting preview failed · {error}");
+                } else {
+                    self.status = format!("LSP workspace edit preview failed · {error}");
+                }
+                true
+            }
+        }
     }
 
     pub fn agent_chrome_line(&self) -> String {
@@ -6575,6 +6655,36 @@ impl DevTuiState {
         }
     }
 
+    fn queue_editor_acceptance(&mut self, id: String) -> Result<String, String> {
+        if self.pending_editor_acceptances.len() >= 8 {
+            return Err("Accept failed · proposal queue is full".into());
+        }
+        if !self.pending_editor_acceptances.contains(&id) {
+            self.pending_editor_acceptances.push_back(id.clone());
+        }
+        self.status = "Proposal acceptance queued · waiting for the workspace".into();
+        Ok(format!(
+            "Queued acceptance for proposal {id} · workspace busy"
+        ))
+    }
+
+    fn flush_pending_editor_acceptance(&mut self) -> bool {
+        let Some(id) = self.pending_editor_acceptances.pop_front() else {
+            return false;
+        };
+        match self.accept_review_proposal(Some(&id)) {
+            Ok(message) if message.starts_with("Queued acceptance for proposal ") => false,
+            Ok(message) => {
+                self.status = message;
+                true
+            }
+            Err(error) => {
+                self.status = format!("Proposal acceptance failed · {error}");
+                true
+            }
+        }
+    }
+
     pub fn accept_review_proposal(&mut self, id: Option<&str>) -> Result<String, String> {
         let id = self.resolve_review_proposal_id(id)?;
         if !self.auto_checkpoint("before-review-accept") {
@@ -6592,8 +6702,9 @@ impl DevTuiState {
                 self.refresh_review_object();
                 Ok(format!("Accepted proposal {id}"))
             }
+            Some(Err(error)) if Self::is_workspace_busy(&error) => self.queue_editor_acceptance(id),
             Some(Err(error)) => Err(error.to_string()),
-            None => Err("Accept failed · workspace busy".into()),
+            None => self.queue_editor_acceptance(id),
         }
     }
 
@@ -8547,29 +8658,9 @@ impl DevTuiState {
                     };
                     if matches!(
                         result.tool.as_str(),
-                        "glass.lsp.formatting" | "glass.lsp.range_formatting"
+                        "glass.lsp.formatting" | "glass.lsp.range_formatting" | "glass.lsp.rename"
                     ) {
-                        match self.preview_lsp_formatting(&value) {
-                            Ok(true) => {}
-                            Ok(false) => {
-                                self.status = "LSP formatting result received".into();
-                            }
-                            Err(error) => {
-                                self.status = format!("LSP formatting preview failed · {error}");
-                            }
-                        }
-                    }
-                    if result.tool == "glass.lsp.rename" {
-                        match self.preview_lsp_workspace_edit(&value) {
-                            Ok(true) => {}
-                            Ok(false) => {
-                                self.status = "LSP workspace edit result received".into();
-                            }
-                            Err(error) => {
-                                self.status =
-                                    format!("LSP workspace edit preview failed · {error}");
-                            }
-                        }
+                        self.handle_lsp_preview_result(&result.tool, &value);
                     }
                 }
                 if !matches!(
@@ -8849,7 +8940,8 @@ impl DevTuiState {
     }
 
     fn is_workspace_busy(error: &impl std::fmt::Display) -> bool {
-        error.to_string().contains("workspace busy")
+        let error = error.to_string().to_ascii_lowercase();
+        error.contains("workspace busy") || error.contains("wouldblock")
     }
 
     pub fn next_surface(&mut self) {
@@ -10404,13 +10496,15 @@ impl DevTuiState {
     /// Retry queued editor input after a background operation releases the
     /// workspace. Events stay in order, including save and exit keys.
     pub fn flush_pending_editor_input(&mut self) -> bool {
+        let preview_processed = self.flush_pending_lsp_preview_result();
+        let acceptance_processed = self.flush_pending_editor_acceptance();
         if self.pending_editor_input.is_empty() {
-            return false;
+            return preview_processed || acceptance_processed;
         }
         if self.workspace.try_lock().is_err() {
-            return false;
+            return preview_processed || acceptance_processed;
         }
-        let mut processed = false;
+        let mut processed = preview_processed || acceptance_processed;
         while let Some(input) = self.pending_editor_input.pop_front() {
             let remaining_before = self.pending_editor_input.len();
             match input {
@@ -15416,7 +15510,15 @@ mod tests {
                 "newText": "let x = 1;"
             }]
         });
-        assert!(state.preview_lsp_formatting(&result).unwrap());
+        let shared_workspace = state.workspace.clone();
+        let workspace_guard = shared_workspace
+            .try_lock()
+            .expect("hold workspace while formatting result arrives");
+        state.handle_lsp_preview_result("glass.lsp.formatting", &result);
+        assert_eq!(state.pending_lsp_preview_results.len(), 1);
+        assert_eq!(state.pending_lsp_format_baselines.len(), 1);
+        drop(workspace_guard);
+        assert!(state.flush_pending_editor_input());
         assert!(state.status.contains("LSP formatting preview"));
         assert_eq!(
             state
@@ -15540,7 +15642,15 @@ mod tests {
                 }
             }
         });
-        assert!(state.preview_lsp_workspace_edit(&result).unwrap());
+        let shared_workspace = state.workspace.clone();
+        let workspace_guard = shared_workspace
+            .try_lock()
+            .expect("hold workspace for fixture");
+        state.handle_lsp_preview_result("glass.lsp.rename", &result);
+        assert_eq!(state.pending_lsp_preview_results.len(), 1);
+        assert!(state.status.contains("waiting for the workspace"));
+        drop(workspace_guard);
+        assert!(state.flush_pending_editor_input());
         assert!(state.status.contains("2 files"));
         assert_eq!(state.editor_engine.hunks.len(), 1);
         assert_eq!(
@@ -15572,10 +15682,25 @@ mod tests {
             .map(|proposal| proposal.id.clone())
             .collect::<Vec<_>>();
         assert_eq!(proposal_ids.len(), 2);
-        for id in proposal_ids {
-            state
-                .accept_review_proposal(Some(&id))
-                .expect("accept each reviewed file proposal explicitly");
+        for (index, id) in proposal_ids.iter().enumerate() {
+            if index == 0 {
+                let shared_workspace = state.workspace.clone();
+                let workspace_guard = shared_workspace
+                    .try_lock()
+                    .expect("hold workspace while accepting fixture proposal");
+                let queued = state
+                    .accept_review_proposal(Some(id))
+                    .expect("busy acceptance is retained for retry");
+                assert!(queued.contains("Queued acceptance"));
+                assert!(!state.flush_pending_editor_input());
+                assert_eq!(state.pending_editor_acceptances.len(), 1);
+                drop(workspace_guard);
+                assert!(state.flush_pending_editor_input());
+            } else {
+                state
+                    .accept_review_proposal(Some(id))
+                    .expect("accept each reviewed file proposal explicitly");
+            }
         }
         assert_eq!(
             state

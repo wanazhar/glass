@@ -6771,6 +6771,124 @@ fn code_editor_accepts_and_saves_typed_text_through_pty() {
 }
 
 #[test]
+fn lsp_workspace_rename_is_previewed_and_accepted_per_file_in_pty() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    let root = workspace_root();
+    std::fs::create_dir_all(root.join("src")).expect("create source directory");
+    let first = root.join("src/first.rs");
+    let second = root.join("src/second.rs");
+    let original_first = "// unsaved first\nfn old_name() {}\n";
+    let original_second = "// unsaved second\nold_name();\n";
+    std::fs::write(&first, original_first).expect("write first source file");
+    std::fs::write(&second, original_second).expect("write second source file");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/fake_lsp_workspace_edit.py");
+    let fake_core = fake_core_binary_with_mode("mixed");
+    let mut session = Session::start_with_core_binary(&binary(), &root, 100, 30, Some(&fake_core));
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+    send_alt_digit(&mut session, b'2');
+    assert!(session.wait_for_visible("FILES", Duration::from_secs(5)));
+    for path in ["src/first.rs", "src/second.rs", "src/first.rs"] {
+        let offset = session.buffer.len();
+        session.send_slowly(
+            format!(":open {path}\r").as_bytes(),
+            Duration::from_millis(20),
+        );
+        assert!(
+            session.wait_for_output_after(offset, "Esc back", Duration::from_secs(5)),
+            "Code did not open {path}\n{}",
+            session.output_tail()
+        );
+        session.clear_output();
+        session.send(b"\x1b");
+        assert!(
+            session.wait_for_visible("FILES", Duration::from_secs(5)),
+            "Escape did not return from the editor to Code\n{}",
+            session.output_tail()
+        );
+    }
+
+    let start_offset = session.buffer.len();
+    session.send_slowly(
+        format!(":lsp start fixture python3 {}\r", fixture.display()).as_bytes(),
+        Duration::from_millis(10),
+    );
+    assert!(
+        session.wait_for_output_after(
+            start_offset,
+            "one-use confirmation required",
+            Duration::from_secs(8),
+        ),
+        "LSP start did not ask for its normal confirmation\n{}",
+        session.output_tail()
+    );
+    let start_result_offset = session.buffer.len();
+    session.send(b"y");
+    assert!(
+        session.wait_for_output_after(
+            start_result_offset,
+            "Completed glass.lsp.start",
+            Duration::from_secs(8),
+        ),
+        "LSP fixture did not start\n{}",
+        session.output_tail()
+    );
+    let rename_offset = session.buffer.len();
+    session.send_slowly(
+        b":lsp rename fixture src/first.rs 2 4 new_name\r",
+        Duration::from_millis(10),
+    );
+    assert!(
+        session.wait_for_output_after(
+            rename_offset,
+            "2 files · review each diff",
+            Duration::from_secs(8),
+        ),
+        "LSP WorkspaceEdit was not previewed in Code\n{}",
+        session.output_tail()
+    );
+    assert!(
+        session.wait_for_visible("AGENT · Human", Duration::from_secs(5)),
+        "LSP proposal did not enter the per-file review state\n{}",
+        session.output_tail()
+    );
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), original_first);
+    assert_eq!(std::fs::read_to_string(&second).unwrap(), original_second);
+
+    session.send(b"\r");
+    session.settle(Duration::from_secs(1));
+    session.send(b"\x13");
+    session.settle(Duration::from_millis(300));
+    session.send(b"\x13");
+    assert_eq!(
+        std::fs::read_to_string(&first).unwrap(),
+        "// unsaved first\nfn new_name() {}\n"
+    );
+    assert_eq!(std::fs::read_to_string(&second).unwrap(), original_second);
+
+    session.clear_output();
+    session.send(b"\x1b");
+    assert!(session.wait_for_visible("FILES", Duration::from_secs(5)));
+    let second_open_offset = session.buffer.len();
+    session.send_slowly(b":open src/second.rs\r", Duration::from_millis(20));
+    assert!(session.wait_for_output_after(second_open_offset, "Esc back", Duration::from_secs(5)));
+    assert!(session.wait_for_visible("Enter accept · n reject", Duration::from_secs(5)));
+    session.send(b"\r");
+    session.settle(Duration::from_secs(1));
+    session.send(b"\x13");
+    session.settle(Duration::from_millis(300));
+    session.send(b"\x13");
+    assert_eq!(
+        std::fs::read_to_string(&second).unwrap(),
+        "// unsaved second\nnew_name();\n"
+    );
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+}
+
+#[test]
 fn git_stage_and_commit_work_in_an_isolated_local_repository() {
     if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
         return;

@@ -54,7 +54,14 @@ pub fn code_blocks(text: &str) -> Vec<(String, String)> {
 /// Provider text is display data, never terminal instructions.
 pub fn sanitize(text: &str) -> String {
     let mut clean = String::with_capacity(text.len());
-    for c in text.chars() {
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut index = 0;
+    while index < chars.len() {
+        let c = chars[index];
+        if c == '\u{1b}' || c == '\u{009b}' || c == '\u{009d}' {
+            skip_terminal_sequence(&chars, &mut index);
+            continue;
+        }
         if matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{206f}')
         {
             // Show direction overrides explicitly: filenames and tool output
@@ -63,8 +70,52 @@ pub fn sanitize(text: &str) -> String {
         } else if !c.is_control() || matches!(c, '\n' | '\t') {
             clean.push(c);
         }
+        index += 1;
     }
     clean
+}
+
+fn skip_terminal_sequence(chars: &[char], index: &mut usize) {
+    let Some(first) = chars.get(*index).copied() else {
+        return;
+    };
+    *index += 1;
+    let introducer = if first == '\u{1b}' {
+        let Some(next) = chars.get(*index).copied() else {
+            return;
+        };
+        *index += 1;
+        next
+    } else {
+        first
+    };
+
+    if introducer == '[' || first == '\u{009b}' {
+        while let Some(c) = chars.get(*index).copied() {
+            *index += 1;
+            if ('@'..='~').contains(&c) {
+                break;
+            }
+        }
+    } else if matches!(introducer, ']' | 'P' | '^' | '_' | 'X') || first == '\u{009d}' {
+        while let Some(c) = chars.get(*index).copied() {
+            *index += 1;
+            if matches!(c, '\u{0007}' | '\u{009c}') {
+                break;
+            }
+            if c == '\u{1b}' && chars.get(*index) == Some(&'\\') {
+                *index += 1;
+                break;
+            }
+        }
+    } else if first == '\u{1b}' && (' '..='/').contains(&introducer) {
+        while let Some(c) = chars.get(*index).copied() {
+            *index += 1;
+            if ('0'..='~').contains(&c) {
+                break;
+            }
+        }
+    }
 }
 
 fn numbered_item(text: &str) -> Option<(&str, &str)> {
@@ -1321,6 +1372,17 @@ pub fn write_ansi(io: &mut impl std::io::Write, line: &Line<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sanitizer_removes_complete_and_truncated_terminal_sequences() {
+        assert_eq!(
+            sanitize("before\u{1b}[32mgreen\u{1b}[0m after"),
+            "beforegreen after"
+        );
+        assert_eq!(sanitize("\u{1b}]0;title\u{0007}safe"), "safe");
+        assert_eq!(sanitize("tail\u{1b}[31"), "tail");
+        assert_eq!(sanitize("\u{1b}(0x"), "x");
+    }
+
     #[test]
     fn common_inline_markup_is_styled_without_hiding_destinations() {
         let spans = inline(

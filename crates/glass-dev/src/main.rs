@@ -53,6 +53,7 @@ fn run() -> MainResult {
     let command = command.after_help(
         "Glass Core commands are also available as `glass <core-command> ...` when the name does not conflict with a Glass command. Use `glass core <args...>` as the complete, exact Core CLI escape hatch; `glass core --help` shows Core's own commands and options.",
     );
+    let command = hide_browser_options_from_glass_help(command);
     let cli = parse_glass_args(command, args).unwrap_or_else(|error| error.exit());
 
     let interactive_tui = uses_interactive_tui(&cli);
@@ -79,6 +80,55 @@ fn run() -> MainResult {
         .enable_all()
         .build()?
         .block_on(glass_dev::dispatch(*cli))
+}
+
+/// Keep Browser-wide flags accepted globally without repeating them in help
+/// for Glass-only workspace and agent commands where they have no effect.
+fn hide_browser_options_from_glass_help(mut command: clap::Command) -> clap::Command {
+    command.build();
+    let browser_global_ids = command
+        .get_arguments()
+        .filter(|argument| argument.is_global_set())
+        .map(|argument| argument.get_id().as_str().to_owned())
+        .collect::<Vec<_>>();
+    const GLASS_ONLY_COMMANDS: &[&str] = &[
+        "workspace",
+        "project",
+        "agent",
+        "harness",
+        "memory",
+        "surfaces",
+        "backend",
+        "daemon",
+        "logs",
+        "mcp-config",
+    ];
+    for name in GLASS_ONLY_COMMANDS {
+        command = command.mut_subcommand(name, |subcommand| {
+            hide_browser_options_recursively(subcommand, &browser_global_ids)
+        });
+    }
+    command
+}
+
+fn hide_browser_options_recursively(
+    command: clap::Command,
+    browser_global_ids: &[String],
+) -> clap::Command {
+    command
+        .mut_args(|argument| {
+            if browser_global_ids
+                .iter()
+                .any(|id| argument.get_id().as_str() == id)
+            {
+                argument.hide(true)
+            } else {
+                argument
+            }
+        })
+        .mut_subcommands(|subcommand| {
+            hide_browser_options_recursively(subcommand, browser_global_ids)
+        })
 }
 
 /// Determine whether argv selects a Core CLI command instead of a Glass route.

@@ -1918,3 +1918,94 @@ fn rule_index_anchors_on_the_rare_rightmost_class_without_losing_matches() {
         }
     }
 }
+
+#[test]
+fn large_stylesheet_rule_candidates_match_full_scan_and_reuse_scratch() {
+    use std::time::Instant;
+
+    let rules = (0..4096)
+        .map(|index| match index % 4 {
+            0 => format!(
+                ".mw-body a.link-common {{ color: #{:06x}; }}",
+                index % 0x00ff_ffff
+            ),
+            1 => format!("a {{ margin: {}px; }}", index % 17),
+            2 => format!(
+                ".mw-body a.link-frequent-{} {{ padding: {}px; }}",
+                index % 16,
+                index % 17
+            ),
+            _ => format!(
+                ".mw-body a.link-{} {{ border-width: {}px; }}",
+                index % 256,
+                index % 17
+            ),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let stylesheet = NativeStylesheet::from_sources(vec![rules]).unwrap();
+
+    let mut source = String::from("<!doctype html><main class='mw-body'>");
+    for index in 0..8000 {
+        source.push_str(&format!(
+            "<a class='link-common link-frequent-{} link-{}' href='/item/{index}'>item {index}</a>",
+            index % 16,
+            index % 256
+        ));
+    }
+    source.push_str("</main>");
+    let document = NativeDocument::parse(&source, &NativeEngineLimits::default()).unwrap();
+    let mut scratch = Vec::new();
+    let started = Instant::now();
+    let mut candidate_total = 0usize;
+    for node_id in document.element_node_ids() {
+        let node = document.node(node_id).unwrap();
+        stylesheet.rule_index.candidates_into(node, &mut scratch);
+        candidate_total += scratch.len();
+    }
+    let elapsed = started.elapsed();
+    let warmed_capacity = scratch.capacity();
+    let style_started = Instant::now();
+    let element_count = document.element_node_ids().count();
+    let mut styled_nodes = 0;
+    for node_id in document.element_node_ids() {
+        document.computed_style_for_layout(node_id);
+        styled_nodes += 1;
+    }
+    let style_elapsed = style_started.elapsed();
+    assert_eq!(styled_nodes, element_count);
+
+    let anchors = document
+        .element_node_ids()
+        .filter(|id| document.node(*id).unwrap().element_name() == Some("a"))
+        .take(64)
+        .collect::<Vec<_>>();
+    for node_id in anchors {
+        let node = document.node(node_id).unwrap();
+        stylesheet.rule_index.candidates_into(node, &mut scratch);
+        let matching = stylesheet
+            .rules
+            .iter()
+            .enumerate()
+            .filter_map(|(index, rule)| {
+                rule.selector
+                    .matches_in_document(&document, node_id)
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(scratch, matching);
+    }
+    for node_id in document.element_node_ids().take(32) {
+        stylesheet
+            .rule_index
+            .candidates_into(document.node(node_id).unwrap(), &mut scratch);
+        assert_eq!(scratch.capacity(), warmed_capacity);
+    }
+    eprintln!(
+        "large native selector index: {} nodes, 4096 rules, {} candidates, candidate lookup={} ms, style cascade={} ms",
+        document.node_count(),
+        candidate_total,
+        elapsed.as_millis(),
+        style_elapsed.as_millis()
+    );
+}

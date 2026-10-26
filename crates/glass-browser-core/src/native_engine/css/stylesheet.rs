@@ -4,30 +4,46 @@ impl NativeStylesheet {
     /// Whether a node can receive a background-image declaration from a
     /// matching stylesheet rule. This is a conservative candidate check: the
     /// normal computed-style cascade still chooses the final value.
+    #[cfg(test)]
     pub(crate) fn has_background_image_rule_for_node(
         &self,
         document: &NativeDocument,
         node_id: NativeNodeId,
         viewport: Viewport,
     ) -> bool {
+        self.has_background_image_rule_for_node_with_candidates(
+            document,
+            node_id,
+            viewport,
+            &mut Vec::new(),
+        )
+    }
+
+    pub(crate) fn has_background_image_rule_for_node_with_candidates(
+        &self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+        viewport: Viewport,
+        candidates: &mut Vec<usize>,
+    ) -> bool {
+        candidates.clear();
         let Some(node) = document.node(node_id) else {
             return false;
         };
         self.background_image_rule_index
-            .candidates(node)
-            .into_iter()
-            .any(|rule_index| {
-                let rule = &self.rules[rule_index];
-                !rule
-                    .media
+            .candidates_into(node, candidates);
+        candidates.iter().copied().any(|rule_index| {
+            let rule = &self.rules[rule_index];
+            !rule
+                .media
+                .as_deref()
+                .is_some_and(|media| !css_media_list_matches(media, viewport))
+                && !rule
+                    .supports
                     .as_deref()
-                    .is_some_and(|media| !css_media_list_matches(media, viewport))
-                    && !rule
-                        .supports
-                        .as_deref()
-                        .is_some_and(|supports| !css_supports_condition_matches(supports))
-                    && rule.selector.matches_in_document(document, node_id)
-            })
+                    .is_some_and(|supports| !css_supports_condition_matches(supports))
+                && rule.selector.matches_in_document(document, node_id)
+        })
     }
 
     #[cfg(test)]

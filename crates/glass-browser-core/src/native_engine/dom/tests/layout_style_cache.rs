@@ -834,6 +834,40 @@ fn background_image_candidates_match_full_computed_style_scan() {
     <div class="unrelated">no background</div>"#;
     let limits = NativeEngineLimits::default();
     let document = NativeDocument::parse(source, &limits).unwrap();
+    let mut candidate_scratch = Vec::new();
+    for node in document
+        .nodes
+        .iter()
+        .filter(|node| node.element_name().is_some())
+    {
+        let reused = document
+            .stylesheet
+            .has_background_image_rule_for_node_with_candidates(
+                &document,
+                node.id(),
+                document.viewport,
+                &mut candidate_scratch,
+            );
+        let allocating = document.stylesheet.has_background_image_rule_for_node(
+            &document,
+            node.id(),
+            document.viewport,
+        );
+        assert_eq!(reused, allocating);
+    }
+    assert!(candidate_scratch.capacity() > 0);
+    candidate_scratch.push(usize::MAX);
+    assert!(
+        !document
+            .stylesheet
+            .has_background_image_rule_for_node_with_candidates(
+                &document,
+                NativeNodeId::from_parts(document.generation, u32::MAX),
+                document.viewport,
+                &mut candidate_scratch,
+            )
+    );
+    assert!(candidate_scratch.is_empty());
     let optimized = document.external_background_image_links(usize::MAX);
     let full_scan: Vec<_> = document
         .nodes
@@ -872,6 +906,75 @@ fn background_image_candidates_match_full_computed_style_scan() {
     let limited = document.external_background_image_links(3);
     assert_eq!(limited.as_slice(), &optimized[..3]);
     assert!(document.external_background_image_links(0).is_empty());
+}
+
+#[test]
+fn background_image_candidate_scratch_matches_allocation_on_large_document() {
+    use std::time::Instant;
+
+    let mut source = String::from("<style>");
+    for rule in 0..128 {
+        source.push_str(&format!(
+            ".image-{rule} {{ background-image: url('/bg-{rule}.png') }}"
+        ));
+    }
+    source.push_str("</style><main>");
+    for node in 0..5_000 {
+        source.push_str(&format!("<div class='image-{}'>item</div>", node % 128));
+    }
+    source.push_str("</main>");
+
+    let limits = NativeEngineLimits::default();
+    let document = NativeDocument::parse(&source, &limits).unwrap();
+    let elements = document
+        .nodes
+        .iter()
+        .filter(|node| node.element_name().is_some())
+        .map(NativeNode::id)
+        .collect::<Vec<_>>();
+
+    let allocated_started = Instant::now();
+    let allocated = elements
+        .iter()
+        .map(|id| {
+            document.stylesheet.has_background_image_rule_for_node(
+                &document,
+                *id,
+                document.viewport,
+            )
+        })
+        .collect::<Vec<_>>();
+    let allocated_elapsed = allocated_started.elapsed();
+
+    let mut candidates = Vec::new();
+    let reused_started = Instant::now();
+    let reused = elements
+        .iter()
+        .map(|id| {
+            document
+                .stylesheet
+                .has_background_image_rule_for_node_with_candidates(
+                    &document,
+                    *id,
+                    document.viewport,
+                    &mut candidates,
+                )
+        })
+        .collect::<Vec<_>>();
+    let reused_elapsed = reused_started.elapsed();
+
+    assert_eq!(reused, allocated);
+    assert_eq!(
+        reused.iter().filter(|match_found| **match_found).count(),
+        5_000
+    );
+    assert!(candidates.capacity() >= 1);
+    eprintln!(
+        "background-image rule candidates: {} elements, allocated={} ms, reused scratch={} ms",
+        elements.len(),
+        allocated_elapsed.as_millis(),
+        reused_elapsed.as_millis()
+    );
 }
 
 #[test]

@@ -447,6 +447,26 @@ fn native_runtime_session_exposes_bounded_wait_and_verification() {
     assert_eq!(lifecycle.condition, "lifecycle");
     assert_eq!(lifecycle.target_id, "native-context");
 
+    let title = session
+        .native_wait(
+            WaitCondition::TitleContains("veriFY".into()),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+    assert_eq!(title.condition, "title_contains");
+    assert_eq!(title.target_id, "native-context");
+    assert_eq!(title.last_state, "title=Verify");
+
+    let url = session
+        .native_wait(
+            WaitCondition::UrlPrefix("data:text/html".into()),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+    assert!(url.last_state.starts_with("url=data:text/html"));
+
     let text = session
         .native_wait(
             WaitCondition::Text("Save".into()),

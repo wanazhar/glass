@@ -8,7 +8,9 @@
 use super::backend_factory::{BackendFactory, BackendStartup};
 use super::bidi_backend::BidiBackendConfig;
 #[cfg(feature = "native-engine")]
-use super::native_backend::{NativeEngineBackend, NativeFrameInspectionSnapshot};
+use super::native_backend::{
+    NativeEngineBackend, NativeFrameInspectionSnapshot, NativePageMetadataSnapshot,
+};
 #[cfg(feature = "native-engine")]
 use super::native_engine::{
     NativeDialogControlPlane, NativeDialogController, NativeEngineConfig, NativeFile,
@@ -43,7 +45,7 @@ use super::session::{
     SemanticIntentExecutionRequest, SemanticIntentExecutionResult, SemanticIntentExecutionStatus,
     SemanticIntentResult, SemanticObservation, SemanticObservationLevel, SemanticResolution,
     SemanticTarget, VerificationOutcome, VerificationPredicate, ViewportState, VisualCapture,
-    VisualCaptureOptions, WaitCondition, WaitOutcome, WaitTimeout,
+    VisualCaptureOptions, WaitCondition, WaitOutcome, WaitTimeout, bounded_wait_state,
 };
 use super::session::{ActionContractError, BrowserResult};
 #[cfg(feature = "native-engine")]
@@ -2737,6 +2739,49 @@ impl BrowserRuntimeSession {
     }
 
     #[cfg(feature = "native-engine")]
+    fn native_page_metadata(&self) -> BrowserResult<Option<NativePageMetadataSnapshot>> {
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.try_page_metadata()?),
+            _ => Err("native page metadata is only available on the native runtime".into()),
+        }
+    }
+
+    #[cfg(feature = "native-engine")]
+    fn native_wait_observed_page(&self) -> Option<super::session::PageInfo> {
+        self.native_page_metadata()
+            .ok()
+            .flatten()
+            .map(|metadata| super::session::PageInfo {
+                url: metadata.page.url,
+                title: metadata.page.title,
+                ready_state: "complete".into(),
+                target_id: metadata.target_id,
+                frame_id: metadata.frame_id,
+            })
+    }
+
+    #[cfg(feature = "native-engine")]
+    fn native_wait_page_metadata(
+        &self,
+        remaining: Duration,
+        condition: &str,
+        deadline: Duration,
+        last_state: &str,
+    ) -> BrowserResult<Option<NativePageMetadataSnapshot>> {
+        if remaining.is_zero() {
+            Err(Box::new(WaitTimeout {
+                condition: condition.to_owned(),
+                deadline_ms: deadline.as_millis() as u64,
+                last_state: bounded_wait_state(last_state),
+                observed_page: self.native_wait_observed_page(),
+                reason: "deadline_exceeded",
+            }))
+        } else {
+            self.native_page_metadata()
+        }
+    }
+
+    #[cfg(feature = "native-engine")]
     async fn native_semantic_observation_unlocked(
         &self,
     ) -> BrowserResult<super::session::SemanticObservation> {
@@ -2837,35 +2882,63 @@ impl BrowserRuntimeSession {
         let started = tokio::time::Instant::now();
         let expires = started + deadline;
         loop {
-            let result = self.script(&expression).await?;
+            let remaining = expires.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(Box::new(WaitTimeout {
+                    condition: description,
+                    deadline_ms: deadline.as_millis() as u64,
+                    last_state: "deadline_exceeded".into(),
+                    observed_page: self.native_wait_observed_page(),
+                    reason: "deadline_exceeded",
+                }));
+            }
+            let result = match tokio::time::timeout(remaining, self.script(&expression)).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    return Err(Box::new(WaitTimeout {
+                        condition: description,
+                        deadline_ms: deadline.as_millis() as u64,
+                        last_state: "probe_deadline_exceeded".into(),
+                        observed_page: self.native_wait_observed_page(),
+                        reason: "deadline_exceeded",
+                    }));
+                }
+            };
             let matched = result
                 .value
                 .as_bool()
                 .ok_or("native wait JavaScript predicate must return a boolean")?;
             let state = matched.to_string();
             if matched {
-                let observation = self.native_semantic_observation().await?;
+                let metadata = self.native_wait_page_metadata(
+                    expires.saturating_duration_since(tokio::time::Instant::now()),
+                    &description,
+                    deadline,
+                    &state,
+                )?;
+                let Some(metadata) = metadata else {
+                    tokio::time::sleep(
+                        expires
+                            .saturating_duration_since(tokio::time::Instant::now())
+                            .min(NATIVE_WAIT_POLL_INTERVAL),
+                    )
+                    .await;
+                    continue;
+                };
                 return Ok(WaitOutcome {
                     condition: description,
                     elapsed_ms: started.elapsed().as_millis() as u64,
                     last_state: state,
-                    target_id: observation.route.target_id,
-                    frame_id: observation.route.frame_id,
+                    target_id: metadata.target_id,
+                    frame_id: metadata.frame_id,
                 });
             }
             if tokio::time::Instant::now() >= expires {
-                let observation = self.native_semantic_observation().await?;
                 return Err(Box::new(WaitTimeout {
                     condition: description,
                     deadline_ms: deadline.as_millis() as u64,
                     last_state: state,
-                    observed_page: Some(super::session::PageInfo {
-                        url: observation.page.url,
-                        title: observation.page.title,
-                        ready_state: "complete".into(),
-                        target_id: observation.route.target_id,
-                        frame_id: observation.route.frame_id,
-                    }),
+                    observed_page: self.native_wait_observed_page(),
                     reason: "deadline_exceeded",
                 }));
             }
@@ -2889,39 +2962,70 @@ impl BrowserRuntimeSession {
         let expires = started + deadline;
         let mut previous_geometry = None;
         loop {
-            let (matched, state, geometry) = match &condition {
-                WaitCondition::NetworkQuiet(duration) => {
-                    let (matched, state) = self.native_network_quiet(*duration).await?;
-                    (matched, state, None)
+            let remaining = expires.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(Box::new(WaitTimeout {
+                    condition: description,
+                    deadline_ms: deadline.as_millis() as u64,
+                    last_state: "deadline_exceeded".into(),
+                    observed_page: self.native_wait_observed_page(),
+                    reason: "deadline_exceeded",
+                }));
+            }
+            let check = async {
+                match &condition {
+                    WaitCondition::NetworkQuiet(duration) => {
+                        let (matched, state) = self.native_network_quiet(*duration).await?;
+                        Ok((matched, state, None))
+                    }
+                    _ => {
+                        self.native_check_wait_condition(&condition, previous_geometry.as_deref())
+                            .await
+                    }
                 }
-                _ => {
-                    self.native_check_wait_condition(&condition, previous_geometry.as_deref())
-                        .await?
+            };
+            let (matched, state, geometry) = match tokio::time::timeout(remaining, check).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    return Err(Box::new(WaitTimeout {
+                        condition: description,
+                        deadline_ms: deadline.as_millis() as u64,
+                        last_state: "probe_deadline_exceeded".into(),
+                        observed_page: self.native_wait_observed_page(),
+                        reason: "deadline_exceeded",
+                    }));
                 }
             };
             if matched {
-                let observation = self.native_semantic_observation().await?;
+                let metadata = self.native_wait_page_metadata(
+                    expires.saturating_duration_since(tokio::time::Instant::now()),
+                    &description,
+                    deadline,
+                    &state,
+                )?;
+                let Some(metadata) = metadata else {
+                    tokio::time::sleep(
+                        expires
+                            .saturating_duration_since(tokio::time::Instant::now())
+                            .min(NATIVE_WAIT_POLL_INTERVAL),
+                    )
+                    .await;
+                    continue;
+                };
                 return Ok(WaitOutcome {
                     condition: description,
                     elapsed_ms: started.elapsed().as_millis() as u64,
                     last_state: state,
-                    target_id: observation.route.target_id,
-                    frame_id: observation.route.frame_id,
+                    target_id: metadata.target_id,
+                    frame_id: metadata.frame_id,
                 });
             }
             if tokio::time::Instant::now() >= expires {
-                let observation = self.native_semantic_observation().await?;
                 return Err(Box::new(WaitTimeout {
                     condition: description,
                     deadline_ms: deadline.as_millis() as u64,
                     last_state: state,
-                    observed_page: Some(super::session::PageInfo {
-                        url: observation.page.url,
-                        title: observation.page.title,
-                        ready_state: "complete".into(),
-                        target_id: observation.route.target_id,
-                        frame_id: observation.route.frame_id,
-                    }),
+                    observed_page: self.native_wait_observed_page(),
                     reason: "deadline_exceeded",
                 }));
             }
@@ -3026,34 +3130,42 @@ impl BrowserRuntimeSession {
     ) -> BrowserResult<(bool, String, Option<String>)> {
         match condition {
             WaitCondition::Lifecycle(expected) => {
-                let _observation = self.native_semantic_observation().await?;
+                let Some(_metadata) = self.native_page_metadata()? else {
+                    return Ok((false, "page_metadata_pending".into(), None));
+                };
                 let matched = matches!(expected.as_str(), "interactive" | "complete");
                 Ok((matched, "lifecycle=complete".into(), None))
             }
             WaitCondition::UrlExact(expected) => {
-                let observation = self.native_semantic_observation().await?;
+                let Some(metadata) = self.native_page_metadata()? else {
+                    return Ok((false, "page_metadata_pending".into(), None));
+                };
                 Ok((
-                    observation.page.url == *expected,
-                    format!("url={}", observation.page.url),
+                    metadata.page.url == *expected,
+                    format!("url={}", metadata.page.url),
                     None,
                 ))
             }
             WaitCondition::UrlPrefix(prefix) => {
-                let observation = self.native_semantic_observation().await?;
+                let Some(metadata) = self.native_page_metadata()? else {
+                    return Ok((false, "page_metadata_pending".into(), None));
+                };
                 Ok((
-                    observation.page.url.starts_with(prefix),
-                    format!("url={}", observation.page.url),
+                    metadata.page.url.starts_with(prefix),
+                    format!("url={}", metadata.page.url),
                     None,
                 ))
             }
             WaitCondition::TitleContains(fragment) => {
-                let observation = self.native_semantic_observation().await?;
-                let matched = observation
+                let Some(metadata) = self.native_page_metadata()? else {
+                    return Ok((false, "page_metadata_pending".into(), None));
+                };
+                let matched = metadata
                     .page
                     .title
                     .to_lowercase()
                     .contains(&fragment.to_lowercase());
-                Ok((matched, format!("title={}", observation.page.title), None))
+                Ok((matched, format!("title={}", metadata.page.title), None))
             }
             WaitCondition::Text(expected) => {
                 let observation = self.native_semantic_observation().await?;

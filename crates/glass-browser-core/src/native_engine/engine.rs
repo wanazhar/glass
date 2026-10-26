@@ -310,6 +310,17 @@ pub struct NativeEngineSnapshot {
     pub viewport: super::config::Viewport,
 }
 
+/// Lightweight current-page identity for waits and status checks that do not
+/// need a semantic tree or layout snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePageMetadata {
+    pub lifecycle: NativeLifecycleState,
+    pub url: String,
+    pub title: String,
+    pub title_truncated: bool,
+    pub revision: u64,
+}
+
 /// Result of an accepted native semantic action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeActionResult {
@@ -1302,6 +1313,21 @@ impl NativeEngine {
     pub fn semantic_nodes(&self) -> Result<Vec<super::dom::NativeSemanticNode>, NativeEngineError> {
         self.require_running("semantic DOM")?;
         Ok(self.document.semantic_nodes())
+    }
+
+    /// Read current URL/title state without computing visible text, styles, or
+    /// layout. This keeps simple page-identity waits proportional to the title
+    /// node rather than the document's full presentation tree.
+    pub fn page_metadata(&self) -> Result<NativePageMetadata, NativeEngineError> {
+        self.require_running("page metadata")?;
+        let (title, title_truncated) = self.document.title(self.config.limits.max_text_bytes);
+        Ok(NativePageMetadata {
+            lifecycle: self.lifecycle,
+            url: self.url.clone(),
+            title,
+            title_truncated,
+            revision: self.revision,
+        })
     }
 
     /// Capture the current native page, semantic nodes, and layout under one

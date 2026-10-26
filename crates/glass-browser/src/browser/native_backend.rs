@@ -25,8 +25,8 @@ use super::native_engine::{
     NativeFrameScriptWindow, NativeHistoryDirection, NativeInspectionSnapshot,
     NativeLayoutSnapshot, NativeNavigationCancellation, NativeNavigationMethod,
     NativeNavigationRequest, NativeNodeSubtreeTransfer, NativeOrigin, NativePageMessagePortCommand,
-    NativePendingDialog, NativePoint, NativePopupRequest, NativePostMessageRequest,
-    NativePreflightAction, NativeRequestBody, NativeScriptCommand,
+    NativePageMetadata, NativePendingDialog, NativePoint, NativePopupRequest,
+    NativePostMessageRequest, NativePreflightAction, NativeRequestBody, NativeScriptCommand,
     NativeServiceWorkerClientMessage, NativeServiceWorkerOpenWindowRequest,
     NativeSharedWorkerCreateRequest, NativeSharedWorkerStorageKey, NativeSurface,
     NativeTargetPreflight, NativeWebSocketEvent, NativeWindowCloseRequest,
@@ -860,6 +860,15 @@ pub struct NativeFrameInspectionSnapshot {
     pub frame_id: String,
     pub parent_id: Option<String>,
     pub inspection: NativeInspectionSnapshot,
+}
+
+/// Current native page identity plus the selected target/frame route, without
+/// generating the agent-facing tree/layout inspection snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePageMetadataSnapshot {
+    pub target_id: String,
+    pub frame_id: String,
+    pub page: NativePageMetadata,
 }
 
 impl NativeEngineBackend {
@@ -2329,6 +2338,66 @@ impl NativeEngineBackend {
         self.try_lock_engine(BackendOperation::Evidence)?
             .inspection_snapshot()
             .map_err(native_error)
+    }
+
+    /// Read URL and title directly from the active root document without
+    /// forcing CSS, layout, or semantic-node projection. Returns `None` when
+    /// another native operation currently owns either state lock.
+    pub fn try_page_metadata(
+        &self,
+    ) -> Result<Option<NativePageMetadataSnapshot>, BrowserBackendError> {
+        match self.async_effect_pump_error.try_lock() {
+            Ok(error) => {
+                if let Some(error) = error.clone() {
+                    return Err(error);
+                }
+            }
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(poisoned_lock_error(
+                    BackendOperation::Evidence,
+                    "native event pump",
+                ));
+            }
+        }
+        let (target_id, frame_id) = {
+            let targets = match self.targets.try_lock() {
+                Ok(targets) => targets,
+                Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(poisoned_lock_error(
+                        BackendOperation::Evidence,
+                        "target registry",
+                    ));
+                }
+            };
+            let Some(target_id) = targets.active_target_id.clone() else {
+                return Err(BrowserBackendError::Lifecycle {
+                    operation: "page metadata".into(),
+                    state: "no-target-selected".into(),
+                    reason: "select an available native page target before reading page metadata"
+                        .into(),
+                });
+            };
+            (target_id, targets.active_frames.active_frame_id.clone())
+        };
+        let owner = match self.engine.try_lock() {
+            Ok(owner) => Arc::clone(&owner),
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(poisoned_lock_error(BackendOperation::Evidence, "engine"));
+            }
+        };
+        let engine = match owner.try_lock_owned() {
+            Ok(engine) => engine,
+            Err(_) => return Ok(None),
+        };
+        let page = engine.page_metadata().map_err(native_error)?;
+        Ok(Some(NativePageMetadataSnapshot {
+            target_id,
+            frame_id,
+            page,
+        }))
     }
 
     /// Return bounded parser and presentation diagnostics for the active
@@ -11854,6 +11923,49 @@ mod tests {
         NativeMessagePortTransfer, NativeNodeSubtreeTransfer, NativeOrigin,
     };
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn page_metadata_reports_pending_when_native_state_is_busy() {
+        let backend = NativeEngineBackend::new(NativeEngineConfig::default())
+            .expect("native backend must construct");
+        let owner = {
+            let engine = backend
+                .engine
+                .lock()
+                .expect("engine owner lock must be available");
+            Arc::clone(&engine)
+        };
+        let _engine = Arc::clone(&owner).lock_owned().await;
+        assert!(
+            backend
+                .try_page_metadata()
+                .expect("busy metadata read must not be an error")
+                .is_none()
+        );
+
+        drop(_engine);
+        let _targets = backend
+            .targets
+            .lock()
+            .expect("target lock must be available");
+        assert!(
+            backend
+                .try_page_metadata()
+                .expect("busy target read must not be an error")
+                .is_none()
+        );
+        drop(_targets);
+        let _pump = backend
+            .async_effect_pump_error
+            .lock()
+            .expect("pump error lock must be available");
+        assert!(
+            backend
+                .try_page_metadata()
+                .expect("busy pump error read must not be an error")
+                .is_none()
+        );
+    }
 
     #[test]
     fn native_backend_profile_describes_bounded_navigation_and_script_support() {

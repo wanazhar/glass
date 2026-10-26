@@ -19,11 +19,11 @@ mod grid;
 #[path = "builder/text.rs"]
 mod text;
 
-const MAX_LAYOUT_TEXT_WIDTH_CACHE_ENTRIES: usize = 4096;
-const MAX_LAYOUT_TEXT_WIDTH_CACHE_TEXT_BYTES: usize = 128;
+pub(in crate::native_engine) const MAX_LAYOUT_TEXT_WIDTH_CACHE_ENTRIES: usize = 4096;
+pub(in crate::native_engine) const MAX_LAYOUT_TEXT_WIDTH_CACHE_TEXT_BYTES: usize = 128;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(super) struct NativeTextWidthCacheKey {
+pub(in crate::native_engine) struct NativeTextWidthCacheKey {
     font_family: NativeFontFamilyList,
     font_size: u32,
     font_weight: FontWeightValue,
@@ -31,6 +31,32 @@ pub(super) struct NativeTextWidthCacheKey {
     font_stretch: u16,
     letter_spacing: u32,
     word_spacing: u32,
+}
+
+impl NativeTextWidthCacheKey {
+    pub(super) fn for_style(style: NativeComputedStyle) -> Option<Self> {
+        (style.direction() == super::super::css::DirectionValue::Ltr
+            && style.font_variant_ligatures() == NativeFontVariantLigatures::default()
+            && style.font_variant_caps() == NativeFontVariantCaps::default()
+            && style.font_variant_position() == NativeFontVariantPosition::default()
+            && style.font_variant_alternates() == NativeFontVariantAlternates::default()
+            && style.font_language_override() == Default::default()
+            && style.font_variation_settings() == NativeFontVariationSettings::default()
+            && style.font_variant_east_asian() == NativeFontVariantEastAsian::default()
+            && style.font_variant_numeric() == NativeFontVariantNumeric::default()
+            && style.font_feature_settings() == Default::default()
+            && style.font_kerning() == NativeFontKerning::Auto
+            && style.font_optical_sizing() == NativeFontOpticalSizing::Auto)
+            .then(|| Self {
+                font_family: style.font_family(),
+                font_size: style.font_size(),
+                font_weight: style.font_weight(),
+                font_style: style.font_style(),
+                font_stretch: style.font_stretch().min,
+                letter_spacing: style.letter_spacing(),
+                word_spacing: style.word_spacing(),
+            })
+    }
 }
 
 pub(super) struct LayoutBuilder<'a> {
@@ -44,7 +70,7 @@ pub(super) struct LayoutBuilder<'a> {
     pub(super) fixed: bool,
     pub(super) sticky_root: Option<usize>,
     pub(super) stacking_context: i32,
-    pub(super) text_width_cache: HashMap<NativeTextWidthCacheKey, HashMap<String, u32>>,
+    pub(super) text_width_cache: std::rc::Rc<super::NativeLayoutTextWidthCache>,
     pub(super) text_width_cache_entries: usize,
     pub(super) text_width_cache_hits: usize,
 }
@@ -118,6 +144,8 @@ impl<'a> LayoutBuilder<'a> {
                 letter_spacing,
                 owns_line_boundaries,
             },
+            std::rc::Rc::clone(&self.text_width_cache),
+            NativeTextWidthCacheKey::for_style(style),
         );
         let containing_block = self.containing_block;
         self.process_children(parent, &mut flow, depth, containing_block);
@@ -1199,46 +1227,17 @@ impl<'a> LayoutBuilder<'a> {
         style: NativeComputedStyle,
         text: &str,
     ) -> u32 {
-        let cacheable = text.len() <= MAX_LAYOUT_TEXT_WIDTH_CACHE_TEXT_BYTES
-            && style.direction() == super::super::css::DirectionValue::Ltr
-            && style.font_variant_ligatures() == NativeFontVariantLigatures::default()
-            && style.font_variant_caps() == NativeFontVariantCaps::default()
-            && style.font_variant_position() == NativeFontVariantPosition::default()
-            && style.font_variant_alternates() == NativeFontVariantAlternates::default()
-            && style.font_language_override() == Default::default()
-            && style.font_variation_settings() == NativeFontVariationSettings::default()
-            && style.font_variant_east_asian() == NativeFontVariantEastAsian::default()
-            && style.font_variant_numeric() == NativeFontVariantNumeric::default()
-            && style.font_feature_settings() == Default::default()
-            && style.font_kerning() == NativeFontKerning::Auto
-            && style.font_optical_sizing() == NativeFontOpticalSizing::Auto;
-        if !cacheable {
-            return metrics.measure_text(text, style.letter_spacing(), style.word_spacing());
-        }
-        let key = NativeTextWidthCacheKey {
-            font_family: style.font_family(),
-            font_size: style.font_size(),
-            font_weight: style.font_weight(),
-            font_style: style.font_style(),
-            font_stretch: style.font_stretch().min,
-            letter_spacing: style.letter_spacing(),
-            word_spacing: style.word_spacing(),
-        };
-        if let Some(width) = self
-            .text_width_cache
-            .get(&key)
-            .and_then(|widths| widths.get(text))
-            .copied()
-        {
+        let (width, hit, inserted) = self.text_width_cache.measure(
+            NativeTextWidthCacheKey::for_style(style).as_ref(),
+            text,
+            metrics,
+            style.letter_spacing(),
+            style.word_spacing(),
+        );
+        if hit {
             self.text_width_cache_hits = self.text_width_cache_hits.saturating_add(1);
-            return width;
         }
-        let width = metrics.measure_text(text, style.letter_spacing(), style.word_spacing());
-        if self.text_width_cache_entries < MAX_LAYOUT_TEXT_WIDTH_CACHE_ENTRIES {
-            self.text_width_cache
-                .entry(key)
-                .or_default()
-                .insert(text.to_owned(), width);
+        if inserted {
             self.text_width_cache_entries += 1;
         }
         width
@@ -1486,7 +1485,9 @@ mod text_width_cache_tests {
             fixed: false,
             sticky_root: None,
             stacking_context: 0,
-            text_width_cache: HashMap::new(),
+            text_width_cache: std::rc::Rc::new(super::super::NativeLayoutTextWidthCache::new(
+                HashMap::new(),
+            )),
             text_width_cache_entries: 0,
             text_width_cache_hits: 0,
         }

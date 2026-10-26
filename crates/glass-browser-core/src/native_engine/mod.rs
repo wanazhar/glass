@@ -83,7 +83,7 @@ pub use engine::parse_point_target;
 pub use engine::{
     NativeActionResult, NativeActionabilityReason, NativeDiagnosticsSnapshot,
     NativeEffectsSnapshot, NativeEngine, NativeEngineSnapshot, NativeInspectionSnapshot,
-    NativePreflightAction, NativeScrollTargetSnapshot, NativeTargetErrorKind,
+    NativePageMetadata, NativePreflightAction, NativeScrollTargetSnapshot, NativeTargetErrorKind,
     NativeTargetPreflight,
 };
 pub use error::{NativeEngineError, NativeWorkerFailureKind};

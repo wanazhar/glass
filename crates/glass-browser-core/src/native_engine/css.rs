@@ -2600,6 +2600,7 @@ mod computed_style;
 pub(crate) struct NativeStylesheet {
     rules: Vec<NativeStyleRule>,
     rule_index: NativeStyleRuleIndex,
+    custom_property_rule_index: NativeStyleRuleIndex,
     background_image_rule_index: NativeStyleRuleIndex,
     background_image_sources: BTreeMap<u32, String>,
     font_face_rules: Vec<NativeFontFaceRule>,

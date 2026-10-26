@@ -59,7 +59,11 @@ pub(super) fn decode_html_body(
         }
     } else {
         match label.as_str() {
-            "utf-8" | "utf8" => String::from_utf8(bytes.to_vec()).map_err(|_| ()),
+            // HTML decoding uses the Encoding Standard's replacement behavior
+            // for malformed UTF-8. A declared, supported UTF-8 charset must
+            // not be reported as an unsupported encoding just because the
+            // response contains a bad byte sequence.
+            "utf-8" | "utf8" => Ok(String::from_utf8_lossy(bytes).into_owned()),
             "utf-16" | "utf-16le" => decode_utf16(bytes, true),
             "utf-16be" => decode_utf16(bytes, false),
             "us-ascii" => {

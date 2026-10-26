@@ -3333,7 +3333,7 @@ fn provider_tool_aliases(
         .collect::<std::collections::HashSet<_>>();
     let mut aliases = std::collections::HashMap::new();
     let mut next = 0_u64;
-    for (name, _, _) in tools {
+    for (name, description, _) in tools {
         if name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
@@ -3349,6 +3349,14 @@ fn provider_tool_aliases(
             }
         };
         *name = alias.clone();
+        // Provider wire names must use the restricted identifier alphabet,
+        // but removing the canonical name from the advertised catalogue made
+        // hosted tools difficult for models to discover. Preserve the actual
+        // route in the human-readable description; returned aliases are still
+        // restored before host validation and dispatch.
+        *description = format!(
+            "Glass route: {original}. Invoke this using the advertised tool name. {description}"
+        );
         aliases.insert(alias, original);
     }
     aliases
@@ -3474,12 +3482,16 @@ mod warm_integration {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
         }));
+        assert!(tools[2].1.starts_with(
+            "Glass route: glass.workspace.list. Invoke this using the advertised tool name."
+        ));
     }
 
     #[test]
     fn mixed_host_provider_alias_is_restored_before_execution() {
         struct ProviderSpy {
             request_tools: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+            request_descriptions: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
             requests: AtomicU64,
         }
         impl Provider for ProviderSpy {
@@ -3496,6 +3508,13 @@ mod warm_integration {
                     .map(|(name, _, _)| name.clone())
                     .collect::<Vec<_>>();
                 self.request_tools.lock().unwrap().push(names.clone());
+                self.request_descriptions.lock().unwrap().push(
+                    request
+                        .tools
+                        .iter()
+                        .map(|(_, description, _)| description.clone())
+                        .collect(),
+                );
                 let event = if self.requests.fetch_add(1, Ordering::SeqCst) == 0 {
                     let alias = names
                         .iter()
@@ -3522,6 +3541,7 @@ mod warm_integration {
         std::fs::create_dir_all(&dir).unwrap();
         let provider = ProviderSpy {
             request_tools: Arc::new(std::sync::Mutex::new(Vec::new())),
+            request_descriptions: Arc::new(std::sync::Mutex::new(Vec::new())),
             requests: AtomicU64::new(0),
         };
         let host_calls = Arc::new(AtomicU64::new(0));
@@ -3540,15 +3560,22 @@ mod warm_integration {
             &dir,
         )
         .with_mixed_host_tools(
-            vec![(
-                "glass.workspace.list".into(),
-                "List Glass workspaces".into(),
-                r#"{"type":"object"}"#.into(),
-            )],
+            vec![
+                (
+                    "glass.browser.observe".into(),
+                    "Observe the current Glass native browser page".into(),
+                    r#"{"type":"object"}"#.into(),
+                ),
+                (
+                    "glass.workspace.list".into(),
+                    "List Glass workspaces".into(),
+                    r#"{"type":"object"}"#.into(),
+                ),
+            ],
             Box::new(move |call, _, _| {
-                assert_eq!(call.name, "glass.workspace.list");
+                assert_eq!(call.name, "glass.browser.observe");
                 observed.fetch_add(1, Ordering::SeqCst);
-                HostToolOutcome::plain(tools::Outcome::ok("workspace listed".into()))
+                HostToolOutcome::plain(tools::Outcome::ok("native page observed".into()))
             }),
         );
 
@@ -3565,13 +3592,28 @@ mod warm_integration {
         assert!(
             requests
                 .iter()
-                .all(|names| !names.iter().any(|name| name.contains('.')))
+                .all(|names| names.contains(&"web_search".into()))
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|names| names.contains(&"web_fetch".into()))
         );
         drop(requests);
+        let descriptions = provider.request_descriptions.lock().unwrap();
+        assert!(descriptions.iter().all(|descriptions| {
+            descriptions
+                .iter()
+                .any(|description| description.starts_with("Glass route: glass.browser.observe."))
+                && descriptions.iter().any(|description| {
+                    description.starts_with("Glass route: glass.workspace.list.")
+                })
+        }));
+        drop(descriptions);
         drop(agent);
         assert!(session.history_records().iter().any(|record| matches!(
             record,
-            Record::ToolCall { name, .. } if name == "glass.workspace.list"
+            Record::ToolCall { name, .. } if name == "glass.browser.observe"
         )));
         drop(session);
         std::fs::remove_dir_all(&dir).unwrap();

@@ -303,6 +303,8 @@ pub struct BrowserWorkspaceState {
     pub generation: u64,
     pub owned: bool,
     pub endpoint: Option<String>,
+    /// Actual execution backend reported by the resident browser service.
+    pub backend: Option<String>,
     pub recovery_reason: Option<String>,
     pub title: String,
     pub url: String,
@@ -335,6 +337,7 @@ impl Default for BrowserWorkspaceState {
             generation: 0,
             owned: false,
             endpoint: None,
+            backend: None,
             recovery_reason: None,
             title: "No page".into(),
             url: String::new(),
@@ -464,6 +467,7 @@ impl BrowserWorkspaceController {
         self.state.generation = self.state.generation.saturating_add(1);
         self.state.owned = owned;
         self.state.endpoint = endpoint.map(bounded);
+        self.state.backend = self.state.endpoint.as_ref().map(|_| "chromium".into());
         self.state.recovery_reason = None;
         self.observe_revision(revision);
     }

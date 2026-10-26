@@ -230,6 +230,7 @@ pub(crate) struct GlassCoreRuntime {
     host_events: VecDeque<Value>,
     startup_events: Vec<Value>,
     pending_operations: HashMap<String, String>,
+    pending_command_names: HashMap<String, String>,
     active_turn: Option<Value>,
 }
 
@@ -400,6 +401,7 @@ impl GlassCoreRuntime {
             host_events: VecDeque::new(),
             startup_events: Vec::new(),
             pending_operations: HashMap::new(),
+            pending_command_names: HashMap::new(),
             active_turn: None,
         };
         runtime.initialize()?;
@@ -742,12 +744,20 @@ impl GlassCoreRuntime {
                 }))?;
                 self.pending_operations
                     .insert(id.clone(), request_operation(&request).into());
+                if let crate::resident_harness::ResidentSessionRequest::CoreCommand {
+                    name, ..
+                } = &request
+                {
+                    self.pending_command_names
+                        .insert(id.clone(), name.trim_start_matches('/').to_string());
+                }
             }
             Err(reason) => {
                 self.host_events.push_back(json!({
                     "type": "response",
                     "id": id,
                     "operation": request_operation(&request),
+                    "commandName": request_command_name(&request),
                     "ok": false,
                     "error": reason,
                 }));
@@ -836,6 +846,9 @@ impl GlassCoreRuntime {
                 let operation = id
                     .as_str()
                     .and_then(|id| self.pending_operations.remove(id));
+                let command_name = id
+                    .as_str()
+                    .and_then(|id| self.pending_command_names.remove(id));
                 let mut event = json!({
                     "type": "response",
                     "id": id,
@@ -843,6 +856,9 @@ impl GlassCoreRuntime {
                 });
                 if let Some(operation) = operation.as_ref() {
                     event["operation"] = Value::String(operation.clone());
+                }
+                if let Some(command_name) = command_name {
+                    event["commandName"] = Value::String(command_name);
                 }
                 if let Some(result) = value.get("result") {
                     event["result"] = if operation.as_deref() == Some("coreTaskGraph") {
@@ -1255,6 +1271,15 @@ fn request_operation(request: &crate::resident_harness::ResidentSessionRequest) 
         Request::Messages => "messages",
         Request::SessionStats => "stats",
         Request::SetSessionName { .. } => "setName",
+    }
+}
+
+fn request_command_name(request: &crate::resident_harness::ResidentSessionRequest) -> Option<&str> {
+    match request {
+        crate::resident_harness::ResidentSessionRequest::CoreCommand { name, .. } => {
+            Some(name.trim_start_matches('/'))
+        }
+        _ => None,
     }
 }
 
@@ -2296,9 +2321,14 @@ mod tests {
             .expect("catalogue response");
         assert_eq!(catalogue["operation"], "coreCommands");
         assert_eq!(catalogue["result"]["source"], "glass-core");
+        assert_eq!(catalogue["result"]["commandPresentationVersion"], 1);
         assert_eq!(
-            catalogue["result"]["commands"][1]["runtimeMode"],
+            catalogue["result"]["commands"][3]["runtimeMode"],
             "interactive"
+        );
+        assert_eq!(
+            catalogue["result"]["commands"][3]["presentationKind"],
+            "picker"
         );
 
         runtime
@@ -2313,6 +2343,7 @@ mod tests {
             .expect("status response");
         assert_eq!(status["operation"], "coreCommand");
         assert_eq!(status["result"]["name"], "status");
+        assert_eq!(status["result"]["presentation"]["kind"], "status");
         assert!(
             status["result"]["text"]
                 .as_str()
@@ -2331,6 +2362,21 @@ mod tests {
             .unwrap()
             .expect("interactive handoff response");
         assert_eq!(handoff["result"]["requiresInteractive"], true);
+        assert_eq!(handoff["result"]["presentation"]["kind"], "picker");
+
+        runtime
+            .start_request(ResidentSessionRequest::CoreCommand {
+                name: "error".into(),
+                arguments: None,
+            })
+            .unwrap();
+        let failure = runtime
+            .recv_event_timeout(Duration::from_secs(2))
+            .unwrap()
+            .expect("command error response");
+        assert_eq!(failure["operation"], "coreCommand");
+        assert_eq!(failure["commandName"], "error");
+        assert_eq!(failure["error"]["message"], "fixture command failed");
         drop(runtime);
         fs::remove_dir_all(root).unwrap();
     }
@@ -2400,32 +2446,66 @@ mod tests {
         executor: Option<crate::resident_harness::AgentToolExecutor>,
         mode: &str,
     ) -> DevelopmentResult<GlassCoreRuntime> {
-        let python = python3().expect("python3 is required for this fixture test");
+        let binary = fixture_core_binary(root, mode);
         GlassCoreRuntime::spawn(
             root,
             CoreRuntimeOptions {
                 session_dir: root.join("sessions"),
                 name: Some("fixture".into()),
                 local_tool_executor: executor,
-                binary: Some(python),
-                binary_args: vec![fixture().display().to_string(), mode.into()],
+                binary: Some(binary),
                 ..CoreRuntimeOptions::default()
             },
         )
     }
 
     fn spawn_exact_mode(root: &Path, mode: &str) -> DevelopmentResult<GlassCoreRuntime> {
-        let python = python3().expect("python3 is required for this fixture test");
+        let binary = fixture_core_binary(root, mode);
         GlassCoreRuntime::spawn(
             root,
             CoreRuntimeOptions {
                 session_dir: root.join("sessions"),
                 resume_session_id: Some("fixture-session".into()),
-                binary: Some(python),
-                binary_args: vec![fixture().display().to_string(), mode.into()],
+                binary: Some(binary),
                 ..CoreRuntimeOptions::default()
             },
         )
+    }
+
+    fn fixture_core_binary(root: &Path, mode: &str) -> PathBuf {
+        let python = python3().expect("python3 is required for this fixture test");
+        #[cfg(unix)]
+        let binary = root.join("fixture-glass-core");
+        #[cfg(windows)]
+        let binary = root.join("fixture-glass-core.cmd");
+        #[cfg(unix)]
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'glass-core {}\\n'; exit 0; fi\nexec '{}' '{}' '{}' \"$@\"\n",
+            env!("CARGO_PKG_VERSION"),
+            python.display(),
+            fixture().display(),
+            mode
+        );
+        #[cfg(windows)]
+        let script = format!(
+            "@echo off\r\nif \"%1\"==\"--version\" (echo glass-core {}& exit /b 0)\r\n\"{}\" \"{}\" \"{}\" %*\r\n",
+            env!("CARGO_PKG_VERSION"),
+            python.display(),
+            fixture().display(),
+            mode
+        );
+        fs::write(&binary, script).expect("write versioned fixture Core wrapper");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&binary)
+                .expect("stat fixture Core wrapper")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&binary, permissions)
+                .expect("make fixture Core wrapper executable");
+        }
+        binary
     }
 
     fn drain(runtime: &mut GlassCoreRuntime, timeout: Duration) -> Vec<Value> {
@@ -2876,14 +2956,12 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let python = python3().unwrap();
         let runtime = GlassCoreRuntime::spawn(
             &root,
             CoreRuntimeOptions {
                 session_dir: root.join("sessions"),
                 resume: true,
-                binary: Some(python),
-                binary_args: vec![fixture().display().to_string()],
+                binary: Some(fixture_core_binary(&root, "mixed")),
                 ..CoreRuntimeOptions::default()
             },
         )

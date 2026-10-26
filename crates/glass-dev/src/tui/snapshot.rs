@@ -187,6 +187,7 @@ pub struct DisplaySnapshot {
 #[derive(Debug, Clone, Default)]
 pub struct CoreCommandCatalogue {
     pub commands: Vec<serde_json::Value>,
+    pub presentation_version: u16,
     pub error: Option<String>,
 }
 
@@ -228,6 +229,12 @@ fn core_command_catalogues(
         }
         let catalogue = catalogues.entry(event.agent_id.clone()).or_default();
         if event.payload.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+            catalogue.presentation_version = event
+                .payload
+                .pointer("/result/commandPresentationVersion")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|version| *version == 1)
+                .unwrap_or_default() as u16;
             catalogue.commands = event
                 .payload
                 .pointer("/result/commands")
@@ -1479,7 +1486,7 @@ mod tests {
                 serde_json::json!({
                     "operation":"coreCommands",
                     "ok":true,
-                    "result":{"commands":[{"name":"status"}]}
+                    "result":{"commandPresentationVersion":1,"commands":[{"name":"status"}]}
                 }),
             ),
             event(
@@ -1487,12 +1494,13 @@ mod tests {
                 serde_json::json!({
                     "operation":"coreCommands",
                     "ok":true,
-                    "result":{"commands":[{"name":"status"},{"name":"model"}]}
+                    "result":{"commandPresentationVersion":1,"commands":[{"name":"status"},{"name":"model"}]}
                 }),
             ),
         ]);
         assert_eq!(catalogues[&agent].commands.len(), 2);
         assert_eq!(catalogues[&agent].commands[1]["name"], "model");
+        assert_eq!(catalogues[&agent].presentation_version, 1);
 
         let catalogues = core_command_catalogues(&[event(
             3,

@@ -1,7 +1,7 @@
 //! Decomposed full Glass Dev terminal application.
 //!
-//! The event loop keeps overlays above surface keys: quit, editor exit, help,
-//! menus, pickers, recovery, human mutation confirmation, the
+//! The event loop keeps overlays above surface keys: quit, editor exit, Core UI,
+//! help, menus, pickers, recovery, human mutation confirmation, the
 //! full-screen editor, composer dock, then the command palette. Git workbench
 //! keys stay live while a diff is open, but they do not trap confirm or
 //! palette input. `Ctrl-C` opens quit confirmation from editor input; an
@@ -527,6 +527,62 @@ pub(crate) fn run_with_browser_policy(
                         }
                     } else if active_overlay == Some(overlay::ActiveOverlay::EditorExitPrompt) {
                         state.handle_editor_exit_key(key.code);
+                    } else if active_overlay == Some(overlay::ActiveOverlay::NativeGcUiPanel) {
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Esc, _) => state.close_native_gc_ui_panel(),
+                            (KeyCode::Char('u'), modifiers)
+                                if modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                state.native_gc_ui_search_clear()
+                            }
+                            (KeyCode::Char('/'), modifiers)
+                                if !modifiers.intersects(
+                                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                                ) =>
+                            {
+                                state.native_gc_ui_search_start()
+                            }
+                            (KeyCode::Enter, _) => state.native_gc_ui_search_finish(),
+                            (KeyCode::Backspace, _)
+                                if state
+                                    .native_gc_ui_panel
+                                    .as_ref()
+                                    .is_some_and(|panel| panel.searching) =>
+                            {
+                                state.native_gc_ui_search_backspace()
+                            }
+                            (KeyCode::Char(character), modifiers)
+                                if !modifiers.intersects(
+                                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                                ) && state
+                                    .native_gc_ui_panel
+                                    .as_ref()
+                                    .is_some_and(|panel| panel.searching) =>
+                            {
+                                state.native_gc_ui_search_char(character)
+                            }
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _)
+                                if !state
+                                    .native_gc_ui_panel
+                                    .as_ref()
+                                    .is_some_and(|panel| panel.searching) =>
+                            {
+                                state.scroll_native_gc_ui(-1)
+                            }
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _)
+                                if !state
+                                    .native_gc_ui_panel
+                                    .as_ref()
+                                    .is_some_and(|panel| panel.searching) =>
+                            {
+                                state.scroll_native_gc_ui(1)
+                            }
+                            (KeyCode::PageUp, _) => state.scroll_native_gc_ui(-8),
+                            (KeyCode::PageDown, _) => state.scroll_native_gc_ui(8),
+                            (KeyCode::Home, _) => state.scroll_native_gc_ui(i32::MIN),
+                            (KeyCode::End, _) => state.scroll_native_gc_ui(i32::MAX),
+                            _ => {}
+                        }
                     } else if key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
@@ -1624,6 +1680,11 @@ fn reset_pointer_on_overlay_transition(
 
 fn route_paste(state: &mut DevTuiState, text: &str) {
     match overlay::active_overlay(state) {
+        Some(overlay::ActiveOverlay::NativeGcUiPanel) => {
+            for character in text.chars() {
+                state.native_gc_ui_search_char(character);
+            }
+        }
         Some(overlay::ActiveOverlay::BrowserDialog) => {
             for character in text.chars() {
                 state.insert_native_dialog_char(character);

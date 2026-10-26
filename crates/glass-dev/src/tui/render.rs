@@ -594,6 +594,10 @@ pub fn render(frame: &mut Frame<'_>, state: &DevTuiState) {
             render_native_browser_dialog(frame, state, area);
             return;
         }
+        Some(ActiveOverlay::NativeGcUiPanel) => {
+            render_native_gc_ui_panel(frame, state, area);
+            return;
+        }
         Some(ActiveOverlay::Help) => {
             render_help(frame, state, area);
             return;
@@ -2077,6 +2081,63 @@ fn render_help(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
         area,
     );
 }
+
+fn render_native_gc_ui_panel(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
+    let Some(panel) = state.native_gc_ui_panel.as_ref() else {
+        return;
+    };
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(area);
+    let title = format!(" CORE · /{} ", panel.command);
+    let block = Block::default()
+        .title(title)
+        .title_style(Style::default().fg(PURPLE).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(PURPLE))
+        .bg(PANEL_BACKGROUND)
+        .padding(Padding::horizontal(1));
+    let query = if panel.searching {
+        format!("Search /{}▏ · Enter done · Esc close", panel.query)
+    } else {
+        format!(
+            "/ search · j/k or ↑/↓ scroll · Esc close{}",
+            if panel.pending { " · loading" } else { "" }
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(query)
+            .style(Style::default().fg(MUTED))
+            .block(
+                Block::default()
+                    .bg(PANEL_BACKGROUND)
+                    .padding(Padding::horizontal(1)),
+            ),
+        rows[0],
+    );
+    let lines = panel
+        .visible_lines()
+        .into_iter()
+        .map(|line| {
+            let safe = line
+                .chars()
+                .filter(|character| !character.is_control() || *character == '\t')
+                .collect::<String>();
+            Line::from(safe)
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .style(Style::default().fg(TEXT))
+            .scroll((panel.scroll, 0))
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        rows[1],
+    );
+}
+
 fn render_factory_home(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -5828,6 +5889,58 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn core_help_panel_renders_search_and_scroll_at_phone_and_desktop_sizes() {
+        let (mut state, root) = overlay_state();
+        let owner = crate::AgentId::parse("agent-0001").unwrap();
+        state.open_native_gc_ui_pending(owner, "help");
+        if let Some(panel) = state.native_gc_ui_panel.as_mut() {
+            panel.pending = false;
+            panel.content = (0..40)
+                .map(|index| format!("/command-{index:02}  Native Core command"))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+
+        for (width, height) in [(58, 24), (80, 24), (120, 36)] {
+            state.terminal_width = width;
+            state.terminal_height = height;
+            let first_page = rendered(&state, width, height);
+            assert!(first_page.contains("CORE · /help"), "{width}x{height}");
+            assert!(first_page.contains("/command-00"), "{width}x{height}");
+            assert!(!first_page.contains("/command-39"), "{width}x{height}");
+
+            state.scroll_native_gc_ui(i32::MAX);
+            let later_page = rendered(&state, width, height);
+            let expected_first_line = format!(
+                "/command-{:02}",
+                state.native_gc_ui_panel.as_ref().unwrap().scroll
+            );
+            assert!(
+                later_page.contains(&expected_first_line),
+                "{width}x{height} scroll {}: {later_page:?}",
+                state.native_gc_ui_panel.as_ref().unwrap().scroll
+            );
+            assert!(!later_page.contains("/command-00"), "{width}x{height}");
+            state.scroll_native_gc_ui(i32::MIN);
+
+            state.native_gc_ui_search_start();
+            for character in "command-39".chars() {
+                state.native_gc_ui_search_char(character);
+            }
+            let search = rendered(&state, width, height);
+            assert!(search.contains("/command-39"), "{width}x{height}");
+            assert!(!search.contains("/command-00"), "{width}x{height}");
+            state.native_gc_ui_search_clear();
+        }
+
+        state.close_native_gc_ui_panel();
+        let closed = rendered(&state, 80, 24);
+        assert!(!closed.contains("CORE · /help"));
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn install_native_dialog(state: &mut DevTuiState, dialog_type: &str) {
         let prompt = dialog_type == "prompt";
         let prompt_input = if prompt { "Ada" } else { "" };
@@ -6204,6 +6317,7 @@ mod tests {
             client_message_id: None,
             tool_name: None,
             tool_card: None,
+            core_ui: None,
         })
         .collect();
 
@@ -6300,6 +6414,7 @@ mod tests {
                 spill: None,
                 truncated: false,
             }),
+            core_ui: None,
         })
         .collect();
 
@@ -6341,6 +6456,7 @@ mod tests {
             client_message_id: None,
             tool_name: None,
             tool_card: None,
+            core_ui: None,
         }];
         let text = agent_conversation_text(&state, "", 32, 4);
         assert!(text.lines.len() <= 4);
@@ -6362,6 +6478,7 @@ mod tests {
             client_message_id: None,
             tool_name: None,
             tool_card: None,
+            core_ui: None,
         }];
         let text = agent_conversation_text(&state, "", 72, 8).to_string();
         assert!(text.contains("PgUp/PgDn"));
@@ -7006,6 +7123,7 @@ mod tests {
                 client_message_id: None,
                 tool_name: None,
                 tool_card: None,
+                core_ui: None,
             })
             .collect();
         state.agent_conversations.insert(

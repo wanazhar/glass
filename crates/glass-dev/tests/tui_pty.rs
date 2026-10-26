@@ -785,8 +785,10 @@ fn fake_core_binary_with_mode(mode: &str) -> std::path::PathBuf {
     std::fs::write(
         &path,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'glass-core 0.1.0\\n'; exit 0; fi\nif [ $# -eq 0 ]; then printf 'FAKE GLASS CORE NATIVE UI\\n'; exit 0; fi\nexec python3 '{}' '{}' \"$@\"\n",
-            fixture.display(), mode
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'glass-core {}\\n'; exit 0; fi\nif [ $# -eq 0 ]; then printf 'FAKE GLASS CORE NATIVE UI\\n'; exit 0; fi\nexec python3 '{}' '{}' \"$@\"\n",
+            env!("CARGO_PKG_VERSION"),
+            fixture.display(),
+            mode
         ),
     )
     .unwrap();
@@ -3714,6 +3716,182 @@ fn gc_commands_are_discoverable_and_forwarded_from_the_launcher_terminal() {
     session.kill();
     let _ = std::fs::remove_file(fake_core);
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn gc_palette_commands_use_owned_surfaces_and_return_to_the_composer_in_pty() {
+    if std::env::var("GLASS_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    for (width, height) in [(58, 24), (80, 24), (120, 36)] {
+        let root = workspace_root();
+        let _root_guard = TemporaryProjectGuard(root.clone());
+        let launcher_dir = root.join("launcher");
+        std::fs::create_dir_all(&launcher_dir).unwrap();
+        let launcher = launcher_dir.join("glass");
+        std::fs::hard_link(std::path::Path::new(&binary()), &launcher)
+            .expect("link the exact launcher under test");
+        let fake_core = fake_core_binary_with_mode("mixed");
+        let adjacent_core = launcher_dir.join("glass-core");
+        std::fs::copy(&fake_core, &adjacent_core).expect("install adjacent fake Core fixture");
+        let mut permissions = std::fs::metadata(&adjacent_core).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&adjacent_core, permissions).unwrap();
+        let data_home = root.join("data-home");
+        let fixture_state = root.join(".glass");
+        std::fs::create_dir_all(&fixture_state).unwrap();
+        std::fs::write(fixture_state.join("e2e-core-request-log"), "enabled").unwrap();
+        let mut core_guard =
+            FixtureChildGuard::new(root.join(".glass/agent-sessions/fixture-runtime-pid"));
+        let mut session = Session::start_with_data_home_options(
+            &launcher.display().to_string(),
+            &root,
+            width,
+            height,
+            None,
+            Some(&data_home),
+        );
+        session.wait_for_agent_surface();
+
+        let palette_start = session.output().len();
+        session.send(b"/");
+        assert!(
+            session.wait_for_output_after(palette_start, "/compact", Duration::from_secs(8)),
+            "Core command catalogue was not ready at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        session.send(b"help");
+        let request_start = session.output().len();
+        session.send(b"\r");
+        let received_help = session.wait_for_output_after(
+            request_start,
+            "HELP_PANEL_MARKER",
+            Duration::from_secs(8),
+        );
+        assert!(
+            received_help,
+            "Core help panel did not receive its result at {width}x{height}\n{}\nfixture requests: {}",
+            session.output_tail(),
+            std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+                .unwrap_or_default()
+        );
+        let help = session.visible_output_from(request_start);
+        assert!(
+            help.contains("/status"),
+            "loaded Core help content missing at {width}x{height}: {help}"
+        );
+
+        let close_start = session.output().len();
+        session.send(b"\x1b");
+        session.send(b"/");
+        session.send(b"status");
+        session.send(b"\r");
+        assert!(
+            session.wait_for_output_after(close_start, "fixture-model", Duration::from_secs(8)),
+            "status result did not use its own panel at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        assert!(
+            session
+                .visible_output_from(close_start)
+                .contains("fixture-model"),
+            "status panel omitted its typed payload"
+        );
+
+        let model_start = session.output().len();
+        session.send(b"\x1b");
+        session.send(b"/");
+        session.send(b"model");
+        session.send(b"\r");
+        assert!(
+            session.wait_for_output_after(model_start, "claude-opus-4", Duration::from_secs(8)),
+            "model command did not open the provider picker at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        // The first Escape returns from the model picker to the Core palette;
+        // the second closes the palette and preserves its query as a draft.
+        session.send(b"\x1b");
+        session.send(b"\x1b");
+        session.send(b"\x7f\x7f\x7f\x7f\x7f\x7f");
+
+        for command in ["settings", "history", "todo"] {
+            let unsupported_start = session.output().len();
+            session.send(b"\x1b");
+            session.send(b"/");
+            session.send(command.as_bytes());
+            session.send(b"\r");
+            assert!(
+                session.wait_for_output_after(
+                    unsupported_start,
+                    "No action was run",
+                    Duration::from_secs(5)
+                ),
+                "unsupported /{command} did not use an owner panel at {width}x{height}\n{}",
+                session.output_tail()
+            );
+            assert!(
+                session
+                    .visible_output_from(unsupported_start)
+                    .contains("Not available in this Glass workspace")
+            );
+            assert!(
+                session
+                    .visible_output_from(unsupported_start)
+                    .contains("No action was run")
+            );
+        }
+
+        let error_start = session.output().len();
+        session.send(b"\x1b");
+        session.send(b"/");
+        session.send(b"error");
+        session.send(b"\r");
+        assert!(
+            session.wait_for_output_after(error_start, "fixture", Duration::from_secs(8)),
+            "command error did not stay in its panel at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        let error_panel = session.visible_output_from(error_start);
+        let runtime_requests =
+            std::fs::read_to_string(fixture_state.join("e2e-core-requests.jsonl"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .map(|request| {
+                    serde_json::json!({
+                        "method": request.get("method"),
+                        "command": request.pointer("/params/name"),
+                    })
+                })
+                .collect::<Vec<_>>();
+        assert!(
+            error_panel.contains("fixture"),
+            "error panel lost its detail: {error_panel}\nCore requests: {runtime_requests:?}"
+        );
+        assert!(
+            error_panel.contains("failed"),
+            "error panel lost its status: {error_panel}"
+        );
+
+        let close_start = session.output().len();
+        session.send(b"\x1b");
+        session.send(b"x");
+        assert!(
+            session.wait_for_composer_text("x", Duration::from_secs(4)),
+            "Esc did not return focus to the always-ready composer at {width}x{height}\n{}",
+            session.output_tail()
+        );
+        assert!(
+            !session
+                .visible_output_from(close_start)
+                .contains("Waiting for Glass Core /error"),
+            "closed command panel resumed a pending state at {width}x{height}"
+        );
+
+        session.kill();
+        core_guard.terminate();
+        let _ = std::fs::remove_file(fake_core);
+    }
 }
 
 #[test]

@@ -715,6 +715,7 @@ mod tests {
                 client_message_id: None,
                 tool_name: None,
                 tool_card: None,
+                core_ui: None,
             })
             .collect();
         let _ = super::super::render::agent_conversation_text(&state, "", 72, 18);
@@ -763,6 +764,7 @@ mod tests {
                 client_message_id: None,
                 tool_name: None,
                 tool_card: None,
+                core_ui: None,
             })
             .collect();
         let _ = super::super::render::agent_conversation_text(&state, "", 72, 18);

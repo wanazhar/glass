@@ -130,10 +130,11 @@ impl BackendFactory {
             .ok_or_else(|| BrowserBackendError::SelectionFailed {
                 reason: "selected backend was not present in registry".into(),
             })?;
-        let backend = candidates
-            .into_iter()
-            .nth(position)
-            .expect("position checked above");
+        let backend = candidates.into_iter().nth(position).ok_or_else(|| {
+            BrowserBackendError::SelectionFailed {
+                reason: "selected backend position was not present in registry".into(),
+            }
+        })?;
         Ok(StartedBackend { selection, backend })
     }
 

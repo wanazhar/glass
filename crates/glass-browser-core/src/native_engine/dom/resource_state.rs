@@ -890,6 +890,7 @@ impl NativeDocument {
     /// so do not cascade candidates that it would immediately discard.
     pub(crate) fn external_background_image_links(&self, limit: usize) -> Vec<(u32, String)> {
         let mut links = Vec::with_capacity(limit.min(self.nodes.len()));
+        let mut rule_candidates = Vec::new();
         for node in &self.nodes {
             if links.len() >= limit {
                 break;
@@ -901,11 +902,14 @@ impl NativeDocument {
                 let has_inline_style =
                     node.inline_style_allowed() && node.attribute("style").is_some();
                 if !has_inline_style
-                    && !self.stylesheet.has_background_image_rule_for_node(
-                        self,
-                        node_id,
-                        self.viewport,
-                    )
+                    && !self
+                        .stylesheet
+                        .has_background_image_rule_for_node_with_candidates(
+                            self,
+                            node_id,
+                            self.viewport,
+                            &mut rule_candidates,
+                        )
                 {
                     return None;
                 }

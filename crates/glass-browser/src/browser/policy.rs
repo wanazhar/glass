@@ -561,12 +561,13 @@ impl BrowserPolicy {
     pub fn preflight_navigation(&self, value: &str) -> NavigationPreflight {
         let normalized = normalize_navigation_url(value);
         let parsed = Url::parse(&normalized);
-        let (safe_url, host) = match parsed {
+        let (url, safe_url, host) = match parsed {
             Ok(url) => {
                 let host = url
                     .host_str()
                     .map(|host| host.trim_end_matches('.').to_string());
-                (Some(redacted_url(&url)), host)
+                let safe_url = redacted_url(&url);
+                (url, Some(safe_url), host)
             }
             Err(error) => {
                 return NavigationPreflight {
@@ -579,7 +580,6 @@ impl BrowserPolicy {
                 };
             }
         };
-        let url = Url::parse(&normalized).expect("navigation URL parsed above");
         match self.check_url(&url) {
             Ok(()) => NavigationPreflight {
                 schema_version: POLICY_SCHEMA_VERSION,

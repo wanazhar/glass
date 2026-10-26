@@ -4067,6 +4067,7 @@ impl NativeStyleRuleIndex {
         index
     }
 
+    #[cfg(test)]
     fn candidates(&self, node: &NativeNode) -> Vec<usize> {
         let mut candidates = Vec::new();
         self.candidates_into(node, &mut candidates);

@@ -206,6 +206,15 @@ struct ScreencastSink {
     sender: mpsc::Sender<CdpScreencastFrame>,
 }
 
+fn lock_screencast_sink(
+    sink: &std::sync::Mutex<Option<ScreencastSink>>,
+) -> std::sync::MutexGuard<'_, Option<ScreencastSink>> {
+    // This lock protects only the optional frame sender and its session id.
+    // Recovering the value keeps a poisoned mutex from panicking the CDP event
+    // reader, which owns response routing for the entire browser connection.
+    sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[derive(Debug, Deserialize)]
 struct IncomingMessage {
     #[serde(default)]
@@ -505,10 +514,7 @@ impl CdpClient {
         &self,
         session_id: Option<String>,
     ) -> Result<mpsc::Receiver<CdpScreencastFrame>, CdpError> {
-        let mut sink = self
-            .screencast_sink
-            .lock()
-            .map_err(|_| CdpError::transport("screencast sink lock poisoned"))?;
+        let mut sink = lock_screencast_sink(&self.screencast_sink);
         if sink.is_some() {
             return Err(CdpError::transport("a screencast scope is already active"));
         }
@@ -520,9 +526,7 @@ impl CdpClient {
     }
 
     pub fn close_screencast_channel(&self) -> (u64, u64) {
-        if let Ok(mut sink) = self.screencast_sink.lock() {
-            *sink = None;
-        }
+        *lock_screencast_sink(&self.screencast_sink) = None;
         (
             self.screencast_received.load(Ordering::Relaxed),
             self.screencast_dropped.load(Ordering::Relaxed),
@@ -1495,7 +1499,7 @@ fn handle_incoming_message(
                     };
                     if let Some(frame) = frame {
                         let frame_id = frame.frame_id;
-                        let sink = screencast.sink.lock().expect("screencast sink poisoned");
+                        let sink = lock_screencast_sink(screencast.sink);
                         if let Some(sink) = sink.as_ref() {
                             if sink.session_id == frame.session_id {
                                 screencast.received.fetch_add(1, Ordering::Relaxed);
@@ -1561,6 +1565,19 @@ mod tests {
     use futures_util::{SinkExt, StreamExt};
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
+
+    #[test]
+    fn poisoned_screencast_sink_lock_is_recovered() {
+        let sink = Arc::new(std::sync::Mutex::new(None));
+        let poisoner = Arc::clone(&sink);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.lock().expect("initial screencast sink lock");
+            panic!("poison screencast sink for regression coverage");
+        })
+        .join();
+
+        assert!(lock_screencast_sink(&sink).is_none());
+    }
 
     #[tokio::test]
     async fn routes_concurrent_responses_by_id_and_delivers_events() {

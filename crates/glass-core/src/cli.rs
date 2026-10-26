@@ -741,6 +741,11 @@ pub fn command_help(args: &[String]) -> Result<bool, String> {
             "Inspect the active provider, model, endpoint and saved connections. Credentials are not printed.",
             "gc status\ngc status --json",
         ),
+        "model" | "models" => (
+            "gc run --model MODEL <prompt> | /model",
+            "There is no standalone model command. Pass --model to gc run, or use /model inside an interactive session.",
+            "gc run --model MODEL \"explain this project\"\n/model",
+        ),
         "doctor" => (
             "gc doctor [--probe] [--json]",
             "Check local configuration, authentication references, permissions and terminal support. Offline by default. --probe explicitly checks the configured provider.",

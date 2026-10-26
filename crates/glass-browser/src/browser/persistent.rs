@@ -1630,7 +1630,10 @@ fn remove_socket_if_safe(path: &Path) -> BrowserResult<()> {
 
 #[cfg(unix)]
 fn process_is_alive(pid: u32) -> bool {
-    pid != 0 && unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    pid > 0 && unsafe { libc::kill(pid, 0) == 0 }
 }
 
 #[cfg(not(unix))]
@@ -1659,6 +1662,14 @@ mod tests {
         assert_eq!(value["state"], "stopped");
         assert_eq!(value["name"], "missing-test-session");
         assert!(value.get("port").is_none_or(serde_json::Value::is_null));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_liveness_rejects_unrepresentable_and_nonpositive_pids() {
+        assert!(libc::pid_t::try_from(u32::MAX).is_err());
+        assert!(!process_is_alive(0));
+        assert!(!process_is_alive(u32::MAX));
     }
 
     #[cfg(feature = "native-engine")]

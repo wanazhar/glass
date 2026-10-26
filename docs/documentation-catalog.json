@@ -114,6 +114,11 @@
         },
         {
           "level": "3",
+          "title": "Issue #65 budget-lock poison follow-up (2026-10-26)",
+          "anchor": "issue-65-budget-lock-poison-follow-up-2026-10-26"
+        },
+        {
+          "level": "3",
           "title": "Issue #65 process-ID follow-up (2026-10-26)",
           "anchor": "issue-65-process-id-follow-up-2026-10-26"
         },

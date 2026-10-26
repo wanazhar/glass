@@ -3,7 +3,7 @@ use crate::{
     pricing::RateCard,
     provider::{Error, Event, Provider, Request},
 };
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct Ledger {
@@ -18,6 +18,36 @@ pub struct Metered {
     pub card: Option<RateCard>,
     pub path: Arc<Mutex<std::path::PathBuf>>,
 }
+
+/// Recover a poisoned ledger without treating partially updated spending as
+/// known. A configured cost limit will then refuse metering until the user
+/// reloads or explicitly changes the budget state.
+pub fn lock(ledger: &Shared) -> MutexGuard<'_, Ledger> {
+    match ledger.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            guard.unknown = true;
+            ledger.clear_poison();
+            guard
+        }
+    }
+}
+
+pub fn spent_label(ledger: &Ledger) -> String {
+    if ledger.unknown {
+        "unavailable".into()
+    } else {
+        crate::pricing::money(ledger.spent)
+    }
+}
+
+pub fn path_snapshot(path: &Mutex<std::path::PathBuf>) -> Result<std::path::PathBuf, String> {
+    path.lock()
+        .map(|path| path.clone())
+        .map_err(|_| "budget persistence path lock is poisoned".to_owned())
+}
+
 impl Provider for Metered {
     fn rate_card(&self) -> Option<RateCard> {
         self.card
@@ -36,7 +66,7 @@ impl Provider for Metered {
     }
     fn stream(&self, req: &Request<'_>) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
         {
-            let l = self.ledger.lock().unwrap();
+            let l = lock(&self.ledger);
             if let Some(limit) = l.limit {
                 if self.card.is_none() || l.unknown {
                     return Err(Error::Config(
@@ -75,12 +105,16 @@ impl Iterator for Meter<'_> {
 }
 impl Drop for Meter<'_> {
     fn drop(&mut self) {
-        let mut l = self.owner.ledger.lock().unwrap();
+        let mut l = lock(&self.owner.ledger);
         match (self.owner.card, self.usage) {
             (Some(c), Some(u)) => l.spent += c.cost(&u),
             _ => l.unknown = true,
         }
-        if save(&self.owner.path.lock().unwrap(), &l).is_err() {
+        let saved = match self.owner.path.lock() {
+            Ok(path) => save(&path, &l),
+            Err(_) => Err("budget persistence path lock was poisoned".into()),
+        };
+        if saved.is_err() {
             l.unknown = true;
         }
     }
@@ -200,5 +234,93 @@ mod tests {
             path: Arc::new(Mutex::new(std::env::temp_dir().join("unused-cost.json"))),
         };
         assert!(a.stream(&request()).is_err());
+    }
+
+    #[test]
+    fn poisoned_ledger_is_recovered_as_unknown_and_fails_closed_under_limit() {
+        let ledger = Arc::new(Mutex::new(Ledger {
+            spent: 0.5,
+            limit: Some(1.0),
+            ..Default::default()
+        }));
+        let poisoner = Arc::clone(&ledger);
+        let _ = std::thread::spawn(move || {
+            let mut guard = poisoner.lock().unwrap();
+            guard.spent = 0.75;
+            panic!("simulate interruption while accounting is locked");
+        })
+        .join();
+
+        let recovered = lock(&ledger);
+        assert!(recovered.unknown);
+        assert_eq!(recovered.spent, 0.75);
+        drop(recovered);
+        assert!(!ledger.is_poisoned());
+
+        let metered = Metered {
+            inner: Box::new(Fake),
+            ledger,
+            card: Some(RateCard {
+                input: 1.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+                output: 0.0,
+            }),
+            path: Arc::new(Mutex::new(std::env::temp_dir().join("unused-cost.json"))),
+        };
+        assert!(metered.stream(&request()).is_err());
+    }
+
+    #[test]
+    fn poisoned_persistence_path_does_not_panic_from_meter_drop() {
+        let ledger = Arc::new(Mutex::new(Ledger {
+            limit: Some(1.0),
+            ..Default::default()
+        }));
+        let path = Arc::new(Mutex::new(std::env::temp_dir().join("unused-cost.json")));
+        let poisoner = Arc::clone(&path);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.lock().unwrap();
+            panic!("simulate interruption while the cost path is locked");
+        })
+        .join();
+
+        let metered = Metered {
+            inner: Box::new(Fake),
+            ledger: Arc::clone(&ledger),
+            card: Some(RateCard {
+                input: 1.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+                output: 0.0,
+            }),
+            path,
+        };
+        let meter = Meter {
+            iter: Box::new(std::iter::empty()),
+            owner: &metered,
+            usage: Some(Usage::default()),
+        };
+        drop(meter);
+
+        assert!(lock(&ledger).unknown);
+        assert!(path_snapshot(&metered.path).is_err());
+        assert!(metered.stream(&request()).is_err());
+    }
+
+    #[test]
+    fn unknown_spending_is_not_presented_as_a_precise_amount() {
+        let known = Ledger {
+            spent: 1.25,
+            ..Default::default()
+        };
+        let unknown = Ledger {
+            spent: 1.25,
+            unknown: true,
+            ..Default::default()
+        };
+
+        assert_eq!(spent_label(&known), crate::pricing::money(known.spent));
+        assert_eq!(spent_label(&unknown), "unavailable");
     }
 }

@@ -120,6 +120,24 @@ explicit interleaving boundary. Read-only `kill(pid, 0)` probes can also
 observe PID reuse, but they do not signal or mutate the observed process.
 
 
+### Issue #65 budget-lock poison follow-up (2026-10-26)
+
+`glass-core::budget::Shared` is public, so a panic while another caller holds
+the ledger can poison accounting. The provider wrapper and Glass Core TUI
+previously unwrapped that lock, including from `Meter::drop`; the persistence
+path lock had the same panic risk in the drop path. `budget::lock` now recovers
+the ledger as `unknown`, clears the poison marker, and makes a configured cost
+limit refuse another request. A poisoned persistence-path lock skips the save
+and marks the ledger unknown instead of panicking; interactive budget/status
+output reports the amount as unavailable when accounting is unknown. Core path
+reads return an error instead of unwrapping a poisoned path mutex. Two
+deterministic tests simulate an interrupted ledger update and a poisoned path
+lock, verify fail-closed behavior, and verify that drop completes without
+panic. The six focused `budget::tests` pass; strict binary Clippy and a debug
+Core build pass.
+This closes the reviewed budget-lock panic path, not the remaining error,
+policy, sandbox, concurrency, and authoring sweeps.
+
 ### Issue #65 process-ID follow-up (2026-10-26)
 
 Two unchecked Unix narrowing paths are fixed: `browser/persistent.rs` rejects persisted `u32` process IDs that cannot be represented as positive `pid_t` before `kill(pid, 0)`, and `browser/chrome.rs` parses `lsof` output as positive `pid_t` before `SIGTERM`. A follow-up changes `kill_chrome(port)` to inspect only TCP listeners and signal only same-user TCP listeners whose lsof command names match Chrome/Chromium variants; other services, other users, and outgoing clients are excluded, and lsof inspection errors are returned. Its parser regression and the surrounding Chrome unit module pass (18 tests), with strict `glass-browser` library Clippy and formatting. The public function has no in-repository callers; UID and command-name filtering are not an executable-identity pin; a same-user process that deliberately adopts a Chrome command name remains outside this safeguard. Owned sessions should use `ChromeProcess::shutdown`, which signals the exact child Glass launched.

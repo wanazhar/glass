@@ -1453,8 +1453,9 @@ fn headless(
     if let Some(schema) = &output_schema {
         prompt.push_str(&format!("\n\nFinal answer contract: return only JSON satisfying this schema. Complete the task normally first. Unsupported constraints were rejected locally before this request.\n{schema}"));
     }
-    let path = Arc::new(Mutex::new(session.path.with_extension("cost.json")));
-    let ledger = budget::load(&path.lock().unwrap(), limit);
+    let path = session.path.with_extension("cost.json");
+    let ledger = budget::load(&path, limit);
+    let path = Arc::new(Mutex::new(path));
     let factory: crate::warmer::ProviderFactory = {
         let cfg = cfg.clone();
         let ledger = Arc::clone(&ledger);
@@ -1647,7 +1648,7 @@ fn headless(
     let structured = output_schema
         .as_ref()
         .and_then(|schema| contracts::parse(schema, &text).ok());
-    let l = ledger.lock().unwrap();
+    let l = budget::lock(&ledger);
     if let Some(e) = &error {
         session.append(Record::Meta(format!("error: {e}")));
     }
@@ -2514,8 +2515,9 @@ fn repl(
                     checkpoint_dir = config::data_dir().join("checkpoints").join(&session.id);
                     latest_checkpoint = latest_task_checkpoint(&checkpoint_dir);
                     let limit = cfg.cost_limit;
-                    ledger_path = Arc::new(Mutex::new(session.path.with_extension("cost.json")));
-                    ledger = budget::load(&ledger_path.lock().unwrap(), limit);
+                    let path = session.path.with_extension("cost.json");
+                    ledger = budget::load(&path, limit);
+                    ledger_path = Arc::new(Mutex::new(path));
                     *budget_context.lock().unwrap() =
                         (Arc::clone(&ledger), Arc::clone(&ledger_path));
                     retry_available = false;
@@ -2748,7 +2750,7 @@ fn repl(
             continue;
         }
         if text == "/status" {
-            let l = ledger.lock().unwrap();
+            let l = budget::lock(&ledger);
             let detail = format!(
                 "{}\n\nProvider: {}\nEndpoint: {}\nModel: {}\nSession: {}\nSpent: {}\n\n/login connect · /model choose provider and model · /logout sign out",
                 auth::status(&cfg),
@@ -2756,7 +2758,7 @@ fn repl(
                 cfg.base_url,
                 cfg.model,
                 session.id,
-                pricing::money(l.spent)
+                budget::spent_label(&l)
             );
             drop(l);
             modal::info(&keys, "Connection and session", &detail);
@@ -2862,10 +2864,10 @@ fn repl(
             }
         }
         if text == "/budget" {
-            let l = ledger.lock().unwrap();
+            let l = budget::lock(&ledger);
             let note = format!(
                 "Spent {} · limit {}",
-                pricing::money(l.spent),
+                budget::spent_label(&l),
                 l.limit.map(pricing::money).unwrap_or_else(|| "off".into())
             );
             drop(l);
@@ -3040,7 +3042,7 @@ fn repl(
             .strip_prefix("/budget")
             .filter(|s| s.is_empty() || s.starts_with(' '))
         {
-            let mut l = ledger.lock().unwrap();
+            let mut l = budget::lock(&ledger);
             let args = args.trim();
             if !args.is_empty() {
                 if args == "off" {
@@ -3056,14 +3058,16 @@ fn repl(
                     ui_println!("usage: /budget [dollars|off]");
                     continue;
                 }
-                if let Err(e) = budget::save(&ledger_path.lock().unwrap(), &l) {
+                let saved =
+                    budget::path_snapshot(&ledger_path).and_then(|path| budget::save(&path, &l));
+                if let Err(e) = saved {
                     ui_println!("budget persistence failed: {e}");
                     l.unknown = true;
                 }
             }
             ui_println!(
                 "spent {} · limit {}{}",
-                pricing::money(l.spent),
+                budget::spent_label(&l),
                 l.limit.map(pricing::money).unwrap_or_else(|| "off".into()),
                 if l.unknown {
                     " · incomplete accounting"
@@ -3214,9 +3218,10 @@ fn repl(
                     state.restore_todo(&session.history_records())?;
                     checkpoint_dir = config::data_dir().join("checkpoints").join(&session.id);
                     latest_checkpoint = None;
-                    let limit = ledger.lock().unwrap().limit;
-                    ledger_path = Arc::new(Mutex::new(session.path.with_extension("cost.json")));
-                    ledger = budget::load(&ledger_path.lock().unwrap(), limit);
+                    let limit = budget::lock(&ledger).limit;
+                    let path = session.path.with_extension("cost.json");
+                    ledger = budget::load(&path, limit);
+                    ledger_path = Arc::new(Mutex::new(path));
                     *budget_context.lock().unwrap() =
                         (Arc::clone(&ledger), Arc::clone(&ledger_path));
                     // Refresh credentials before the next request.
@@ -3627,9 +3632,10 @@ fn repl(
                     pending = queue::Queue::open(&session)?;
                     polish::bind(&session, &cfg.workspace)?;
                     checkpoint_dir = config::data_dir().join("checkpoints").join(&session.id);
-                    let limit = ledger.lock().unwrap().limit;
-                    ledger_path = Arc::new(Mutex::new(session.path.with_extension("cost.json")));
-                    ledger = budget::load(&ledger_path.lock().unwrap(), limit);
+                    let limit = budget::lock(&ledger).limit;
+                    let path = session.path.with_extension("cost.json");
+                    ledger = budget::load(&path, limit);
+                    ledger_path = Arc::new(Mutex::new(path));
                     *budget_context.lock().unwrap() =
                         (Arc::clone(&ledger), Arc::clone(&ledger_path));
                     // Refresh credentials before the next request.
@@ -3919,7 +3925,7 @@ fn repl(
                         totals.last_input = out.last_input.map(u64::from);
                         let card = cfg.rate_card(&cfg.model);
                         let width = term_size().0 as usize;
-                        let l = ledger.lock().unwrap();
+                        let l = budget::lock(&ledger);
                         let cost = if l.unknown {
                             "cost unavailable".into()
                         } else {
@@ -4025,7 +4031,7 @@ fn repl(
                 // Only when the turn series is fully done: a queued follow-up
                 // means work continues and an alert would be premature.
                 let cost = {
-                    let l = ledger.lock().unwrap();
+                    let l = budget::lock(&ledger);
                     (!l.unknown).then(|| pricing::money(l.spent))
                 };
                 crate::notify::publish(

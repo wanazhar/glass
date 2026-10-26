@@ -3,6 +3,7 @@
 
 import json
 import sys
+import time
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
@@ -31,6 +32,8 @@ def write_message(message):
 
 
 documents = {}
+rename_attempts = 0
+slow_references = False
 
 while True:
     request = read_message()
@@ -51,7 +54,27 @@ while True:
         continue
     if method == "initialize":
         result = {"capabilities": {"renameProvider": True, "textDocumentSync": 1}}
+    elif method == "textDocument/references":
+        if slow_references:
+            time.sleep(0.4)
+        source_uri = request["params"]["textDocument"]["uri"]
+        result = [{"uri": source_uri, "range": {"start": {"line": 1, "character": 3}, "end": {"line": 1, "character": 11}}}]
     elif method == "textDocument/rename":
+        rename_attempts += 1
+        if request["params"].get("newName") == "retry_once" and rename_attempts == 1:
+            write_message({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32801, "message": "content modified"},
+            })
+            continue
+        if request["params"].get("newName") == "retry_empty_once" and rename_attempts == 1:
+            write_message({"jsonrpc": "2.0", "id": request_id, "result": {"documentChanges": []}})
+            continue
+        if request["params"].get("newName") == "retry_slow_references" and rename_attempts == 1:
+            slow_references = True
+            write_message({"jsonrpc": "2.0", "id": request_id, "result": {"documentChanges": []}})
+            continue
         source_uri = request["params"]["textDocument"]["uri"]
         source_path = Path(unquote(urlparse(source_uri).path))
         call_path = source_path.with_name("second.rs")

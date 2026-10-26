@@ -618,6 +618,20 @@ impl Session {
         false
     }
 
+    fn wait_for_raw_after(&mut self, offset: usize, probe: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            self.settle(Duration::from_millis(200));
+            if self.buffer[offset.min(self.buffer.len())..]
+                .windows(probe.len())
+                .any(|window| window == probe.as_bytes())
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     fn visible_output(&self) -> String {
         self.visible_output_from(0)
     }
@@ -6843,7 +6857,7 @@ fn lsp_workspace_rename_is_previewed_and_accepted_per_file_in_pty() {
     assert!(
         session.wait_for_output_after(
             rename_offset,
-            "2 files · review each diff",
+            "LSP workspace edit preview · 2 files",
             Duration::from_secs(8),
         ),
         "LSP WorkspaceEdit was not previewed in Code\n{}",
@@ -6884,6 +6898,216 @@ fn lsp_workspace_rename_is_previewed_and_accepted_per_file_in_pty() {
         std::fs::read_to_string(&second).unwrap(),
         "// unsaved second\nnew_name();\n"
     );
+    session.kill();
+    let _ = std::fs::remove_file(fake_core);
+}
+
+#[test]
+fn rust_analyzer_workspace_rename_is_accepted_per_file_in_pty() {
+    if std::env::var("GLASS_RUST_ANALYZER_E2E").ok().as_deref() != Some("1") {
+        return;
+    }
+    if !Command::new("rust-analyzer")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+    {
+        return;
+    }
+    let root = workspace_root();
+    std::fs::create_dir_all(root.join("src")).expect("create Rust source directory");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname='glass_pty_rust_analyzer'\nversion='0.1.0'\nedition='2024'\n",
+    )
+    .expect("write Rust fixture manifest");
+    let first = root.join("src/lib.rs");
+    let second = root.join("src/call.rs");
+    let original_first = "pub mod call;\npub fn legacy_name() {}\n";
+    let original_second = "pub fn invoke() { crate::legacy_name(); }\n";
+    std::fs::write(&first, original_first).expect("write declaration file");
+    std::fs::write(&second, original_second).expect("write call-site file");
+    let check = Command::new("cargo")
+        .args(["check", "--offline", "--manifest-path"])
+        .arg(root.join("Cargo.toml"))
+        .status()
+        .expect("check local Rust analyzer fixture");
+    assert!(check.success());
+
+    let fake_core = fake_core_binary_with_mode("mixed");
+    let data_home = root.join("xdg-data");
+    let mut session = Session::start_with_data_home_options(
+        &binary(),
+        &root,
+        180,
+        32,
+        Some(&fake_core),
+        Some(&data_home),
+    );
+    assert!(session.wait_for("Core available", Duration::from_secs(8)));
+    send_alt_digit(&mut session, b'2');
+    assert!(session.wait_for_visible("FILES", Duration::from_secs(5)));
+    for path in ["src/lib.rs", "src/call.rs"] {
+        let offset = session.buffer.len();
+        session.send_slowly(
+            format!(":open {path}\r").as_bytes(),
+            Duration::from_millis(20),
+        );
+        assert!(session.wait_for_output_after(offset, "Esc back", Duration::from_secs(5)));
+        session.send(b"\x1b");
+        assert!(session.wait_for_visible("FILES", Duration::from_secs(5)));
+    }
+    // File opens can leave a workspace snapshot reconciliation holding the
+    // workspace mutex briefly. Start the local server after that deterministic
+    // setup work settles so the PTY measures the LSP path, not this lock race.
+    session.settle(Duration::from_secs(5));
+
+    let mut start_offset = None;
+    for attempt in 0..4 {
+        let offset = session.buffer.len();
+        session.send_slowly(
+            b":lsp start rust-analyzer rust-analyzer\r",
+            Duration::from_millis(20),
+        );
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut contended = false;
+        while Instant::now() < deadline {
+            session.settle(Duration::from_millis(200));
+            let output = &session.buffer[offset.min(session.buffer.len())..];
+            if output
+                .windows(b"one-use confirmation required".len())
+                .any(|window| window == b"one-use confirmation required")
+            {
+                start_offset = Some(offset);
+                break;
+            }
+            if output
+                .windows(b"workspace busy with a background operation".len())
+                .any(|window| window == b"workspace busy with a background operation")
+            {
+                // The router returns before starting a server when its
+                // non-blocking workspace lock reports contention. Wait for
+                // the snapshot worker to settle before the next attempt.
+                contended = true;
+                break;
+            }
+        }
+        if start_offset.is_some() {
+            break;
+        }
+        if contended && attempt < 3 {
+            session.settle(Duration::from_secs(1));
+            continue;
+        }
+        break;
+    }
+    assert!(
+        start_offset.is_some(),
+        "rust-analyzer start did not request scoped confirmation after bounded lock-contention handling\n{}",
+        session.output_tail()
+    );
+    let confirmation_offset = session.buffer.len();
+    session.send(b"y");
+    assert!(
+        session.wait_for_output_after(
+            confirmation_offset,
+            "Completed glass.lsp.start",
+            Duration::from_secs(15)
+        ),
+        "rust-analyzer did not start\n{}",
+        session.output_tail()
+    );
+
+    let mut rename_offset = None;
+    for attempt in 0..4 {
+        let offset = session.buffer.len();
+        session.send_slowly(
+            b":lsp rename rust-analyzer src/lib.rs 2 8 modern_name\r",
+            Duration::from_millis(15),
+        );
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut contended = false;
+        while Instant::now() < deadline {
+            session.settle(Duration::from_millis(200));
+            let output = &session.buffer[offset.min(session.buffer.len())..];
+            if output
+                .windows(b"pair-apply".len())
+                .any(|window| window == b"pair-apply")
+            {
+                rename_offset = Some(offset);
+                break;
+            }
+            if output
+                .windows(b"workspace busy with a background operation".len())
+                .any(|window| window == b"workspace busy with a background operation")
+            {
+                // A non-blocking workspace lock fails before the rename tool
+                // runs, so retry only after observing that precise conflict.
+                contended = true;
+                break;
+            }
+        }
+        if rename_offset.is_some() {
+            break;
+        }
+        if contended && attempt < 3 {
+            session.settle(Duration::from_secs(1));
+            continue;
+        }
+        break;
+    }
+    let Some(rename_offset) = rename_offset else {
+        panic!(
+            "real rust-analyzer WorkspaceEdit did not reach Code review after bounded lock-contention handling\n{}",
+            session.output_tail()
+        );
+    };
+    assert!(
+        session.wait_for_raw_after(rename_offset, "Enter accept", Duration::from_secs(5)),
+        "real rust-analyzer proposal did not show per-file review controls\n{}",
+        session.output_tail()
+    );
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), original_first);
+    assert_eq!(std::fs::read_to_string(&second).unwrap(), original_second);
+
+    session.settle(Duration::from_secs(1));
+    session.send(b"\r");
+    session.send(b"\x13");
+    let first_expected = "pub mod call;\npub fn modern_name() {}\n";
+    let first_deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < first_deadline
+        && std::fs::read_to_string(&first).ok().as_deref() != Some(first_expected)
+    {
+        session.settle(Duration::from_millis(100));
+    }
+    assert_eq!(
+        std::fs::read_to_string(&first).unwrap(),
+        first_expected,
+        "real rust-analyzer declaration proposal was not saved; first={:?}, second={:?}\n{}",
+        std::fs::read_to_string(&first),
+        std::fs::read_to_string(&second),
+        session.output_tail()
+    );
+    assert_eq!(std::fs::read_to_string(&second).unwrap(), original_second);
+
+    session.clear_output();
+    session.send(b"\x1b");
+    assert!(session.wait_for_visible("FILES", Duration::from_secs(5)));
+    let second_open_offset = session.buffer.len();
+    session.send_slowly(b":open src/call.rs\r", Duration::from_millis(20));
+    assert!(session.wait_for_output_after(second_open_offset, "Esc back", Duration::from_secs(5)));
+    assert!(session.wait_for_visible("Enter accept · n reject", Duration::from_secs(5)));
+    session.settle(Duration::from_secs(1));
+    session.send(b"\r");
+    session.send(b"\x13");
+    let second_expected = "pub fn invoke() { crate::modern_name(); }\n";
+    let second_deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < second_deadline
+        && std::fs::read_to_string(&second).ok().as_deref() != Some(second_expected)
+    {
+        session.settle(Duration::from_millis(100));
+    }
+    assert_eq!(std::fs::read_to_string(&second).unwrap(), second_expected);
     session.kill();
     let _ = std::fs::remove_file(fake_core);
 }

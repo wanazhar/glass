@@ -3223,6 +3223,7 @@ mod tests {
     use crate::development::Actor;
     use serde_json::json;
     use std::path::Path;
+    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -3348,6 +3349,96 @@ mod tests {
         router
             .execute(&mut workspace, &stop, &stop_context)
             .expect("stop local LSP fixture");
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rust_analyzer_workspace_rename_flows_through_the_governed_router_when_available() {
+        if !Command::new("rust-analyzer")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+        {
+            return;
+        }
+        let mut workspace = workspace();
+        let root = workspace.project().root().to_path_buf();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='glass_router_rust_analyzer'\nversion='0.1.0'\nedition='2024'\n",
+        )
+        .unwrap();
+        let source = "pub mod call;\npub fn legacy_name() {}\n";
+        let call_site = "pub fn invoke() { crate::legacy_name(); }\n";
+        std::fs::write(root.join("src/lib.rs"), source).unwrap();
+        std::fs::write(root.join("src/call.rs"), call_site).unwrap();
+        let check = Command::new("cargo")
+            .args(["check", "--offline", "--manifest-path"])
+            .arg(root.join("Cargo.toml"))
+            .status()
+            .expect("check local Rust analyzer fixture");
+        assert!(check.success());
+        for (path, content) in [("src/lib.rs", source), ("src/call.rs", call_site)] {
+            workspace
+                .project_mut()
+                .open_buffer(path, Actor::local())
+                .unwrap();
+            workspace
+                .project_mut()
+                .edit_buffer(path, content.into(), Actor::local())
+                .unwrap();
+        }
+
+        let router = DevelopmentToolRouter::default();
+        let start = ToolCall {
+            id: "rust-analyzer-start".into(),
+            name: "glass.lsp.start".into(),
+            arguments: json!({"server":"rust-analyzer","command":"rust-analyzer"}),
+        };
+        let start_context = context(&workspace, true);
+        router
+            .execute(&mut workspace, &start, &start_context)
+            .expect("start configured Rust analyzer");
+        let rename = ToolCall {
+            id: "rust-analyzer-rename".into(),
+            name: "glass.lsp.rename".into(),
+            arguments: json!({
+                "server":"rust-analyzer",
+                "path":"src/lib.rs",
+                "line":2,
+                "character":8,
+                "newName":"modern_name"
+            }),
+        };
+        let rename_context = context(&workspace, false);
+        let result = router
+            .execute(&mut workspace, &rename, &rename_context)
+            .unwrap_or_else(|error| panic!("configured Rust analyzer rename failed: {error}"));
+        let document_changes = result["result"]["documentChanges"]
+            .as_array()
+            .expect("Rust analyzer returns document changes");
+        assert_eq!(document_changes.len(), 2);
+        assert!(document_changes.iter().all(|change| {
+            change["edits"]
+                .as_array()
+                .is_some_and(|edits| edits.iter().any(|edit| edit["newText"] == "modern_name"))
+        }));
+        assert_eq!(
+            workspace.project().buffer("src/lib.rs").unwrap().content,
+            source,
+            "the route returns a review edit without changing the source buffer"
+        );
+        let stop = ToolCall {
+            id: "rust-analyzer-stop".into(),
+            name: "glass.lsp.stop".into(),
+            arguments: json!({"server":"rust-analyzer"}),
+        };
+        let stop_context = context(&workspace, true);
+        router
+            .execute(&mut workspace, &stop, &stop_context)
+            .expect("stop Rust analyzer");
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
     }

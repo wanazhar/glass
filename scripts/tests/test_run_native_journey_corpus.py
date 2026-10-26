@@ -120,6 +120,34 @@ class JourneyFailureClassificationTests(unittest.TestCase):
                 {"targetSource": "observed-viewport"}, "observe"
             )
 
+    def test_public_mdn_video_journey_checks_real_playback_not_a_poster(self):
+        journeys = json.loads(corpus.DEFAULT_CORPUS.read_text(encoding="utf-8"))["journeys"]
+        journey = next(
+            item for item in journeys if item["id"] == "public-mdn-cc0-webm-playback"
+        )
+        self.assertEqual(journey["backend"], "native")
+        self.assertEqual(journey["scope"], "public-read-only")
+        self.assertEqual(journey["asset"]["license"], "CC0-1.0")
+        steps = corpus.compile_public_steps(journey)
+        self.assertEqual(
+            [step["action"] for step in steps],
+            ["navigate", "observe", "wait", "evaluate", "wait", "evaluate", "wait", "screenshot"],
+        )
+        self.assertIn("currentSrc.includes('flower.webm')", steps[2]["condition"])
+        self.assertIn("video.readyState >= 2", steps[2]["condition"])
+        self.assertIn("video.play()", steps[3]["expression"])
+        self.assertIn("video.currentTime >= 0.25", steps[4]["condition"])
+        self.assertIn("video.pause()", steps[5]["expression"])
+        self.assertIn("video.paused", steps[6]["condition"])
+
+    def test_public_evaluate_step_is_bounded(self):
+        journey = {"timeoutMs": 1000, "steps": [{"action": "evaluate", "expression": " "}]}
+        with self.assertRaisesRegex(ValueError, "nonempty expression"):
+            corpus.compile_public_steps(journey)
+        journey["steps"][0]["expression"] = "x" * 4097
+        with self.assertRaisesRegex(ValueError, "4096 characters"):
+            corpus.compile_public_steps(journey)
+
     def test_missing_observed_target_is_a_product_failure(self):
         message = "unsupported operation action: native action target was not found"
         self.assertEqual(corpus.classify(message), "product_bug")
@@ -183,6 +211,47 @@ class JourneyFailureClassificationTests(unittest.TestCase):
         self.assertEqual(results[0]["elapsedMs"], 42)
         self.assertEqual(results[1]["action"], "observe")
         self.assertEqual(results[1]["errorKind"], "runner_deadline")
+
+    def test_public_journey_keeps_progress_when_process_exits_without_json(self):
+        with tempfile.TemporaryDirectory(prefix="glass-native-journey-exit-") as directory:
+            root = Path(directory)
+            fake = root / "fake-browser"
+            fake.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' \\\n"
+                "  '{\"event\":\"batch_started\",\"total\":2}' \\\n"
+                "  '{\"event\":\"step_started\",\"index\":0,\"action\":\"navigate\"}' \\\n"
+                "  '{\"event\":\"step_finished\",\"index\":0,\"action\":\"navigate\",\"status\":\"ok\",\"elapsedMs\":12}' \\\n"
+                "  '{\"event\":\"step_started\",\"index\":1,\"action\":\"observe\"}' \\\n"
+                "  '{\"event\":\"step_finished\",\"index\":1,\"action\":\"observe\",\"status\":\"error\",\"elapsedMs\":8,\"errorKind\":\"worker\"}' \\\n"
+                "  >> \"$GLASS_BROWSER_BATCH_PROGRESS_PATH\"\n"
+                "printf '%s\\n' 'native content worker exited' >&2\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o700)
+            result = corpus.run_public_journey(
+                str(fake),
+                {
+                    "id": "worker-exit-fixture",
+                    "scope": "public-read-only",
+                    "timeoutMs": 1000,
+                    "steps": [
+                        {"action": "navigate", "url": "https://example.com"},
+                        {"action": "observe"},
+                    ],
+                },
+                root,
+            )
+
+        self.assertEqual(result["classification"], "product_bug")
+        self.assertEqual(
+            [(step["action"], step["status"]) for step in result["steps"]],
+            [("navigate", "ok"), ("observe", "error")],
+        )
+        self.assertEqual(result["steps"][1]["errorKind"], "worker")
+        self.assertEqual(result["errorKind"], "worker")
+        self.assertIsNotNone(result["progressArtifact"])
 
     def test_timeout_kills_and_reaps_the_owned_process_group(self):
         with tempfile.TemporaryDirectory() as directory:

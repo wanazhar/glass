@@ -83,6 +83,28 @@ scroll scenario. The local nested-scroll fixture separately passes through a
 revision-bound `scrollTargetObserved` selection. A missing selector reports up
 to eight observed target tags and bounded labels to make target selection
 evidence inspectable without dumping the page.
+
+The optional public video scenario uses MDN's interactive `<video>` example and
+its CC0 WebM flower sample. It requires the current resource to be that WebM,
+metadata and decoded dimensions, muted playback-clock progression, a pause, and
+a screenshot step; a poster or successful fetch alone cannot pass. The first
+run using the standalone `glass-browser` package binary completed navigation
+(6.38 s) and observation (2 ms), then the media-resource predicate errored
+after 43 ms and the content worker closed before playback began. This is a
+failed public media acceptance attempt, not a video playback pass. The report
+and private trace are `/tmp/glass-native-mdn-video-product-binary-20261026.json`
+and its adjacent `.artifacts/` directory. The earlier attempt used Glass Dev's
+duplicate-name `glass-browser` wrapper and overflowed its smaller main-thread
+stack; that run is not product evidence. The Glass Dev wrapper now has the same
+fixed 16 MiB main-thread stack as the standalone binary. [MDN's video reference](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/video)
+documents the WebM-first source, and [the linked interactive demo](https://interactive-examples.mdn.mozilla.net/pages/tabbed/video.html)
+is the public scenario entry point.
+
+The corpus runner retains completed and failed per-step status/timing when its
+owned browser process exits without a final JSON document, and gives progress
+step errors static classifications without recording raw error text. A
+deterministic fake-browser regression covers this early-exit path.
+
 The latest bounded Wikipedia
 journey on 25 October did not reach its first observation: navigation hit its
 120-second deadline. It ran 12 host-view installs, with the slowest at 8.03 s,

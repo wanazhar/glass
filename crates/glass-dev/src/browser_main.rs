@@ -1,20 +1,35 @@
 use clap::{CommandFactory, FromArgMatches};
+use std::io::IsTerminal;
 
 type MainResult = Result<(), Box<dyn std::error::Error>>;
 const RUNTIME_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024;
+const MAIN_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 fn main() -> MainResult {
-    #[cfg(windows)]
-    return std::thread::Builder::new()
+    let result = std::thread::Builder::new()
         .name("glass-browser-main".into())
-        .stack_size(8 * 1024 * 1024)
+        .stack_size(MAIN_THREAD_STACK_SIZE)
         .spawn(|| run().map_err(|error| error.to_string()))?
         .join()
         .map_err(|_| std::io::Error::other("Glass browser main thread panicked"))?
-        .map_err(|error| std::io::Error::other(error).into());
-
-    #[cfg(not(windows))]
-    run()
+        .map_err(std::io::Error::other);
+    if let Err(error) = result {
+        if std::io::stderr().is_terminal() {
+            let width = glass_tui::crossterm::terminal::size()
+                .map(|(width, _)| usize::from(width))
+                .unwrap_or(80)
+                .clamp(24, 120);
+            let color =
+                !glass_tui::theme::no_color() && std::env::var("TERM").as_deref() != Ok("dumb");
+            let rendered = glass_tui::cli::error("Glass", &error.to_string(), width, color);
+            use std::io::Write;
+            let _ = std::io::stderr().lock().write_all(rendered.as_bytes());
+        } else {
+            eprintln!("Error: {error}");
+        }
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 fn run() -> MainResult {

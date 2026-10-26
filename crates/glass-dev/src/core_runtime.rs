@@ -186,7 +186,8 @@ pub struct CoreRuntimeOptions {
     /// Session id to fork from, when the caller wants a branch.
     pub fork_from: Option<PathBuf>,
     /// Explicit compatible `glass-core` executable. If unset, Glass checks
-    /// `GLASS_CORE_BINARY`, its adjacent Core package binary, then `PATH`.
+    /// explicit options, `GLASS_CORE_BINARY`, its adjacent Core package binary,
+    /// then `PATH`.
     pub binary: Option<PathBuf>,
     /// Extra argv passed before the `runtime` subcommand.
     pub binary_args: Vec<String>,
@@ -1670,11 +1671,11 @@ fn resolve_core_binary_candidates(
     if let Some(path) = explicit {
         return validate_core_binary(path, "the explicit Glass Core binary");
     }
-    if let Some(path) = adjacent {
-        return validate_core_binary(&path, "the Core binary adjacent to Glass");
-    }
     if let Some(path) = configured {
         return validate_core_binary(&path, GLASS_CORE_BINARY_ENV);
+    }
+    if let Some(path) = adjacent {
+        return validate_core_binary(&path, "the Core binary adjacent to Glass");
     }
     if let Some(path) = on_path {
         return validate_core_binary(&path, "the `glass-core` found on PATH");
@@ -2024,7 +2025,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn core_resolution_prefers_explicit_and_adjacent_matching_packages() {
+    fn core_resolution_prefers_explicit_and_configured_over_adjacent_packages() {
         let root = std::env::temp_dir().join(format!(
             "glass-core-resolver-{}-{}",
             std::process::id(),
@@ -2052,11 +2053,11 @@ mod tests {
         );
         let valid = write_core_version_fixture(&root, "matching-core", env!("CARGO_PKG_VERSION"));
         assert_eq!(
-            resolve_core_binary_candidates(None, Some(old.clone()), Some(valid.clone()), None)
+            resolve_core_binary_candidates(None, Some(valid.clone()), Some(old.clone()), None)
                 .unwrap(),
             valid
         );
-        let error = resolve_core_binary_candidates(None, Some(old.clone()), None, None)
+        let error = resolve_core_binary_candidates(None, Some(old.clone()), Some(valid), None)
             .unwrap_err()
             .to_string();
         assert!(error.contains("reports Glass Core 0.1.0"));

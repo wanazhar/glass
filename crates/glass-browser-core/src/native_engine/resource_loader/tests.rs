@@ -11,8 +11,8 @@ use super::{
     NativeNetworkState, NativeObjectUrlResource, NativeRequestBody, NativeResource,
     NativeResourceLoader, NativeSubresourceKind, NativeTextCacheEntry, cache_control_max_age,
     cache_control_requires_revalidation, cached_resource_content_type_text_allowed,
-    content_security_policy, cors_origin_header, cors_preflight_response_allowed,
-    cors_response_allowed, csp_report_deliveries_for_declaration,
+    content_security_policy, content_type_charset, cors_origin_header,
+    cors_preflight_response_allowed, cors_response_allowed, csp_report_deliveries_for_declaration,
     csp_script_sources_allow_for_rooted_file, csp_sources_allow, csp_sources_allow_for_redirect,
     csp_sources_allow_for_rooted_file, data_font_bytes, data_media_metadata, decode_html_body,
     document_cache_fresh_until, document_cache_storage_allowed, fetch_credentials_for_url,
@@ -183,6 +183,17 @@ fn malformed_bytes_under_declared_utf8_use_replacement_without_mislabeling_chars
     let error = decode_html_body(b"text", Some("x-unknown"), 32).unwrap_err();
     assert!(error.to_string().contains("x-unknown"));
     assert!(decode_html_body(b"before\xffafter", Some("utf-8"), 8).is_err());
+}
+
+#[test]
+fn quoted_utf8_response_charset_decodes_malformed_bytes_as_html() {
+    let content_type = HeaderValue::from_static("text/html; charset=\"utf-8\"");
+    let charset = content_type_charset(Some(&content_type)).unwrap();
+    assert_eq!(charset.as_deref(), Some("utf-8"));
+    assert_eq!(
+        decode_html_body(b"before\xffafter", charset.as_deref(), 32).unwrap(),
+        "before\u{fffd}after"
+    );
 }
 
 #[test]

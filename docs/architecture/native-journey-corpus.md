@@ -127,6 +127,16 @@ article or reached the semantic subpage; Wikipedia remains an open native
 acceptance gap. Reports contain step outcomes and artifact references without
 retaining page dumps or user data.
 
+The matching local style workload uses 4,096 rules across 16,006 DOM nodes,
+with common tag/class rules plus frequent and rare class anchors. Candidate
+lookup visits 16,928,000 rule candidates in 311–336 ms, and a complete cached
+style pass for 8,004 elements takes 1.98–2.03 seconds. The candidate set
+matches a full selector scan for sampled anchors, and reusable scratch keeps
+its warmed capacity. A trial hash-map index was slightly slower (317 ms and
+2.10 seconds), so the existing ordered index remains. This local profile helps
+separate candidate lookup from the more expensive rule matching; it does not
+explain all of the public page cost or establish compatibility.
+
 ## Native video capability boundary
 
 The native engine currently supports a narrow silent-video path for WebM files

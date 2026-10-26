@@ -284,8 +284,8 @@ current user instructions.
   gates for issue #40. Its versioned contract is the [Glass Core Web
   Profile](plan/native-engine-browser-profile.md).
 - [Native browser journey corpus](architecture/native-journey-corpus.md) —
-  versioned local and public journeys, evidence boundaries, and capability
-  coverage.
+  versioned local and public journeys, performance evidence, evidence
+  boundaries, and capability coverage.
 - [Alternative browser runtimes](browser-host-rfc.md#current-browser-runtime-mapping) —
   experimental Firefox BiDi and Safari WebDriver support, plus the native
   browser feasibility boundary.

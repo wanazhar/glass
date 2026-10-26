@@ -2769,7 +2769,9 @@ pub(super) fn agent_conversation_text(
     let tail_hint = if at_tail { "↓ live" } else { "↓ new" };
     let core_running = state.selected_agent_status() == Some(crate::AgentStatus::Working);
     let footer = if width < 52 {
-        format!("PgUp/Dn Home/End · {position}/{total} {tail_hint}")
+        format!("PgUp/Dn · {position}/{total} · {tail_hint}")
+    } else if width < 72 {
+        format!("PgUp/Dn · {position}/{total} · {tail_hint} · Ctrl-T think")
     } else if width < 112 {
         format!("PgUp/PgDn · Home/End · {position}/{total} · {tail_hint} · Ctrl-T reasoning")
     } else if !state.composer_mode {
@@ -4203,8 +4205,11 @@ fn render_git_file_list(frame: &mut Frame<'_>, state: &DevTuiState, area: Rect) 
                 if !state.snapshot_ready {
                     " CHANGES · … ".to_string()
                 } else {
-                    let mut title =
-                        format!(" CHANGES · {} · INDEX/WORKTREE ", state.git_entries.len());
+                    let mut title = if area.width < 40 {
+                        format!(" CHANGES · {} ", state.git_entries.len())
+                    } else {
+                        format!(" CHANGES · {} · INDEX/WORKTREE ", state.git_entries.len())
+                    };
                     let conflicts = state.git_conflicts.len();
                     let unstaged = state
                         .git_entries
@@ -6515,6 +6520,14 @@ mod tests {
         assert!(!text.contains("Ctrl-X abort"));
         assert!(!text.contains("Ctrl-D follow-up"));
 
+        let narrow = agent_conversation_text(&state, "", 56, 8);
+        let narrow_footer = narrow.lines.last().expect("conversation footer");
+        assert!(
+            narrow_footer.width() <= 56,
+            "phone footer wraps instead of preserving one-line controls: {narrow_footer:?}"
+        );
+        assert!(narrow_footer.to_string().contains("Ctrl-T think"));
+
         state.composer_steer = true;
         let idle_steer = agent_conversation_text(&state, "", 72, 8).to_string();
         assert!(!idle_steer.contains("Ctrl-X abort"));
@@ -6911,6 +6924,13 @@ mod tests {
         assert!(output.contains("1 unstaged"));
         assert!(output.contains("1 untracked"));
         assert!(!output.contains("0!"));
+
+        let medium = rendered(&state, 120, 36);
+        assert!(medium.contains("CHANGES · 2"));
+        assert!(
+            !medium.contains("INDEX/WORKTRE"),
+            "narrow changes header should not clip its title: {medium}"
+        );
 
         state.layout = TuiLayout::Auto;
         let compact = rendered(&state, 48, 18);

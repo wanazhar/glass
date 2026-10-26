@@ -4068,7 +4068,14 @@ impl NativeStyleRuleIndex {
     }
 
     fn candidates(&self, node: &NativeNode) -> Vec<usize> {
-        let mut candidates = self.fallback.clone();
+        let mut candidates = Vec::new();
+        self.candidates_into(node, &mut candidates);
+        candidates
+    }
+
+    fn candidates_into(&self, node: &NativeNode, candidates: &mut Vec<usize>) {
+        candidates.clear();
+        candidates.extend_from_slice(&self.fallback);
         if let Some(id) = node.attribute("id")
             && let Some(indices) = self.by_id.get(id)
         {
@@ -4088,7 +4095,6 @@ impl NativeStyleRuleIndex {
         }
         candidates.sort_unstable();
         candidates.dedup();
-        candidates
     }
 }
 

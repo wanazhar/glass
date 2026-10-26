@@ -73,8 +73,10 @@ pub enum BatchStep {
     #[serde(rename = "clickObserved")]
     ClickObserved {
         role: String,
-        #[serde(rename = "nameContains")]
+        #[serde(default, rename = "nameContains")]
         name_contains: String,
+        #[serde(default, rename = "nameEquals")]
+        name_equals: Option<String>,
     },
     #[serde(rename = "type")]
     Type {

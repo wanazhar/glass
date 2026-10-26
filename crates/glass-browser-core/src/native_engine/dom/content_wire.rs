@@ -1,5 +1,24 @@
 use super::*;
 use crate::native_engine::css;
+use flate2::{Compression, write::ZlibEncoder};
+use std::io::Write;
+
+fn encode_content_image_pixels(pixels: &[u8]) -> (String, String) {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+    if encoder.write_all(pixels).is_ok()
+        && let Ok(compressed) = encoder.finish()
+        && compressed.len() < pixels.len()
+    {
+        return (
+            String::new(),
+            base64::engine::general_purpose::STANDARD.encode(compressed),
+        );
+    }
+    (
+        base64::engine::general_purpose::STANDARD.encode(pixels),
+        String::new(),
+    )
+}
 
 impl NativeDocument {
     pub(crate) fn to_content_wire(&self) -> NativeDocumentWire {
@@ -9,14 +28,26 @@ impl NativeDocument {
                 "document_wire_computed_styles",
             )
         });
-        let computed_styles = (0..self.nodes.len())
-            .map(|index| {
-                self.computed_style_for_layout(NativeNodeId {
-                    generation: self.generation,
-                    index: u32::try_from(index).unwrap_or(u32::MAX),
-                })
-            })
-            .collect();
+        let mut computed_style_table = Vec::new();
+        let mut computed_style_indices = Vec::with_capacity(self.nodes.len());
+        let mut computed_style_lookup = HashMap::<Vec<u8>, u32>::new();
+        for index in 0..self.nodes.len() {
+            let style = self.computed_style_for_layout(NativeNodeId {
+                generation: self.generation,
+                index: u32::try_from(index).unwrap_or(u32::MAX),
+            });
+            let style_key = serde_json::to_vec(&style)
+                .unwrap_or_else(|_| format!("serialization-error:{style:?}").into_bytes());
+            let style_index = if let Some(existing) = computed_style_lookup.get(&style_key) {
+                *existing
+            } else {
+                let style_index = u32::try_from(computed_style_table.len()).unwrap_or(u32::MAX);
+                computed_style_table.push(style);
+                computed_style_lookup.insert(style_key, style_index);
+                style_index
+            };
+            computed_style_indices.push(style_index);
+        }
         if let Some(stage) = style_stage {
             stage.finish(Some(self.nodes.len()));
         }
@@ -92,24 +123,32 @@ impl NativeDocument {
                 let _node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
                 (is_image_resource_node_in(&self.nodes, *node_index as usize)
                     && self.image_loads.get(node_index) == Some(&resource.source))
-                .then(|| NativeImageResourceWire {
-                    node_index: *node_index,
-                    source: resource.source.clone(),
-                    width: resource.image.width,
-                    height: resource.image.height,
-                    pixels_base64: base64::engine::general_purpose::STANDARD
-                        .encode(&resource.image.pixels),
-                    frames: resource
-                        .image
-                        .frames
-                        .iter()
-                        .map(|frame| NativeImageFrameWire {
-                            delay_ms: frame.delay_ms,
-                            pixels_base64: base64::engine::general_purpose::STANDARD
-                                .encode(&frame.pixels),
-                        })
-                        .collect(),
-                    loop_count: resource.image.loop_count,
+                .then(|| {
+                    let (pixels_base64, pixels_zlib_base64) =
+                        encode_content_image_pixels(&resource.image.pixels);
+                    NativeImageResourceWire {
+                        node_index: *node_index,
+                        source: resource.source.clone(),
+                        width: resource.image.width,
+                        height: resource.image.height,
+                        pixels_base64,
+                        pixels_zlib_base64,
+                        frames: resource
+                            .image
+                            .frames
+                            .iter()
+                            .map(|frame| {
+                                let (pixels_base64, pixels_zlib_base64) =
+                                    encode_content_image_pixels(&frame.pixels);
+                                NativeImageFrameWire {
+                                    delay_ms: frame.delay_ms,
+                                    pixels_base64,
+                                    pixels_zlib_base64,
+                                }
+                            })
+                            .collect(),
+                        loop_count: resource.image.loop_count,
+                    }
                 })
             })
             .collect();
@@ -134,24 +173,32 @@ impl NativeDocument {
                 (self.selected_video_poster_source(node_id).as_deref()
                     == Some(resource.source.as_str())
                     && self.video_poster_loads.get(node_index) == Some(&resource.source))
-                .then(|| NativeImageResourceWire {
-                    node_index: *node_index,
-                    source: resource.source.clone(),
-                    width: resource.image.width,
-                    height: resource.image.height,
-                    pixels_base64: base64::engine::general_purpose::STANDARD
-                        .encode(&resource.image.pixels),
-                    frames: resource
-                        .image
-                        .frames
-                        .iter()
-                        .map(|frame| NativeImageFrameWire {
-                            delay_ms: frame.delay_ms,
-                            pixels_base64: base64::engine::general_purpose::STANDARD
-                                .encode(&frame.pixels),
-                        })
-                        .collect(),
-                    loop_count: resource.image.loop_count,
+                .then(|| {
+                    let (pixels_base64, pixels_zlib_base64) =
+                        encode_content_image_pixels(&resource.image.pixels);
+                    NativeImageResourceWire {
+                        node_index: *node_index,
+                        source: resource.source.clone(),
+                        width: resource.image.width,
+                        height: resource.image.height,
+                        pixels_base64,
+                        pixels_zlib_base64,
+                        frames: resource
+                            .image
+                            .frames
+                            .iter()
+                            .map(|frame| {
+                                let (pixels_base64, pixels_zlib_base64) =
+                                    encode_content_image_pixels(&frame.pixels);
+                                NativeImageFrameWire {
+                                    delay_ms: frame.delay_ms,
+                                    pixels_base64,
+                                    pixels_zlib_base64,
+                                }
+                            })
+                            .collect(),
+                        loop_count: resource.image.loop_count,
+                    }
                 })
             })
             .collect();
@@ -240,24 +287,32 @@ impl NativeDocument {
             .filter_map(|(node_index, resource)| {
                 let node_id = NativeNodeId::from_parts(self.generation, *node_index);
                 (self.background_image_source_for_node(node_id) == Some(resource.source.as_str()))
-                    .then(|| NativeImageResourceWire {
-                        node_index: *node_index,
-                        source: resource.source.clone(),
-                        width: resource.image.width,
-                        height: resource.image.height,
-                        pixels_base64: base64::engine::general_purpose::STANDARD
-                            .encode(&resource.image.pixels),
-                        frames: resource
-                            .image
-                            .frames
-                            .iter()
-                            .map(|frame| NativeImageFrameWire {
-                                delay_ms: frame.delay_ms,
-                                pixels_base64: base64::engine::general_purpose::STANDARD
-                                    .encode(&frame.pixels),
-                            })
-                            .collect(),
-                        loop_count: resource.image.loop_count,
+                    .then(|| {
+                        let (pixels_base64, pixels_zlib_base64) =
+                            encode_content_image_pixels(&resource.image.pixels);
+                        NativeImageResourceWire {
+                            node_index: *node_index,
+                            source: resource.source.clone(),
+                            width: resource.image.width,
+                            height: resource.image.height,
+                            pixels_base64,
+                            pixels_zlib_base64,
+                            frames: resource
+                                .image
+                                .frames
+                                .iter()
+                                .map(|frame| {
+                                    let (pixels_base64, pixels_zlib_base64) =
+                                        encode_content_image_pixels(&frame.pixels);
+                                    NativeImageFrameWire {
+                                        delay_ms: frame.delay_ms,
+                                        pixels_base64,
+                                        pixels_zlib_base64,
+                                    }
+                                })
+                                .collect(),
+                            loop_count: resource.image.loop_count,
+                        }
                     })
             })
             .collect();
@@ -286,7 +341,9 @@ impl NativeDocument {
         let wire = NativeDocumentWire {
             native_document_state_replayable: false,
             nodes,
-            computed_styles,
+            computed_styles: Vec::new(),
+            computed_style_table,
+            computed_style_indices,
             viewport: self.viewport,
             quirks_mode: self.quirks_mode,
             document_referrer_policy: self.document_referrer_policy.as_str().to_owned(),
@@ -333,7 +390,7 @@ impl NativeDocument {
     }
 
     pub(crate) fn from_content_wire(
-        wire: NativeDocumentWire,
+        mut wire: NativeDocumentWire,
         limits: &NativeEngineLimits,
         generation: u32,
     ) -> Result<Self, NativeEngineError> {
@@ -342,6 +399,29 @@ impl NativeDocument {
                 offset: 0,
                 reason: "unchanged content-process document cannot be decoded as a snapshot".into(),
             });
+        }
+        if !wire.computed_style_table.is_empty() || !wire.computed_style_indices.is_empty() {
+            if !wire.computed_styles.is_empty()
+                || wire.computed_style_table.len() > wire.nodes.len()
+                || wire.computed_style_indices.len() != wire.nodes.len()
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned invalid interned computed styles".into(),
+                });
+            }
+            let mut expanded = Vec::with_capacity(wire.nodes.len());
+            for index in &wire.computed_style_indices {
+                let style = wire
+                    .computed_style_table
+                    .get(*index as usize)
+                    .ok_or_else(|| NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "content process returned an invalid computed-style index".into(),
+                    })?;
+                expanded.push(*style);
+            }
+            wire.computed_styles = expanded;
         }
         let viewport = wire.viewport;
         let quirks_mode = wire.quirks_mode;
@@ -783,11 +863,15 @@ impl NativeDocument {
                     reason: "content process returned an invalid image source".into(),
                 });
             }
-            if resource.pixels_base64.len() > max_encoded_pixels {
+            let encoded_pixels = resource
+                .pixels_base64
+                .len()
+                .max(resource.pixels_zlib_base64.len());
+            if encoded_pixels > max_encoded_pixels {
                 return Err(NativeEngineError::limit(
                     "content-process image pixels",
                     max_encoded_pixels,
-                    resource.pixels_base64.len(),
+                    encoded_pixels,
                 ));
             }
             let node_index =

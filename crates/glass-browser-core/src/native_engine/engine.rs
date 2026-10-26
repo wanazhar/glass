@@ -6,9 +6,9 @@ use super::config::{
     validate_url_text, validate_window_name, without_fragment,
 };
 use super::content_process::{
-    CONTENT_PROCESS_ASYNC_EFFECT_TIMEOUT, CONTENT_PROCESS_SCRIPT_TIMEOUT,
-    NativeContentAsyncEffectNotification, NativeContentLoad, NativeContentLoadResult,
-    NativeContentMutation, NativeContentNavigation, NativeContentProcess,
+    CONTENT_PROCESS_ASYNC_EFFECT_TIMEOUT, CONTENT_PROCESS_LIFECYCLE_TIMEOUT,
+    CONTENT_PROCESS_SCRIPT_TIMEOUT, NativeContentAsyncEffectNotification, NativeContentLoad,
+    NativeContentLoadResult, NativeContentMutation, NativeContentNavigation, NativeContentProcess,
     NativeContentScriptResult, merge_dynamic_page_script_result,
 };
 use super::css::{

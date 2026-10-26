@@ -231,12 +231,19 @@ impl NativeDocument {
     }
 
     pub(crate) fn set_inline_style_policy(&mut self, allowed_nodes: &BTreeSet<u32>) {
+        let mut changed = false;
         for node in &mut self.nodes {
             if node.element_name() == Some("style") || node.attribute("style").is_some() {
-                node.state.inline_style_allowed = allowed_nodes.contains(&node.id().index());
+                let allowed = allowed_nodes.contains(&node.id().index());
+                if node.state.inline_style_allowed != allowed {
+                    node.state.inline_style_allowed = allowed;
+                    changed = true;
+                }
             }
         }
-        self.invalidate_layout_styles();
+        if changed {
+            self.invalidate_layout_styles();
+        }
     }
 
     pub(crate) fn set_external_stylesheet_states(

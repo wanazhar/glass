@@ -352,6 +352,7 @@ async fn versioned_native_journey_selects_observed_responsive_duplicate_by_regio
             &[BatchStep::ClickObserved {
                 role: click_step["role"].as_str().unwrap().to_owned(),
                 name_contains: click_step["nameContains"].as_str().unwrap().to_owned(),
+                name_equals: click_step["nameEquals"].as_str().map(str::to_owned),
             }],
             false,
             BatchMode::Unguarded,
@@ -401,6 +402,7 @@ fn observed_duplicate_links_with_the_same_destination_are_one_action_target() {
                     &[BatchStep::ClickObserved {
                         role: "link".into(),
                         name_contains: "library".into(),
+                        name_equals: None,
                     }],
                     false,
                     BatchMode::Unguarded,
@@ -434,6 +436,7 @@ fn observed_duplicate_links_with_different_destinations_remain_ambiguous() {
                     &[BatchStep::ClickObserved {
                         role: "link".into(),
                         name_contains: "library".into(),
+                        name_equals: None,
                     }],
                     false,
                     BatchMode::Unguarded,
@@ -448,10 +451,73 @@ fn observed_duplicate_links_with_different_destinations_remain_ambiguous() {
                 }
                 BatchStepOutcome::Success { .. } => panic!("different links must stay ambiguous"),
             }
+            let exact_outcome = session
+                .native_run_batch(
+                    &[BatchStep::ClickObserved {
+                        role: "link".into(),
+                        name_contains: String::new(),
+                        name_equals: Some("library".into()),
+                    }],
+                    false,
+                    BatchMode::Unguarded,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(!exact_outcome.success);
+            match &exact_outcome.steps[0] {
+                BatchStepOutcome::Error { message, .. } => {
+                    assert!(message.contains("multiple visible targets"));
+                }
+                BatchStepOutcome::Success { .. } => {
+                    panic!("exact duplicate names with different targets stay ambiguous")
+                }
+            }
             assert_eq!(
                 session.evidence(EvidenceLevel::Compact).await.unwrap().url,
                 "fixture://different-links.test/"
             );
+        });
+    });
+}
+
+#[test]
+fn observed_exact_accessible_name_disambiguates_overlapping_link_names() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(async {
+            let config = NativeEngineConfig::default()
+                .with_initial_url("fixture://exact-link-name.test/")
+                .with_fixture(
+                    "fixture://exact-link-name.test/",
+                    "<main><a href='/computer-science'>Computer science</a><a href='/computer-science-portal'>Computer science portal</a></main>",
+                )
+                .unwrap()
+                .with_fixture(
+                    "fixture://exact-link-name.test/computer-science",
+                    "<title>Computer science</title><main>Target article</main>",
+                )
+                .unwrap();
+            let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+            let outcome = session
+                .native_run_batch(
+                    &[BatchStep::ClickObserved {
+                        role: "link".into(),
+                        name_contains: String::new(),
+                        name_equals: Some("computer science".into()),
+                    }],
+                    false,
+                    BatchMode::Unguarded,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(outcome.success);
+            assert_eq!(outcome.completed, 1);
+            assert_eq!(
+                session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+                "fixture://exact-link-name.test/computer-science"
+            );
+            session.close().await.unwrap();
         });
     });
 }

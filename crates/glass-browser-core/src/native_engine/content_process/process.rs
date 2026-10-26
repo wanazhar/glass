@@ -984,6 +984,20 @@ impl NativeContentProcess {
         events: &[NativeEventKind],
         parent_loader: &mut NativeResourceLoader,
     ) -> Result<NativeContentMutation, NativeEngineError> {
+        self.dispatch_lifecycle_events_with_timeout(
+            events,
+            parent_loader,
+            CONTENT_PROCESS_LIFECYCLE_TIMEOUT,
+        )
+        .await
+    }
+
+    pub(crate) async fn dispatch_lifecycle_events_with_timeout(
+        &mut self,
+        events: &[NativeEventKind],
+        parent_loader: &mut NativeResourceLoader,
+        timeout: Duration,
+    ) -> Result<NativeContentMutation, NativeEngineError> {
         let event_names = events
             .iter()
             .map(|kind| event_kind_text(*kind))
@@ -994,7 +1008,7 @@ impl NativeContentProcess {
             "mutate_lifecycle_events",
             json!({"events": event_names}),
             parent_loader,
-            CONTENT_PROCESS_LIFECYCLE_TIMEOUT,
+            timeout,
         )
         .await
     }

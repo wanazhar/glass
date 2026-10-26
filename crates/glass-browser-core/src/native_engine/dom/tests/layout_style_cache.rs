@@ -33,6 +33,81 @@ fn layout_style_cache_reuses_cascade_and_matches_fresh_document() {
 }
 
 #[test]
+fn unchanged_inline_style_policy_preserves_cached_styles() {
+    let limits = NativeEngineLimits::default();
+    let mut document = NativeDocument::parse(
+        "<style>#target{color:blue}</style><div id=target style='color:red'>target</div>",
+        &limits,
+    )
+    .unwrap();
+    let target = document.find_element_by_id("target").unwrap();
+    let target_index = target.index();
+    document.set_inline_style_policy(&std::collections::BTreeSet::new());
+
+    let blocked_style = document.computed_style_for_layout(target);
+    assert!(blocked_style.color().is_some());
+    assert!(
+        document
+            .layout_style_cache
+            .0
+            .lock()
+            .unwrap()
+            .contains_key(&target)
+    );
+
+    // Applying the same policy is common when navigation and page lifecycle
+    // checkpoints both refresh CSP-derived inline-style admission. Preserve
+    // the computed cascade so large documents do not rebuild every node.
+    document.set_inline_style_policy(&std::collections::BTreeSet::new());
+    assert!(
+        document
+            .layout_style_cache
+            .0
+            .lock()
+            .unwrap()
+            .contains_key(&target)
+    );
+    assert_eq!(document.computed_style_for_layout(target), blocked_style);
+
+    let allowed = std::collections::BTreeSet::from([target_index]);
+    document.set_inline_style_policy(&allowed);
+    assert!(
+        !document
+            .layout_style_cache
+            .0
+            .lock()
+            .unwrap()
+            .contains_key(&target)
+    );
+    let allowed_style = document.computed_style_for_layout(target);
+    assert_ne!(allowed_style, blocked_style);
+
+    // Repeating the now-effective policy also retains the newly computed
+    // result; changing it back still invalidates and restores the stylesheet
+    // rule's value.
+    document.set_inline_style_policy(&allowed);
+    assert!(
+        document
+            .layout_style_cache
+            .0
+            .lock()
+            .unwrap()
+            .contains_key(&target)
+    );
+    assert_eq!(document.computed_style_for_layout(target), allowed_style);
+    document.set_inline_style_policy(&std::collections::BTreeSet::new());
+    assert!(
+        !document
+            .layout_style_cache
+            .0
+            .lock()
+            .unwrap()
+            .contains_key(&target)
+    );
+    assert_eq!(document.computed_style_for_layout(target), blocked_style);
+}
+
+#[test]
 fn cached_parent_style_fast_path_matches_fallback_on_mixed_large_document() {
     use std::time::Instant;
 

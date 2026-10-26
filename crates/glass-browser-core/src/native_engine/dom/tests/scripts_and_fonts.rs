@@ -368,6 +368,127 @@ fn content_wire_omits_default_node_state_and_empty_children() {
 }
 
 #[test]
+fn content_wire_interns_repeated_computed_styles_without_changing_decoded_styles() {
+    let limits = NativeEngineLimits::default();
+    let repeated = (0..2_000)
+        .map(|index| format!("<p class='row'>row {index}</p>"))
+        .collect::<String>();
+    let html = format!(
+        "<style>body{{font-size:16px;color:#202020}}.row{{display:block;margin:2px 0;color:#404040}}</style><main>{repeated}</main>"
+    );
+    let document = NativeDocument::parse(&html, &limits).expect("style wire fixture must parse");
+    let wire = document.to_content_wire();
+    assert!(wire.computed_styles.is_empty());
+    assert_eq!(wire.computed_style_indices.len(), wire.nodes.len());
+    assert!(
+        wire.computed_style_table.len() < wire.nodes.len() / 10,
+        "repeated style values should share table entries"
+    );
+
+    let mut expanded = wire.clone();
+    expanded.computed_styles = wire
+        .computed_style_indices
+        .iter()
+        .map(|index| wire.computed_style_table[*index as usize])
+        .collect();
+    expanded.computed_style_indices.clear();
+    expanded.computed_style_table.clear();
+    let compact_bytes = serde_json::to_vec(&wire).unwrap().len();
+    let expanded_bytes = serde_json::to_vec(&expanded).unwrap().len();
+    assert!(
+        compact_bytes < expanded_bytes / 2,
+        "interned styles should materially reduce repeated wire bytes"
+    );
+
+    let restored = NativeDocument::from_content_wire(wire, &limits, document.generation())
+        .expect("interned style wire should decode");
+    for index in 0..document.nodes.len() {
+        let id = NativeNodeId::from_parts(document.generation(), index as u32);
+        assert_eq!(
+            restored.computed_style_for_layout(id),
+            document.computed_style_for_layout(id),
+            "wire style mismatch at node {index}"
+        );
+    }
+}
+
+#[test]
+fn content_wire_compresses_image_pixels_without_changing_rendered_data() {
+    let limits = NativeEngineLimits::default();
+    let images = (0..24)
+        .map(|index| format!("<img id='image-{index}' src='/image-{index}.png'>"))
+        .collect::<String>();
+    let mut document = NativeDocument::parse(&images, &limits).unwrap();
+    let pixels = vec![0x5a; 256 * 256 * 4];
+    for index in 0..24 {
+        let id = document
+            .find_element_by_id(&format!("image-{index}"))
+            .unwrap();
+        let source = document.image_current_src(id, Viewport::default());
+        document
+            .mark_image_load(id.index(), source.clone(), Viewport::default())
+            .unwrap();
+        document
+            .set_image_resource(
+                id.index(),
+                source,
+                NativeImage::new(256, 256, pixels.clone()),
+            )
+            .unwrap();
+    }
+
+    let wire = document.to_content_wire();
+    assert_eq!(wire.image_resources.len(), 24);
+    assert!(wire.image_resources.iter().all(
+        |resource| resource.pixels_base64.is_empty() && !resource.pixels_zlib_base64.is_empty()
+    ));
+
+    let mut expanded_wire = wire.clone();
+    for resource in &mut expanded_wire.image_resources {
+        resource.pixels_base64 = base64::engine::general_purpose::STANDARD.encode(&pixels);
+        resource.pixels_zlib_base64.clear();
+    }
+    let compact_bytes = serde_json::to_vec(&wire).unwrap().len();
+    let expanded_bytes = serde_json::to_vec(&expanded_wire).unwrap().len();
+    assert!(
+        compact_bytes < expanded_bytes / 4,
+        "compressed image pixels should materially reduce bounded document snapshots"
+    );
+
+    let restored = NativeDocument::from_content_wire(wire, &limits, document.generation()).unwrap();
+    for index in 0..24 {
+        let id = restored
+            .find_element_by_id(&format!("image-{index}"))
+            .unwrap();
+        assert_eq!(
+            restored.image_resources[&id.index()].image.pixels,
+            pixels,
+            "image resource {index} must round-trip byte-for-byte"
+        );
+    }
+}
+
+#[test]
+fn content_wire_bounds_compressed_image_expansion_to_declared_dimensions() {
+    use std::io::Write;
+
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(&vec![0; 1024 * 1024]).unwrap();
+    let compressed = encoder.finish().unwrap();
+    let resource = NativeImageResourceWire {
+        node_index: 0,
+        source: "https://example.test/image.png".into(),
+        width: 1,
+        height: 1,
+        pixels_base64: String::new(),
+        pixels_zlib_base64: base64::engine::general_purpose::STANDARD.encode(compressed),
+        frames: Vec::new(),
+        loop_count: None,
+    };
+    assert!(image_from_wire(&resource, 1024).is_err());
+}
+
+#[test]
 fn content_wire_round_trips_background_images_resolved_from_custom_properties() {
     let limits = NativeEngineLimits::default();
     let document = NativeDocument::parse(

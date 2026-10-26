@@ -59,6 +59,20 @@ fn journal_cookie_change(name: &str, value: Option<&str>) -> NativeCookieChange 
 }
 
 #[test]
+fn empty_web_storage_profile_is_treated_as_uninitialized_without_rewriting_it() {
+    let profile_path = test_profile_path("empty-web-storage");
+    remove_test_profile(&profile_path);
+    fs::write(&profile_path, []).unwrap();
+
+    let state = load_web_storage_profile(Some(&profile_path)).unwrap();
+    assert!(state.local.is_empty());
+    assert!(state.session.is_empty());
+    assert_eq!(fs::metadata(&profile_path).unwrap().len(), 0);
+
+    remove_test_profile(&profile_path);
+}
+
+#[test]
 fn cookie_changes_round_trip_through_profile_journal_and_old_records_decode() {
     let profile_path = test_profile_path("cookie-roundtrip");
     remove_test_profile(&profile_path);

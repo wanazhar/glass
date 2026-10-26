@@ -25,6 +25,13 @@ most 20,000 characters by default (60,000 maximum). Unsupported media types,
 oversized bodies, redirects, and transport failures are reported as tool
 results rather than presented as successful page content.
 
+Rendered browser integrations are session-specific. In a Glass mixed session,
+the host advertises its `glass.browser.*` tools to Core. Standalone Core does
+not invent those host tools; when the separate `glass-browser` executable is
+installed, use `command -v glass-browser` and `glass-browser --help` to discover
+its first-party browser CLI from any working directory. Search and fetch remain
+text tools and do not claim to provide rendered or interactive browser access.
+
 The Rust packages live under [`crates/`](../crates/glass-core/Cargo.toml) in
 the root Cargo workspace. They share the root package version, currently
 `0.3.14`, while retaining `MIT OR Apache-2.0` package metadata and the

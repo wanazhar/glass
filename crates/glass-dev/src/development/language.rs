@@ -13,6 +13,8 @@ use std::{
 };
 
 const MAX_LSP_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+const RENAME_INDEX_WAIT: Duration = Duration::from_secs(8);
+const RENAME_CONTENT_MODIFIED_RETRIES: usize = 3;
 // Some rust-analyzer versions publish an empty snapshot before their first
 // real check completes. Keep waiting within the existing bounded request
 // deadline so that the empty snapshot cannot mask a later diagnostic.
@@ -42,6 +44,7 @@ pub struct LanguageDiagnostic {
 /// lifecycle, bounded framing, normalized diagnostics, and timeline routing.
 pub(crate) struct LspClient {
     root: PathBuf,
+    server_settings: Value,
     child: Child,
     input: ChildStdin,
     output: Receiver<Value>,
@@ -91,6 +94,9 @@ impl LspClient {
         initialization_options: Option<Value>,
     ) -> DevelopmentResult<Self> {
         let root = fs::canonicalize(root)?;
+        let server_settings = initialization_options
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({}));
         let mut child = Command::new(server)
             .args(arguments)
             .current_dir(&root)
@@ -117,6 +123,7 @@ impl LspClient {
             .map_err(DevelopmentError::Io)?;
         let mut client = Self {
             root,
+            server_settings,
             child,
             input,
             output: receiver,
@@ -523,14 +530,113 @@ impl LspClient {
             ));
         }
         let uri = self.sync_document_with_content(path, content)?.uri;
-        self.request_result(
-            "textDocument/rename",
-            serde_json::json!({
-                "textDocument":{"uri":uri},
-                "position":{"line":line.saturating_sub(1),"character":character.saturating_sub(1)},
-                "newName":new_name
-            }),
-        )
+        let params = serde_json::json!({
+            "textDocument":{"uri":uri},
+            "position":{"line":line.saturating_sub(1),"character":character.saturating_sub(1)},
+            "newName":new_name
+        });
+        let initial = self.rename_request(params.clone());
+        let needs_index_check = match &initial {
+            Err(error) => error
+                .to_string()
+                .contains("No references found at position"),
+            Ok(response) => response.result.is_null() || workspace_edit_is_empty(&response.result),
+        };
+        if !needs_index_check {
+            return initial;
+        }
+        let position = DiagnosticPosition { line, character };
+        if !self.wait_for_rename_references(&uri, &position) {
+            return initial;
+        }
+        let response = self.rename_request(params)?;
+        if response.result.is_null() {
+            return Err(DevelopmentError::Process(
+                "textDocument/rename returned no WorkspaceEdit after the selected symbol was indexed".into(),
+            ));
+        }
+        Ok(response)
+    }
+
+    /// LSP error -32801 means the server invalidated a request because its
+    /// document view changed while the request was running. Retrying this
+    /// exact read-only rename request is safe, but keep the retry count and
+    /// delays bounded so other errors remain visible to the caller.
+    fn rename_request(&mut self, params: Value) -> DevelopmentResult<LanguageResponse> {
+        for attempt in 0..=RENAME_CONTENT_MODIFIED_RETRIES {
+            let response = self.call(
+                "textDocument/rename",
+                params.clone(),
+                Duration::from_secs(15),
+            )?;
+            if let Some(error) = response.get("error") {
+                if error.get("code").and_then(Value::as_i64) == Some(-32801)
+                    && attempt < RENAME_CONTENT_MODIFIED_RETRIES
+                {
+                    thread::sleep(Duration::from_millis(50 * (1 << attempt)));
+                    continue;
+                }
+                return Err(DevelopmentError::Process(format!(
+                    "textDocument/rename failed: {error}"
+                )));
+            }
+            let result = response.get("result").cloned().unwrap_or(Value::Null);
+            if serde_json::to_vec(&result)?.len() > MAX_LSP_MESSAGE_BYTES {
+                return Err(DevelopmentError::Serialization(
+                    "language response exceeds the size limit".into(),
+                ));
+            }
+            return Ok(LanguageResponse {
+                method: "textDocument/rename".into(),
+                result,
+            });
+        }
+        unreachable!("bounded rename retry loop returns or errors")
+    }
+
+    /// rust-analyzer can answer the first rename request before its initial
+    /// Cargo workspace index is ready. Retry only the known empty/no-reference
+    /// outcomes, and only after a bounded read-only references probe confirms
+    /// the selected symbol is indexed. Other errors remain visible.
+    fn wait_for_rename_references(&mut self, uri: &str, position: &DiagnosticPosition) -> bool {
+        let deadline = Instant::now() + RENAME_INDEX_WAIT;
+        let params = serde_json::json!({
+            "textDocument":{"uri":uri},
+            "position":protocol_position(position),
+            "context":{"includeDeclaration":true}
+        });
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            // Keep only one references request in flight. Short timeouts leave
+            // stale responses queued in the language server and can make a
+            // busy server spend the whole readiness window answering probes
+            // Glass has already abandoned.
+            match self.request_result_with_timeout(
+                "textDocument/references",
+                params.clone(),
+                remaining,
+            ) {
+                Ok(response)
+                    if response
+                        .result
+                        .as_array()
+                        .is_some_and(|references| !references.is_empty()) =>
+                {
+                    return true;
+                }
+                Err(error) if error.to_string().contains("timed out") => {}
+                Err(_) => return false,
+                _ => {}
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            thread::sleep(remaining.min(Duration::from_millis(250)));
+        }
     }
 
     fn position_request(
@@ -554,7 +660,16 @@ impl LspClient {
         method: &str,
         params: Value,
     ) -> DevelopmentResult<LanguageResponse> {
-        let response = self.call(method, params, Duration::from_secs(15))?;
+        self.request_result_with_timeout(method, params, Duration::from_secs(15))
+    }
+
+    fn request_result_with_timeout(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> DevelopmentResult<LanguageResponse> {
+        let response = self.call(method, params, timeout)?;
         if let Some(error) = response.get("error") {
             return Err(DevelopmentError::Process(format!(
                 "{method} failed: {error}"
@@ -594,7 +709,11 @@ impl LspClient {
             "processId": std::process::id(),
             "rootUri": root_uri,
             "capabilities": {
-                "workspace": {"workspaceEdit": {"documentChanges": true}},
+                "workspace": {
+                    "configuration": true,
+                    "workspaceFolders": true,
+                    "workspaceEdit": {"documentChanges": true}
+                },
                 "textDocument": {
                     "publishDiagnostics": {"relatedInformation": true},
                     "completion": {"completionItem": {"snippetSupport": false}},
@@ -642,6 +761,19 @@ impl LspClient {
                         "language server response timed out: {error}"
                     ))
                 })?;
+            if let (Some(request_id), Some(server_method)) =
+                (value.get("id"), value.get("method").and_then(Value::as_str))
+            {
+                let response = server_request_response(
+                    server_method,
+                    request_id.clone(),
+                    value.get("params").unwrap_or(&Value::Null),
+                    &self.server_settings,
+                    &self.root,
+                )?;
+                self.notify(response)?;
+                continue;
+            }
             if value.get("id").and_then(Value::as_u64) == Some(id) {
                 return Ok(value);
             }
@@ -662,8 +794,94 @@ impl LspClient {
     }
 }
 
+fn workspace_edit_is_empty(result: &Value) -> bool {
+    if result.is_null() {
+        return true;
+    }
+    let document_changes_empty = result
+        .get("documentChanges")
+        .is_none_or(|changes| changes.as_array().is_some_and(Vec::is_empty));
+    let changes_empty = result
+        .get("changes")
+        .is_none_or(|changes| changes.as_object().is_some_and(serde_json::Map::is_empty));
+    document_changes_empty && changes_empty
+}
+
 fn note_empty_diagnostics(first_empty: &mut Option<Instant>, now: Instant) {
     first_empty.get_or_insert(now);
+}
+
+fn server_request_response(
+    method: &str,
+    id: Value,
+    params: &Value,
+    settings: &Value,
+    root: &Path,
+) -> DevelopmentResult<Value> {
+    let result = match method {
+        "workspace/configuration" => {
+            let items = params
+                .get("items")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let values = items
+                .iter()
+                .map(|item| {
+                    configuration_value(settings, item.get("section").and_then(Value::as_str))
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!(values)
+        }
+        "workspace/workspaceFolders" => {
+            serde_json::json!([{
+                "uri": file_uri(root)?,
+                "name": root.file_name().and_then(|name| name.to_str()).unwrap_or("project")
+            }])
+        }
+        "client/registerCapability"
+        | "client/unregisterCapability"
+        | "window/workDoneProgress/create"
+        | "window/showMessageRequest"
+        | "workspace/diagnostic/refresh" => Value::Null,
+        "workspace/applyEdit" => serde_json::json!({
+            "applied": false,
+            "failureReason": "Glass requires workspace edits to pass through its review proposals"
+        }),
+        "window/showDocument" => serde_json::json!({"success": false}),
+        _ => {
+            return Ok(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32601,
+                    "message": format!("unsupported language-server request: {method}")
+                }
+            }));
+        }
+    };
+    Ok(serde_json::json!({"jsonrpc":"2.0","id":id,"result":result}))
+}
+
+fn configuration_value(settings: &Value, section: Option<&str>) -> Value {
+    let Some(section) = section else {
+        return settings.clone();
+    };
+    let mut value = settings.get("rust-analyzer").unwrap_or(settings);
+    let section = section
+        .strip_prefix("rust-analyzer")
+        .map(|section| section.strip_prefix('.').unwrap_or(section))
+        .unwrap_or(section);
+    if section.is_empty() {
+        return value.clone();
+    }
+    for part in section.split('.') {
+        let Some(next) = value.get(part) else {
+            return Value::Null;
+        };
+        value = next;
+    }
+    value.clone()
 }
 
 impl Drop for LspClient {
@@ -811,8 +1029,10 @@ fn language_id(path: &Path) -> &'static str {
 
 fn rust_analyzer_initialization_options() -> Value {
     serde_json::json!({
-        "cargo": {"allTargets": false},
-        "check": {"allTargets": false, "workspace": false}
+        "rust-analyzer": {
+            "cargo": {"allTargets": false},
+            "check": {"allTargets": false, "workspace": false}
+        }
     })
 }
 
@@ -855,9 +1075,59 @@ mod tests {
         assert_eq!(
             rust_analyzer_initialization_options(),
             serde_json::json!({
-                "cargo": {"allTargets": false},
-                "check": {"allTargets": false, "workspace": false}
+                "rust-analyzer": {
+                    "cargo": {"allTargets": false},
+                    "check": {"allTargets": false, "workspace": false}
+                }
             })
+        );
+    }
+
+    #[test]
+    fn language_server_configuration_requests_receive_the_selected_settings() {
+        let settings = rust_analyzer_initialization_options();
+        let response = server_request_response(
+            "workspace/configuration",
+            serde_json::json!(41),
+            &serde_json::json!({"items":[
+                {"section":"rust-analyzer"},
+                {"section":"rust-analyzer.cargo"},
+                {"section":"rust-analyzer.check.workspace"},
+                {"section":"rust-analyzer.unknown"}
+            ]}),
+            &settings,
+            Path::new("/tmp/project"),
+        )
+        .unwrap();
+        assert_eq!(response["id"], 41);
+        assert_eq!(
+            response["result"],
+            serde_json::json!([
+                {"cargo":{"allTargets":false},"check":{"allTargets":false,"workspace":false}},
+                {"allTargets":false},
+                false,
+                null
+            ])
+        );
+    }
+
+    #[test]
+    fn server_initiated_workspace_edits_are_returned_to_review_in_glass() {
+        let response = server_request_response(
+            "workspace/applyEdit",
+            serde_json::json!(9),
+            &serde_json::json!({"edit":{"changes":{}}}),
+            &Value::Null,
+            Path::new("/tmp/project"),
+        )
+        .unwrap();
+        assert_eq!(response["id"], 9);
+        assert_eq!(response["result"]["applied"], false);
+        assert!(
+            response["result"]["failureReason"]
+                .as_str()
+                .unwrap()
+                .contains("review proposals")
         );
     }
 
@@ -909,5 +1179,171 @@ mod tests {
             );
         }
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rust_analyzer_waits_for_cross_file_rename_index_when_available() {
+        if !Command::new("rust-analyzer")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+        {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("glass-lsp-rename-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='glass_lsp_rename_fixture'\nversion='0.1.0'\nedition='2024'\n",
+        )
+        .unwrap();
+        let source = "pub mod call;\npub fn legacy_name() {}\n";
+        let call_site = "pub fn invoke() { crate::legacy_name(); }\n";
+        fs::write(root.join("src/lib.rs"), source).unwrap();
+        fs::write(root.join("src/call.rs"), call_site).unwrap();
+        let check = Command::new("cargo")
+            .args(["check", "--offline", "--manifest-path"])
+            .arg(root.join("Cargo.toml"))
+            .status()
+            .expect("check local rename fixture");
+        assert!(check.success());
+
+        let mut client = LspClient::spawn(&root, "rust-analyzer", &[]).unwrap();
+        client
+            .sync_document_with_content("src/call.rs", call_site)
+            .unwrap();
+        let response = client
+            .rename_with_content("src/lib.rs", 2, 8, "modern_name", source)
+            .unwrap();
+        assert_eq!(response.method, "textDocument/rename");
+        let mut changed_paths = std::collections::BTreeSet::new();
+        if let Some(documents) = response
+            .result
+            .get("documentChanges")
+            .and_then(Value::as_array)
+        {
+            for document in documents {
+                let uri = document
+                    .pointer("/textDocument/uri")
+                    .and_then(Value::as_str);
+                let has_rename =
+                    document
+                        .get("edits")
+                        .and_then(Value::as_array)
+                        .is_some_and(|edits| {
+                            edits.iter().any(|edit| {
+                                edit.get("newText")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|text| text == "modern_name")
+                            })
+                        });
+                if has_rename && let Some(uri) = uri {
+                    changed_paths.insert(uri.to_string());
+                }
+            }
+        }
+        assert!(
+            changed_paths
+                .iter()
+                .any(|path| path.ends_with("/src/lib.rs")),
+            "rust-analyzer rename omitted the declaration: {:#}",
+            response.result
+        );
+        assert!(
+            changed_paths
+                .iter()
+                .any(|path| path.ends_with("/src/call.rs")),
+            "rust-analyzer rename omitted the call site: {:#}",
+            response.result
+        );
+        drop(client);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_retries_only_the_lsp_content_modified_response() {
+        let Some(python) = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|directory| directory.join("python3"))
+            .find(|candidate| candidate.is_file())
+        else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("glass-lsp-modified-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='fixture'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        let source = "// unsaved first\nfn old_name() {}\n";
+        let call_site = "// unsaved second\nold_name();\n";
+        fs::write(root.join("src/first.rs"), source).unwrap();
+        fs::write(root.join("src/second.rs"), call_site).unwrap();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_lsp_workspace_edit.py");
+        let mut client = LspClient::spawn(
+            &root,
+            &python.to_string_lossy(),
+            &[fixture.to_string_lossy().into_owned()],
+        )
+        .unwrap();
+        client
+            .sync_document_with_content("src/second.rs", call_site)
+            .unwrap();
+        let response = client
+            .rename_with_content("src/first.rs", 2, 4, "retry_once", source)
+            .expect("ContentModified is retried and the later WorkspaceEdit is returned");
+        assert_eq!(
+            response.result["documentChanges"].as_array().unwrap().len(),
+            2
+        );
+        drop(client);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_waits_for_slow_references_without_overlapping_requests() {
+        let Some(python) = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|directory| directory.join("python3"))
+            .find(|candidate| candidate.is_file())
+        else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("glass-lsp-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='fixture'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        let source = "// unsaved first\nfn old_name() {}\n";
+        let call_site = "// unsaved second\nold_name();\n";
+        fs::write(root.join("src/first.rs"), source).unwrap();
+        fs::write(root.join("src/second.rs"), call_site).unwrap();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_lsp_workspace_edit.py");
+        let mut client = LspClient::spawn(
+            &root,
+            &python.to_string_lossy(),
+            &[fixture.to_string_lossy().into_owned()],
+        )
+        .unwrap();
+        client
+            .sync_document_with_content("src/second.rs", call_site)
+            .unwrap();
+        let response = client
+            .rename_with_content("src/first.rs", 2, 4, "retry_slow_references", source)
+            .expect("a slow references response confirms the empty WorkspaceEdit was transient");
+        assert_eq!(
+            response.result["documentChanges"].as_array().unwrap().len(),
+            2
+        );
+        drop(client);
+        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -4296,7 +4296,16 @@ impl DevTuiState {
         if let Some(index) = self.files.iter().position(|path| path == &proposal.path) {
             self.selected_file = index;
         }
+        if let Some(index) = self.ws().ok().and_then(|workspace| {
+            workspace
+                .project()
+                .buffers()
+                .position(|buffer| buffer.path == proposal.path)
+        }) {
+            self.editor_buffer_index = index;
+        }
         self.surface = DevSurface::Code;
+        self.code_edit_mode = true;
         self.refresh_editor_projection();
         self.refresh_editor_hunks();
         self.status = format!(
@@ -4387,7 +4396,16 @@ impl DevTuiState {
         if let Some(index) = self.files.iter().position(|path| path == &first_path) {
             self.selected_file = index;
         }
+        if let Some(index) = self.ws().ok().and_then(|workspace| {
+            workspace
+                .project()
+                .buffers()
+                .position(|buffer| buffer.path == first_path)
+        }) {
+            self.editor_buffer_index = index;
+        }
         self.surface = DevSurface::Code;
+        self.code_edit_mode = true;
         self.refresh_editor_projection();
         self.refresh_editor_hunks();
         self.status = format!(

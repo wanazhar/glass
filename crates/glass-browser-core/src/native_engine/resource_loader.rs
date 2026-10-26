@@ -232,10 +232,7 @@ pub struct NativeObjectUrlTransfer {
     pub(crate) resource: NativeObjectUrlResource,
 }
 
-/// Metadata admitted for one media element resource. The native engine keeps
-/// this separate from decoded audio/video frames: callers can inspect source
-/// ownership and media readiness without retaining an unbounded codec buffer
-/// in the document wire.
+/// Metadata and bounded decoded media admitted for one media element resource.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NativeMediaMetadata {
@@ -244,6 +241,61 @@ pub(crate) struct NativeMediaMetadata {
     pub(crate) duration_millis: Option<u64>,
     #[serde(default)]
     pub(crate) video_frames: Vec<NativeVideoFrame>,
+    #[serde(default)]
+    pub(crate) audio_track: Option<NativeAudioTrack>,
+}
+
+/// A decoded, bounded PCM audio track. Samples are interleaved signed 16-bit
+/// little-endian values so the client can package them as a playable WAV
+/// without depending on a host audio device.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeAudioTrack {
+    pub(crate) channels: u16,
+    pub(crate) sample_rate: u32,
+    pub(crate) pcm_s16le: Vec<u8>,
+}
+
+impl NativeAudioTrack {
+    pub(crate) fn as_wav(&self) -> Option<Vec<u8>> {
+        if (self.channels != 1 && self.channels != 2)
+            || !(8_000..=96_000).contains(&self.sample_rate)
+            || self.pcm_s16le.is_empty()
+            || self.pcm_s16le.len() > MAX_NATIVE_AUDIO_DECODED_BYTES
+            || !self
+                .pcm_s16le
+                .len()
+                .is_multiple_of(usize::from(self.channels) * 2)
+        {
+            return None;
+        }
+        let data_length = u32::try_from(self.pcm_s16le.len()).ok()?;
+        let block_align = self.channels.checked_mul(2)?;
+        let byte_rate = self.sample_rate.checked_mul(u32::from(block_align))?;
+        let mut bytes = Vec::with_capacity(self.pcm_s16le.len().checked_add(44)?);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&data_length.checked_add(36)?.to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&self.channels.to_le_bytes());
+        bytes.extend_from_slice(&self.sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&byte_rate.to_le_bytes());
+        bytes.extend_from_slice(&block_align.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_length.to_le_bytes());
+        bytes.extend_from_slice(&self.pcm_s16le);
+        Some(bytes)
+    }
+}
+
+/// Playable PCM audio decoded by the native browser, with the source kept
+/// private to the browser owner for redacted client-side provenance labels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeAudioClip {
+    pub source: String,
+    pub wav_bytes: Vec<u8>,
 }
 
 /// One decoded, bounded VP8 frame retained for native WebM video playback.
@@ -2858,14 +2910,32 @@ fn media_metadata_from_bytes(
     let Some(content_type) = content_type else {
         return Ok(None);
     };
-    let duration_millis = (content_type == "audio/wav")
-        .then(|| wav_duration_millis(bytes))
-        .flatten();
+    let audio_track = if content_type == "audio/wav" {
+        decode_bounded_pcm_wav(bytes)?
+    } else {
+        None
+    };
+    if (content_type.starts_with("audio/")
+        || content_type == "application/ogg"
+        || content_type == "application/vnd.apple.mpegurl")
+        && audio_track.is_none()
+    {
+        return Ok(None);
+    }
+    let duration_millis = audio_track.as_ref().map(|track| {
+        let frames = track.pcm_s16le.len() / (usize::from(track.channels) * 2);
+        (frames as u64).saturating_mul(1000) / u64::from(track.sample_rate)
+    });
     let video_frames = if content_type == "video/webm" {
         decode_bounded_vp8_webm(bytes)?
     } else {
         Vec::new()
     };
+    if content_type.starts_with("video/")
+        && (content_type != "video/webm" || video_frames.is_empty())
+    {
+        return Ok(None);
+    }
     let video_duration = if content_type == "video/webm" {
         let duration = matroska_demuxer::MatroskaFile::open(std::io::Cursor::new(bytes))
             .ok()
@@ -2893,6 +2963,7 @@ fn media_metadata_from_bytes(
         byte_length: bytes.len(),
         duration_millis,
         video_frames,
+        audio_track,
     }))
 }
 
@@ -2901,6 +2972,123 @@ pub(crate) const MAX_NATIVE_VIDEO_DIMENSION: u32 = 640;
 pub(crate) const MAX_NATIVE_VIDEO_DECODED_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const MAX_NATIVE_DOCUMENT_VIDEO_FRAMES: usize = 120;
 pub(crate) const MAX_NATIVE_DOCUMENT_VIDEO_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_NATIVE_AUDIO_DECODED_BYTES: usize = 2 * 1024 * 1024 - 44;
+pub(crate) const MAX_NATIVE_DOCUMENT_AUDIO_DECODED_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_NATIVE_AUDIO_DURATION_MILLIS: u64 = 30_000;
+
+fn decode_bounded_pcm_wav(bytes: &[u8]) -> Result<Option<NativeAudioTrack>, NativeEngineError> {
+    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Ok(None);
+    }
+    let riff_bytes =
+        usize::try_from(u32::from_le_bytes(bytes[4..8].try_into().map_err(
+            |_| NativeEngineError::invalid("WAV", "invalid RIFF length"),
+        )?))
+        .unwrap_or(usize::MAX)
+        .saturating_add(8);
+    if riff_bytes > bytes.len() || riff_bytes < 12 {
+        return Ok(None);
+    }
+    let mut offset = 12usize;
+    let mut format: Option<(u16, u16, u32, u16, u16)> = None;
+    let mut sample_bytes: Option<&[u8]> = None;
+    while offset.checked_add(8).is_some_and(|end| end <= riff_bytes) {
+        let chunk_len = usize::try_from(u32::from_le_bytes(
+            bytes[offset + 4..offset + 8]
+                .try_into()
+                .expect("fixed WAV chunk length"),
+        ))
+        .unwrap_or(usize::MAX);
+        let start = offset + 8;
+        let Some(end) = start.checked_add(chunk_len) else {
+            return Ok(None);
+        };
+        if end > riff_bytes {
+            return Ok(None);
+        }
+        match &bytes[offset..offset + 4] {
+            b"fmt " if chunk_len >= 16 => {
+                format = Some((
+                    u16::from_le_bytes([bytes[start], bytes[start + 1]]),
+                    u16::from_le_bytes([bytes[start + 2], bytes[start + 3]]),
+                    u32::from_le_bytes(
+                        bytes[start + 4..start + 8]
+                            .try_into()
+                            .expect("fixed WAV sample rate"),
+                    ),
+                    u16::from_le_bytes(
+                        bytes[start + 12..start + 14]
+                            .try_into()
+                            .expect("fixed WAV block alignment"),
+                    ),
+                    u16::from_le_bytes(
+                        bytes[start + 14..start + 16]
+                            .try_into()
+                            .expect("fixed WAV bit depth"),
+                    ),
+                ));
+            }
+            b"data" => sample_bytes = Some(&bytes[start..end]),
+            _ => {}
+        }
+        offset = end.saturating_add(chunk_len & 1);
+    }
+    let Some((encoding, channels, sample_rate, block_align, bits_per_sample)) = format else {
+        return Ok(None);
+    };
+    let Some(sample_bytes) = sample_bytes else {
+        return Ok(None);
+    };
+    if encoding != 1
+        || !(channels == 1 || channels == 2)
+        || !(8_000..=96_000).contains(&sample_rate)
+        || !matches!(bits_per_sample, 8 | 16 | 24 | 32)
+    {
+        return Ok(None);
+    }
+    let bytes_per_sample = usize::from(bits_per_sample / 8);
+    let expected_align = usize::from(channels).saturating_mul(bytes_per_sample);
+    if usize::from(block_align) != expected_align || sample_bytes.len() % expected_align != 0 {
+        return Ok(None);
+    }
+    let decoded_len = sample_bytes
+        .len()
+        .checked_div(bytes_per_sample)
+        .and_then(|samples| samples.checked_mul(2))
+        .unwrap_or(usize::MAX);
+    if decoded_len > MAX_NATIVE_AUDIO_DECODED_BYTES {
+        return Err(NativeEngineError::limit(
+            "decoded native audio samples",
+            MAX_NATIVE_AUDIO_DECODED_BYTES,
+            decoded_len,
+        ));
+    }
+    let frame_count = sample_bytes.len() / expected_align;
+    let duration_millis = (frame_count as u64).saturating_mul(1000) / u64::from(sample_rate);
+    if duration_millis > MAX_NATIVE_AUDIO_DURATION_MILLIS {
+        return Ok(None);
+    }
+    let mut pcm_s16le = Vec::with_capacity(decoded_len);
+    for sample in sample_bytes.chunks_exact(bytes_per_sample) {
+        let value = match bits_per_sample {
+            8 => (i32::from(sample[0]) - 128) << 8,
+            16 => i32::from(i16::from_le_bytes([sample[0], sample[1]])),
+            24 => {
+                let sign = if sample[2] & 0x80 == 0 { 0 } else { 0xff };
+                let raw = i32::from_le_bytes([sample[0], sample[1], sample[2], sign]);
+                raw >> 8
+            }
+            32 => i32::from_le_bytes(sample.try_into().expect("fixed 32-bit WAV sample")) >> 16,
+            _ => unreachable!("WAV bit depth validated above"),
+        };
+        pcm_s16le.extend_from_slice(&(value as i16).to_le_bytes());
+    }
+    Ok(Some(NativeAudioTrack {
+        channels,
+        sample_rate,
+        pcm_s16le,
+    }))
+}
 
 fn decode_bounded_vp8_webm(bytes: &[u8]) -> Result<Vec<NativeVideoFrame>, NativeEngineError> {
     use std::io::Cursor;
@@ -3140,42 +3328,6 @@ fn sniff_media_type(bytes: &[u8]) -> Option<&'static str> {
         return Some("audio/mpeg");
     }
     None
-}
-
-fn wav_duration_millis(bytes: &[u8]) -> Option<u64> {
-    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-        return None;
-    }
-    let mut offset = 12usize;
-    let mut byte_rate = None;
-    let mut data_length = None;
-    while offset.checked_add(8)? <= bytes.len() {
-        let chunk_length = usize::try_from(u32::from_le_bytes(
-            bytes[offset + 4..offset + 8].try_into().ok()?,
-        ))
-        .ok()?;
-        let start = offset.checked_add(8)?;
-        let end = start.checked_add(chunk_length)?.min(bytes.len());
-        match &bytes[offset..offset + 4] {
-            b"fmt " if end.saturating_sub(start) >= 12 => {
-                byte_rate = Some(u32::from_le_bytes(
-                    bytes[start + 8..start + 12].try_into().ok()?,
-                ));
-            }
-            b"data" => data_length = Some(end.saturating_sub(start) as u64),
-            _ => {}
-        }
-        if end == bytes.len() {
-            break;
-        }
-        offset = end.saturating_add(chunk_length % 2);
-    }
-    let byte_rate = u64::from(byte_rate?);
-    if byte_rate > 0 {
-        data_length.map(|length| length.saturating_mul(1000) / byte_rate)
-    } else {
-        None
-    }
 }
 
 fn script_content_type_allowed(

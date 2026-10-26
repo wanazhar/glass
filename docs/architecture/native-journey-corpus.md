@@ -166,11 +166,20 @@ the blue second frame. This is one deterministic local capability result, not
 a claim of broad public-site compatibility.
 
 The decoder is bounded: encoded media remains capped at 16 MiB; VP8 dimensions
-at 640 by 640; decoded data at 2 MiB per resource and 4 MiB per document; and
-retained frames at 60 per resource and 120 per document. Media outside those
-caps or without a VP8 track is not advertised as playable. Other containers
-and codecs, audio decoding/output, captions, and full media Web IDL behavior
-remain unsupported. Poster fetch/paint remains an independent image path.
+at 640 by 640; decoded video data at 2 MiB per resource and 4 MiB per document;
+and retained frames at 60 per resource and 120 per document. Media outside
+those caps or without a VP8 track is not advertised as playable.
+
+The native engine also decodes integer PCM WAV audio (8-, 16-, 24-, or 32-bit)
+with one or two channels, sample rates from 8 to 96 kHz, and duration no longer
+than 30 seconds. Decoded samples are bounded to 2 MiB per resource and 4 MiB
+per document. The Glass Remote View publishes a token-scoped `audio/wav`
+artifact with native browser provenance and ordinary user-controlled audio
+controls; it does not autoplay or require a sound device on the host. This
+lets the user's client play the decoded samples. It does not claim audio is
+played through the headless Glass process. Compressed audio, multichannel WAV,
+captions, and full media Web IDL behavior remain unsupported. Poster fetch and
+paint remains an independent image path.
 
 The decoder dependencies are optional through `glass-browser-core/native-engine`.
 [`zvidlib-vp8`](https://docs.rs/zvidlib-vp8/0.5.0) is MIT-licensed and built
@@ -216,6 +225,7 @@ need no system multimedia package.
 | Public repository subpage | `public-github-repository-and-observed-directory` | Pass on 25 October: observed repository link, subpage URL, and directory content; 6/6 steps in 50.62 s |
 | Public documentation page scroll | `public-svelte-documentation-page-scroll` | Pass on 25 October: Svelte reactivity page title, accepted viewport scroll, and post-scroll observation; 6/6 in 80.21 s. Page-script execution remains 47.61 s in this run. |
 | Silent WebM/VP8 video decoding and playback | `native_webm_vp8_play_pause_seek_paints_decoded_video_frame` plus `native_webm_vp8_decodes_bounded_real_rgba_frames` | Pass: local authored clip verifies two decoded colors, 1 s metadata, capability, elapsed playback, pause, seek, and painted frame |
+| WAV decode and client-side audio playback | `local-audio-wav-decode-and-client-playback`, `native_local_data_media_loads_during_navigation`, and `wav_artifact_is_token_scoped_current_only_and_user_controlled` | Pass: authored 250 ms sine wave becomes bounded non-silent PCM, then a non-autoplay WAV artifact is served to the client's audio controls; no host sound device required |
 | Dynamic disclosure, search form, and result history | `versioned_native_disclosure_search_form_and_history_journey` | Pass: click an observed disclosure control, verify hidden-state/content update, type a GET query, verify result URL/content, and go back |
 | Menus, frames, SPA routes, and additional form patterns | Focused authored fixture tests under `tests/native_engine_tests/` | Add journeys where a measured gap is demonstrated |
 

@@ -214,26 +214,34 @@ impl NativeDocument {
                     })
             })
             .collect();
-        let media_resources = self
-            .media_resources
-            .iter()
-            .filter_map(|(node_index, resource)| {
-                let node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
-                ((node.element_name() == Some("audio") || node.element_name() == Some("video"))
-                    && self.media_loads.get(node_index) == Some(&resource.source))
-                .then(|| NativeMediaResourceWire {
-                    node_index: *node_index,
-                    source: resource.source.clone(),
-                    content_type: resource.content_type.clone(),
-                    byte_length: resource.byte_length,
-                    duration_millis: resource.duration_millis,
-                    video_frames: resource.video_frames.clone(),
-                    current_time_millis: resource.current_time_millis,
-                    is_playing: resource.is_playing,
-                    playback_rate_millionths: resource.playback_rate_millionths,
+        let media_resources =
+            self.media_resources
+                .iter()
+                .filter_map(|(node_index, resource)| {
+                    let node = self.node(NativeNodeId::from_parts(self.generation, *node_index))?;
+                    ((node.element_name() == Some("audio") || node.element_name() == Some("video"))
+                        && self.media_loads.get(node_index) == Some(&resource.source))
+                    .then(|| NativeMediaResourceWire {
+                        node_index: *node_index,
+                        source: resource.source.clone(),
+                        content_type: resource.content_type.clone(),
+                        byte_length: resource.byte_length,
+                        duration_millis: resource.duration_millis,
+                        video_frames: resource.video_frames.clone(),
+                        audio_track: resource.audio_track.as_ref().map(|track| {
+                            NativeAudioTrackWire {
+                                channels: track.channels,
+                                sample_rate: track.sample_rate,
+                                pcm_s16le_base64: base64::engine::general_purpose::STANDARD
+                                    .encode(&track.pcm_s16le),
+                            }
+                        }),
+                        current_time_millis: resource.current_time_millis,
+                        is_playing: resource.is_playing,
+                        playback_rate_millionths: resource.playback_rate_millionths,
+                    })
                 })
-            })
-            .collect();
+                .collect();
         let media_loads =
             self.media_loads
                 .iter()
@@ -1157,6 +1165,7 @@ impl NativeDocument {
         let mut media_resources = BTreeMap::new();
         let mut document_video_bytes = 0usize;
         let mut document_video_frame_count = 0usize;
+        let mut document_audio_bytes = 0usize;
         for resource in wire.media_resources {
             if resource.source.is_empty()
                 || resource.source.len() > MAX_ATTRIBUTE_BYTES
@@ -1223,6 +1232,44 @@ impl NativeDocument {
                     reason: "content process returned invalid or over-budget video frames".into(),
                 });
             }
+            let audio_track = if let Some(track) = resource.audio_track {
+                let pcm_s16le = base64::engine::general_purpose::STANDARD
+                    .decode(track.pcm_s16le_base64.as_bytes())
+                    .map_err(|_| NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "content process returned malformed audio samples".into(),
+                    })?;
+                let valid = (track.channels == 1 || track.channels == 2)
+                    && (8_000..=96_000).contains(&track.sample_rate)
+                    && !pcm_s16le.is_empty()
+                    && pcm_s16le
+                        .len()
+                        .is_multiple_of(usize::from(track.channels) * 2)
+                    && pcm_s16le.len() <= MAX_NATIVE_AUDIO_DECODED_BYTES
+                    && resource.content_type == "audio/wav"
+                    && resource.duration_millis
+                        == Some(
+                            (pcm_s16le.len() as u64 / (u64::from(track.channels) * 2))
+                                .saturating_mul(1000)
+                                / u64::from(track.sample_rate),
+                        )
+                    && node.element_name() == Some("audio");
+                document_audio_bytes = document_audio_bytes.saturating_add(pcm_s16le.len());
+                if !valid || document_audio_bytes > MAX_NATIVE_DOCUMENT_AUDIO_DECODED_BYTES {
+                    return Err(NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "content process returned invalid or over-budget audio samples"
+                            .into(),
+                    });
+                }
+                Some(NativeAudioTrack {
+                    channels: track.channels,
+                    sample_rate: track.sample_rate,
+                    pcm_s16le,
+                })
+            } else {
+                None
+            };
             if media_resources
                 .insert(
                     resource.node_index,
@@ -1232,6 +1279,7 @@ impl NativeDocument {
                         byte_length: resource.byte_length,
                         duration_millis: resource.duration_millis,
                         video_frames: resource.video_frames,
+                        audio_track,
                         current_time_millis: resource.current_time_millis,
                         is_playing: resource.is_playing,
                         playback_rate_millionths: resource.playback_rate_millionths,

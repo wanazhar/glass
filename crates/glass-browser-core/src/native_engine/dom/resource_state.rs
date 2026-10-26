@@ -343,6 +343,26 @@ impl NativeDocument {
         Some((0, 2, None, source, None))
     }
 
+    pub(crate) fn capture_audio_clip(&self) -> Option<NativeAudioClip> {
+        self.media_resources
+            .iter()
+            .find_map(|(node_index, resource)| {
+                let node_id = NativeNodeId::from_parts(self.generation, *node_index);
+                let node = self.node(node_id)?;
+                if node.element_name() != Some("audio")
+                    || self.selected_media_source(node_id).as_deref()
+                        != Some(resource.source.as_str())
+                {
+                    return None;
+                }
+                let audio_track = resource.audio_track.as_ref()?;
+                Some(NativeAudioClip {
+                    source: resource.source.clone(),
+                    wav_bytes: audio_track.as_wav()?,
+                })
+            })
+    }
+
     pub(crate) fn mark_media_load(
         &mut self,
         node_index: u32,
@@ -462,6 +482,12 @@ impl NativeDocument {
                 reason: "media resource does not match its media element".into(),
             });
         }
+        if metadata.audio_track.is_some() && node.element_name() != Some("audio") {
+            return Err(NativeEngineError::invalid(
+                "native audio resource",
+                "decoded WAV audio must belong to an audio element",
+            ));
+        }
         self.media_errors.remove(&node_index);
         let retained_video_bytes = self
             .media_resources
@@ -481,6 +507,29 @@ impl NativeDocument {
             })
             .map(|(_, resource)| resource.video_frames.len())
             .fold(0usize, usize::saturating_add);
+        let retained_audio_bytes = self
+            .media_resources
+            .iter()
+            .filter(|(existing_index, resource)| {
+                **existing_index != node_index && resource.source != source
+            })
+            .filter_map(|(_, resource)| resource.audio_track.as_ref())
+            .fold(0usize, |total, track| {
+                total.saturating_add(track.pcm_s16le.len())
+            });
+        let incoming_audio_bytes = metadata
+            .audio_track
+            .as_ref()
+            .map_or(0, |track| track.pcm_s16le.len());
+        if retained_audio_bytes.saturating_add(incoming_audio_bytes)
+            > MAX_NATIVE_DOCUMENT_AUDIO_DECODED_BYTES
+        {
+            return Err(NativeEngineError::limit(
+                "decoded native document audio",
+                MAX_NATIVE_DOCUMENT_AUDIO_DECODED_BYTES,
+                retained_audio_bytes.saturating_add(incoming_audio_bytes),
+            ));
+        }
         let incoming_video_bytes = metadata.video_frames.iter().fold(0usize, |total, frame| {
             total.saturating_add(frame.pixels.len())
         });
@@ -502,6 +551,7 @@ impl NativeDocument {
                 byte_length: metadata.byte_length,
                 duration_millis,
                 video_frames,
+                audio_track: metadata.audio_track,
                 current_time_millis: 0,
                 is_playing: false,
                 playback_rate_millionths: 1_000_000,

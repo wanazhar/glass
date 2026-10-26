@@ -1,7 +1,7 @@
 //! Resident browser and workflow ownership for the Glass development workspace.
 
 use crate::development::{DevelopmentError, DevelopmentResult};
-use crate::development::{RemoteFrame, RemoteInput, RemoteView};
+use crate::development::{RemoteAudioAsset, RemoteFrame, RemoteInput, RemoteView};
 #[cfg(test)]
 use glass_browser::browser::policy::NavigationPreflight;
 use glass_browser::browser::policy::{BrowserPolicy, PolicyPreset};
@@ -1389,6 +1389,25 @@ impl BrowserWorker {
                 session.screenshot_png().await.map_err(browser_error)?
             }
         };
+        let audio_clip = match session {
+            ResidentBrowserSession::Native(session) => session
+                .native_capture_audio_clip()
+                .await
+                .map_err(browser_error)?,
+            ResidentBrowserSession::Chromium(_) => None,
+        };
+        let audio_asset = audio_clip.map(|clip| {
+            let origin = url::Url::parse(&clip.source)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .unwrap_or_else(|| "local media".into());
+            RemoteAudioAsset {
+                id: format!("revision-{revision}"),
+                label: format!("Decoded WAV · native · {origin}"),
+                bytes: clip.wav_bytes,
+            }
+        });
+        view.publish_audio(audio_asset);
         let published = view.publish(RemoteFrame {
             browser_revision: revision,
             mime_type: "image/png".into(),

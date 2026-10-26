@@ -123,9 +123,9 @@ pub use raster::{
 };
 #[doc(hidden)]
 pub use resource_loader::{
-    NativeCookieJar, NativeCspViolation, NativeModuleResourceType, NativeNavigationMethod,
-    NativeNavigationRequest, NativeRequestBody, schedule_native_csp_report_deliveries,
-    validate_target_navigation_payload,
+    NativeAudioClip, NativeCookieJar, NativeCspViolation, NativeModuleResourceType,
+    NativeNavigationMethod, NativeNavigationRequest, NativeRequestBody,
+    schedule_native_csp_report_deliveries, validate_target_navigation_payload,
 };
 pub use resource_loader::{NativeFetchResponse, NativeResource, NativeResourceLoader};
 pub use runtime::{

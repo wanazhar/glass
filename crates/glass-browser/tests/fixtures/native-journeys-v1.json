@@ -123,6 +123,23 @@
       ]
     },
     {
+      "id": "local-audio-wav-decode-and-client-playback",
+      "backend": "native",
+      "scope": "local-fixture",
+      "capabilities": ["wav-pcm-decode", "client-audio-artifact", "user-controlled-playback"],
+      "timeoutMs": 10000,
+      "asset": {"kind":"authored-sine-wave","sampleRateHz":8000,"channels":1,"durationMs":250,"license":"CC0-1.0"},
+      "expectedCapability": "supported-as-wav-artifact",
+      "requiresSoundDevice": false,
+      "steps": [
+        {"id":"probe-wav","action":"capability","type":"audio/wav","expected":"maybe"},
+        {"id":"decode-pcm","action":"assert","expression":"audio.readyState === 1 && audio.duration === 0.25"},
+        {"id":"check-samples","action":"assertDecodedAudio","format":"pcm_s16le","channels":1,"sampleRateHz":8000,"durationMs":250,"requireNonSilentSamples":true},
+        {"id":"publish-client-artifact","action":"publishAudioArtifact","format":"audio/wav","userControlled":true,"autoplay":false},
+        {"id":"listen-from-client","action":"playFromRemoteView","assertion":"decoded sine-wave samples are delivered to the user's client audio output"}
+      ]
+    },
+    {
       "id": "local-silent-video-webm-vp8-playback",
       "backend": "native",
       "scope": "local-fixture",

@@ -841,7 +841,9 @@
             ? "maybe"
             : "";
         }}
-        return "maybe";
+        return /^audio\/(?:wav|wave|x-wav)$/i.test(text.split(";", 1)[0].trim())
+          ? "maybe"
+          : "";
       }};
       element.__glassMediaReset = resetMediaState;
     }}

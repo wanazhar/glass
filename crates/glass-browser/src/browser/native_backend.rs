@@ -1477,6 +1477,16 @@ impl NativeEngineBackend {
             .and_then(|surface| surface.to_png().map_err(native_error))
     }
 
+    /// Return a bounded decoded audio clip for explicit client-side playback.
+    pub fn capture_audio_clip(
+        &self,
+    ) -> Result<Option<super::native_engine::NativeAudioClip>, BrowserBackendError> {
+        let _targets = self.lock_targets(BackendOperation::Capture)?;
+        self.try_lock_engine_raw(BackendOperation::Capture)?
+            .capture_audio_clip()
+            .map_err(native_error)
+    }
+
     /// Discover current child browsing contexts and capture the selected
     /// frame with every visible descendant frame composited into its owner.
     /// The asynchronous form is used by normal Glass operations so a caller

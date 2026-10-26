@@ -212,7 +212,22 @@ fn rooted_file_loader_reads_documents_and_denies_escape() {
     let media_path = root.join("clip.wav");
     let outside_path = outside.join("outside.html");
     fs::write(&page_path, "<p>rooted</p>").unwrap();
-    fs::write(&media_path, b"RIFFxxxxWAVE").unwrap();
+    let mut wav = vec![0_u8; 45];
+    wav[0..4].copy_from_slice(b"RIFF");
+    wav[4..8].copy_from_slice(&37_u32.to_le_bytes());
+    wav[8..12].copy_from_slice(b"WAVE");
+    wav[12..16].copy_from_slice(b"fmt ");
+    wav[16..20].copy_from_slice(&16_u32.to_le_bytes());
+    wav[20..22].copy_from_slice(&1_u16.to_le_bytes());
+    wav[22..24].copy_from_slice(&1_u16.to_le_bytes());
+    wav[24..28].copy_from_slice(&8000_u32.to_le_bytes());
+    wav[28..32].copy_from_slice(&8000_u32.to_le_bytes());
+    wav[32..34].copy_from_slice(&1_u16.to_le_bytes());
+    wav[34..36].copy_from_slice(&8_u16.to_le_bytes());
+    wav[36..40].copy_from_slice(b"data");
+    wav[40..44].copy_from_slice(&1_u32.to_le_bytes());
+    wav[44] = 128;
+    fs::write(&media_path, &wav).unwrap();
     fs::write(&outside_path, "<p>outside</p>").unwrap();
     let page_url = Url::from_file_path(&page_path).unwrap().to_string();
     let outside_url = Url::from_file_path(&outside_path).unwrap().to_string();
@@ -229,7 +244,7 @@ fn rooted_file_loader_reads_documents_and_denies_escape() {
         .unwrap()
         .unwrap();
     assert_eq!(metadata.content_type, "audio/wav");
-    assert_eq!(metadata.byte_length, 12);
+    assert_eq!(metadata.byte_length, wav.len());
 
     fs::remove_dir_all(root).unwrap();
     fs::remove_dir_all(outside).unwrap();
@@ -263,6 +278,11 @@ fn media_metadata_accepts_supported_types_and_bounds_payloads() {
     assert_eq!(metadata.content_type, "audio/wav");
     assert_eq!(metadata.byte_length, wav.len());
     assert_eq!(metadata.duration_millis, Some(1000));
+    let decoded_audio = metadata.audio_track.expect("valid WAV is decoded");
+    assert_eq!(decoded_audio.channels, 1);
+    assert_eq!(decoded_audio.sample_rate, 8000);
+    assert_eq!(decoded_audio.pcm_s16le.len(), 16_000);
+    assert_eq!(&decoded_audio.pcm_s16le[..4], &[0, 0, 0, 0]);
     assert_eq!(
         media_metadata_from_bytes(None, b"not a media resource").unwrap(),
         None
@@ -326,12 +346,10 @@ fn data_media_decodes_bounded_binary_payloads() {
     assert_eq!(metadata.content_type, "audio/wav");
     assert_eq!(metadata.byte_length, 45);
     assert_eq!(metadata.duration_millis, Some(0));
+    assert_eq!(metadata.audio_track.as_ref().unwrap().pcm_s16le.len(), 2);
 
     let sniffed = Url::parse("data:;base64,T2dnUw==").unwrap();
-    assert_eq!(
-        data_media_metadata(&sniffed).unwrap().unwrap().content_type,
-        "application/ogg"
-    );
+    assert_eq!(data_media_metadata(&sniffed).unwrap(), None);
     assert!(
         data_media_metadata(&Url::parse("data:application/octet-stream,%00").unwrap())
             .unwrap()

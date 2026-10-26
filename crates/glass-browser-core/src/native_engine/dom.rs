@@ -33,11 +33,12 @@ use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect, NativeTextWid
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
-    MAX_NATIVE_CSP_POLICIES, MAX_NATIVE_DOCUMENT_VIDEO_BYTES, MAX_NATIVE_DOCUMENT_VIDEO_FRAMES,
-    MAX_NATIVE_MEDIA_BYTES, MAX_NATIVE_VIDEO_DECODED_BYTES, MAX_NATIVE_VIDEO_DIMENSION,
-    MAX_NATIVE_VIDEO_FRAME_COUNT, NativeFetchReferrerPolicy, NativeMediaMetadata,
-    NativeNavigationRequest, NativeRequestBody, NativeVideoFrame,
-    javascript_mime_type_essence_match,
+    MAX_NATIVE_AUDIO_DECODED_BYTES, MAX_NATIVE_CSP_POLICIES,
+    MAX_NATIVE_DOCUMENT_AUDIO_DECODED_BYTES, MAX_NATIVE_DOCUMENT_VIDEO_BYTES,
+    MAX_NATIVE_DOCUMENT_VIDEO_FRAMES, MAX_NATIVE_MEDIA_BYTES, MAX_NATIVE_VIDEO_DECODED_BYTES,
+    MAX_NATIVE_VIDEO_DIMENSION, MAX_NATIVE_VIDEO_FRAME_COUNT, NativeAudioClip, NativeAudioTrack,
+    NativeFetchReferrerPolicy, NativeMediaMetadata, NativeNavigationRequest, NativeRequestBody,
+    NativeVideoFrame, javascript_mime_type_essence_match,
 };
 use super::{
     config::{MAX_NATIVE_DOM_DEPTH, MAX_NATIVE_NODES, TextFragmentTerms, Viewport},
@@ -501,11 +502,21 @@ pub(crate) struct NativeMediaResourceWire {
     #[serde(default)]
     pub(crate) video_frames: Vec<NativeVideoFrame>,
     #[serde(default)]
+    pub(crate) audio_track: Option<NativeAudioTrackWire>,
+    #[serde(default)]
     pub(crate) current_time_millis: u64,
     #[serde(default)]
     pub(crate) is_playing: bool,
     #[serde(default = "default_media_playback_rate_millionths")]
     pub(crate) playback_rate_millionths: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeAudioTrackWire {
+    pub(crate) channels: u16,
+    pub(crate) sample_rate: u32,
+    pub(crate) pcm_s16le_base64: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1448,6 +1459,7 @@ struct NativeMediaResource {
     byte_length: usize,
     duration_millis: Option<u64>,
     video_frames: Vec<NativeVideoFrame>,
+    audio_track: Option<NativeAudioTrack>,
     current_time_millis: u64,
     is_playing: bool,
     playback_rate_millionths: i64,

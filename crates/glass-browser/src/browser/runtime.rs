@@ -13,8 +13,8 @@ use super::native_backend::{
 };
 #[cfg(feature = "native-engine")]
 use super::native_engine::{
-    NativeDialogControlPlane, NativeDialogController, NativeEngineConfig, NativeFile,
-    NativePendingDialog, NativePreflightAction, NativeTargetPreflight, Viewport,
+    NativeAudioClip, NativeDialogControlPlane, NativeDialogController, NativeEngineConfig,
+    NativeFile, NativePendingDialog, NativePreflightAction, NativeTargetPreflight, Viewport,
 };
 #[cfg(feature = "native-engine")]
 use super::policy::BrowserPolicy;
@@ -1106,6 +1106,16 @@ impl BrowserRuntimeSession {
         match &self.backend {
             BackendStartup::Native(backend) => Ok(backend.capture_png_async().await?),
             _ => Err("native PNG capture is only available on the native runtime".into()),
+        }
+    }
+
+    /// Return one bounded, decoded native audio clip for client-side playback.
+    #[cfg(feature = "native-engine")]
+    pub async fn native_capture_audio_clip(&self) -> BrowserResult<Option<NativeAudioClip>> {
+        let _operation = self.operation_lock.lock().await;
+        match &self.backend {
+            BackendStartup::Native(backend) => Ok(backend.capture_audio_clip()?),
+            _ => Err("native audio capture is only available on the native runtime".into()),
         }
     }
 

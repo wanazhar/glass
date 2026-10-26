@@ -68,10 +68,11 @@ use super::origin::NativeOrigin;
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
-    NativeCookieJar, NativeCspViolation, NativeFetchReferrerPolicy, NativeFetchResponse,
-    NativeModuleResourceType, NativeNavigationMethod, NativeNavigationPolicyKind,
-    NativeNavigationRequest, NativeObjectUrlTransfer, NativeResource, NativeResourceLoader,
-    csp_sources_allow, csp_sources_allow_for_redirect, validate_target_navigation_payload,
+    NativeAudioClip, NativeCookieJar, NativeCspViolation, NativeFetchReferrerPolicy,
+    NativeFetchResponse, NativeModuleResourceType, NativeNavigationMethod,
+    NativeNavigationPolicyKind, NativeNavigationRequest, NativeObjectUrlTransfer, NativeResource,
+    NativeResourceLoader, csp_sources_allow, csp_sources_allow_for_redirect,
+    validate_target_navigation_payload,
 };
 use super::runtime::{NativeRuntimeState, NativeRuntimeTraceEvent};
 use super::scheduler::{DeterministicScheduler, NativeTask};
@@ -1519,6 +1520,13 @@ impl NativeEngine {
     pub fn capture_png(&self) -> Result<Vec<u8>, NativeEngineError> {
         self.require_running("capture")?;
         self.rasterize()?.to_png()
+    }
+
+    /// Return one decoded WAV audio resource for explicit client-side output.
+    /// The native engine does not open a host sound device.
+    pub fn capture_audio_clip(&self) -> Result<Option<NativeAudioClip>, NativeEngineError> {
+        self.require_running("audio capture")?;
+        Ok(self.document.capture_audio_clip())
     }
 
     /// Apply one semantic action and advance the document revision exactly

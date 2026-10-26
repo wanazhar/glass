@@ -100,7 +100,9 @@ pub use project::{
     ProjectTreeResult, ProjectWorkspace, detect_project,
 };
 /// Remote-view state and input/frame types.
-pub use remote_view::{RemoteFrame, RemoteInput, RemoteView};
+pub use remote_view::{
+    RemoteAudioAsset, RemoteAudioDescriptor, RemoteFrame, RemoteInput, RemoteView,
+};
 /// Revision identifiers and bounded replay.
 pub use replay::{DevelopmentRevision, ReplayWindow, replay};
 /// Search hit types and ranking helpers.

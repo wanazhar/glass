@@ -325,21 +325,55 @@ async fn native_local_dynamic_blob_media_exposes_metadata_and_load_event() {
 }
 #[tokio::test]
 async fn native_local_data_media_loads_during_navigation() {
-    let mut wav = vec![0_u8; 44 + 320];
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../../fixtures/native-journeys-v1.json"))
+            .expect("native journey corpus must be valid JSON");
+    let journey = corpus["journeys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|journey| journey["id"] == "local-audio-wav-decode-and-client-playback")
+        .expect("bounded audio journey is required");
+    assert_eq!(journey["backend"], "native");
+    assert_eq!(journey["expectedCapability"], "supported-as-wav-artifact");
+    assert_eq!(journey["requiresSoundDevice"], false);
+    assert_eq!(
+        journey["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| step["action"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "capability",
+            "assert",
+            "assertDecodedAudio",
+            "publishAudioArtifact",
+            "playFromRemoteView"
+        ]
+    );
+    let mut pcm = Vec::with_capacity(2000 * 2);
+    for index in 0..2000 {
+        let phase = std::f64::consts::TAU * 440.0 * index as f64 / 8000.0;
+        let sample = (phase.sin() * 16_000.0).round() as i16;
+        pcm.extend_from_slice(&sample.to_le_bytes());
+    }
+    let data_length = u32::try_from(pcm.len()).unwrap();
+    let mut wav = vec![0_u8; 44];
+    wav.extend_from_slice(&pcm);
     wav[0..4].copy_from_slice(b"RIFF");
-    wav[4..8].copy_from_slice(&(356_u32).to_le_bytes());
+    wav[4..8].copy_from_slice(&(data_length + 36).to_le_bytes());
     wav[8..12].copy_from_slice(b"WAVE");
     wav[12..16].copy_from_slice(b"fmt ");
     wav[16..20].copy_from_slice(&(16_u32).to_le_bytes());
     wav[20..22].copy_from_slice(&(1_u16).to_le_bytes());
     wav[22..24].copy_from_slice(&(1_u16).to_le_bytes());
     wav[24..28].copy_from_slice(&(8000_u32).to_le_bytes());
-    wav[28..32].copy_from_slice(&(8000_u32).to_le_bytes());
-    wav[32..34].copy_from_slice(&(1_u16).to_le_bytes());
-    wav[34..36].copy_from_slice(&(8_u16).to_le_bytes());
+    wav[28..32].copy_from_slice(&(16_000_u32).to_le_bytes());
+    wav[32..34].copy_from_slice(&(2_u16).to_le_bytes());
+    wav[34..36].copy_from_slice(&(16_u16).to_le_bytes());
     wav[36..40].copy_from_slice(b"data");
-    wav[40..44].copy_from_slice(&(320_u32).to_le_bytes());
-    wav[44..].fill(128);
+    wav[40..44].copy_from_slice(&data_length.to_le_bytes());
     let data_url = format!(
         "data:audio/wav;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(&wav)
@@ -359,10 +393,60 @@ async fn native_local_data_media_loads_during_navigation() {
             )
             .await
             .unwrap(),
-        serde_json::json!([1, 1, data_url, 0.04, serde_json::Value::Null, "maybe"])
+        serde_json::json!([1, 1, data_url, 0.25, serde_json::Value::Null, "maybe"])
     );
+    let clip = engine
+        .capture_audio_clip()
+        .unwrap()
+        .expect("decoded WAV must be available to explicit client output");
+    assert_eq!(clip.source, data_url);
+    assert_eq!(&clip.wav_bytes[..4], b"RIFF");
+    assert_eq!(
+        u32::from_le_bytes(clip.wav_bytes[40..44].try_into().unwrap()),
+        data_length
+    );
+    assert!(clip.wav_bytes[44..].iter().any(|sample| *sample != 0));
     engine.close_async().await.unwrap();
 }
+
+#[tokio::test]
+async fn native_audio_does_not_claim_unsupported_codecs_or_fake_playback() {
+    let config = NativeEngineConfig::default()
+        .with_fixture(
+            "fixture://unsupported-audio",
+            "<audio id='audio' src='data:audio/ogg;base64,T2dnUw=='></audio>",
+        )
+        .unwrap()
+        .with_initial_url("fixture://unsupported-audio");
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize_async().await.unwrap();
+
+    assert_eq!(
+        engine
+            .evaluate_async(
+                "(() => { const audio = document.getElementById('audio'); return [audio.canPlayType('audio/ogg'), audio.readyState, audio.error && audio.error.code]; })()",
+            )
+            .await
+            .unwrap(),
+        serde_json::json!(["", 0, 4])
+    );
+    engine
+        .evaluate_async(
+            "globalThis.audioPlayResult = 'pending'; document.getElementById('audio').play().then(() => { audioPlayResult = 'playing'; }, error => { audioPlayResult = error.name; }); true",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.audioPlayResult")
+            .await
+            .unwrap(),
+        serde_json::json!("NotSupportedError")
+    );
+    assert!(engine.capture_audio_clip().unwrap().is_none());
+    engine.close_async().await.unwrap();
+}
+
 #[tokio::test]
 async fn native_local_dynamic_blob_media_play_resolves_for_known_duration() {
     let config = NativeEngineConfig::default()

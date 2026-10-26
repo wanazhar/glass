@@ -16,6 +16,9 @@ use tokio_tungstenite::{accept_async, tungstenite};
 const MAX_CLIENTS: usize = 4;
 const MAX_INPUT_BYTES: usize = 16 * 1024;
 const MAX_FRAME_DATA_BYTES: usize = 8 * 1024 * 1024;
+const MAX_AUDIO_ASSET_BYTES: usize = 2 * 1024 * 1024;
+const MAX_AUDIO_LABEL_BYTES: usize = 128;
+const MAX_AUDIO_ID_BYTES: usize = 64;
 const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -25,6 +28,33 @@ pub struct RemoteFrame {
     pub browser_revision: u64,
     pub mime_type: String,
     pub data: String,
+}
+
+/// A bounded, already-decoded WAV artifact for a user-controlled Remote View
+/// player. The source URL and request metadata are intentionally not retained.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteAudioAsset {
+    pub id: String,
+    pub label: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Safe metadata sent with Remote View frames. The player requests the WAV
+/// through this view's token-scoped endpoint only after the user presses play.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteAudioDescriptor {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteFrameMessage {
+    browser_revision: u64,
+    mime_type: String,
+    data: String,
+    audio: Option<RemoteAudioDescriptor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -107,6 +137,7 @@ pub struct RemoteView {
     port: u16,
     token: String,
     frame: watch::Sender<Option<RemoteFrame>>,
+    audio: watch::Sender<Option<RemoteAudioAsset>>,
     inputs: mpsc::Receiver<RemoteInput>,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<()>,
@@ -127,14 +158,23 @@ impl RemoteView {
         let port = listener.local_addr()?.port();
         let token = secure_token()?;
         let (frame, frame_rx) = watch::channel(None);
+        let (audio, audio_rx) = watch::channel(None);
         let (input_tx, inputs) = mpsc::channel(64);
         let (shutdown, shutdown_rx) = watch::channel(false);
         let task_token = token.clone();
-        let task = tokio::spawn(serve(listener, task_token, frame_rx, input_tx, shutdown_rx));
+        let task = tokio::spawn(serve(
+            listener,
+            task_token,
+            frame_rx,
+            audio_rx,
+            input_tx,
+            shutdown_rx,
+        ));
         Ok(Self {
             port,
             token,
             frame,
+            audio,
             inputs,
             shutdown,
             task,
@@ -163,6 +203,29 @@ impl RemoteView {
         true
     }
 
+    /// Replace the current audio artifact, or clear it with `None`.
+    /// Invalid assets clear the previous artifact and return `None`, ensuring
+    /// the viewer cannot continue to play stale media after a failed update.
+    pub fn publish_audio(&self, audio: Option<RemoteAudioAsset>) -> Option<RemoteAudioDescriptor> {
+        let Some(audio) = audio else {
+            self.audio.send_replace(None);
+            return None;
+        };
+        if !valid_audio_asset(&audio) {
+            self.audio.send_replace(None);
+            return None;
+        }
+        let descriptor = RemoteAudioDescriptor {
+            id: audio.id.clone(),
+            label: audio.label.clone(),
+        };
+        if self.audio.borrow().as_ref() == Some(&audio) {
+            return Some(descriptor);
+        }
+        self.audio.send_replace(Some(audio));
+        Some(descriptor)
+    }
+
     pub fn try_recv_input(&mut self) -> Result<RemoteInput, mpsc::error::TryRecvError> {
         self.inputs.try_recv()
     }
@@ -177,6 +240,7 @@ async fn serve(
     listener: TcpListener,
     token: String,
     frame: watch::Receiver<Option<RemoteFrame>>,
+    audio: watch::Receiver<Option<RemoteAudioAsset>>,
     inputs: mpsc::Sender<RemoteInput>,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -190,11 +254,12 @@ async fn serve(
                 let Ok(permit) = Arc::clone(&clients).try_acquire_owned() else { continue };
                 let token = token.clone();
                 let frame = frame.clone();
+                let audio = audio.clone();
                 let inputs = inputs.clone();
                 let revoked = shutdown.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    let _ = handle_client(stream, token, frame, inputs, revoked).await;
+                    let _ = handle_client(stream, token, frame, audio, inputs, revoked).await;
                 });
             }
         }
@@ -205,6 +270,7 @@ async fn handle_client(
     mut stream: TcpStream,
     token: String,
     mut frame: watch::Receiver<Option<RemoteFrame>>,
+    mut audio: watch::Receiver<Option<RemoteAudioAsset>>,
     inputs: mpsc::Sender<RemoteInput>,
     mut revoked: watch::Receiver<bool>,
 ) -> DevelopmentResult<()> {
@@ -227,7 +293,7 @@ async fn handle_client(
         .split(|byte| *byte == b'\n')
         .next()
         .unwrap_or_default();
-    let request = std::str::from_utf8(request_line).unwrap_or("");
+    let request = std::str::from_utf8(request_line).unwrap_or("").trim_end();
     let expected_page = format!("GET /{token}/ ");
     if request.starts_with(&expected_page) {
         let body = viewer_html(&token);
@@ -237,6 +303,25 @@ async fn handle_client(
             body
         );
         tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes()).await?;
+        tokio::io::AsyncWriteExt::shutdown(&mut stream).await?;
+        return Ok(());
+    }
+    if let Some(id) = audio_asset_request_id(request, &token) {
+        let asset = audio.borrow().clone();
+        if let Some(asset) = asset.filter(|asset| asset.id == id) {
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Disposition: inline; filename=audio.wav\r\nConnection: close\r\n\r\n",
+                asset.bytes.len()
+            );
+            tokio::io::AsyncWriteExt::write_all(&mut stream, header.as_bytes()).await?;
+            tokio::io::AsyncWriteExt::write_all(&mut stream, &asset.bytes).await?;
+        } else {
+            tokio::io::AsyncWriteExt::write_all(
+                &mut stream,
+                b"HTTP/1.1 404 Not Found\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .await?;
+        }
         tokio::io::AsyncWriteExt::shutdown(&mut stream).await?;
         return Ok(());
     }
@@ -260,6 +345,12 @@ async fn handle_client(
             DevelopmentError::Process(format!("remote view handshake failed: {error}"))
         })?;
 
+    let current_frame = frame.borrow().clone();
+    let current_audio = audio.borrow().clone();
+    if let Some(current) = current_frame {
+        send_frame_message(&mut socket, current, current_audio.as_ref()).await?;
+    }
+
     loop {
         tokio::select! {
             changed = revoked.changed() => if changed.is_err() || *revoked.borrow() { break },
@@ -267,8 +358,16 @@ async fn handle_client(
                 if changed.is_err() { break; }
                 let latest = { frame.borrow().clone() };
                 if let Some(value) = latest {
-                    let text = serde_json::to_string(&value)?;
-                    socket.send(tungstenite::Message::Text(text.into())).await.map_err(|error| DevelopmentError::Process(error.to_string()))?;
+                    let current_audio = audio.borrow().clone();
+                    send_frame_message(&mut socket, value, current_audio.as_ref()).await?;
+                }
+            }
+            changed = audio.changed() => {
+                if changed.is_err() { break; }
+                let latest = { frame.borrow().clone() };
+                if let Some(value) = latest {
+                    let current_audio = audio.borrow().clone();
+                    send_frame_message(&mut socket, value, current_audio.as_ref()).await?;
                 }
             }
             message = socket.next() => match message {
@@ -284,6 +383,69 @@ async fn handle_client(
         }
     }
     Ok(())
+}
+
+async fn send_frame_message<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    frame: RemoteFrame,
+    audio: Option<&RemoteAudioAsset>,
+) -> DevelopmentResult<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let message = RemoteFrameMessage {
+        browser_revision: frame.browser_revision,
+        mime_type: frame.mime_type,
+        data: frame.data,
+        audio: audio.map(|asset| RemoteAudioDescriptor {
+            id: asset.id.clone(),
+            label: asset.label.clone(),
+        }),
+    };
+    let text = serde_json::to_string(&message)?;
+    socket
+        .send(tungstenite::Message::Text(text.into()))
+        .await
+        .map_err(|error| DevelopmentError::Process(error.to_string()))
+}
+
+fn valid_audio_asset(asset: &RemoteAudioAsset) -> bool {
+    let bytes = &asset.bytes;
+    let Some(riff_size) = bytes.get(4..8).and_then(|size| size.try_into().ok()) else {
+        return false;
+    };
+    let riff_size = u32::from_le_bytes(riff_size) as usize;
+    bytes.len() >= 12
+        && bytes.len() <= MAX_AUDIO_ASSET_BYTES
+        && bytes.get(..4) == Some(b"RIFF")
+        && bytes.get(8..12) == Some(b"WAVE")
+        && riff_size.checked_add(8) == Some(bytes.len())
+        && valid_audio_id(&asset.id)
+        && !asset.label.is_empty()
+        && asset.label.len() <= MAX_AUDIO_LABEL_BYTES
+        && asset.label.chars().all(|character| {
+            character.is_alphanumeric()
+                || character.is_whitespace()
+                || matches!(character, '·' | '-' | '_')
+        })
+}
+
+fn valid_audio_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_AUDIO_ID_BYTES
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn audio_asset_request_id<'a>(request: &'a str, token: &str) -> Option<&'a str> {
+    let prefix = format!("GET /{token}/media/");
+    let path = request.strip_prefix(&prefix)?;
+    let path = path
+        .strip_suffix(" HTTP/1.1")
+        .or_else(|| path.strip_suffix(" HTTP/1.0"))?;
+    let id = path.strip_suffix(".wav")?;
+    valid_audio_id(id).then_some(id)
 }
 
 async fn read_http_header<R>(reader: &mut R) -> DevelopmentResult<Vec<u8>>
@@ -328,7 +490,7 @@ fn secure_token() -> DevelopmentResult<String> {
 
 fn viewer_html(token: &str) -> String {
     format!(
-        r#"<!doctype html><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Glass Remote View</title><style>html,body{{margin:0;background:#101418;color:#eef;font:14px system-ui}}header{{padding:10px}}img{{display:block;width:100%;height:auto;touch-action:none}}input{{box-sizing:border-box;width:100%;padding:12px;background:#172231;color:#eef;border:1px solid #39485d}}</style><header>Glass Remote View · loopback session</header><img id=v tabindex=0 alt="Browser frame"><input id=t autocomplete=off placeholder="Type into focused browser control, then press Enter"><script>const v=document.querySelector('#v'),t=document.querySelector('#t');let r=0;const send=o=>{{if(w.readyState===1)w.send(JSON.stringify({{...o,expectedRevision:r}}))}},w=new WebSocket(`ws://${{location.host}}/ws/{token}`);w.onmessage=e=>{{const f=JSON.parse(e.data);r=f.browserRevision;v.src=`data:${{f.mimeType}};base64,${{f.data}}`}};v.onclick=e=>{{const b=v.getBoundingClientRect();send({{type:'click',x:(e.clientX-b.left)/b.width,y:(e.clientY-b.top)/b.height}});v.focus()}};v.onwheel=e=>{{e.preventDefault();send({{type:'scroll',dx:e.deltaX,dy:e.deltaY}})}};window.onkeydown=e=>{{if(e.target!==t){{e.preventDefault();send({{type:'key',key:e.key}})}}}};t.onkeydown=e=>{{if(e.key==='Enter'&&t.value){{send({{type:'text',text:t.value}});t.value='';e.preventDefault()}}}};</script>"#
+        r#"<!doctype html><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Glass Remote View</title><style>html,body{{margin:0;background:#101418;color:#eef;font:14px system-ui}}header{{padding:10px}}img{{display:block;width:100%;height:auto;touch-action:none}}input{{box-sizing:border-box;width:100%;padding:12px;background:#172231;color:#eef;border:1px solid #39485d}}#a{{padding:10px}}audio{{display:block;width:100%}}</style><header>Glass Remote View · loopback session</header><img id=v tabindex=0 alt="Browser frame"><section id=a hidden><label for=m>Decoded native browser audio · <span id=l></span></label><audio id=m controls preload=none></audio></section><input id=t autocomplete=off placeholder="Type into focused browser control, then press Enter"><script>const v=document.querySelector('#v'),t=document.querySelector('#t'),a=document.querySelector('#a'),m=document.querySelector('#m'),l=document.querySelector('#l');let r=0,audioId=null;const send=o=>{{if(w.readyState===1)w.send(JSON.stringify({{...o,expectedRevision:r}}))}},w=new WebSocket(`ws://${{location.host}}/ws/{token}`);w.onmessage=e=>{{const f=JSON.parse(e.data);r=f.browserRevision;v.src=`data:${{f.mimeType}};base64,${{f.data}}`;const d=f.audio;if(!d){{if(audioId!==null){{m.pause();m.removeAttribute('src');m.load();audioId=null}}a.hidden=true;return}}l.textContent=d.label;if(audioId!==d.id){{m.pause();m.src=`/${{encodeURIComponent("{token}")}}/media/${{encodeURIComponent(d.id)}}.wav`;m.load();audioId=d.id}}a.hidden=false}};v.onclick=e=>{{const b=v.getBoundingClientRect();send({{type:'click',x:(e.clientX-b.left)/b.width,y:(e.clientY-b.top)/b.height}});v.focus()}};v.onwheel=e=>{{e.preventDefault();send({{type:'scroll',dx:e.deltaX,dy:e.deltaY}})}};window.onkeydown=e=>{{if(e.target!==t&&e.target!==m){{e.preventDefault();send({{type:'key',key:e.key}})}}}};t.onkeydown=e=>{{if(e.key==='Enter'&&t.value){{send({{type:'text',text:t.value}});t.value='';e.preventDefault()}}}};</script>"#
     )
 }
 
@@ -341,8 +503,8 @@ mod tests {
         use tokio::io::AsyncWriteExt;
 
         let view = RemoteView::bind().await.unwrap();
-        let token = view
-            .local_url()
+        let local_url = view.local_url();
+        let token = local_url
             .trim_end_matches('/')
             .rsplit('/')
             .next()
@@ -408,10 +570,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wav_artifact_is_token_scoped_current_only_and_user_controlled() {
+        let view = RemoteView::bind().await.unwrap();
+        let local_url = view.local_url();
+        let token = local_url
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .to_string();
+        let first = test_wav();
+        let descriptor = view
+            .publish_audio(Some(RemoteAudioAsset {
+                id: "decoded-audio-1".into(),
+                label: "Decoded local fixture · 250 ms".into(),
+                bytes: first.clone(),
+            }))
+            .expect("valid WAV artifact should be published");
+        assert_eq!(descriptor.id, "decoded-audio-1");
+        assert_eq!(descriptor.label, "Decoded local fixture · 250 ms");
+
+        let page = reqwest::get(view.local_url()).await.unwrap();
+        let html = page.text().await.unwrap();
+        assert!(html.contains("<audio id=m controls preload=none></audio>"));
+        assert!(html.contains("l.textContent=d.label"));
+        assert!(!html.contains("autoplay"));
+
+        let url = format!(
+            "http://127.0.0.1:{}/{token}/media/{}.wav",
+            view.port(),
+            descriptor.id
+        );
+        let response = reqwest::get(&url).await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "audio/wav");
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        assert_eq!(response.bytes().await.unwrap().as_ref(), first.as_slice());
+
+        // The old opaque ID stops working immediately after replacement.
+        view.publish_audio(Some(RemoteAudioAsset {
+            id: "decoded-audio-2".into(),
+            label: "Updated decoded fixture".into(),
+            bytes: test_wav(),
+        }))
+        .expect("replacement WAV artifact should be published");
+        assert_eq!(
+            reqwest::get(&url).await.unwrap().status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
+        view.publish_audio(None);
+        let current_url = format!(
+            "http://127.0.0.1:{}/{token}/media/decoded-audio-2.wav",
+            view.port()
+        );
+        assert_eq!(
+            reqwest::get(current_url).await.unwrap().status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
+        let wrong_token = format!(
+            "http://127.0.0.1:{}/{token}-wrong/media/decoded-audio-1.wav",
+            view.port()
+        );
+        assert_eq!(
+            reqwest::get(wrong_token).await.unwrap().status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
+        view.revoke().await;
+    }
+
+    #[tokio::test]
+    async fn audio_publication_rejects_non_wav_oversize_urls_and_unsafe_ids() {
+        let view = RemoteView::bind().await.unwrap();
+        for asset in [
+            RemoteAudioAsset {
+                id: "not-wav".into(),
+                label: "fixture".into(),
+                bytes: b"OggSnot-a-wave".to_vec(),
+            },
+            RemoteAudioAsset {
+                id: "too-large".into(),
+                label: "fixture".into(),
+                bytes: vec![0; MAX_AUDIO_ASSET_BYTES + 1],
+            },
+            RemoteAudioAsset {
+                id: "../private".into(),
+                label: "fixture".into(),
+                bytes: test_wav(),
+            },
+            RemoteAudioAsset {
+                id: "url-label".into(),
+                label: "https://private.example/audio.wav".into(),
+                bytes: test_wav(),
+            },
+        ] {
+            assert!(view.publish_audio(Some(asset)).is_none());
+        }
+        view.publish_audio(Some(RemoteAudioAsset {
+            id: "valid-before-invalid".into(),
+            label: "Decoder output · 1 second".into(),
+            bytes: test_wav(),
+        }))
+        .expect("valid artifact should be accepted");
+        assert!(
+            view.publish_audio(Some(RemoteAudioAsset {
+                id: "invalid-replacement".into(),
+                label: "source.example/file.wav".into(),
+                bytes: test_wav(),
+            }))
+            .is_none()
+        );
+        let local_url = view.local_url();
+        let token = local_url.trim_end_matches('/').rsplit('/').next().unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/{token}/media/valid-before-invalid.wav",
+            view.port()
+        );
+        assert_eq!(
+            reqwest::get(url).await.unwrap().status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
+        view.revoke().await;
+    }
+
+    #[tokio::test]
     async fn websocket_delivers_latest_frame_and_revision_bound_input() {
         let mut view = RemoteView::bind().await.unwrap();
-        let token = view
-            .local_url()
+        let local_url = view.local_url();
+        let token = local_url
             .trim_end_matches('/')
             .rsplit('/')
             .next()
@@ -455,6 +740,58 @@ mod tests {
         view.revoke().await;
     }
 
+    #[tokio::test]
+    async fn websocket_frame_includes_safe_audio_descriptor_and_clear_state() {
+        let view = RemoteView::bind().await.unwrap();
+        let descriptor = view
+            .publish_audio(Some(RemoteAudioAsset {
+                id: "clip-42".into(),
+                label: "Decoded audio sample".into(),
+                bytes: test_wav(),
+            }))
+            .unwrap();
+        assert_eq!(descriptor.id, "clip-42");
+        view.publish(RemoteFrame {
+            browser_revision: 4,
+            mime_type: "image/png".into(),
+            data: "AA==".into(),
+        });
+        let local_url = view.local_url();
+        let token = local_url
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .to_string();
+        let url = format!("ws://127.0.0.1:{}/ws/{token}", view.port());
+        let (mut socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+        let first = timeout(Duration::from_secs(2), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap();
+        let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(first["audio"]["id"], "clip-42");
+        assert_eq!(first["audio"]["label"], "Decoded audio sample");
+        assert!(first["audio"].get("url").is_none());
+
+        view.publish_audio(None);
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let message = socket.next().await.unwrap().unwrap().into_text().unwrap();
+                let message: serde_json::Value = serde_json::from_str(&message).unwrap();
+                if message["audio"].is_null() {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("viewer receives an explicit audio clear update");
+        view.revoke().await;
+    }
+
     #[test]
     fn inputs_are_revision_bound_and_bounded() {
         let input = RemoteInput::Click {
@@ -473,6 +810,23 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    fn test_wav() -> Vec<u8> {
+        let mut bytes = Vec::from(&b"RIFF\0\0\0\0WAVEfmt "[..]);
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+        bytes.extend_from_slice(&1_u16.to_le_bytes()); // mono
+        bytes.extend_from_slice(&8_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&8_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&8_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        bytes.extend_from_slice(&[128, 192]);
+        let riff_size = u32::try_from(bytes.len() - 8).unwrap();
+        bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        bytes
     }
 
     #[tokio::test]

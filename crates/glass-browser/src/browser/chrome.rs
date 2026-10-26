@@ -942,16 +942,24 @@ pub async fn kill_chrome(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 
     if output.status.success() {
         for pid in String::from_utf8_lossy(&output.stdout).lines() {
-            if let Ok(pid_num) = pid.trim().parse::<u32>() {
+            #[cfg(unix)]
+            if let Some(pid_num) = parse_kill_pid(pid) {
                 warn!(pid = pid_num, "killing Chrome process");
-                #[cfg(unix)]
+                // SAFETY: `parse_kill_pid` rejects zero, negative and
+                // unrepresentable process IDs, so this targets one PID.
                 unsafe {
-                    libc::kill(pid_num as i32, libc::SIGTERM);
+                    libc::kill(pid_num, libc::SIGTERM);
                 }
             }
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn parse_kill_pid(value: &str) -> Option<libc::pid_t> {
+    let pid = value.trim().parse::<libc::pid_t>().ok()?;
+    (pid > 0).then_some(pid)
 }
 
 /// A page target advertised by Chrome's HTTP DevTools endpoint.
@@ -1102,6 +1110,16 @@ fn select_page_target<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_pid_parser_rejects_nonpositive_and_unrepresentable_ids() {
+        assert_eq!(parse_kill_pid("123\n"), Some(123));
+        assert_eq!(parse_kill_pid("0"), None);
+        assert_eq!(parse_kill_pid("-1"), None);
+        assert_eq!(parse_kill_pid("2147483648"), None);
+    }
+
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::net::TcpListener;
 

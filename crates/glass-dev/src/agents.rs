@@ -2432,17 +2432,29 @@ mod tests {
 
     #[cfg(unix)]
     fn configure_fake_core(registry: &mut AgentRegistry, mode: &str) {
-        registry.core_binary = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        let python = std::env::split_paths(&std::env::var_os("PATH").unwrap())
             .map(|directory| directory.join("python3"))
-            .find(|candidate| candidate.is_file());
-        assert!(registry.core_binary.is_some(), "python3 is required");
-        registry.core_binary_args = vec![
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/fake_glass_core_runtime.py")
-                .display()
-                .to_string(),
-            mode.into(),
-        ];
+            .find(|candidate| candidate.is_file())
+            .expect("python3 is required");
+        let wrapper = registry.root.join(".glass/fake-glass-core");
+        std::fs::create_dir_all(wrapper.parent().expect("wrapper has a parent"))
+            .expect("create fake Core wrapper directory");
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_glass_core_runtime.py");
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' 'Glass Core {}'\n  exit 0\nfi\nexec '{}' \"$@\"\n",
+            env!("CARGO_PKG_VERSION"),
+            python.display(),
+        );
+        std::fs::write(&wrapper, script).expect("write fake Core version wrapper");
+        let mut permissions = std::fs::metadata(&wrapper)
+            .expect("inspect fake Core version wrapper")
+            .permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&wrapper, permissions).expect("make fake Core executable");
+        registry.core_binary = Some(wrapper);
+        registry.core_binary_args = vec![fixture.display().to_string(), mode.into()];
     }
 
     #[cfg(unix)]

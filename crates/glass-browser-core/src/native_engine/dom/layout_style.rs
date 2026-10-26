@@ -231,9 +231,11 @@ impl NativeDocument {
                 inherited_pointer_events = style.pointer_events();
             }};
         }
-        // Reuse the rule-index scratch across the ancestor chain. Each node's
-        // style and custom-property cascade share the same matching candidates.
+        // Reuse separate rule-index scratch across the ancestor chain. The
+        // custom-property cascade only needs rules that declare custom
+        // properties; ordinary declarations still use the complete index.
         let mut rule_candidates = Vec::new();
+        let mut custom_property_rule_candidates = Vec::new();
         // Snapshot transfer walks the arena in preorder. When the target's
         // parent already has both cached style and inherited variables, start
         // at the target directly instead of rebuilding the entire ancestor
@@ -312,7 +314,15 @@ impl NativeDocument {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .get(&current_id)
                 .copied();
-            if cached_custom_properties.is_none() || cached_style.is_none() {
+            if cached_custom_properties.is_none() {
+                self.stylesheet
+                    .custom_property_rule_candidates_for_node_in_document(
+                        self,
+                        current_id,
+                        &mut custom_property_rule_candidates,
+                    );
+            }
+            if cached_style.is_none() {
                 self.stylesheet.rule_candidates_for_node_in_document(
                     self,
                     current_id,
@@ -326,7 +336,7 @@ impl NativeDocument {
                         self,
                         current_id,
                         self.viewport,
-                        &rule_candidates,
+                        &custom_property_rule_candidates,
                     );
                 let values = if local.is_empty() {
                     Arc::clone(&inherited_custom_properties)

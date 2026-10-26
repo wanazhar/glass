@@ -978,6 +978,84 @@ fn background_image_candidate_scratch_matches_allocation_on_large_document() {
 }
 
 #[test]
+fn custom_property_candidates_skip_rules_without_custom_declarations() {
+    use std::time::Instant;
+
+    let mut source = String::from("<style>");
+    for index in 0..1_024 {
+        source.push_str(&format!(".common {{ color: #{:06x} }}", index + 1));
+    }
+    for index in 0..32 {
+        source.push_str(&format!(".common {{ --accent-{index}: {index}px }}"));
+    }
+    source.push_str("</style><main>");
+    for _ in 0..8_024 {
+        source.push_str("<div class=common></div>");
+    }
+    source.push_str("</main>");
+
+    let document = NativeDocument::parse(&source, &NativeEngineLimits::default()).unwrap();
+    let mut full_candidates = Vec::new();
+    let mut custom_property_candidates = Vec::new();
+
+    let full_started = Instant::now();
+    let full_values = document
+        .element_node_ids()
+        .map(|id| {
+            document.stylesheet.rule_candidates_for_node_in_document(
+                &document,
+                id,
+                &mut full_candidates,
+            );
+            document
+                .stylesheet
+                .custom_properties_for_node_in_document_with_candidates(
+                    &document,
+                    id,
+                    document.viewport,
+                    &full_candidates,
+                )
+        })
+        .collect::<Vec<_>>();
+    let full_elapsed = full_started.elapsed();
+
+    let custom_property_started = Instant::now();
+    let custom_property_values = document
+        .element_node_ids()
+        .map(|id| {
+            document
+                .stylesheet
+                .custom_property_rule_candidates_for_node_in_document(
+                    &document,
+                    id,
+                    &mut custom_property_candidates,
+                );
+            document
+                .stylesheet
+                .custom_properties_for_node_in_document_with_candidates(
+                    &document,
+                    id,
+                    document.viewport,
+                    &custom_property_candidates,
+                )
+        })
+        .collect::<Vec<_>>();
+    let custom_property_elapsed = custom_property_started.elapsed();
+
+    assert_eq!(custom_property_values, full_values);
+    assert!(full_candidates.len() >= 1_024);
+    assert_eq!(custom_property_candidates.len(), 32);
+    eprintln!(
+        "custom property cascade: {} elements, full={} ms, custom-rule index={} ms, candidates={} -> {}",
+        custom_property_values.len(),
+        full_elapsed.as_millis(),
+        custom_property_elapsed.as_millis(),
+        full_candidates.len(),
+        custom_property_candidates.len()
+    );
+}
+
+#[test]
 fn dynamic_selector_state_changes_invalidate_cached_cascade() {
     let limits = NativeEngineLimits::default();
     let mut document = NativeDocument::parse(

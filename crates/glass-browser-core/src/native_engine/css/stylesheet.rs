@@ -77,6 +77,15 @@ impl NativeStylesheet {
             )?;
         }
         stylesheet.rule_index = NativeStyleRuleIndex::build(&stylesheet.rules);
+        stylesheet.custom_property_rule_index = NativeStyleRuleIndex::build_selected(
+            &stylesheet.rules,
+            stylesheet
+                .rules
+                .iter()
+                .enumerate()
+                .filter(|(_, rule)| !rule.custom_properties.is_empty())
+                .map(|(index, _)| index),
+        );
         stylesheet.background_image_rule_index = NativeStyleRuleIndex::build_selected(
             &stylesheet.rules,
             stylesheet
@@ -227,6 +236,20 @@ impl NativeStylesheet {
     ) {
         if let Some(node) = document.node(node_id) {
             self.rule_index.candidates_into(node, candidates);
+        } else {
+            candidates.clear();
+        }
+    }
+
+    pub(crate) fn custom_property_rule_candidates_for_node_in_document(
+        &self,
+        document: &NativeDocument,
+        node_id: NativeNodeId,
+        candidates: &mut Vec<usize>,
+    ) {
+        if let Some(node) = document.node(node_id) {
+            self.custom_property_rule_index
+                .candidates_into(node, candidates);
         } else {
             candidates.clear();
         }

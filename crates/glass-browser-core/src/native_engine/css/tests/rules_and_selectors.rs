@@ -1874,3 +1874,47 @@ fn rule_index_candidate_scratch_reuses_storage_without_stale_or_duplicate_matche
     }
     assert_eq!(scratch.capacity(), warmed_capacity);
 }
+
+#[test]
+fn rule_index_anchors_on_the_rare_rightmost_class_without_losing_matches() {
+    let rules = (0..32)
+        .map(|bucket| {
+            format!(
+                ".item.bucket-{bucket} {{ color: #{:06x}; }}",
+                (bucket * 0x010101) % 0x00ff_ffff
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let stylesheet = NativeStylesheet::from_sources(vec![rules]).unwrap();
+    assert!(!stylesheet.rule_index.by_class.contains_key("item"));
+    assert_eq!(stylesheet.rule_index.by_class.len(), 32);
+
+    let source = (0..32)
+        .map(|bucket| format!("<article class='item bucket-{bucket}'>item</article>"))
+        .collect::<String>();
+    let document = NativeDocument::parse(&source, &NativeEngineLimits::default()).unwrap();
+    for node_id in document.element_node_ids() {
+        let node = document.node(node_id).unwrap();
+        let candidates = stylesheet.rule_index.candidates(node);
+        let matching_rules = stylesheet
+            .rules
+            .iter()
+            .enumerate()
+            .filter_map(|(index, rule)| {
+                rule.selector
+                    .matches_in_document(&document, node_id)
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            matching_rules
+                .iter()
+                .all(|index| candidates.contains(index))
+        );
+        if node.element_name() == Some("article") {
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates, matching_rules);
+        }
+    }
+}

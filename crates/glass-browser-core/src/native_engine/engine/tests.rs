@@ -26,6 +26,40 @@ fn initialized_engine() -> NativeEngine {
 }
 
 #[tokio::test]
+async fn page_metadata_reads_current_url_title_and_revision() {
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://metadata.test/index")
+        .with_fixture(
+            "fixture://metadata.test/index",
+            "<title>Initial title</title><main>body</main>",
+        )
+        .unwrap();
+    let mut engine = NativeEngine::new(config).unwrap();
+    engine.initialize().unwrap();
+    let metadata = engine.page_metadata().unwrap();
+    assert_eq!(metadata.url, "fixture://metadata.test/index");
+    assert_eq!(metadata.title, "Initial title");
+    assert_eq!(metadata.revision, engine.revision());
+    assert_eq!(metadata.lifecycle, NativeLifecycleState::Running);
+
+    engine
+        .evaluate_async("document.title = 'Updated title'")
+        .await
+        .unwrap();
+    assert_eq!(engine.page_metadata().unwrap().title, "Updated title");
+}
+
+#[test]
+fn page_metadata_handles_empty_title() {
+    let engine = initialized_engine();
+    let metadata = engine.page_metadata().unwrap();
+    assert_eq!(metadata.url, "fixture://preflight.test/index");
+    assert!(metadata.title.is_empty());
+    assert_eq!(metadata.revision, engine.revision());
+    assert_eq!(metadata.lifecycle, NativeLifecycleState::Running);
+}
+
+#[tokio::test]
 async fn explicit_scroll_target_moves_only_the_observed_nested_container() {
     let config = NativeEngineConfig::default()
         .with_initial_url("fixture://targeted-scroll.test/")

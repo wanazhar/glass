@@ -29,7 +29,7 @@ use super::interaction::{
     validate_native_key,
 };
 use super::javascript::NativeScriptCommand;
-use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect};
+use super::layout::{NativeLayoutSnapshot, NativePoint, NativeRect, NativeTextWidthCacheKey};
 use super::paint::NativeDisplayList;
 use super::raster::NativeSurface;
 use super::resource_loader::{
@@ -1125,6 +1125,7 @@ pub struct NativeDocument {
 /// Per-document memo of cascade results for layout queries. It is derived
 /// state: clones get an independent copy, while document equality ignores it.
 type CachedNativeScriptSnapshot = (u64, u64, usize, Viewport, NativeScriptDocumentSnapshot);
+type CachedNativeTextWidths = HashMap<NativeTextWidthCacheKey, HashMap<String, u32>>;
 type CachedNativeScrollProjection = (
     u64,
     u64,
@@ -1143,6 +1144,8 @@ struct NativeLayoutStyleCache(
     Mutex<u64>,
     Mutex<Option<CachedNativeScriptSnapshot>>,
     Mutex<Option<CachedNativeScrollProjection>>,
+    Mutex<CachedNativeTextWidths>,
+    Mutex<usize>,
 );
 
 impl Clone for NativeLayoutStyleCache {
@@ -1166,6 +1169,15 @@ impl Clone for NativeLayoutStyleCache {
             .3
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let text_widths = self
+            .6
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let text_width_cache_hits = *self
+            .7
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         Self(
             Mutex::new(styles),
             Mutex::new(custom_properties),
@@ -1173,6 +1185,8 @@ impl Clone for NativeLayoutStyleCache {
             Mutex::new(snapshot_generation),
             Mutex::new(None),
             Mutex::new(None),
+            Mutex::new(text_widths),
+            Mutex::new(text_width_cache_hits),
         )
     }
 }
@@ -1200,6 +1214,44 @@ impl NativeLayoutStyleCache {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         self.invalidate_script_snapshot();
+    }
+
+    fn text_widths(&self) -> CachedNativeTextWidths {
+        self.6
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn cache_text_widths(&self, widths: CachedNativeTextWidths, hits: usize) {
+        *self
+            .6
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = widths;
+        let mut total_hits = self
+            .7
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *total_hits = total_hits.saturating_add(hits);
+    }
+
+    fn clear_text_widths(&self) {
+        self.6
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        *self
+            .7
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = 0;
+    }
+
+    #[cfg(test)]
+    fn text_width_cache_hits(&self) -> usize {
+        *self
+            .7
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn invalidate_script_snapshot(&self) {

@@ -355,8 +355,11 @@ impl NativeDocument {
                 total_bytes,
             ));
         }
-        self.font_book = NativeFontBook::from_resources(&resources);
-        self.font_resources = resources;
+        if self.font_resources != resources {
+            self.layout_style_cache.clear_text_widths();
+            self.font_book = NativeFontBook::from_resources(&resources);
+            self.font_resources = resources;
+        }
         Ok(())
     }
 
@@ -1296,6 +1299,31 @@ impl NativeDocument {
         let layout = NativeLayoutSnapshot::compute(self, viewport)?;
         self.layout_style_cache.cache_layout(layout.clone());
         Ok(layout)
+    }
+
+    pub(in crate::native_engine) fn layout_text_width_cache(
+        &self,
+    ) -> std::collections::HashMap<
+        super::super::layout::NativeTextWidthCacheKey,
+        std::collections::HashMap<String, u32>,
+    > {
+        self.layout_style_cache.text_widths()
+    }
+
+    pub(in crate::native_engine) fn cache_layout_text_widths(
+        &self,
+        widths: std::collections::HashMap<
+            super::super::layout::NativeTextWidthCacheKey,
+            std::collections::HashMap<String, u32>,
+        >,
+        hits: usize,
+    ) {
+        self.layout_style_cache.cache_text_widths(widths, hits);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn layout_text_width_cache_hits(&self) -> usize {
+        self.layout_style_cache.text_width_cache_hits()
     }
 
     /// Hit test one point in the supplied viewport without scrolling or

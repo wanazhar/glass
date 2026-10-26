@@ -4040,6 +4040,24 @@ impl NativeStyleRuleIndex {
         rules: &[NativeStyleRule],
         selected: impl IntoIterator<Item = usize>,
     ) -> Self {
+        let selected = selected.into_iter().collect::<Vec<_>>();
+        let mut id_frequencies = BTreeMap::<&str, usize>::new();
+        let mut class_frequencies = BTreeMap::<&str, usize>::new();
+        let mut tag_frequencies = BTreeMap::<&str, usize>::new();
+        for rule_index in selected.iter().copied() {
+            let Some(target) = rules[rule_index].selector.compounds.last() else {
+                continue;
+            };
+            if let Some(id) = target.id.as_deref() {
+                *id_frequencies.entry(id).or_default() += 1;
+            }
+            for class in &target.classes {
+                *class_frequencies.entry(class).or_default() += 1;
+            }
+            if let Some(tag) = target.tag.as_deref() {
+                *tag_frequencies.entry(tag).or_default() += 1;
+            }
+        }
         let mut index = Self::default();
         for rule_index in selected {
             let rule = &rules[rule_index];
@@ -4047,22 +4065,54 @@ impl NativeStyleRuleIndex {
                 index.fallback.push(rule_index);
                 continue;
             };
-            if let Some(id) = target.id.as_ref() {
-                index.by_id.entry(id.clone()).or_default().push(rule_index);
-            } else if let Some(class) = target.classes.first() {
-                index
+            let mut anchor: Option<(usize, u8, &str)> = None;
+            macro_rules! consider_anchor {
+                ($frequency:expr, $priority:expr, $key:expr $(,)?) => {{
+                    let candidate = ($frequency, $priority, $key);
+                    if anchor
+                        .is_none_or(|current| (candidate.0, candidate.1) < (current.0, current.1))
+                    {
+                        anchor = Some(candidate);
+                    }
+                }};
+            }
+            if let Some(id) = target.id.as_deref() {
+                consider_anchor!(id_frequencies.get(id).copied().unwrap_or(usize::MAX), 0, id);
+            }
+            for class in &target.classes {
+                consider_anchor!(
+                    class_frequencies
+                        .get(class.as_str())
+                        .copied()
+                        .unwrap_or(usize::MAX),
+                    1,
+                    class.as_str(),
+                );
+            }
+            if let Some(tag) = target.tag.as_deref() {
+                consider_anchor!(
+                    tag_frequencies.get(tag).copied().unwrap_or(usize::MAX),
+                    2,
+                    tag,
+                );
+            }
+            match anchor.map(|(_, kind, key)| (kind, key)) {
+                Some((0, id)) => index
+                    .by_id
+                    .entry(id.to_owned())
+                    .or_default()
+                    .push(rule_index),
+                Some((1, class)) => index
                     .by_class
-                    .entry(class.clone())
+                    .entry(class.to_owned())
                     .or_default()
-                    .push(rule_index);
-            } else if let Some(tag) = target.tag.as_ref() {
-                index
+                    .push(rule_index),
+                Some((2, tag)) => index
                     .by_tag
-                    .entry(tag.clone())
+                    .entry(tag.to_owned())
                     .or_default()
-                    .push(rule_index);
-            } else {
-                index.fallback.push(rule_index);
+                    .push(rule_index),
+                _ => index.fallback.push(rule_index),
             }
         }
         index

@@ -99,6 +99,79 @@ fn cached_parent_style_fast_path_matches_fallback_on_mixed_large_document() {
 }
 
 #[test]
+fn deep_dom_many_rule_style_cache_matches_uncached_cascade() {
+    use std::time::Instant;
+
+    let mut source = String::from("<!doctype html><style>");
+    for group in 0..12 {
+        for bucket in 0..32 {
+            let color = (group * 32 + bucket) % 0x00ff_ffff;
+            let padding = (bucket % 7) + 1;
+            source.push_str(&format!(
+                "section.group-{group} article.item.bucket-{bucket} {{ color: #{color:06x}; padding: {padding}px }}"
+            ));
+        }
+    }
+    source.push_str("</style><main>");
+    for group in 0..12 {
+        source.push_str(&format!("<section class='group-{group}'>"));
+        for item in 0..100 {
+            let bucket = (group * 100 + item) % 32;
+            source.push_str(&format!(
+                "<article class='item bucket-{bucket}'><a href='/item/{group}-{item}'>item {group}-{item}</a><p>details {group}-{item}</p></article>"
+            ));
+        }
+        source.push_str("</section>");
+    }
+    source.push_str("</main>");
+
+    let limits = NativeEngineLimits::default();
+    let document = NativeDocument::parse(&source, &limits).unwrap();
+    let indexed_started = Instant::now();
+    let indexed = document
+        .nodes
+        .iter()
+        .map(|node| document.computed_style_for_layout(node.id()))
+        .collect::<Vec<_>>();
+    let indexed_elapsed = indexed_started.elapsed();
+
+    let fallback_document = NativeDocument::parse(&source, &limits).unwrap();
+    let fallback_started = Instant::now();
+    let fallback = fallback_document
+        .nodes
+        .iter()
+        .map(|node| fallback_document.computed_style_for_layout_without_parent_cache(node.id()))
+        .collect::<Vec<_>>();
+    let fallback_elapsed = fallback_started.elapsed();
+
+    assert_eq!(indexed.len(), fallback.len());
+    assert_eq!(indexed, fallback);
+
+    let viewport = Viewport::default();
+    let first_layout_started = Instant::now();
+    let first_layout = document.layout(viewport).unwrap();
+    let first_layout_elapsed = first_layout_started.elapsed();
+    let first_layout_cache_hits = document.layout_text_width_cache_hits();
+    document.layout_style_cache.2.lock().unwrap().take();
+    let second_layout_started = Instant::now();
+    let second_layout = document.layout(viewport).unwrap();
+    let second_layout_elapsed = second_layout_started.elapsed();
+    let second_layout_cache_hits = document.layout_text_width_cache_hits();
+    assert_eq!(first_layout, second_layout);
+    assert!(second_layout_cache_hits > first_layout_cache_hits);
+    eprintln!(
+        "deep DOM native rendering: {} nodes, 384 class-constrained rules, indexed styles={} ms, no-parent-cache styles={} ms, first layout={} ms, cached-text layout={} ms, text-width cache hits {} -> {}",
+        document.nodes.len(),
+        indexed_elapsed.as_millis(),
+        fallback_elapsed.as_millis(),
+        first_layout_elapsed.as_millis(),
+        second_layout_elapsed.as_millis(),
+        first_layout_cache_hits,
+        second_layout_cache_hits,
+    );
+}
+
+#[test]
 fn clear_file_input_invalidates_cached_validity_styles() {
     let limits = NativeEngineLimits::default();
     let source = "<style>input:valid{color:#123456} input:invalid{color:#abcdef}</style><input id=upload type=file required>";
@@ -185,6 +258,7 @@ fn layout_snapshot_cache_matches_fresh_layout_and_invalidates_style_and_viewport
 
     let initial = document.layout(viewport).unwrap();
     assert_eq!(document.layout(viewport).unwrap(), initial);
+    let initial_text_width_cache_hits = document.layout_text_width_cache_hits();
     assert!(document.layout_style_cache.2.lock().unwrap().is_some());
     let clone = document.clone();
     assert_eq!(clone.layout(viewport).unwrap(), initial);
@@ -195,6 +269,10 @@ fn layout_snapshot_cache_matches_fresh_layout_and_invalidates_style_and_viewport
     assert!(document.layout_style_cache.2.lock().unwrap().is_none());
     assert!(clone.layout_style_cache.2.lock().unwrap().is_some());
     let styled = document.layout(viewport).unwrap();
+    assert!(
+        document.layout_text_width_cache_hits() > initial_text_width_cache_hits,
+        "a style-only mutation should keep reusable font metrics across layout rebuilds"
+    );
     let fresh_styled = NativeDocument::parse(
         "<style>.active{width:240px} p{height:32px}</style><main><p id=target class=active>text</p></main>",
         &limits,

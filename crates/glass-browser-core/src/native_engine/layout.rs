@@ -12,7 +12,13 @@ use super::dom::{MAX_NATIVE_CANVAS_DIMENSION, NativeDocument, NativeNode, Native
 use super::error::NativeEngineError;
 use super::font::NativeTextMetrics;
 use builder::LayoutBuilder;
+pub(super) use builder::{
+    MAX_LAYOUT_TEXT_WIDTH_CACHE_ENTRIES, MAX_LAYOUT_TEXT_WIDTH_CACHE_TEXT_BYTES,
+    NativeTextWidthCacheKey,
+};
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 pub(crate) use svg::{
     svg_image_viewport, svg_line_points, svg_path_subpaths, svg_points, svg_preserve_aspect_ratio,
     svg_transform_for_node, svg_transform_points, svg_transformed_points, svg_transformed_subpaths,
@@ -25,6 +31,69 @@ const DEFAULT_BUTTON_WIDTH: u32 = 80;
 const DEFAULT_SVG_WIDTH: u32 = 300;
 const DEFAULT_SVG_HEIGHT: u32 = 150;
 const CHARACTER_WIDTH: u32 = 8;
+
+pub(super) struct NativeLayoutTextWidthCache {
+    values: RefCell<HashMap<NativeTextWidthCacheKey, HashMap<String, u32>>>,
+    entries: Cell<usize>,
+    hits: Cell<usize>,
+}
+
+impl NativeLayoutTextWidthCache {
+    fn new(values: HashMap<NativeTextWidthCacheKey, HashMap<String, u32>>) -> Self {
+        let entries = values.values().map(HashMap::len).sum();
+        Self {
+            values: RefCell::new(values),
+            entries: Cell::new(entries),
+            hits: Cell::new(0),
+        }
+    }
+
+    pub(super) fn measure(
+        &self,
+        key: Option<&NativeTextWidthCacheKey>,
+        text: &str,
+        metrics: &NativeTextMetrics,
+        letter_spacing: u32,
+        word_spacing: u32,
+    ) -> (u32, bool, bool) {
+        let Some(key) = key.filter(|_| text.len() <= MAX_LAYOUT_TEXT_WIDTH_CACHE_TEXT_BYTES) else {
+            return (
+                metrics.measure_text(text, letter_spacing, word_spacing),
+                false,
+                false,
+            );
+        };
+        if let Some(width) = self
+            .values
+            .borrow()
+            .get(key)
+            .and_then(|widths| widths.get(text))
+            .copied()
+        {
+            self.hits.set(self.hits.get().saturating_add(1));
+            return (width, true, false);
+        }
+        let width = metrics.measure_text(text, letter_spacing, word_spacing);
+        if self.entries.get() < MAX_LAYOUT_TEXT_WIDTH_CACHE_ENTRIES {
+            self.values
+                .borrow_mut()
+                .entry(key.clone())
+                .or_default()
+                .insert(text.to_owned(), width);
+            self.entries.set(self.entries.get().saturating_add(1));
+            return (width, false, true);
+        }
+        (width, false, false)
+    }
+
+    fn snapshot(&self) -> HashMap<NativeTextWidthCacheKey, HashMap<String, u32>> {
+        self.values.borrow().clone()
+    }
+
+    fn hits(&self) -> usize {
+        self.hits.get()
+    }
+}
 pub(crate) const MAX_NATIVE_SVG_POINTS: usize = 2048;
 const MAX_NATIVE_SVG_CURVE_SEGMENTS: usize = 16;
 const MAX_NATIVE_SVG_ARC_SEGMENTS: usize = 64;
@@ -339,6 +408,9 @@ impl NativeLayoutSnapshot {
         viewport: Viewport,
     ) -> Result<Self, NativeEngineError> {
         viewport.validate()?;
+        let cached_text_widths = document.layout_text_width_cache();
+        let text_width_cache_entries = cached_text_widths.values().map(HashMap::len).sum();
+        let text_width_cache = Rc::new(NativeLayoutTextWidthCache::new(cached_text_widths));
         let mut builder = LayoutBuilder {
             document,
             boxes: Vec::new(),
@@ -354,8 +426,8 @@ impl NativeLayoutSnapshot {
             fixed: false,
             sticky_root: None,
             stacking_context: 0,
-            text_width_cache: HashMap::new(),
-            text_width_cache_entries: 0,
+            text_width_cache,
+            text_width_cache_entries,
             text_width_cache_hits: 0,
             containing_block: PositionedContainingBlock {
                 x: 0,
@@ -389,11 +461,11 @@ impl NativeLayoutSnapshot {
                 text_width_calls,
             );
         }
-        if builder.text_width_cache_hits > 0 {
+        if builder.text_width_cache.hits() > 0 {
             crate::native_engine::content_process::record_content_load_measurement(
                 "native_layout_text_width_cache_hits",
                 0,
-                builder.text_width_cache_hits,
+                builder.text_width_cache.hits(),
             );
         }
         build_stage.finish(Some(builder.boxes.len()));
@@ -532,6 +604,10 @@ impl NativeLayoutSnapshot {
                     .flatten()
             })
             .collect();
+        document.cache_layout_text_widths(
+            builder.text_width_cache.snapshot(),
+            builder.text_width_cache.hits(),
+        );
         Ok(Self {
             revision: document.revision(),
             viewport,
@@ -2463,6 +2539,8 @@ impl FlowItem {
 
 struct FlowCursor {
     font: NativeTextMetrics,
+    text_width_cache: Rc<NativeLayoutTextWidthCache>,
+    text_width_cache_key: Option<NativeTextWidthCacheKey>,
     base_start_x: u32,
     base_available_width: u32,
     start_x: u32,
@@ -2489,12 +2567,21 @@ struct FlowCursor {
 }
 
 impl FlowCursor {
-    fn new(x: u32, y: u32, available_width: u32, style: FlowStyle) -> Self {
+    fn new(
+        x: u32,
+        y: u32,
+        available_width: u32,
+        style: FlowStyle,
+        text_width_cache: Rc<NativeLayoutTextWidthCache>,
+        text_width_cache_key: Option<NativeTextWidthCacheKey>,
+    ) -> Self {
         let effective_indent = style
             .text_indent
             .min(available_width.saturating_sub(CHARACTER_WIDTH));
         Self {
             font: style.font,
+            text_width_cache,
+            text_width_cache_key,
             base_start_x: x,
             base_available_width: available_width,
             start_x: x.saturating_add(effective_indent),
@@ -2595,8 +2682,15 @@ impl FlowCursor {
     }
 
     fn text_width(&self, value: &str) -> u32 {
-        self.font
-            .measure_text(value, self.letter_spacing, self.word_spacing)
+        self.text_width_cache
+            .measure(
+                self.text_width_cache_key.as_ref(),
+                value,
+                &self.font,
+                self.letter_spacing,
+                self.word_spacing,
+            )
+            .0
     }
 
     fn character_advance(&self, character: char) -> u32 {

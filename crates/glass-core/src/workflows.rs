@@ -20,11 +20,27 @@ use std::{
     time::Instant,
 };
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct Plan {
     task: String,
     proposal: String,
 }
+const MAX_SAVED_PLAN_BYTES: usize = 1024 * 1024;
+
+fn load_saved_plan(path: &Path) -> Result<Option<Plan>, String> {
+    crate::requests::bounded_optional(path, MAX_SAVED_PLAN_BYTES)?
+        .map(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
+        .transpose()
+}
+
+fn save_plan(path: &Path, plan: &Plan) -> Result<(), String> {
+    let bytes = serde_json::to_vec(plan).map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_SAVED_PLAN_BYTES {
+        return Err("Saved plan exceeds the 1048576 byte limit".into());
+    }
+    auth::secure_write(path, &bytes)
+}
+
 fn plan_path(session: &Session) -> PathBuf {
     session.path.with_extension("plan.json")
 }
@@ -36,13 +52,10 @@ pub fn plan(
     factory: crate::warmer::ProviderFactory,
     task: &str,
 ) -> Result<Option<String>, String> {
-    let mut saved: Plan = match std::fs::read(plan_path(current)) {
-        Ok(bytes) => {
-            serde_json::from_slice(&bytes).map_err(|_| "Saved plan is invalid; not overwritten")?
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Plan::default(),
-        Err(e) => return Err(e.to_string()),
-    };
+    let path = plan_path(current);
+    let mut saved = load_saved_plan(&path)
+        .map_err(|_| "Saved plan is invalid or exceeds its size limit; not overwritten")?
+        .unwrap_or_default();
     let task = if !task.trim().is_empty() {
         Some(task.trim().to_string())
     } else if saved.proposal.is_empty() {
@@ -119,10 +132,7 @@ pub fn plan(
         match result {
             Some(Ok(proposal)) => {
                 saved = Plan { task, proposal };
-                auth::secure_write(
-                    &plan_path(current),
-                    &serde_json::to_vec_pretty(&saved).map_err(|e| e.to_string())?,
-                )?;
+                save_plan(&path, &saved)?;
             }
             Some(Err(e)) => return Err(e),
             None => return Ok(None),
@@ -1036,12 +1046,9 @@ pub fn portable_plan(
 ) -> Result<serde_json::Value, String> {
     let path = plan_path(current);
     if task.trim().is_empty() {
-        return match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(serde_json::json!({"task":"","proposal":""}))
-            }
-            Err(e) => Err(e.to_string()),
+        return match crate::requests::bounded_optional(&path, MAX_SAVED_PLAN_BYTES)? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string()),
+            None => Ok(serde_json::json!({"task":"","proposal":""})),
         };
     }
     let provider = factory()?;
@@ -1085,16 +1092,35 @@ pub fn portable_plan(
         proposal: out.text,
     };
     let value = serde_json::to_value(&saved).map_err(|e| e.to_string())?;
-    auth::secure_write(
-        &path,
-        &serde_json::to_vec(&saved).map_err(|e| e.to_string())?,
-    )?;
+    save_plan(&path, &saved)?;
     Ok(value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_plan_read_and_write_are_bounded() {
+        let path = std::env::temp_dir().join(format!(
+            "gc-plan-bounds-{}-{}.json",
+            std::process::id(),
+            crate::auth::random(8).unwrap()
+        ));
+        std::fs::write(&path, vec![b' '; MAX_SAVED_PLAN_BYTES + 1]).unwrap();
+        let error = load_saved_plan(&path).unwrap_err();
+        assert!(error.contains("1048576 byte limit"), "{error}");
+        std::fs::remove_file(&path).unwrap();
+
+        let oversized = Plan {
+            task: String::new(),
+            proposal: "x".repeat(MAX_SAVED_PLAN_BYTES),
+        };
+        let error = save_plan(&path, &oversized).unwrap_err();
+        assert!(error.contains("1048576 byte limit"), "{error}");
+        assert!(!path.exists(), "oversized plans are never written");
+    }
+
     #[test]
     fn hunk_parser_preserves_headers_and_newlines() {
         let (header, parts) = hunks(

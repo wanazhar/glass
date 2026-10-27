@@ -33,6 +33,46 @@ use crate::ext;
 use crate::session::{Record, Session};
 
 const PROTOCOL_VERSION: u64 = 1;
+const MAX_ACP_LINE_BYTES: usize = 1024 * 1024;
+
+fn read_bounded_line(reader: &mut impl BufRead, limit: usize) -> std::io::Result<Option<Vec<u8>>> {
+    let mut line = Vec::new();
+    let mut oversized = false;
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            break;
+        }
+        let count = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if !oversized {
+            if line.len().saturating_add(count) > limit {
+                oversized = true;
+                line.clear();
+            } else {
+                line.extend_from_slice(&available[..count]);
+            }
+        }
+        let complete = available[count - 1] == b'\n';
+        reader.consume(count);
+        if complete {
+            break;
+        }
+    }
+    if oversized {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "ACP input line exceeds the size limit",
+        ));
+    }
+    if line.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(line))
+    }
+}
 
 fn send(message: Value) {
     let stdout = std::io::stdout();
@@ -117,12 +157,23 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
     let (tx, rx) = std::sync::mpsc::channel::<Result<Value, ()>>();
     std::thread::spawn(move || {
         let stdin = std::io::stdin();
-        for line in stdin.lock().lines() {
-            let Ok(line) = line else { break };
-            if line.trim().is_empty() {
+        let mut reader = stdin.lock();
+        loop {
+            let line = match read_bounded_line(&mut reader, MAX_ACP_LINE_BYTES) {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                    if tx.send(Err(())).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                Err(_) => break,
+            };
+            if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
-            let parsed = serde_json::from_str::<Value>(&line).map_err(|_| ());
+            let parsed = serde_json::from_slice::<Value>(&line).map_err(|_| ());
             if tx.send(parsed).is_err() {
                 break;
             }
@@ -433,6 +484,28 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_line_limit_drains_an_oversized_line_and_keeps_next_frame() {
+        let mut input = std::io::Cursor::new(b"1234\n{}\n".as_slice());
+        assert_eq!(
+            read_bounded_line(&mut input, 5).unwrap().as_deref(),
+            Some(b"1234\n".as_slice())
+        );
+        assert_eq!(
+            read_bounded_line(&mut input, 5).unwrap().as_deref(),
+            Some(b"{}\n".as_slice())
+        );
+
+        let mut input = std::io::Cursor::new(b"12345\n{}\n".as_slice());
+        let error = read_bounded_line(&mut input, 5).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            read_bounded_line(&mut input, 5).unwrap().as_deref(),
+            Some(b"{}\n".as_slice()),
+            "rejecting one frame must preserve framing for the next"
+        );
+    }
 
     #[test]
     fn prompt_text_folds_text_links_and_inline_resources() {

@@ -119,26 +119,36 @@ pub const BUNDLES: &[Bundle] = &[
         access: "Spawns configured language servers in the workspace and reads their diagnostics; reads ~/.config/glass-core/lsp.json.",
     },
 ];
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Preferences {
     enabled: BTreeSet<String>,
     disabled: BTreeSet<String>,
     custom_enabled: BTreeSet<String>,
 }
-fn load() -> Result<Preferences, String> {
-    match std::fs::read(config::config_dir().join("addons.json")) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
+const MAX_ADDON_PREFERENCES_BYTES: usize = 64 * 1024;
+
+fn load_preferences(path: &std::path::Path) -> Result<Preferences, String> {
+    match crate::requests::bounded_optional(path, MAX_ADDON_PREFERENCES_BYTES)? {
+        Some(bytes) => serde_json::from_slice(&bytes)
             .map_err(|_| "Add-on preferences are invalid; not overwritten".into()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Preferences::default()),
-        Err(e) => Err(e.to_string()),
+        None => Ok(Preferences::default()),
     }
 }
+
+fn load() -> Result<Preferences, String> {
+    load_preferences(&config::config_dir().join("addons.json"))
+}
+fn save_preferences(path: &std::path::Path, p: &Preferences) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(p).map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_ADDON_PREFERENCES_BYTES {
+        return Err("Add-on preferences exceed the 65536 byte limit".into());
+    }
+    auth::secure_write(path, &bytes)
+}
+
 fn save(p: &Preferences) -> Result<(), String> {
-    auth::secure_write(
-        &config::config_dir().join("addons.json"),
-        &serde_json::to_vec_pretty(p).map_err(|e| e.to_string())?,
-    )
+    save_preferences(&config::config_dir().join("addons.json"), p)
 }
 fn command(bundle: &Bundle) -> Result<String, String> {
     let path = config::config_dir()
@@ -498,4 +508,30 @@ pub fn request(
 
 pub fn snapshot(cfg: &config::Config, registry: &ext::Registry) -> serde_json::Value {
     serde_json::json!({"configured":cfg.extensions,"loaded":registry.names(),"failures":registry.failures(),"bundles":BUNDLES.iter().map(|b|serde_json::json!({"name":b.name,"description":b.description,"access":b.access})).collect::<Vec<_>>()} )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn addon_preferences_refuse_oversized_reads_and_writes() {
+        let path = std::env::temp_dir().join(format!(
+            "gc-addon-prefs-{}-{}.json",
+            std::process::id(),
+            crate::auth::random(8).unwrap()
+        ));
+        std::fs::write(&path, vec![b' '; MAX_ADDON_PREFERENCES_BYTES + 1]).unwrap();
+        let error = load_preferences(&path).unwrap_err();
+        assert!(error.contains("65536 byte limit"), "{error}");
+        std::fs::remove_file(&path).unwrap();
+
+        let mut preferences = Preferences::default();
+        preferences
+            .custom_enabled
+            .insert("x".repeat(MAX_ADDON_PREFERENCES_BYTES));
+        let error = save_preferences(&path, &preferences).unwrap_err();
+        assert!(error.contains("65536 byte limit"), "{error}");
+        assert!(!path.exists(), "oversized preferences are never written");
+    }
 }

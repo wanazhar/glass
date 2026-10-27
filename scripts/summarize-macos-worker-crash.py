@@ -17,7 +17,8 @@ MAX_REPORT_BYTES = 8 * 1024 * 1024
 MAX_CANDIDATES = 24
 MAX_FRAMES = 32
 MAX_OUTPUT_BYTES = 16 * 1024
-ALLOWED_PROCESSES = {"glass-native-content-worker"}
+WORKER_PROCESS_NAME = "glass-native-content-worker"
+WORKER_PROCESS_PREFIX = "glass-native-con"
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.$<>:+-]{1,160}$")
 OLD_FRAME = re.compile(
     r"^\s*(\d+)\s+([^\s]+)\s+0x[0-9a-fA-F]+\s+(.+?)(?:\s+\+\s+\d+)?\s*$"
@@ -40,6 +41,19 @@ def image_name(value: Any) -> str | None:
     return safe_token(name, limit=100)
 
 
+def is_worker_process(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    if value == WORKER_PROCESS_NAME:
+        return True
+    # macOS may expose a 16-character procName even though the executable's
+    # full basename is longer. Accept only this fixed, distinctive prefix.
+    return (
+        len(WORKER_PROCESS_PREFIX) <= len(value) <= 20
+        and WORKER_PROCESS_NAME.startswith(value)
+    )
+
+
 def ips_payload(text: str) -> dict[str, Any] | None:
     candidates: list[dict[str, Any]] = []
     for line in text.splitlines()[:64]:
@@ -60,8 +74,8 @@ def ips_payload(text: str) -> dict[str, Any] | None:
         (
             value
             for value in reversed(candidates)
-            if isinstance(value.get("procName"), str)
-            and value["procName"] in ALLOWED_PROCESSES
+            if is_worker_process(value.get("procName"))
+            or is_worker_process(value.get("procPath"))
         ),
         None,
     )
@@ -70,7 +84,7 @@ def ips_payload(text: str) -> dict[str, Any] | None:
 def ips_summary(payload: dict[str, Any]) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "capture": "matched",
-        "process": payload["procName"],
+        "process": WORKER_PROCESS_NAME,
         "frames": [],
     }
     exception = payload.get("exception")
@@ -180,11 +194,11 @@ def old_crash_summary(text: str) -> dict[str, Any] | None:
                 if len(frames) >= MAX_FRAMES:
                     break
 
-    if process not in ALLOWED_PROCESSES:
+    if not is_worker_process(process):
         return None
     summary: dict[str, Any] = {
         "capture": "matched",
-        "process": process,
+        "process": WORKER_PROCESS_NAME,
         "frames": frames,
     }
     if exception:
@@ -238,13 +252,20 @@ def candidate_reports(since: float, directories: list[Path]) -> list[Path]:
 
 def collect_summary(since: float, directories: list[Path], wait_seconds: float) -> dict[str, Any]:
     deadline = time.monotonic() + max(0.0, min(wait_seconds, 20.0))
+    recent_reports = 0
     while True:
-        for path in candidate_reports(since, directories):
+        candidates = candidate_reports(since, directories)
+        recent_reports = len(candidates)
+        for path in candidates:
             summary = parse_report(path, since=since)
             if summary:
                 return summary
         if time.monotonic() >= deadline:
-            return {"capture": "no-matching-worker-report", "frames": []}
+            return {
+                "capture": "no-matching-worker-report",
+                "recentReports": recent_reports,
+                "frames": [],
+            }
         time.sleep(0.5)
 
 
@@ -285,6 +306,22 @@ def self_test() -> None:
         assert "__pthread_kill" in rendered
         assert "secret" not in rendered and "https://" not in rendered
         assert "/private/" not in rendered and "token" not in rendered
+
+        truncated = root / "glass-native-content-worker-truncated.ips"
+        truncated.write_text(
+            json.dumps(
+                {
+                    "procName": "glass-native-con",
+                    "procPath": "/private/tmp/runner/glass-native-content-worker",
+                    "exception": {"type": "EXC_CRASH", "signal": "SIGABRT"},
+                    "threads": [{"triggered": True, "frames": []}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary = parse_report(truncated, since=since)
+        assert summary is not None and summary["process"] == WORKER_PROCESS_NAME
+        assert "/private/" not in json.dumps(summary)
 
         crash = root / "glass-native-content-worker-test.crash"
         crash.write_text(

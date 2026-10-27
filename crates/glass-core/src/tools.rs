@@ -967,11 +967,13 @@ fn parse_items(raw: &str) -> Result<Vec<String>, Outcome> {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     struct FixtureCleanup {
         stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
         thread: Option<std::thread::JoinHandle<()>>,
     }
 
+    #[cfg(target_os = "linux")]
     impl Drop for FixtureCleanup {
         fn drop(&mut self) {
             self.stop.store(true, std::sync::atomic::Ordering::Release);
@@ -981,6 +983,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     struct BrowserOwnerCleanup {
         browser: PathBuf,
         worker: PathBuf,
@@ -989,6 +992,7 @@ mod tests {
         active: bool,
     }
 
+    #[cfg(target_os = "linux")]
     impl Drop for BrowserOwnerCleanup {
         fn drop(&mut self) {
             if !self.active {

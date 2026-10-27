@@ -4,20 +4,17 @@ use std::path::{Path, PathBuf};
 pub fn path() -> Result<PathBuf, String> {
     let current =
         std::env::current_exe().map_err(|e| format!("Cannot locate GC executable: {e}"))?;
+    // Linux retains access to the running inode even if no replacement exists.
+    #[cfg(target_os = "linux")]
+    let running = {
+        // A PID path also remains meaningful when GC_BIN is inherited by a shell.
+        let running = PathBuf::from(format!("/proc/{}/exe", std::process::id()));
+        running.is_file().then_some(running)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let running = None;
     replacement(&current)
-        .or_else(|| {
-            // Linux retains access to the running inode even if no replacement exists.
-            #[cfg(target_os = "linux")]
-            {
-                // A PID path also remains meaningful when GC_BIN is inherited by a shell.
-                let running = PathBuf::from(format!("/proc/{}/exe", std::process::id()));
-                running.is_file().then_some(running)
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                None
-            }
-        })
+        .or(running)
         .ok_or_else(|| "GC executable is unavailable; reinstall GC and restart the gateway".into())
 }
 

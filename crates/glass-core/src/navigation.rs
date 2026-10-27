@@ -44,7 +44,7 @@ pub(crate) fn process_stamp(pid: u32) -> Option<String> {
             .output()
             .ok()?;
         let stamp = String::from_utf8(output.stdout).ok()?.trim().to_owned();
-        return (output.status.success() && !stamp.is_empty()).then_some(stamp);
+        (output.status.success() && !stamp.is_empty()).then_some(stamp)
     }
     #[cfg(target_os = "linux")]
     {

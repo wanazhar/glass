@@ -35,6 +35,25 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use url::Url;
 
+fn one_sample_pcm_wav() -> [u8; 45] {
+    let mut wav = [0_u8; 45];
+    wav[0..4].copy_from_slice(b"RIFF");
+    wav[4..8].copy_from_slice(&37_u32.to_le_bytes());
+    wav[8..12].copy_from_slice(b"WAVE");
+    wav[12..16].copy_from_slice(b"fmt ");
+    wav[16..20].copy_from_slice(&16_u32.to_le_bytes());
+    wav[20..22].copy_from_slice(&1_u16.to_le_bytes());
+    wav[22..24].copy_from_slice(&1_u16.to_le_bytes());
+    wav[24..28].copy_from_slice(&8000_u32.to_le_bytes());
+    wav[28..32].copy_from_slice(&8000_u32.to_le_bytes());
+    wav[32..34].copy_from_slice(&1_u16.to_le_bytes());
+    wav[34..36].copy_from_slice(&8_u16.to_le_bytes());
+    wav[36..40].copy_from_slice(b"data");
+    wav[40..44].copy_from_slice(&1_u32.to_le_bytes());
+    wav[44] = 128;
+    wav
+}
+
 #[test]
 fn xhr_credentials_modes_match_same_origin_and_include_contracts() {
     let initiator = Url::parse("https://page.example.test/document").unwrap();
@@ -328,11 +347,12 @@ fn native_webm_vp8_rejects_video_over_frame_and_dimension_caps() {
         over_limit_dimensions.as_slice(),
         over_resource_byte_budget.as_slice(),
     ] {
-        let metadata = media_metadata_from_bytes(Some("video/webm"), bytes)
-            .unwrap()
-            .expect("the valid WebM fixture should be recognized");
-        assert!(metadata.video_frames.is_empty());
-        assert_eq!(metadata.duration_millis, None);
+        assert!(
+            media_metadata_from_bytes(Some("video/webm"), bytes)
+                .unwrap()
+                .is_none(),
+            "over-budget video must not be admitted as playable media"
+        );
     }
 }
 
@@ -1659,7 +1679,7 @@ fn rooted_file_image_font_media_csp_uses_directives_fallback_and_roots() {
         )
         .unwrap();
         fs::write(directory.join("font.ttf"), b"bounded font bytes").unwrap();
-        fs::write(directory.join("media.wav"), b"bounded media bytes").unwrap();
+        fs::write(directory.join("media.wav"), one_sample_pcm_wav()).unwrap();
     }
 
     let document_url = Url::from_file_path(site.join("index.html"))

@@ -919,7 +919,10 @@ fn gc_command_menu_geometry(
     content: &GcCommandMenuContent,
 ) -> GcCommandMenuGeometry {
     let width = area.width.saturating_sub(4).min(88);
-    let height = area.height.saturating_sub(4).clamp(5, 16);
+    let content_height = u16::try_from(content.lines.len().saturating_add(2)).unwrap_or(u16::MAX);
+    let height = content_height
+        .clamp(5, 16)
+        .min(area.height.saturating_sub(4).max(1));
     let modal = Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -2086,19 +2089,7 @@ fn render_native_gc_ui_panel(frame: &mut Frame<'_>, state: &DevTuiState, area: R
     let Some(panel) = state.native_gc_ui_panel.as_ref() else {
         return;
     };
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
-        .split(area);
     let title = format!(" CORE · /{} ", panel.command);
-    let block = Block::default()
-        .title(title)
-        .title_style(Style::default().fg(PURPLE).add_modifier(Modifier::BOLD))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(PURPLE))
-        .bg(PANEL_BACKGROUND)
-        .padding(Padding::horizontal(1));
     let query = if panel.searching {
         format!("Search /{}▏ · Enter done · Esc close", panel.query)
     } else {
@@ -2107,6 +2098,61 @@ fn render_native_gc_ui_panel(frame: &mut Frame<'_>, state: &DevTuiState, area: R
             if panel.pending { " · loading" } else { "" }
         )
     };
+    let lines = panel
+        .visible_lines()
+        .into_iter()
+        .map(|line| {
+            line.chars()
+                .filter(|character| !character.is_control() || *character == '\t')
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    let available_width = area.width.saturating_sub(2).max(1);
+    let content_width = lines
+        .iter()
+        .map(|line| u16::try_from(line.chars().count()).unwrap_or(u16::MAX))
+        .chain([
+            u16::try_from(title.chars().count()).unwrap_or(u16::MAX),
+            u16::try_from(query.chars().count()).unwrap_or(u16::MAX),
+        ])
+        .max()
+        .unwrap_or(0)
+        .saturating_add(4);
+    let modal_width = content_width.clamp(36, 100).min(available_width);
+    let inner_width = modal_width.saturating_sub(4).max(1);
+    let content_rows = lines
+        .iter()
+        .map(|line| {
+            line.chars()
+                .count()
+                .div_ceil(usize::from(inner_width))
+                .max(1)
+        })
+        .sum::<usize>()
+        .max(1);
+    let available_height = area.height.saturating_sub(2).max(1);
+    let modal_height = u16::try_from(content_rows.saturating_add(3))
+        .unwrap_or(u16::MAX)
+        .min(available_height);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(modal_width) / 2,
+        y: area.y + area.height.saturating_sub(modal_height) / 2,
+        width: modal_width,
+        height: modal_height,
+    };
+    frame.render_widget(Clear, modal);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(modal);
+    let block = Block::default()
+        .title(title)
+        .title_style(Style::default().fg(PURPLE).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(PURPLE))
+        .bg(PANEL_BACKGROUND)
+        .padding(Padding::horizontal(1));
     frame.render_widget(
         Paragraph::new(query)
             .style(Style::default().fg(MUTED))
@@ -2117,23 +2163,14 @@ fn render_native_gc_ui_panel(frame: &mut Frame<'_>, state: &DevTuiState, area: R
             ),
         rows[0],
     );
-    let lines = panel
-        .visible_lines()
-        .into_iter()
-        .map(|line| {
-            let safe = line
-                .chars()
-                .filter(|character| !character.is_control() || *character == '\t')
-                .collect::<String>();
-            Line::from(safe)
-        })
-        .collect::<Vec<_>>();
     frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .style(Style::default().fg(TEXT))
-            .scroll((panel.scroll, 0))
-            .block(block)
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(Text::from(
+            lines.into_iter().map(Line::from).collect::<Vec<_>>(),
+        ))
+        .style(Style::default().fg(TEXT))
+        .scroll((panel.scroll, 0))
+        .block(block)
+        .wrap(Wrap { trim: false }),
         rows[1],
     );
 }
@@ -5870,6 +5907,27 @@ mod tests {
             assert!(line.contains("/cmd20"), "{width}x{height}: {line:?}");
         }
 
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn gc_model_picker_sizes_to_its_visible_content() {
+        let (mut state, root) = overlay_state();
+        state.composer_mode = true;
+        state.gc_command_menu_open = true;
+        state.gc_model_menu_open = true;
+        state.gc_model_current = Some("fixture-model".into());
+        state.gc_model_provider = Some("fixture".into());
+        state.gc_model_items = vec![serde_json::json!({
+            "id":"fixture-model",
+            "label":"Fixture Model"
+        })];
+        state.terminal_width = 80;
+        state.terminal_height = 24;
+        let geometry = gc_command_menu_geometry_for_screen(&state);
+        assert!(geometry.modal.height < 16);
+        assert!(geometry.inner.height >= 4);
         drop(state);
         std::fs::remove_dir_all(root).unwrap();
     }

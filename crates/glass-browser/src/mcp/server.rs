@@ -875,7 +875,16 @@ where
         None
     };
 
-    while let Some((body, format)) = read_message(&mut reader).await? {
+    let mut read_error = None;
+    loop {
+        let (body, format) = match read_message(&mut reader).await {
+            Ok(Some(message)) => message,
+            Ok(None) => break,
+            Err(error) => {
+                read_error = Some(error.to_string());
+                break;
+            }
+        };
         let body_bytes = body.len();
         let message: Value = match serde_json::from_str(&body) {
             Ok(message) => message,
@@ -1306,15 +1315,28 @@ where
     #[cfg(feature = "native-engine")]
     cancel_active_requests(&server_request_cancellations);
     drop(outbound_tx);
-    writer.await??;
+    let mut cleanup_error = read_error;
+    match writer.await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            cleanup_error.get_or_insert_with(|| error.to_string());
+        }
+        Err(error) => {
+            cleanup_error.get_or_insert_with(|| error.to_string());
+        }
+    }
     if close_session_on_eof {
         let mut session = session.lock().await;
-        if let Some(session) = session.take() {
-            session.close().await?;
+        if let Some(session) = session.take()
+            && let Err(error) = session.close().await
+        {
+            cleanup_error.get_or_insert_with(|| error.to_string());
         }
         let mut native_session = native_session.lock().await;
-        if let Some(session) = native_session.take() {
-            session.close().await?;
+        if let Some(session) = native_session.take()
+            && let Err(error) = session.close().await
+        {
+            cleanup_error.get_or_insert_with(|| error.to_string());
         }
     }
     if let Some(lease_context) = lease_context {
@@ -1327,7 +1349,10 @@ where
             .update_mutation_lease_owner(owner)
             .await;
     }
-    Ok(())
+    match cleanup_error {
+        Some(error) => Err(error.into()),
+        None => Ok(()),
+    }
 }
 
 fn is_lease_method(method: &str) -> bool {
@@ -7856,6 +7881,107 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn malformed_frame_runs_connection_cleanup_and_releases_daemon_lease() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let nonce = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock should be after the Unix epoch")
+                    .as_nanos();
+                let directory = std::env::temp_dir().join(format!(
+                    "glass-mcp-read-error-{}-{nonce}",
+                    std::process::id()
+                ));
+                std::fs::create_dir(&directory).expect("temporary daemon status directory");
+                let status_path = directory.join("daemon.json");
+                let status = crate::daemon::DaemonStatus {
+                    protocol_version: crate::daemon::DAEMON_PROTOCOL_VERSION,
+                    schema_version: crate::results::RESULT_SCHEMA_VERSION,
+                    state: "running".into(),
+                    pid: std::process::id(),
+                    socket: directory.join("daemon.sock"),
+                    status_path: status_path.clone(),
+                    log_path: None,
+                    recovery_path: None,
+                    started_at: "2026-10-26T00:00:00Z".into(),
+                    transport: "unix-mcp-isolated-sessions".into(),
+                    client_sessions: 1,
+                    mutation_lease_owner: None,
+                    provenance: crate::results::ExperienceProvenance::default(),
+                    resource_refs: Vec::new(),
+                    active_runs: Vec::new(),
+                };
+                let status = Arc::new(crate::daemon::DaemonStatusState::new(&status_path, status));
+                let manager = Arc::new(Mutex::new(crate::daemon::MutationLeaseManager::default()));
+                let lease_context = Arc::new(DaemonLeaseContext {
+                    manager: Arc::clone(&manager),
+                    session_id: crate::daemon::DAEMON_SESSION_ID.into(),
+                    owner_id: "daemon-client-test".into(),
+                    request_permits: Arc::new(Semaphore::new(
+                        crate::daemon::MAX_DAEMON_CONCURRENT_REQUESTS,
+                    )),
+                    client_request_permits: Arc::new(Semaphore::new(
+                        crate::daemon::MAX_DAEMON_CLIENT_CONCURRENT_REQUESTS,
+                    )),
+                    status,
+                    development_sessions: (),
+                });
+                let cli = Cli::try_parse_from_on_dedicated_stack([
+                    "glass",
+                    "--mcp",
+                    "--incognito",
+                ])
+                .expect("test CLI arguments should parse");
+                let input = concat!(
+                    "{\"jsonrpc\":\"2.0\",\"id\":\"init\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}\n",
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
+                    "{\"jsonrpc\":\"2.0\",\"id\":\"lease\",\"method\":\"glass/lease/acquire\",\"params\":{\"ttlMs\":1000}}\n",
+                    "Content-Length: invalid\r\n\r\n",
+                );
+                let (output_writer, mut output_reader) = tokio::io::duplex(64 * 1024);
+                let result = run_mcp_stream_inner(
+                    BufReader::new(input.as_bytes()),
+                    output_writer,
+                    &cli,
+                    Arc::new(Mutex::new(None)),
+                    false,
+                    false,
+                    true,
+                    Some(Arc::clone(&lease_context)),
+                    None,
+                )
+                .await;
+
+                let error = result.expect_err("invalid frame should still be reported");
+                assert!(
+                    error.to_string().contains("invalid Content-Length"),
+                    "the original frame error should be preserved: {error}"
+                );
+                let mut output = Vec::new();
+                output_reader
+                    .read_to_end(&mut output)
+                    .await
+                    .expect("read captured MCP replies");
+                let output = String::from_utf8(output).expect("MCP replies are UTF-8");
+                assert!(
+                    output.contains("\"token\":\"lease-1\""),
+                    "the lease must have been acquired before the malformed frame: {output}"
+                );
+                assert_eq!(
+                    manager
+                        .lock()
+                        .await
+                        .current_owner(crate::daemon::DAEMON_SESSION_ID, current_time_ms()),
+                    None,
+                    "a malformed frame must release the disconnected client's lease"
+                );
+                std::fs::remove_dir_all(directory)
+                    .expect("remove the isolated daemon status fixture");
+            })
+            .await;
+    }
+
     #[test]
     fn daemon_lease_request_without_context_returns_json_rpc_error() {
         std::thread::Builder::new()
@@ -8980,9 +9106,11 @@ mod tests {
                 .is_some()
         );
 
+        // JS probes cross the worker async boundary; leave margin for loaded
+        // full-suite runs instead of treating scheduler delay as a product error.
         let javascript = invoke_native_mcp_tool(
             "wait",
-            json!({"condition": "js=document.readyState === 'complete'", "timeoutMs": 100}),
+            json!({"condition": "js=document.readyState === 'complete'", "timeoutMs": 2_000}),
             &mut session,
             &mut native_session,
             &options,

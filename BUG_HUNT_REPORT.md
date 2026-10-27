@@ -142,6 +142,27 @@ policy, sandbox, concurrency, and authoring sweeps.
 
 Two unchecked Unix narrowing paths are fixed: `browser/persistent.rs` rejects persisted `u32` process IDs that cannot be represented as positive `pid_t` before `kill(pid, 0)`, and `browser/chrome.rs` parses `lsof` output as positive `pid_t` before `SIGTERM`. A follow-up changes `kill_chrome(port)` to inspect only TCP listeners and signal only same-user TCP listeners whose lsof command names match Chrome/Chromium variants; other services, other users, and outgoing clients are excluded, and lsof inspection errors are returned. Its parser regression and the surrounding Chrome unit module pass (18 tests), with strict `glass-browser` library Clippy and formatting. The public function has no in-repository callers; UID and command-name filtering are not an executable-identity pin; a same-user process that deliberately adopts a Chrome command name remains outside this safeguard. Owned sessions should use `ChromeProcess::shutdown`, which signals the exact child Glass launched.
 
+### Issue #65 fail-closed task-risk follow-up (2026-10-26)
+
+`task_compiler::risk_at_least` treated `UnknownRisk` as satisfying any minimum
+risk because it ranked above known values. Compiled plans already reject
+unknown risk earlier; the comparison now also rejects unknown actual and
+required classes directly. The complete task-compiler test module passes 20/20,
+including a regression for both unknown sides and known-risk ordering. This
+hardens that comparison invariant without closing the remaining authoring or
+policy audit.
+
+### Issue #65 malformed MCP frame cleanup follow-up (2026-10-26)
+
+`run_mcp_stream_inner` previously propagated a malformed frame-read error
+immediately, before canceling in-flight requests, closing owned sessions, and
+releasing a daemon mutation lease. It now retains the framing error while it
+performs the normal connection cleanup, then returns the error. A focused test
+initializes a daemon client, acquires its lease, sends invalid Content-Length,
+and verifies both the framing failure and lease release (1/1). This addresses
+the read-error cleanup path only; the broader daemon interleaving audit remains
+open.
+
 ## Issue #65 policy and sandbox path dispositions
 
 The named permission and policy entry points received focused source review
@@ -160,6 +181,12 @@ confirmation, named-target non-fallback, form scoping, and postconditions;
 `browser/session/workflow.rs` passed 36 tests for bounded inputs, retry
 behavior, state transitions, post-dispatch reconciliation, redaction, and
 resume/trace validation.
+
+The task risk floor now rejects `UnknownRisk` on either side of its comparison;
+unknown risk cannot satisfy an ordinary minimum merely because it ranks above
+known categories. A focused regression covers unknown actual/required risk and
+both sides of the known-risk ordering. The compiler's existing earlier
+unknown-risk rejection remains in place as a separate plan invariant.
 
 These tests disposition the concrete issue entry points; they are not a proof
 for all platform implementations or every command parser. The Linux Landlock

@@ -1246,7 +1246,9 @@ fn risk_rank(risk: TaskRiskClass) -> u8 {
 }
 
 fn risk_at_least(actual: TaskRiskClass, minimum: TaskRiskClass) -> bool {
-    actual == TaskRiskClass::UnknownRisk || risk_rank(actual) >= risk_rank(minimum)
+    actual != TaskRiskClass::UnknownRisk
+        && minimum != TaskRiskClass::UnknownRisk
+        && risk_rank(actual) >= risk_rank(minimum)
 }
 
 fn max_risk(left: TaskRiskClass, right: TaskRiskClass) -> TaskRiskClass {
@@ -1382,6 +1384,26 @@ mod tests {
     use super::*;
     use crate::task_protocol::{TaskAmbiguityPolicy, TaskLimits, TaskPostconditionKind, TaskScope};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn risk_floor_rejects_unknown_actual_or_required_risk() {
+        assert!(!risk_at_least(
+            TaskRiskClass::UnknownRisk,
+            TaskRiskClass::LocalMutation
+        ));
+        assert!(!risk_at_least(
+            TaskRiskClass::RemoteIrreversible,
+            TaskRiskClass::UnknownRisk
+        ));
+        assert!(risk_at_least(
+            TaskRiskClass::RemoteIrreversible,
+            TaskRiskClass::LocalMutation
+        ));
+        assert!(!risk_at_least(
+            TaskRiskClass::ReadOnly,
+            TaskRiskClass::LocalMutation
+        ));
+    }
 
     fn task(kind: TaskKind, risk: TaskRiskClass) -> GlassTask {
         let inputs = match kind {

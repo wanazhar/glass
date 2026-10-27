@@ -135,16 +135,31 @@ source/report; 20 IDs (#61–80), 18 IDs (#91–108), and the eight thematic IDs
 | #57–60, session / agent / team / checkpoint / queue | The issue supplies a grouped topic, not four independently testable descriptions. Reviewed follow-ups include session, checkpoint, queue, team-lock and MCP lifecycle paths; the report records each changed path and its tests above. | Keep the group open until each remaining named path has a bounded invariant/reproduction, or explicitly record that no distinct finding was filed for it. |
 | #61–80 | No finding text or source path appears in the filed body. | No source disposition can be claimed from these absent descriptions. |
 | #81–82, two Clippy examples | The cited manual clamp and collapsible-if sites are stale in current source; strict all-target Core Clippy passes. | Mark as stale examples, not active lint failures. |
-| #83–90, hygiene and robustness themes | Cast sites, unsafe ownership families, dead-code annotations, tool-panic retry behavior, and selected policy/authoring paths have source review and focused fixes/tests. | Cross-platform sandbox behavior, wider daemon/request interleavings, and all remaining public structured/file input paths are not yet a complete audit. |
+| #83–90, hygiene and robustness themes | Cast sites, unsafe ownership families, dead-code annotations, tool-panic retry behavior, and selected policy/authoring paths have source review and focused fixes/tests. Core attach replay/cursor/stop and Browser client request budgets, mutation leases, and active-workflow status now have one scoped deterministic pass (7 Core and 13 Browser tests). | This is not a full race/fuzz proof. Cross-platform sandbox behavior and the remaining public structured/file input paths are still open. |
 | #91–108 | No finding text or source path appears in the filed body. | No source disposition can be claimed from these absent descriptions. |
 
-The finite remaining gates are: (1) obtain or explicitly bound macOS sandbox
-support evidence; (2) finish one scoped pass over Core/browser daemon and
-request interleavings, with named paths and deterministic regressions for any
-reproduced defect; (3) inventory public structured-value and file parsers and
-verify limits are applied before allocation/parsing; and (4) disposition the
-grouped or absent issue ranges without inventing findings. Until those gates
-are completed or explicitly de-scoped by the issue owner, #65 remains open.
+One bounded daemon/request interleaving pass is recorded below. The remaining
+gates are: (1) obtain or explicitly bound macOS sandbox support evidence; (2)
+complete the public structured-value and file-parser inventory and verify
+limits are applied before allocation/parsing; and (3) disposition the grouped
+or absent issue ranges without inventing findings. Until those gates are
+completed or explicitly de-scoped by the issue owner, #65 remains open.
+
+### Issue #65 bounded daemon/request interleaving pass (2026-10-27)
+
+Reviewed Core's resident attach replay/cursor and stop-handshake paths in
+`crates/glass-core/src/serve.rs`; focused tests cover stale and retained
+cursors, restart persistence of cursor and pending request ID, bounded attach
+state, exact stop acknowledgement framing, and bounded replay previews. All
+seven `serve::tests` pass.
+
+Reviewed Browser daemon lease and state paths in
+`crates/glass-browser/src/daemon.rs`; focused tests cover one mutation owner,
+per-client concurrent-request bounds, owner-bound leases, atomic active
+workflow status publication/removal, and identity-bound termination. All 13
+`daemon::tests` pass. No new interleaving defect was reproduced in this
+bounded pass. These deterministic unit tests are evidence for the named paths,
+not a fuzzed race proof or a complete audit of all daemon concurrency.
 
 ### Issue #65 browser snapshot and workflow file bounds (2026-10-27)
 

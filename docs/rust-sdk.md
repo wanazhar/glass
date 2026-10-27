@@ -918,7 +918,7 @@ exports are authoritative for individual items.
 | `daemon` | Local socket, isolated MCP sessions, leases, and recovery |
 | `diagnostics` | Bounded reader for the local redacted Core tool-error journal |
 | `extensions` | Manifest, permission, registry, sandbox, and guarded-action boundary |
-| `extraction` | Strict source-labelled evidence extraction |
+| `extraction` | Strict source-labelled evidence extraction with pre-parse request and output budgets |
 | `mcp` | JSON-RPC/MCP stdio server, prompts, resources, and tool dispatch |
 | `presentation` | Browser-neutral frame metadata, geometry, ownership, mailbox, and metrics |
 | `protocol` | Canonical versioned operations and responses |

@@ -265,6 +265,16 @@ budget before typed conversion. Focused tests reject oversized arrays and
 excessive nesting. Other already allocated `Value` APIs and the remaining
 parser and error-propagation audit for #65 remain open.
 
+### Issue #65 extraction request JSON source bound (2026-10-27)
+
+`ExtractionRequest::from_json` now rejects source above its 256 KiB contract
+budget before serde deserialization. The exact boundary remains accepted, and
+the regression verifies an oversized invalid document returns the size error
+before a JSON syntax error. Existing request validation still enforces the
+tighter node, text, depth, duration, and output budgets. This closes the
+direct extraction-request string parser only; transport decoding and other
+authoring parsers remain separate audit items.
+
 ### Issue #64 native public video failure recheck (2026-10-27)
 
 The focused local VP8/WebM journey passes with native `videoWidth` and

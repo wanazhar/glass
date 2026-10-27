@@ -159,6 +159,11 @@
         },
         {
           "level": "3",
+          "title": "Issue #65 extraction request JSON source bound (2026-10-27)",
+          "anchor": "issue-65-extraction-request-json-source-bound-2026-10-27"
+        },
+        {
+          "level": "3",
           "title": "Issue #64 native public video failure recheck (2026-10-27)",
           "anchor": "issue-64-native-public-video-failure-recheck-2026-10-27"
         },

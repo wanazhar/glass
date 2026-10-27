@@ -29,6 +29,8 @@ pub const MAX_EXTRACTION_DEPTH: u16 = 64;
 pub const MAX_EXTRACTION_DURATION_MS: u64 = 15_000;
 /// Maximum serialized evidence bytes returned by one extraction.
 pub const MAX_EXTRACTION_OUTPUT_BYTES: u32 = 256 * 1024;
+/// Maximum serialized size of one authored extraction request.
+pub const MAX_EXTRACTION_REQUEST_SOURCE_BYTES: usize = 256 * 1024;
 
 /// The page scope from which evidence may be gathered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,6 +199,14 @@ impl ExtractionRequest {
 
     /// Parse and validate a strict authored request.
     pub fn from_json(input: &str) -> Result<Self, ExtractionContractError> {
+        if input.len() > MAX_EXTRACTION_REQUEST_SOURCE_BYTES {
+            return Err(ExtractionContractError::new(
+                "$",
+                format!(
+                    "extraction request exceeds the {MAX_EXTRACTION_REQUEST_SOURCE_BYTES}-byte input limit"
+                ),
+            ));
+        }
         let request: Self = serde_json::from_str(input).map_err(|error| {
             ExtractionContractError::new("$", format!("invalid extraction request: {error}"))
         })?;
@@ -1920,6 +1930,21 @@ mod tests {
             request.to_canonical_json().unwrap(),
             request.to_canonical_json().unwrap()
         );
+    }
+
+    #[test]
+    fn request_json_source_is_bounded_before_deserialization() {
+        let oversized = " ".repeat(MAX_EXTRACTION_REQUEST_SOURCE_BYTES + 1);
+        let error = ExtractionRequest::from_json(&oversized).unwrap_err();
+        assert!(error.reason.contains("input limit"));
+
+        let canonical = request().to_canonical_json().unwrap();
+        let padded = format!(
+            "{canonical}{}",
+            " ".repeat(MAX_EXTRACTION_REQUEST_SOURCE_BYTES - canonical.len())
+        );
+        assert_eq!(padded.len(), MAX_EXTRACTION_REQUEST_SOURCE_BYTES);
+        assert!(ExtractionRequest::from_json(&padded).is_ok());
     }
 
     #[test]

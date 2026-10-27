@@ -98,6 +98,11 @@
           "anchor": "workspace-coverage"
         },
         {
+          "level": "3",
+          "title": "Issue #65 CI regression follow-up (2026-10-27)",
+          "anchor": "issue-65-ci-regression-follow-up-2026-10-27"
+        },
+        {
           "level": "2",
           "title": "Issue #64 standalone native browser session lifecycle (2026-10-27)",
           "anchor": "issue-64-standalone-native-browser-session-lifecycle-2026-10-27"

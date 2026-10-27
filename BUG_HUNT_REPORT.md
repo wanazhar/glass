@@ -518,10 +518,10 @@ after parsing. This closes this direct response-contract parser path only.
 
 Core partial-turn sidecars now read at most 512 KiB plus one byte before JSON
 parsing, and streamed tool identifiers are capped at UTF-8 boundaries. The
-browser knowledge store and durable workspace snapshots also read only their
+browser knowledge store and workspace `open` path also read only their
 configured limit plus one byte before deserialization, returning a capacity or
 corruption error without allocating the complete oversized file. Boundary
-regressions cover the knowledge store, workspace store, and partial sidecar.
+regressions cover the knowledge store, workspace open path, and partial sidecar.
 Other persisted-state paths and concurrent replacement scenarios remain in
 the #65 source-level acceptance matrix.
 
@@ -530,11 +530,21 @@ the #65 source-level acceptance matrix.
 Persistent native session status used `std::fs::read` and checked its existing
 32 KiB cap only after allocation. Synchronous status reads now take at most
 cap+1 bytes before JSON parsing. The native owner readiness poll uses the
-same bound and treats malformed or oversized status as a not-yet-ready
-record rather than unwrapping. The test-only status reader now follows the
-same cap, and an oversized invalid-JSON regression verifies the size error is
-returned first. The focused regression passes; this closes the persisted
-session status boundary only, not daemon interleavings or the full #65 audit.
+same bound in its test-only readiness loop and treats malformed or oversized
+status as a not-yet-ready record rather than unwrapping. The test-only status
+reader also follows the cap, and an oversized invalid-JSON regression verifies
+the size error is returned first. The focused regression passes; this closes
+the persisted session status boundary only, not daemon interleavings or the
+full #65 audit.
+
+### Issue #65 workspace snapshot save bound (2026-10-27)
+
+`WorkspaceStore::save` separately re-read the current durable snapshot with
+unbounded `fs::read` before its existing 64 KiB parser check. It now uses the
+same bounded opened-file reader as `open` before comparing revisions. A new
+save-path regression replaces the stored snapshot with cap+1 invalid bytes
+and verifies save rejects it before parsing or writing, preserving the
+oversized file. This closes the workspace save read boundary only.
 
 ### Issue #64 native public video failure recheck (2026-10-27)
 

@@ -28,9 +28,9 @@ pub struct Requirements {
 /// (launch is refused) rather than guessed at.
 pub fn load(dir: &Path) -> Result<Requirements, String> {
     let path = dir.join("requirements.toml");
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Requirements::default()),
+    let text = match crate::config::read_bounded_text(&path, 64 * 1024) {
+        Ok(Some(t)) => t,
+        Ok(None) => return Ok(Requirements::default()),
         Err(e) => return Err(format!("requirements.toml unreadable: {e}")),
     };
 
@@ -147,6 +147,15 @@ mod tests {
         let err = load(&dir).unwrap_err();
         assert!(err.contains("parse"), "{err}");
         // A failed load must apply nothing.
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn oversized_file_fails_closed_before_toml_parsing() {
+        let dir = scratch("oversized");
+        std::fs::write(dir.join("requirements.toml"), vec![b' '; 64 * 1024 + 1]).unwrap();
+        let error = load(&dir).unwrap_err();
+        assert!(error.contains("65536 byte limit"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

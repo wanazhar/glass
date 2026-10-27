@@ -10,6 +10,46 @@ use crate::notify;
 use crate::pricing;
 use crate::sandbox;
 
+const MAX_CONFIG_FILE_BYTES: usize = 1024 * 1024;
+
+/// Read an optional settings file without allowing pipes or oversized files
+/// to block startup or allocate without a bound. Symlinks remain supported
+/// for user-managed configuration paths.
+pub(crate) fn read_bounded_text(path: &Path, limit: usize) -> std::io::Result<Option<String>> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "settings path is not a regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(limit.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("settings file exceeds {limit} byte limit"),
+        ));
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "settings are not UTF-8"))
+}
+
 /// Whether workspace instructions need consent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Trust {
@@ -294,9 +334,9 @@ struct PricingRaw {
 pub fn load(path: &Path) -> Result<Config, LoadError> {
     let mut cfg = Config::default();
 
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(cfg),
+    let text = match read_bounded_text(path, MAX_CONFIG_FILE_BYTES) {
+        Ok(Some(t)) => t,
+        Ok(None) => return Ok(cfg),
         Err(e) => return Err(LoadError::Io(e)),
     };
 
@@ -586,6 +626,15 @@ mod tests {
         let cfg = load(&d.join("nope.toml")).unwrap();
         assert_eq!(cfg.provider, "anthropic");
         assert!(cfg.system_prompt.contains("bash"));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn oversized_config_is_rejected_before_toml_parsing() {
+        let d = scratch("oversized");
+        let p = write(&d, "c.toml", &" ".repeat(MAX_CONFIG_FILE_BYTES + 1));
+        let error = load(&p).unwrap_err().to_string();
+        assert!(error.contains("1048576 byte limit"), "{error}");
         std::fs::remove_dir_all(&d).ok();
     }
 

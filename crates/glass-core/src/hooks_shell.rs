@@ -387,7 +387,7 @@ fn warn(message: String) -> Verdict {
 /// call site only reaches this after the existing trust gate.
 pub fn load_config() -> Option<PreToolUse> {
     let path = crate::config::default_path();
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = crate::config::read_bounded_text(&path, 1024 * 1024).ok()??;
     let value: toml::Value = toml::from_str(&text).ok()?;
     let table = value.get("hooks")?.get("pre_tool_use")?.as_table()?;
     let command = table

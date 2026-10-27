@@ -923,7 +923,7 @@ exports are authoritative for individual items.
 | `presentation` | Browser-neutral frame metadata, geometry, ownership, mailbox, and metrics |
 | `protocol` | Canonical versioned operations and responses |
 | `reliability` | Browser-free scenario, fixture, replay, scorecard, and gate contracts |
-| `reliability_runner` | Bounded browser execution for reliability scenarios |
+| `reliability_runner` | Bounded browser execution for reliability scenarios and in-root workflow sources |
 | `results` | Agent-facing projections and local diagnostic artifacts |
 | `surfaces` | Bounded multi-surface understanding and bridge grants |
 | `task_compiler` | Deterministic Task Protocol to execution-plan compiler |

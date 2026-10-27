@@ -261,7 +261,10 @@ file reader, which checks metadata and reads at most limit+1 bytes so file
 growth during a read is rejected before parsing. Direct JSON parser tests
 cover oversized input, exact-limit scenario acceptance, and live-site
 manifest rejection; the existing bounded-reader regression covers oversized
-files. `ReliabilityScenario::from_value` and `ReliabilityReplayBundle::from_value`
+files. The reliability runner now applies the same opened-file pattern to each
+referenced workflow JSON/YAML source at the existing 256 KiB workflow limit;
+an oversized-file regression proves the file is rejected before parsing.
+`ReliabilityScenario::from_value` and `ReliabilityReplayBundle::from_value`
 also enforce an iterative 32,768-node, 128-level, 512 KiB accounted-value
 budget before typed conversion. Focused tests reject oversized arrays and
 excessive nesting. Other already allocated `Value` APIs and the remaining

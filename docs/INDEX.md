@@ -41,9 +41,10 @@ The [workspace implementation matrix](../BUG_HUNT_REPORT.md) tracks the
 current GC/Glass ownership and end-to-end evidence for the workspace changes
 under review, including the native media readiness evidence for issue #64 and
 bounded browser snapshot/TUI workflow and Core instruction/result artifact
-reads plus scoped production panic-safety, policy, and parser input
-dispositions for issue #65, with a bounded Core/Browser daemon interleaving
-pass. It preserves unresolved public-site and provider findings as open.
+reads plus scoped production panic-safety, policy, parser input, and
+cross-platform CI dispositions for issue #65, with a bounded Core/Browser
+daemon interleaving pass. It preserves unresolved public-site and provider
+findings as open.
 The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
 
 ## Choose your path

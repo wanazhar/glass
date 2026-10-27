@@ -101,6 +101,23 @@ fn json_line_is_valid(line: &[u8]) -> bool {
         || serde_json::from_slice::<serde_json::Value>(line).is_ok()
 }
 
+fn encode_session_records(records: &[Record]) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    for record in records {
+        let start = bytes.len();
+        serde_json::to_writer(&mut bytes, &record.to_json()).map_err(std::io::Error::other)?;
+        if bytes.len().saturating_sub(start) > MAX_SESSION_RECORD_BYTES {
+            bytes.truncate(start);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("session record exceeds {MAX_SESSION_RECORD_BYTES} bytes"),
+            ));
+        }
+        bytes.push(b'\n');
+    }
+    Ok(bytes)
+}
+
 /// One recorded event. Kept flat and stringly-typed on purpose: a log format
 /// that needs a schema migration is a log format that loses data.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -863,8 +880,7 @@ impl Session {
             kind: kind.to_string(),
             data: data.map(str::to_string),
         };
-        let mut bytes = serde_json::to_vec(&record.to_json()).map_err(std::io::Error::other)?;
-        bytes.push(b'\n');
+        let bytes = encode_session_records(std::slice::from_ref(&record))?;
         let mut file = OpenOptions::new().read(true).append(true).open(path)?;
         let start = file.metadata()?.len();
         let result = file
@@ -1242,17 +1258,15 @@ impl Session {
             return;
         };
         let records = self.with_state_receipts(std::slice::from_ref(&record));
-        let mut bytes = Vec::new();
-        let encoded = records
-            .iter()
-            .try_for_each(|record| -> std::io::Result<()> {
-                serde_json::to_writer(&mut bytes, &record.to_json())
-                    .map_err(std::io::Error::other)?;
-                bytes.push(b'\n');
-                Ok(())
-            });
-        let result = match (encoded, self.file.as_mut()) {
-            (Ok(()), Some(f)) => f
+        let bytes = match encode_session_records(&records) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.write_error = Some(format!("session append refused: {error}"));
+                return;
+            }
+        };
+        let result = match self.file.as_mut() {
+            Some(f) => f
                 .write_all(&bytes)
                 .map_err(std::io::Error::other)
                 .and_then(|()| f.flush())
@@ -1263,8 +1277,7 @@ impl Session {
                         Ok(())
                     }
                 }),
-            (Err(error), _) => Err(error),
-            (_, None) => Err(std::io::Error::other("session file closed")),
+            None => Err(std::io::Error::other("session file closed")),
         };
         if let Err(error) = result {
             self.rollback_failed_write(start, &error);
@@ -1322,11 +1335,13 @@ impl Session {
             return Err(std::io::Error::other(error.clone()));
         }
         let records = self.with_state_receipts(records);
-        let mut bytes = Vec::new();
-        for record in &records {
-            serde_json::to_writer(&mut bytes, &record.to_json()).map_err(std::io::Error::other)?;
-            bytes.push(b'\n');
-        }
+        let bytes = match encode_session_records(&records) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.write_error = Some(format!("session append refused: {error}"));
+                return Err(error);
+            }
+        };
         let Some(start) = self
             .file
             .as_ref()
@@ -3963,6 +3978,35 @@ mod tests {
         let error = Session::open(&dir, "s").err().unwrap();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn session_append_paths_refuse_records_the_reader_would_reject() {
+        let dir = tmpdir("oversized-session-append");
+        fs::create_dir_all(&dir).unwrap();
+        let mut session = Session::create(&dir).unwrap();
+        let path = session.path.clone();
+        let before = fs::read(&path).unwrap();
+        let large = "x".repeat(MAX_SESSION_RECORD_BYTES + 1);
+
+        let error = Session::append_custom_path(&path, "ext/large", Some(&large)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(&path).unwrap(), before);
+
+        session.append(Record::Assistant(large.clone()));
+        assert!(session.write_error().is_some());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        drop(session);
+
+        let mut checked = Session::create(&dir).unwrap();
+        let checked_path = checked.path.clone();
+        let checked_before = fs::read(&checked_path).unwrap();
+        let error = checked
+            .append_checked(&[Record::Assistant(large)])
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(&checked_path).unwrap(), checked_before);
         fs::remove_dir_all(dir).ok();
     }
 

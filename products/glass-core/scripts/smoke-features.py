@@ -38,6 +38,7 @@ def process_exists(pid):
 class Endpoint(http.server.BaseHTTPRequestHandler):
     calls = 0
     mode = "edit"
+    loop_limit = 0
 
     def log_message(self, *_):
         pass
@@ -55,7 +56,9 @@ class Endpoint(http.server.BaseHTTPRequestHandler):
         assert body["stream"] is True
         type(self).calls += 1
         n = type(self).calls
-        if self.mode == "loop" or n < 3:
+        if self.mode == "loop" and n > self.loop_limit:
+            delta = {"content": "Finished after the long tool sequence."}
+        elif self.mode == "loop" or n < 3:
             command = "echo loop" if self.mode == "loop" else ("cat ./file" if n == 1 else "echo 'agent edit' > ./file")
             delta = {"tool_calls": [{"index": 0, "id": f"call{n}", "function": {"name": "bash", "arguments": json.dumps({"command": command})}}]}
         else:
@@ -186,9 +189,14 @@ class Terminal:
 
     def idle(self, timeout=10):
         deadline = time.monotonic() + timeout
-        while not (self.screen.x == 2 and self.screen.y == max(0,self.screen.height-3) and "".join(self.screen.cells[max(0,self.screen.height-3)]).strip() == "❯"):
+        while not self.idle_composer_visible():
             assert time.monotonic() < deadline, self.screen.text()
             if select.select([self.master], [], [], 0.05)[0]: self.read()
+
+    def idle_composer_visible(self):
+        row = max(0, self.screen.height - 3)
+        text = "".join(self.screen.cells[row]).lstrip()
+        return self.screen.y == row and text.startswith("❯")
 
     def wait(self, text, timeout=10):
         deadline = time.monotonic() + timeout
@@ -213,12 +221,17 @@ class Terminal:
 
     def dismiss(self):
         self.received = ""
-        os.write(self.master, b"\x1b")
-        self.wait("\x1b[?25h")
-        deadline = time.monotonic() + 5
-        while self.screen.y != max(0,self.screen.height-3):
-            assert time.monotonic() < deadline, self.screen.text()
-            if select.select([self.master], [], [], 0.05)[0]: self.read()
+        # A command opened from the slash palette returns to its parent palette
+        # before the composer, so unwind the visible menu stack and verify the
+        # final screen rather than an early cursor-restore escape sequence.
+        for _ in range(4):
+            os.write(self.master, b"\x1b")
+            deadline = time.monotonic() + 0.3
+            while time.monotonic() < deadline:
+                if self.idle_composer_visible():
+                    return
+                if select.select([self.master], [], [], 0.05)[0]: self.read()
+        assert self.idle_composer_visible(), self.screen.text()
 
     def resize(self, width, height):
         while select.select([self.master],[],[],0)[0]: self.read()
@@ -265,6 +278,14 @@ class Terminal:
             if key == b"\x03":
                 deadline = time.monotonic() + 1
             else:
+                # Ctrl-D intentionally asks for confirmation; accept the
+                # visible dialog so shutdown exercises the clean exit path.
+                confirm_by = time.monotonic() + 2
+                while self.process.poll() is None and time.monotonic() < confirm_by:
+                    if "Quit glass-core?" in self.screen.text():
+                        os.write(self.master, b"\r")
+                        break
+                    if select.select([self.master], [], [], 0.05)[0]: self.read()
                 deadline = time.monotonic() + 5
             while self.process.poll() is None and time.monotonic() < deadline:
                 if select.select([self.master], [], [], 0.05)[0]: self.read()
@@ -326,7 +347,7 @@ def terminal_checks(workspace, root, env):
         terminal.wait("stopped job 1")
         terminal.dismiss()
         terminal.send("/branch 1")
-        output = terminal.wait("conversation forked")
+        output = terminal.wait("conversation alternative retained")
         branch = re.search(r"branch ([a-z0-9]+(?:-[a-z0-9]+)+)", output).group(1)
         terminal.send("/budget 0.5")
         terminal.wait("limit $0.500")
@@ -383,8 +404,8 @@ def input_palette_checks(workspace, root, env):
         terminal.visible("❯ ac")
         os.write(terminal.master, b"\x03")
         os.write(terminal.master, b"/")
-        terminal.visible("Commands")
-        terminal.visible("/help")
+        terminal.visible("Search actions")
+        terminal.visible("Conversations")
         os.write(terminal.master, b"bud")
         terminal.visible("/budget")
         assert "/skills" not in terminal.screen.text()
@@ -402,7 +423,7 @@ def input_palette_checks(workspace, root, env):
         os.write(terminal.master, b"unfinished draft")
         terminal.visible("❯ unfinished draft")
         os.write(terminal.master, b"\x10")
-        terminal.visible("Commands")
+        terminal.visible("Search actions")
         terminal.dismiss()
         terminal.visible("❯ unfinished draft")
         # Filter to /btw directly; /keys is now an additional palette item.
@@ -492,17 +513,18 @@ def main():
 
             Endpoint.calls = 0
             Endpoint.mode = "loop"
-            exhausted = run(stdin="keep running")
-            result = json.loads(exhausted.stdout)
-            assert exhausted.returncode == 2, exhausted.stderr
-            assert result["status"] == "incomplete" and Endpoint.calls == 24
+            Endpoint.loop_limit = 24
+            continued = run(stdin="keep running")
+            result = json.loads(continued.stdout)
+            assert continued.returncode == 0, continued.stderr
+            assert result["status"] == "finished" and Endpoint.calls == 25
 
             Endpoint.calls = 0
             invalid = run("--budget", "nan", "edit")
             assert invalid.returncode == 1 and Endpoint.calls == 0
             terminal_checks(workspace, root, env)
             input_palette_checks(workspace, root, env)
-            print("PASS: first-character visibility and command palette; glass-core namespace isolation; headless edits, JSON, stdin, cost accounting, budget stop, round limit, invalid budget; terminal diff, undo, checkpoint restore, branching, budget isolation, background output/stop/exit cleanup")
+            print("PASS: first-character visibility and command palette; glass-core namespace isolation; headless edits, JSON, stdin, cost accounting, budget stop, tool sequences beyond 24 rounds, invalid budget; terminal diff, undo, checkpoint restore, branching, budget isolation, background output/stop/exit cleanup")
         finally:
             server.shutdown()
             server.server_close()

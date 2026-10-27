@@ -1741,6 +1741,27 @@ fn make_metered(
     }) as Box<dyn provider::Provider>)
 }
 
+fn budget_context_snapshot(
+    context: &std::sync::Mutex<(
+        budget::Shared,
+        std::sync::Arc<std::sync::Mutex<std::path::PathBuf>>,
+    )>,
+) -> Result<
+    (
+        budget::Shared,
+        std::sync::Arc<std::sync::Mutex<std::path::PathBuf>>,
+    ),
+    String,
+> {
+    let context = context
+        .lock()
+        .map_err(|_| "budget context lock poisoned".to_string())?;
+    Ok((
+        std::sync::Arc::clone(&context.0),
+        std::sync::Arc::clone(&context.1),
+    ))
+}
+
 fn repl(
     mut cfg: config::Config,
     mut loaded_mods: Vec<Box<dyn glass_mod_api::Mod_>>,
@@ -1788,7 +1809,7 @@ fn repl(
                 .lock()
                 .map_err(|_| "configuration lock poisoned")?
                 .clone();
-            let (ledger, path) = budget_context.lock().unwrap().clone();
+            let (ledger, path) = budget_context_snapshot(&budget_context)?;
             make_provider(&cfg, ledger, path, None)
         })
     };
@@ -1806,7 +1827,7 @@ fn repl(
                     .lock()
                     .map_err(|_| "configuration lock poisoned")?
                     .clone();
-                let (ledger, path) = budget_context.lock().unwrap().clone();
+                let (ledger, path) = budget_context_snapshot(&budget_context)?;
                 make_provider(&cfg, ledger, path, Some(&model))
             });
             f
@@ -2518,7 +2539,9 @@ fn repl(
                     let path = session.path.with_extension("cost.json");
                     ledger = budget::load(&path, limit);
                     ledger_path = Arc::new(Mutex::new(path));
-                    *budget_context.lock().unwrap() =
+                    *budget_context
+                        .lock()
+                        .map_err(|_| "budget context lock poisoned".to_string())? =
                         (Arc::clone(&ledger), Arc::clone(&ledger_path));
                     retry_available = false;
                     ui_println!("Resumed {} · {}", polish::title(&session), session.id);
@@ -3222,7 +3245,9 @@ fn repl(
                     let path = session.path.with_extension("cost.json");
                     ledger = budget::load(&path, limit);
                     ledger_path = Arc::new(Mutex::new(path));
-                    *budget_context.lock().unwrap() =
+                    *budget_context
+                        .lock()
+                        .map_err(|_| "budget context lock poisoned".to_string())? =
                         (Arc::clone(&ledger), Arc::clone(&ledger_path));
                     // Refresh credentials before the next request.
                     for r in &session.records {
@@ -3636,7 +3661,9 @@ fn repl(
                     let path = session.path.with_extension("cost.json");
                     ledger = budget::load(&path, limit);
                     ledger_path = Arc::new(Mutex::new(path));
-                    *budget_context.lock().unwrap() =
+                    *budget_context
+                        .lock()
+                        .map_err(|_| "budget context lock poisoned".to_string())? =
                         (Arc::clone(&ledger), Arc::clone(&ledger_path));
                     // Refresh credentials before the next request.
                     state = tools::State::new();
@@ -5605,5 +5632,27 @@ mod painter_tests {
         assert!(out.contains("╭─ sh"));
         assert!(out.contains("│ "));
         assert!(!out.contains("```"));
+    }
+}
+
+#[cfg(test)]
+mod budget_context_tests {
+    use super::*;
+
+    #[test]
+    fn poisoned_budget_context_returns_an_error_instead_of_panicking() {
+        let context = std::sync::Mutex::new((
+            std::sync::Arc::new(std::sync::Mutex::new(budget::Ledger::default())),
+            std::sync::Arc::new(std::sync::Mutex::new(std::path::PathBuf::new())),
+        ));
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = context.lock().unwrap();
+            panic!("poison the test context");
+        }));
+        assert!(panic.is_err());
+        assert!(matches!(
+            budget_context_snapshot(&context),
+            Err(message) if message == "budget context lock poisoned"
+        ));
     }
 }

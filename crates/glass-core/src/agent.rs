@@ -18,6 +18,54 @@ use crate::tools::{self, State};
 use crate::verify;
 use crate::warmer::{CacheSnapshot, Warmer};
 
+fn parallel_bash_call<'a>(
+    index: usize,
+    calls: &'a std::collections::HashMap<usize, ToolCall>,
+    approvals: &'a std::collections::HashMap<usize, crate::sandbox::SessionApprovals>,
+) -> Result<(&'a ToolCall, &'a crate::sandbox::SessionApprovals), &'static str> {
+    let call = calls
+        .get(&index)
+        .ok_or("parallel tool batch referenced an unknown call index")?;
+    let approval = approvals
+        .get(&index)
+        .ok_or("parallel tool batch has no approval context for its call index")?;
+    Ok((call, approval))
+}
+
+#[cfg(test)]
+mod parallel_bash_call_tests {
+    use super::*;
+
+    #[test]
+    fn missing_call_index_returns_an_error() {
+        let calls = std::collections::HashMap::new();
+        let approvals = std::collections::HashMap::new();
+
+        assert!(matches!(
+            parallel_bash_call(7, &calls, &approvals),
+            Err("parallel tool batch referenced an unknown call index")
+        ));
+    }
+
+    #[test]
+    fn missing_approval_context_returns_an_error() {
+        let calls = std::collections::HashMap::from([(
+            7,
+            ToolCall {
+                id: "bash-7".into(),
+                name: "bash".into(),
+                arguments: r#"{"command":"true"}"#.into(),
+            },
+        )]);
+        let approvals = std::collections::HashMap::new();
+
+        assert!(matches!(
+            parallel_bash_call(7, &calls, &approvals),
+            Err("parallel tool batch has no approval context for its call index")
+        ));
+    }
+}
+
 /// Condense tool output to one line for the activity feed.
 ///
 /// The full text is always in the log and always goes to the model; this is
@@ -2023,17 +2071,14 @@ impl<'a> Agent<'a> {
             .collect();
         std::thread::spawn(move || {
             let results = concurrency::execute(&plan, concurrency::MAX_PARALLEL, |i| {
-                let inner = by_index.get(&i).unwrap();
+                let (inner, approval) = match parallel_bash_call(i, &by_index, &approvals) {
+                    Ok(call) => call,
+                    Err(error) => return tools::Outcome::err(error),
+                };
                 if worker_cancel.load(std::sync::atomic::Ordering::Acquire) {
                     return tools::Outcome::err("Cancelled before execution");
                 }
-                tools::bash_owned(
-                    inner,
-                    &workspace,
-                    &worker_cancel,
-                    &approvals[&i],
-                    Some(&owner),
-                )
+                tools::bash_owned(inner, &workspace, &worker_cancel, approval, Some(&owner))
             });
             let _ = tx.send(results);
         });

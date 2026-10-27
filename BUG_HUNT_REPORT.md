@@ -59,6 +59,36 @@ Issue #65 Browser error-path follow-up: navigation preflight now carries the alr
 
 `RetryPolicy::max_attempts` is a public field, so callers can construct a zero-attempt policy directly even though `RetryPolicy::new` clamps it. Both retry loops previously skipped all attempts and reached `unreachable!`, panicking on that valid public struct state. Execution now clamps the effective attempt count to one in both click and navigation retries; the direct-zero regression passes with the full 11-test retry module, and strict `glass-browser` Clippy passes. This covers the retry-limit panic path; other workflow and platform interleavings remain open.
 
+## Issue #65 finite acceptance reconciliation (2026-10-27)
+
+This is a source-and-report reconciliation of the filed issue body, not a
+claim that every raw pattern match is a defect. The issue body gives concrete
+paths for #26–60 and the two lint examples #81–82. It does not give independent
+source paths or acceptance criteria for #61–80 or #91–108; #83–90 are broad
+audit themes, and #57–60 are grouped rather than individually scoped. The
+reported total of 108 therefore must not be read as 108 independently
+reproduced findings.
+
+| Filed scope | Current disposition | Remaining acceptance |
+|---|---|---|
+| #26–30, Core read-only / sandbox profile | Permission-profile wiring, Linux deny-write behavior, and host-approval hooks have source dispositions and focused tests. | macOS profile behavior has not been run on macOS. Record a macOS regression result or an explicit platform support boundary before claiming cross-platform completion. |
+| #31–40, shell read guards and command policy | Scanner limits and supported shell forms are documented; command ordering, wildcard matching, and read-only policy have focused coverage. `STALE_READ_CALLS = 25` is an advisory threshold, not a permission bypass. | This scanner intentionally recognizes a bounded command grammar; do not describe it as a complete shell parser. |
+| #41–50, browser read-only and task policy | Current validators gate read-only mutations, unknown task risk fails closed, and navigation/preflight/workflow paths have focused dispositions. The filed `semantic.rs:1803` and `types.rs:1326` references no longer point to the described behavior. | Treat those two line references as stale; retain the current source/tests as the authority. |
+| #51–56, panic-safety examples | Malformed origin parsing is checked; the parallel tool executor now returns an error for missing call/approval entries; the bridge-origin and SVG tuple paths are guarded by validated invariants. The MCP unwrap tally is test-only in the current source. | Focused tests cover the concrete fixes. Broader production error and concurrency review is separate from these examples. |
+| #57–60, session / agent / team / checkpoint / queue | The issue supplies a grouped topic, not four independently testable descriptions. Reviewed follow-ups include session, checkpoint, queue, team-lock and MCP lifecycle paths; the report records each changed path and its tests above. | Keep the group open until each remaining named path has a bounded invariant/reproduction, or explicitly record that no distinct finding was filed for it. |
+| #61–80 | No finding text or source path appears in the filed body. | No source disposition can be claimed from these absent descriptions. |
+| #81–82, two Clippy examples | The cited manual clamp and collapsible-if sites are stale in current source; strict all-target Core Clippy passes. | Mark as stale examples, not active lint failures. |
+| #83–90, hygiene and robustness themes | Cast sites, unsafe ownership families, dead-code annotations, tool-panic retry behavior, and selected policy/authoring paths have source review and focused fixes/tests. | Cross-platform sandbox behavior, wider daemon/request interleavings, and all remaining public structured/file input paths are not yet a complete audit. |
+| #91–108 | No finding text or source path appears in the filed body. | No source disposition can be claimed from these absent descriptions. |
+
+The finite remaining gates are: (1) obtain or explicitly bound macOS sandbox
+support evidence; (2) finish one scoped pass over Core/browser daemon and
+request interleavings, with named paths and deterministic regressions for any
+reproduced defect; (3) inventory public structured-value and file parsers and
+verify limits are applied before allocation/parsing; and (4) disposition the
+grouped or absent issue ranges without inventing findings. Until those gates
+are completed or explicitly de-scoped by the issue owner, #65 remains open.
+
 ## Issue #65 dead-code allowance dispositions
 
 The refreshed source scan finds 23 remaining product-code `dead_code` annotation sites plus one test-only helper in product source; the separate integration-contract test has one more test allowance. Several reviewed suppressions were removed after production callsites were verified. `Session::turn` is retained because the `sessions` CLI reads it; its stale suppression is removed. This is a count of annotation sites (module and impl scopes can cover multiple items), not 44 distinct defect candidates. The previous 44-item count is stale. The unused provider `Usage::hit_rate` method and stale module-level allowance in `browser/session/types.rs` were also removed.
@@ -164,6 +194,16 @@ skip cleanup. Shutdown now recovers poisoned locks solely for cleanup,
 interrupts and joins owned workers, removes the hub, and clears the poison
 marker. A deterministic poisoned-state regression verifies dropping the guard
 does not panic.
+
+### Issue #65 parallel tool-batch lookup safety (2026-10-27)
+
+The parallel bash executor previously unwrapped the call and approval maps
+using the scheduler's index. Those maps are built from the same enumerated
+batch, but an internal scheduler/index mismatch would panic a worker instead
+of returning a result. The executor now reports a failed tool outcome for a
+missing call or approval context. Two focused regressions cover both missing
+map entries; this closes that panic path while the broader concurrency and
+interleaving review remains open.
 
 ### Issue #65 process-ID follow-up (2026-10-26)
 

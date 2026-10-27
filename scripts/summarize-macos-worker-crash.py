@@ -502,6 +502,22 @@ def self_test() -> None:
         }
         assert "/private/" not in json.dumps(summary)
         assert "secret" not in json.dumps(summary)
+        incomplete_directory = root / "incomplete-report"
+        incomplete_directory.mkdir()
+        incomplete = incomplete_directory / "glass-native-content-worker-incomplete.ips"
+        incomplete.write_text(
+            json.dumps(
+                {
+                    "procName": "glass-native-content-worker",
+                    "processArguments": ["secret-page-title"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary = collect_summary(since, [incomplete_directory], wait_seconds=0)
+        assert summary["capture"] == "matched-process-header-incomplete"
+        assert summary["reportShape"]["crashDataPresent"] is False
+        assert "secret" not in json.dumps(summary)
 
         growing_directory = root / "growing-report"
         growing_directory.mkdir()

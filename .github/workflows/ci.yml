@@ -51,9 +51,7 @@ jobs:
         run: scripts/check-rust-workspace.sh fast-check
       - name: Install Linux native-engine sandbox prerequisite
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes bubblewrap
+        run: scripts/prepare-native-sandbox-ci.sh
       - name: Build native content worker test prerequisite
         run: cargo build --package glass-browser --features native-engine --bin glass-native-content-worker --locked
       - name: Run native async-effect owner contract tests
@@ -62,9 +60,27 @@ jobs:
           cargo test --package glass-browser --lib --features native-engine --locked asynchronous_effect -- --nocapture
           cargo test --package glass-browser --lib --features native-engine --locked async_effect -- --nocapture
           cargo test --package glass-browser --lib --features native-engine --locked dropping_runtime_backend -- --nocapture
+      - name: Mark macOS native worker diagnostics window
+        if: runner.os == 'macOS'
+        run: date +%s > "$RUNNER_TEMP/glass-native-worker-test-started"
       - name: Run native-engine navigation preload process tests
         if: runner.os != 'Linux'
         run: cargo test --package glass-browser --test native_engine --features native-engine --locked navigation_preload -- --nocapture --test-threads=1
+      - name: Summarize macOS native worker crash
+        if: runner.os == 'macOS' && failure()
+        run: >-
+          python3 scripts/summarize-macos-worker-crash.py
+          --since-file "$RUNNER_TEMP/glass-native-worker-test-started"
+          --output "$RUNNER_TEMP/glass-native-worker-crash-summary.json"
+          --wait-seconds 20
+      - name: Upload sanitized macOS native worker crash summary
+        if: runner.os == 'macOS' && failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-native-worker-crash-summary-${{ github.run_id }}
+          path: ${{ runner.temp }}/glass-native-worker-crash-summary.json
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Run glass-dev browser-free contract tests
         run: cargo test --package glass-dev --tests --all-features --locked -- --nocapture
       - name: Certify native Windows named-pipe daemon lifecycle
@@ -101,9 +117,7 @@ jobs:
           cargo check --package glass-browser-core --all-targets --features native-engine --locked
           cargo check --package glass-browser --features native-engine --locked
       - name: Install native-engine sandbox prerequisite
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes bubblewrap
+        run: scripts/prepare-native-sandbox-ci.sh
       - name: Build native content worker test prerequisite
         run: cargo build --package glass-browser --features native-engine --bin glass-native-content-worker --locked
       - name: Test native engine feature
@@ -141,9 +155,7 @@ jobs:
             ${{ runner.os }}-cargo-${{ github.job }}-
 
       - name: Install native-engine sandbox prerequisite
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes bubblewrap
+        run: scripts/prepare-native-sandbox-ci.sh
 
       - name: Run common source certification
         env:

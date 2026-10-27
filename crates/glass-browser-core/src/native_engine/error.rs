@@ -132,6 +132,14 @@ impl NativeEngineError {
         let Self::Worker { reason, .. } = self else {
             return None;
         };
+        if reason.contains("content process exited or closed its pipe")
+            || reason.contains("content process pipe is unavailable")
+        {
+            return Some("content_process_pipe_closed");
+        }
+        if reason.contains("content process returned a truncated frame") {
+            return Some("content_process_truncated_frame");
+        }
         Some(match reason.as_str() {
             "content process has no committed document" => "missing_document",
             "content process has no committed URL" => "missing_url",
@@ -346,6 +354,15 @@ mod tests {
             }
             .diagnostic_reason_class(),
             Some("other")
+        );
+        assert_eq!(
+            NativeEngineError::Worker {
+                operation: "content process script".into(),
+                reason: "connection failed: content process exited or closed its pipe; private URL"
+                    .into(),
+            }
+            .diagnostic_reason_class(),
+            Some("content_process_pipe_closed")
         );
     }
 }

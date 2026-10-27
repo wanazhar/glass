@@ -119,7 +119,12 @@ failure remains unidentified. Its owner-only stdout, stderr, and trace are in
 When `GLASS_RUNTIME_DIAGNOSTIC_TRACE` is enabled, worker failures report a
 static error class, a coarse allowlisted operation family, and an allowlisted
 reason class where available. Dynamic operation strings, error text, URLs, and
-page content are not written to stderr.
+page content are not written to stderr. Review of the captured MDN failure text
+shows the content-process pipe closed with worker exit status 1 during the
+script exchange. The safe classifier now maps known generic pipe-closure and
+truncated-frame messages to static classes. The saved attempt predates that
+mapping and reports `other`; no repeated public run was made, and the exit
+cause remains unidentified.
 
 The corpus runner retains completed and failed per-step status/timing when its
 owned browser process exits without a final JSON document, and gives progress

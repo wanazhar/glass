@@ -18,6 +18,7 @@ use std::{
 
 const ISSUER: &str = "https://auth.openai.com";
 const RESOURCE: &str = "https://api.openai.com/v1";
+const MAX_AUTH_STORE_BYTES: usize = 1024 * 1024;
 const SCOPES: &str =
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
 #[derive(Clone, Serialize, Deserialize)]
@@ -60,11 +61,15 @@ pub struct Store {
     pub credentials: BTreeMap<String, Credential>,
 }
 pub fn load() -> Result<Store, String> {
-    match std::fs::read(config::config_dir().join("auth.json")) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
+    load_from(&config::config_dir().join("auth.json"))
+}
+fn load_from(path: &Path) -> Result<Store, String> {
+    match crate::requests::bounded_optional(path, MAX_AUTH_STORE_BYTES)
+        .map_err(|e| format!("cannot read auth.json: {e}"))?
+    {
+        Some(bytes) => serde_json::from_slice(&bytes)
             .map_err(|_| "auth.json is invalid; credentials have not been overwritten".into()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Store::default()),
-        Err(e) => Err(format!("cannot read auth.json: {e}")),
+        None => Ok(Store::default()),
     }
 }
 pub fn secure_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -90,10 +95,14 @@ pub fn secure_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     result
 }
 pub fn save(store: &Store) -> Result<(), String> {
-    secure_write(
-        &config::config_dir().join("auth.json"),
-        &serde_json::to_vec_pretty(store).map_err(|e| e.to_string())?,
-    )
+    save_to(&config::config_dir().join("auth.json"), store)
+}
+fn save_to(path: &Path, store: &Store) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(store).map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_AUTH_STORE_BYTES {
+        return Err("auth.json exceeds the 1048576 byte limit".into());
+    }
+    secure_write(path, &bytes)
 }
 /// Update the store under an OS lock; a crashed process releases it automatically.
 pub fn edit<T>(update: impl FnOnce(&mut Store) -> Result<T, String>) -> Result<T, String> {
@@ -850,6 +859,40 @@ mod tests {
             url: String::new(),
         }
     }
+    #[test]
+    fn auth_store_reads_and_writes_are_bounded() {
+        let path = std::env::temp_dir().join(format!(
+            "gc-auth-bounds-{}-{}.json",
+            std::process::id(),
+            random(8).unwrap()
+        ));
+        std::fs::write(&path, vec![b' '; MAX_AUTH_STORE_BYTES + 1]).unwrap();
+        let error = match load_from(&path) {
+            Ok(_) => panic!("oversized auth store should be refused"),
+            Err(error) => error,
+        };
+        assert!(error.contains("1048576 byte limit"), "{error}");
+        std::fs::remove_file(&path).unwrap();
+
+        let mut store = Store::default();
+        store.credentials.insert(
+            "oversized".into(),
+            Credential {
+                access_token: "x".repeat(MAX_AUTH_STORE_BYTES),
+                refresh_token: String::new(),
+                expires_at: 0,
+                client_id: String::new(),
+                subject: String::new(),
+                email: String::new(),
+                id_token: String::new(),
+                scopes: vec![],
+            },
+        );
+        let error = save_to(&path, &store).unwrap_err();
+        assert!(error.contains("1048576 byte limit"), "{error}");
+        assert!(!path.exists(), "oversized credentials are never written");
+    }
+
     #[test]
     fn callback_binds_state_address_and_registration() {
         let a = attempt(false);

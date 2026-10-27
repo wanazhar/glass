@@ -38,23 +38,25 @@ struct Store {
     /// Canonical workspace path -> decision for one instruction hash.
     workspaces: BTreeMap<String, Entry>,
 }
+const MAX_TRUST_STORE_BYTES: usize = 1024 * 1024;
 
 fn store_path() -> PathBuf {
     config::config_dir().join("trust.json")
 }
 
 fn load_from(path: &Path) -> Store {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-        Err(_) => Store::default(),
+    match crate::requests::bounded_optional(path, MAX_TRUST_STORE_BYTES) {
+        Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Ok(None) | Err(_) => Store::default(),
     }
 }
 
 fn save_to(path: &Path, store: &Store) -> Result<(), String> {
-    auth::secure_write(
-        path,
-        &serde_json::to_vec_pretty(store).map_err(|e| e.to_string())?,
-    )
+    let bytes = serde_json::to_vec_pretty(store).map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_TRUST_STORE_BYTES {
+        return Err("trust.json exceeds the 1048576 byte limit".into());
+    }
+    auth::secure_write(path, &bytes)
 }
 
 /// Content hash of the loaded instructions: path, text, truncation marker.
@@ -201,6 +203,29 @@ mod tests {
         );
         remember_in(&store, &ws, "hash2", Decision::Deny).unwrap();
         assert_eq!(remembered_in(&store, &ws, "hash2"), Some(Decision::Deny));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn trust_store_reads_and_writes_are_bounded() {
+        let dir = scratch("bounds");
+        let path = dir.join("trust.json");
+        std::fs::write(&path, vec![b' '; MAX_TRUST_STORE_BYTES + 1]).unwrap();
+        assert!(load_from(&path).workspaces.is_empty());
+        std::fs::remove_file(&path).unwrap();
+
+        let store = Store {
+            workspaces: BTreeMap::from([(
+                "x".repeat(MAX_TRUST_STORE_BYTES),
+                Entry {
+                    hash: String::new(),
+                    decision: Decision::Allow,
+                },
+            )]),
+        };
+        let error = save_to(&path, &store).unwrap_err();
+        assert!(error.contains("1048576 byte limit"), "{error}");
+        assert!(!path.exists(), "oversized trust state is never written");
         std::fs::remove_dir_all(&dir).ok();
     }
 

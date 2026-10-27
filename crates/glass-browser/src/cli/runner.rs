@@ -4849,6 +4849,8 @@ fn compact_json<T: Serialize + ?Sized>(value: &T) -> BrowserResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "native-engine")]
+    use clap::Parser;
 
     #[test]
     fn cli_source_reader_rejects_oversized_file_before_json_parse() {
@@ -4881,6 +4883,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "native-engine")]
     #[test]
     fn native_persistent_owner_reports_unsupported_chromium_settings() {
         // Clap's generated parser for this large CLI needs more stack than
@@ -4902,7 +4905,7 @@ mod tests {
                         "review",
                     ])
                     .unwrap();
-                    let Some(Commands::Session { action }) = &cli.command else {
+                    let Some(Commands::Session { action }) = cli.command.as_ref() else {
                         panic!("session command expected");
                     };
                     let error = validate_native_persistent_settings(&cli, action).unwrap_err();
@@ -4915,6 +4918,7 @@ mod tests {
             .expect("CLI parser test worker panicked");
     }
 
+    #[cfg(feature = "native-engine")]
     #[test]
     fn persistent_owner_runtime_flags_round_trip_without_dropping_configuration() {
         std::thread::Builder::new()

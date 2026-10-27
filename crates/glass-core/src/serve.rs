@@ -45,6 +45,7 @@ const REPLAY_ENTRY_BYTES: usize = 32 * 1024;
 const PROTOCOL_VERSION: u64 = 1;
 /// Concurrent attaches per served session.
 const MAX_CLIENTS: usize = 4;
+const MAX_ATTACH_STATE_BYTES: usize = 1024 * 1024;
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -68,14 +69,18 @@ fn attach_state_path(socket: &Path) -> PathBuf {
 }
 
 fn load_attach_state(path: &Path) -> AttachState {
-    std::fs::read(path)
+    crate::requests::bounded_optional(path, MAX_ATTACH_STATE_BYTES)
         .ok()
+        .flatten()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
 }
 
 fn save_attach_state(path: &Path, state: &AttachState) -> Result<(), String> {
     let bytes = serde_json::to_vec(state).map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_ATTACH_STATE_BYTES {
+        return Err("attach state exceeds the 1048576 byte limit".into());
+    }
     crate::auth::secure_write(path, &bytes)
 }
 
@@ -2178,6 +2183,27 @@ mod tests {
         assert_eq!(restarted.cursor, 20);
         assert!(restarted.pending.is_none());
         assert_eq!(restarted.request_seq, 9);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn attach_state_reads_and_writes_are_bounded() {
+        let dir = scratch("attach-state-bounds");
+        let path = dir.join("attach.json");
+        std::fs::write(&path, vec![b' '; MAX_ATTACH_STATE_BYTES + 1]).unwrap();
+        assert_eq!(load_attach_state(&path).request_seq, 0);
+        std::fs::remove_file(&path).unwrap();
+
+        let state = AttachState {
+            pending: Some(PendingRequest {
+                id: "request".into(),
+                text: "x".repeat(MAX_ATTACH_STATE_BYTES),
+            }),
+            ..AttachState::default()
+        };
+        let error = save_attach_state(&path, &state).unwrap_err();
+        assert!(error.contains("1048576 byte limit"), "{error}");
+        assert!(!path.exists(), "oversized attach state is never written");
         std::fs::remove_dir_all(dir).ok();
     }
 

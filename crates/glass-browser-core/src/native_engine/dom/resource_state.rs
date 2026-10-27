@@ -2,7 +2,7 @@ use super::*;
 
 pub(crate) type ExternalStylesheetLinkWithNonce =
     (u32, String, Option<String>, Option<String>, Option<String>);
-pub(crate) type MediaProperties = (u8, u8, Option<u64>, String, Option<u16>);
+pub(crate) type MediaProperties = (u8, u8, Option<u64>, String, Option<u16>, u32, u32);
 
 impl NativeDocument {
     pub(crate) fn external_stylesheet_states(
@@ -326,21 +326,38 @@ impl NativeDocument {
         }
         let source = self.media_current_src(node_id);
         if source.is_empty() {
-            return Some((0, 0, None, String::new(), None));
+            return Some((0, 0, None, String::new(), None, 0, 0));
         }
         if let Some(resource) = self.media_resources.get(&node_id.index())
             && resource.source == source
         {
-            return Some((1, 1, resource.duration_millis, source, None));
+            let (video_width, video_height) = if node.element_name() == Some("video") {
+                resource
+                    .video_frames
+                    .first()
+                    .map(|frame| (frame.width, frame.height))
+                    .unwrap_or((0, 0))
+            } else {
+                (0, 0)
+            };
+            return Some((
+                1,
+                1,
+                resource.duration_millis,
+                source,
+                None,
+                video_width,
+                video_height,
+            ));
         }
         if self
             .media_errors
             .get(&node_id.index())
             .is_some_and(|loaded_source| loaded_source == &source)
         {
-            return Some((0, 3, None, source, Some(4)));
+            return Some((0, 3, None, source, Some(4), 0, 0));
         }
-        Some((0, 2, None, source, None))
+        Some((0, 2, None, source, None, 0, 0))
     }
 
     pub(crate) fn capture_audio_clip(&self) -> Option<NativeAudioClip> {

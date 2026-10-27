@@ -964,6 +964,12 @@ pub struct NativeScriptElementSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub(crate) media_duration_millis: Option<u64>,
+    #[serde(skip_serializing_if = "is_default_snapshot_value")]
+    #[serde(default)]
+    pub(crate) media_video_width: u32,
+    #[serde(skip_serializing_if = "is_default_snapshot_value")]
+    #[serde(default)]
+    pub(crate) media_video_height: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub(crate) media_error: Option<u16>,

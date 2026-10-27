@@ -160,6 +160,8 @@
     let mediaDurationMillis = entry.mediaDurationMillis === null || entry.mediaDurationMillis === undefined
       ? null
       : Number(entry.mediaDurationMillis);
+    let mediaVideoWidth = Number(entry.mediaVideoWidth) || 0;
+    let mediaVideoHeight = Number(entry.mediaVideoHeight) || 0;
     let mediaError = entry.mediaError === null || entry.mediaError === undefined
       ? null
       : Number(entry.mediaError);
@@ -183,6 +185,8 @@
       mediaNetworkState = Object.prototype.hasOwnProperty.call(entry.attributes, "src") ? 2 : 0;
       mediaCurrentSrc = "";
       mediaDurationMillis = null;
+      mediaVideoWidth = 0;
+      mediaVideoHeight = 0;
       mediaError = null;
     }};
     if (!entry.attributeNamespaces || typeof entry.attributeNamespaces !== "object") entry.attributeNamespaces = {{}};
@@ -748,6 +752,8 @@
       mediaNetworkState: () => mediaNetworkState,
       mediaCurrentSrc: () => mediaCurrentSrc,
       mediaDurationMillis: () => mediaDurationMillis,
+      mediaVideoWidth: () => mediaVideoWidth,
+      mediaVideoHeight: () => mediaVideoHeight,
       mediaError: () => mediaError,
       mediaReset: resetMediaState,
       mediaLoad: () => pushCommand({{ kind: "mediaLoad", node_index: entry.nodeIndex }}),
@@ -1078,6 +1084,8 @@
         mediaDurationMillis = nextEntry.mediaDurationMillis === null || nextEntry.mediaDurationMillis === undefined
           ? null
           : Number(nextEntry.mediaDurationMillis);
+        mediaVideoWidth = Number(nextEntry.mediaVideoWidth) || 0;
+        mediaVideoHeight = Number(nextEntry.mediaVideoHeight) || 0;
         mediaError = nextEntry.mediaError === null || nextEntry.mediaError === undefined
           ? null
           : Number(nextEntry.mediaError);

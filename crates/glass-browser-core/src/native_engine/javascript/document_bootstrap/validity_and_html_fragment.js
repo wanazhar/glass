@@ -557,6 +557,12 @@
         durationMillis: typeof state.mediaDurationMillis === "function"
           ? state.mediaDurationMillis()
           : null,
+        videoWidth: typeof state.mediaVideoWidth === "function"
+          ? Number(state.mediaVideoWidth()) || 0
+          : 0,
+        videoHeight: typeof state.mediaVideoHeight === "function"
+          ? Number(state.mediaVideoHeight()) || 0
+          : 0,
         errorCode: typeof state.mediaError === "function"
           ? state.mediaError()
           : null,
@@ -705,6 +711,10 @@
         readyState: {{ enumerable: true, configurable: false, get() {{ return mediaState().readyState; }} }},
         networkState: {{ enumerable: true, configurable: false, get() {{ return mediaState().networkState; }} }},
         duration: {{ enumerable: true, configurable: false, get() {{ return mediaDuration(); }} }},
+        ...(element.tagName === "VIDEO" ? {{
+          videoWidth: {{ enumerable: true, configurable: false, get() {{ return mediaState().videoWidth; }} }},
+          videoHeight: {{ enumerable: true, configurable: false, get() {{ return mediaState().videoHeight; }} }},
+        }} : {{}}),
         currentTime: {{
           enumerable: true,
           configurable: false,

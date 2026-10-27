@@ -105,7 +105,7 @@ async fn native_webm_vp8_play_pause_seek_paints_decoded_video_frame() {
     let expected_duration = journey["expectedDurationSeconds"].as_f64().unwrap();
     let capability = engine
         .evaluate_async(&format!(
-            "(() => {{ const video = document.getElementById('clip'); return [video.canPlayType({}), video.readyState, video.duration]; }})()",
+            "(() => {{ const video = document.getElementById('clip'); return [video.canPlayType({}), video.readyState, video.duration, video.videoWidth, video.videoHeight]; }})()",
             serde_json::to_string(capability_type).unwrap()
         ))
         .await
@@ -113,6 +113,8 @@ async fn native_webm_vp8_play_pause_seek_paints_decoded_video_frame() {
     assert_eq!(capability[0], serde_json::json!(expected_capability));
     assert_eq!(capability[1], serde_json::json!(expected_ready_state));
     assert_eq!(capability[2].as_f64(), Some(expected_duration));
+    assert_eq!(capability[3], serde_json::json!(16));
+    assert_eq!(capability[4], serde_json::json!(16));
     let seek_seconds = steps[2]["timeSeconds"].as_f64().unwrap();
     assert_eq!(
         engine

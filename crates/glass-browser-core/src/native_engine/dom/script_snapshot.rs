@@ -296,9 +296,17 @@ impl NativeDocument {
                     media_duration_millis,
                     media_current_src,
                     media_error,
-                ) = self
-                    .media_properties(node.id())
-                    .unwrap_or((0, 0, None, String::new(), None));
+                    media_video_width,
+                    media_video_height,
+                ) = self.media_properties(node.id()).unwrap_or((
+                    0,
+                    0,
+                    None,
+                    String::new(),
+                    None,
+                    0,
+                    0,
+                ));
                 let computed_style = self.computed_style_for_layout(node.id());
                 Some(NativeScriptElementSnapshot {
                     node_index: node.id().index(),
@@ -344,6 +352,8 @@ impl NativeDocument {
                     media_network_state,
                     media_current_src,
                     media_duration_millis,
+                    media_video_width,
+                    media_video_height,
                     media_error,
                     scroll_x: 0,
                     scroll_y: 0,

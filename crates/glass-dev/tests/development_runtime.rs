@@ -12,10 +12,35 @@ fn glass_binary() -> std::path::PathBuf {
         .expect("Cargo should expose the glass-dev integration-test binary")
 }
 
+fn daemon_request(
+    id: &str,
+    token: &str,
+    operation: &str,
+    workspace_id: &str,
+) -> glass_dev::daemon::DevelopmentDaemonRequest {
+    serde_json::from_value(serde_json::json!({
+        "id": id,
+        "token": token,
+        "operation": operation,
+        "workspaceId": workspace_id
+    }))
+    .expect("external daemon request should deserialize with internal authorization denied")
+}
+
+#[test]
+fn daemon_request_wire_uses_camel_case_and_defaults_internal_authority_to_denied() {
+    let request = daemon_request("wire", "test-token", "workspace.open", "workspace-a");
+    let wire = serde_json::to_value(request).expect("serialize daemon request");
+
+    assert_eq!(wire["workspaceId"], "workspace-a");
+    assert_eq!(wire["coreRuntimeAuthorized"], false);
+    assert!(wire.get("workspace_id").is_none());
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn windows_named_pipe_daemon_lifecycle_reconnect_and_permissions() {
-    use glass_dev::daemon::{DevelopmentDaemonRequest, DevelopmentDaemonStatus, request};
+    use glass_dev::daemon::{DevelopmentDaemonStatus, request};
     use glass_dev::development::ToolCall;
     use std::time::Duration;
 
@@ -38,35 +63,12 @@ async fn windows_named_pipe_daemon_lifecycle_reconnect_and_permissions() {
         serde_json::from_slice(&std::fs::read(&status_path).unwrap()).unwrap();
     assert_eq!(status.socket, std::path::PathBuf::from(&pipe));
     let token = std::fs::read_to_string(&status.token_path).unwrap();
-    let base_request = |id: &str, operation: &str| -> DevelopmentDaemonRequest {
-        // Build the client request through the wire format: internal runtime
-        // authorization is private and defaults to false when omitted.
-        serde_json::from_value(serde_json::json!({
-            "id": id,
-            "token": token,
-            "operation": operation,
-            "workspace_id": "native-windows",
-            "root": null,
-            "call": null,
-            "expected_generation": null,
-            "expected_project_revision": null,
-            "allow_mutation": false,
-            "confirmed": false,
-            "actor": "windows-native-test",
-            "since": null,
-            "limit": null,
-            "operation_id": null
-        }))
-        .expect("daemon wire request should deserialize with internal authorization denied")
-    };
+    let base_request =
+        |id: &str, operation: &str| daemon_request(id, &token, operation, "native-windows");
     let mut open = base_request("open", "workspace.open");
     open.root = Some(project.clone());
-    assert!(
-        request(std::path::Path::new(&pipe), &open)
-            .await
-            .unwrap()
-            .ok
-    );
+    let opened = request(std::path::Path::new(&pipe), &open).await.unwrap();
+    assert!(opened.ok, "workspace.open failed: {:?}", opened.error);
     let mut read = base_request("read", "workspace.tool");
     read.call = Some(ToolCall {
         id: "readme".into(),

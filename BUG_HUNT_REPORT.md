@@ -179,7 +179,12 @@ source before parsing; a regression supplies a syntactically valid checkpoint
 prefix followed by more than the limit and verifies the typed size error. The
 current string entry points are bounded before parsing: workflow JSON and YAML
 at 256 KiB, and persisted workflow checkpoints at 8 KiB. This does not replace
-caller bounds for APIs that accept already allocated `Value` objects.
+caller bounds for APIs that accept already allocated `Value` objects. The
+public `GlassTask::from_json` path also lacked a pre-parse source cap despite
+the existing 256 KiB argument-JSON budget; it now rejects larger source before
+deserialization, with exact-limit and one-byte-over boundary coverage. The
+Task Protocol parser tests and workflow parser tests cover these direct JSON
+entry points; this is not a blanket disposition of the other #65 audit themes.
 
 ## Issue #65 policy and sandbox path dispositions
 

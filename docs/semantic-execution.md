@@ -75,6 +75,8 @@ Extraction is non-mutating and limited by node count, depth, text bytes, output
 bytes, and wall-clock duration. Compilation is limited by Task Protocol action,
 input, item, and timeout bounds. Web IR limits cap entities, relationships,
 diagnostics, text, and serialized output.
+`GlassTask::from_json` also rejects source over 256 KiB before JSON parsing,
+matching the public argument-JSON budget.
 
 Requested sources that could not be observed appear in `limits.missingSources`.
 Observed absence is not reported as missing evidence. Incomplete frames, shadow

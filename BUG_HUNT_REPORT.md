@@ -155,6 +155,16 @@ had a gap. A maximum-valued cursor could overflow in debug builds. Reset
 classification now uses saturating addition; a boundary regression covers
 `u64::MAX` and ordinary gap/no-gap behavior.
 
+### Issue #65 teammate hub shutdown poison safety (2026-10-27)
+
+`team::Guard::drop` previously unwrapped hub-state, worker-list, and registry
+mutexes while tearing down the listener and joining owned workers. A prior
+panic while holding one of those locks could make the destructor panic and
+skip cleanup. Shutdown now recovers poisoned locks solely for cleanup,
+interrupts and joins owned workers, removes the hub, and clears the poison
+marker. A deterministic poisoned-state regression verifies dropping the guard
+does not panic.
+
 ### Issue #65 process-ID follow-up (2026-10-26)
 
 Two unchecked Unix narrowing paths are fixed: `browser/persistent.rs` rejects persisted `u32` process IDs that cannot be represented as positive `pid_t` before `kill(pid, 0)`, and `browser/chrome.rs` parses `lsof` output as positive `pid_t` before `SIGTERM`. A follow-up changes `kill_chrome(port)` to inspect only TCP listeners and signal only same-user TCP listeners whose lsof command names match Chrome/Chromium variants; other services, other users, and outgoing clients are excluded, and lsof inspection errors are returned. Its parser regression and the surrounding Chrome unit module pass (18 tests), with strict `glass-browser` library Clippy and formatting. The public function has no in-repository callers; UID and command-name filtering are not an executable-identity pin; a same-user process that deliberately adopts a Chrome command name remains outside this safeguard. Owned sessions should use `ChromeProcess::shutdown`, which signals the exact child Glass launched.

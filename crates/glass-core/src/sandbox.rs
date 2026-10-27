@@ -765,13 +765,13 @@ pub fn extension_capabilities(
 /// Inspect and validate the pre-execution capability sidecar without launching
 /// the extension. Status/enable flows can use this even while isolation is off.
 pub fn inspect_extension_capabilities(
-    spec: &str,
-    workspace: &std::path::Path,
+    _spec: &str,
+    _workspace: &std::path::Path,
 ) -> Result<ExtensionCapabilities, String> {
     #[cfg(target_os = "linux")]
     {
-        let roots = landlock::PathRoots::new(workspace)?;
-        let (caps, _sidecar, _entrypoint) = load_extension_capabilities(spec, &roots)?;
+        let roots = landlock::PathRoots::new(_workspace)?;
+        let (caps, _sidecar, _entrypoint) = load_extension_capabilities(_spec, &roots)?;
         let (_writes, _reads) = landlock::pin_capability_paths(&caps, &roots)?;
         Ok(caps)
     }

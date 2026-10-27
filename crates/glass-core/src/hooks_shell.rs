@@ -411,6 +411,7 @@ pub fn load_config() -> Option<PreToolUse> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use std::path::PathBuf;
 
     fn hook(command: &str, matcher: &str) -> PreToolUse {

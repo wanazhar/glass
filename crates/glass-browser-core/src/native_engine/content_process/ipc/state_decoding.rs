@@ -315,40 +315,6 @@ pub(in crate::native_engine::content_process) fn decode_source_groups(
     Ok(Some(decoded))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decode_source_groups_accepts_larger_valid_groups_within_budgets() {
-        let value = serde_json::json!({
-            "frame_sources": [(0..96).map(|index| format!("https://frame-{index}.example")).collect::<Vec<_>>()],
-        });
-
-        let decoded = decode_frame_sources(&value, "test frame source decoding")
-            .expect("valid frame policy group should decode")
-            .expect("frame policy should be present");
-
-        assert_eq!(decoded.len(), 1);
-        assert_eq!(decoded[0].len(), 96);
-        assert_eq!(decoded[0][95], "https://frame-95.example");
-    }
-
-    #[test]
-    fn decode_source_groups_rejects_excessive_source_count() {
-        let value = serde_json::json!({
-            "frame_sources": [(0..=MAX_CONTENT_POLICY_SOURCES_PER_GROUP)
-                .map(|index| format!("https://frame-{index}.example"))
-                .collect::<Vec<_>>()],
-        });
-
-        let error = decode_frame_sources(&value, "test frame source decoding")
-            .expect_err("excessive frame policy group must fail closed");
-
-        assert!(error.to_string().contains("source group"));
-    }
-}
-
 pub(in crate::native_engine::content_process) fn decode_frame_script_bindings(
     value: Option<&Value>,
     operation: &str,
@@ -1199,4 +1165,38 @@ pub(in crate::native_engine::content_process) fn decode_content_navigation(
         replace_history,
         object_url,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_source_groups_accepts_larger_valid_groups_within_budgets() {
+        let value = serde_json::json!({
+            "frame_sources": [(0..96).map(|index| format!("https://frame-{index}.example")).collect::<Vec<_>>()],
+        });
+
+        let decoded = decode_frame_sources(&value, "test frame source decoding")
+            .expect("valid frame policy group should decode")
+            .expect("frame policy should be present");
+
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].len(), 96);
+        assert_eq!(decoded[0][95], "https://frame-95.example");
+    }
+
+    #[test]
+    fn decode_source_groups_rejects_excessive_source_count() {
+        let value = serde_json::json!({
+            "frame_sources": [(0..=MAX_CONTENT_POLICY_SOURCES_PER_GROUP)
+                .map(|index| format!("https://frame-{index}.example"))
+                .collect::<Vec<_>>()],
+        });
+
+        let error = decode_frame_sources(&value, "test frame source decoding")
+            .expect_err("excessive frame policy group must fail closed");
+
+        assert!(error.to_string().contains("source group"));
+    }
 }

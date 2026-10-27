@@ -161,6 +161,50 @@ workflow status publication/removal, and identity-bound termination. All 13
 bounded pass. These deterministic unit tests are evidence for the named paths,
 not a fuzzed race proof or a complete audit of all daemon concurrency.
 
+### Issue #65 cross-platform build and CI failure reconciliation (2026-10-27)
+
+Review of the Actions run for `d3a175bf` found real target-specific compile
+defects and test-environment failures. The Core sandbox implementation imports
+`windows_sys` for Windows Job Objects, but `glass-browser-core` did not declare
+that dependency; the Windows package check therefore failed with unresolved
+`windows_sys`. A Windows-only dependency with the Foundation and JobObjects
+features is now declared in `crates/glass-browser-core/Cargo.toml`.
+
+The macOS Core Clippy run found seven target-specific warning failures. The
+Linux-only hook path import and Core bash acceptance-test cleanup helpers are
+now Linux-gated; the capability inspection parameters remain named as unused
+on non-Linux targets; and the executable resolver and process-stamp branch no
+longer trigger `unnecessary_lazy_eval` / `needless_return`. These are scoped
+portability cleanups in `crates/glass-core/src/hooks_shell.rs`,
+`sandbox.rs`, `executable.rs`, `navigation.rs`, and `tools.rs`. Linux all-target
+Core Clippy passes. A local Windows cross-target check cannot complete because
+this host has no MSVC C compiler; GitHub's Windows job is required to verify the
+target-specific dependency. Strict Browser Core Clippy on the current toolchain
+also found a test module before later production items in
+`content_process/ipc/state_decoding.rs`; moving that module to the end restores
+the all-target lint pass.
+
+The native-engine Core Actions job reported 13 failures out of 950 tests. A
+local full Linux run reported 948/950: the two local failures were test defects,
+not runtime regressions. The over-budget WebM test expected a resource rejected
+by the decoder to remain admitted, and the rooted-file CSP test wrote arbitrary
+text to a `.wav` file while requiring decoded media. The assertions now match
+the admission contract and the CSP test uses a valid one-sample PCM WAV; each
+corrected regression passes individually. The remaining Actions-only process
+tests report worker exits; whether each shares the sandbox cause is not
+established. The runner's direct sandbox test fails because bubblewrap cannot
+configure its user namespace (`setting up uid map: Permission denied`). Those
+Actions-only failures are not accepted as passes or browser-engine defect
+reproductions.
+
+The macOS navigation-preload process job still fails three named tests with
+content-worker `SIGABRT` / IPC closure. The Mac runner log identifies the
+failure boundary but not its cause. The macOS sandbox/runtime path remains an
+open support and CI gate; no pass or unsupported disposition is claimed.
+Issue #65 remains open for this platform gate, the remaining public
+structured-value and file-parser inventory, and disposition of grouped or
+absent issue ranges.
+
 ### Issue #65 browser snapshot and workflow file bounds (2026-10-27)
 
 The 128 KiB `SessionSnapshot::validate` cap was applied only after

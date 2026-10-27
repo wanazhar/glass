@@ -52,6 +52,9 @@ zune-jpeg = { version = "0.5.16-rc2", optional = true, default-features = false,
 zvidlib-core = { version = "0.5.0", optional = true }
 zvidlib-vp8 = { version = "0.5.0", optional = true, default-features = false }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects"] }
+
 [features]
 default = []
 native-engine = [

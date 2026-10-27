@@ -1209,6 +1209,7 @@ dependencies = [
  "ttf-parser",
  "url",
  "webp-rust",
+ "windows-sys 0.61.2",
  "wuff",
  "zune-jpeg 0.5.16-rc2",
  "zvidlib-core",

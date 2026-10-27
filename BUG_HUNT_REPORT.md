@@ -163,6 +163,17 @@ and verifies both the framing failure and lease release (1/1). This addresses
 the read-error cleanup path only; the broader daemon interleaving audit remains
 open.
 
+### Issue #65 direct workflow JSON parser bound (2026-10-27)
+
+The public `WorkflowDefinition::from_json` API previously parsed an arbitrary
+source string into a JSON value before validating workflow limits. It now
+enforces the same 256 KiB pre-parse bound as `compile_workflow_json`, using one
+shared constant. Its boundary regression accepts exactly 256 KiB and rejects
+one byte over before parsing; the existing bounded YAML-alias regression also
+passes. This covers the direct JSON API path. `from_value` accepts an already
+allocated JSON value, so callers of that structured API still need their own
+input bounds before allocating or constructing the value.
+
 ## Issue #65 policy and sandbox path dispositions
 
 The named permission and policy entry points received focused source review

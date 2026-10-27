@@ -58,7 +58,9 @@ Example:
 Use [workflow-v1.schema.json](schema/workflow-v1.schema.json) for the external
 JSON contract.
 
-`WorkflowDefinition::from_json` and `WorkflowDefinition::from_value` reject:
+`WorkflowDefinition::from_json` checks that the raw UTF-8 source is at most
+256 KiB before parsing. Both `WorkflowDefinition::from_json` and
+`WorkflowDefinition::from_value` reject:
 
 - missing required fields;
 - unsupported schema versions;

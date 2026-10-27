@@ -24,24 +24,52 @@ pub(crate) struct Page {
     pub width: usize,
     pub color: bool,
     pub text: String,
+    frontend: CliFrontend,
 }
 impl Page {
+    pub(crate) fn blank(width: usize, color: bool) -> Self {
+        Self {
+            width: width.max(1),
+            color,
+            text: String::new(),
+            frontend: current_frontend(),
+        }
+    }
+
     pub fn row(&mut self, text: &str, tone: glass_tui::theme::Tone, bold: bool, indent: usize) {
         let indent = indent.min(self.width.saturating_sub(1));
         let clean = glass_tui::markdown::sanitize(text);
         for row in glass_tui::text::wrap_words(&clean, self.width.saturating_sub(indent).max(1)) {
             self.text.push_str(&" ".repeat(indent));
-            if self.color {
-                self.text.push_str(&glass_tui::theme::ansi(tone));
-                if bold {
-                    self.text.push_str("\x1b[1m");
-                }
-            }
-            self.text.push_str(&row);
-            if self.color {
-                self.text.push_str("\x1b[0m");
-            }
+            self.append_semantic_spans(&row, tone, bold);
             self.text.push('\n');
+        }
+    }
+    fn append_semantic_spans(&mut self, text: &str, base: Tone, bold: bool) {
+        let mut spans = command_spans(text, self.frontend);
+        spans.extend(status_spans(text));
+        spans.sort_by_key(|(range, _)| (range.start, range.end));
+        let mut cursor = 0;
+        for (range, tone) in spans {
+            if range.start < cursor || range.end > text.len() {
+                continue;
+            }
+            self.push_tone(&text[cursor..range.start], base, bold);
+            self.push_tone(&text[range.clone()], tone, bold);
+            cursor = range.end;
+        }
+        self.push_tone(&text[cursor..], base, bold);
+    }
+    fn push_tone(&mut self, text: &str, tone: Tone, bold: bool) {
+        if self.color {
+            self.text.push_str(&glass_tui::theme::ansi(tone));
+            if bold {
+                self.text.push_str("\x1b[1m");
+            }
+        }
+        self.text.push_str(text);
+        if self.color {
+            self.text.push_str("\x1b[0m");
         }
     }
     pub fn section(&mut self, title: &str, items: &[(&str, &str)]) {
@@ -58,13 +86,7 @@ impl Page {
             if self.width >= 72 && column < self.width / 2 {
                 let rows = glass_tui::text::wrap_words(description, self.width - column - 2);
                 self.text.push_str("  ");
-                if self.color {
-                    self.text.push_str(&glass_tui::theme::ansi(Tone::Secondary));
-                }
-                self.text.push_str(command);
-                if self.color {
-                    self.text.push_str("\x1b[0m");
-                }
+                self.append_semantic_spans(command, Tone::Secondary, false);
                 self.text
                     .push_str(&" ".repeat(column - glass_tui::text::width(command)));
                 self.text
@@ -87,9 +109,8 @@ impl Page {
 
     fn new_with_frontend(title: &str, width: usize, color: bool, frontend: CliFrontend) -> Self {
         let mut page = Self {
-            width: width.max(1),
-            color,
-            text: String::new(),
+            frontend,
+            ..Self::blank(width, color)
         };
         let title = title
             .chars()
@@ -250,6 +271,138 @@ enum CliFrontend {
     Standalone,
     Glass,
     GlassCore,
+}
+
+const COMMAND_ROOTS: &[&str] = &[
+    "acp",
+    "agent",
+    "attach",
+    "attention",
+    "blobs",
+    "capture",
+    "checkpoint",
+    "completions",
+    "companion",
+    "config",
+    "connect",
+    "context",
+    "contract",
+    "details",
+    "diagnostics",
+    "doctor",
+    "export",
+    "extensions",
+    "file",
+    "guidance",
+    "handoff",
+    "help",
+    "history",
+    "hub",
+    "init",
+    "inspect",
+    "keys",
+    "list",
+    "memory",
+    "models",
+    "neuralnets",
+    "plugin",
+    "policy",
+    "prewalk",
+    "profiles",
+    "pr",
+    "pwd",
+    "requests",
+    "resume",
+    "respawn",
+    "runtime",
+    "review",
+    "run",
+    "search",
+    "send",
+    "serve",
+    "sessions",
+    "settings",
+    "skill",
+    "structure",
+    "status",
+    "stop",
+    "team",
+    "transaction",
+    "tools",
+    "usage",
+    "worktree",
+    "workspace",
+];
+
+fn command_spans(text: &str, frontend: CliFrontend) -> Vec<(std::ops::Range<usize>, Tone)> {
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+    while cursor < text.len() {
+        let Some(relative) = text[cursor..].find(['g', 'l']) else {
+            break;
+        };
+        let start = cursor + relative;
+        let prefix = if text[start..].starts_with("glass core ") {
+            "glass core "
+        } else if text[start..].starts_with("glass-browser ") {
+            "glass-browser "
+        } else if text[start..].starts_with("glass ") {
+            "glass "
+        } else if text[start..].starts_with("gc ") {
+            "gc "
+        } else {
+            cursor = start
+                + text[start..]
+                    .chars()
+                    .next()
+                    .map(char::len_utf8)
+                    .unwrap_or(1);
+            continue;
+        };
+        let boundary = start == 0
+            || text[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|ch| ch.is_whitespace() || matches!(ch, ':' | '(' | '[' | '"' | '\''));
+        let command_start = start + prefix.len();
+        let command_end = text[command_start..]
+            .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+            .map(|offset| command_start + offset)
+            .unwrap_or(text.len());
+        let root = &text[command_start..command_end];
+        let browser_root = matches!(
+            root,
+            "click" | "navigate" | "observe" | "session" | "text" | "type"
+        );
+        let known_root =
+            COMMAND_ROOTS.contains(&root) || prefix == "glass-browser " && browser_root;
+        if boundary && known_root {
+            let tone = match (frontend, prefix) {
+                (CliFrontend::GlassCore, "glass core ") => Tone::Core,
+                (CliFrontend::Glass, "glass " | "glass-browser ") => Tone::Accent,
+                _ => Tone::Accent,
+            };
+            spans.push((start..command_end, tone));
+        }
+        cursor = command_end.max(start + 1);
+    }
+    spans
+}
+
+fn status_spans(text: &str) -> Vec<(std::ops::Range<usize>, Tone)> {
+    let Some(marker) = text.rfind(" · ") else {
+        return Vec::new();
+    };
+    let status_start = marker + " · ".len();
+    let status = &text[status_start..];
+    let tone = match status {
+        "ready" | "running" | "ok" | "done" => Tone::Success,
+        "stopped" | "idle" => Tone::Muted,
+        "warning" | "degraded" => Tone::Warning,
+        "error" | "failed" => Tone::Error,
+        _ => return Vec::new(),
+    };
+    vec![(status_start..text.len(), tone)]
 }
 
 fn cli_frontend(value: Option<&str>) -> CliFrontend {
@@ -483,6 +636,7 @@ fn heading(title: &str) -> Page {
             width,
             color,
             text: String::new(),
+            frontend: current_frontend(),
         }
     }
 }
@@ -610,6 +764,7 @@ pub fn error(label: &str, error: &str) {
         width,
         color,
         text: String::new(),
+        frontend,
     };
     p.row(&format!("{label} · Error"), Tone::Error, true, 0);
     for line in glass_tui::markdown::sanitize(&error).lines() {
@@ -941,6 +1096,7 @@ mod tests {
             width: 80,
             color: false,
             text: String::new(),
+            frontend: CliFrontend::Standalone,
         };
         p.literal("1 |     nested    value\n+    added    value\n2 |\tindented");
         assert!(p.text.contains("1 |     nested    value"));
@@ -1056,5 +1212,55 @@ mod tests {
                 p.text
             );
         }
+    }
+
+    #[test]
+    fn command_hints_and_connect_states_use_semantic_spans() {
+        let actions = "glass connect status · glass connect stop";
+        let glass = command_spans(actions, CliFrontend::Glass);
+        assert_eq!(
+            glass
+                .iter()
+                .map(|(range, _)| &actions[range.clone()])
+                .collect::<Vec<_>>(),
+            ["glass connect", "glass connect"]
+        );
+        assert!(glass.iter().all(|(_, tone)| matches!(tone, Tone::Accent)));
+
+        let core_actions = "glass core connect status";
+        let core = command_spans(core_actions, CliFrontend::GlassCore);
+        assert_eq!(&core_actions[core[0].0.clone()], "glass core connect");
+        assert!(matches!(core[0].1, Tone::Core));
+        let gc_actions = "gc connect stop";
+        let gc = command_spans(gc_actions, CliFrontend::Standalone);
+        assert_eq!(&gc_actions[gc[0].0.clone()], "gc connect");
+        assert!(matches!(gc[0].1, Tone::Accent));
+
+        assert!(command_spans("Open https://example.com/connect", CliFrontend::Glass).is_empty());
+        assert!(command_spans("Glass connection is ready", CliFrontend::Glass).is_empty());
+        assert!(matches!(
+            status_spans("Glass Connect · ready")[0].1,
+            Tone::Success
+        ));
+        assert!(matches!(
+            status_spans("Glass Connect · stopped")[0].1,
+            Tone::Muted
+        ));
+
+        let mut page = Page::new_with_frontend("Connect", 80, true, CliFrontend::Glass);
+        page.body("Glass Connect · ready\nhttps://example.com\nSame threads · glass connect status · glass connect stop");
+        assert!(page.text.contains("https://example.com"));
+        if !glass_tui::theme::no_color() {
+            assert!(page.text.contains(&format!(
+                "{}ready\x1b[0m",
+                glass_tui::theme::ansi(Tone::Success)
+            )));
+            assert!(page.text.contains(&format!(
+                "{}glass connect\x1b[0m",
+                glass_tui::theme::ansi(Tone::Accent)
+            )));
+        }
+        let plain = glass_tui::markdown::sanitize(&page.text);
+        assert!(plain.lines().all(|line| glass_tui::text::width(line) <= 80));
     }
 }

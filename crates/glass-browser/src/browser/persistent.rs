@@ -192,14 +192,11 @@ pub fn paths(name: &str) -> BrowserResult<PersistentSessionPaths> {
 
 pub fn read_record(name: &str) -> BrowserResult<Option<PersistentSessionRecord>> {
     let paths = paths(name)?;
-    let bytes = match std::fs::read(&paths.status) {
+    let bytes = match read_status_bytes(&paths.status) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if bytes.len() > MAX_STATUS_BYTES {
-        return Err(format!("session status exceeds {MAX_STATUS_BYTES} bytes").into());
-    }
     let record: PersistentSessionRecord = serde_json::from_slice(&bytes)?;
     if record.schema_version != SESSION_SCHEMA_VERSION {
         return Err("unsupported persistent session status schema".into());
@@ -1654,6 +1651,40 @@ fn write_record(path: &Path, record: &PersistentSessionRecord) -> BrowserResult<
     Ok(())
 }
 
+fn read_status_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(MAX_STATUS_BYTES + 1);
+    file.take((MAX_STATUS_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_STATUS_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("session status exceeds {MAX_STATUS_BYTES} bytes"),
+        ));
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+async fn read_status_bytes_async(path: &Path) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+
+    let file = tokio::fs::File::open(path).await?;
+    let mut bytes = Vec::with_capacity(MAX_STATUS_BYTES + 1);
+    file.take((MAX_STATUS_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() > MAX_STATUS_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("session status exceeds {MAX_STATUS_BYTES} bytes"),
+        ));
+    }
+    Ok(bytes)
+}
+
 fn remove_stale_artifacts(record: &PersistentSessionRecord) -> BrowserResult<()> {
     let _ = std::fs::remove_file(&record.status_path);
     remove_socket_if_safe(&record.socket)
@@ -1719,6 +1750,20 @@ mod tests {
         assert_eq!(value["state"], "stopped");
         assert_eq!(value["name"], "missing-test-session");
         assert!(value.get("port").is_none_or(serde_json::Value::is_null));
+    }
+
+    #[test]
+    fn oversized_session_status_is_rejected_before_json_parsing() {
+        let path = std::env::temp_dir().join(format!(
+            "oversized-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::write(&path, vec![b'{'; MAX_STATUS_BYTES + 1]).unwrap();
+
+        let error = read_status_bytes(&path).unwrap_err().to_string();
+        assert!(error.contains("session status exceeds"), "{error}");
+        let _ = std::fs::remove_file(path);
     }
 
     #[cfg(unix)]
@@ -1914,12 +1959,11 @@ mod tests {
 
                     let record = tokio::time::timeout(Duration::from_secs(30), async {
                         loop {
-                            if let Ok(bytes) = tokio::fs::read(&status_path).await {
-                                let record: PersistentSessionRecord =
-                                    serde_json::from_slice(&bytes).unwrap();
-                                if record.state == "running" {
-                                    break record;
-                                }
+                            if let Ok(bytes) = read_status_bytes_async(&status_path).await
+                                && let Ok(record) = serde_json::from_slice::<PersistentSessionRecord>(&bytes)
+                                && record.state == "running"
+                            {
+                                break record;
                             }
                             tokio::time::sleep(Duration::from_millis(25)).await;
                         }
@@ -2714,6 +2758,6 @@ mod tests {
 
     #[cfg(all(unix, feature = "native-engine"))]
     fn read_record_from_path(path: &Path) -> BrowserResult<PersistentSessionRecord> {
-        Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+        Ok(serde_json::from_slice(&read_status_bytes(path)?)?)
     }
 }

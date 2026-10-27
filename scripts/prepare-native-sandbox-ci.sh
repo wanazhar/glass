@@ -9,7 +9,8 @@ runner_group="$(id -gn)"
 ensure_subordinate_range() {
     local kind="$1"
     local file="/etc/sub${kind}"
-    if awk -F: -v user="$runner_user" '$1 == user { found = 1 } END { exit !found }' "$file"; then
+    if awk -F: -v user="$runner_user" \
+        '$1 == user && $3 >= 65536 { found = 1 } END { exit !found }' "$file"; then
         return
     fi
     local range
@@ -55,6 +56,24 @@ ensure_subordinate_range gid
 printf 'Native sandbox runner=%s group=%s uid=%s gid=%s\n' \
     "$runner_user" "$runner_group" "$(id -u)" "$(id -g)"
 printf 'Bubblewrap: %s\n' "$(bwrap --version)"
+printf 'Subordinate UID/GID ranges of at least 65536 IDs: '
+for kind in uid gid; do
+    file="/etc/sub${kind}"
+    if awk -F: -v user="$runner_user" \
+        '$1 == user && $3 >= 65536 { found = 1 } END { exit !found }' "$file"; then
+        printf '%s=ready ' "$kind"
+    else
+        printf '%s=missing ' "$kind"
+    fi
+done
+printf '\n'
+printf 'Bubblewrap mode=%s newuidmap=%s newgidmap=%s\n' \
+    "$(stat -c '%a' "$(command -v bwrap)")" \
+    "$(command -v newuidmap || printf unavailable)" \
+    "$(command -v newgidmap || printf unavailable)"
+if [[ -r /proc/self/status ]]; then
+    awk '/^(NoNewPrivs|Seccomp):/ { print $1 "=" $2 }' /proc/self/status
+fi
 for setting in /proc/sys/kernel/unprivileged_userns_clone /proc/sys/user/max_user_namespaces; do
     if [[ -r "$setting" ]]; then
         printf '%s=%s\n' "$setting" "$(cat "$setting")"

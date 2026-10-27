@@ -9694,7 +9694,9 @@ impl DevTuiState {
             .map_err(|error| format!("source path unavailable: {error}"))?;
         let relative = relative_workspace_path(&root, &source)
             .ok_or_else(|| "source path is outside this workspace".to_string())?;
-        Ok(relative.to_string_lossy().into_owned())
+        Ok(relative
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/"))
     }
 
     pub fn move_todo_selection(&mut self, delta: i32) {

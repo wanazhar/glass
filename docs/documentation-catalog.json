@@ -99,6 +99,11 @@
         },
         {
           "level": "2",
+          "title": "Issue #64 standalone native browser session lifecycle (2026-10-27)",
+          "anchor": "issue-64-standalone-native-browser-session-lifecycle-2026-10-27"
+        },
+        {
+          "level": "2",
           "title": "Native Wikipedia follow-up (2026-10-26)",
           "anchor": "native-wikipedia-follow-up-2026-10-26"
         },

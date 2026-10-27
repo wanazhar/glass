@@ -335,8 +335,23 @@ pub async fn start(config: PersistentSessionConfig) -> BrowserResult<PersistentS
         .arg(&paths.status)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        // This process is the explicitly named session owner. Give it a
+        // separate session so the caller's foreground tool-group cleanup
+        // cannot tear down the browser between attach commands. Its status
+        // record and private socket still own its lifetime; `session stop`
+        // closes only this browser session.
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command.spawn()?;
 
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
@@ -543,8 +558,16 @@ async fn serve_chromium_unix(config: PersistentSessionServeConfig) -> BrowserRes
                     }
                     _ => json!({"ok": false, "error": "unknown session operation"}),
                 };
-                write.write_all(serde_json::to_string(&response)?.as_bytes()).await?;
-                write.write_all(b"\n").await?;
+                let response = serde_json::to_vec(&response)?;
+                if write.write_all(&response).await.is_err()
+                    || write.write_all(b"\n").await.is_err()
+                {
+                    // A cancelled one-shot CLI may disappear while this
+                    // owned session is finishing its bounded browser command.
+                    // Its socket is per request; a broken client must not
+                    // close the explicit session owner or its page state.
+                    continue;
+                }
             }
             _ = tokio::signal::ctrl_c() => {
                 shutdown = true;
@@ -641,12 +664,17 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                 let (read, mut write) = stream.into_split();
                 let mut reader = BufReader::new(read);
                 let mut line = String::new();
-                reader.read_line(&mut line).await?;
-                if line.len() > MAX_SESSION_REQUEST_BYTES {
-                    return Err("persistent session request exceeds its size bound".into());
+                let line_len = match reader.read_line(&mut line).await {
+                    Ok(length) if length > 0 => length,
+                    Ok(_) | Err(_) => continue,
+                };
+                if line_len > MAX_SESSION_REQUEST_BYTES {
+                    continue;
                 }
-                let request = serde_json::from_str::<SessionRequest>(line.trim())
-                    .map_err(|error| format!("invalid session request: {error}"))?;
+                let request = match serde_json::from_str::<SessionRequest>(line.trim()) {
+                    Ok(request) => request,
+                    Err(_) => continue,
+                };
                 let response = match request.op.as_str() {
                     "status" => serde_json::to_value(&record)?,
                     "stop" => {
@@ -671,6 +699,7 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                             &listener,
                             session,
                             &record,
+                            &mut reader,
                             operation,
                         )
                         .await
@@ -695,6 +724,7 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                                     &listener,
                                     session,
                                     &record,
+                                    &mut reader,
                                     operation,
                                 )
                                 .await
@@ -748,6 +778,7 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                                 &listener,
                                 session,
                                 &record,
+                                &mut reader,
                                 operation,
                             )
                             .await
@@ -783,6 +814,7 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                             &listener,
                             session,
                             &record,
+                            &mut reader,
                             operation,
                         )
                         .await
@@ -793,11 +825,18 @@ async fn serve_native_unix(config: PersistentSessionServeConfig) -> BrowserResul
                     }
                     _ => json!({"ok": false, "error": "unknown session operation"}),
                 };
-                write.write_all(serde_json::to_string(&response)?.as_bytes()).await?;
-                write.write_all(b"\n").await?;
-                if response.get("state").and_then(serde_json::Value::as_str)
-                    == Some("stopping")
+                let stopping = response.get("state").and_then(serde_json::Value::as_str)
+                    == Some("stopping");
+                let response = serde_json::to_vec(&response)?;
+                if write.write_all(&response).await.is_err()
+                    || write.write_all(b"\n").await.is_err()
                 {
+                    // A cancelled one-shot client must not tear down the
+                    // explicitly owned browser session when its response is
+                    // no longer deliverable.
+                    continue;
+                }
+                if stopping {
                     shutdown = true;
                 }
             }
@@ -973,14 +1012,16 @@ fn native_owner_status(
 }
 
 #[cfg(all(unix, feature = "native-engine"))]
-async fn run_native_operation_with_controls<F>(
+async fn run_native_operation_with_controls<F, R>(
     listener: &tokio::net::UnixListener,
     session: &BrowserRuntimeSession,
     record: &PersistentSessionRecord,
+    client: &mut R,
     operation: F,
 ) -> BrowserResult<serde_json::Value>
 where
     F: Future<Output = BrowserResult<serde_json::Value>>,
+    R: tokio::io::AsyncBufRead + Unpin,
 {
     let (operation_result, close_target_after_operation) = {
         tokio::pin!(operation);
@@ -989,6 +1030,22 @@ where
             tokio::select! {
                 result = &mut operation => {
                     break (result, close_target_after_operation.take());
+                }
+                client_state = client.fill_buf() => {
+                    match client_state {
+                        Ok([]) | Err(_) => {
+                            break (
+                                Err("native browser command client disconnected".into()),
+                                close_target_after_operation.take(),
+                            );
+                        }
+                        Ok(_) => {
+                            break (
+                                Err("native browser command sent trailing request data".into()),
+                                close_target_after_operation.take(),
+                            );
+                        }
+                    }
                 }
                 accepted = accept_native_owner_request(listener) => {
                 let (mut writer, request) = accepted?;

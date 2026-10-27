@@ -33,6 +33,24 @@ context, observation state, and native resources. `CdpBrowserSession` owns the
 target/frame route, CDP state, observation caches, policy, browser revision,
 and (for an owned launch) the Chrome child and profile lifecycle.
 
+One-shot CLI operations close their session when the command returns. To keep
+native page state across separate processes, start the explicitly named owner
+and pass the same name to each command:
+
+```sh
+glass-browser --browser-runtime native session start research
+glass-browser --browser-runtime native --session research navigate https://example.com
+glass-browser --browser-runtime native --session research observe
+glass-browser --browser-runtime native --session research text
+glass-browser --browser-runtime native session stop research
+```
+
+The owner runs in its own OS session so foreground shell cleanup does not end
+it after `session start` returns. Its private status record and local command
+socket define ownership; `session stop` closes that browser instance. A
+one-shot `glass-browser navigate` command still intentionally ends after its
+single operation.
+
 ```text
 DevelopmentWorkspace (survives browser loss)
 ├─ ProjectWorkspace / agents / processes / tasks

@@ -306,8 +306,8 @@ current user instructions.
   interaction contracts for the current source line.
 - [Connection-aware presentation](architecture/connection-presentation.md) and
   [browser connection/Remote View](architecture/browser-connection.md) — the
-  0.3.3 environment-policy matrix, recovery controller, target picker, and
-  secure same-session visual plane.
+  0.3.3 environment-policy matrix, recovery controller, target picker,
+  named native session lifecycle, and secure same-session visual plane.
 - [Semantic core hardening](architecture/semantic-core-hardening.md) — corpus,
   scoped evidence, live binding, state, continuity, privacy, and agent tools.
 - [Ownership and compatibility](ownership.md) — module ownership and

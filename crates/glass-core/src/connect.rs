@@ -282,6 +282,11 @@ fn https_url(settings: &Settings) -> String {
         )
     }
 }
+fn ready_output(product: &str, url: &str, command: &str) -> String {
+    format!(
+        "{product} · ready\n{url}\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\n{command} status · {command} stop"
+    )
+}
 fn assets() -> Result<PathBuf, String> {
     let mut paths = Vec::new();
     if let Some(path) = std::env::var_os("GC_WEB_ASSETS") {
@@ -385,9 +390,12 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
             ));
         }
         crate::cli_println!(
-            "{} · ready\n{}",
-            crate::cli::connect_product_name(),
-            web_url(&s)
+            "{}",
+            ready_output(
+                crate::cli::connect_product_name(),
+                &web_url(&s),
+                crate::cli::connect_command()
+            )
         );
         return Ok(());
     }
@@ -545,11 +553,12 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
     }
     http_alias(&settings, true)?;
     crate::cli_println!(
-        "{} · ready\n{}\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\n{} status · {} stop",
-        crate::cli::connect_product_name(),
-        web_url(&settings),
-        crate::cli::connect_command(),
-        crate::cli::connect_command()
+        "{}",
+        ready_output(
+            crate::cli::connect_product_name(),
+            &web_url(&settings),
+            crate::cli::connect_command()
+        )
     );
     Ok(())
 }
@@ -2182,6 +2191,25 @@ mod tests {
             "Glass Core Connect · stopped"
         );
         assert_eq!(status_output(None, "GC Connect"), "GC Connect · stopped");
+    }
+    #[test]
+    fn ready_output_keeps_the_action_hints_for_existing_sessions() {
+        assert_eq!(
+            ready_output("Glass Connect", "http://127.0.0.1:8083", "glass connect"),
+            "Glass Connect · ready\nhttp://127.0.0.1:8083\n\nOpen in Safari → Share → Add to Home Screen.\nSame threads · tasks continue when you disconnect.\nglass connect status · glass connect stop"
+        );
+        assert!(
+            ready_output(
+                "Glass Core Connect",
+                "http://localhost",
+                "glass core connect"
+            )
+            .ends_with("glass core connect status · glass core connect stop")
+        );
+        assert!(
+            ready_output("GC Connect", "http://localhost", "gc connect")
+                .ends_with("gc connect status · gc connect stop")
+        );
     }
     #[test]
     fn malformed_connect_status_state_remains_an_error() {

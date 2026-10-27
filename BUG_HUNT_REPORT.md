@@ -874,6 +874,37 @@ tests with a content-worker `SIGABRT` and no worker-side cause. The Windows
 worker-stack regression is fixed, and the latest Windows daemon fixture check
 is pending; no cross-platform or umbrella-issue closure is claimed.
 
+### Issue #65 native adoption and hosted worker diagnostics (2026-10-27)
+
+The 2026-10-27 native adoption regression was traced to two state-loss paths.
+The host document detached every descendant when a script removed a node, so a
+queued cross-document transfer received a root without its retained children.
+Detached nodes now keep their internal child links while the root is removed
+from the live document; a tree-mutation regression and the full native
+same-origin adoption contract pass. The host snapshot also installed a fixed
+main-document `ownerDocument` getter on every element, shadowing the dynamic
+native getter. Removing that shadow lets `adoptNode` and custom-element
+`adoptedCallback` observe the target document. The same integration contract
+passes top-to-frame, frame-to-top, sibling-frame, inert-template, and node/depth
+limit cases. Snapshot fields omitted when empty/default now deserialize with
+those defaults; the focused frame-binding decode regression and all 951
+`glass-browser-core` native-engine library tests pass.
+
+Hosted CI `40549142534` exposed one `glass-dev` MCP integration failure:
+`tools/list` lacked the expected `tools` array at the test assertion. The test
+passed locally both alone and in the full seven-test `development_runtime`
+target with all features, and the subsequent hosted Ubuntu job passed; this is
+recorded as a transient CI failure rather than a source fix. The same run's
+macOS artifact matched the worker but had no frames because its process name
+was in the `.ips` metadata header while its stack was in the pretty-printed
+body. `4a9ec15b` merges those bounded objects before summarizing. Artifact
+`macos-native-worker-crash-summary-40552548087` now captures `EXC_CRASH` /
+`SIGABRT`, thread 0, and a sanitized `dyld` startup stack ending at
+`ignition_halt` / `boot_boot` / `ignite` before any worker Rust frame. This
+localizes the abort to dynamic-loader startup; the exact loader termination
+reason or dependency remains undetermined. The three macOS navigation-preload
+tests still fail, so #65 and the cross-platform acceptance gate remain open.
+
 ## Verification in this working tree
 
 Passed so far:

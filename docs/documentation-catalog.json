@@ -308,6 +308,11 @@
           "anchor": "issue-65-windows-test-and-path-follow-up-2026-10-27"
         },
         {
+          "level": "3",
+          "title": "Issue #65 native adoption and hosted worker diagnostics (2026-10-27)",
+          "anchor": "issue-65-native-adoption-and-hosted-worker-diagnostics-2026-10-27"
+        },
+        {
           "level": "2",
           "title": "Verification in this working tree",
           "anchor": "verification-in-this-working-tree"

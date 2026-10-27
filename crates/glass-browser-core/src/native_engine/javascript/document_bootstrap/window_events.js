@@ -155,13 +155,6 @@
   try {{ Object.setPrototypeOf(location, LocationNative.prototype); }} catch (_error) {{}}
   for (const element of elements) {{
     try {{ Object.setPrototypeOf(element, elementPrototypeFor(element.tagName)); }} catch (_error) {{}}
-    if (!Object.prototype.hasOwnProperty.call(element, "ownerDocument")) {{
-      Object.defineProperty(element, "ownerDocument", {{
-        enumerable: false,
-        configurable: false,
-        get() {{ return globalThis.document || null; }},
-      }});
-    }}
   }}
   nativeCustomElementUpgradeTree(document, true);
   nativeFormAssociatedReconcile(document);

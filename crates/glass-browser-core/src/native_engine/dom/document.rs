@@ -1867,14 +1867,17 @@ impl NativeDocument {
         };
         parent_node.children.retain(|child| *child != id);
 
+        // A removed node is detached from the live document, but the node
+        // object keeps its descendants. Script code can retain and later
+        // reinsert that object, and cross-document adoptNode needs the
+        // detached subtree intact while its queued host transfer is applied.
         let mut pending = vec![id];
         let mut detached = Vec::new();
         while let Some(current) = pending.pop() {
-            let children = self
+            let node = self
                 .raw_node(current)
-                .ok_or(NativeEngineError::DetachedTarget)?
-                .children
-                .clone();
+                .ok_or(NativeEngineError::DetachedTarget)?;
+            let children = node.children.clone();
             pending.extend(children);
             detached.push(current);
         }
@@ -1884,13 +1887,13 @@ impl NativeDocument {
             self.media_loads.remove(&current.index());
             self.media_errors.remove(&current.index());
         }
+        if let Some(root) = self.raw_node_mut(id) {
+            root.parent = None;
+        }
         for current in detached {
-            let node = self
-                .raw_node_mut(current)
-                .ok_or(NativeEngineError::DetachedTarget)?;
-            node.parent = None;
-            node.children.clear();
-            node.state.focused = false;
+            if let Some(node) = self.raw_node_mut(current) {
+                node.state.focused = false;
+            }
         }
         self.invalidate_layout_styles();
         Ok(())

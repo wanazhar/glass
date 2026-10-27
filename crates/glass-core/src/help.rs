@@ -249,11 +249,7 @@ const RUN: &[Item] = &[
 use crate::cli::Page;
 fn render(topic: &str, width: usize, color: bool) -> Result<String, String> {
     use glass_tui::theme::Tone;
-    let mut p = Page {
-        width: width.clamp(8, 100),
-        color,
-        text: String::new(),
-    };
+    let mut p = Page::blank(width.clamp(8, 100), color);
     p.row(
         &format!(
             "{} {}",

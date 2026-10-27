@@ -26,6 +26,17 @@ const MAX_EXCLUDE_TEXT: usize = 8;
 const MAX_CANDIDATES: usize = 32;
 const MAX_SUGGESTIONS: usize = 8;
 const MAX_EXECUTION_VALUE_BYTES: usize = 4_096;
+const MAX_INTENT_JSON_BYTES: usize = 256 * 1024;
+
+fn check_json_source(input: &str) -> Result<(), IntentResolutionError> {
+    if input.len() > MAX_INTENT_JSON_BYTES {
+        return Err(IntentResolutionError::new(
+            "$",
+            format!("intent JSON exceeds the {MAX_INTENT_JSON_BYTES}-byte source limit"),
+        ));
+    }
+    Ok(())
+}
 
 /// Action requested after intent resolution succeeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,6 +140,7 @@ impl SemanticIntentExecutionRequest {
     }
 
     pub fn from_json(input: &str) -> Result<Self, IntentResolutionError> {
+        check_json_source(input)?;
         let request: Self = serde_json::from_str(input).map_err(|error| {
             IntentResolutionError::new(
                 "$",
@@ -1228,6 +1240,7 @@ impl SemanticIntentRequest {
     }
 
     pub fn from_json(input: &str) -> Result<Self, IntentResolutionError> {
+        check_json_source(input)?;
         let request: Self = serde_json::from_str(input).map_err(|error| {
             IntentResolutionError::new("$", format!("invalid intent request shape: {error}"))
         })?;
@@ -1342,6 +1355,7 @@ impl SemanticIntentResult {
     }
 
     pub fn from_json(input: &str) -> Result<Self, IntentResolutionError> {
+        check_json_source(input)?;
         let result: Self = serde_json::from_str(input).map_err(|error| {
             IntentResolutionError::new("$", format!("invalid intent result shape: {error}"))
         })?;
@@ -1745,6 +1759,33 @@ mod tests {
             resolution_policy: SemanticResolutionPolicy::RequireUniqueHighConfidence,
             expected_revision: Some(42),
         }
+    }
+
+    #[test]
+    fn intent_json_parsers_reject_oversized_source_before_deserialization() {
+        let oversized_valid_json = format!("{{}}{}", " ".repeat(MAX_INTENT_JSON_BYTES));
+        let request = SemanticIntentRequest::from_json(&oversized_valid_json).unwrap_err();
+        let execution =
+            SemanticIntentExecutionRequest::from_json(&oversized_valid_json).unwrap_err();
+        let result = SemanticIntentResult::from_json(&oversized_valid_json).unwrap_err();
+        for error in [request, execution, result] {
+            assert_eq!(error.path, "$", "{error}");
+            assert!(error.reason.contains("source limit"), "{error}");
+        }
+    }
+
+    #[test]
+    fn intent_request_json_accepts_the_source_limit_boundary() {
+        let canonical = make_request().to_canonical_json().unwrap();
+        let at_limit = format!(
+            "{canonical}{}",
+            " ".repeat(MAX_INTENT_JSON_BYTES - canonical.len())
+        );
+        assert_eq!(at_limit.len(), MAX_INTENT_JSON_BYTES);
+        assert_eq!(
+            SemanticIntentRequest::from_json(&at_limit).unwrap(),
+            make_request()
+        );
     }
 
     #[test]

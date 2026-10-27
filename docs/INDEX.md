@@ -196,8 +196,8 @@ current user instructions.
   revisions, deltas, explicit deep DOM, screenshots, and privacy.
 - [Semantic execution](semantic-execution.md) — extraction evidence, stable Web
   IR, Task Protocol, deterministic compilation, live binding, and receipts.
-- [Intent resolution](intent-resolution.md) — bounded candidates, policies,
-  fingerprints, selection, and guarded execution.
+- [Intent resolution](intent-resolution.md) — bounded JSON inputs, candidates,
+  policies, fingerprints, selection, and guarded execution.
 - [Workflow definitions](workflows.md) and [workflow authoring](workflow-authoring.md)
   — validation, budgets, conditions, outputs, checkpoints, resume, recorder,
   formatting, linting, preview, and diff.

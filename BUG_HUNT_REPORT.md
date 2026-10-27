@@ -236,6 +236,18 @@ regression; strict Core binary Clippy and formatting passed. This covers the
 named subprocess setup and PID-narrowing paths only. It does not close the
 broader #65 process-group, cross-platform, and error-propagation audit.
 
+### Issue #65 semantic intent JSON source bounds (2026-10-27)
+
+The public `SemanticIntentRequest::from_json`,
+`SemanticIntentExecutionRequest::from_json`, and `SemanticIntentResult::from_json`
+entry points now reject UTF-8 JSON source above 256 KiB before deserialization.
+Field and collection validation still runs after parsing. Regressions verify
+all three parsers reject oversized JSON before schema errors and that a valid
+request padded to exactly the limit is accepted. The focused intent module
+passes 11/11 tests; strict `glass-browser` library Clippy passes. This
+closes these three direct JSON parser paths, not the complete authoring-input
+audit for #65.
+
 ## Verification in this working tree
 
 Passed so far:

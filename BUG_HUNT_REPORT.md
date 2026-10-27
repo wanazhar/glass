@@ -261,6 +261,12 @@ the underlying failure is not identified and no public video pass is claimed.
 The redacted report and owner-only trace are
 `/tmp/glass-native-mdn-video-sourcecheck-20261027.json` and its adjacent
 `.artifacts/` directory. This remains an open native media acceptance failure.
+An additional source-built batch with bounded worker diagnostics reports
+operation class `content_process_script` and reason class `other`. The worker
+logs only static allowlisted categories, never the operation text, error
+reason, URL, or page content. This narrows the failed boundary but does not
+identify a cause or count as a media pass; the owner-only records are in
+`/tmp/glass-mdn-video-reasonclass-qs3za94c/`.
 
 ## Verification in this working tree
 

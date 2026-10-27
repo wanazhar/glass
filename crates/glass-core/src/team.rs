@@ -55,6 +55,15 @@ static HUBS: OnceLock<Mutex<BTreeMap<String, Weak<Hub>>>> = OnceLock::new();
 fn hubs() -> &'static Mutex<BTreeMap<String, Weak<Hub>>> {
     HUBS.get_or_init(Default::default)
 }
+fn lock_for_cleanup<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            mutex.clear_poison();
+            poisoned.into_inner()
+        }
+    }
+}
 fn valid(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 96
@@ -281,7 +290,7 @@ pub struct Guard {
 impl Drop for Guard {
     fn drop(&mut self) {
         {
-            let mut state = self.hub.state.lock().unwrap();
+            let mut state = lock_for_cleanup(&self.hub.state);
             self.hub.stop.store(true, Ordering::Release);
             for worker in state.agents.values_mut() {
                 worker.interrupt = true;
@@ -296,11 +305,11 @@ impl Drop for Guard {
         }
         // Agent streams run through the pumped channel, so cancellation does
         // not wait for a network iterator. Join every tool-capable worker.
-        for thread in self.hub.workers.lock().unwrap().drain(..) {
+        for thread in lock_for_cleanup(&self.hub.workers).drain(..) {
             let _ = thread.join();
         }
         let _ = fs::remove_file(socket(&self.hub.owner));
-        hubs().lock().unwrap().remove(&self.hub.owner);
+        lock_for_cleanup(hubs()).remove(&self.hub.owner);
     }
 }
 impl Hub {
@@ -2188,6 +2197,17 @@ mod tests {
             dir,
             requests,
         )
+    }
+    #[test]
+    fn poisoned_hub_state_does_not_make_guard_drop_panic() {
+        let (guard, dir, _) = fixture();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _state = guard.hub.state.lock().unwrap();
+            panic!("poison the test hub");
+        }));
+        assert!(panic.is_err());
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(guard))).is_ok());
+        fs::remove_dir_all(dir).unwrap();
     }
     fn settled(hub: &Arc<Hub>) {
         let start = Instant::now();

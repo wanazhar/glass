@@ -129,6 +129,11 @@
         },
         {
           "level": "3",
+          "title": "Issue #65 teammate hub shutdown poison safety (2026-10-27)",
+          "anchor": "issue-65-teammate-hub-shutdown-poison-safety-2026-10-27"
+        },
+        {
+          "level": "3",
           "title": "Issue #65 process-ID follow-up (2026-10-26)",
           "anchor": "issue-65-process-id-follow-up-2026-10-26"
         },

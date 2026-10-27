@@ -2,7 +2,7 @@
 set -euo pipefail
 
 sudo apt-get update
-sudo apt-get install --yes bubblewrap uidmap
+sudo apt-get install --yes apparmor-profiles bubblewrap uidmap
 
 runner_user="$(id -un)"
 runner_group="$(id -gn)"
@@ -87,6 +87,26 @@ if [[ -r /proc/self/attr/current ]]; then
         unconfined) printf 'AppArmor current profile=unconfined\n' ;;
         *) printf 'AppArmor current profile=confined\n' ;;
     esac
+fi
+
+# Ubuntu 24.04 enables AppArmor's restriction on unprivileged user namespaces.
+# Its packaged profile grants that ability only to Bubblewrap and stacks the
+# unpriv_bwrap child profile, which denies capabilities after bwrap has built
+# the sandbox. Do not use aa-exec/unconfined and do not disable the host-wide
+# restriction: load Ubuntu's purpose-built profile for this executable only.
+apparmor_userns_restricted=0
+if [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+    apparmor_userns_restricted="$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)"
+fi
+if [[ "$apparmor_userns_restricted" == 1 ]]; then
+    bwrap_profile="/usr/share/apparmor/extra-profiles/bwrap-userns-restrict"
+    if [[ ! -r "$bwrap_profile" ]]; then
+        printf 'Ubuntu bwrap AppArmor profile is unavailable: %s\n' "$bwrap_profile" >&2
+        exit 1
+    fi
+    printf 'Loading packaged Bubblewrap AppArmor namespace profile: %s\n' \
+        "$(dpkg-query -W -f='${Version}' apparmor-profiles)"
+    sudo apparmor_parser --replace "$bwrap_profile"
 fi
 
 # This mirrors the production outer namespaces and the nested-userns denial

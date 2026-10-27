@@ -382,7 +382,26 @@ fn command_spans(text: &str, frontend: CliFrontend) -> Vec<(std::ops::Range<usiz
                 (CliFrontend::Glass, "glass " | "glass-browser ") => Tone::Accent,
                 _ => Tone::Accent,
             };
-            spans.push((start..command_end, tone));
+            let hint_start = text[..start]
+                .rfind(" · ")
+                .map(|marker| marker + " · ".len())
+                .unwrap_or(start);
+            let hint_end = text[start..]
+                .find(" · ")
+                .map(|marker| start + marker)
+                .unwrap_or(text.len());
+            let hint = text[hint_start..hint_end].trim();
+            let command_hint = text.contains(" · ")
+                && hint_start == start
+                && hint.chars().all(|ch| {
+                    ch.is_ascii_alphanumeric()
+                        || ch.is_ascii_whitespace()
+                        || matches!(ch, '-' | '_' | '.' | '/' | ':' | '=' | '[' | ']' | '|')
+                });
+            spans.push((
+                start..if command_hint { hint_end } else { command_end },
+                tone,
+            ));
         }
         cursor = command_end.max(start + 1);
     }
@@ -1223,7 +1242,7 @@ mod tests {
                 .iter()
                 .map(|(range, _)| &actions[range.clone()])
                 .collect::<Vec<_>>(),
-            ["glass connect", "glass connect"]
+            ["glass connect status", "glass connect stop"]
         );
         assert!(glass.iter().all(|(_, tone)| matches!(tone, Tone::Accent)));
 
@@ -1258,7 +1277,11 @@ mod tests {
                     glass_tui::theme::ansi(Tone::Success)
                 )));
                 assert!(page.text.contains(&format!(
-                    "{}glass connect\x1b[0m",
+                    "{}glass connect status\x1b[0m",
+                    glass_tui::theme::ansi(Tone::Accent)
+                )));
+                assert!(!page.text.contains(&format!(
+                    "{}https://example.com",
                     glass_tui::theme::ansi(Tone::Accent)
                 )));
             }

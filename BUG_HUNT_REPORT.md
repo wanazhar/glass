@@ -802,6 +802,19 @@ same setup. The local Ubuntu host can create the required Bubblewrap namespace;
 this CI run therefore does not establish Linux worker behavior on a runner
 that supports the production sandbox.
 
+The follow-up CI run `40505021593` on `57978cbc` confirms the dedicated-stack
+change fixes the Windows regression: all three `navigation_preload` process
+tests passed, and the Windows job advanced into the remaining browser-free
+contract tests. The three macOS tests again exited with `SIGABRT`, without a
+worker diagnostic or crash backtrace, so that failure is still unlocalized.
+Hosted Ubuntu again failed worker-dependent tests at Bubblewrap's user-namespace
+setup (`bwrap: setting up uid map: Permission denied`): the native Core target
+reported 939 passed and 11 failed; the browser-free Glass Dev target reported
+695 passed and one failed. The clients job passed. These are distinct outcomes:
+the Windows stack issue is verified fixed, the macOS abort still needs a
+macOS-side cause, and hosted Linux remains unverified where sandbox setup was
+denied. Umbrella issues #64 and #65 remain open.
+
 A single current-source public MDN WebM journey after the worker-stack change
 again passed navigation (5.339 s) and observation (3 ms), then failed during
 the first media-resource wait (31 ms), before a media resource was admitted or

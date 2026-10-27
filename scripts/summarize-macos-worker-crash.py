@@ -41,6 +41,19 @@ def image_name(value: Any) -> str | None:
     return safe_token(name, limit=100)
 
 
+def report_process_name(payload: dict[str, Any]) -> str | None:
+    for key in ("procName", "procPath"):
+        name = image_name(payload.get(key))
+        if name:
+            return name
+    return None
+
+
+def is_glass_related_process(payload: dict[str, Any]) -> bool:
+    name = report_process_name(payload)
+    return bool(name and ("glass" in name.casefold() or "native" in name.casefold()))
+
+
 def is_worker_process(value: Any) -> bool:
     if not isinstance(value, str):
         return False
@@ -79,7 +92,7 @@ def ips_payload(text: str) -> dict[str, Any] | None:
             return None
         if isinstance(value, dict):
             candidates.append(value)
-    return next(
+    worker = next(
         (
             value
             for value in reversed(candidates)
@@ -88,12 +101,24 @@ def ips_payload(text: str) -> dict[str, Any] | None:
         ),
         None,
     )
+    if worker:
+        return worker
+    # Preserve a bounded, allowlisted summary for a renamed Glass process so
+    # the CI artifact can identify a missed executable alias without retaining
+    # report text, paths, arguments, or arbitrary exception messages.
+    return next(
+        (value for value in reversed(candidates) if is_glass_related_process(value)),
+        None,
+    )
 
 
 def ips_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    worker_process = is_worker_process(payload.get("procName")) or is_worker_process(
+        payload.get("procPath")
+    )
     summary: dict[str, Any] = {
-        "capture": "matched",
-        "process": WORKER_PROCESS_NAME,
+        "capture": "matched" if worker_process else "related-process-report",
+        "process": WORKER_PROCESS_NAME if worker_process else report_process_name(payload),
         "frames": [],
     }
     exception = payload.get("exception")
@@ -359,6 +384,38 @@ def self_test() -> None:
         )
         summary = parse_report(alias, since=since)
         assert summary is not None and summary["process"] == WORKER_PROCESS_NAME
+
+        related = root / "glass-related-process.ips"
+        related.write_text(
+            json.dumps(
+                {
+                    "procName": "GlassNativeWorkerHost",
+                    "procPath": "/private/tmp/secret-profile/GlassNativeWorkerHost",
+                    "processArguments": ["private-page-title"],
+                    "exception": {"type": "EXC_CRASH", "signal": "SIGABRT"},
+                    "faultingThread": 0,
+                    "usedImages": [{"name": "/usr/lib/libsystem_kernel.dylib"}],
+                    "threads": [
+                        {
+                            "frames": [
+                                {
+                                    "imageIndex": 0,
+                                    "symbol": "__pthread_kill",
+                                    "symbolLocation": 4,
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary = parse_report(related, since=since)
+        assert summary is not None and summary["capture"] == "related-process-report"
+        rendered = json.dumps(summary, sort_keys=True)
+        assert "GlassNativeWorkerHost" in rendered and "__pthread_kill" in rendered
+        assert "secret" not in rendered and "private-page-title" not in rendered
+        assert "/private/" not in rendered and "SIGABRT" in rendered
 
         crash = root / "glass-native-content-worker-test.crash"
         crash.write_text(

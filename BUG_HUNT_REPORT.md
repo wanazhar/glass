@@ -586,9 +586,29 @@ closure and exit status 1 during the script exchange. The safe reason classifier
 now maps those known generic pipe messages to `content_process_pipe_closed`
 (and truncated frames to `content_process_truncated_frame`); its regression
 uses synthetic private suffixes to verify the emitted category remains static.
-The captured worker stderr still contains the earlier `other` category because
-no additional public run was made. Why the content process exits remains
-unidentified, and the public video journey remains failed before decode.
+The earlier source-built worker trace reported `other`; why the content process
+exits remained unidentified at that point, and the public video journey failed
+before decode.
+
+A local source-level reproduction found a separate readiness-state mismatch:
+after a native media resource was decoded, `HTMLMediaElement.readyState` still
+reported `HAVE_METADATA` (1) even when the engine held a decoded video frame or
+non-empty PCM samples. The public journey waits for `HAVE_CURRENT_DATA` (at
+least 2). Native media properties now report 2 when current decoded data is
+available, while metadata-only resources remain at 1. Local VP8 playback,
+decoded WAV, dynamic blob WAV, and rooted-file WAV acceptance tests pass with
+the corrected state. This removes the local predicate mismatch but does not
+reproduce or explain the public content-process pipe closure; the public
+journey remains open and no public pass is claimed.
+
+One bounded rerun using the newly installed standalone browser still failed at
+that same MDN wait step 19 ms after it began, with the content worker exiting
+status 1. The journey runner now retains only the worker's static allowlisted
+diagnostic classes from stderr; this attempt reported `worker`,
+`content_process_script`, and `other`. Free-form worker text remains discarded.
+The failure is therefore narrowed to an error while servicing a script request,
+but its underlying operation or reason is not identified. The local readiness
+fix is verified independently and does not count as a public video pass.
 
 ## Verification in this working tree
 

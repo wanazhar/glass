@@ -156,7 +156,7 @@
       "requiresSoundDevice": false,
       "steps": [
         {"id":"probe-wav","action":"capability","type":"audio/wav","expected":"maybe"},
-        {"id":"decode-pcm","action":"assert","expression":"audio.readyState === 1 && audio.duration === 0.25"},
+        {"id":"decode-pcm","action":"assert","expression":"audio.readyState === 2 && audio.duration === 0.25"},
         {"id":"check-samples","action":"assertDecodedAudio","format":"pcm_s16le","channels":1,"sampleRateHz":8000,"durationMs":250,"requireNonSilentSamples":true},
         {"id":"publish-client-artifact","action":"publishAudioArtifact","format":"audio/wav","userControlled":true,"autoplay":false},
         {"id":"listen-from-client","action":"playFromRemoteView","assertion":"decoded sine-wave samples are delivered to the user's client audio output"}
@@ -175,7 +175,7 @@
       "expectedFrameColor": "blue",
       "steps": [
         {"id":"probe-vp8-decoder","action":"capability","type":"video/webm; codecs=\"vp8\"","expected":"maybe"},
-        {"id":"admit-video","action":"assert","readyState":1,"durationSeconds":1},
+        {"id":"admit-video","action":"assert","readyState":2,"durationSeconds":1},
         {"id":"seek","action":"seek","timeSeconds":0.75},
         {"id":"rewind","action":"seek","timeSeconds":0},
         {"id":"play","action":"play"},

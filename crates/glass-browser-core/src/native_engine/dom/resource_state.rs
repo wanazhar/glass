@@ -331,17 +331,25 @@ impl NativeDocument {
         if let Some(resource) = self.media_resources.get(&node_id.index())
             && resource.source == source
         {
-            let (video_width, video_height) = if node.element_name() == Some("video") {
-                resource
-                    .video_frames
-                    .first()
-                    .map(|frame| (frame.width, frame.height))
-                    .unwrap_or((0, 0))
-            } else {
-                (0, 0)
-            };
+            let (video_width, video_height, has_current_data) =
+                if node.element_name() == Some("video") {
+                    resource
+                        .video_frames
+                        .first()
+                        .map(|frame| (frame.width, frame.height, true))
+                        .unwrap_or((0, 0, false))
+                } else {
+                    (
+                        0,
+                        0,
+                        resource
+                            .audio_track
+                            .as_ref()
+                            .is_some_and(|track| !track.pcm_s16le.is_empty()),
+                    )
+                };
             return Some((
-                1,
+                if has_current_data { 2 } else { 1 },
                 1,
                 resource.duration_millis,
                 source,

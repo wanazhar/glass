@@ -29,7 +29,7 @@ async fn native_file_document_loads_rooted_media_during_navigation() {
             )
             .await
             .unwrap(),
-        serde_json::json!([1, 1, media_url, 0.04, serde_json::Value::Null, "maybe"])
+        serde_json::json!([2, 1, media_url, 0.04, serde_json::Value::Null, "maybe"])
     );
     engine.close_async().await.unwrap();
     fs::remove_dir_all(root).unwrap();
@@ -74,7 +74,7 @@ async fn native_file_document_loads_rooted_media_after_dynamic_attachment() {
             )
             .await
             .unwrap(),
-        serde_json::json!([["load"], 1, 1, media_url, 0.04, serde_json::Value::Null])
+        serde_json::json!([["load"], 2, 1, media_url, 0.04, serde_json::Value::Null])
     );
     engine.close_async().await.unwrap();
     fs::remove_dir_all(root).unwrap();

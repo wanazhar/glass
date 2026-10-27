@@ -311,7 +311,7 @@ async fn native_local_dynamic_blob_media_exposes_metadata_and_load_event() {
         serde_json::json!([
             ["load"],
             true,
-            1,
+            2,
             1,
             1,
             "blob:null/glass-native-1",
@@ -393,7 +393,7 @@ async fn native_local_data_media_loads_during_navigation() {
             )
             .await
             .unwrap(),
-        serde_json::json!([1, 1, data_url, 0.25, serde_json::Value::Null, "maybe"])
+        serde_json::json!([2, 1, data_url, 0.25, serde_json::Value::Null, "maybe"])
     );
     let clip = engine
         .capture_audio_clip()

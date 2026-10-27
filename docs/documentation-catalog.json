@@ -314,6 +314,11 @@
         },
         {
           "level": "3",
+          "title": "Issue #65 latest hosted CI regression follow-up (2026-10-27)",
+          "anchor": "issue-65-latest-hosted-ci-regression-follow-up-2026-10-27"
+        },
+        {
+          "level": "3",
           "title": "Issue #64 MDN video route and frame probe (2026-10-27)",
           "anchor": "issue-64-mdn-video-route-and-frame-probe-2026-10-27"
         },

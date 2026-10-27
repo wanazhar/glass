@@ -178,8 +178,30 @@ fn canonical_browser_session_exposes_guarded_and_unguarded_recovery() {
         .join()
         .expect("canonical recovery test thread should complete");
 }
-#[tokio::test]
-async fn native_visual_capture_honors_clip_scale_full_page_and_element_options() {
+#[test]
+fn native_visual_capture_honors_clip_scale_full_page_and_element_options() {
+    // Native rendering and PNG decoding use a deeper stack on some hosted
+    // runners than the Rust test harness' default worker. Keep this test's
+    // fixture independent of the process-wide RUST_MIN_STACK setting.
+    std::thread::Builder::new()
+        .name("native-visual-capture-test".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .thread_stack_size(8 * 1024 * 1024)
+                .enable_all()
+                .build()
+                .expect("native visual capture test runtime should build");
+            runtime.block_on(
+                native_visual_capture_honors_clip_scale_full_page_and_element_options_inner(),
+            );
+        })
+        .expect("native visual capture test thread should start")
+        .join()
+        .expect("native visual capture test thread should complete");
+}
+
+async fn native_visual_capture_honors_clip_scale_full_page_and_element_options_inner() {
     let config = NativeEngineConfig::default()
         .with_viewport(Viewport {
             width: 8,

@@ -905,6 +905,30 @@ localizes the abort to dynamic-loader startup; the exact loader termination
 reason or dependency remains undetermined. The three macOS navigation-preload
 tests still fail, so #65 and the cross-platform acceptance gate remain open.
 
+### Issue #65 latest hosted CI regression follow-up (2026-10-27)
+
+Run `40555053740` passed the browser-free Windows and Linux jobs, including the
+production-compatible Linux Bubblewrap setup, but its native-engine core and
+common source-certification jobs failed. The native import-node contract
+reproduced locally on `a90c1166`: a copied template child in a frame had the
+right attribute and text but its `id` property was empty, so `#id` lookup
+returned no node and the test surfaced an `ownerDocument` access on null.
+Frame-created elements initialized own empty `id` and `className` fields that
+shadowed the shared reflected-attribute properties. Removing those fields
+restores attribute-backed behavior. The exact import-node contract and the
+cross-context adoption contract both pass locally after the change.
+
+The common source-certification job separately overflowed in
+`native_visual_capture_honors_clip_scale_full_page_and_element_options`.
+That test now runs on an explicit 8 MiB test thread and current-thread Tokio
+runtime; its focused test passes with `RUST_MIN_STACK=4194304`. This addresses
+test-harness stack variability without changing the renderer. The latest Mac
+artifact from `40555053740` matched `glass-native-content-worker` but contained
+no frames or exception metadata. The earlier sanitized dyld startup stack from
+`40552548087` remains the only Mac-side stack evidence; the abort reason and
+dependency are still unknown. These local fixes await hosted CI verification,
+and neither the Mac worker nor the umbrella issue is claimed complete.
+
 ### Issue #64 MDN video route and frame probe (2026-10-27)
 
 One bounded read-only rerun on `a90c1166` navigated to

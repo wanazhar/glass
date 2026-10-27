@@ -1214,8 +1214,6 @@
         nodeName: namespaceURI === HTML_NAMESPACE ? normalized.toUpperCase() : normalized,
         localName: normalized,
         namespaceURI,
-        id: "",
-        className: "",
         value: "",
         checked: false,
         indeterminate: false,

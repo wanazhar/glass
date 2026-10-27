@@ -72,6 +72,30 @@ that multi-call browsing needs a named session; its on-demand research recipe,
 syntax. Regression assertions enforce the compact prompt and recipe byte
 budgets.
 
+### Core Bash multi-call acceptance and active-thread diagnosis (2026-10-27)
+
+The installed `glass-browser` protocol was exercised through the real Core
+`bash` tool, with each action issued as a separate tool call from a temporary
+workspace outside the repository. The test starts one named native session,
+navigates to the local fixture, then separately observes, types `Ada`, clicks
+Save, and reads `Saved Ada`; it finally stops and reaps that exact owner. The
+fixture binds loopback only and uses an isolated config directory. No public
+site, external browser, CDP attachment, or user service is involved. The
+acceptance passes when each attached invocation includes both
+`--browser-runtime native` and the same `--session NAME`, as shown in Core's
+web help and base prompt.
+
+The currently running Glass Connect thread was inspected without restarting
+or modifying its service. Its redacted browser-command metadata contains 23
+browser invocations and no `--session` or `--browser-runtime` arguments; its
+resident worker executable is a deleted, pre-guidance debug inode. This
+explains the observed `about:blank` between independent one-shot commands,
+but does not establish the unresolved provider stall or public MDN media
+failure. A newly opened thread on the existing Connect service can use the
+rebuilt replacement executable and current named-session guidance. The
+current thread remains on its already-loaded prompt; restarting Connect is
+not part of this change and is not required to preserve the existing thread.
+
 ## Native Wikipedia follow-up (2026-10-26)
 
 One bounded native run used the rebuilt monorepo browser and worker after adding reusable selector-candidate storage to background-image discovery. It ended inconclusive at the harness's 130.9-second outer deadline: navigation hit its 120-second step deadline before the journey could observe the article or follow a subpage. The run is recorded at `/tmp/glass-native-journey-wikipedia-background-scratch-fff88d7b.json`; its mode-0600 diagnostics and progress files are in the adjacent `.artifacts/` directory. It is not a Wikipedia pass.

@@ -967,6 +967,46 @@ fn parse_items(raw: &str) -> Result<Vec<String>, Outcome> {
 mod tests {
     use super::*;
 
+    struct FixtureCleanup {
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for FixtureCleanup {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    struct BrowserOwnerCleanup {
+        browser: PathBuf,
+        worker: PathBuf,
+        config_home: PathBuf,
+        name: String,
+        active: bool,
+    }
+
+    impl Drop for BrowserOwnerCleanup {
+        fn drop(&mut self) {
+            if !self.active {
+                return;
+            }
+            let _ = std::process::Command::new(&self.browser)
+                .env("GLASS_CONFIG_HOME", &self.config_home)
+                .env("GLASS_NATIVE_CONTENT_WORKER", &self.worker)
+                .args(["--browser-runtime", "native", "session", "stop", &self.name])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if let Some(root) = self.config_home.parent() {
+                let _ = std::fs::remove_dir_all(root);
+            }
+        }
+    }
+
     fn call(args: &str) -> ToolCall {
         ToolCall {
             id: "t1".into(),
@@ -997,6 +1037,219 @@ mod tests {
         assert_eq!(out.body, "[exit 0]\nhello\n");
         assert_eq!(out.exit_code, Some(0));
         assert!(!out.truncated);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn separate_core_bash_calls_reuse_named_native_browser_session() {
+        use std::net::TcpListener;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use std::thread::JoinHandle;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        fn on_path(name: &str) -> Option<PathBuf> {
+            std::env::split_paths(&std::env::var_os("PATH")?)
+                .map(|dir| dir.join(name))
+                .find(|p| p.is_file())
+        }
+        fn quote(value: &str) -> String {
+            format!("'{}'", value.replace('\'', "'\\''"))
+        }
+        fn bash_tool(command: String, workspace: &Path) -> Outcome {
+            let call = ToolCall {
+                id: "native-browser-acceptance".into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({"command": command, "timeout_ms": 30_000})
+                    .to_string(),
+            };
+            // Some unrelated Core tests install a process-wide Landlock
+            // policy. These test-owned browser executables intentionally
+            // exercise the exact-command escape hatch instead of depending
+            // on whichever sandbox singleton another test initialized.
+            let mut approvals = crate::sandbox::SessionApprovals::default();
+            approvals.approve_exact(&command);
+            bash_with_approvals(
+                &call,
+                workspace,
+                &std::sync::atomic::AtomicBool::new(false),
+                &approvals,
+            )
+        }
+
+        let Some(installed_browser) = on_path("glass-browser") else {
+            eprintln!("skipping installed-browser acceptance: glass-browser is not on PATH");
+            return;
+        };
+        let Some(installed_worker) = on_path("glass-native-content-worker") else {
+            eprintln!(
+                "skipping installed-browser acceptance: native content worker is not on PATH"
+            );
+            return;
+        };
+
+        let listener = match TcpListener::bind(("127.0.0.1", 0)) {
+            Ok(listener) => listener,
+            Err(error) => {
+                eprintln!("skipping local browser fixture: {error}");
+                return;
+            }
+        };
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let fixture_html = include_str!("../../glass-browser/tests/fixtures/basic.html");
+        let fixture_stop = Arc::new(AtomicBool::new(false));
+        let stop_server = fixture_stop.clone();
+        let server: JoinHandle<()> = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            while !stop_server.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = [0_u8; 2048];
+                        let _ = stream.read(&mut request);
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            fixture_html.len(),
+                            fixture_html
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        let fixture_cleanup = FixtureCleanup {
+            stop: fixture_stop.clone(),
+            thread: Some(server),
+        };
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("gcb-{}-{nonce}", std::process::id()));
+        let config_home = root.join("c");
+        let workspace = root.join("w");
+        std::fs::create_dir_all(&config_home).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        // Copy the installed pair under the test workspace so this remains
+        // runnable when another parallel test has activated a process-wide
+        // Landlock policy that permits child execution only from that root.
+        let browser = workspace.join("glass-browser");
+        let worker = workspace.join("glass-native-content-worker");
+        std::fs::copy(&installed_browser, &browser).unwrap();
+        std::fs::copy(&installed_worker, &worker).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for executable in [&browser, &worker] {
+                let mut permissions = std::fs::metadata(executable).unwrap().permissions();
+                permissions.set_mode(0o755);
+                std::fs::set_permissions(executable, permissions).unwrap();
+            }
+        }
+        let name = format!("b-{}-{nonce}", std::process::id());
+        let config = format!(
+            "GLASS_CONFIG_HOME={} ",
+            quote(&config_home.to_string_lossy())
+        );
+        let worker_env = format!(
+            "GLASS_NATIVE_CONTENT_WORKER={} ",
+            quote(&worker.to_string_lossy())
+        );
+        let browser_prefix = format!("{} ", quote(&browser.to_string_lossy()));
+        let run = |args: &str| {
+            let result = bash_tool(
+                format!("{config}{worker_env}{browser_prefix}{args}"),
+                &workspace,
+            );
+            assert_eq!(result.exit_code, Some(0), "{}", result.body);
+            result.body
+        };
+
+        let mut owner_cleanup = BrowserOwnerCleanup {
+            browser: browser.clone(),
+            worker: worker.clone(),
+            config_home: config_home.clone(),
+            name: name.clone(),
+            active: true,
+        };
+        let start_command =
+            format!("{browser_prefix}--browser-runtime native session start {name}");
+        let start_result = bash_tool(format!("{config}{worker_env}{start_command}"), &workspace);
+        let failure = std::fs::read(
+            config_home
+                .join("glass/sessions")
+                .join(format!("{name}.json")),
+        )
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|record| {
+            record
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        });
+        assert_eq!(
+            start_result.exit_code,
+            Some(0),
+            "{}{}",
+            start_result.body,
+            failure
+                .map(|error| format!("\nowner failure: {error}"))
+                .unwrap_or_default()
+        );
+        let start = start_result.body;
+        assert!(start.contains("\"state\":\"running\""), "{start}");
+        let owner = serde_json::from_str::<serde_json::Value>(
+            start
+                .strip_prefix("[exit 0]\n")
+                .expect("tool output has exit marker"),
+        )
+        .expect("session start returns its owner record");
+        let owner_pid = owner["pid"].as_u64().expect("owner pid") as u32;
+
+        // Each call below is a fresh, real Core bash tool invocation. The
+        // browser owner must outlive every shell process group and retain DOM
+        // state without sharing it with another caller or using CDP.
+        let attached = |action: &str| {
+            run(&format!(
+                "--browser-runtime native --session {} {action}",
+                name,
+            ))
+        };
+        let navigate = attached(&format!("navigate http://{address}/fixture.html"));
+        assert!(navigate.contains("http://127.0.0.1"), "{navigate}");
+        let observe = attached("observe --level interactive");
+        assert!(observe.contains("Glass Fixture"), "{observe}");
+        let type_text = attached("type Ada --target id=name");
+        assert!(type_text.contains("\"accepted\":true"), "{type_text}");
+        let click = attached("click id=save");
+        assert!(click.contains("\"accepted\":true"), "{click}");
+        let text = attached("text");
+        assert!(text.contains("Saved Ada"), "{text}");
+
+        let stopped = run(&format!("session stop {name}"));
+        assert!(stopped.contains("\"state\":\"stopping\""), "{stopped}");
+        let owner_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while Path::new(&format!("/proc/{owner_pid}")).exists()
+            && std::time::Instant::now() < owner_deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !Path::new(&format!("/proc/{owner_pid}")).exists(),
+            "explicit stop must reap only the named session owner"
+        );
+        owner_cleanup.active = false;
+        fixture_stop.store(true, Ordering::Release);
+        drop(fixture_cleanup);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(target_os = "linux")]

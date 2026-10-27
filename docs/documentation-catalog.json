@@ -103,6 +103,11 @@
           "anchor": "issue-64-standalone-native-browser-session-lifecycle-2026-10-27"
         },
         {
+          "level": "3",
+          "title": "Core Bash multi-call acceptance and active-thread diagnosis (2026-10-27)",
+          "anchor": "core-bash-multi-call-acceptance-and-active-thread-diagnosis-2026-10-27"
+        },
+        {
           "level": "2",
           "title": "Native Wikipedia follow-up (2026-10-26)",
           "anchor": "native-wikipedia-follow-up-2026-10-26"

@@ -94,6 +94,52 @@ impl NativeEngineError {
         }
     }
 
+    /// Return a coarse operation family without exposing the operation or its
+    /// error details, which may include page or profile data.
+    pub fn diagnostic_operation_class(&self) -> Option<&'static str> {
+        let operation = match self {
+            Self::Worker { operation, .. } | Self::WorkerFailure { operation, .. } => operation,
+            _ => return None,
+        };
+        if operation.contains("content process") {
+            return Some(if operation.contains("script") {
+                "content_process_script"
+            } else {
+                "content_process"
+            });
+        }
+        let prefix = operation
+            .split_ascii_whitespace()
+            .next()
+            .unwrap_or_default();
+        Some(match prefix {
+            "dispatch" | "stage" | "evaluate" | "dynamic" | "script" | "javascript"
+            | "page-load" => "script_runtime",
+            "parse" | "serialize" | "encode" | "decode" => "serialization",
+            "read" | "write" | "download" | "file" => "filesystem",
+            "fetch" | "network" | "request" | "route" | "origin" | "HTTP" | "WebSocket" => {
+                "network"
+            }
+            "compile" | "configure" | "create" | "initialize" | "install" | "prepare" | "spawn"
+            | "activate" | "register" => "runtime_setup",
+            _ => "other",
+        })
+    }
+
+    /// Return a safe class for known worker failures without exposing their
+    /// error text, which may contain page, URL, or profile data.
+    pub fn diagnostic_reason_class(&self) -> Option<&'static str> {
+        let Self::Worker { reason, .. } = self else {
+            return None;
+        };
+        Some(match reason.as_str() {
+            "content process has no committed document" => "missing_document",
+            "content process has no committed URL" => "missing_url",
+            "content process has no committed origin" => "missing_origin",
+            _ => "other",
+        })
+    }
+
     /// Return bounded resource-limit diagnostics without exposing page data.
     pub fn diagnostic_limit(&self) -> Option<(String, usize, usize)> {
         let Self::LimitExceeded {
@@ -243,6 +289,63 @@ mod tests {
         assert_eq!(
             NativeEngineError::limit("private page text", 10, 11).diagnostic_limit(),
             Some(("private page text".to_owned(), 10, 11))
+        );
+    }
+
+    #[test]
+    fn worker_operation_diagnostic_is_coarse_and_excludes_dynamic_details() {
+        let error = NativeEngineError::Worker {
+            operation: "dispatch private-event-name".into(),
+            reason: "private page payload".into(),
+        };
+        assert_eq!(error.diagnostic_operation_class(), Some("script_runtime"));
+        assert_eq!(error.diagnostic_class(), "worker");
+        assert!(
+            !format!("{:?}", error.diagnostic_operation_class()).contains("private-event-name")
+        );
+        assert_eq!(
+            NativeEngineError::Network {
+                operation: "request".into(),
+                reason: "secret".into(),
+            }
+            .diagnostic_operation_class(),
+            None
+        );
+        assert_eq!(
+            NativeEngineError::Worker {
+                operation: "page-load private-resource-key".into(),
+                reason: "private payload".into(),
+            }
+            .diagnostic_operation_class(),
+            Some("script_runtime")
+        );
+        let content_script_failure = NativeEngineError::Worker {
+            operation: "content process script private-event".into(),
+            reason: "private page payload".into(),
+        };
+        assert_eq!(
+            content_script_failure.diagnostic_operation_class(),
+            Some("content_process_script")
+        );
+        assert!(
+            !format!("{:?}", content_script_failure.diagnostic_operation_class())
+                .contains("private-event")
+        );
+        assert_eq!(
+            NativeEngineError::Worker {
+                operation: "content process script".into(),
+                reason: "content process has no committed URL".into(),
+            }
+            .diagnostic_reason_class(),
+            Some("missing_url")
+        );
+        assert_eq!(
+            NativeEngineError::Worker {
+                operation: "content process script".into(),
+                reason: "private URL and query".into(),
+            }
+            .diagnostic_reason_class(),
+            Some("other")
         );
     }
 }

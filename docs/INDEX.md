@@ -286,7 +286,8 @@ current user instructions.
   Profile](plan/native-engine-browser-profile.md).
 - [Native browser journey corpus](architecture/native-journey-corpus.md) —
   versioned local and public journeys, performance evidence, evidence
-  boundaries, capability coverage, and explicit public media failure status.
+  boundaries, privacy-safe worker diagnostics, capability coverage, and
+  explicit public media failure status.
 - [Alternative browser runtimes](browser-host-rfc.md#current-browser-runtime-mapping) —
   experimental Firefox BiDi and Safari WebDriver support, plus the native
   browser feasibility boundary.

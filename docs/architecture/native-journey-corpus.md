@@ -110,7 +110,16 @@ or screenshot step ran. The redacted report and owner-only trace are
 `.artifacts/` directory. The authored local WebM fixture now additionally
 asserts decoded `videoWidth`/`videoHeight` of 16×16 and still passes its
 play/pause/seek/paint test; this local result does not change the public
-failure classification.
+failure classification. A later source-built batch with the updated diagnostic
+reported operation class `content_process_script` and reason class `other`;
+these categories omit the raw operation and error reason, so the underlying
+failure remains unidentified. Its owner-only stdout, stderr, and trace are in
+`/tmp/glass-mdn-video-reasonclass-qs3za94c/`.
+
+When `GLASS_RUNTIME_DIAGNOSTIC_TRACE` is enabled, worker failures report a
+static error class, a coarse allowlisted operation family, and an allowlisted
+reason class where available. Dynamic operation strings, error text, URLs, and
+page content are not written to stderr.
 
 The corpus runner retains completed and failed per-step status/timing when its
 owned browser process exits without a final JSON document, and gives progress

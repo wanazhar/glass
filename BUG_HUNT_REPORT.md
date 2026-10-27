@@ -138,6 +138,15 @@ Core build pass.
 This closes the reviewed budget-lock panic path, not the remaining error,
 policy, sandbox, concurrency, and authoring sweeps.
 
+### Issue #65 Core budget-context mutex follow-up (2026-10-27)
+
+The Glass Core REPL's provider factories and session-reset paths also used
+unchecked budget-context mutex access, separate from the ledger's recovered
+lock. Reads now return a factory error on poison, and reset paths propagate an
+error instead of panicking. A focused poisoned-context regression passes;
+this is one Core error-propagation fix, not closure of the remaining
+interleaving audit.
+
 ### Issue #65 process-ID follow-up (2026-10-26)
 
 Two unchecked Unix narrowing paths are fixed: `browser/persistent.rs` rejects persisted `u32` process IDs that cannot be represented as positive `pid_t` before `kill(pid, 0)`, and `browser/chrome.rs` parses `lsof` output as positive `pid_t` before `SIGTERM`. A follow-up changes `kill_chrome(port)` to inspect only TCP listeners and signal only same-user TCP listeners whose lsof command names match Chrome/Chromium variants; other services, other users, and outgoing clients are excluded, and lsof inspection errors are returned. Its parser regression and the surrounding Chrome unit module pass (18 tests), with strict `glass-browser` library Clippy and formatting. The public function has no in-repository callers; UID and command-name filtering are not an executable-identity pin; a same-user process that deliberately adopts a Chrome command name remains outside this safeguard. Owned sessions should use `ChromeProcess::shutdown`, which signals the exact child Glass launched.

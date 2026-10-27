@@ -1170,6 +1170,43 @@ pub(in crate::native_engine::content_process) fn decode_content_navigation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_engine::dom::NativeValiditySnapshot;
+
+    #[test]
+    fn frame_script_bindings_accept_elided_default_element_fields() {
+        let value = serde_json::json!([{
+            "nodeIndex": 0,
+            "frameId": "frame-1",
+            "url": "about:blank",
+            "origin": "null",
+            "generation": 1,
+            "revision": 1,
+            "sameOrigin": true,
+            "document": {
+                "revision": 1,
+                "title": "",
+                "visibleText": "",
+                "elements": [{
+                    "nodeIndex": 0,
+                    "tagName": "div",
+                    "attributes": {},
+                }],
+            },
+        }]);
+
+        let bindings =
+            decode_frame_script_bindings(Some(&value), "test frame script binding decoding")
+                .expect("elided empty/default fields should decode");
+
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].document.elements.len(), 1);
+        assert!(bindings[0].document.elements[0].text.is_empty());
+        assert!(!bindings[0].document.elements[0].checked);
+        assert_eq!(
+            bindings[0].document.elements[0].validity,
+            NativeValiditySnapshot::default()
+        );
+    }
 
     #[test]
     fn decode_source_groups_accepts_larger_valid_groups_within_budgets() {

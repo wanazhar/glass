@@ -2046,6 +2046,10 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts_inner() {
                 }
                 let depthError = null;
                 try { topTarget.adoptNode(depthSource); } catch (error) { depthError = error.name; }
+                // These prototype-only nodes exercise the preflight depth
+                // bound and must not remain in the document's live lookup
+                // tree after the rejected transfer.
+                depthSource.__glassChildren = [];
 
                 const nodeSource = document.getElementById('node-source');
                 for (let index = 0; index < __NATIVE_NODE_LIMIT_PLUS_ONE__; index += 1) {
@@ -2055,6 +2059,9 @@ async fn native_documents_adopt_nodes_within_their_browsing_contexts_inner() {
                 }
                 let nodeLimitError = null;
                 try { topTarget.adoptNode(nodeSource); } catch (error) { nodeLimitError = error.name; }
+                // Keep the synthetic nodes used by the limit probe out of
+                // the page tree when the host snapshot is committed.
+                nodeSource.__glassChildren = [];
 
                 return {
                   top: [topResult === topSource, topSource.parentNode === null,

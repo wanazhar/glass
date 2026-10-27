@@ -603,6 +603,15 @@ fn script_remove_detaches_existing_subtree() {
     assert!(document.find_element_by_id("nested").is_none());
     assert!(document.node(remove).is_none());
     assert!(document.node(nested).is_none());
+    assert_eq!(
+        document.raw_node(remove).unwrap().children(),
+        &[nested],
+        "a detached node must retain its child subtree"
+    );
+    assert_eq!(
+        document.raw_node(nested).and_then(NativeNode::parent),
+        Some(remove)
+    );
     assert_eq!(document.visible_text(1024), ("stay".into(), false));
 }
 

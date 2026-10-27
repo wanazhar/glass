@@ -887,6 +887,7 @@ pub struct NativeScriptElementSnapshot {
     #[serde(default)]
     pub(crate) template_content_index: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub(crate) form_owner_index: Option<u32>,
     pub(crate) tag_name: String,
     #[serde(default)]
@@ -896,6 +897,7 @@ pub struct NativeScriptElementSnapshot {
     pub(crate) attribute_namespaces: BTreeMap<String, String>,
     pub(crate) attributes: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default)]
     pub(crate) text: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     #[serde(default)]
@@ -906,17 +908,22 @@ pub struct NativeScriptElementSnapshot {
     #[serde(default)]
     pub(crate) files: Vec<NativeFile>,
     #[serde(skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub(crate) checked: bool,
     #[serde(skip_serializing_if = "is_false")]
     #[serde(default)]
     pub(crate) indeterminate: bool,
     #[serde(skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub(crate) selected: bool,
     #[serde(skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub(crate) disabled: bool,
     #[serde(skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub(crate) hidden: bool,
     #[serde(skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub(crate) focused: bool,
     #[serde(default)]
     pub(crate) focus_anchor_node_index: Option<u32>,
@@ -927,18 +934,25 @@ pub struct NativeScriptElementSnapshot {
     #[serde(default)]
     pub(crate) user_interacted: bool,
     #[serde(skip_serializing_if = "is_default_snapshot_value")]
+    #[serde(default)]
     pub(crate) validity: NativeValiditySnapshot,
     #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default)]
     pub(crate) validation_message: String,
     #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default)]
     pub(crate) custom_validity: String,
     #[serde(skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub(crate) will_validate: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub(crate) selection_start: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub(crate) selection_end: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub(crate) selection_direction: Option<String>,
     #[serde(skip_serializing_if = "is_false")]
     #[serde(default)]

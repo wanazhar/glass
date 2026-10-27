@@ -905,6 +905,30 @@ localizes the abort to dynamic-loader startup; the exact loader termination
 reason or dependency remains undetermined. The three macOS navigation-preload
 tests still fail, so #65 and the cross-platform acceptance gate remain open.
 
+### Issue #64 MDN video route and frame probe (2026-10-27)
+
+One bounded read-only rerun on `a90c1166` navigated to
+`https://interactive-examples.mdn.mozilla.net/pages/tabbed/video.html` and
+observed successfully, then timed out after 15 seconds waiting for the authored
+`video` predicate. It emitted no worker diagnostic; the prior worker exit was
+not reproduced on this source. The redacted report is
+`/tmp/glass-mdn-recheck-a90c1166.json`.
+
+A separate isolated named native session used a private temporary
+`GLASS_CONFIG_HOME` and stopped its owner after the probe. Separate CLI
+invocations retained the page across navigation, frame discovery, selection,
+and evaluation. The parent document exposed zero video elements and one iframe;
+frame discovery returned the root and a child still at `about:blank`. Evaluating
+the selected child also found zero video elements. A bounded parent-frame
+projection found that the iframe had neither `src` nor `srcdoc`, and its
+`contentDocument` was inaccessible. The probe reported only static
+structure and Boolean/numeric media fields; it retained no page text or media
+source. This identifies the current journey's wrong/missing media-document
+boundary, but does not distinguish whether MDN's current response/content or
+the native iframe lifecycle leaves that child blank. Media decode, playback,
+and public-page acceptance remain unverified; the local authored VP8 fixture
+is separate evidence.
+
 ## Verification in this working tree
 
 Passed so far:

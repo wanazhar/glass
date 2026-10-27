@@ -2407,12 +2407,7 @@ impl WorkspaceStore {
         let Some(expected) = workspace.persisted_revision else {
             return Err(WorkspaceStoreError::UnpersistedWorkspace(id.clone()));
         };
-        let current_bytes = fs::read(self.path_for(id)).map_err(io_error)?;
-        let current = Workspace::from_json(
-            std::str::from_utf8(&current_bytes)
-                .map_err(|error| WorkspaceStoreError::Corrupt(error.to_string()))?,
-        )
-        .map_err(|error| WorkspaceStoreError::Corrupt(error.to_string()))?;
+        let current = self.read_unlocked(id)?;
         if current.snapshot_revision != expected {
             return Err(WorkspaceStoreError::StaleSnapshot(id.clone()));
         }
@@ -2881,6 +2876,33 @@ mod persistence_tests {
             Err(WorkspaceStoreError::Corrupt(message))
                 if message == "snapshot exceeds wire limit"
         ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn oversized_workspace_snapshot_is_rejected_before_save_revision_check() {
+        let root = test_root("oversized-save-snapshot");
+        let store = WorkspaceStore::new(&root).unwrap();
+        let id = WorkspaceId::new("oversized-save").unwrap();
+        let mut workspace = store
+            .create(
+                id.clone(),
+                [],
+                WorkspaceConfig::durable_named(ProfileId::new("oversized-save").unwrap()),
+            )
+            .unwrap();
+        let path = store.path_for(&id);
+        fs::write(&path, vec![b'x'; MAX_WIRE_BYTES + 1]).unwrap();
+
+        assert!(matches!(
+            store.save(&mut workspace),
+            Err(WorkspaceStoreError::Corrupt(message))
+                if message == "snapshot exceeds wire limit"
+        ));
+        assert_eq!(
+            fs::metadata(&path).unwrap().len(),
+            (MAX_WIRE_BYTES + 1) as u64
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

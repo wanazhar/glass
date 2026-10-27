@@ -74,11 +74,20 @@ printf 'Bubblewrap mode=%s newuidmap=%s newgidmap=%s\n' \
 if [[ -r /proc/self/status ]]; then
     awk '/^(NoNewPrivs|Seccomp):/ { print $1 "=" $2 }' /proc/self/status
 fi
-for setting in /proc/sys/kernel/unprivileged_userns_clone /proc/sys/user/max_user_namespaces; do
+for setting in \
+    /proc/sys/kernel/unprivileged_userns_clone \
+    /proc/sys/kernel/apparmor_restrict_unprivileged_userns \
+    /proc/sys/user/max_user_namespaces; do
     if [[ -r "$setting" ]]; then
         printf '%s=%s\n' "$setting" "$(cat "$setting")"
     fi
 done
+if [[ -r /proc/self/attr/current ]]; then
+    case "$(cat /proc/self/attr/current)" in
+        unconfined) printf 'AppArmor current profile=unconfined\n' ;;
+        *) printf 'AppArmor current profile=confined\n' ;;
+    esac
+fi
 
 # This mirrors the production outer namespaces and the nested-userns denial
 # controls. CI must provide the same isolation the native worker requires.

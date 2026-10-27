@@ -146,6 +146,23 @@ verify limits are applied before allocation/parsing; and (4) disposition the
 grouped or absent issue ranges without inventing findings. Until those gates
 are completed or explicitly de-scoped by the issue owner, #65 remains open.
 
+### Issue #65 browser snapshot and workflow file bounds (2026-10-27)
+
+The 128 KiB `SessionSnapshot::validate` cap was applied only after
+`SessionSnapshotStore::load` and `list` had read complete files into memory.
+Both paths now use a bounded opened-file reader that checks metadata and reads
+at most cap+1 bytes before JSON parsing; `load` reports an oversized snapshot,
+and `list` skips it as invalid. A regression verifies both paths reject a
+cap+1 file and preserve its bytes.
+
+The interactive browser TUI's `workflow run` and `workflow resume` commands
+also parsed `fs::read` results directly, bypassing the 256 KiB cap already
+used by the CLI workflow commands. Both now share a bounded TUI loader and a
+cap+1 regression that verifies refusal before JSON parsing without altering
+the input file. These fixes close these two persisted/user-file paths only;
+they do not complete the broader public structured-value and file-parser
+inventory, which remains an explicit #65 acceptance gate.
+
 ### Issue #65 Core settings file bounds (2026-10-27)
 
 Core settings were another repeated file-to-parser boundary: `config.toml` was

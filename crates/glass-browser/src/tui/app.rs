@@ -21,7 +21,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::collections::BTreeMap;
 #[cfg(feature = "native-engine")]
 use std::future::Future;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
+use std::path::Path;
 #[cfg(feature = "native-engine")]
 use std::pin::Pin;
 #[cfg(feature = "native-engine")]
@@ -35,8 +36,8 @@ use super::live_view::{
 };
 use crate::browser::policy::BrowserPolicy;
 use crate::browser::session::{
-    BrowserResult, CdpBrowserSession, PageTargetInfo, SessionOptions, WorkflowCheckpoint,
-    WorkflowDefinition, WorkflowRunResult,
+    BrowserResult, CdpBrowserSession, MAX_WORKFLOW_SOURCE_BYTES, PageTargetInfo, SessionOptions,
+    WorkflowCheckpoint, WorkflowDefinition, WorkflowRunResult,
 };
 #[cfg(feature = "native-engine")]
 use crate::browser::{BrowserRuntimeSession, NativeHistoryDirection};
@@ -1091,8 +1092,7 @@ impl BrowserTui {
             return Ok(false);
         }
         if let Some(path) = command.strip_prefix("workflow run ") {
-            let document: serde_json::Value = serde_json::from_slice(&std::fs::read(path.trim())?)?;
-            let definition = WorkflowDefinition::from_value(document)?;
+            let definition = load_workflow_definition(Path::new(path.trim()))?;
             let session = self.session.as_ref().ok_or("browser is detached")?;
             let policy = crate::cli::runner::policy_from_cli(cli)?;
             let result = session
@@ -1127,8 +1127,7 @@ impl BrowserTui {
             return Ok(false);
         }
         if let Some(path) = command.strip_prefix("workflow resume ") {
-            let document: serde_json::Value = serde_json::from_slice(&std::fs::read(path.trim())?)?;
-            let definition = WorkflowDefinition::from_value(document)?;
+            let definition = load_workflow_definition(Path::new(path.trim()))?;
             let checkpoint = self
                 .workflow_checkpoint
                 .as_ref()
@@ -2197,6 +2196,29 @@ impl TerminalGuard {
     }
 }
 
+fn load_workflow_definition(path: &Path) -> BrowserResult<WorkflowDefinition> {
+    let file = std::fs::File::open(path)?;
+    let max_bytes = u64::try_from(MAX_WORKFLOW_SOURCE_BYTES)
+        .map_err(|_| "workflow source limit is outside the platform file-size range")?;
+    if file.metadata()?.len() > max_bytes {
+        return Err(format!(
+            "workflow source exceeds the {MAX_WORKFLOW_SOURCE_BYTES}-byte authoring limit"
+        )
+        .into());
+    }
+    let mut source = String::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_string(&mut source)?;
+    if source.len() > MAX_WORKFLOW_SOURCE_BYTES {
+        return Err(format!(
+            "workflow source exceeds the {MAX_WORKFLOW_SOURCE_BYTES}-byte authoring limit"
+        )
+        .into());
+    }
+    let document: serde_json::Value = serde_json::from_str(&source)?;
+    Ok(WorkflowDefinition::from_value(document)?)
+}
+
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
@@ -2214,6 +2236,27 @@ impl Drop for TerminalGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflow_file_reader_refuses_cap_plus_one_before_json_parsing() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-tui-workflow-size-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("workflow.json");
+        let original = vec![b' '; MAX_WORKFLOW_SOURCE_BYTES + 1];
+        std::fs::write(&path, &original).unwrap();
+
+        let error = load_workflow_definition(&path).unwrap_err();
+        assert!(error.to_string().contains("authoring limit"));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn responsive_classes_preserve_phone_compact_and_desktop_boundaries() {

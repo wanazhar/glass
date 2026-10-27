@@ -4,7 +4,8 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SESSION_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
@@ -19,6 +20,32 @@ pub fn default_session_snapshot_path(profile: &str) -> PathBuf {
         .join(profile)
 }
 const MAX_SNAPSHOTS: usize = 64;
+
+fn read_snapshot_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let max_bytes = u64::try_from(MAX_SNAPSHOT_BYTES).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "session snapshot byte limit is outside the platform range",
+        )
+    })?;
+    if file.metadata()?.len() > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("session snapshot exceeds {MAX_SNAPSHOT_BYTES} bytes"),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(MAX_SNAPSHOT_BYTES.min(4096));
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_SNAPSHOT_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("session snapshot exceeds {MAX_SNAPSHOT_BYTES} bytes"),
+        ));
+    }
+    Ok(bytes)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -116,7 +143,7 @@ impl SessionSnapshotStore {
 
     pub fn load(&self, snapshot_id: &str) -> BrowserResult<SessionSnapshot> {
         let path = self.path_for(snapshot_id)?;
-        let snapshot: SessionSnapshot = serde_json::from_slice(&std::fs::read(path)?)?;
+        let snapshot: SessionSnapshot = serde_json::from_slice(&read_snapshot_file(&path)?)?;
         snapshot.validate()?;
         Ok(snapshot)
     }
@@ -124,7 +151,12 @@ impl SessionSnapshotStore {
     pub fn list(&self) -> BrowserResult<Vec<SessionSnapshot>> {
         let mut snapshots = Vec::new();
         for path in self.files()? {
-            if let Ok(snapshot) = serde_json::from_slice::<SessionSnapshot>(&std::fs::read(path)?)
+            let bytes = match read_snapshot_file(&path) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if let Ok(snapshot) = serde_json::from_slice::<SessionSnapshot>(&bytes)
                 && snapshot.validate().is_ok()
             {
                 snapshots.push(snapshot);
@@ -308,6 +340,29 @@ mod tests {
             "[REDACTED]"
         );
         assert!(serde_json::to_string(&snapshot).unwrap().len() < MAX_SNAPSHOT_BYTES);
+    }
+
+    #[test]
+    fn load_and_list_refuse_oversized_snapshots_before_parsing() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-snapshot-size-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = SessionSnapshotStore::new(&root);
+        let path = store.path_for("oversized").unwrap();
+        let original = vec![b' '; MAX_SNAPSHOT_BYTES + 1];
+        std::fs::write(&path, &original).unwrap();
+
+        let error = store.load("oversized").unwrap_err();
+        assert!(error.to_string().contains("session snapshot exceeds"));
+        assert!(store.list().unwrap().is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

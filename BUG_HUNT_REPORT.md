@@ -141,6 +141,15 @@ silently granted. Focused tests cover oversized reads and writes for both
 stores. This adds two settings paths to the bounded-input coverage and does
 not close the broader issue inventory.
 
+### Issue #65 served-session attach state bound (2026-10-27)
+
+The detached-session attach cursor and pending-request state also used an
+unbounded JSON read. It now reads through the shared 1 MiB regular-file cap
+and rejects serialized writes over the same limit. Oversized or malformed
+attach state keeps its prior empty-state recovery behavior. A focused
+read/write regression verifies that neither direction accepts an over-limit
+file. This closes the attach-state sidecar path only.
+
 ## Issue #65 dead-code allowance dispositions
 
 The refreshed source scan finds 23 remaining product-code `dead_code` annotation sites plus one test-only helper in product source; the separate integration-contract test has one more test allowance. Several reviewed suppressions were removed after production callsites were verified. `Session::turn` is retained because the `sessions` CLI reads it; its stale suppression is removed. This is a count of annotation sites (module and impl scopes can cover multiple items), not 44 distinct defect candidates. The previous 44-item count is stale. The unused provider `Usage::hit_rate` method and stale module-level allowance in `browser/session/types.rs` were also removed.

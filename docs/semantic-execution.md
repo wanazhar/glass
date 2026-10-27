@@ -76,7 +76,9 @@ bytes, and wall-clock duration. Compilation is limited by Task Protocol action,
 input, item, and timeout bounds. Web IR limits cap entities, relationships,
 diagnostics, text, and serialized output.
 `GlassTask::from_json` also rejects source over 256 KiB before JSON parsing,
-matching the public argument-JSON budget.
+matching the public argument-JSON budget. The `glass task` file commands apply
+that cap while reading task files; Web IR file commands use the same capped
+reader with the Web IR contract's 256 KiB limit.
 
 Requested sources that could not be observed appear in `limits.missingSources`.
 Observed absence is not reported as missing evidence. Incomplete frames, shadow

@@ -20,7 +20,7 @@ use std::fmt::{Display, Formatter};
 pub const WEB_IR_SCHEMA_VERSION: u32 = 1;
 const MAX_WEB_IR_ENTITIES: usize = 4_096;
 const MAX_WEB_IR_RELATIONSHIPS: usize = 8_192;
-const MAX_WEB_IR_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_WEB_IR_BYTES: usize = 256 * 1024;
 const MAX_WEB_IR_DIAGNOSTICS: usize = 128;
 const MAX_WEB_IR_DIAGNOSTIC_BYTES: usize = 512;
 const MAX_WEB_IR_ENTITY_TEXT_BYTES: usize = 256;

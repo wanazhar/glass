@@ -20,13 +20,13 @@ use crate::browser::profile::ProfileManager;
 use crate::browser::runtime::{BrowserRuntime, BrowserRuntimeSession};
 use crate::browser::session::{
     ActionKind, BatchStep, BrowserResult, CdpBrowserSession, CheckpointV1, Cookie, InteractionMode,
-    KnowledgeConfidence, KnowledgeStore, Locator, PdfOptions, ReconciliationOptions,
-    SemanticIntentExecutionRequest, SemanticIntentRequest, SemanticObservationLevel,
-    SessionOptions, SessionSnapshotStore, StructuredExtractionRequest, VerificationPredicate,
-    VisualCaptureOptions, WaitCondition, WorkflowAuthoringFormat, WorkflowCheckpoint,
-    WorkflowDefinition, WorkflowDiagnosticSeverity, WorkflowRecordingSession, compile_workflow,
-    default_knowledge_store_path, diff_workflows, format_workflow_yaml, preview_workflow,
-    record_semantic_events,
+    KnowledgeConfidence, KnowledgeStore, Locator, MAX_WORKFLOW_SOURCE_BYTES, PdfOptions,
+    ReconciliationOptions, SemanticIntentExecutionRequest, SemanticIntentRequest,
+    SemanticObservationLevel, SessionOptions, SessionSnapshotStore, StructuredExtractionRequest,
+    VerificationPredicate, VisualCaptureOptions, WaitCondition, WorkflowAuthoringFormat,
+    WorkflowCheckpoint, WorkflowDefinition, WorkflowDiagnosticSeverity, WorkflowRecordingSession,
+    compile_workflow, default_knowledge_store_path, diff_workflows, format_workflow_yaml,
+    preview_workflow, record_semantic_events,
 };
 use crate::browser::{BackendFactory, CdpSessionBackend};
 use crate::browser_backend::{
@@ -51,6 +51,8 @@ use crate::results::{
     project_and_store,
 };
 use crate::surfaces::SurfaceSet;
+use crate::task_protocol::MAX_TASK_SOURCE_BYTES;
+use crate::web_ir::MAX_WEB_IR_BYTES;
 use crate::workspace::{ResourceReference, WorkspaceId, WorkspaceStore};
 use base64::Engine;
 #[cfg(feature = "native-engine")]
@@ -3572,7 +3574,7 @@ fn dispatch_task(action: &TaskCommand) -> BrowserResult<()> {
 }
 
 fn read_task_request(path: &Path, operation: &str) -> BrowserResult<GlassRequest> {
-    let source = std::fs::read_to_string(path)?;
+    let source = read_bounded_text_file(path, "Task Protocol JSON", MAX_TASK_SOURCE_BYTES)?;
     let task: Value = serde_json::from_str(&source)?;
     let request = GlassRequest {
         protocol_version: GLASS_PROTOCOL_VERSION,
@@ -3589,8 +3591,16 @@ fn read_task_request(path: &Path, operation: &str) -> BrowserResult<GlassRequest
 }
 
 fn read_task_compile_request(task_path: &Path, ir_path: &Path) -> BrowserResult<GlassRequest> {
-    let task: Value = serde_json::from_str(&std::fs::read_to_string(task_path)?)?;
-    let ir: Value = serde_json::from_str(&std::fs::read_to_string(ir_path)?)?;
+    let task: Value = serde_json::from_str(&read_bounded_text_file(
+        task_path,
+        "Task Protocol JSON",
+        MAX_TASK_SOURCE_BYTES,
+    )?)?;
+    let ir: Value = serde_json::from_str(&read_bounded_text_file(
+        ir_path,
+        "Glass Web IR JSON",
+        MAX_WEB_IR_BYTES,
+    )?)?;
     let request = GlassRequest {
         protocol_version: GLASS_PROTOCOL_VERSION,
         request_id: "cli-task-compile".into(),
@@ -3610,7 +3620,7 @@ fn read_task_execution_request(
     expected_revision: u64,
     confirmed: bool,
 ) -> BrowserResult<GlassRequest> {
-    let source = std::fs::read_to_string(path)?;
+    let source = read_bounded_text_file(path, "Task Protocol JSON", MAX_TASK_SOURCE_BYTES)?;
     let task: Value = serde_json::from_str(&source)?;
     let request = GlassRequest {
         protocol_version: GLASS_PROTOCOL_VERSION,
@@ -3674,7 +3684,7 @@ fn dispatch_ir(action: &IrCommand) -> BrowserResult<()> {
 }
 
 fn read_web_ir_request(path: &Path, operation: &str) -> BrowserResult<GlassRequest> {
-    let source = std::fs::read_to_string(path)?;
+    let source = read_bounded_text_file(path, "Glass Web IR JSON", MAX_WEB_IR_BYTES)?;
     let draft: Value = serde_json::from_str(&source)?;
     let request = GlassRequest {
         protocol_version: GLASS_PROTOCOL_VERSION,
@@ -3695,8 +3705,8 @@ fn read_web_ir_continuity_request(
     after: &Path,
     entity_id: &str,
 ) -> BrowserResult<GlassRequest> {
-    let before_source = std::fs::read_to_string(before)?;
-    let after_source = std::fs::read_to_string(after)?;
+    let before_source = read_bounded_text_file(before, "Glass Web IR JSON", MAX_WEB_IR_BYTES)?;
+    let after_source = read_bounded_text_file(after, "Glass Web IR JSON", MAX_WEB_IR_BYTES)?;
     let request = GlassRequest {
         protocol_version: GLASS_PROTOCOL_VERSION,
         request_id: "cli-web-ir-continuity".into(),
@@ -3716,10 +3726,26 @@ fn read_web_ir_continuity_request(
 }
 
 fn read_web_ir(path: &Path) -> BrowserResult<crate::web_ir::GlassWebIrV1> {
-    let source = std::fs::read_to_string(path)?;
+    let source = read_bounded_text_file(path, "Glass Web IR JSON", MAX_WEB_IR_BYTES)?;
     let ir: crate::web_ir::GlassWebIrV1 = serde_json::from_str(&source)?;
     ir.validate()?;
     Ok(ir)
+}
+
+fn read_bounded_text_file(path: &Path, label: &str, max_bytes: usize) -> BrowserResult<String> {
+    let file = std::fs::File::open(path)?;
+    let max_bytes_u64 =
+        u64::try_from(max_bytes).map_err(|_| "input limit exceeds the platform file size range")?;
+    if file.metadata()?.len() > max_bytes_u64 {
+        return Err(format!("{label} exceeds the {max_bytes}-byte input limit").into());
+    }
+    let read_limit = max_bytes_u64.saturating_add(1);
+    let mut source = String::new();
+    file.take(read_limit).read_to_string(&mut source)?;
+    if source.len() > max_bytes {
+        return Err(format!("{label} exceeds the {max_bytes}-byte input limit").into());
+    }
+    Ok(source)
 }
 
 fn explain_task(
@@ -3820,7 +3846,8 @@ fn dispatch_workflow_authoring(action: &WorkflowAuthoringCommand) -> BrowserResu
             }
         }
         WorkflowAuthoringCommand::Compile { input, output } => {
-            let source = std::fs::read_to_string(input)?;
+            let source =
+                read_bounded_text_file(input, "workflow source", MAX_WORKFLOW_SOURCE_BYTES)?;
             let document = compile_workflow(&source, authoring_format(input))?;
             if let Some(output) = output {
                 std::fs::write(output, &document.canonical_json)?;
@@ -3837,7 +3864,8 @@ fn dispatch_workflow_authoring(action: &WorkflowAuthoringCommand) -> BrowserResu
             }
         }
         WorkflowAuthoringCommand::Format { input, output } => {
-            let source = std::fs::read_to_string(input)?;
+            let source =
+                read_bounded_text_file(input, "workflow source", MAX_WORKFLOW_SOURCE_BYTES)?;
             let document = compile_workflow(&source, authoring_format(input))?;
             let formatted = format_workflow_yaml(&document.definition)?;
             if let Some(output) = output {
@@ -3848,7 +3876,8 @@ fn dispatch_workflow_authoring(action: &WorkflowAuthoringCommand) -> BrowserResu
             }
         }
         WorkflowAuthoringCommand::Preview { input } => {
-            let source = std::fs::read_to_string(input)?;
+            let source =
+                read_bounded_text_file(input, "workflow source", MAX_WORKFLOW_SOURCE_BYTES)?;
             let document = compile_workflow(&source, authoring_format(input))?;
             let preview = preview_workflow(&document.definition)?;
             print_json(&serde_json::json!({
@@ -3857,8 +3886,10 @@ fn dispatch_workflow_authoring(action: &WorkflowAuthoringCommand) -> BrowserResu
             }))?;
         }
         WorkflowAuthoringCommand::Diff { before, after } => {
-            let before_source = std::fs::read_to_string(before)?;
-            let after_source = std::fs::read_to_string(after)?;
+            let before_source =
+                read_bounded_text_file(before, "workflow source", MAX_WORKFLOW_SOURCE_BYTES)?;
+            let after_source =
+                read_bounded_text_file(after, "workflow source", MAX_WORKFLOW_SOURCE_BYTES)?;
             let before_document = compile_workflow(&before_source, authoring_format(before))?;
             let after_document = compile_workflow(&after_source, authoring_format(after))?;
             let diff = diff_workflows(&before_document.definition, &after_document.definition)?;
@@ -3881,7 +3912,8 @@ fn dispatch_workflow_authoring(action: &WorkflowAuthoringCommand) -> BrowserResu
             }
         }
         WorkflowAuthoringCommand::Validate { input } => {
-            let source = std::fs::read_to_string(input)?;
+            let source =
+                read_bounded_text_file(input, "workflow source", MAX_WORKFLOW_SOURCE_BYTES)?;
             let document = compile_workflow(&source, authoring_format(input))?;
             print_json(&document)?;
         }
@@ -3889,7 +3921,8 @@ fn dispatch_workflow_authoring(action: &WorkflowAuthoringCommand) -> BrowserResu
             input,
             warnings_as_errors,
         } => {
-            let source = std::fs::read_to_string(input)?;
+            let source =
+                read_bounded_text_file(input, "workflow source", MAX_WORKFLOW_SOURCE_BYTES)?;
             let document = compile_workflow(&source, authoring_format(input))?;
             let failed = document.diagnostics.iter().any(|diagnostic| {
                 diagnostic.severity == WorkflowDiagnosticSeverity::Error
@@ -4789,6 +4822,21 @@ fn compact_json<T: Serialize + ?Sized>(value: &T) -> BrowserResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_source_reader_rejects_oversized_file_before_json_parse() {
+        let path = std::env::temp_dir().join(format!(
+            "glass-cli-bounded-source-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, vec![b' '; MAX_TASK_SOURCE_BYTES + 1]).unwrap();
+        let error = read_bounded_text_file(&path, "Task Protocol JSON", MAX_TASK_SOURCE_BYTES)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Task Protocol JSON"));
+        assert!(error.contains("262144-byte input limit"));
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn doctor_labels_are_readable_and_keep_warning_severity() {

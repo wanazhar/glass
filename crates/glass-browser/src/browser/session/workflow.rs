@@ -27,7 +27,7 @@ pub use recorder::*;
 /// The workflow definition schema understood by this crate.
 pub const WORKFLOW_SCHEMA_VERSION: u32 = 1;
 const MAX_NAME_BYTES: usize = 128;
-pub(super) const MAX_WORKFLOW_SOURCE_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_WORKFLOW_SOURCE_BYTES: usize = 256 * 1024;
 const MAX_SCROLL_FILTER_BYTES: usize = 256;
 const MAX_DESCRIPTION_BYTES: usize = 4 * 1024;
 const MAX_INPUTS: usize = 64;

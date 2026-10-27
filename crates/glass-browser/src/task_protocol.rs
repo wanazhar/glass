@@ -11,7 +11,7 @@ use std::fmt::{Display, Formatter};
 
 /// Version of the authored Task Protocol contract.
 pub const TASK_PROTOCOL_SCHEMA_VERSION: u32 = 1;
-const MAX_TASK_SOURCE_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_TASK_SOURCE_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_INPUTS: usize = 64;
 pub(crate) const MAX_INPUT_NAME_BYTES: usize = 64;
 const MAX_INPUT_VALUE_BYTES: usize = 4_096;

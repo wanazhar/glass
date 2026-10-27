@@ -275,6 +275,14 @@ tighter node, text, depth, duration, and output budgets. This closes the
 direct extraction-request string parser only; transport decoding and other
 authoring parsers remain separate audit items.
 
+### Issue #65 semantic observation JSON source bound (2026-10-27)
+
+`SemanticObservation::from_json` now rejects source above 256 KiB before serde
+deserialization, matching the bounded structured observation contract. Its
+regression covers oversized invalid JSON and exact-limit acceptance. Existing
+per-field, record-count, and 64 KiB aggregate structured-data checks still run
+after parsing. This closes this direct response-contract parser path only.
+
 ### Issue #64 native public video failure recheck (2026-10-27)
 
 The focused local VP8/WebM journey passes with native `videoWidth` and

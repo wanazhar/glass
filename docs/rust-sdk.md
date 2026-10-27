@@ -909,7 +909,7 @@ exports are authoritative for individual items.
 
 | Module | Contract |
 |---|---|
-| `browser` | Chrome/CDP lifecycle, session API, policies, profiles, actions, observations, workflows, and advisory knowledge |
+| `browser` | Chrome/CDP lifecycle, session API, policies, profiles, actions, observations, workflows, and advisory knowledge; semantic observation JSON is bounded before deserialization |
 | `browser_backend` | Transport-neutral semantic backend contract and dispatcher |
 | `browser_workspace` | Bounded revision-safe browser UI state, actions, focus, ownership, layout, and presentation contracts |
 | `capabilities` | Versioned discovery and negotiation manifest |

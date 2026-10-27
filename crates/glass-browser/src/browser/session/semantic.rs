@@ -28,6 +28,7 @@ const MAX_STRUCTURED_FIELDS: usize = 32;
 const MAX_STRUCTURED_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_ROLE_BYTES: usize = 64;
 const MAX_VISIBLE_TEXT_BYTES: usize = 8 * 1024;
+const MAX_SEMANTIC_OBSERVATION_SOURCE_BYTES: usize = 256 * 1024;
 
 /// Amount of semantic structure requested by a caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -934,6 +935,14 @@ impl SemanticObservation {
 
     /// Parse and validate a semantic observation from JSON.
     pub fn from_json(input: &str) -> Result<Self, SemanticObservationError> {
+        if input.len() > MAX_SEMANTIC_OBSERVATION_SOURCE_BYTES {
+            return Err(SemanticObservationError::new(
+                "$",
+                format!(
+                    "semantic observation exceeds the {MAX_SEMANTIC_OBSERVATION_SOURCE_BYTES}-byte input limit"
+                ),
+            ));
+        }
         let observation: Self = serde_json::from_str(input).map_err(|error| {
             SemanticObservationError::new("$", format!("invalid observation shape: {error}"))
         })?;
@@ -2131,6 +2140,21 @@ mod tests {
         value["futureField"] = Value::Bool(true);
         let decoded = SemanticObservation::from_json(&value.to_string()).unwrap();
         decoded.validate().unwrap();
+    }
+
+    #[test]
+    fn semantic_observation_json_source_is_bounded_before_deserialization() {
+        let oversized = " ".repeat(MAX_SEMANTIC_OBSERVATION_SOURCE_BYTES + 1);
+        let error = SemanticObservation::from_json(&oversized).unwrap_err();
+        assert!(error.reason.contains("input limit"));
+
+        let canonical = observation().to_canonical_json().unwrap();
+        let padded = format!(
+            "{canonical}{}",
+            " ".repeat(MAX_SEMANTIC_OBSERVATION_SOURCE_BYTES - canonical.len())
+        );
+        assert_eq!(padded.len(), MAX_SEMANTIC_OBSERVATION_SOURCE_BYTES);
+        assert!(SemanticObservation::from_json(&padded).is_ok());
     }
 
     #[test]

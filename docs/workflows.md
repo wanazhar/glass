@@ -143,6 +143,10 @@ or step error strings.
 validates the checkpoint schema and bounded fields. The limit applies to the
 serialized input as well as checkpoints exported by Glass.
 
+The `glass workflow compile`, `format`, `preview`, `diff`, `validate`, and
+`lint` commands read each source file through a capped file handle before
+passing it to the authoring parser.
+
 `reconcile_workflow_checkpoint` checks the workflow, route, and next step. It
 does not dispatch an action. It rejects route changes, definition changes, and
 a next state that could represent an already dispatched effect.

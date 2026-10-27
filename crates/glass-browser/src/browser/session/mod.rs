@@ -193,6 +193,7 @@ mod visual;
 mod wait;
 mod webauthn;
 mod workflow;
+pub(crate) use workflow::MAX_WORKFLOW_SOURCE_BYTES;
 pub use workflow::{
     WORKFLOW_SCHEMA_VERSION, WorkflowBranchDecision, WorkflowBudgets, WorkflowCheckpoint,
     WorkflowCheckpointPage, WorkflowCheckpointStep, WorkflowDefinition, WorkflowDraft,

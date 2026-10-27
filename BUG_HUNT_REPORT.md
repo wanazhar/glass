@@ -185,6 +185,12 @@ the existing 256 KiB argument-JSON budget; it now rejects larger source before
 deserialization, with exact-limit and one-byte-over boundary coverage. The
 Task Protocol parser tests and workflow parser tests cover these direct JSON
 entry points; this is not a blanket disposition of the other #65 audit themes.
+The corresponding `glass workflow`, `glass task`, and `glass ir` file commands
+also used unbounded `read_to_string`, which could allocate the full file before
+their parser contracts rejected it. Those paths now use one opened-file reader
+that checks metadata size and reads at most limit+1 bytes, catching file growth
+between the metadata check and read. Its oversized-file regression verifies the
+reader rejects before JSON parsing.
 
 ## Issue #65 policy and sandbox path dispositions
 

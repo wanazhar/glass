@@ -712,13 +712,11 @@ pub(super) struct SendAttemptRetryTarget {
     pub(super) preview: String,
 }
 
-#[cfg(unix)]
 fn retryable_send_attempt_status(attempt: &crate::thread_store::SendAttemptRecord) -> bool {
     use crate::thread_store::SendAttemptStatus::{Failed, Uncertain};
     attempt.status == Uncertain || (attempt.status == Failed && attempt.engine_request_id.is_some())
 }
 
-#[cfg(unix)]
 fn send_attempt_attention_label(status: crate::thread_store::SendAttemptStatus) -> &'static str {
     match status {
         crate::thread_store::SendAttemptStatus::Failed => "Core turn failed",
@@ -5340,9 +5338,12 @@ impl DevTuiState {
 
     pub fn poll_follow_up_queue_io(
         &mut self,
-        worker: &mut super::snapshot::SnapshotWorker,
+        _worker: &mut super::snapshot::SnapshotWorker,
     ) -> bool {
+        #[cfg(unix)]
         let mut changed = false;
+        #[cfg(not(unix))]
+        let changed = false;
         #[cfg(unix)]
         {
             if let Some((generations, reply)) = self.attention_queue_load.take() {
@@ -5423,7 +5424,7 @@ impl DevTuiState {
                                     owner == &agent_id && *pending_generation == generation
                                 },
                             ) {
-                                self.submit_follow_up_queue_dispatch(worker);
+                                self.submit_follow_up_queue_dispatch(_worker);
                             }
                         }
                     }

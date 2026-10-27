@@ -105,18 +105,28 @@ def ips_payloads(text: str) -> list[dict[str, Any]]:
 
 def ips_payload(text: str) -> dict[str, Any] | None:
     candidates = ips_payloads(text)
-    worker = next(
+    worker_name = next(
         (
-            value
+            name
             for value in reversed(candidates)
-            if is_worker_process(value.get("procName"))
-            or is_worker_process(value.get("procPath"))
-            or is_worker_process(value.get("app_name"))
+            for name in (value.get("procName"), value.get("procPath"), value.get("app_name"))
+            if is_worker_process(name)
         ),
         None,
     )
-    if worker:
-        return worker
+    if worker_name:
+        # Some `.ips` files put the process name in a small first-line
+        # metadata object and the exception/thread data in the report body.
+        # Merge both bounded objects before selecting the crash summary.
+        merged: dict[str, Any] = {}
+        for value in candidates:
+            merged.update(value)
+        if not any(
+            is_worker_process(merged.get(key))
+            for key in ("procName", "procPath", "app_name")
+        ):
+            merged["procName"] = worker_name
+        return merged
     # Preserve a bounded, allowlisted summary for a renamed Glass process so
     # the CI artifact can identify a missed executable alias without retaining
     # report text, paths, arguments, or arbitrary exception messages.
@@ -436,7 +446,6 @@ def self_test() -> None:
             + "\n"
             + json.dumps(
                 {
-                    "procName": "glass-native-content-worker",
                     "exception": {"type": "EXC_CRASH", "signal": "SIGABRT"},
                     "threads": [
                         {

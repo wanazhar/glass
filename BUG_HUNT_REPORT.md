@@ -926,8 +926,13 @@ test-harness stack variability without changing the renderer. The latest Mac
 artifact from `40555053740` matched `glass-native-content-worker` but contained
 no frames or exception metadata. The earlier sanitized dyld startup stack from
 `40552548087` remains the only Mac-side stack evidence; the abort reason and
-dependency are still unknown. These local fixes await hosted CI verification,
-and neither the Mac worker nor the umbrella issue is claimed complete.
+dependency are still unknown. The crash-summary sanitizer now also emits only
+allowlisted report-shape booleans and bounded thread/image counts, so a later
+matched report can distinguish a process-only metadata record from missing
+thread data without retaining report text, paths, or arguments. Its offline
+sanitizer self-test passes; hosted verification for this diagnostic addition
+is pending. These local fixes await hosted CI verification, and neither the
+Mac worker nor the umbrella issue is claimed complete.
 
 ### Issue #64 MDN video route and frame probe (2026-10-27)
 

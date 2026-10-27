@@ -207,6 +207,19 @@ def ips_summary(payload: dict[str, Any]) -> dict[str, Any]:
     images = payload.get("usedImages")
     images = images if isinstance(images, list) else []
     threads = payload.get("threads")
+    # Keep the report schema observable without retaining its arbitrary values.
+    # A matched `.ips` may contain only the process metadata header; these
+    # bounded booleans and counts distinguish that from an empty/unrecognized
+    # thread stack and guide the next hosted capture change.
+    summary["reportShape"] = {
+        "exceptionPresent": isinstance(exception, dict),
+        "terminationPresent": isinstance(termination, dict),
+        "faultingThreadPresent": isinstance(crashed_thread, int),
+        "threadsPresent": isinstance(threads, list),
+        "threadCount": min(len(threads), 10_000) if isinstance(threads, list) else 0,
+        "usedImagesPresent": isinstance(payload.get("usedImages"), list),
+        "usedImageCount": min(len(images), 10_000),
+    }
     if not isinstance(threads, list):
         return summary
 
@@ -439,6 +452,31 @@ def self_test() -> None:
         summary = parse_report(truncated, since=since)
         assert summary is not None and summary["process"] == WORKER_PROCESS_NAME
         assert "/private/" not in json.dumps(summary)
+
+        metadata_only = root / "glass-native-content-worker-metadata-only.ips"
+        metadata_only.write_text(
+            json.dumps(
+                {
+                    "procName": "glass-native-content-worker",
+                    "procPath": "/private/tmp/runner/worker",
+                    "processArguments": ["secret-page-title"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary = parse_report(metadata_only, since=since)
+        assert summary is not None and summary["frames"] == []
+        assert summary["reportShape"] == {
+            "exceptionPresent": False,
+            "terminationPresent": False,
+            "faultingThreadPresent": False,
+            "threadsPresent": False,
+            "threadCount": 0,
+            "usedImagesPresent": False,
+            "usedImageCount": 0,
+        }
+        assert "/private/" not in json.dumps(summary)
+        assert "secret" not in json.dumps(summary)
 
         pretty_report = root / "glass-native-content-worker-pretty.ips"
         pretty_report.write_text(

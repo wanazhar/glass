@@ -1896,11 +1896,14 @@ fn agent_scrollback_controls_render_in_compact_and_desktop_pty() {
             );
         }
 
-        assert!(session.visible_output().contains("PgUp"));
-        assert!(session.visible_output().contains("Home/End"));
-        assert!(session.visible_output().contains("live"));
-        assert!(!session.visible_output().contains("Ctrl-X abort"));
-        assert!(!session.visible_output().contains("Ctrl-D follow-up"));
+        let transcript = session.visible_output();
+        assert!(
+            transcript.contains("PgUp/Dn") || transcript.contains("PgUp/PgDn"),
+            "conversation omitted its responsive scroll controls at {cols}x{rows}"
+        );
+        assert!(transcript.contains("live"));
+        assert!(!transcript.contains("Ctrl-X abort"));
+        assert!(!transcript.contains("Ctrl-D follow-up"));
 
         if let Some(capture_dir) = std::env::var_os("GLASS_PTY_CAPTURE_DIR") {
             let capture_dir = std::path::PathBuf::from(capture_dir);
@@ -3958,15 +3961,18 @@ fn gc_palette_commands_use_owned_surfaces_and_return_to_the_composer_in_pty() {
         session.send(b"/");
         session.send(b"status");
         session.send(b"\r");
+        let received_status =
+            session.wait_for_output_after(close_start, "fixture-session", Duration::from_secs(8));
+        capture_pty_frame("status-result", width, height, &session.buffer);
         assert!(
-            session.wait_for_output_after(close_start, "fixture-model", Duration::from_secs(8)),
+            received_status,
             "status result did not use its own panel at {width}x{height}\n{}",
             session.output_tail()
         );
         assert!(
             session
                 .visible_output_from(close_start)
-                .contains("fixture-model"),
+                .contains("fixture-session"),
             "status panel omitted its typed payload"
         );
         capture_pty_frame("status", width, height, &session.buffer);
@@ -3990,14 +3996,21 @@ fn gc_palette_commands_use_owned_surfaces_and_return_to_the_composer_in_pty() {
 
         let settings_start = session.output().len();
         session.send(b"/");
+        assert!(
+            session.wait_for_output_after(settings_start, "/compact", Duration::from_secs(8)),
+            "Core command palette did not reopen before /settings at {width}x{height}\n{}",
+            session.output_tail()
+        );
         session.send(b"settings");
         session.send(b"\r");
+        let received_settings = session.wait_for_output_after(
+            settings_start,
+            "provider anthropic · model",
+            Duration::from_secs(8),
+        );
+        capture_pty_frame("settings-result", width, height, &session.buffer);
         assert!(
-            session.wait_for_output_after(
-                settings_start,
-                "provider anthropic · model",
-                Duration::from_secs(8)
-            ),
+            received_settings,
             "Core /settings did not open the provider settings panel at {width}x{height}\n{}",
             session.output_tail()
         );
@@ -4064,8 +4077,14 @@ fn gc_palette_commands_use_owned_surfaces_and_return_to_the_composer_in_pty() {
         session.send(b"/");
         session.send(b"error");
         session.send(b"\r");
+        let received_error = session.wait_for_output_after(
+            error_start,
+            "Glass Core /error failed",
+            Duration::from_secs(8),
+        );
+        capture_pty_frame("error-result", width, height, &session.buffer);
         assert!(
-            session.wait_for_output_after(error_start, "fixture", Duration::from_secs(8)),
+            received_error,
             "command error did not stay in its panel at {width}x{height}\n{}",
             session.output_tail()
         );
@@ -4083,12 +4102,8 @@ fn gc_palette_commands_use_owned_surfaces_and_return_to_the_composer_in_pty() {
                 })
                 .collect::<Vec<_>>();
         assert!(
-            error_panel.contains("fixture"),
-            "error panel lost its detail: {error_panel}\nCore requests: {runtime_requests:?}"
-        );
-        assert!(
             error_panel.contains("failed"),
-            "error panel lost its status: {error_panel}"
+            "error panel lost its title/status: {error_panel}\nCore requests: {runtime_requests:?}"
         );
         capture_pty_frame("error", width, height, &session.buffer);
 

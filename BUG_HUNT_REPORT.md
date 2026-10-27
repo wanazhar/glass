@@ -958,6 +958,22 @@ the native iframe lifecycle leaves that child blank. Media decode, playback,
 and public-page acceptance remain unverified; the local authored VP8 fixture
 is separate evidence.
 
+A second bounded recheck after the frame-selector fix used a fresh named native
+incognito session under a private temporary config directory. Navigation
+succeeded, but the parent still had zero videos and one `output-iframe` with no
+`src` or `srcdoc`, and no accessible `contentDocument`; the 12-second video
+predicate timed out. The next separate `evaluate` returned
+`content process exited or closed its pipe`. At that point the named owner was
+still reported running, with no browser PID and a defunct `bwrap` child. The
+isolated session was stopped and verified stopped. A local `data:` control page
+with the same empty iframe survived the same 12-second video-predicate timeout,
+a later separate evaluation, and a further 35-second timeout that brought the
+owner beyond a minute old; another evaluation still succeeded. This narrows
+the worker exit to the MDN route's workload rather than an empty iframe,
+timeout, or elapsed minute alone, but the specific script/resource trigger
+remains unknown. No second public retry was made and the route is not counted
+as a media pass.
+
 ## Verification in this working tree
 
 Passed so far:

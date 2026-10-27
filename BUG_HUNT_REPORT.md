@@ -682,6 +682,47 @@ The earlier source-built worker trace reported `other`; why the content process
 exits remained unidentified at that point, and the public video journey failed
 before decode.
 
+### Issue #64 / #65 bounded follow-up and CI reconciliation (2026-10-27)
+
+A further single-run `public-mdn-cc0-webm-playback` check against source commit
+`816aa218` again completed navigation (7.96 s) and observation (4 ms), then
+lost the content worker 60 ms into the first media-resource wait, before any
+decode, playback, or paint step. The worker exit status was 1; its allowlisted
+diagnostics remained `worker` / `content_process_script` / `other`. This does
+not isolate a media parser failure or identify the worker error. The redacted
+journey result is `/tmp/glass-mdn-repro-816aa218.json` with owner-only traces
+in its adjacent `.artifacts/` directory. Local VP8/WAV journeys continue to
+cover decoded readiness, playback clock, pause, seek, and paint; they do not
+cover this public page failure.
+
+The bounded Core request-ledger review retained only timestamps, elapsed
+durations, first-event latency, and retry counts. The latest successful request
+(2026-10-27 09:33 UTC) took 1.376 s with first event at 1.368 s and no retry.
+A different session (2026-10-26 08:28 UTC) contained 123.965 s and 147.663 s
+requests with first events at 121.278 s and 121.155 s, respectively, and two
+transport retries across those records. These records do not correlate to the
+reported incident and do not identify whether retry/backoff, upstream delay,
+or another transport stage caused the old wait. No provider call, prompt
+record, account, or live service was changed.
+
+CI run `40486642899` (head `816aa218`) exposed three independent acceptance
+gaps. Windows compilation referenced two follow-up status helpers that were
+incorrectly Unix-gated; the gates are removed because the helpers are
+platform-independent. Linux `cargo check -p glass-dev --lib --bins --locked`
+passes. A local Windows cross-check could not reach Rust compilation because
+the host lacks the MSVC C toolchain required by `ring`; Windows CI remains
+the proof gate. macOS failed to bind a Unix-domain control socket under a long
+XDG data path; socket placement now uses a private per-user short path only
+when the normal path exceeds a conservative limit, with a bind regression.
+The Core product smoke test had asserted an obsolete 24-round stop even though
+the documented contract permits long tool sequences; the fixture now returns
+a final answer after 24 tool calls and checks successful completion on call
+25. The updated Core smoke passed locally. The current CI run also has
+unresolved native content-worker exits (including macOS aborts) and a
+browser-free TypeScript handshake smoke failure at `glass.browser.state`.
+Those failures remain open pending focused diagnosis; this reconciliation does
+not claim the CI run or either umbrella issue complete.
+
 A local source-level reproduction found a separate readiness-state mismatch:
 after a native media resource was decoded, `HTMLMediaElement.readyState` still
 reported `HAVE_METADATA` (1) even when the engine held a decoded video frame or

@@ -175,6 +175,17 @@ attach state keeps its prior empty-state recovery behavior. A focused
 read/write regression verifies that neither direction accepts an over-limit
 file. This closes the attach-state sidecar path only.
 
+### Issue #65 session preference bind bound (2026-10-27)
+
+Session preference display already read `meta.json` through the shared 4 MiB
+regular-file cap, but workspace binding separately used `std::fs::read` and
+parsed the entire file before checking the selected workspace. Binding now
+uses the same bounded reader and refuses an over-limit or invalid preference
+file without overwriting it. The focused regression writes a file one byte
+over the cap and verifies it is rejected and preserved. This closes the
+binding path only; other remaining parser and file inputs still require their
+own inventory and evidence.
+
 ## Issue #65 dead-code allowance dispositions
 
 The refreshed source scan finds 23 remaining product-code `dead_code` annotation sites plus one test-only helper in product source; the separate integration-contract test has one more test allowance. Several reviewed suppressions were removed after production callsites were verified. `Session::turn` is retained because the `sessions` CLI reads it; its stale suppression is removed. This is a count of annotation sites (module and impl scopes can cover multiple items), not 44 distinct defect candidates. The previous 44-item count is stale. The unused provider `Usage::hit_rate` method and stale module-level allowance in `browser/session/types.rs` were also removed.

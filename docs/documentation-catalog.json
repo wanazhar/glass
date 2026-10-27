@@ -138,6 +138,11 @@
           "anchor": "issue-65-served-session-attach-state-bound-2026-10-27"
         },
         {
+          "level": "3",
+          "title": "Issue #65 session preference bind bound (2026-10-27)",
+          "anchor": "issue-65-session-preference-bind-bound-2026-10-27"
+        },
+        {
           "level": "2",
           "title": "Issue #65 dead-code allowance dispositions",
           "anchor": "issue-65-dead-code-allowance-dispositions"

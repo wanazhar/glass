@@ -10,6 +10,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+const SESSION_METADATA_MAX_BYTES: usize = 4 * 1024 * 1024;
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct Metadata {
     pub workspace: PathBuf,
@@ -50,7 +52,7 @@ fn meta_path(s: &Session) -> PathBuf {
     s.path.with_extension("meta.json")
 }
 pub fn metadata(s: &Session) -> Metadata {
-    crate::requests::bounded(&meta_path(s), 4 * 1024 * 1024)
+    crate::requests::bounded(&meta_path(s), SESSION_METADATA_MAX_BYTES)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default()
@@ -64,7 +66,8 @@ pub fn save(s: &Session, meta: &Metadata) -> Result<(), String> {
 pub fn bind(s: &Session, workspace: &Path) -> Result<(), String> {
     let path = meta_path(s);
     if path.exists() {
-        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        let bytes = crate::requests::bounded(&path, SESSION_METADATA_MAX_BYTES)
+            .map_err(|_| "Session preferences are invalid or exceed the 4 MiB limit; they have not been overwritten.")?;
         serde_json::from_slice::<Metadata>(&bytes)
             .map_err(|_| "Session preferences are invalid; they have not been overwritten.")?;
     }
@@ -1069,6 +1072,24 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
         std::fs::remove_dir_all(other).ok();
     }
+
+    #[test]
+    fn oversized_session_preferences_are_not_parsed_or_overwritten() {
+        let root = scratch();
+        let session = Session::create(&root).unwrap();
+        let path = meta_path(&session);
+        let oversized = vec![b' '; SESSION_METADATA_MAX_BYTES + 1];
+        std::fs::write(&path, &oversized).unwrap();
+
+        let error = bind(&session, &root).unwrap_err();
+        assert!(error.contains("4 MiB limit"));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            oversized.len() as u64
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn attachment_is_a_snapshot_and_can_be_removed() {
         let root = scratch();

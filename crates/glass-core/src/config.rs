@@ -193,7 +193,7 @@ impl Default for Config {
 pub const BASE_SYSTEM_PROMPT: &str = concat!(
     "You are glass-core, the user's coding agent. ",
     "Use read/edit/write/view_image; bash searches and builds. ",
-    "Browser: PATH `glass-browser` defaults native with native feature; `--attach` only if asked for existing Chrome/CDP. In Glass use offered `glass.browser.*` tools. ",
+    "Browser: `glass-browser` defaults native. Multi-call: reuse `--session NAME`; one-shot is stateless. `--attach` only if asked for Chrome/CDP. In Glass use offered `glass.browser.*` tools. ",
     "Read before editing; preserve user work/constraints. Bound output; verify. ",
     "`state` replaces durable notes; save goals/decisions/paths before compaction. ",
     "Recall with state.neuralnets action:search; action:save stores verified lessons. ",
@@ -859,9 +859,11 @@ mod tests {
     fn base_prompt_names_both_tools() {
         assert!(BASE_SYSTEM_PROMPT.contains("bash"));
         assert!(BASE_SYSTEM_PROMPT.contains("`state`"));
-        assert!(BASE_SYSTEM_PROMPT.contains("PATH `glass-browser`"));
+        assert!(BASE_SYSTEM_PROMPT.contains("`glass-browser` defaults native"));
         assert!(BASE_SYSTEM_PROMPT.contains("defaults native"));
-        assert!(BASE_SYSTEM_PROMPT.contains("`--attach` only if asked for existing Chrome/CDP"));
+        assert!(BASE_SYSTEM_PROMPT.contains("Multi-call: reuse `--session NAME`"));
+        assert!(BASE_SYSTEM_PROMPT.contains("one-shot is stateless"));
+        assert!(BASE_SYSTEM_PROMPT.contains("`--attach` only if asked for Chrome/CDP"));
         assert!(BASE_SYSTEM_PROMPT.contains("use offered `glass.browser.*` tools"));
     }
 

@@ -146,7 +146,7 @@ const WEB_TOOLS: &[Item] = &[
     ),
     (
         "glass-browser",
-        "Native visual browser CLI, when installed.",
+        "Native visual browser CLI, when installed. Multi-call: start one named session, pass `--session NAME` to every command, then stop it. Bare one-shot calls are stateless.",
     ),
     (
         "glass.browser.*",
@@ -489,6 +489,9 @@ mod tests {
         assert!(web.contains("web_search"));
         assert!(web.contains("web_fetch"));
         assert!(web.contains("glass-browser"));
+        assert!(web.contains("--session NAME"));
+        assert!(web.contains("command"));
+        assert!(web.contains("Bare one-shot calls are stateless"));
         assert!(web.contains("host advertises them"));
         let compact_web = render("tools", 58, false).unwrap();
         assert!(compact_web.lines().count() <= 24, "{compact_web}");

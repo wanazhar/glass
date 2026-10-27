@@ -24,7 +24,7 @@ use crate::results::ResponseMode;
     version,
     about = "Semantic browser execution for humans and agents",
     disable_help_subcommand = true,
-    after_help = "Start here:\n  glass doctor                         Check browser and local runtime support\n  glass                                Open the interactive terminal workspace\n  glass navigate https://example.com   Open a page in one bounded operation\n  glass observe --level interactive    Inspect current semantic understanding\n  glass task compile task.json ir.json Compile a deterministic browser-free task\n\nUse `glass <command> --help` for command-specific options and examples."
+    after_help = "Start here:\n  glass doctor                         Check browser and local runtime support\n  glass                                Open the interactive terminal workspace\n  glass navigate https://example.com   Open a page in one bounded operation\n  glass observe --level interactive    Inspect current semantic understanding\n  glass task compile task.json ir.json Compile a deterministic browser-free task\n\nMulti-call native browsing keeps page state in one named session:\n  glass-browser --browser-runtime native session start NAME\n  glass-browser --browser-runtime native --session NAME navigate URL\n  glass-browser --browser-runtime native --session NAME observe\n  glass-browser --browser-runtime native --session NAME click TARGET\n  glass-browser --browser-runtime native --session NAME text\n  glass-browser --browser-runtime native session stop NAME\nUse the same NAME on each call. Bare one-shot calls are stateless.\n\nUse `glass <command> --help` for command-specific options and examples."
 )]
 pub struct Cli {
     /// Browser safety preset. Hardened mode fails closed for privileged operations.
@@ -2136,6 +2136,28 @@ mod tests {
             }) if name == "work"
         ));
     }
+
+    #[test]
+    fn native_multicall_session_syntax_is_in_bounded_browser_help() {
+        let help = cli_command().render_long_help().to_string();
+        for syntax in [
+            "glass-browser --browser-runtime native session start NAME",
+            "glass-browser --browser-runtime native --session NAME navigate URL",
+            "glass-browser --browser-runtime native --session NAME observe",
+            "glass-browser --browser-runtime native --session NAME click TARGET",
+            "glass-browser --browser-runtime native --session NAME text",
+            "glass-browser --browser-runtime native session stop NAME",
+            "Bare one-shot calls are stateless",
+        ] {
+            assert!(help.contains(syntax), "missing `{syntax}` in {help}");
+        }
+        assert!(
+            help.len() <= 16_384,
+            "browser help grew to {} bytes",
+            help.len()
+        );
+    }
+
     #[test]
     fn update_options_are_explicit_and_browser_free() {
         let cli = try_parse_cli([

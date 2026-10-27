@@ -143,6 +143,16 @@
           "anchor": "issue-65-session-preference-bind-bound-2026-10-27"
         },
         {
+          "level": "3",
+          "title": "Issue #65 interrupted-turn sidecar bound (2026-10-27)",
+          "anchor": "issue-65-interrupted-turn-sidecar-bound-2026-10-27"
+        },
+        {
+          "level": "3",
+          "title": "Issue #65 browser knowledge-store snapshot bound (2026-10-27)",
+          "anchor": "issue-65-browser-knowledge-store-snapshot-bound-2026-10-27"
+        },
+        {
           "level": "2",
           "title": "Issue #65 dead-code allowance dispositions",
           "anchor": "issue-65-dead-code-allowance-dispositions"
@@ -226,6 +236,11 @@
           "level": "3",
           "title": "Issue #65 semantic observation JSON source bound (2026-10-27)",
           "anchor": "issue-65-semantic-observation-json-source-bound-2026-10-27"
+        },
+        {
+          "level": "3",
+          "title": "Issue #65 persisted snapshot read bounds (2026-10-27)",
+          "anchor": "issue-65-persisted-snapshot-read-bounds-2026-10-27"
         },
         {
           "level": "3",

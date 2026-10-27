@@ -525,6 +525,17 @@ regressions cover the knowledge store, workspace store, and partial sidecar.
 Other persisted-state paths and concurrent replacement scenarios remain in
 the #65 source-level acceptance matrix.
 
+### Issue #65 persistent browser status file bound (2026-10-27)
+
+Persistent native session status used `std::fs::read` and checked its existing
+32 KiB cap only after allocation. Synchronous status reads now take at most
+cap+1 bytes before JSON parsing. The native owner readiness poll uses the
+same bound and treats malformed or oversized status as a not-yet-ready
+record rather than unwrapping. The test-only status reader now follows the
+same cap, and an oversized invalid-JSON regression verifies the size error is
+returned first. The focused regression passes; this closes the persisted
+session status boundary only, not daemon interleavings or the full #65 audit.
+
 ### Issue #64 native public video failure recheck (2026-10-27)
 
 The focused local VP8/WebM journey passes with native `videoWidth` and

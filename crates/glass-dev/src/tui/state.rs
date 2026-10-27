@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_BROWSER_TOOL: AtomicU64 = AtomicU64::new(1);
@@ -39,6 +39,28 @@ const MAX_LSP_WORKSPACE_EDIT_EDITS: usize = 16_384;
 const MAX_NATIVE_GC_UI_OUTPUT_BYTES: usize = 64 * 1024;
 pub(super) const BROWSER_RECOVERY_STATUS: &str =
     "Browser recovery available · current surface preserved";
+
+fn relative_workspace_path(root: &Path, path: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let mut path_components = path.components();
+        for root_component in root.components() {
+            let path_component = path_components.next()?;
+            if !root_component
+                .as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&path_component.as_os_str().to_string_lossy())
+            {
+                return None;
+            }
+        }
+        Some(path_components.collect())
+    }
+    #[cfg(not(windows))]
+    {
+        path.strip_prefix(root).ok().map(Path::to_path_buf)
+    }
+}
 
 fn bounded_native_gc_ui_output(text: &str) -> String {
     if text.len() <= MAX_NATIVE_GC_UI_OUTPUT_BYTES {
@@ -4335,9 +4357,14 @@ impl DevTuiState {
                 let absolute_path = parsed
                     .to_file_path()
                     .map_err(|()| "LSP workspace edit contains an invalid file URI".to_string())?;
-                let relative_path = absolute_path.strip_prefix(&root).map_err(|_| {
-                    "LSP workspace edit targets a file outside this project".to_string()
-                })?;
+                let root = std::fs::canonicalize(&root)
+                    .map_err(|_| "LSP workspace root is unavailable".to_string())?;
+                let absolute_path = std::fs::canonicalize(&absolute_path)
+                    .map_err(|_| "LSP workspace edit targets an unavailable file".to_string())?;
+                let relative_path =
+                    relative_workspace_path(&root, &absolute_path).ok_or_else(|| {
+                        "LSP workspace edit targets a file outside this project".to_string()
+                    })?;
                 let relative_path = relative_path
                     .to_str()
                     .ok_or_else(|| "LSP workspace edit path is not valid UTF-8".to_string())?
@@ -9665,9 +9692,8 @@ impl DevTuiState {
             .map_err(|error| format!("workspace root unavailable: {error}"))?;
         let source = std::fs::canonicalize(path)
             .map_err(|error| format!("source path unavailable: {error}"))?;
-        let relative = source
-            .strip_prefix(&root)
-            .map_err(|_| "source path is outside this workspace".to_string())?;
+        let relative = relative_workspace_path(&root, &source)
+            .ok_or_else(|| "source path is outside this workspace".to_string())?;
         Ok(relative.to_string_lossy().into_owned())
     }
 
@@ -21436,6 +21462,25 @@ mod tests {
 
         drop(worker);
         std::fs::remove_dir_all(root).expect("remove temporary workspace");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_workspace_relative_paths_ignore_component_case() {
+        assert_eq!(
+            relative_workspace_path(
+                Path::new(r"C:\Users\runneradmin\Project"),
+                Path::new(r"c:\users\RUNNERADMIN\project\src\main.rs"),
+            ),
+            Some(PathBuf::from(r"src\main.rs"))
+        );
+        assert_eq!(
+            relative_workspace_path(
+                Path::new(r"C:\Users\runneradmin\Project"),
+                Path::new(r"C:\Users\runneradmin\Other\main.rs"),
+            ),
+            None
+        );
     }
 
     #[test]

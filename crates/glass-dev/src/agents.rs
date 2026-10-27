@@ -3962,15 +3962,16 @@ mod tests {
         let id = AgentId::parse("agent-panic-test").unwrap();
         let (command, _commands) = mpsc::sync_channel(COMMAND_CAPACITY);
         let worker = thread::spawn(|| panic!("intentional worker panic"));
-        worker.thread().unpark();
-        insert_test_worker(&mut registry, id.clone(), command, worker);
-        for _ in 0..100 {
-            registry.refresh().unwrap();
-            if registry.records[&id].snapshot.status == AgentStatus::Failed {
-                break;
-            }
-            thread::sleep(Duration::from_millis(5));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !worker.is_finished() && Instant::now() < deadline {
+            thread::yield_now();
         }
+        assert!(
+            worker.is_finished(),
+            "panic worker should terminate promptly"
+        );
+        insert_test_worker(&mut registry, id.clone(), command, worker);
+        registry.refresh().unwrap();
         let snapshot = registry.snapshot(&id).unwrap();
         assert_eq!(snapshot.status, AgentStatus::Failed);
         assert!(snapshot.last_error.unwrap().contains(id.as_str()));

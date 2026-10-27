@@ -225,15 +225,17 @@ mod tests {
         );
         let manager = ExperimentManager::new(&root).unwrap();
         let experiment = manager.create("candidate_a", 3101).unwrap();
+        let expected_worktree = root
+            .parent()
+            .unwrap()
+            .join(format!(
+                ".glass-{}-experiments",
+                root.file_name().unwrap().to_string_lossy()
+            ))
+            .join("candidate_a");
         assert_eq!(
-            experiment.worktree,
-            root.parent()
-                .unwrap()
-                .join(format!(
-                    ".glass-{}-experiments",
-                    root.file_name().unwrap().to_string_lossy()
-                ))
-                .join("candidate_a")
+            fs::canonicalize(&experiment.worktree).unwrap(),
+            fs::canonicalize(expected_worktree).unwrap()
         );
         fs::write(experiment.worktree.join("app.txt"), "base\nchange\n").unwrap();
         fs::write(experiment.worktree.join("new.txt"), "untracked\n").unwrap();

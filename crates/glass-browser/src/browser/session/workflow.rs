@@ -27,6 +27,7 @@ pub use recorder::*;
 /// The workflow definition schema understood by this crate.
 pub const WORKFLOW_SCHEMA_VERSION: u32 = 1;
 const MAX_NAME_BYTES: usize = 128;
+pub(super) const MAX_WORKFLOW_SOURCE_BYTES: usize = 256 * 1024;
 const MAX_SCROLL_FILTER_BYTES: usize = 256;
 const MAX_DESCRIPTION_BYTES: usize = 4 * 1024;
 const MAX_INPUTS: usize = 64;
@@ -70,6 +71,12 @@ pub struct WorkflowDefinition {
 impl WorkflowDefinition {
     /// Parse and validate a JSON workflow definition.
     pub fn from_json(input: &str) -> Result<Self, WorkflowValidationError> {
+        if input.len() > MAX_WORKFLOW_SOURCE_BYTES {
+            return Err(WorkflowValidationError::new(
+                "$",
+                "workflow source exceeds the 256 KiB authoring limit",
+            ));
+        }
         let value: Value = serde_json::from_str(input)
             .map_err(|error| WorkflowValidationError::new("$", format!("invalid JSON: {error}")))?;
         Self::from_value(value)
@@ -3025,6 +3032,26 @@ mod tests {
         assert!(first.contains("\"schemaVersion\":1"));
         assert!(first.contains("\"timeoutMs\":20000"));
         assert!(first.contains("\"workflowVersion\":\"1.0.0\""));
+    }
+
+    #[test]
+    fn from_json_enforces_the_authoring_source_limit_before_parsing() {
+        let canonical = definition().to_canonical_json().unwrap();
+        let at_limit = format!(
+            "{}{}",
+            canonical,
+            " ".repeat(MAX_WORKFLOW_SOURCE_BYTES - canonical.len())
+        );
+        assert_eq!(at_limit.len(), MAX_WORKFLOW_SOURCE_BYTES);
+        assert!(WorkflowDefinition::from_json(&at_limit).is_ok());
+
+        let oversized = format!("{at_limit} ");
+        let error = WorkflowDefinition::from_json(&oversized).unwrap_err();
+        assert_eq!(error.path, "$");
+        assert_eq!(
+            error.reason,
+            "workflow source exceeds the 256 KiB authoring limit"
+        );
     }
 
     #[test]

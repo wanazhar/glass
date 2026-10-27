@@ -133,6 +133,11 @@
           "anchor": "issue-65-malformed-mcp-frame-cleanup-follow-up-2026-10-26"
         },
         {
+          "level": "3",
+          "title": "Issue #65 direct workflow JSON parser bound (2026-10-27)",
+          "anchor": "issue-65-direct-workflow-json-parser-bound-2026-10-27"
+        },
+        {
           "level": "2",
           "title": "Issue #65 policy and sandbox path dispositions",
           "anchor": "issue-65-policy-and-sandbox-path-dispositions"

@@ -4,6 +4,7 @@
 //! [`super::WorkflowDefinition`] contract after this module parses, validates,
 //! and analyzes the source.
 
+use super::workflow::MAX_WORKFLOW_SOURCE_BYTES;
 use super::{
     BatchStep, SemanticIntentAction, WorkflowDefinition, WorkflowDraft, WorkflowTransactionClass,
     WorkflowValidationError,
@@ -18,7 +19,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub const WORKFLOW_AUTHORING_SCHEMA_VERSION: u32 = 1;
-const MAX_SOURCE_BYTES: usize = 256 * 1024;
 const MAX_YAML_EXPANDED_NODES: usize = 32 * 1024;
 const MAX_YAML_EXPANDED_SCALAR_BYTES: usize = 1024 * 1024;
 const MAX_DIAGNOSTIC_MESSAGE_BYTES: usize = 512;
@@ -318,7 +318,7 @@ pub fn compile_workflow(
     source: &str,
     format: WorkflowAuthoringFormat,
 ) -> Result<WorkflowAuthoringDocument, WorkflowCompileError> {
-    if source.is_empty() || source.len() > MAX_SOURCE_BYTES {
+    if source.is_empty() || source.len() > MAX_WORKFLOW_SOURCE_BYTES {
         return Err(compile_error(
             format,
             diagnostic(
@@ -1202,7 +1202,7 @@ outputs: {}
             .collect::<Vec<_>>()
             .join(", ");
         let source = format!("payload: &payload '{payload}'\ncopies: [{aliases}]\n");
-        assert!(source.len() < MAX_SOURCE_BYTES);
+        assert!(source.len() < MAX_WORKFLOW_SOURCE_BYTES);
 
         let error = compile_workflow_yaml(&source).unwrap_err();
         assert_eq!(error.diagnostics[0].code, "authoring.expansion_limit");

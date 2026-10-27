@@ -44,14 +44,22 @@ def image_name(value: Any) -> str | None:
 def is_worker_process(value: Any) -> bool:
     if not isinstance(value, str):
         return False
-    value = value.replace("\\", "/").rsplit("/", 1)[-1]
+    value = value.replace("\\", "/").rsplit("/", 1)[-1].replace("_", "-")
     if value == WORKER_PROCESS_NAME:
         return True
     # macOS may expose a 16-character procName even though the executable's
     # full basename is longer. Accept only this fixed, distinctive prefix.
-    return (
+    if (
         len(WORKER_PROCESS_PREFIX) <= len(value) <= 20
         and WORKER_PROCESS_NAME.startswith(value)
+    ):
+        return True
+    # Some launch paths use a more specific native-worker basename. Match
+    # only Glass-native executables explicitly ending in `worker`.
+    return (
+        value.startswith("glass-native-")
+        and value.endswith("-worker")
+        and len(value) <= 64
     )
 
 
@@ -338,6 +346,19 @@ def self_test() -> None:
         summary = parse_report(path_match, since=since)
         assert summary is not None and summary["process"] == WORKER_PROCESS_NAME
         assert "/private/" not in json.dumps(summary)
+
+        alias = root / "glass-native-worker-alias.ips"
+        alias.write_text(
+            json.dumps(
+                {
+                    "procName": "glass_native_worker",
+                    "threads": [{"triggered": True, "frames": []}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary = parse_report(alias, since=since)
+        assert summary is not None and summary["process"] == WORKER_PROCESS_NAME
 
         crash = root / "glass-native-content-worker-test.crash"
         crash.write_text(

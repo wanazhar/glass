@@ -223,6 +223,19 @@ cases ran on Linux only. The separate macOS profile, all tool-specific error
 propagation, concurrent request/daemon interleavings, and remaining workflow
 authoring shapes still need individual evidence before #65 can close.
 
+### Issue #65 syntax-check subprocess setup and timeout signaling (2026-10-27)
+
+The Core syntax-only diagnostics subprocess now treats unexpectedly absent
+stdin/stdout/stderr pipes as an `unavailable` checker result and kills/reaps
+the child before returning. Timeout cleanup converts the child ID to
+`libc::pid_t` with checked conversion before signaling its process group, and
+falls back to killing the exact child if conversion is unavailable. The
+post-wait status path no longer unwraps an optional value. The focused
+diagnostics test filter passed five tests, including a checked PID conversion
+regression; strict Core binary Clippy and formatting passed. This covers the
+named subprocess setup and PID-narrowing paths only. It does not close the
+broader #65 process-group, cross-platform, and error-propagation audit.
+
 ## Verification in this working tree
 
 Passed so far:

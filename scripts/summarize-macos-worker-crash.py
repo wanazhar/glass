@@ -44,6 +44,7 @@ def image_name(value: Any) -> str | None:
 def is_worker_process(value: Any) -> bool:
     if not isinstance(value, str):
         return False
+    value = value.replace("\\", "/").rsplit("/", 1)[-1]
     if value == WORKER_PROCESS_NAME:
         return True
     # macOS may expose a 16-character procName even though the executable's
@@ -320,6 +321,21 @@ def self_test() -> None:
             encoding="utf-8",
         )
         summary = parse_report(truncated, since=since)
+        assert summary is not None and summary["process"] == WORKER_PROCESS_NAME
+        assert "/private/" not in json.dumps(summary)
+
+        path_match = root / "glass-native-content-worker-path.ips"
+        path_match.write_text(
+            json.dumps(
+                {
+                    "procName": "renamed-process",
+                    "procPath": "/private/tmp/runner/glass-native-content-worker",
+                    "threads": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary = parse_report(path_match, since=since)
         assert summary is not None and summary["process"] == WORKER_PROCESS_NAME
         assert "/private/" not in json.dumps(summary)
 

@@ -2957,9 +2957,18 @@ fn dispatch_certify(action: &CertifyCommand) -> BrowserResult<()> {
             unreachable!("browser-backed reliability runs are handled after startup")
         }
         CertifyCommand::Plan { scenario, fixture } => {
-            let scenario = ReliabilityScenario::from_value(read_json_input(Some(scenario))?)?;
-            let fixture =
-                ReliabilityFixtureManifest::from_json(&std::fs::read_to_string(fixture)?)?;
+            let scenario_source = read_bounded_text_file(
+                scenario,
+                "reliability scenario JSON",
+                MAX_RELIABILITY_SOURCE_BYTES,
+            )?;
+            let fixture_source = read_bounded_text_file(
+                fixture,
+                "reliability fixture JSON",
+                MAX_RELIABILITY_SOURCE_BYTES,
+            )?;
+            let scenario = ReliabilityScenario::from_json(&scenario_source)?;
+            let fixture = ReliabilityFixtureManifest::from_json(&fixture_source)?;
             let plan = scenario.execution_plan(&fixture)?;
             print_json(&serde_json::json!({
                 "status": "valid",

@@ -264,11 +264,15 @@ manifest rejection; the existing bounded-reader regression covers oversized
 files. The reliability runner now applies the same opened-file pattern to each
 referenced workflow JSON/YAML source at the existing 256 KiB workflow limit;
 an oversized-file regression proves the file is rejected before parsing.
+`certify plan` now also uses the bounded reader for scenario and fixture
+files rather than parsing an unbounded fixture read.
 `ReliabilityScenario::from_value` and `ReliabilityReplayBundle::from_value`
 also enforce an iterative 32,768-node, 128-level, 512 KiB accounted-value
 budget before typed conversion. Focused tests reject oversized arrays and
-excessive nesting. Other already allocated `Value` APIs and the remaining
-parser and error-propagation audit for #65 remain open.
+excessive nesting. `WorkflowDefinition::from_value` enforces the same
+iterative node/depth budget with the 256 KiB workflow input ceiling. Other
+structured APIs and the remaining parser and error-propagation audit for #65
+remain open.
 
 ### Issue #65 extraction request JSON source bound (2026-10-27)
 

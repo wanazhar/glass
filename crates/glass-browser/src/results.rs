@@ -8,6 +8,7 @@ use crate::workspace::ResourceReference;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
@@ -394,8 +395,23 @@ impl ResultStore {
 
     pub fn load(&self, result_id: &str) -> Result<ResultArtifact, ResultStoreError> {
         validate_id(result_id)?;
-        let artifact: ResultArtifact =
-            serde_json::from_slice(&std::fs::read(self.path_for(result_id))?)?;
+        let path = self.path_for(result_id);
+        let file = std::fs::File::open(path)?;
+        let max_bytes = u64::try_from(self.max_bytes).unwrap_or(u64::MAX);
+        let file_bytes = file.metadata()?.len();
+        if file_bytes > max_bytes {
+            return Err(ResultStoreError::TooLarge(
+                usize::try_from(file_bytes).unwrap_or(usize::MAX),
+                self.max_bytes,
+            ));
+        }
+        let mut bytes = Vec::with_capacity(self.max_bytes.min(4096));
+        file.take(max_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > self.max_bytes {
+            return Err(ResultStoreError::TooLarge(bytes.len(), self.max_bytes));
+        }
+        let artifact: ResultArtifact = serde_json::from_slice(&bytes)?;
         if artifact.schema_version != RESULT_SCHEMA_VERSION || artifact.result_id != result_id {
             return Err(ResultStoreError::InvalidArtifact(result_id.to_string()));
         }
@@ -600,6 +616,25 @@ mod tests {
         assert_eq!(artifact.details["cookie"], "[REDACTED]");
         assert_eq!(artifact.details["nested"]["password"], "[REDACTED]");
         assert_eq!(artifact.details["value"], 3);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn result_store_load_refuses_oversized_files_before_parsing() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-results-size-{}-{}",
+            std::process::id(),
+            RESULT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = ResultStore::new(&root).with_max_bytes(1024);
+        let path = store.path_for("run_oversized");
+        let original = vec![b' '; 1025];
+        std::fs::write(&path, &original).unwrap();
+
+        let error = store.load("run_oversized").unwrap_err();
+        assert!(matches!(error, ResultStoreError::TooLarge(1025, 1024)));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
         let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -13,6 +13,7 @@ use std::fmt;
 pub const RELIABILITY_SCENARIO_SCHEMA_VERSION: u32 = 1;
 pub const RELIABILITY_FIXTURE_SCHEMA_VERSION: u32 = 1;
 pub const RELIABILITY_REPLAY_SCHEMA_VERSION: u32 = 1;
+pub(crate) const MAX_RELIABILITY_SOURCE_BYTES: usize = 512 * 1024;
 const MAX_SCENARIO_ID_BYTES: usize = 128;
 const MAX_CATEGORY_BYTES: usize = 128;
 const MAX_FIXTURE_BYTES: usize = 256;
@@ -135,6 +136,7 @@ pub struct ReliabilityFixtureManifest {
 impl ReliabilityFixtureManifest {
     /// Parse and validate one fixture manifest.
     pub fn from_json(input: &str) -> Result<Self, ReliabilityScenarioError> {
+        check_json_source_size(input)?;
         let manifest: Self = serde_json::from_str(input).map_err(|error| {
             ReliabilityScenarioError::new("$", format!("invalid fixture JSON: {error}"))
         })?;
@@ -304,6 +306,7 @@ impl ReliabilityReplayBundle {
         input: &str,
         scenario: &ReliabilityScenario,
     ) -> Result<Self, ReliabilityScenarioError> {
+        check_json_source_size(input)?;
         let value = serde_json::from_str(input).map_err(|error| {
             ReliabilityScenarioError::new("$", format!("invalid replay JSON: {error}"))
         })?;
@@ -609,6 +612,7 @@ pub struct ReliabilityScenario {
 impl ReliabilityScenario {
     /// Parse and validate one JSON scenario.
     pub fn from_json(input: &str) -> Result<Self, ReliabilityScenarioError> {
+        check_json_source_size(input)?;
         let scenario: Self = serde_json::from_str(input).map_err(|error| {
             ReliabilityScenarioError::new("$", format!("invalid scenario JSON: {error}"))
         })?;
@@ -1049,6 +1053,16 @@ fn validate_text(path: &str, value: &str, maximum: usize) -> Result<(), Reliabil
     Ok(())
 }
 
+fn check_json_source_size(input: &str) -> Result<(), ReliabilityScenarioError> {
+    if input.len() > MAX_RELIABILITY_SOURCE_BYTES {
+        return Err(ReliabilityScenarioError::new(
+            "$",
+            format!("JSON source exceeds the {MAX_RELIABILITY_SOURCE_BYTES}-byte input limit"),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_digest(path: &str, value: &str) -> Result<(), ReliabilityScenarioError> {
     if !value.starts_with("sha256:") || value.len() != "sha256:".len() + 64 {
         return Err(ReliabilityScenarioError::new(
@@ -1174,6 +1188,33 @@ mod tests {
         let parsed = ReliabilityScenario::from_json(&canonical).unwrap();
         assert_eq!(parsed.id, "duplicate-submit");
         assert!(canonical.contains("nonIdempotentMutationDuplicated"));
+    }
+
+    #[test]
+    fn public_json_parsers_reject_oversized_source_before_parsing() {
+        let oversized = " ".repeat(MAX_RELIABILITY_SOURCE_BYTES + 1);
+        let error = ReliabilityScenario::from_json(&oversized).unwrap_err();
+        assert!(error.reason.contains("input limit"));
+
+        let error = ReliabilityFixtureManifest::from_json(&oversized).unwrap_err();
+        assert!(error.reason.contains("input limit"));
+
+        let error = ReliabilityReplayBundle::from_json(&oversized, &scenario()).unwrap_err();
+        assert!(error.reason.contains("input limit"));
+    }
+
+    #[test]
+    fn scenario_parser_accepts_the_exact_source_limit() {
+        let canonical = scenario().to_canonical_json().unwrap();
+        let padded = format!(
+            "{canonical}{}",
+            " ".repeat(MAX_RELIABILITY_SOURCE_BYTES - canonical.len())
+        );
+        assert_eq!(padded.len(), MAX_RELIABILITY_SOURCE_BYTES);
+        assert_eq!(
+            ReliabilityScenario::from_json(&padded).unwrap().id,
+            "duplicate-submit"
+        );
     }
 
     #[test]

@@ -29,6 +29,10 @@ evaluation are performed.
 
 ## Manifest
 
+The UTF-8 source is limited to 512 KiB. The CLI enforces that limit while
+reading the manifest, and the parser rejects oversized source before JSON
+deserialization.
+
 The input is a JSON file with up to 32 sites:
 
 ```json

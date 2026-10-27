@@ -211,12 +211,11 @@ pub(crate) async fn run(
     viewport: Option<(i64, i64)>,
     stop_on_error: bool,
 ) -> BrowserResult<()> {
-    let source = std::fs::read_to_string(input).map_err(|error| {
-        format!(
-            "could not read site smoke manifest '{}': {error}",
-            input.display()
-        )
-    })?;
+    let source = super::runner::read_bounded_text_file(
+        input,
+        "site smoke manifest",
+        crate::reliability::MAX_RELIABILITY_SOURCE_BYTES,
+    )?;
     let sites = parse_manifest(&source)?;
     let options = SessionOptions {
         port: cli.port,
@@ -283,6 +282,13 @@ pub(crate) async fn run(
 }
 
 fn parse_manifest(source: &str) -> BrowserResult<Vec<SiteSmokeSpec>> {
+    if source.len() > crate::reliability::MAX_RELIABILITY_SOURCE_BYTES {
+        return Err(format!(
+            "site smoke manifest exceeds the {}-byte input limit",
+            crate::reliability::MAX_RELIABILITY_SOURCE_BYTES
+        )
+        .into());
+    }
     let input: SiteSmokeInput = serde_json::from_str(source)
         .map_err(|error| format!("invalid site smoke manifest JSON: {error}"))?;
     let (schema_version, sites) = match input {
@@ -1266,6 +1272,13 @@ mod tests {
         assert_eq!(parse_manifest(manifest).unwrap().len(), 1);
         let duplicate = r#"{"schemaVersion":1,"sites":[{"id":"same","url":"https://a.example"},{"id":"same","url":"https://b.example"}]}"#;
         assert!(parse_manifest(duplicate).is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_manifest_before_json_parsing() {
+        let oversized = " ".repeat(crate::reliability::MAX_RELIABILITY_SOURCE_BYTES + 1);
+        let error = parse_manifest(&oversized).unwrap_err().to_string();
+        assert!(error.contains("input limit"));
     }
 
     #[test]

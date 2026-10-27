@@ -9,6 +9,8 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+#[cfg(unix)]
+use std::hash::{Hash, Hasher};
 use std::{
     collections::{BTreeMap, VecDeque},
     fs::{self, File, OpenOptions},
@@ -74,7 +76,25 @@ fn root(owner: &str) -> PathBuf {
     config::data_dir().join("agents").join(owner)
 }
 fn socket(owner: &str) -> PathBuf {
-    root(owner).join("control.sock")
+    let path = root(owner).join("control.sock");
+    shorten_control_socket_path(path, owner)
+}
+#[cfg(unix)]
+fn shorten_control_socket_path(path: PathBuf, owner: &str) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+
+    // macOS sockaddr_un.sun_path is shorter than Linux's. Leave room for the
+    // terminating NUL and avoid relying on the host's exact limit.
+    if path.as_os_str().as_bytes().len() <= 90 {
+        return path;
+    }
+
+    // Keep long XDG_DATA_HOME paths usable without moving durable agent state.
+    // This directory is created with mode 0700 before binding the socket.
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    owner.hash(&mut hasher);
+    let uid = unsafe { libc::geteuid() };
+    PathBuf::from(format!("/tmp/glass-core-{uid}")).join(format!("{:016x}.sock", hasher.finish()))
 }
 fn short(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
@@ -1306,6 +1326,9 @@ pub fn start(
     let listener = {
         use std::os::unix::net::UnixListener;
         let path = socket(owner);
+        if let Some(parent) = path.parent() {
+            private_dir(parent)?;
+        }
         let _ = fs::remove_file(&path);
         let listener =
             UnixListener::bind(&path).map_err(|e| format!("agent control socket: {e}"))?;
@@ -2131,6 +2154,33 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     static IDS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cfg(unix)]
+    #[test]
+    fn long_agent_control_socket_uses_bindable_private_temp_path() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::net::UnixListener;
+
+        let owner = format!(
+            "socket-path-{}-{}",
+            std::process::id(),
+            IDS.fetch_add(1, Ordering::Relaxed)
+        );
+        let long_path = PathBuf::from("/")
+            .join("x".repeat(100))
+            .join(&owner)
+            .join("control.sock");
+        let path = shorten_control_socket_path(long_path, &owner);
+        assert!(path.as_os_str().as_bytes().len() <= 90);
+        assert!(path.starts_with(format!("/tmp/glass-core-{}", unsafe { libc::geteuid() })));
+
+        let parent = path.parent().unwrap();
+        private_dir(parent).unwrap();
+        let listener = UnixListener::bind(&path).expect("short control socket path should bind");
+        drop(listener);
+        fs::remove_file(path).unwrap();
+    }
+
     struct Fake {
         requests: Arc<Mutex<Vec<usize>>>,
     }

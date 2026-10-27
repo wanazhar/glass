@@ -6,8 +6,9 @@
 //! browser payloads.
 
 use crate::browser::session::{
-    BrowserResult, CdpBrowserSession, WorkflowCheckpoint, WorkflowDefinition, WorkflowRunResult,
-    WorkflowRunStatus, compile_workflow_json, compile_workflow_yaml,
+    BrowserResult, CdpBrowserSession, MAX_WORKFLOW_SOURCE_BYTES, WorkflowCheckpoint,
+    WorkflowDefinition, WorkflowRunResult, WorkflowRunStatus, compile_workflow_json,
+    compile_workflow_yaml,
 };
 use crate::reliability::{
     ReliabilityExecutionOperation, ReliabilityFaultKind, ReliabilityFixtureManifest,
@@ -17,6 +18,7 @@ use crate::reliability::{
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -316,7 +318,24 @@ fn bounded_workflow_path(root: &Path, source: &str) -> BrowserResult<PathBuf> {
 }
 
 fn load_workflow(path: &Path) -> BrowserResult<WorkflowDefinition> {
-    let source = std::fs::read_to_string(path)?;
+    let file = std::fs::File::open(path)?;
+    let max_bytes = u64::try_from(MAX_WORKFLOW_SOURCE_BYTES)
+        .map_err(|_| "workflow input limit exceeds the platform file size range")?;
+    if file.metadata()?.len() > max_bytes {
+        return Err(format!(
+            "workflow source exceeds the {MAX_WORKFLOW_SOURCE_BYTES}-byte authoring limit"
+        )
+        .into());
+    }
+    let mut source = String::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_string(&mut source)?;
+    if source.len() > MAX_WORKFLOW_SOURCE_BYTES {
+        return Err(format!(
+            "workflow source exceeds the {MAX_WORKFLOW_SOURCE_BYTES}-byte authoring limit"
+        )
+        .into());
+    }
     let format = path.extension().and_then(|extension| extension.to_str());
     let document = match format {
         Some("yaml") | Some("yml") => compile_workflow_yaml(&source)?,
@@ -386,6 +405,28 @@ mod tests {
 
         assert_eq!(workflow.name, "open-example");
         assert_eq!(workflow.steps.len(), 1);
+    }
+
+    #[test]
+    fn workflow_loader_rejects_oversized_file_before_parsing() {
+        let directory = std::env::temp_dir().join(format!(
+            "glass-reliability-oversized-workflow-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("oversized.json");
+        std::fs::write(
+            &path,
+            vec![b' '; MAX_WORKFLOW_SOURCE_BYTES.saturating_add(1)],
+        )
+        .unwrap();
+        let error = load_workflow(&path).unwrap_err().to_string();
+        assert!(error.contains("authoring limit"));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

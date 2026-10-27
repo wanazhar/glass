@@ -282,7 +282,7 @@ mod tests {
                 );
                 assert_eq!(
                     core_cli_presentation(&args(&["glass", "core", "browser", "status"])),
-                    None
+                    Some("glass core")
                 );
                 assert_eq!(
                     core_cli_forward_args(&args(&["glass", "browser", "status"]), &command),

@@ -17,6 +17,8 @@ use crate::session::{Record, Session};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
+const MAX_SAVED_QUEUE_BYTES: usize = 1024 * 1024;
+
 /// How a message typed during a turn is treated.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Intent {
@@ -45,17 +47,18 @@ impl Queue {
     /// Load a session-owned queue. Delivery receipts prevent replay after a crash.
     pub fn open(session: &Session) -> Result<Self, String> {
         let path = session.path.with_extension("queue.json");
-        let mut queue: Self = match std::fs::read(&path) {
-            Ok(bytes) => {
+        let mut queue: Self = match crate::requests::bounded_optional(&path, MAX_SAVED_QUEUE_BYTES)
+            .map_err(|error| format!("Invalid queue: {error}"))?
+        {
+            Some(bytes) => {
                 serde_json::from_slice(&bytes).map_err(|e| format!("Invalid queue: {e}"))?
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            None => {
                 return Ok(Self {
                     path: Some(path),
                     ..Self::default()
                 });
             }
-            Err(e) => return Err(e.to_string()),
         };
         queue.path = Some(path);
         if queue.is_empty() {
@@ -84,7 +87,11 @@ impl Queue {
 
     fn save(&self) -> Result<(), String> {
         if let Some(path) = &self.path {
-            crate::auth::secure_write(path, &serde_json::to_vec(self).map_err(|e| e.to_string())?)?;
+            let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+            if bytes.len() > MAX_SAVED_QUEUE_BYTES {
+                return Err("Saved queue exceeds the 1048576 byte limit".into());
+            }
+            crate::auth::secure_write(path, &bytes)?;
         }
         Ok(())
     }
@@ -336,6 +343,8 @@ pub fn classify(text: &str, alt: bool, turn_running: bool) -> Option<Intent> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn saved_edits_preserve_order_and_reject_invalid_indices() {
         let mut queue = super::Queue::new();
@@ -352,8 +361,6 @@ mod tests {
         queue.edit_saved("clear", 0, "").unwrap();
         assert!(queue.is_empty());
     }
-
-    use super::*;
 
     #[test]
     fn queue_survives_restart_and_committed_delivery_is_not_replayed() {
@@ -394,6 +401,24 @@ mod tests {
         );
         drop(session);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn oversized_queue_sidecar_is_rejected_before_deserialization() {
+        let dir = std::env::temp_dir().join(format!(
+            "gc-queue-oversized-{}-{}",
+            std::process::id(),
+            crate::auth::random(8).unwrap()
+        ));
+        let session = Session::create(&dir).unwrap();
+        let path = session.path.with_extension("queue.json");
+        std::fs::write(&path, vec![b' '; MAX_SAVED_QUEUE_BYTES + 1]).unwrap();
+        let error = match Queue::open(&session) {
+            Ok(_) => panic!("oversized queue should be refused"),
+            Err(error) => error,
+        };
+        assert!(error.contains("1048576 byte limit"), "{error}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

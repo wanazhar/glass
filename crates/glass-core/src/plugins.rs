@@ -25,6 +25,19 @@ use crate::skills::Skill;
 
 /// The only manifest schema we recognise.
 pub const PLUGIN_SCHEMA: &str = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
+const MAX_PLUGIN_MANIFEST_BYTES: usize = 262_144;
+
+fn read_manifest(path: &Path) -> Result<serde_json::Value, String> {
+    let bytes = crate::requests::bounded(path, MAX_PLUGIN_MANIFEST_BYTES).map_err(|error| {
+        if error.contains("byte limit") {
+            "plugin.json exceeds size limit".to_string()
+        } else {
+            error
+        }
+    })?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("plugin.json is not valid JSON: {error}"))
+}
 
 /// Manifest fields the spec permits; anything else is reported and ignored.
 const ALLOWED_FIELDS: &[&str] = &[
@@ -114,24 +127,10 @@ pub fn load_one(dir: &Path, report: &mut Vec<String>) -> Option<Plugin> {
         }
     }
     let manifest_path = dir.join("plugin.json");
-    if std::fs::metadata(&manifest_path)
-        .map(|m| m.len() > 262_144)
-        .unwrap_or(false)
-    {
-        report.push(format!(
-            "plugin {}: plugin.json exceeds size limit",
-            dir.display()
-        ));
-        return None;
-    }
-    let text = std::fs::read_to_string(&manifest_path).ok()?;
-    let value: serde_json::Value = match serde_json::from_str(&text) {
+    let value: serde_json::Value = match read_manifest(&manifest_path) {
         Ok(v) => v,
         Err(e) => {
-            report.push(format!(
-                "plugin {}: plugin.json is not valid JSON: {e}",
-                dir.display()
-            ));
+            report.push(format!("plugin {}: {e}", dir.display()));
             return None;
         }
     };
@@ -415,11 +414,7 @@ fn git_revision(path: &Path) -> Option<String> {
 }
 
 fn capabilities(dir: &Path) -> Result<serde_json::Value, String> {
-    let bytes = std::fs::read(dir.join("plugin.json")).map_err(|e| e.to_string())?;
-    if bytes.len() > 262_144 {
-        return Err("plugin.json exceeds size limit".into());
-    }
-    let manifest: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let manifest = read_manifest(&dir.join("plugin.json"))?;
     let value = manifest
         .pointer("/extensions/org.glass-core/capabilities")
         .cloned()
@@ -936,6 +931,25 @@ mod tests {
         assert!(plugin.skills[0].description.contains("Say hello"));
         assert!(plugin.mcp.is_none(), "no mcp.json means no MCP component");
         assert!(report.is_empty(), "{report:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn oversized_manifest_is_rejected_during_the_bounded_read() {
+        let root = scratch("oversized-manifest");
+        let dir = write_plugin(&root);
+        std::fs::write(
+            dir.join("plugin.json"),
+            vec![b' '; MAX_PLUGIN_MANIFEST_BYTES + 1],
+        )
+        .unwrap();
+        let mut report = Vec::new();
+        assert!(load_one(&dir, &mut report).is_none());
+        assert!(
+            report
+                .iter()
+                .any(|line| line.contains("exceeds size limit"))
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

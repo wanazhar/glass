@@ -113,6 +113,16 @@
           "anchor": "issue-65-core-settings-file-bounds-2026-10-27"
         },
         {
+          "level": "3",
+          "title": "Issue #65 plugin and durable JSON sidecar bounds (2026-10-27)",
+          "anchor": "issue-65-plugin-and-durable-json-sidecar-bounds-2026-10-27"
+        },
+        {
+          "level": "3",
+          "title": "Issue #65 ACP frame input bound (2026-10-27)",
+          "anchor": "issue-65-acp-frame-input-bound-2026-10-27"
+        },
+        {
           "level": "2",
           "title": "Issue #65 dead-code allowance dispositions",
           "anchor": "issue-65-dead-code-allowance-dispositions"

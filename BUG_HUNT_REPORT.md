@@ -106,6 +106,30 @@ full Core binary suite passes 965/965, config tests 27/27, requirement tests
 these settings paths only; it does not complete the remaining public
 parser/file inventory.
 
+### Issue #65 plugin and durable JSON sidecar bounds (2026-10-27)
+
+The next local JSON inputs were plugin manifests, add-on preferences, session
+follow-up queues, and saved plans. Plugin manifests now use one no-follow
+regular-file read capped at 256 KiB for both plugin loading and capability
+checks, removing the metadata/read race and post-allocation size check. Add-on
+preferences are capped at 64 KiB on read and write. Saved queues and plans
+are capped at 1 MiB on read and write, so a generated sidecar cannot exceed
+its own reopen limit. Focused over-limit regressions pass for all four paths;
+the full Core binary suite passes 969/969 and strict Core binary Clippy passes.
+This covers these local manifest/state inputs only; the remaining public
+transport and authoring parser inventory is still open.
+
+### Issue #65 ACP frame input bound (2026-10-27)
+
+The ACP stdin reader used `BufRead::lines`, which could grow a `String`
+without limit before JSON parsing. It now reads at most 1 MiB per line,
+drains an oversized frame through its newline, reports it as a parse error,
+and keeps framing aligned for the following request. A deterministic
+regression covers an accepted boundary line and an oversized line followed by
+a valid frame. The full Core binary suite passes 970/970 and strict Core
+binary Clippy passes. This bounds ACP framing only; other transports remain
+separate inventory entries.
+
 ## Issue #65 dead-code allowance dispositions
 
 The refreshed source scan finds 23 remaining product-code `dead_code` annotation sites plus one test-only helper in product source; the separate integration-contract test has one more test allowance. Several reviewed suppressions were removed after production callsites were verified. `Session::turn` is retained because the `sessions` CLI reads it; its stale suppression is removed. This is a count of annotation sites (module and impl scopes can cover multiple items), not 44 distinct defect candidates. The previous 44-item count is stale. The unused provider `Usage::hit_rate` method and stale module-level allowance in `browser/session/types.rs` were also removed.

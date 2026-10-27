@@ -42,7 +42,7 @@ def image_name(value: Any) -> str | None:
 
 
 def report_process_name(payload: dict[str, Any]) -> str | None:
-    for key in ("procName", "procPath"):
+    for key in ("procName", "procPath", "app_name"):
         name = image_name(payload.get(key))
         if name:
             return name
@@ -78,20 +78,28 @@ def is_worker_process(value: Any) -> bool:
 
 def ips_payloads(text: str) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for line in text.splitlines()[:64]:
+    lines = text.splitlines()
+    for line in lines[:64]:
         try:
             value = json.loads(line)
         except (json.JSONDecodeError, TypeError):
             continue
         if isinstance(value, dict):
             candidates.append(value)
-    if not candidates:
+
+    # Newer macOS `.ips` files can contain a one-line metadata object followed
+    # by a pretty-printed report object. Parse the report tail as a whole too;
+    # otherwise the valid metadata line prevents the multiline crash payload
+    # from ever being considered.
+    for start in range(min(len(lines), 2)):
         try:
-            value = json.loads(text)
+            value = json.loads("\n".join(lines[start:]))
         except (json.JSONDecodeError, TypeError):
-            return []
+            continue
         if isinstance(value, dict):
-            candidates.append(value)
+            if value not in candidates:
+                candidates.append(value)
+            break
     return candidates
 
 
@@ -103,6 +111,7 @@ def ips_payload(text: str) -> dict[str, Any] | None:
             for value in reversed(candidates)
             if is_worker_process(value.get("procName"))
             or is_worker_process(value.get("procPath"))
+            or is_worker_process(value.get("app_name"))
         ),
         None,
     )
@@ -158,8 +167,9 @@ def ips_process_reports_at(path: Path, *, since: float) -> list[dict[str, str]]:
 
 
 def ips_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    worker_process = is_worker_process(payload.get("procName")) or is_worker_process(
-        payload.get("procPath")
+    worker_process = any(
+        is_worker_process(payload.get(key))
+        for key in ("procName", "procPath", "app_name")
     )
     summary: dict[str, Any] = {
         "capture": "matched" if worker_process else "related-process-report",
@@ -419,6 +429,34 @@ def self_test() -> None:
         summary = parse_report(truncated, since=since)
         assert summary is not None and summary["process"] == WORKER_PROCESS_NAME
         assert "/private/" not in json.dumps(summary)
+
+        pretty_report = root / "glass-native-content-worker-pretty.ips"
+        pretty_report.write_text(
+            json.dumps({"app_name": "glass-native-content-worker"})
+            + "\n"
+            + json.dumps(
+                {
+                    "procName": "glass-native-content-worker",
+                    "exception": {"type": "EXC_CRASH", "signal": "SIGABRT"},
+                    "threads": [
+                        {
+                            "triggered": True,
+                            "frames": [
+                                {"imageIndex": 0, "symbol": "__pthread_kill"},
+                            ],
+                        }
+                    ],
+                    "usedImages": [{"name": "/usr/lib/libsystem_kernel.dylib"}],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        summary = parse_report(pretty_report, since=since)
+        assert summary is not None and summary["capture"] == "matched"
+        assert summary["frames"] == [
+            {"frame": 0, "image": "libsystem_kernel.dylib", "symbol": "__pthread_kill"}
+        ]
 
         path_match = root / "glass-native-content-worker-path.ips"
         path_match.write_text(

@@ -934,6 +934,17 @@ sanitizer self-test passes; hosted verification for this diagnostic addition
 is pending. These local fixes await hosted CI verification, and neither the
 Mac worker nor the umbrella issue is claimed complete.
 
+The artifact from `40562211038` contains only the `.ips` process metadata
+header: exception, termination, faulting-thread, thread-array, and image-array
+fields are all absent. The collector previously returned as soon as that
+header parsed, even though macOS writes the pretty-printed crash body after the
+header. The collector now continues polling for crash fields within its
+existing bounded wait, and labels a header-only result as incomplete only if
+the wait expires. A sanitizer self-test writes a report in two stages and
+verifies that the result includes its later sanitized signal and native frame.
+This fixes a diagnostic race; it does not yet establish why the Mac worker
+aborts. Hosted verification of the delayed-report path is pending.
+
 ### Issue #64 MDN video route and frame probe (2026-10-27)
 
 One bounded read-only rerun on `a90c1166` navigated to

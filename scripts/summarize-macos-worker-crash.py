@@ -9,6 +9,7 @@ import re
 import stat
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -219,6 +220,12 @@ def ips_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "threadCount": min(len(threads), 10_000) if isinstance(threads, list) else 0,
         "usedImagesPresent": isinstance(payload.get("usedImages"), list),
         "usedImageCount": min(len(images), 10_000),
+        "crashDataPresent": (
+            isinstance(exception, dict)
+            or isinstance(termination, dict)
+            or isinstance(crashed_thread, int)
+            or isinstance(threads, list)
+        ),
     }
     if not isinstance(threads, list):
         return summary
@@ -371,6 +378,7 @@ def candidate_reports(since: float, directories: list[Path]) -> list[Path]:
 def collect_summary(since: float, directories: list[Path], wait_seconds: float) -> dict[str, Any]:
     deadline = time.monotonic() + max(0.0, min(wait_seconds, 20.0))
     recent_reports = 0
+    partial_worker_header: dict[str, Any] | None = None
     while True:
         candidates = candidate_reports(since, directories)
         recent_reports = len(candidates)
@@ -378,6 +386,18 @@ def collect_summary(since: float, directories: list[Path], wait_seconds: float) 
         for path in candidates:
             summary = parse_report(path, since=since)
             if summary:
+                shape = summary.get("reportShape")
+                if (
+                    summary.get("capture") == "matched"
+                    and isinstance(shape, dict)
+                    and shape.get("crashDataPresent") is False
+                ):
+                    # macOS can create the `.ips` metadata line before it has
+                    # written the pretty-printed exception and thread report.
+                    # Keep polling for the body instead of treating that
+                    # transient header as a complete crash capture.
+                    partial_worker_header = summary
+                    continue
                 return summary
             if path.suffix.lower() == ".ips":
                 for report in ips_process_reports_at(path, since=since):
@@ -391,6 +411,10 @@ def collect_summary(since: float, directories: list[Path], wait_seconds: float) 
                 "frames": [],
             }
         if time.monotonic() >= deadline:
+            if partial_worker_header is not None:
+                partial_worker_header["capture"] = "matched-process-header-incomplete"
+                partial_worker_header["recentReports"] = recent_reports
+                return partial_worker_header
             return {
                 "capture": "no-matching-worker-report",
                 "recentReports": recent_reports,
@@ -474,9 +498,50 @@ def self_test() -> None:
             "threadCount": 0,
             "usedImagesPresent": False,
             "usedImageCount": 0,
+            "crashDataPresent": False,
         }
         assert "/private/" not in json.dumps(summary)
         assert "secret" not in json.dumps(summary)
+
+        growing_directory = root / "growing-report"
+        growing_directory.mkdir()
+        growing = growing_directory / "glass-native-content-worker-growing.ips"
+        growing.write_text(
+            json.dumps({"procName": "glass-native-content-worker"}),
+            encoding="utf-8",
+        )
+
+        def finish_growing_report() -> None:
+            time.sleep(0.1)
+            with growing.open("a", encoding="utf-8") as report:
+                report.write(
+                    "\n"
+                    + json.dumps(
+                        {
+                            "exception": {"type": "EXC_CRASH", "signal": "SIGABRT"},
+                            "faultingThread": 0,
+                            "usedImages": [{"name": "libsystem_kernel.dylib"}],
+                            "threads": [
+                                {
+                                    "frames": [
+                                        {"imageIndex": 0, "symbol": "__pthread_kill"}
+                                    ]
+                                }
+                            ],
+                        }
+                    )
+                )
+
+        writer = threading.Thread(target=finish_growing_report, daemon=True)
+        writer.start()
+        summary = collect_summary(since, [growing_directory], wait_seconds=1)
+        writer.join(timeout=1)
+        assert not writer.is_alive()
+        assert summary["capture"] == "matched"
+        assert summary["exception"] == "EXC_CRASH"
+        assert summary["frames"] == [
+            {"frame": 0, "image": "libsystem_kernel.dylib", "symbol": "__pthread_kill"}
+        ]
 
         pretty_report = root / "glass-native-content-worker-pretty.ips"
         pretty_report.write_text(

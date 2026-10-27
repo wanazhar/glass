@@ -779,6 +779,40 @@ readiness and VP8 decoder tests do not count as a public video pass. CI now
 inherits worker panic backtraces on native runtime jobs to identify the
 cross-platform process exits without logging page data.
 
+### Issue #64 / #65 worker stack and cross-platform failure follow-up (2026-10-27)
+
+CI run `40502209358` supplied one concrete worker cause. The Windows
+navigation-preload process tests reported `thread 'main' has overflowed its
+stack` from the child content-worker process before the parent observed its
+closed IPC pipe. The worker previously ran Tokio's current-thread runtime on
+the OS-created process-main thread, whose stack is platform-default sized. The
+worker now runs that runtime on a dedicated thread with an explicit 16 MiB
+stack. Its regression recursively consumes more than 4 MiB of stack frames;
+the focused worker-binary test passes. The exact navigation-preload filter
+also passes 3/3 locally after this change. Windows CI must rerun to verify the
+cross-platform fix.
+
+The same CI run's three macOS navigation-preload cases still failed with the
+worker exiting by `SIGABRT`; there was no worker panic/backtrace or diagnostic
+reason in the log. The same three tests pass on this Ubuntu host, but that is
+not macOS evidence. The cause of the macOS abort remains open. On hosted
+Ubuntu, all worker-dependent failures followed `bwrap: setting up uid map:
+Permission denied`, and the nested-user-namespace sandbox test failed at the
+same setup. The local Ubuntu host can create the required Bubblewrap namespace;
+this CI run therefore does not establish Linux worker behavior on a runner
+that supports the production sandbox.
+
+A single current-source public MDN WebM journey after the worker-stack change
+again passed navigation (5.339 s) and observation (3 ms), then failed during
+the first media-resource wait (31 ms), before a media resource was admitted or
+decode began. Worker diagnostics remain `worker` /
+`content_process_script` / `other`. Increasing the worker stack did not resolve
+or explain this public-media failure; no public video pass is claimed. The
+redacted report is `/tmp/glass-mdn-after-worker-stack-20261027.json` with
+owner-only traces under its adjacent `.artifacts/` directory. The provider
+stall records remain uncorrelated to the reported wait, so that separate #64
+diagnosis is also unresolved.
+
 ## Verification in this working tree
 
 Passed so far:

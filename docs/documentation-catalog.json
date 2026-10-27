@@ -298,6 +298,11 @@
           "anchor": "issue-64-65-bounded-follow-up-and-ci-reconciliation-2026-10-27"
         },
         {
+          "level": "3",
+          "title": "Issue #64 / #65 worker stack and cross-platform failure follow-up (2026-10-27)",
+          "anchor": "issue-64-65-worker-stack-and-cross-platform-failure-follow-up-2026-10-27"
+        },
+        {
           "level": "2",
           "title": "Verification in this working tree",
           "anchor": "verification-in-this-working-tree"

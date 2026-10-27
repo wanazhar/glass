@@ -14,6 +14,8 @@ pub const RELIABILITY_SCENARIO_SCHEMA_VERSION: u32 = 1;
 pub const RELIABILITY_FIXTURE_SCHEMA_VERSION: u32 = 1;
 pub const RELIABILITY_REPLAY_SCHEMA_VERSION: u32 = 1;
 pub(crate) const MAX_RELIABILITY_SOURCE_BYTES: usize = 512 * 1024;
+const MAX_RELIABILITY_VALUE_NODES: usize = 32 * 1024;
+const MAX_RELIABILITY_VALUE_DEPTH: usize = 128;
 const MAX_SCENARIO_ID_BYTES: usize = 128;
 const MAX_CATEGORY_BYTES: usize = 128;
 const MAX_FIXTURE_BYTES: usize = 256;
@@ -318,6 +320,7 @@ impl ReliabilityReplayBundle {
         value: Value,
         scenario: &ReliabilityScenario,
     ) -> Result<Self, ReliabilityScenarioError> {
+        check_json_value_budget(&value)?;
         let bundle: Self = serde_json::from_value(value).map_err(|error| {
             ReliabilityScenarioError::new("$", format!("invalid replay shape: {error}"))
         })?;
@@ -622,6 +625,7 @@ impl ReliabilityScenario {
 
     /// Parse and validate one JSON value.
     pub fn from_value(value: Value) -> Result<Self, ReliabilityScenarioError> {
+        check_json_value_budget(&value)?;
         let scenario: Self = serde_json::from_value(value).map_err(|error| {
             ReliabilityScenarioError::new("$", format!("invalid scenario shape: {error}"))
         })?;
@@ -1063,6 +1067,64 @@ fn check_json_source_size(input: &str) -> Result<(), ReliabilityScenarioError> {
     Ok(())
 }
 
+fn check_json_value_budget(value: &Value) -> Result<(), ReliabilityScenarioError> {
+    let mut stack = vec![(value, 0_usize)];
+    let mut visited = 0_usize;
+    let mut accounted_bytes = 0_usize;
+
+    while let Some((value, depth)) = stack.pop() {
+        visited += 1;
+        if visited > MAX_RELIABILITY_VALUE_NODES || depth > MAX_RELIABILITY_VALUE_DEPTH {
+            return Err(ReliabilityScenarioError::new(
+                "$",
+                "structured JSON exceeds the reliability input complexity limit",
+            ));
+        }
+        accounted_bytes = accounted_bytes.saturating_add(8);
+        match value {
+            Value::String(text) => accounted_bytes = accounted_bytes.saturating_add(text.len()),
+            Value::Array(values) => {
+                if visited
+                    .saturating_add(stack.len())
+                    .saturating_add(values.len())
+                    > MAX_RELIABILITY_VALUE_NODES
+                {
+                    return Err(ReliabilityScenarioError::new(
+                        "$",
+                        "structured JSON exceeds the reliability input complexity limit",
+                    ));
+                }
+                stack.extend(values.iter().map(|value| (value, depth + 1)));
+            }
+            Value::Object(fields) => {
+                if visited
+                    .saturating_add(stack.len())
+                    .saturating_add(fields.len())
+                    > MAX_RELIABILITY_VALUE_NODES
+                {
+                    return Err(ReliabilityScenarioError::new(
+                        "$",
+                        "structured JSON exceeds the reliability input complexity limit",
+                    ));
+                }
+                for (name, value) in fields {
+                    accounted_bytes = accounted_bytes.saturating_add(name.len()).saturating_add(4);
+                    stack.push((value, depth + 1));
+                }
+            }
+            Value::Number(_) => accounted_bytes = accounted_bytes.saturating_add(16),
+            Value::Null | Value::Bool(_) => {}
+        }
+        if accounted_bytes > MAX_RELIABILITY_SOURCE_BYTES {
+            return Err(ReliabilityScenarioError::new(
+                "$",
+                "structured JSON exceeds the reliability input size limit",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_digest(path: &str, value: &str) -> Result<(), ReliabilityScenarioError> {
     if !value.starts_with("sha256:") || value.len() != "sha256:".len() + 64 {
         return Err(ReliabilityScenarioError::new(
@@ -1214,6 +1276,28 @@ mod tests {
         assert_eq!(
             ReliabilityScenario::from_json(&padded).unwrap().id,
             "duplicate-submit"
+        );
+    }
+
+    #[test]
+    fn structured_reliability_values_enforce_node_and_depth_budgets() {
+        let oversized = Value::Array(vec![Value::Null; MAX_RELIABILITY_VALUE_NODES + 1]);
+        assert!(
+            ReliabilityScenario::from_value(oversized)
+                .unwrap_err()
+                .reason
+                .contains("complexity limit")
+        );
+
+        let mut deeply_nested = Value::Null;
+        for _ in 0..=MAX_RELIABILITY_VALUE_DEPTH {
+            deeply_nested = Value::Array(vec![deeply_nested]);
+        }
+        assert!(
+            ReliabilityReplayBundle::from_value(deeply_nested, &scenario())
+                .unwrap_err()
+                .reason
+                .contains("complexity limit")
         );
     }
 

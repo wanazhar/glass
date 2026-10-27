@@ -166,7 +166,7 @@ def old_crash_summary(text: str) -> dict[str, Any] | None:
         if line.startswith("Process:"):
             match = re.match(r"Process:\s+([^\s]+)", line)
             if match:
-                process = safe_token(match.group(1), limit=100)
+                process = image_name(match.group(1))
         elif line.startswith("Exception Type:"):
             match = re.match(r"Exception Type:\s+([^\s(]+)", line)
             if match:
@@ -351,6 +351,16 @@ def self_test() -> None:
         )
         summary = parse_report(crash, since=since)
         assert summary is not None and len(summary["frames"]) == 2
+        assert "/private/" not in json.dumps(summary)
+
+        path_crash = root / "glass-native-content-worker-path.crash"
+        path_crash.write_text(
+            "Process: /private/tmp/runner/glass-native-content-worker [42]\n"
+            "Exception Type: EXC_CRASH (SIGABRT)\n",
+            encoding="utf-8",
+        )
+        summary = parse_report(path_crash, since=since)
+        assert summary is not None and summary["process"] == WORKER_PROCESS_NAME
         assert "/private/" not in json.dumps(summary)
 
 

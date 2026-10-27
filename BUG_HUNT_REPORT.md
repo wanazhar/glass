@@ -163,6 +163,22 @@ the input file. These fixes close these two persisted/user-file paths only;
 they do not complete the broader public structured-value and file-parser
 inventory, which remains an explicit #65 acceptance gate.
 
+### Issue #65 Core instruction and result artifact reads (2026-10-27)
+
+`agents_md::load` previously read each project instruction file in full before
+applying its existing 8 KiB per-file and 12 KiB aggregate prompt budgets. It
+now reads at most the per-file cap plus one byte, preserving the visible
+truncation behavior while bounding temporary allocation. A sparse oversized
+fixture verifies the reader returns exactly cap+1 bytes.
+
+`ResultStore::save` enforced its configurable artifact-size cap, but
+`ResultStore::load` read the whole artifact before parsing and ignored that
+cap. Load now checks file metadata, reads at most cap+1 bytes to cover growth
+races, and rejects oversized artifacts before JSON parsing. Its regression
+uses a cap+1 invalid JSON file and verifies the file is preserved. These close
+two read-before-cap paths; the complete public structured-value and file
+parser inventory and the other finite #65 gates remain open.
+
 ### Issue #65 Core settings file bounds (2026-10-27)
 
 Core settings were another repeated file-to-parser boundary: `config.toml` was

@@ -18,6 +18,7 @@
 //! A file that is too big is a sign it belongs in a skill, which is loaded on
 //! demand for exactly this reason.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Candidate names, in precedence order. `override` shadows within one
@@ -37,6 +38,14 @@ pub const MAX_FILE_BYTES: usize = 8_000;
 /// Total budget across every file, so a repo with instructions in several
 /// directories cannot crowd out the conversation.
 pub const MAX_TOTAL_BYTES: usize = 12_000;
+
+fn read_instruction_prefix(path: &Path) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let mut raw = Vec::with_capacity(MAX_FILE_BYTES.saturating_add(1));
+    file.take((MAX_FILE_BYTES as u64).saturating_add(1))
+        .read_to_end(&mut raw)?;
+    Ok(raw)
+}
 
 /// Compile-time guard on the budget. Raising `MAX_TOTAL_BYTES` past this should
 /// be a deliberate act with a deliberate justification, not an accident that
@@ -100,7 +109,7 @@ pub fn load(workspace: &Path) -> Vec<Instruction> {
         if out.iter().any(|i: &Instruction| i.path == path) {
             continue;
         }
-        let Ok(raw) = std::fs::read(&path) else {
+        let Ok(raw) = read_instruction_prefix(&path) else {
             continue;
         };
 
@@ -207,6 +216,18 @@ mod tests {
         let r = loaded[0].render();
         assert!(r.contains("truncated"), "{r}");
         assert!(r.len() < MAX_FILE_BYTES + 500);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn oversized_instruction_read_stops_at_cap_plus_one() {
+        let d = scratch("bounded-read");
+        let path = d.join("AGENTS.md");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len((MAX_FILE_BYTES as u64) + 1_000_000).unwrap();
+
+        let raw = read_instruction_prefix(&path).unwrap();
+        assert_eq!(raw.len(), MAX_FILE_BYTES + 1);
         std::fs::remove_dir_all(&d).ok();
     }
 

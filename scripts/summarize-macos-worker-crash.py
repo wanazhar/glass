@@ -76,7 +76,7 @@ def is_worker_process(value: Any) -> bool:
     )
 
 
-def ips_payload(text: str) -> dict[str, Any] | None:
+def ips_payloads(text: str) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for line in text.splitlines()[:64]:
         try:
@@ -89,9 +89,14 @@ def ips_payload(text: str) -> dict[str, Any] | None:
         try:
             value = json.loads(text)
         except (json.JSONDecodeError, TypeError):
-            return None
+            return []
         if isinstance(value, dict):
             candidates.append(value)
+    return candidates
+
+
+def ips_payload(text: str) -> dict[str, Any] | None:
+    candidates = ips_payloads(text)
     worker = next(
         (
             value
@@ -110,6 +115,46 @@ def ips_payload(text: str) -> dict[str, Any] | None:
         (value for value in reversed(candidates) if is_glass_related_process(value)),
         None,
     )
+
+
+def ips_process_reports(text: str) -> list[dict[str, str]]:
+    reports: list[dict[str, str]] = []
+    for payload in reversed(ips_payloads(text)):
+        process = report_process_name(payload)
+        if not process:
+            continue
+        report = {"process": process}
+        exception = payload.get("exception")
+        if isinstance(exception, dict):
+            for source, destination in (("type", "exception"), ("signal", "signal")):
+                token = safe_token(exception.get(source), limit=64)
+                if token:
+                    report[destination] = token
+        if report not in reports:
+            reports.append(report)
+        if len(reports) >= 8:
+            break
+    return reports
+
+
+def ips_process_reports_at(path: Path, *, since: float) -> list[dict[str, str]]:
+    try:
+        metadata = path.lstat()
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_mtime < since
+            or metadata.st_size <= 0
+            or metadata.st_size > MAX_REPORT_BYTES
+        ):
+            return []
+        with path.open("rb") as report:
+            raw = report.read(MAX_REPORT_BYTES + 1)
+    except OSError:
+        return []
+    if len(raw) > MAX_REPORT_BYTES:
+        return []
+    return ips_process_reports(raw.decode("utf-8", errors="replace"))
 
 
 def ips_summary(payload: dict[str, Any]) -> dict[str, Any]:
@@ -296,10 +341,22 @@ def collect_summary(since: float, directories: list[Path], wait_seconds: float) 
     while True:
         candidates = candidate_reports(since, directories)
         recent_reports = len(candidates)
+        process_reports: list[dict[str, str]] = []
         for path in candidates:
             summary = parse_report(path, since=since)
             if summary:
                 return summary
+            if path.suffix.lower() == ".ips":
+                for report in ips_process_reports_at(path, since=since):
+                    if report not in process_reports:
+                        process_reports.append(report)
+        if process_reports:
+            return {
+                "capture": "unmatched-process-reports",
+                "recentReports": recent_reports,
+                "processReports": process_reports[:8],
+                "frames": [],
+            }
         if time.monotonic() >= deadline:
             return {
                 "capture": "no-matching-worker-report",
@@ -422,6 +479,22 @@ def self_test() -> None:
         assert "GlassNativeWorkerHost" in rendered and "__pthread_kill" in rendered
         assert "secret" not in rendered and "private-page-title" not in rendered
         assert "/private/" not in rendered and "SIGABRT" in rendered
+
+        unrelated = json.dumps(
+            {
+                "procName": "XCTest",
+                "procPath": "/private/tmp/secret-profile/XCTest",
+                "processArguments": ["private-page-title"],
+                "exception": {"type": "EXC_CRASH", "signal": "SIGABRT"},
+            }
+        )
+        process_reports = ips_process_reports(unrelated)
+        rendered = json.dumps(process_reports, sort_keys=True)
+        assert process_reports == [
+            {"process": "XCTest", "exception": "EXC_CRASH", "signal": "SIGABRT"}
+        ]
+        assert "secret" not in rendered and "private-page-title" not in rendered
+        assert "/private/" not in rendered
 
         crash = root / "glass-native-content-worker-test.crash"
         crash.write_text(

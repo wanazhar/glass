@@ -228,11 +228,17 @@ def old_crash_summary(text: str) -> dict[str, Any] | None:
                 if len(frames) >= MAX_FRAMES:
                     break
 
-    if not is_worker_process(process):
+    process_name = image_name(process)
+    worker_process = is_worker_process(process_name)
+    related_process = bool(
+        process_name
+        and ("glass" in process_name.casefold() or "native" in process_name.casefold())
+    )
+    if not worker_process and not related_process:
         return None
     summary: dict[str, Any] = {
-        "capture": "matched",
-        "process": WORKER_PROCESS_NAME,
+        "capture": "matched" if worker_process else "related-process-report",
+        "process": WORKER_PROCESS_NAME if worker_process else process_name,
         "frames": frames,
     }
     if exception:
@@ -440,6 +446,20 @@ def self_test() -> None:
         summary = parse_report(path_crash, since=since)
         assert summary is not None and summary["process"] == WORKER_PROCESS_NAME
         assert "/private/" not in json.dumps(summary)
+
+        related_crash = root / "glass-related-process.crash"
+        related_crash.write_text(
+            "Process: /private/tmp/secret-profile/GlassNativeWorkerHost [42]\n"
+            "Exception Type: EXC_CRASH (SIGABRT)\n"
+            "Thread 0 Crashed:\n"
+            "0   libsystem_kernel.dylib 0x0000000100000000 __pthread_kill + 4\n",
+            encoding="utf-8",
+        )
+        summary = parse_report(related_crash, since=since)
+        assert summary is not None and summary["capture"] == "related-process-report"
+        rendered = json.dumps(summary, sort_keys=True)
+        assert "GlassNativeWorkerHost" in rendered and "__pthread_kill" in rendered
+        assert "secret" not in rendered and "/private/" not in rendered
 
 
 def main() -> int:

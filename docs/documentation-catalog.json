@@ -164,6 +164,11 @@
         },
         {
           "level": "3",
+          "title": "Issue #65 semantic observation JSON source bound (2026-10-27)",
+          "anchor": "issue-65-semantic-observation-json-source-bound-2026-10-27"
+        },
+        {
+          "level": "3",
           "title": "Issue #64 native public video failure recheck (2026-10-27)",
           "anchor": "issue-64-native-public-video-failure-recheck-2026-10-27"
         },

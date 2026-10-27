@@ -11,6 +11,7 @@ use std::fmt::{Display, Formatter};
 
 /// Version of the authored Task Protocol contract.
 pub const TASK_PROTOCOL_SCHEMA_VERSION: u32 = 1;
+const MAX_TASK_SOURCE_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_INPUTS: usize = 64;
 pub(crate) const MAX_INPUT_NAME_BYTES: usize = 64;
 const MAX_INPUT_VALUE_BYTES: usize = 4_096;
@@ -236,6 +237,12 @@ pub struct GlassTask {
 impl GlassTask {
     /// Parse strict authored JSON into a task.
     pub fn from_json(input: &str) -> Result<Self, TaskProtocolError> {
+        if input.len() > MAX_TASK_SOURCE_BYTES {
+            return Err(TaskProtocolError::new(
+                "$",
+                "task source exceeds the 256 KiB authoring limit",
+            ));
+        }
         let task: Self = serde_json::from_str(input)
             .map_err(|error| TaskProtocolError::new("$", error.to_string()))?;
         task.validate()?;
@@ -645,6 +652,26 @@ mod tests {
         assert_eq!(first, second);
         assert!(first.contains("form.fill"));
         assert!(first.contains("Shipping"));
+    }
+
+    #[test]
+    fn task_json_source_limit_is_checked_before_parsing() {
+        let canonical = task().to_canonical_json().unwrap();
+        let at_limit = format!(
+            "{}{}",
+            canonical,
+            " ".repeat(MAX_TASK_SOURCE_BYTES - canonical.len())
+        );
+        assert_eq!(at_limit.len(), MAX_TASK_SOURCE_BYTES);
+        assert!(GlassTask::from_json(&at_limit).is_ok());
+
+        let oversized = format!("{at_limit} ");
+        let error = GlassTask::from_json(&oversized).unwrap_err();
+        assert_eq!(error.path, "$");
+        assert_eq!(
+            error.reason,
+            "task source exceeds the 256 KiB authoring limit"
+        );
     }
 
     #[test]

@@ -172,7 +172,14 @@ shared constant. Its boundary regression accepts exactly 256 KiB and rejects
 one byte over before parsing; the existing bounded YAML-alias regression also
 passes. This covers the direct JSON API path. `from_value` accepts an already
 allocated JSON value, so callers of that structured API still need their own
-input bounds before allocating or constructing the value.
+input bounds before allocating or constructing the value. The same audit found
+that `CdpBrowserSession::parse_workflow_checkpoint` checked its 8 KiB serialized
+checkpoint limit only after JSON deserialization. It now rejects oversized
+source before parsing; a regression supplies a syntactically valid checkpoint
+prefix followed by more than the limit and verifies the typed size error. The
+current string entry points are bounded before parsing: workflow JSON and YAML
+at 256 KiB, and persisted workflow checkpoints at 8 KiB. This does not replace
+caller bounds for APIs that accept already allocated `Value` objects.
 
 ## Issue #65 policy and sandbox path dispositions
 

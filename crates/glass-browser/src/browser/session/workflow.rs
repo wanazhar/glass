@@ -1977,6 +1977,9 @@ impl super::CdpBrowserSession {
     pub fn parse_workflow_checkpoint(
         input: &str,
     ) -> Result<WorkflowCheckpoint, WorkflowResumeError> {
+        if input.len() > MAX_WORKFLOW_CHECKPOINT_BYTES {
+            return Err(WorkflowResumeError::CheckpointTooLarge);
+        }
         let checkpoint: WorkflowCheckpoint = serde_json::from_str(input)
             .map_err(|error| WorkflowResumeError::CheckpointShape(error.to_string()))?;
         checkpoint.validate_size()?;
@@ -3052,6 +3055,19 @@ mod tests {
             error.reason,
             "workflow source exceeds the 256 KiB authoring limit"
         );
+    }
+
+    #[test]
+    fn workflow_checkpoint_source_limit_is_checked_before_parsing() {
+        let oversized = format!(
+            "{{\"schemaVersion\":1}}{}",
+            " ".repeat(MAX_WORKFLOW_CHECKPOINT_BYTES)
+        );
+        assert!(oversized.len() > MAX_WORKFLOW_CHECKPOINT_BYTES);
+        assert!(matches!(
+            crate::CdpBrowserSession::parse_workflow_checkpoint(&oversized),
+            Err(WorkflowResumeError::CheckpointTooLarge)
+        ));
     }
 
     #[test]

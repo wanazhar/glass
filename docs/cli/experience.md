@@ -106,8 +106,9 @@ replay browser input and does not grant a live target.
 Scenario, fixture, replay, workflow-input, and live-site smoke manifest JSON
 sources are limited to 512 KiB. The CLI checks files while reading, and public
 string parsers reject oversized input before JSON deserialization. Structured
-`Value` APIs receive already-allocated data, so callers must bound input before
-constructing those values.
+`Value` APIs receive already-allocated data; reliability scenario and replay
+parsers also bound their node count, depth, and accounted size before typed
+conversion.
 
 Malformed JSON, unknown records/workspaces, invalid schemas, scope mismatch,
 expired or incompatible evidence, and denied profile capability are errors.

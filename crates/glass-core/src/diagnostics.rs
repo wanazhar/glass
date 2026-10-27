@@ -56,13 +56,21 @@ except SyntaxError as e:
         Ok(c) => c,
         Err(e) => return json!({"status":"unavailable","diagnostics":[],"message":e.to_string()}),
     };
-    let mut input = child.stdin.take().unwrap();
+    let Some(mut input) = child.stdin.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return json!({"status":"unavailable","diagnostics":[],"message":"Syntax checker stdin was unavailable"});
+    };
     let payload = source.as_bytes().to_vec();
     let writer = std::thread::spawn(move || {
         let _ = input.write_all(&payload);
     });
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = writer.join();
+        return json!({"status":"unavailable","diagnostics":[],"message":"Syntax checker output was unavailable"});
+    };
     let read = |pipe: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
@@ -78,8 +86,16 @@ except SyntaxError as e:
             Ok(Some(s)) => break Some(s),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
             _ => {
-                unsafe {
-                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                if let Ok(group) = libc::pid_t::try_from(child.id()) {
+                    if group > 0 {
+                        unsafe {
+                            libc::kill(-group, libc::SIGKILL);
+                        }
+                    } else {
+                        let _ = child.kill();
+                    }
+                } else {
+                    let _ = child.kill();
                 }
                 let _ = child.wait();
                 break None;
@@ -95,7 +111,7 @@ except SyntaxError as e:
     if ext == "py" || ext == "pyi" {
         return serde_json::from_slice(&out).unwrap_or_else(|_|json!({"status":"unavailable","diagnostics":[],"message":String::from_utf8_lossy(&err)}));
     }
-    if status.unwrap().success() {
+    if status.is_some_and(|status| status.success()) {
         json!({"status":"ok","checker":"node-check","diagnostics":[]})
     } else {
         let text = String::from_utf8_lossy(&err);
@@ -140,6 +156,13 @@ pub fn summary(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn process_group_id_conversion_is_checked() {
+        assert_eq!(libc::pid_t::try_from(1_u32).ok(), Some(1));
+        if libc::pid_t::BITS < u32::BITS {
+            assert!(libc::pid_t::try_from(u32::MAX).is_err());
+        }
+    }
     #[test]
     fn json_location() {
         let v = check("x.json", "{\n bad}");

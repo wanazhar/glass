@@ -143,6 +143,11 @@
           "anchor": "issue-65-policy-and-sandbox-path-dispositions"
         },
         {
+          "level": "3",
+          "title": "Issue #65 syntax-check subprocess setup and timeout signaling (2026-10-27)",
+          "anchor": "issue-65-syntax-check-subprocess-setup-and-timeout-signaling-2026-10-27"
+        },
+        {
           "level": "2",
           "title": "Verification in this working tree",
           "anchor": "verification-in-this-working-tree"

@@ -39,8 +39,9 @@ page, section, anchor, and body-only changes against a base commit.
 
 The [workspace implementation matrix](../BUG_HUNT_REPORT.md) tracks the
 current GC/Glass ownership and end-to-end evidence for the workspace changes
-under review. The [bug report note](../BUG_REPORT.md) routes readers to that
-matrix.
+under review, including scoped production panic-safety, policy, and parser
+input dispositions for issue #65. The [bug report note](../BUG_REPORT.md)
+routes readers to that matrix.
 
 ## Choose your path
 

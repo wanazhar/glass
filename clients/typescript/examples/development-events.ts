@@ -6,9 +6,8 @@ const controller = new AbortController();
 process.once("SIGINT", () => controller.abort());
 
 try {
-  const trust = await glass.call("glass.workspace.trust.status") as { trust?: string };
   const runtime = await glass.call("glass.runtime.inspect") as { project?: { root?: string } };
-  console.log(`watching ${runtime.project?.root ?? root} trust=${trust.trust ?? "unknown"}`);
+  console.log(`watching ${runtime.project?.root ?? root}`);
   const seen = new Set<string>();
   while (!controller.signal.aborted) {
     const entries = await glass.call("glass.replay.list", { since: 0, limit: 128 }) as unknown;

@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { GlassClient, GlassStructuredError } from "./dist/index.js";
+import { GlassClient } from "./dist/index.js";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 const client = new GlassClient({
   command: process.env.GLASS_BINARY ?? path.join(repositoryRoot, "target", "debug", "glass"),
+  cwd: repositoryRoot,
 });
 try {
   const manifest = await client.initialize();
@@ -20,15 +21,11 @@ try {
   for (const capability of browserFixture.requiredCapabilities) client.requireCapability(capability);
   const toolNames = (await client.listTools()).map((tool) => tool.name).sort();
   if (JSON.stringify(toolNames) !== JSON.stringify(developmentFixture.tools)) throw new Error("MCP tool inventory does not match the full-product conformance fixture");
-  const trust = await client.call("glass.workspace.trust.status");
-  if (!trust || typeof trust !== "object" || !["untrusted", "trustedOnce", "trustedProject"].includes(trust.trust)) {
-    throw new Error("invalid workspace trust status");
+  const runtime = await client.call("glass.runtime.inspect");
+  if (!runtime || typeof runtime !== "object" || !runtime.project) {
+    throw new Error("invalid resident runtime inspection");
   }
-  const authority = await client.call("glass.workspace.trust.inspect");
-  if (!authority || typeof authority !== "object" || !Array.isArray(authority.items)) {
-    throw new Error("invalid workspace authority inspection");
-  }
-  const tree = await client.call("glass.file.list");
+  const tree = await client.call("glass.file.list", { path: "clients/typescript", limit: 10 });
   if (!tree || typeof tree !== "object" || !Array.isArray(tree.entries)) {
     throw new Error("invalid bounded file list");
   }
@@ -38,14 +35,6 @@ try {
   }
   if (!Array.isArray(await client.call("glass.task.list"))) throw new Error("task list was not an array");
   if (!Array.isArray(await client.call("glass.replay.list"))) throw new Error("replay list was not an array");
-  if (trust.trust === "untrusted") {
-    try {
-      await client.call("glass.test.discover");
-      throw new Error("untrusted executable project discovery was not denied");
-    } catch (error) {
-      if (!(error instanceof GlassStructuredError)) throw error;
-    }
-  }
 } finally {
   client.close();
 }

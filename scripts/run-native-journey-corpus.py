@@ -183,6 +183,9 @@ def safe_worker_diagnostics(stderr: str) -> list[dict[str, str]]:
     reasons = {
         "content_process_pipe_closed",
         "content_process_truncated_frame",
+        "javascript_stack_overflow",
+        "javascript_out_of_memory",
+        "javascript_exception",
         "missing_document",
         "missing_url",
         "missing_origin",

@@ -34,6 +34,24 @@ class JourneyFailureClassificationTests(unittest.TestCase):
             }],
         )
 
+    def test_javascript_failure_diagnostics_keep_stack_class_and_hide_page_text(self):
+        diagnostics = corpus.safe_worker_diagnostics(
+            "native content worker exited with diagnostic class: worker\n"
+            "native content worker operation class: content_process_script\n"
+            "native content worker reason class: javascript_stack_overflow\n"
+            "native content worker private operation: user-supplied-script\n"
+            "private page url and contents"
+        )
+
+        self.assertEqual(
+            diagnostics,
+            [{
+                "class": "worker",
+                "operation": "content_process_script",
+                "reason": "javascript_stack_overflow",
+            }],
+        )
+
     def test_outer_deadline_is_distinct_from_per_step_timeout(self):
         self.assertEqual(corpus.journey_outer_timeout_ms({"timeoutMs": 120000}), 130000)
         self.assertEqual(

@@ -302,6 +302,14 @@ logs only static allowlisted categories, never the operation text, error
 reason, URL, or page content. This narrows the failed boundary but does not
 identify a cause or count as a media pass; the owner-only records are in
 `/tmp/glass-mdn-video-reasonclass-qs3za94c/`.
+Review of that attempt's bounded step error identifies a content-process pipe
+closure and exit status 1 during the script exchange. The safe reason classifier
+now maps those known generic pipe messages to `content_process_pipe_closed`
+(and truncated frames to `content_process_truncated_frame`); its regression
+uses synthetic private suffixes to verify the emitted category remains static.
+The captured worker stderr still contains the earlier `other` category because
+no additional public run was made. Why the content process exits remains
+unidentified, and the public video journey remains failed before decode.
 
 ## Verification in this working tree
 

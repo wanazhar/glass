@@ -15,7 +15,7 @@ pub(crate) fn svg_points(node: &NativeNode) -> Option<Vec<NativePoint>> {
         return None;
     }
     let mut points = Vec::with_capacity(coordinates.len() / 2);
-    for pair in coordinates.chunks_exact(2) {
+    for pair in coordinates.as_chunks::<2>().0.iter() {
         points.push(NativePoint {
             x: pair[0].parse().ok()?,
             y: pair[1].parse().ok()?,

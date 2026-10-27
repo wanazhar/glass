@@ -245,11 +245,15 @@ fn png_pixels_to_rgba(raw: &[u8], color_type: ColorType) -> Option<Vec<u8>> {
     Some(match color_type {
         ColorType::Rgba => raw.to_vec(),
         ColorType::Rgb => raw
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], u8::MAX])
             .collect(),
         ColorType::GrayscaleAlpha => raw
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .flat_map(|pixel| [pixel[0], pixel[0], pixel[0], pixel[1]])
             .collect(),
         ColorType::Grayscale => raw
@@ -386,8 +390,10 @@ fn composite_apng_frame(
             destination_row.copy_from_slice(source_row);
         } else {
             for (destination, source) in destination_row
-                .chunks_exact_mut(4)
-                .zip(source_row.chunks_exact(4))
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(source_row.as_chunks::<4>().0.iter())
             {
                 blend_apng_pixel(destination, source);
             }
@@ -942,7 +948,9 @@ fn decode_webp_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option<NativeIma
         decoded
     } else {
         decoded
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], u8::MAX])
             .collect()
     };
@@ -988,7 +996,9 @@ fn decode_animated_webp(
             decoded.clone()
         } else {
             decoded
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], u8::MAX])
                 .collect()
         };
@@ -1066,8 +1076,10 @@ fn decode_gif_bytes(bytes: &[u8], max_decoded_bytes: usize) -> Option<NativeImag
                 .checked_mul(4)?;
             let canvas_row = canvas.get_mut(canvas_start..canvas_start + frame_width * 4)?;
             for (destination, source) in canvas_row
-                .chunks_exact_mut(4)
-                .zip(source_row.chunks_exact(4))
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(source_row.as_chunks::<4>().0.iter())
             {
                 if source[3] != 0 {
                     destination.copy_from_slice(source);

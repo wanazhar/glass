@@ -5917,6 +5917,7 @@ impl DevTuiState {
         self.status = "Saving queue state before sending…".into();
     }
 
+    #[cfg(unix)]
     fn submit_follow_up_queue_dispatch(&mut self, worker: &mut super::snapshot::SnapshotWorker) {
         let Some((agent_id, entry_id, _)) = self.follow_up_queue_pending_dispatch.take() else {
             return;
@@ -5973,6 +5974,7 @@ impl DevTuiState {
         }
     }
 
+    #[cfg(unix)]
     fn mark_queue_dispatch_failed(
         &mut self,
         agent_id: &crate::AgentId,

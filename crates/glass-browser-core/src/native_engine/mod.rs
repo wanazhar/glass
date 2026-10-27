@@ -38,6 +38,16 @@ mod scheduler;
 mod service_worker;
 mod worker;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// Keep this primitive compatible with the workspace MSRV (Rust 1.88).
+// `AtomicU64::fetch_update` is renamed in newer stable compilers, while the
+// checked increment semantics remain the same.
+#[allow(deprecated)]
+fn fetch_next_id(counter: &AtomicU64, success: Ordering, failure: Ordering) -> Result<u64, u64> {
+    counter.fetch_update(success, failure, |current| current.checked_add(1))
+}
+
 pub use browsing_context::{NATIVE_CONTEXT_ID, NativeBrowsingContext};
 #[doc(hidden)]
 pub use cancellation::NativeNavigationCancellation;

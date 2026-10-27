@@ -786,9 +786,7 @@ pub(super) async fn native_backend_dispatches_vertical_scroll_into_capture_inner
     let output = reader.next_frame(&mut decoded).unwrap();
     assert_eq!((output.width, output.height), (80, 24));
     assert!(
-        decoded
-            .chunks_exact(4)
-            .any(|pixel| pixel == [0, 0, 255, 255]),
+        decoded.as_chunks::<4>().0.contains(&[0, 0, 255, 255]),
         "scrolled button should be visible"
     );
 

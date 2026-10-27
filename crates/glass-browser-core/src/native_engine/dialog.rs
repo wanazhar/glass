@@ -1,5 +1,6 @@
 use super::config::{validate_context_id, validate_url_text};
 use super::error::NativeEngineError;
+use super::fetch_next_id;
 use super::javascript::{MAX_NATIVE_DIALOG_TEXT_BYTES, NativeDialog};
 use crate::contracts::PendingDialog;
 use serde::{Deserialize, Serialize};
@@ -230,13 +231,8 @@ impl NativeDialogControlPlane {
         validate_context_id(context_id)?;
         validate_context_id(frame_id)?;
         validate_url_text("native dialog URL", url)?;
-        let id = self
-            .0
-            .next_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
-                next.checked_add(1)
-            })
-            .map_err(|_| {
+        let id =
+            fetch_next_id(&self.0.next_id, Ordering::Relaxed, Ordering::Relaxed).map_err(|_| {
                 NativeEngineError::invalid("native dialog ID", "identifier space exhausted")
             })?;
         let pending = NativePendingDialog {

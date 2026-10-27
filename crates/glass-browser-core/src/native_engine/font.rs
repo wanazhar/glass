@@ -2153,7 +2153,13 @@ fn rasterize_svg_glyph(
         composite: NativeGlyphComposite::SourceOver,
         gradient: None,
         is_bitmap: true,
-        coverage: image.pixels.chunks_exact(4).map(|pixel| pixel[3]).collect(),
+        coverage: image
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| pixel[3])
+            .collect(),
         bitmap: Some(image.pixels),
     })
 }
@@ -2194,7 +2200,9 @@ fn decode_bitmap_glyph_image(
             }
             let coverage = decoded
                 .pixels
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|pixel| pixel[3])
                 .collect();
             Some(NativeDecodedBitmap {
@@ -2212,7 +2220,7 @@ fn decode_bitmap_glyph_image(
                 return None;
             }
             let mut pixels = Vec::with_capacity(image.data.len());
-            for bgra in image.data.chunks_exact(4) {
+            for bgra in image.data.as_chunks::<4>().0.iter() {
                 let alpha = bgra[3];
                 // A premultiplied channel cannot exceed its alpha. Reject
                 // malformed pixels instead of promoting them to opaque color.
@@ -2238,7 +2246,13 @@ fn decode_bitmap_glyph_image(
                     bgra[3],
                 ]);
             }
-            let coverage = image.data.chunks_exact(4).map(|pixel| pixel[3]).collect();
+            let coverage = image
+                .data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|pixel| pixel[3])
+                .collect();
             Some(NativeDecodedBitmap {
                 width,
                 height,

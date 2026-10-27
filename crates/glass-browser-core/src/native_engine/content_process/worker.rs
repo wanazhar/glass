@@ -52,10 +52,7 @@ pub async fn run_native_content_worker() -> Result<(), NativeEngineError> {
                     "must be valid JSON",
                 )
             })?;
-            let sync_id = broker_next_id
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                    current.checked_add(1)
-                })
+            let sync_id = fetch_next_id(&broker_next_id, Ordering::AcqRel, Ordering::Acquire)
                 .map_err(|_| NativeEngineError::Worker {
                     operation: "parent-brokered synchronous XHR".into(),
                     reason: "request ID space is exhausted".into(),

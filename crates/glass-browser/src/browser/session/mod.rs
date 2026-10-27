@@ -261,9 +261,15 @@ struct CachedObservationContext {
 type PausedPolicyRequests = Arc<Mutex<HashSet<(Option<String>, String)>>>;
 
 fn record_policy_event_lag(lagged_events: &AtomicU64, count: u64) {
-    let _ = lagged_events.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
-        Some(total.saturating_add(count))
-    });
+    let mut total = lagged_events.load(Ordering::Relaxed);
+    loop {
+        let next = total.saturating_add(count);
+        match lagged_events.compare_exchange_weak(total, next, Ordering::Relaxed, Ordering::Relaxed)
+        {
+            Ok(_) => break,
+            Err(observed) => total = observed,
+        }
+    }
 }
 
 fn record_policy_event_receiver_error(

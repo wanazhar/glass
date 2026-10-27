@@ -90,16 +90,14 @@ Glass 0.3.14 development operations use the negotiated `glass.*` catalog. Use
 cockpit schemas are not negotiated by the new Glass Dev runtime:
 
 ```python
-trust = glass.call("glass.workspace.trust.status")
+runtime = glass.call("glass.runtime.inspect")
 tree = glass.call("glass.file.list")
 tasks = glass.call("glass.task.list")
 browser = glass.call("glass.browser.state")
-print(trust["trust"], len(tree["entries"]), len(tasks), browser["connected"])
+print(runtime["project"]["root"], len(tree["entries"]), len(tasks), browser["connected"])
 ```
 
-Executable project services such as tests, LSP, DAP, processes, agents,
-kernels, and experiments remain unavailable until the local Glass UI records a
-trust decision. External MCP clients can inspect trust but cannot elevate it.
+This client API does not expose workspace trust inspection or trust changes.
 Mutation calls remain confirmation-, revision-, and authority-checked by the
 same resident router. Browser observations stay structured-first; screenshots
 remain explicit calls.
@@ -108,8 +106,7 @@ remain explicit calls.
 
 Run `python3 smoke.py` with `GLASS_BINARY` set to the matching built executable;
 CI also builds a wheel with `python3 -m pip wheel --no-deps .`. The smoke also
-proves untrusted workspaces retain static inspection without permitting
-executable project discovery. Uninstall with
+verifies runtime inspection and bounded file listing. Uninstall with
 the same interpreter used for installation, for example
 `python3 -m pip uninstall glass-browser-client`. This removes only the Python package;
 it does not remove Glass binaries, profiles, project state, or configuration.

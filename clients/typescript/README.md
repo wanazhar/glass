@@ -91,16 +91,14 @@ the generic typed `call<T>()` boundary with the schema returned by
 new Glass Dev runtime:
 
 ```typescript
-const trust = await glass.call<{ trust: string }>("glass.workspace.trust.status");
+const runtime = await glass.call<{ project: { root: string } }>("glass.runtime.inspect");
 const tree = await glass.call<{ entries: unknown[] }>("glass.file.list");
 const tasks = await glass.call<unknown[]>("glass.task.list");
 const browser = await glass.call<{ connected: boolean }>("glass.browser.state");
-console.log(trust.trust, tree.entries.length, tasks.length, browser.connected);
+console.log(runtime.project.root, tree.entries.length, tasks.length, browser.connected);
 ```
 
-Executable project services such as tests, LSP, DAP, processes, agents,
-kernels, and experiments remain unavailable until the local Glass UI records a
-trust decision. External MCP clients can inspect trust but cannot elevate it.
+This client API does not expose workspace trust inspection or trust changes.
 Mutation calls remain confirmation-, revision-, and authority-checked by the
 same resident router. Browser observations stay structured-first; screenshots
 remain explicit calls.

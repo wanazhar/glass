@@ -717,11 +717,24 @@ when the normal path exceeds a conservative limit, with a bind regression.
 The Core product smoke test had asserted an obsolete 24-round stop even though
 the documented contract permits long tool sequences; the fixture now returns
 a final answer after 24 tool calls and checks successful completion on call
-25. The updated Core smoke passed locally. The current CI run also has
-unresolved native content-worker exits (including macOS aborts) and a
-browser-free TypeScript handshake smoke failure at `glass.browser.state`.
-Those failures remain open pending focused diagnosis; this reconciliation does
-not claim the CI run or either umbrella issue complete.
+25. The updated Core smoke passed locally. CI run `40486642899` failed its
+TypeScript smoke at `smoke.mjs:23`, the first call to
+`glass.workspace.trust.status`; neither `glass.workspace.trust.status` nor
+`glass.workspace.trust.inspect` appears in the advertised tool catalog or
+implementation. The TypeScript and Python client smoke/docs/examples now use
+supported `glass.runtime.inspect`, and the smoke scopes its file listing to the
+intended client subtree. Both language smoke scripts pass locally against a
+fresh `glass` build. The CI run still has unresolved native content-worker
+exits (including macOS aborts); those remain open pending focused diagnosis.
+This reconciliation does not claim the CI run or either umbrella issue
+complete.
+
+The old client smoke and examples also called `glass.workspace.trust.status`
+and `glass.workspace.trust.inspect`, but neither tool exists in the advertised
+catalog or source. Those invocations did not verify the documented trust
+contract; the client examples now avoid those unsupported routes. This does
+not establish a workspace trust gate or disposition the trust/security
+acceptance in #65. The gap remains explicit for the #65 source audit.
 
 A local source-level reproduction found a separate readiness-state mismatch:
 after a native media resource was decoded, `HTMLMediaElement.readyState` still

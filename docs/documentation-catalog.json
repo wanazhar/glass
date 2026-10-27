@@ -119,6 +119,11 @@
         },
         {
           "level": "3",
+          "title": "Issue #65 browser snapshot and workflow file bounds (2026-10-27)",
+          "anchor": "issue-65-browser-snapshot-and-workflow-file-bounds-2026-10-27"
+        },
+        {
+          "level": "3",
           "title": "Issue #65 Core settings file bounds (2026-10-27)",
           "anchor": "issue-65-core-settings-file-bounds-2026-10-27"
         },

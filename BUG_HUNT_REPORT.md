@@ -248,6 +248,20 @@ passes 11/11 tests; strict `glass-browser` library Clippy passes. This
 closes these three direct JSON parser paths, not the complete authoring-input
 audit for #65.
 
+### Issue #65 reliability and live-site authoring source bounds (2026-10-27)
+
+The public `ReliabilityScenario::from_json`,
+`ReliabilityFixtureManifest::from_json`, and
+`ReliabilityReplayBundle::from_json` methods now reject UTF-8 source above
+512 KiB before serde parsing. The `smoke-sites` manifest parser has the same
+limit. The `certify run` and `smoke-sites` file paths use the bounded opened-
+file reader, which checks metadata and reads at most limit+1 bytes so file
+growth during a read is rejected before parsing. Direct JSON parser tests
+cover oversized input, exact-limit scenario acceptance, and live-site
+manifest rejection; the existing bounded-reader regression covers oversized
+files. This does not cap already allocated `Value` inputs or close the
+remaining parser and error-propagation audit for #65.
+
 ### Issue #64 native public video failure recheck (2026-10-27)
 
 The focused local VP8/WebM journey passes with native `videoWidth` and

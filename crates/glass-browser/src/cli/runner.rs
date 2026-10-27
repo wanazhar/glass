@@ -42,8 +42,8 @@ use crate::protocol::{
     WEB_IR_VALIDATE_OPERATION,
 };
 use crate::reliability::{
-    ReliabilityFixtureManifest, ReliabilityReplayBundle, ReliabilityScenario,
-    ReliabilityScenarioObservation, build_reliability_scorecard,
+    MAX_RELIABILITY_SOURCE_BYTES, ReliabilityFixtureManifest, ReliabilityReplayBundle,
+    ReliabilityScenario, ReliabilityScenarioObservation, build_reliability_scorecard,
 };
 use crate::reliability_runner::{ReliabilityRunOptions, run_reliability_scenario};
 use crate::results::{
@@ -3082,11 +3082,25 @@ async fn dispatch_certify_run(
     inputs_path: Option<&std::path::Path>,
     output: Option<&std::path::Path>,
 ) -> BrowserResult<()> {
-    let scenario = ReliabilityScenario::from_json(&std::fs::read_to_string(scenario_path)?)?;
-    let fixture = ReliabilityFixtureManifest::from_json(&std::fs::read_to_string(fixture_path)?)?;
+    let scenario_source = read_bounded_text_file(
+        scenario_path,
+        "reliability scenario JSON",
+        MAX_RELIABILITY_SOURCE_BYTES,
+    )?;
+    let fixture_source = read_bounded_text_file(
+        fixture_path,
+        "reliability fixture JSON",
+        MAX_RELIABILITY_SOURCE_BYTES,
+    )?;
+    let scenario = ReliabilityScenario::from_json(&scenario_source)?;
+    let fixture = ReliabilityFixtureManifest::from_json(&fixture_source)?;
     let inputs: BTreeMap<String, Value> = match inputs_path {
-        Some(path) => serde_json::from_str(&std::fs::read_to_string(path)?)
-            .map_err(|error| format!("invalid workflow inputs: {error}"))?,
+        Some(path) => serde_json::from_str(&read_bounded_text_file(
+            path,
+            "reliability workflow inputs JSON",
+            MAX_RELIABILITY_SOURCE_BYTES,
+        )?)
+        .map_err(|error| format!("invalid workflow inputs: {error}"))?,
         None => BTreeMap::new(),
     };
     session.navigate(url).await?;
@@ -3732,7 +3746,11 @@ fn read_web_ir(path: &Path) -> BrowserResult<crate::web_ir::GlassWebIrV1> {
     Ok(ir)
 }
 
-fn read_bounded_text_file(path: &Path, label: &str, max_bytes: usize) -> BrowserResult<String> {
+pub(super) fn read_bounded_text_file(
+    path: &Path,
+    label: &str,
+    max_bytes: usize,
+) -> BrowserResult<String> {
     let file = std::fs::File::open(path)?;
     let max_bytes_u64 =
         u64::try_from(max_bytes).map_err(|_| "input limit exceeds the platform file size range")?;

@@ -170,16 +170,18 @@ source string into a JSON value before validating workflow limits. It now
 enforces the same 256 KiB pre-parse bound as `compile_workflow_json`, using one
 shared constant. Its boundary regression accepts exactly 256 KiB and rejects
 one byte over before parsing; the existing bounded YAML-alias regression also
-passes. This covers the direct JSON API path. `from_value` accepts an already
-allocated JSON value, so callers of that structured API still need their own
-input bounds before allocating or constructing the value. The same audit found
+passes. `from_value` now runs the shared iterative structured-value budget
+(32,768 nodes, 128 levels, and 256 KiB accounted size) before typed conversion;
+an oversized-array regression verifies it returns before schema handling. The
+same audit found
 that `CdpBrowserSession::parse_workflow_checkpoint` checked its 8 KiB serialized
 checkpoint limit only after JSON deserialization. It now rejects oversized
 source before parsing; a regression supplies a syntactically valid checkpoint
 prefix followed by more than the limit and verifies the typed size error. The
 current string entry points are bounded before parsing: workflow JSON and YAML
-at 256 KiB, and persisted workflow checkpoints at 8 KiB. This does not replace
-caller bounds for APIs that accept already allocated `Value` objects. The
+at 256 KiB, and persisted workflow checkpoints at 8 KiB. Structured workflow
+and reliability `Value` entry points also enforce their own shape budgets.
+Other `Value` APIs need separate review. The
 public `GlassTask::from_json` path also lacked a pre-parse source cap despite
 the existing 256 KiB argument-JSON budget; it now rejects larger source before
 deserialization, with exact-limit and one-byte-over boundary coverage. The

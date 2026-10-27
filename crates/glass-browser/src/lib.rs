@@ -233,6 +233,7 @@ pub mod diagnostics;
 pub mod extensions;
 /// Experimental bounded browser-evidence extraction contracts.
 pub mod extraction;
+mod json_limits;
 /// MCP stdio server, prompts, resources, and tool dispatch.
 pub mod mcp;
 /// Browser-neutral terminal frame presentation contracts.

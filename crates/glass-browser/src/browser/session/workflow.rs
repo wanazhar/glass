@@ -84,6 +84,8 @@ impl WorkflowDefinition {
 
     /// Deserialize and validate a workflow definition from JSON data.
     pub fn from_value(value: Value) -> Result<Self, WorkflowValidationError> {
+        crate::json_limits::check_value_budget(&value, MAX_WORKFLOW_SOURCE_BYTES)
+            .map_err(|reason| WorkflowValidationError::new("$", reason))?;
         require_object_fields(
             &value,
             &[
@@ -3055,6 +3057,17 @@ mod tests {
             error.reason,
             "workflow source exceeds the 256 KiB authoring limit"
         );
+    }
+
+    #[test]
+    fn from_value_enforces_structured_json_complexity_before_typed_conversion() {
+        let oversized = Value::Array(vec![
+            Value::Null;
+            crate::json_limits::MAX_STRUCTURED_JSON_NODES + 1
+        ]);
+        let error = WorkflowDefinition::from_value(oversized).unwrap_err();
+        assert_eq!(error.path, "$");
+        assert_eq!(error.reason, "structured JSON exceeds the complexity limit");
     }
 
     #[test]

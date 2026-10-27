@@ -139,6 +139,10 @@ bounded execution evidence, and route and revision metadata.
 The checkpoint does not contain input values, cookies, passwords, page content,
 or step error strings.
 
+`parse_workflow_checkpoint` rejects JSON source over 8 KiB before parsing, then
+validates the checkpoint schema and bounded fields. The limit applies to the
+serialized input as well as checkpoints exported by Glass.
+
 `reconcile_workflow_checkpoint` checks the workflow, route, and next step. It
 does not dispatch an action. It rejects route changes, definition changes, and
 a next state that could represent an already dispatched effect.

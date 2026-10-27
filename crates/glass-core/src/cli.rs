@@ -1247,20 +1247,32 @@ mod tests {
             Tone::Muted
         ));
 
-        let mut page = Page::new_with_frontend("Connect", 80, true, CliFrontend::Glass);
-        page.body("Glass Connect · ready\nhttps://example.com\nSame threads · glass connect status · glass connect stop");
-        assert!(page.text.contains("https://example.com"));
-        if !glass_tui::theme::no_color() {
-            assert!(page.text.contains(&format!(
-                "{}ready\x1b[0m",
-                glass_tui::theme::ansi(Tone::Success)
-            )));
-            assert!(page.text.contains(&format!(
-                "{}glass connect\x1b[0m",
-                glass_tui::theme::ansi(Tone::Accent)
-            )));
+        let content = "Glass Connect · ready\nhttps://example.com\nSame threads · glass connect status · glass connect stop";
+        for width in [58, 80, 120] {
+            let mut page = Page::new_with_frontend("Connect", width, true, CliFrontend::Glass);
+            page.body(content);
+            assert!(page.text.contains("https://example.com"));
+            if !glass_tui::theme::no_color() {
+                assert!(page.text.contains(&format!(
+                    "{}ready\x1b[0m",
+                    glass_tui::theme::ansi(Tone::Success)
+                )));
+                assert!(page.text.contains(&format!(
+                    "{}glass connect\x1b[0m",
+                    glass_tui::theme::ansi(Tone::Accent)
+                )));
+            }
+            let plain = glass_tui::markdown::sanitize(&page.text);
+            assert!(
+                plain
+                    .lines()
+                    .all(|line| glass_tui::text::width(line) <= width)
+            );
+
+            let mut no_color = Page::new_with_frontend("Connect", width, false, CliFrontend::Glass);
+            no_color.body(content);
+            assert!(!no_color.text.contains('\x1b'));
+            assert!(no_color.text.contains("glass connect status"));
         }
-        let plain = glass_tui::markdown::sanitize(&page.text);
-        assert!(plain.lines().all(|line| glass_tui::text::width(line) <= 80));
     }
 }

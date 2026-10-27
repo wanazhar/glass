@@ -117,5 +117,9 @@ an old target reference.
 
 Glass bounds requests, candidates, evidence, values, and suggestions. Intent
 payloads do not contain cookies, profile data, screenshots, or raw DOM.
+The public request, execution-request, and result JSON parsers reject UTF-8
+source larger than 256 KiB before deserialization; field-level limits run
+after parsing. The source cap bounds parser allocation, while validation keeps
+the per-field and collection limits smaller.
 
 The schema is [intent-resolution-v1.schema.json](schema/intent-resolution-v1.schema.json).

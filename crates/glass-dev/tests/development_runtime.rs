@@ -38,21 +38,26 @@ async fn windows_named_pipe_daemon_lifecycle_reconnect_and_permissions() {
         serde_json::from_slice(&std::fs::read(&status_path).unwrap()).unwrap();
     assert_eq!(status.socket, std::path::PathBuf::from(&pipe));
     let token = std::fs::read_to_string(&status.token_path).unwrap();
-    let base_request = |id: &str, operation: &str| DevelopmentDaemonRequest {
-        id: id.into(),
-        token: token.clone(),
-        operation: operation.into(),
-        workspace_id: Some("native-windows".into()),
-        root: None,
-        call: None,
-        expected_generation: None,
-        expected_project_revision: None,
-        allow_mutation: false,
-        confirmed: false,
-        actor: Some("windows-native-test".into()),
-        since: None,
-        limit: None,
-        operation_id: None,
+    let base_request = |id: &str, operation: &str| -> DevelopmentDaemonRequest {
+        // Build the client request through the wire format: internal runtime
+        // authorization is private and defaults to false when omitted.
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "token": token,
+            "operation": operation,
+            "workspace_id": "native-windows",
+            "root": null,
+            "call": null,
+            "expected_generation": null,
+            "expected_project_revision": null,
+            "allow_mutation": false,
+            "confirmed": false,
+            "actor": "windows-native-test",
+            "since": null,
+            "limit": null,
+            "operation_id": null
+        }))
+        .expect("daemon wire request should deserialize with internal authorization denied")
     };
     let mut open = base_request("open", "workspace.open");
     open.root = Some(project.clone());

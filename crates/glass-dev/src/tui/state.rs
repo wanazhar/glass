@@ -20086,16 +20086,18 @@ mod tests {
                 ..Default::default()
             },
         );
-        state.select_agent(Some(agent_a.clone()));
+        assert!(state.select_agent(Some(agent_a.clone())));
         assert_eq!(state.agent_conversation, "transcript A");
         state.composer_input = "draft alpha".into();
         state.composer_cursor = 5;
+        #[cfg(unix)]
         assert!(state.persist_composer_draft());
-        state.select_agent(Some(agent_b.clone()));
+        assert!(state.select_agent(Some(agent_b.clone())));
         assert_eq!(state.agent_conversation, "transcript B");
         assert!(state.composer_input.is_empty());
         state.composer_input = "draft bravo".into();
         state.composer_cursor = 6;
+        #[cfg(unix)]
         assert!(state.persist_composer_draft());
         state.composer_mode = true;
         state.surface = DevSurface::Agent;

@@ -248,6 +248,20 @@ passes 11/11 tests; strict `glass-browser` library Clippy passes. This
 closes these three direct JSON parser paths, not the complete authoring-input
 audit for #65.
 
+### Issue #64 native public video failure recheck (2026-10-27)
+
+The focused local VP8/WebM journey passes with native `videoWidth` and
+`videoHeight` assertions at 16×16, in addition to its existing decoded-frame
+play/pause/seek/paint checks. A single source-built public MDN run completed
+navigation (5.24 s) and observation (2 ms), then lost the content worker 30 ms
+into the first media-resource wait, before decode or playback. A direct
+evaluation probe also lost the worker before returning its first query result.
+The worker emitted only the privacy-safe static diagnostic class `worker`, so
+the underlying failure is not identified and no public video pass is claimed.
+The redacted report and owner-only trace are
+`/tmp/glass-native-mdn-video-sourcecheck-20261027.json` and its adjacent
+`.artifacts/` directory. This remains an open native media acceptance failure.
+
 ## Verification in this working tree
 
 Passed so far:

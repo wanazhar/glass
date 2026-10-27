@@ -100,6 +100,18 @@ fixed 16 MiB main-thread stack as the standalone binary. [MDN's video reference]
 documents the WebM-first source, and [the linked interactive demo](https://interactive-examples.mdn.mozilla.net/pages/tabbed/video.html)
 is the public scenario entry point.
 
+A source-built recheck on 27 October completed navigation (5.24 s) and
+observation (2 ms), then the first video-resource wait lost the content worker
+after 30 ms. A direct evaluation probe also lost the worker before returning
+its first query result. The opt-in worker diagnostic emitted only the static
+`worker` class; the cause is not established, and no media decode, playback,
+or screenshot step ran. The redacted report and owner-only trace are
+`/tmp/glass-native-mdn-video-sourcecheck-20261027.json` and its adjacent
+`.artifacts/` directory. The authored local WebM fixture now additionally
+asserts decoded `videoWidth`/`videoHeight` of 16×16 and still passes its
+play/pause/seek/paint test; this local result does not change the public
+failure classification.
+
 The corpus runner retains completed and failed per-step status/timing when its
 owned browser process exits without a final JSON document, and gives progress
 step errors static classifications without recording raw error text. A

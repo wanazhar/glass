@@ -25,6 +25,82 @@ pub(crate) mod state_receipts;
 
 type FileStamp = (u64, std::time::SystemTime, i64, i64, u64, u64);
 
+/// Session logs are append-only, so the total history is intentionally not
+/// capped. Individual records are bounded to keep a corrupt or hostile JSONL
+/// line from forcing an unbounded temporary allocation during replay.
+const MAX_SESSION_RECORD_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read one JSONL record without allowing a single line to grow without bound.
+/// The newline, when present, is included in the returned bytes.
+fn read_session_line(reader: &mut impl BufRead, line: &mut Vec<u8>) -> std::io::Result<usize> {
+    line.clear();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(line.len());
+        }
+        let remaining = MAX_SESSION_RECORD_BYTES
+            .saturating_add(1)
+            .saturating_sub(line.len());
+        let chunk = &available[..available.len().min(remaining)];
+        let newline = chunk.iter().position(|byte| *byte == b'\n');
+        let count = newline.map_or(chunk.len(), |index| index + 1);
+        line.extend_from_slice(&chunk[..count]);
+        reader.consume(count);
+        if newline.is_some() {
+            if line.len().saturating_sub(1) > MAX_SESSION_RECORD_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("session record exceeds {MAX_SESSION_RECORD_BYTES} bytes"),
+                ));
+            }
+            return Ok(line.len());
+        }
+        if line.len() >= MAX_SESSION_RECORD_BYTES {
+            // One final byte distinguishes an exact-limit unterminated line
+            // from an oversized line. A newline is allowed in addition to the
+            // capped record body so repair can add a separator safely.
+            let next = reader.fill_buf()?;
+            if next.first() == Some(&b'\n') && line.len() == MAX_SESSION_RECORD_BYTES {
+                line.push(b'\n');
+                reader.consume(1);
+                return Ok(line.len());
+            }
+            if !next.is_empty() || line.len() > MAX_SESSION_RECORD_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("session record exceeds {MAX_SESSION_RECORD_BYTES} bytes"),
+                ));
+            }
+            return Ok(line.len());
+        }
+    }
+}
+
+fn visit_session_lines(
+    path: &Path,
+    mut visit: impl FnMut(u64, usize, &[u8]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    let (mut offset, mut number) = (0u64, 0usize);
+    loop {
+        let len = read_session_line(&mut reader, &mut line)?;
+        if len == 0 {
+            return Ok(());
+        }
+        number += 1;
+        visit(offset, number, &line)?;
+        offset = offset.saturating_add(len as u64);
+    }
+}
+
+fn json_line_is_valid(line: &[u8]) -> bool {
+    line.iter().all(|byte| byte.is_ascii_whitespace())
+        || serde_json::from_slice::<serde_json::Value>(line).is_ok()
+}
+
 /// One recorded event. Kept flat and stringly-typed on purpose: a log format
 /// that needs a schema migration is a log format that loses data.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -455,103 +531,131 @@ enum Repair {
 /// Lines that are valid JSON but carry an unknown `k` are forward
 /// compatibility, not corruption, and pass through untouched.
 fn repair_log(path: &Path) -> std::io::Result<Repair> {
-    if !path.exists() {
-        return Ok(Repair::None);
-    }
-    let bytes = std::fs::read(path)?;
-    if bytes.is_empty() {
-        return Ok(Repair::None);
-    }
-    let trailing_newline = bytes.last() == Some(&b'\n');
-    // Keep byte offsets alongside lines. Re-serializing parsed lines here
-    // changes CRLF and blank-line bytes, so a normalized length is not a safe
-    // truncation boundary.
-    let mut raw: Vec<(usize, &[u8])> = Vec::new();
-    let mut start = 0;
-    for (i, byte) in bytes.iter().enumerate() {
-        if *byte == b'\n' {
-            raw.push((start, &bytes[start..i]));
-            start = i + 1;
-        }
-    }
-    if start < bytes.len() {
-        raw.push((start, &bytes[start..]));
-    }
-    let last = raw.len().saturating_sub(1);
-    let mut torn = false;
-    let mut torn_offset = 0usize;
+    let initial_stamp = match fs::metadata(path) {
+        Ok(metadata) => file_stamp(&metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Repair::None),
+        Err(error) => return Err(error),
+    };
+    let mut trailing_newline = false;
+    let mut saw_bytes = false;
+    let mut torn_offset = None;
     let mut final_valid_without_newline = false;
     let mut first_bad = 0usize;
     let mut bad = 0usize;
-    for (i, (offset, line)) in raw.iter().enumerate() {
-        let Ok(line) = std::str::from_utf8(line) else {
-            if i == last && !trailing_newline {
-                torn = true;
-                torn_offset = *offset;
-            } else {
-                bad += 1;
-                if first_bad == 0 {
-                    first_bad = i + 1;
-                }
-            }
-            continue;
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        if serde_json::from_str::<serde_json::Value>(line).is_ok() {
-            if i == last && !trailing_newline {
-                final_valid_without_newline = true;
-            }
-            continue;
-        }
-        if i == last && !trailing_newline {
-            torn = true;
-            torn_offset = *offset;
-        } else {
+    match visit_session_lines(path, |offset, number, line| {
+        saw_bytes = true;
+        trailing_newline = line.last() == Some(&b'\n');
+        let blank = line.iter().all(|byte| byte.is_ascii_whitespace());
+        let valid = blank || json_line_is_valid(line);
+        if valid && !blank && !trailing_newline {
+            final_valid_without_newline = true;
+        } else if !valid && !trailing_newline {
+            // An invalid final fragment is a torn append. `visit_session_lines`
+            // only returns unterminated data at EOF, so it cannot be followed
+            // by a later record.
+            torn_offset = Some(offset);
+        } else if !valid {
             bad += 1;
             if first_bad == 0 {
-                first_bad = i + 1;
+                first_bad = number;
             }
         }
+        Ok(())
+    }) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Repair::None),
+        Err(error) => return Err(error),
     }
-    if !torn && bad == 0 && final_valid_without_newline {
+    if file_stamp(&fs::metadata(path)?) != initial_stamp {
+        return Err(std::io::Error::other(
+            "session log changed during repair scan; the log was left untouched",
+        ));
+    }
+    if !saw_bytes {
+        return Ok(Repair::None);
+    }
+    if torn_offset.is_none() && bad == 0 && final_valid_without_newline {
         OpenOptions::new()
             .append(true)
             .open(path)?
             .write_all(b"\n")?;
         return Ok(Repair::AddedSeparator);
     }
-    if !torn && bad == 0 {
+    if torn_offset.is_none() && bad == 0 {
         return Ok(Repair::None);
     }
-    if bad == 0 {
+    if bad == 0
+        && let Some(torn_offset) = torn_offset
+    {
         // Truncate at the exact start of the torn bytes. This retains any
         // valid blank lines and original CRLF separators before the fragment.
         let file = OpenOptions::new().write(true).open(path)?;
-        file.set_len(torn_offset as u64)?;
+        file.set_len(torn_offset)?;
         return Ok(Repair::TruncatedTail);
     }
-    let rewritten: String = raw
-        .iter()
-        .filter_map(|(_, line)| {
-            std::str::from_utf8(line).ok().filter(|line| {
-                !line.trim().is_empty() && serde_json::from_str::<serde_json::Value>(line).is_ok()
-            })
-        })
-        .map(|line| format!("{line}\n"))
-        .collect();
-    let backup = PathBuf::from(format!(
-        "{}.corrupt-{}",
-        path.display(),
-        crate::loops::now()
-    ));
-    crate::auth::secure_write(&backup, &bytes).map_err(std::io::Error::other)?;
-    // Atomic replace, permissions preserved from the original.
-    let tmp = path.with_extension("jsonl.tmp");
-    std::fs::write(&tmp, rewritten.as_bytes())?;
+    static REPAIR_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let suffix = format!(
+        "{}-{}-{}",
+        crate::loops::now(),
+        std::process::id(),
+        REPAIR_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let backup = PathBuf::from(format!("{}.corrupt-{suffix}", path.display()));
+    let mut original = File::open(path)?;
+    let mut backup_options = OpenOptions::new();
+    backup_options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        backup_options.mode(0o600);
+    }
+    let mut backup_file = backup_options.open(&backup)?;
+    if let Err(error) =
+        std::io::copy(&mut original, &mut backup_file).and_then(|_| backup_file.sync_all())
+    {
+        let _ = fs::remove_file(&backup);
+        return Err(error);
+    }
+    if file_stamp(&original.metadata()?) != initial_stamp
+        || file_stamp(&fs::metadata(path)?) != initial_stamp
+    {
+        let _ = fs::remove_file(&backup);
+        return Err(std::io::Error::other(
+            "session log changed during repair backup; the log was left untouched",
+        ));
+    }
+
+    // Rewrite valid records from a bounded per-line reader. Re-serializing
+    // preserves the prior repair policy while avoiding a second full-file
+    // allocation; permissions are preserved from the original.
+    let tmp = path.with_extension(format!("jsonl.repair-{suffix}.tmp"));
+    let mut temp_options = OpenOptions::new();
+    temp_options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        temp_options.mode(0o600);
+    }
+    let mut rewritten = temp_options.open(&tmp)?;
+    visit_session_lines(&backup, |_, _, line| {
+        if json_line_is_valid(line) {
+            let content = line.strip_suffix(b"\n").unwrap_or(line);
+            if !content.iter().all(|byte| byte.is_ascii_whitespace()) {
+                rewritten.write_all(content)?;
+                rewritten.write_all(b"\n")?;
+            }
+        }
+        Ok(())
+    })?;
+    rewritten.sync_all()?;
     if let Ok(meta) = std::fs::metadata(path) {
         let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    if file_stamp(&fs::metadata(path)?) != initial_stamp {
+        let _ = fs::remove_file(&tmp);
+        return Err(std::io::Error::other(
+            "session log changed before repair commit; the log was left untouched",
+        ));
     }
     std::fs::rename(&tmp, path)?;
     Ok(Repair::DroppedLines {
@@ -787,16 +891,22 @@ impl Session {
     }
     /// Read durable records without repairing, opening for append, or replaying the session.
     pub fn raw_records(path: &Path) -> std::io::Result<Vec<Record>> {
-        let text = match fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e),
-        };
-        Ok(text
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter_map(|v| Record::from_json(&v))
-            .collect())
+        let mut records = Vec::new();
+        match visit_session_lines(path, |_, _, line| {
+            if line.iter().all(|byte| byte.is_ascii_whitespace()) {
+                return Ok(());
+            }
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(line)
+                && let Some(record) = Record::from_json(&value)
+            {
+                records.push(record);
+            }
+            Ok(())
+        }) {
+            Ok(()) => Ok(records),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error),
+        }
     }
 
     /// Open a read-only snapshot without repair, locking, or recovery writes.
@@ -918,23 +1028,21 @@ impl Session {
         // `append(true)` alone opens write-only, and reading from such a handle
         // fails with EBADF. `read(true)` is required for the replay pass.
         let file = OpenOptions::new().read(true).append(true).open(&path)?;
-        let reader = BufReader::new(file.try_clone()?);
-
         let mut records = Vec::new();
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
+        visit_session_lines(&path, |_, _, line| {
+            if line.iter().all(|byte| byte.is_ascii_whitespace()) {
+                return Ok(());
             }
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) else {
                 // Repair ran first; a remaining parse failure is a race with
                 // another writer. Skipping keeps resume working.
-                continue;
+                return Ok(());
             };
             if let Some(r) = Record::from_json(&v) {
                 records.push(r);
             }
-        }
+            Ok(())
+        })?;
 
         let id = path
             .file_stem()
@@ -1035,9 +1143,16 @@ impl Session {
         }
         let mut fork = Self::create(dir)?;
         let mut turn = 0;
-        for line in BufReader::new(File::open(&self.path)?).lines() {
-            let line = line?;
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+        let mut reader = BufReader::new(File::open(&self.path)?);
+        let mut line = Vec::new();
+        loop {
+            if read_session_line(&mut reader, &mut line)? == 0 {
+                break;
+            }
+            if line.iter().all(|byte| byte.is_ascii_whitespace()) {
+                continue;
+            }
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(&line) else {
                 continue;
             };
             let Some(r) = Record::from_json(&v) else {
@@ -1291,11 +1406,14 @@ impl Session {
         if stamp == *self.raw_stamp.borrow() {
             return;
         }
-        if let Ok(text) = fs::read_to_string(&self.path)
-            && text.lines().any(|line| {
-                !line.trim().is_empty() && serde_json::from_str::<serde_json::Value>(line).is_err()
-            })
-        {
+        let mut corrupt = false;
+        let scan = visit_session_lines(&self.path, |_, _, line| {
+            if !line.iter().all(|byte| byte.is_ascii_whitespace()) && !json_line_is_valid(line) {
+                corrupt = true;
+            }
+            Ok(())
+        });
+        if scan.is_err() || corrupt {
             self.write_error = Some("session log has an incomplete external append; writes and effects are disabled until resume repair".into());
             return;
         }
@@ -1593,15 +1711,19 @@ impl Session {
                 return records;
             }
         }
-        let Ok(file) = File::open(&self.path) else {
+        let mut records = Vec::new();
+        if visit_session_lines(&self.path, |_, _, line| {
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(line)
+                && let Some(record) = Record::from_json(&value)
+            {
+                records.push(record);
+            }
+            Ok(())
+        })
+        .is_err()
+        {
             return self.records.clone();
-        };
-        let records: Vec<Record> = BufReader::new(file)
-            .lines()
-            .map_while(Result::ok)
-            .filter_map(|line| serde_json::from_str(&line).ok())
-            .filter_map(|value| Record::from_json(&value))
-            .collect();
+        }
         *self.raw_index.borrow_mut() = records.clone();
         self.refresh_stamp();
         records
@@ -3823,6 +3945,42 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert_eq!(fs::read(&sidecar).unwrap(), b"live sidecar");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn oversized_session_record_is_rejected_without_mutating_durable_history() {
+        let dir = tmpdir("oversized-session-record");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        let mut bytes = b"x".repeat(MAX_SESSION_RECORD_BYTES + 1);
+        bytes.push(b'\n');
+        fs::write(&path, &bytes).unwrap();
+
+        let error = Session::raw_records(&path).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(fs::metadata(&path).unwrap().len(), bytes.len() as u64);
+
+        let error = Session::open(&dir, "s").err().unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn bounded_session_line_reader_accepts_the_limit_with_or_without_newline() {
+        let content = vec![b'x'; MAX_SESSION_RECORD_BYTES];
+        let mut terminated = content.clone();
+        terminated.push(b'\n');
+        for bytes in [&content[..], &terminated[..]] {
+            let mut reader = BufReader::new(std::io::Cursor::new(bytes));
+            let mut line = Vec::new();
+            assert_eq!(
+                read_session_line(&mut reader, &mut line).unwrap(),
+                bytes.len()
+            );
+            assert_eq!(line, bytes);
+            assert_eq!(read_session_line(&mut reader, &mut line).unwrap(), 0);
+        }
     }
 
     #[test]

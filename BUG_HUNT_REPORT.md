@@ -537,6 +537,20 @@ the size error is returned first. The focused regression passes; this closes
 the persisted session status boundary only, not daemon interleavings or the
 full #65 audit.
 
+### Issue #65 bounded session-log record reads (2026-10-27)
+
+Core session replay, read-only history, external-index reconciliation, branch,
+and repair paths now read JSONL incrementally with a 16 MiB per-record cap.
+Repair streams its backup and normalized rewrite, and verifies the source file
+stamp before committing so an externally changed log is not replaced from a
+stale scan. An oversized record returns `InvalidData`; the regression verifies
+both history reads and session resume refuse it without modifying the original
+file. The total append-only transcript is not capped: Core retains typed
+history records for complete transcript and export behavior, so its retained
+history memory still scales with the session's actual record count and size.
+This closes unbounded single-record/read-buffer growth, not total-history
+retention or daemon interleavings.
+
 ### Issue #65 workspace snapshot save bound (2026-10-27)
 
 `WorkspaceStore::save` separately re-read the current durable snapshot with

@@ -254,6 +254,11 @@
         },
         {
           "level": "3",
+          "title": "Issue #65 bounded session-log record reads (2026-10-27)",
+          "anchor": "issue-65-bounded-session-log-record-reads-2026-10-27"
+        },
+        {
+          "level": "3",
           "title": "Issue #65 workspace snapshot save bound (2026-10-27)",
           "anchor": "issue-65-workspace-snapshot-save-bound-2026-10-27"
         },

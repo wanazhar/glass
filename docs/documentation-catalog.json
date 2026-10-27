@@ -104,6 +104,11 @@
         },
         {
           "level": "2",
+          "title": "Issue #65 finite acceptance reconciliation (2026-10-27)",
+          "anchor": "issue-65-finite-acceptance-reconciliation-2026-10-27"
+        },
+        {
+          "level": "2",
           "title": "Issue #65 dead-code allowance dispositions",
           "anchor": "issue-65-dead-code-allowance-dispositions"
         },
@@ -131,6 +136,11 @@
           "level": "3",
           "title": "Issue #65 teammate hub shutdown poison safety (2026-10-27)",
           "anchor": "issue-65-teammate-hub-shutdown-poison-safety-2026-10-27"
+        },
+        {
+          "level": "3",
+          "title": "Issue #65 parallel tool-batch lookup safety (2026-10-27)",
+          "anchor": "issue-65-parallel-tool-batch-lookup-safety-2026-10-27"
         },
         {
           "level": "3",

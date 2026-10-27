@@ -130,6 +130,17 @@ a valid frame. The full Core binary suite passes 970/970 and strict Core
 binary Clippy passes. This bounds ACP framing only; other transports remain
 separate inventory entries.
 
+### Issue #65 credential and trust store bounds (2026-10-27)
+
+The credential and workspace trust JSON stores also accepted arbitrary file
+sizes. Both now read through the shared bounded regular-file helper and cap
+serialized writes at 1 MiB. An oversized credential store is returned as an
+error without replacing credentials; an oversized or invalid trust store
+continues to behave as an empty consent cache, so no prior trust decision is
+silently granted. Focused tests cover oversized reads and writes for both
+stores. This adds two settings paths to the bounded-input coverage and does
+not close the broader issue inventory.
+
 ## Issue #65 dead-code allowance dispositions
 
 The refreshed source scan finds 23 remaining product-code `dead_code` annotation sites plus one test-only helper in product source; the separate integration-contract test has one more test allowance. Several reviewed suppressions were removed after production callsites were verified. `Session::turn` is retained because the `sessions` CLI reads it; its stale suppression is removed. This is a count of annotation sites (module and impl scopes can cover multiple items), not 44 distinct defect candidates. The previous 44-item count is stale. The unused provider `Usage::hit_rate` method and stale module-level allowance in `browser/session/types.rs` were also removed.

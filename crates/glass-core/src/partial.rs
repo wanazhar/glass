@@ -43,6 +43,8 @@ pub struct Live {
 
 const TEXT_CAP: usize = 65_536;
 const RECOVERED_CAP: usize = 8_192;
+const TOOL_FIELD_CAP: usize = 4_096;
+const LIVE_SNAPSHOT_CAP: usize = 512 * 1024;
 
 /// `<session>.jsonl` → `<session>.live.json`.
 pub fn path(session_path: &Path) -> PathBuf {
@@ -65,11 +67,19 @@ fn tail_chars(text: &str, cap: usize) -> String {
     text.chars().skip(count - cap).collect()
 }
 
+fn prefix_bytes(text: &str, cap: usize) -> String {
+    let mut end = text.len().min(cap);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
 /// Read the sidecar, discarding an unreadable one (it is best-effort by
 /// definition: a torn write here loses a partial, never the log).
 pub fn load(session_path: &Path) -> Option<Live> {
     let path = path(session_path);
-    let data = std::fs::read(&path).ok()?;
+    let data = crate::requests::bounded(&path, LIVE_SNAPSHOT_CAP).ok()?;
     match serde_json::from_slice::<Live>(&data) {
         Ok(live) => Some(live),
         Err(_) => {
@@ -176,8 +186,8 @@ impl Writer {
 
     pub fn tool(&mut self, call_id: &str, name: &str) {
         self.live.tool = Some(ToolLive {
-            call_id: call_id.to_string(),
-            name: name.to_string(),
+            call_id: prefix_bytes(call_id, TOOL_FIELD_CAP),
+            name: prefix_bytes(name, TOOL_FIELD_CAP),
         });
         self.dirty = true;
         // A tool starting is a phase boundary: everything the model said in
@@ -214,6 +224,9 @@ impl Writer {
         }
         self.live.at = now();
         if let Ok(data) = serde_json::to_vec(&self.live) {
+            if data.len() > LIVE_SNAPSHOT_CAP {
+                return;
+            }
             // Keep the previous good snapshot intact until the new one is
             // complete. The sidecar contains private prompt text, so create
             // the staging file with owner-only permissions as well.
@@ -322,6 +335,39 @@ mod tests {
         w.flush(true);
         let live = load(&session).unwrap();
         assert!(live.text.len() <= TEXT_CAP);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn streamed_tool_identifiers_are_bounded_at_utf8_boundaries() {
+        let dir = scratch("tool-field-bound");
+        let session = dir.join("s.jsonl");
+        let mut writer = Writer::new(&session, 10).unwrap();
+        writer.begin_turn(1);
+        writer.tool(&"é".repeat(TOOL_FIELD_CAP), &"工".repeat(TOOL_FIELD_CAP));
+        writer.flush(true);
+
+        let loaded = load(&session).expect("bounded sidecar should load");
+        let tool = loaded.tool.expect("tool phase should be present");
+        assert!(tool.call_id.len() <= TOOL_FIELD_CAP);
+        assert!(tool.name.len() <= TOOL_FIELD_CAP);
+        assert!(std::fs::metadata(path(&session)).unwrap().len() <= LIVE_SNAPSHOT_CAP as u64);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn oversized_sidecar_is_rejected_before_json_parsing() {
+        let dir = scratch("oversized");
+        let session = dir.join("s.jsonl");
+        let sidecar = path(&session);
+        let content = vec![b' '; LIVE_SNAPSHOT_CAP + 1];
+        std::fs::write(&sidecar, &content).unwrap();
+
+        assert!(load(&session).is_none());
+        assert_eq!(
+            std::fs::metadata(&sidecar).unwrap().len(),
+            content.len() as u64
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

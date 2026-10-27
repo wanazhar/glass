@@ -2286,13 +2286,17 @@ impl WorkspaceStore {
     }
     fn read_unlocked(&self, id: &WorkspaceId) -> Result<Workspace, WorkspaceStoreError> {
         let path = self.path_for(id);
-        let bytes = fs::read(&path).map_err(|error| {
+        let file = File::open(&path).map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
                 WorkspaceStoreError::NotFound(id.clone())
             } else {
                 io_error(error)
             }
         })?;
+        let mut bytes = Vec::with_capacity(MAX_WIRE_BYTES);
+        file.take((MAX_WIRE_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(io_error)?;
         if bytes.len() > MAX_WIRE_BYTES {
             return Err(WorkspaceStoreError::Corrupt(
                 "snapshot exceeds wire limit".into(),
@@ -2857,6 +2861,27 @@ mod persistence_tests {
             "deleted workspace remained observable: {deleted:?}"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn oversized_workspace_snapshot_is_rejected_before_full_read() {
+        let root = test_root("oversized-snapshot");
+        let store = WorkspaceStore::new(&root).unwrap();
+        let id = WorkspaceId::new("oversized").unwrap();
+        store
+            .create(
+                id.clone(),
+                [],
+                WorkspaceConfig::durable_named(ProfileId::new("oversized").unwrap()),
+            )
+            .unwrap();
+        fs::write(store.path_for(&id), vec![b'x'; MAX_WIRE_BYTES + 1]).unwrap();
+        assert!(matches!(
+            store.open(&id),
+            Err(WorkspaceStoreError::Corrupt(message))
+                if message == "snapshot exceeds wire limit"
+        ));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

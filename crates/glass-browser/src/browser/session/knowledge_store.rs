@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use url::Url;
@@ -139,7 +139,7 @@ impl KnowledgeStore {
     ) -> Result<Self, KnowledgeStoreError> {
         limits.validate()?;
         let path = path.into();
-        let snapshot = read_snapshot(&path)?;
+        let snapshot = read_snapshot(&path, limits.max_bytes)?;
         validate_snapshot_size(&snapshot, limits.max_bytes)?;
         Ok(Self {
             path,
@@ -167,7 +167,7 @@ impl KnowledgeStore {
     /// Re-read the snapshot under the store lock.
     pub fn refresh(&mut self) -> Result<(), KnowledgeStoreError> {
         let _lock = StoreLock::acquire(&self.path)?;
-        let snapshot = read_snapshot(&self.path)?;
+        let snapshot = read_snapshot(&self.path, self.limits.max_bytes)?;
         validate_snapshot_size(&snapshot, self.limits.max_bytes)?;
         self.snapshot = snapshot;
         self.last_pruned = None;
@@ -839,7 +839,7 @@ impl KnowledgeStore {
         F: FnOnce(&mut KnowledgeStoreSnapshot) -> Result<T, KnowledgeStoreError>,
     {
         let _lock = StoreLock::acquire(&self.path)?;
-        let mut snapshot = read_snapshot(&self.path)?;
+        let mut snapshot = read_snapshot(&self.path, self.limits.max_bytes)?;
         let result = operation(&mut snapshot)?;
         let pruned = prune_snapshot(&mut snapshot, self.limits)?;
         write_snapshot(&self.path, &snapshot, self.limits.max_bytes)?;
@@ -849,9 +849,19 @@ impl KnowledgeStore {
     }
 }
 
-fn read_snapshot(path: &Path) -> Result<KnowledgeStoreSnapshot, KnowledgeStoreError> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+fn read_snapshot(
+    path: &Path,
+    max_bytes: usize,
+) -> Result<KnowledgeStoreSnapshot, KnowledgeStoreError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Ok(KnowledgeStoreSnapshot {
                 schema_version: KNOWLEDGE_SCHEMA_VERSION,
@@ -860,6 +870,24 @@ fn read_snapshot(path: &Path) -> Result<KnowledgeStoreSnapshot, KnowledgeStoreEr
         }
         Err(error) => return Err(KnowledgeStoreError::Io(error)),
     };
+    if !file.metadata().map_err(KnowledgeStoreError::Io)?.is_file() {
+        return Err(KnowledgeStoreError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "knowledge store must be a regular file",
+        )));
+    }
+    let read_limit = u64::try_from(max_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut bytes = Vec::with_capacity(max_bytes.min(DEFAULT_KNOWLEDGE_STORE_BYTES));
+    file.take(read_limit)
+        .read_to_end(&mut bytes)
+        .map_err(KnowledgeStoreError::Io)?;
+    if bytes.len() > max_bytes {
+        return Err(KnowledgeStoreError::Capacity(
+            "snapshot exceeds the configured store byte limit".into(),
+        ));
+    }
     let snapshot = serde_json::from_slice::<KnowledgeStoreSnapshot>(&bytes)
         .map_err(|error| KnowledgeStoreError::Corrupt(format!("invalid JSON snapshot: {error}")))?;
     snapshot
@@ -1210,6 +1238,22 @@ mod tests {
         fs::write(&path, b"not-json").unwrap();
         let error = KnowledgeStore::open(&path).unwrap_err();
         assert!(matches!(error, KnowledgeStoreError::Corrupt(_)));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn oversized_snapshot_is_refused_before_json_parsing() {
+        let path = test_path();
+        let limits = KnowledgeStoreLimits {
+            max_records: MAX_KNOWLEDGE_RECORDS,
+            max_bytes: 32,
+        };
+        let bytes = vec![b' '; limits.max_bytes + 1];
+        fs::write(&path, &bytes).unwrap();
+
+        let error = KnowledgeStore::open_with_limits(&path, limits).unwrap_err();
+        assert!(matches!(error, KnowledgeStoreError::Capacity(_)));
+        assert_eq!(fs::metadata(&path).unwrap().len(), bytes.len() as u64);
         let _ = fs::remove_file(&path);
     }
 

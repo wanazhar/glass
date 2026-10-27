@@ -55,16 +55,22 @@ The managed owner now starts in its own OS session. Its private status file and
 command socket continue to define the owner, and explicit stop closes that
 one browser. A subprocess regression starts a native owner under an isolated
 caller process group, applies the same group kill used by Core bash cleanup,
-then performs separate navigate, evaluate, text, and observe invocations. The
-text call reads a DOM marker written by the preceding process; the test then
-stops the owner and verifies its process and status are gone. The test uses a
-private temporary config directory and `about:blank`; it makes no network
-request, starts no Chromium, and does not attach to an external browser.
+then runs separate CLI processes from a temporary working directory outside
+the repository. It navigates to a local HTTP fixture, observes it, types into
+its name field, clicks Save, and verifies a later text call reads `Saved Ada`.
+The same owner also survives a failed command and a cancelled attached wait on
+`about:blank`; explicit stop exits the owner and records stopped status. The
+fixture listener and config are test-owned and private; no public network,
+Chromium, or external browser is involved.
 
 This fixes the managed named-session lifecycle. A plain one-shot command
 remains intentionally stateless, and the screenshot alone did not establish
 whether a named session had been started. The owner has to be started and the
-same name passed on each later command.
+same name passed on each later command. Core's compact base prompt now says
+that multi-call browsing needs a named session; its on-demand research recipe,
+`gc help web`, and browser CLI long help show the exact start/attach/stop
+syntax. Regression assertions enforce the compact prompt and recipe byte
+budgets.
 
 ## Native Wikipedia follow-up (2026-10-26)
 
@@ -185,6 +191,29 @@ file without overwriting it. The focused regression writes a file one byte
 over the cap and verifies it is rejected and preserved. This closes the
 binding path only; other remaining parser and file inputs still require their
 own inventory and evidence.
+
+### Issue #65 interrupted-turn sidecar bound (2026-10-27)
+
+Interrupted-turn recovery also read its `*.live.json` sidecar with an
+unbounded `std::fs::read` before JSON parsing. Recovery now uses the shared
+regular-file reader with a 512 KiB cap. The writer bounds provider-supplied
+tool ID/name fields on UTF-8 boundaries and refuses any serialized snapshot
+above that same cap. Regressions cover cap+1 rejection before parsing,
+preservation of the over-limit file, and bounded identifier serialization.
+All eight partial-sidecar tests pass. This closes this recovery sidecar only;
+it does not complete the remaining public parser/file inventory.
+
+### Issue #65 browser knowledge-store snapshot bound (2026-10-27)
+
+`KnowledgeStore` validated serialized byte limits after reading persisted JSON
+with `fs::read`, so an oversized snapshot could allocate before hitting its
+existing store limit. Snapshot reads now take at most `maxBytes + 1` from a
+regular no-follow file, apply the configured limit before JSON parsing, and
+use the same limit for open, refresh, and mutation reloads. A deterministic
+32-byte-limit regression confirms an oversized invalid-JSON file returns the
+capacity error before the parser and remains intact. This closes the
+knowledge-store snapshot boundary only; the remaining file/parser inventory
+still needs scoped dispositions.
 
 ## Issue #65 dead-code allowance dispositions
 
@@ -389,6 +418,11 @@ cases ran on Linux only. The separate macOS profile, all tool-specific error
 propagation, concurrent request/daemon interleavings, and remaining workflow
 authoring shapes still need individual evidence before #65 can close.
 
+The current validation host is Ubuntu Linux aarch64, so macOS runtime and
+sandbox behavior is explicitly unverified. In particular, source-level review
+does not establish the macOS network-egress boundary; that platform acceptance
+remains open for a macOS host.
+
 ### Issue #65 syntax-check subprocess setup and timeout signaling (2026-10-27)
 
 The Core syntax-only diagnostics subprocess now treats unexpectedly absent
@@ -455,6 +489,17 @@ deserialization, matching the bounded structured observation contract. Its
 regression covers oversized invalid JSON and exact-limit acceptance. Existing
 per-field, record-count, and 64 KiB aggregate structured-data checks still run
 after parsing. This closes this direct response-contract parser path only.
+
+### Issue #65 persisted snapshot read bounds (2026-10-27)
+
+Core partial-turn sidecars now read at most 512 KiB plus one byte before JSON
+parsing, and streamed tool identifiers are capped at UTF-8 boundaries. The
+browser knowledge store and durable workspace snapshots also read only their
+configured limit plus one byte before deserialization, returning a capacity or
+corruption error without allocating the complete oversized file. Boundary
+regressions cover the knowledge store, workspace store, and partial sidecar.
+Other persisted-state paths and concurrent replacement scenarios remain in
+the #65 source-level acceptance matrix.
 
 ### Issue #64 native public video failure recheck (2026-10-27)
 

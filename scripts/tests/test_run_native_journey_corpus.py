@@ -16,6 +16,24 @@ SPEC.loader.exec_module(corpus)
 
 
 class JourneyFailureClassificationTests(unittest.TestCase):
+    def test_safe_worker_diagnostics_keep_only_static_allowlisted_classes(self):
+        diagnostics = corpus.safe_worker_diagnostics(
+            "native content worker exited with diagnostic class: worker\n"
+            "native content worker operation class: content_process_script\n"
+            "native content worker reason class: content_process_pipe_closed\n"
+            "native content worker private operation: https://private.example/secret\n"
+            "native content worker reason class: private-page-text"
+        )
+
+        self.assertEqual(
+            diagnostics,
+            [{
+                "class": "worker",
+                "operation": "content_process_script",
+                "reason": "content_process_pipe_closed",
+            }],
+        )
+
     def test_outer_deadline_is_distinct_from_per_step_timeout(self):
         self.assertEqual(corpus.journey_outer_timeout_ms({"timeoutMs": 120000}), 130000)
         self.assertEqual(

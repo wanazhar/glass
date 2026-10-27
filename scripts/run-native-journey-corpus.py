@@ -149,6 +149,71 @@ def error_kind(message: str, timed_out: bool = False) -> str:
     return "journey_step_error"
 
 
+def safe_worker_diagnostics(stderr: str) -> list[dict[str, str]]:
+    """Retain only the worker's static privacy-safe diagnostic categories."""
+    classes = {
+        "invalid_configuration",
+        "lifecycle",
+        "unsupported_url",
+        "network",
+        "worker",
+        "worker_failure",
+        "navigation_cancelled",
+        "storage_profile_locked",
+        "parse",
+        "limit_exceeded",
+        "scheduler",
+        "target_not_found",
+        "ambiguous_target",
+        "detached_target",
+        "target_not_actionable",
+        "disabled_target",
+        "read_only_target",
+    }
+    operations = {
+        "content_process_script",
+        "content_process",
+        "script_runtime",
+        "serialization",
+        "filesystem",
+        "network",
+        "runtime_setup",
+        "other",
+    }
+    reasons = {
+        "content_process_pipe_closed",
+        "content_process_truncated_frame",
+        "missing_document",
+        "missing_url",
+        "missing_origin",
+        "other",
+    }
+    diagnostics: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    prefixes = (
+        ("native content worker exited with diagnostic class: ", "class", classes),
+        ("native content worker operation class: ", "operation", operations),
+        ("native content worker reason class: ", "reason", reasons),
+    )
+    for line in stderr.splitlines():
+        for prefix, field, allowed in prefixes:
+            if not line.startswith(prefix):
+                continue
+            value = line[len(prefix):].strip()
+            if value not in allowed:
+                break
+            if field == "class":
+                if current:
+                    diagnostics.append(current)
+                current = {field: value}
+            elif current is not None:
+                current[field] = value
+            break
+    if current:
+        diagnostics.append(current)
+    return diagnostics[:8]
+
+
 def observed_click_step(step: dict) -> dict:
     if step.get("targetSource") != "fresh-observation":
         raise ValueError("clickObserved requires targetSource=fresh-observation")
@@ -339,6 +404,7 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
             env=environment,
             timeout=outer_timeout_ms / 1000,
         )
+        worker_diagnostics = safe_worker_diagnostics(stderr)
         progress_results = progress_step_results(
             progress_source,
             len(steps),
@@ -412,6 +478,7 @@ def run_public_journey(binary: str, journey: dict, artifact_dir: Path) -> dict:
         "steps": step_results,
         "failedSteps": failed_steps,
         "diagnosticResultId": (result.get("detailAvailability") or {}).get("resultId"),
+        "workerDiagnostics": worker_diagnostics,
         "diagnosticsArtifact": str(trace_target) if trace_target.exists() else None,
         "progressArtifact": str(progress_target) if progress_target.exists() else None,
         "diagnosticStageTotalsMs": {stage: round(value / 1000, 2) for stage, value in stage_time_us.items()},

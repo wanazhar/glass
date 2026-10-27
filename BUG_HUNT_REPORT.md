@@ -768,14 +768,16 @@ the corrected state. This removes the local predicate mismatch but does not
 reproduce or explain the public content-process pipe closure; the public
 journey remains open and no public pass is claimed.
 
-One bounded rerun using the newly installed standalone browser still failed at
-that same MDN wait step 19 ms after it began, with the content worker exiting
-status 1. The journey runner now retains only the worker's static allowlisted
-diagnostic classes from stderr; this attempt reported `worker`,
-`content_process_script`, and `other`. Free-form worker text remains discarded.
-The failure is therefore narrowed to an error while servicing a script request,
-but its underlying operation or reason is not identified. The local readiness
-fix is verified independently and does not count as a public video pass.
+The latest bounded MDN rerun used the rebuilt standalone browser at `0732a2e7`.
+Navigation (5.07 s) and observation (2 ms) passed, then the first WebM-resource
+assertion failed 35 ms into its wait; the worker exited with status 1. The
+redacted trace shows zero admitted media resources, so the failure preceded
+decode and playback. The expanded privacy-safe worker classifier still reports
+`worker` / `content_process_script` / `other`; no free-form worker error, URL,
+or page content is retained. The cause remains unidentified. The local
+readiness and VP8 decoder tests do not count as a public video pass. CI now
+inherits worker panic backtraces on native runtime jobs to identify the
+cross-platform process exits without logging page data.
 
 ## Verification in this working tree
 

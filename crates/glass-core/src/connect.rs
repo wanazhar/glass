@@ -1682,6 +1682,12 @@ fn preview_path(root: &std::path::Path, path: &str) -> Result<(String, Vec<u8>),
     std::str::from_utf8(&bytes).map_err(|_| "Binary file cannot be previewed as text")?;
     Ok(("text/plain; charset=utf-8".into(), bytes))
 }
+fn event_stream_requires_reset(cursor: u64, current: u64, oldest: Option<u64>) -> bool {
+    cursor == 0
+        || cursor > current
+        || oldest.is_some_and(|oldest| cursor.saturating_add(1) < oldest)
+}
+
 fn event_stream(mut stream: TcpStream, b: Arc<Bridge>, since: u64) -> std::io::Result<()> {
     write!(
         stream,
@@ -1698,11 +1704,8 @@ fn event_stream(mut stream: TcpStream, b: Arc<Bridge>, since: u64) -> std::io::R
                 .unwrap()
                 .0;
         }
-        let reset = cursor == 0
-            || cursor > f.seq
-            || f.events
-                .front()
-                .is_some_and(|(seq, _, _)| cursor + 1 < *seq);
+        let reset =
+            event_stream_requires_reset(cursor, f.seq, f.events.front().map(|(seq, _, _)| *seq));
         let data = if reset {
             json!({"reset":true,"cursor":f.seq,"active":f.active,"control":f.snapshot,"interaction":f.interaction,"live":if f.active{f.live.iter().cloned().collect::<Vec<_>>()}else{Vec::new()},"liveClipped":f.live_clipped})
         } else {
@@ -2139,6 +2142,17 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn event_stream_cursor_maximum_does_not_overflow() {
+        assert!(!event_stream_requires_reset(
+            u64::MAX,
+            u64::MAX,
+            Some(u64::MAX)
+        ));
+        assert!(event_stream_requires_reset(3, 10, Some(5)));
+        assert!(!event_stream_requires_reset(4, 10, Some(5)));
+    }
     fn settings() -> Settings {
         Settings {
             port: 8765,

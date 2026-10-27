@@ -147,6 +147,14 @@ error instead of panicking. A focused poisoned-context regression passes;
 this is one Core error-propagation fix, not closure of the remaining
 interleaving audit.
 
+### Issue #65 event-stream cursor overflow (2026-10-27)
+
+Core accepted the reconnect cursor as a `u64` from the HTTP `Last-Event-ID`
+header, then evaluated `cursor + 1` while deciding whether retained events
+had a gap. A maximum-valued cursor could overflow in debug builds. Reset
+classification now uses saturating addition; a boundary regression covers
+`u64::MAX` and ordinary gap/no-gap behavior.
+
 ### Issue #65 process-ID follow-up (2026-10-26)
 
 Two unchecked Unix narrowing paths are fixed: `browser/persistent.rs` rejects persisted `u32` process IDs that cannot be represented as positive `pid_t` before `kill(pid, 0)`, and `browser/chrome.rs` parses `lsof` output as positive `pid_t` before `SIGTERM`. A follow-up changes `kill_chrome(port)` to inspect only TCP listeners and signal only same-user TCP listeners whose lsof command names match Chrome/Chromium variants; other services, other users, and outgoing clients are excluded, and lsof inspection errors are returned. Its parser regression and the surrounding Chrome unit module pass (18 tests), with strict `glass-browser` library Clippy and formatting. The public function has no in-repository callers; UID and command-name filtering are not an executable-identity pin; a same-user process that deliberately adopts a Chrome command name remains outside this safeguard. Owned sessions should use `ChromeProcess::shutdown`, which signals the exact child Glass launched.

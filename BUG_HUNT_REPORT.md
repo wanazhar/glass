@@ -826,6 +826,54 @@ owner-only traces under its adjacent `.artifacts/` directory. The provider
 stall records remain uncorrelated to the reported wait, so that separate #64
 diagnosis is also unresolved.
 
+### Issue #65 Windows test and path follow-up (2026-10-27)
+
+Windows CI `40507924506` on `49169509` confirmed that all three native
+navigation-preload process tests pass after the worker-stack fix, then exposed
+two Glass Dev compile errors. A TUI regression directly called the Unix-only
+composer draft writer, and the Windows named-pipe test constructed a daemon
+request with a struct literal despite its internal Core authorization field
+being private. The TUI test now gates the durable writer assertion to Unix and
+continues to exercise process-local draft switching on Windows. The external
+daemon fixture now goes through its serde wire form, leaving private runtime
+authorization omitted and default-denied. The patched Windows run
+`40512058753` compiled both areas and passed the native preload tests again.
+
+The next Windows Glass Dev run found path assumptions in the experiment, LSP,
+and Debug regressions. Git reports a worktree under the long Windows username
+path while the test's expected path used an 8.3 temporary-directory alias, so
+the experiment test now compares canonical paths. LSP file URIs are
+canonicalized before enforcing project containment; Debug source locations use
+the same canonical, case-insensitive Windows component-prefix check. Debug
+paths are converted to the editor's slash-separated project path format. The
+worker-panic test now waits for the intentionally panicked thread to finish
+before asserting registry reaping. Local Glass Dev tests passed 696/696 and
+strict Glass Dev Clippy passed. CI `40514477856` then passed 644 Windows Glass
+Dev library tests, including the corrected experiment, LSP, Debug, and panic
+regressions.
+
+That Windows run exposed one stale `glass` binary test expectation: explicit
+`glass core browser status` forwarding correctly carries the `glass core`
+presentation marker, but the test expected no marker. The assertion now
+matches the explicit Core escape hatch; the focused binary tests pass 2/2.
+The same run then reached the Windows daemon integration and showed that the
+fixture used snake_case JSON keys for a camelCase wire struct, so `workspaceId`
+was absent and `workspace.open` correctly rejected the request. A shared
+camelCase request builder now omits internal `coreRuntimeAuthorized`; a
+platform-independent serialization regression confirms that field defaults
+to `false`. The focused wire test passes locally. CI `40516383424` on
+`1548d1b0` passed 644 Glass Dev library tests, both binary tests, and all three
+native preload process tests before failing only in this named-pipe fixture.
+CI `40519067228` on `80e20e49` is the pending Windows verification for the
+camelCase fixture repair.
+
+Across these CI runs, hosted Ubuntu continues to fail worker-dependent cases
+at `bwrap: setting up uid map: Permission denied` (939/11 native Core and
+695/1 Glass Dev), while macOS continues to fail all three navigation-preload
+tests with a content-worker `SIGABRT` and no worker-side cause. The Windows
+worker-stack regression is fixed, and the latest Windows daemon fixture check
+is pending; no cross-platform or umbrella-issue closure is claimed.
+
 ## Verification in this working tree
 
 Passed so far:

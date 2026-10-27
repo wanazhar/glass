@@ -1,6 +1,52 @@
 use super::*;
 
 #[test]
+fn native_runtime_dynamic_iframe_srcdoc_property_updates_the_attribute() {
+    run_native_browser_worker_test(|runtime| {
+        runtime
+            .block_on(native_runtime_dynamic_iframe_srcdoc_property_updates_the_attribute_inner());
+    });
+}
+
+async fn native_runtime_dynamic_iframe_srcdoc_property_updates_the_attribute_inner() {
+    let session =
+        BrowserRuntimeSession::connect_native(NativeEngineConfig::default().with_initial_url(
+            "data:text/html,%3Ctitle%3EParent%3C%2Ftitle%3E%3Cbody%3Eparent%3C%2Fbody%3E",
+        ))
+        .await
+        .unwrap();
+    let child_markup = "<p id='sample'>video sample</p>";
+    let result = session
+        .script(&format!(
+            "(() => {{ const frame = document.createElement('iframe'); frame.id = 'output-iframe'; document.body.appendChild(frame); frame.srcdoc = {child_markup:?}; return [frame.srcdoc, frame.getAttribute('srcdoc')]; }})()"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        result.value,
+        serde_json::json!([child_markup, child_markup])
+    );
+    let frames = session.native_list_frames().await.unwrap();
+    assert_eq!(frames.len(), 2);
+    let child_id = frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("dynamically authored srcdoc should create a child browsing context")
+        .id
+        .clone();
+    session.native_select_frame(&child_id).await.unwrap();
+    assert_eq!(
+        session
+            .script("document.body.textContent")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!("video sample")
+    );
+    session.close().await.unwrap();
+}
+
+#[test]
 fn native_runtime_session_exposes_agent_inspection_and_target_discovery() {
     run_native_browser_worker_test(|runtime| {
         runtime

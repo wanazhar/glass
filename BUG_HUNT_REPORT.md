@@ -985,6 +985,20 @@ timeout, or elapsed minute alone, but the specific script/resource trigger
 remains unknown. No second public retry was made and the route is not counted
 as a media pass.
 
+A local contract probe found one concrete iframe API gap: `HTMLIFrameElement`
+had no reflected `srcdoc` property. Assigning `frame.srcdoc = markup` therefore
+created only a JavaScript property; the native document retained a null
+`srcdoc` attribute, while frame discovery builds child documents from that
+attribute. The regression failed with `[markup, null]` before the fix. The
+iframe interface now reflects the property through `setAttribute`; the same
+fixture verifies the attribute, child browsing context, selected child
+document, and authored text. This is a deterministic native fix for dynamic
+`srcdoc` frames. A post-fix, current-binary named native session still found
+the public `#output-iframe` with no `src` or `srcdoc`, and its selected
+`about:blank` child had no video element. The public failure therefore remains
+unresolved; this local fix is not a claim that the MDN sample uses `srcdoc` or
+that its media plays.
+
 ## Verification in this working tree
 
 Passed so far:

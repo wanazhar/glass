@@ -160,6 +160,11 @@
   for (const name of Object.keys(elementConstructors)) {{
     elementConstructors[name] = ensureNativeConstructor(name, elementConstructors[name]);
   }}
+  installSharedStringAttribute(
+    elementConstructors.HTMLIFrameElement.prototype,
+    "srcdoc",
+    "srcdoc",
+  );
   installNativeElementSharedMethods(ElementNative.prototype);
   Object.defineProperties(
     ElementNative.prototype,

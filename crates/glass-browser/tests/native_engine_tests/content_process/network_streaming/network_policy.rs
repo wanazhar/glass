@@ -1698,8 +1698,10 @@ async fn native_content_process_video_posters_use_parent_cookie_authority_and_pa
     assert!(
         initial_images[0]
             .3
-            .chunks_exact(4)
-            .all(|pixel| pixel == [220, 20, 20, 255])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [220, 20, 20, 255])
     );
 
     let setup_state = engine
@@ -1738,8 +1740,10 @@ async fn native_content_process_video_posters_use_parent_cookie_authority_and_pa
         .unwrap();
     assert!(
         first_poster_pixels
-            .chunks_exact(4)
-            .all(|pixel| pixel == [20, 180, 40, 255])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [20, 180, 40, 255])
     );
 
     let second_poster_url = format!("http://{poster_address}/second.png");
@@ -1761,8 +1765,10 @@ async fn native_content_process_video_posters_use_parent_cookie_authority_and_pa
         .unwrap();
     assert!(
         second_poster_pixels
-            .chunks_exact(4)
-            .all(|pixel| pixel == [20, 40, 220, 255])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [20, 40, 220, 255])
     );
 
     engine
@@ -1846,8 +1852,10 @@ async fn native_content_process_video_posters_use_parent_cookie_authority_and_pa
         .unwrap();
     assert!(
         after_failure_pixels
-            .chunks_exact(4)
-            .all(|pixel| pixel == [200, 40, 180, 255])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [200, 40, 180, 255])
     );
     assert_eq!(
         engine

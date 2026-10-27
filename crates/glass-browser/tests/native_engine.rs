@@ -14,12 +14,14 @@ use glass_browser::browser::native_engine::{
     NativeRuntimeTraceKind, NativeSurface, NativeSvgStrokeShape, NativeTextDecorationSkipInk,
     NativeTextDecorationSkipSpaces, NativeTextDecorationStyle, NativeWorkerFailureKind, Viewport,
 };
+#[cfg(unix)]
+use glass_browser::browser::session::VisualFormat;
 use glass_browser::browser::session::{
     BatchMode, BatchStep, BatchStepOutcome, Cookie, ExtractionField, ExtractionKind,
     IntentConfidence, IntentConstraints, SemanticIntentAction, SemanticIntentExecutionRequest,
     SemanticIntentRequest, SemanticObservationLevel, SemanticResolutionPolicy,
     StructuredExtractionRequest, VerificationPredicate, VisualCaptureOptions, VisualClip,
-    VisualFormat, WaitCondition,
+    WaitCondition,
 };
 use glass_browser::browser::{NativeDialogController, NativeDialogResolution, NativePendingDialog};
 use glass_browser::browser_backend::{

@@ -952,7 +952,7 @@ impl NativeSurface {
     }
 
     fn clear(&mut self, color: super::css::NativeColor) {
-        for pixel in self.rgba.chunks_exact_mut(4) {
+        for pixel in self.rgba.as_chunks_mut::<4>().0.iter_mut() {
             pixel.copy_from_slice(&[color.red, color.green, color.blue, color.alpha]);
         }
     }
@@ -2163,7 +2163,7 @@ impl NativeSurface {
 
     fn composite_layer(&mut self, layer: &Self, opacity: u8) {
         let width = usize::try_from(self.width).unwrap_or(1);
-        for (pixel_index, pixel) in layer.rgba.chunks_exact(4).enumerate() {
+        for (pixel_index, pixel) in layer.rgba.as_chunks::<4>().0.iter().enumerate() {
             let color = super::css::NativeColor {
                 red: pixel[0],
                 green: pixel[1],

@@ -22,6 +22,7 @@ use super::dom::{
 };
 use super::environment::NativeEnvironmentOverrides;
 use super::error::{NativeEngineError, NativeWorkerFailureKind};
+use super::fetch_next_id;
 use super::fetch_stream::{
     MAX_NATIVE_FETCH_UPLOAD_CHUNKS, NativeFetchStreamCommand, NativeFetchStreamConnection,
     NativeFetchStreamEvent, NativeFetchUploadCommand, NativeFetchUploadConnection,
@@ -873,11 +874,7 @@ impl NativeWorkerDialogRpc {
             return Err("native dialog text exceeds its byte limit".into());
         }
         validate_url_text("native dialog URL", &url).map_err(|error| error.to_string())?;
-        let dialog_id = self
-            .next_dialog_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
-                next.checked_add(1)
-            })
+        let dialog_id = fetch_next_id(&self.next_dialog_id, Ordering::Relaxed, Ordering::Relaxed)
             .map_err(|_| "native dialog identifier space is exhausted".to_owned())?;
         let event = json!({
             "kind": "dialog_open",

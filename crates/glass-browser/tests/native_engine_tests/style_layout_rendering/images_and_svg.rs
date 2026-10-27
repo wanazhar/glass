@@ -853,14 +853,16 @@ fn native_svg_smooth_and_arc_paths_share_bounded_geometry() {
     assert!(
         surface
             .rgba()
-            .chunks_exact(4)
-            .any(|pixel| pixel == [0, 0, 255, 255])
+            .as_chunks::<4>()
+            .0
+            .contains(&[0, 0, 255, 255])
     );
     assert!(
         surface
             .rgba()
-            .chunks_exact(4)
-            .any(|pixel| pixel == [0, 128, 0, 255])
+            .as_chunks::<4>()
+            .0
+            .contains(&[0, 128, 0, 255])
     );
     assert_eq!(layout.hit_test(5, 8).unwrap(), Some(smooth));
     assert_eq!(layout.hit_test(27, 10).unwrap(), Some(arc));
@@ -970,8 +972,9 @@ fn native_svg_transforms_share_nested_layout_paint_and_hit_geometry() {
     assert!(
         surface
             .rgba()
-            .chunks_exact(4)
-            .any(|pixel| pixel == [255, 0, 0, 255])
+            .as_chunks::<4>()
+            .0
+            .contains(&[255, 0, 0, 255])
     );
     assert_eq!(layout.hit_test(12, 6).unwrap(), Some(rect));
     assert_eq!(layout.hit_test(33, 8).unwrap(), Some(path));

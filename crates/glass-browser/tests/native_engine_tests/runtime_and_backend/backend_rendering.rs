@@ -48,12 +48,14 @@ fn native_engine_raster_surface_is_bounded_and_does_not_mutate_revision() {
     assert!(
         surface
             .rgba()
-            .chunks_exact(4)
-            .any(|pixel| pixel == [0, 0, 255, 255])
+            .as_chunks::<4>()
+            .0
+            .contains(&[0, 0, 255, 255])
     );
 }
 
 #[test]
+#[cfg(unix)]
 fn native_backend_captures_all_visual_formats_without_mutating_revision() {
     std::thread::Builder::new()
         .name("native-visual-formats-test".into())

@@ -650,15 +650,15 @@ impl NativeDocument {
             let index = u32::try_from(index).map_err(|_| {
                 NativeEngineError::limit("content-process DOM node index", u32::MAX as usize, index)
             })?;
-            let parent = wire_node.parent.map(&node_id).transpose()?;
+            let parent = wire_node.parent.map(node_id).transpose()?;
             let children = wire_node
                 .children
                 .iter()
                 .copied()
                 .map(node_id)
                 .collect::<Result<Vec<_>, _>>()?;
-            let template_content = wire_node.template_content.map(&node_id).transpose()?;
-            let template_host = wire_node.template_host.map(&node_id).transpose()?;
+            let template_content = wire_node.template_content.map(node_id).transpose()?;
+            let template_host = wire_node.template_host.map(node_id).transpose()?;
             let kind = match &wire_node.kind {
                 NativeNodeKindWire::Document => NativeNodeKind::Document,
                 NativeNodeKindWire::DocumentFragment => NativeNodeKind::DocumentFragment,

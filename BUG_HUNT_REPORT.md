@@ -62,12 +62,14 @@ Issue #65 Browser error-path follow-up: navigation preflight now carries the alr
 ## Issue #65 finite acceptance reconciliation (2026-10-27)
 
 This is a source-and-report reconciliation of the filed issue body, not a
-claim that every raw pattern match is a defect. The issue body gives concrete
-paths for #26–60 and the two lint examples #81–82. It does not give independent
-source paths or acceptance criteria for #61–80 or #91–108; #83–90 are broad
-audit themes, and #57–60 are grouped rather than individually scoped. The
-reported total of 108 therefore must not be read as 108 independently
-reproduced findings.
+claim that every raw pattern match is a defect. The issue body gives 35
+numbered entries for #26–60 and two lint examples #81–82. It does not give
+independent source paths or acceptance criteria for #61–80 or #91–108; #83–90
+are broad audit themes, and #57–60 are grouped rather than individually
+scoped. All 35 entries and both lint examples were reconciled with the current
+source/report; 20 IDs (#61–80), 18 IDs (#91–108), and the eight thematic IDs
+(#83–90) have no independent source-level disposition. The reported total of
+108 therefore must not be read as 108 independently reproduced findings.
 
 | Filed scope | Current disposition | Remaining acceptance |
 |---|---|---|
@@ -88,6 +90,21 @@ reproduced defect; (3) inventory public structured-value and file parsers and
 verify limits are applied before allocation/parsing; and (4) disposition the
 grouped or absent issue ranges without inventing findings. Until those gates
 are completed or explicitly de-scoped by the issue owner, #65 remains open.
+
+### Issue #65 Core settings file bounds (2026-10-27)
+
+Core settings were another repeated file-to-parser boundary: `config.toml` was
+read without a byte limit by the main config loader, permission-profile
+writer, and pre-tool hook loader; `requirements.toml` and `profiles.json` also
+had unbounded reads. They now share a regular-file reader that preserves
+symlink support, avoids blocking on FIFOs on Unix, and reads at most limit+1
+bytes before UTF-8 or TOML/JSON parsing. The cap is 1 MiB for main config and
+profiles, and 64 KiB for administrator requirements. Regressions for oversized
+config and requirements files verify refusal before TOML parsing; the
+full Core binary suite passes 965/965, config tests 27/27, requirement tests
+7/7, permission tests 3/3, and strict Core binary Clippy passes. This bounds
+these settings paths only; it does not complete the remaining public
+parser/file inventory.
 
 ## Issue #65 dead-code allowance dispositions
 

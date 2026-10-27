@@ -68,9 +68,9 @@ pub fn persist_profile(
     path: &std::path::Path,
     profile: sandbox::PermissionProfile,
 ) -> Result<(), String> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+    let text = match config::read_bounded_text(path, 1024 * 1024) {
+        Ok(Some(text)) => text,
+        Ok(None) => String::new(),
         Err(_) => return Err("cannot read config.toml; profile was not changed".into()),
     };
     let mut expected: toml::Value = toml::from_str(&text)

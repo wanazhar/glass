@@ -29,10 +29,10 @@ pub struct Store {
     pub active: BTreeMap<String, String>,
 }
 pub fn load() -> Result<Store, String> {
-    match std::fs::read(config::config_dir().join("profiles.json")) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
+    match config::read_bounded_text(&config::config_dir().join("profiles.json"), 1024 * 1024) {
+        Ok(Some(text)) => serde_json::from_str(&text)
             .map_err(|_| "Workspace profiles are invalid; not overwritten".into()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Store::default()),
+        Ok(None) => Ok(Store::default()),
         Err(e) => Err(e.to_string()),
     }
 }

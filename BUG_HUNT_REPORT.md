@@ -922,17 +922,17 @@ The common source-certification job separately overflowed in
 `native_visual_capture_honors_clip_scale_full_page_and_element_options`.
 That test now runs on an explicit 8 MiB test thread and current-thread Tokio
 runtime; its focused test passes with `RUST_MIN_STACK=4194304`. This addresses
-test-harness stack variability without changing the renderer. The latest Mac
-artifact from `40555053740` matched `glass-native-content-worker` but contained
-no frames or exception metadata. The earlier sanitized dyld startup stack from
-`40552548087` remains the only Mac-side stack evidence; the abort reason and
-dependency are still unknown. The crash-summary sanitizer now also emits only
-allowlisted report-shape booleans and bounded thread/image counts, so a later
-matched report can distinguish a process-only metadata record from missing
-thread data without retaining report text, paths, or arguments. Its offline
-sanitizer self-test passes; hosted verification for this diagnostic addition
-is pending. These local fixes await hosted CI verification, and neither the
-Mac worker nor the umbrella issue is claimed complete.
+test-harness stack variability without changing the renderer. The Mac artifact
+from `40555053740` matched `glass-native-content-worker` but contained no
+frames or exception metadata. Run `40564722926` verified the corrected
+collector: it now waits for the `.ips` body after the metadata header and
+captured `EXC_CRASH` / `SIGABRT`, termination metadata, faulting thread 0, and
+11 sanitized frames. The stack begins in `dyld` at `__abort_with_payload`,
+`abort_with_payload_wrapper_internal`, `abort_with_reason`, `ignition_halt`,
+`boot_boot`, and `ignite`, before any worker Rust frame. This confirms that the
+observed abort occurs during dynamic-loader startup; the exact loader reason
+and dependency remain unknown. The Mac navigation-preload tests still fail,
+and neither the worker nor the umbrella issue is claimed complete.
 
 The artifact from `40562211038` contains only the `.ips` process metadata
 header: exception, termination, faulting-thread, thread-array, and image-array

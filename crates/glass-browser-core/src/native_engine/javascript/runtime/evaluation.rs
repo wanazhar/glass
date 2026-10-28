@@ -3090,6 +3090,31 @@ mod host_snapshot_delta_tests {
     }
 
     #[test]
+    fn host_snapshot_prepare_falls_back_to_full_payload_for_tree_changes() {
+        let previous = serde_json::json!({
+            "state": {
+                "nodes": [{"nodeIndex": 1, "parentIndex": 0, "children": []}],
+                "elements": [{
+                    "nodeIndex": 1, "tagName": "div", "namespaceUri": "http://www.w3.org/1999/xhtml",
+                    "parentIndex": 0, "templateContentIndex": null, "attributes": {"class": "old"}
+                }],
+                "geometry": []
+            }
+        });
+        let mut next = previous.clone();
+        next["state"]["nodes"][0]["children"] = serde_json::json!([2]);
+        next["state"]["elements"][0]["attributes"]["class"] = "new".into();
+        let full = next.to_string();
+
+        let (payload, cached, uses_delta) =
+            prepare_native_host_view_payload(&full, Some(&previous))
+                .expect("tree-changing host view must remain serializable");
+        assert!(!uses_delta);
+        assert_eq!(payload, full);
+        assert_eq!(cached, Some(next));
+    }
+
+    #[test]
     fn host_snapshot_delta_keeps_large_compatible_refresh_under_wire_budget() {
         let styles = |length: usize| {
             (0..length)
@@ -3234,5 +3259,60 @@ mod host_snapshot_delta_tests {
                 .get("data-observed")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn host_snapshot_delta_validation_is_fail_atomic() {
+        let document = NativeDocument::parse(
+            "<html><head><title>original</title></head><body></body></html>",
+            &NativeEngineLimits::default(),
+        )
+        .expect("small document fixture must parse");
+        let runtime = NativeJavaScriptRuntime::new_with_context_id("delta-atomicity")
+            .expect("native JavaScript runtime must construct");
+        runtime
+            .evaluate(
+                "document.title",
+                &document,
+                "fixture://delta-atomicity.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("initial host view must install");
+
+        let invalid_delta = serde_json::json!({
+            "state": null,
+            "reuse_state": true,
+            "state_delta": [
+                [0, ["title"], "corrupted"],
+                [0, ["missing", "child"], true]
+            ]
+        })
+        .to_string();
+        let delta_result = runtime.context.with(|ctx| {
+            let installer = runtime
+                .host_view_installer
+                .lock()
+                .expect("host-view installer lock must be available")
+                .as_ref()
+                .expect("initial evaluation must cache the installer")
+                .0
+                .clone()
+                .restore(&ctx)
+                .expect("cached host-view installer must restore");
+            installer.call::<_, ()>((invalid_delta.as_str(), false))
+        });
+        assert!(delta_result.is_err(), "invalid delta must be rejected");
+
+        let after_rejection = runtime
+            .evaluate(
+                "document.title",
+                &document,
+                "fixture://delta-atomicity.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("runtime must remain usable after delta rejection");
+        assert_eq!(after_rejection.value, "original");
     }
 }

@@ -1045,6 +1045,10 @@ includes the same-origin frame, detached-node adoption, template-fragment
 MutationObserver, dynamic-script late attachment, and iframe `srcdoc`
 regressions in this working tree. It is native/Linux evidence; it does not
 replace the still-unavailable macOS dyld startup diagnosis.
+That 958-test full-target run predates the inherited `srcdoc` base URL change.
+After that change, the template-composed iframe test and relative-media
+inheritance test each pass as focused 1/1 runs; the full native target has not
+been rerun against the newest source batch.
 
 The bounded filesystem-input follow-up now caps the test-discovery
 `package.json` read at 512 KiB, editor-checkpoint JSON at the existing 512 KiB

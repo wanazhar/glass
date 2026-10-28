@@ -152,6 +152,7 @@ async fn native_runtime_srcdoc_inherits_parent_base_for_relative_media_loading_i
     )
     .unwrap();
     let page_url = native_test_file_url(&page_path);
+    let media_url = native_test_file_url(&media_path);
     let session = BrowserRuntimeSession::connect_native(
         NativeEngineConfig::default()
             .with_initial_url(page_url.clone())
@@ -198,11 +199,7 @@ async fn native_runtime_srcdoc_inherits_parent_base_for_relative_media_loading_i
         .script("[document.baseURI, document.querySelector('video').readyState, document.querySelector('video').currentSrc, document.querySelector('video').duration]")
         .await
         .unwrap();
-    assert_eq!(
-        media.value,
-        serde_json::json!([page_url, 2, "./flower.webm", 1]),
-        "inherited baseURI resolves and loads the local VP8 media; currentSrc currently reflects the literal source attribute"
-    );
+    assert_eq!(media.value, serde_json::json!([page_url, 2, media_url, 1]));
     session.close().await.unwrap();
     fs::remove_dir_all(root).unwrap();
 }

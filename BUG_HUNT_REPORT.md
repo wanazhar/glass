@@ -1009,6 +1009,17 @@ the public `#output-iframe` with no `src` or `srcdoc`, and its selected
 unresolved; this local fix is not a claim that the MDN sample uses `srcdoc` or
 that its media plays.
 
+The local template-composed iframe reproduction now also verifies that the
+changed `srcdoc` replaces its initial `about:blank` child, inherits the parent
+document base URL, and loads the relative checked-in VP8/WebM asset. The video
+reaches `readyState=2` with a one-second duration. A follow-up now resolves
+`HTMLMediaElement.currentSrc` against that effective document base, so the
+focused assertion sees the absolute file URL. The iframe-composition and
+relative-media tests pass individually; the full native integration target
+has not been rerun after this follow-up. This is local authored-document
+evidence only; the public MDN iframe is still observed without `src` or
+`srcdoc`, so its failure remains separate and unresolved.
+
 ## Verification in this working tree
 
 Passed so far:

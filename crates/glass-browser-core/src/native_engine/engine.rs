@@ -1128,6 +1128,11 @@ impl NativeEngine {
             &self.nested_scroll_offsets,
         )?;
         snapshot.base_url = self.document.effective_base_url(&self.url);
+        snapshot.base_fallback_url = self
+            .document
+            .inherited_base_url()
+            .unwrap_or(&self.url)
+            .to_owned();
         Ok(snapshot)
     }
 

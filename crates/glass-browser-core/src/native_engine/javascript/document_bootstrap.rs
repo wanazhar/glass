@@ -172,6 +172,7 @@ pub(super) fn document_bootstrap(
     let serialized = serde_json::to_string(&serde_json::json!({
         "url": document_url,
         "base_url": document.effective_base_url(document_url),
+        "base_fallback_url": document.inherited_base_url().unwrap_or(document_url),
         "creation_url": document_creation_url,
         "document_referrer_policy": document.document_referrer_policy().as_str(),
         "compat_mode": document.compat_mode(),

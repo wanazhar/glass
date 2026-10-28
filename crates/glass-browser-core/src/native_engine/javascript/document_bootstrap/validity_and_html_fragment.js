@@ -359,7 +359,7 @@
       ].includes(mediaType);
   }};
   const effectiveDocumentBaseUrl = () => {{
-    const fallback = String(host.base_url || host.url || "");
+    const fallback = String(host.base_fallback_url || host.url || "");
     const ownerDocument = globalThis.document;
     const pending = Array.isArray(ownerDocument && ownerDocument.__glassChildren)
       ? ownerDocument.__glassChildren.slice().reverse()

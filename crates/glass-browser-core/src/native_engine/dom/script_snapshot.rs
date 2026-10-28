@@ -388,6 +388,7 @@ impl NativeDocument {
             revision: self.revision,
             title,
             base_url: String::new(),
+            base_fallback_url: String::new(),
             visible_text,
             elements,
             nodes,

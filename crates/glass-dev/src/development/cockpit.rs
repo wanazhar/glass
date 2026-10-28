@@ -23,6 +23,7 @@ pub const MAX_RESIDENT_SESSIONS: usize = 8;
 pub const DEFAULT_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub const MAX_ATTENTION_ITEMS: usize = 32;
 pub const MAX_VERIFICATION_CHECKS: usize = 16;
+const MAX_RECONNECT_CAPSULE_BYTES: u64 = 16 * 1024;
 
 #[derive(Debug)]
 struct ResidentEntry {
@@ -288,13 +289,15 @@ impl ReconnectCapsuleStore {
         if !path.is_file() {
             return Ok(None);
         }
-        let metadata = fs::metadata(&path)?;
-        if metadata.len() > 16 * 1024 {
+        let file = fs::File::open(&path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() > MAX_RECONNECT_CAPSULE_BYTES {
             return Err(DevelopmentError::InvalidInput(
                 "reconnect capsule exceeds 16384 bytes".into(),
             ));
         }
-        let capsule = serde_json::from_slice::<ReconnectCapsule>(&fs::read(path)?)?;
+        let bytes = read_bounded_capsule(file, metadata.len())?;
+        let capsule = serde_json::from_slice::<ReconnectCapsule>(&bytes)?;
         capsule.validate()?;
         Ok(Some(capsule))
     }
@@ -307,6 +310,19 @@ impl ReconnectCapsuleStore {
         fs::remove_file(path)?;
         Ok(true)
     }
+}
+
+fn read_bounded_capsule(reader: impl Read, expected_len: u64) -> DevelopmentResult<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(expected_len.min(MAX_RECONNECT_CAPSULE_BYTES) as usize);
+    reader
+        .take(MAX_RECONNECT_CAPSULE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_RECONNECT_CAPSULE_BYTES {
+        return Err(DevelopmentError::InvalidInput(
+            "reconnect capsule exceeds 16384 bytes".into(),
+        ));
+    }
+    Ok(bytes)
 }
 
 fn capsule_path(root: &Path) -> DevelopmentResult<PathBuf> {
@@ -1074,6 +1090,18 @@ mod tests {
         assert!(ReconnectCapsuleStore::clear(&root).unwrap());
         assert_eq!(ReconnectCapsuleStore::load(&root).unwrap(), None);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reconnect_capsule_reader_rejects_growth_after_metadata_check() {
+        let bytes = vec![b' '; MAX_RECONNECT_CAPSULE_BYTES as usize + 9];
+        let error = read_bounded_capsule(std::io::Cursor::new(bytes), 1)
+            .expect_err("capsule growth after metadata must remain bounded");
+        assert!(
+            error
+                .to_string()
+                .contains("reconnect capsule exceeds 16384 bytes")
+        );
     }
 
     #[test]

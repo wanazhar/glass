@@ -219,6 +219,7 @@ pub use workspace::{DevelopmentWorkspace, SharedDevelopmentWorkspace};
 /// Resident development commands are handled here. Browser-only commands use
 /// the public browser runtime through the one-way crate dependency.
 pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    cli::configure_json_output(glass_browser::cli::runner::json_output_requested());
     if cli.mcp {
         let policy = glass_browser::cli::runner::policy_from_cli(&cli)?;
         let backend = std::sync::Arc::new(mcp::DevelopmentMcpBackend::open_with_browser_policy(
@@ -227,7 +228,7 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         )?);
         return glass_browser::mcp::server::run_mcp_server_with_backend(&cli, backend).await;
     }
-    if let Some(glass_browser::cli::args::Commands::Agent { action }) = &cli.command
+    if let Some(glass_browser::cli::args::Commands::Agent { action, .. }) = &cli.command
         && matches!(
             action,
             glass_browser::cli::args::AgentCommand::Tool { .. }
@@ -235,14 +236,20 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         )
     {
         let result = dispatch_external_tool(action).await?;
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        glass_browser::cli::runner::print_cli_result(&result)?;
         return Ok(());
     }
-    if let Some(glass_browser::cli::args::Commands::Agent { action }) = &cli.command {
-        return cli::dispatch_agent(action);
+    if let Some(glass_browser::cli::args::Commands::Agent { action, json }) = &cli.command {
+        return cli::dispatch_agent(
+            action,
+            *json || glass_browser::cli::runner::json_output_requested(),
+        );
     }
-    if let Some(glass_browser::cli::args::Commands::Harness { action }) = &cli.command {
-        return cli::dispatch_harness(action);
+    if let Some(glass_browser::cli::args::Commands::Harness { action, json }) = &cli.command {
+        return cli::dispatch_harness(
+            action,
+            *json || glass_browser::cli::runner::json_output_requested(),
+        );
     }
     if let Some(glass_browser::cli::args::Commands::Daemon { action }) = &cli.command {
         return daemon::dispatch(action).await;
@@ -251,9 +258,15 @@ pub async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         action,
         allow_mutation,
         yes,
+        json,
     }) = &cli.command
     {
-        return cli::dispatch_project(action, *allow_mutation, *yes);
+        return cli::dispatch_project(
+            action,
+            *allow_mutation,
+            *yes,
+            *json || glass_browser::cli::runner::json_output_requested(),
+        );
     }
     if cli.prompt.is_none()
         && matches!(

@@ -53,7 +53,11 @@ fn run() -> MainResult {
                 subcommand
             }
         });
-    let cli = glass_browser::cli::args::Cli::from_arg_matches(&command.get_matches())?;
+    let (arguments, json_output) =
+        glass_browser::cli::runner::take_json_flag(std::env::args_os().collect::<Vec<_>>());
+    let cli =
+        glass_browser::cli::args::Cli::from_arg_matches(&command.get_matches_from(arguments))?;
+    glass_browser::cli::runner::configure_json_output(json_output);
     tokio::runtime::Builder::new_multi_thread()
         .thread_stack_size(RUNTIME_THREAD_STACK_SIZE)
         .enable_all()

@@ -22,7 +22,7 @@ does not add a second agent approval policy.
 | Area | Owner(s) | Acceptance / evidence | Remaining scope / limits |
 |---|---|---|---|
 | Agent and navigation | Glass Dev TUI; Glass Core runtime for agent execution and turn lifecycle | Composer-ready startup; Agent, Code, Browser, Terminal, and Git surfaces; Alt+1…Alt+5 and Ctrl+Tab preserve literal typed digits. Advanced Tasks, Debug, and service actions are reachable through the unified slash/action palette. Fresh-start, first-send, literal typing, surface switching, Code preview/edit, and Core command handoff passed through the rebuilt launcher PTY. | No additional first-send or keyboard navigation gap is recorded in this matrix. |
-| Core commands | Glass Dev CLI/TUI for forwarding and presentation; monorepo `glass-core` for command execution | Unambiguous `glass <core-command>` names and the full `glass core ...` namespace forward to the monorepo executable. CLI argument/stdin/stdout/exit pass-through and help have integration coverage. Top-level failures use the shared width-aware Glass error report on terminals and a concise `Error: …` line on piped stderr; a real `glass daemon status` regression verifies the missing-daemon recovery instruction, exit status 1, and empty stdout. Core human reports retain the shared Glass TUI heading and report style; Browser human start/doctor/profile/install/error output uses the same width-aware renderer. Clap help wraps at terminal width; `workspace`, `agent`, `project`, `harness`, `memory`, `surfaces`, `backend`, `daemon`, `logs`, and `mcp-config` help omit inherited Browser flags without removing their parser compatibility, while browser command help retains those flags. Rebuilt Browser doctor/profile/error and Browser/Glass help PTYs were reviewed at 58, 80, and 120 columns. Piped profile output and JSON doctor output remain on their existing paths. Rebuilt-launcher PTY passed fresh `/`, `/status`, and `/model`; model selection uses the resident session. `/` groups the live Core catalogue and Glass workspace actions; all built-in Core commands declare a presentation disposition; unsupported interactive controls open a Glass-owned notice panel and run no action. Standalone `gc help tools` and `gc help commands` now name built-in `web_search`/`web_fetch`, distinguish the separate native `glass-browser` executable, and state that `glass.browser.*` requires a host-advertised capability. Actual 58×24, 80×24, and 120×36 terminal renders keep the complete tools page visible; `gc model --help` and `gc models --help` instead give the interactive-only `/model` guidance without a TTY. The focused help and non-TTY CLI integration tests pass. The complete destination policy and versioned result contract are documented in [Core command presentation](docs/architecture/core-action-presentation.md). Resolver order is explicit binary, `GLASS_CORE_BINARY`, matching Core adjacent to Glass, then PATH; each selected candidate must report the workspace package version and still pass runtime protocol negotiation. A PTY harness smoke exposed that `GLASS_CORE_BINARY` was being shadowed by an adjacent binary; precedence is now covered explicitly. Direct `target/debug/glass agent doctor` selected monorepo Core 0.3.14 at `target/debug/glass-core`, protocol v2, mixed mode. | The independent GCN product and a standalone `gc` binary are outside this route; the Glass bridge remains pointed at the monorepo executable. |
+| Core commands | Glass Dev CLI/TUI for forwarding and presentation; monorepo `glass-core` for command execution | Unambiguous `glass <core-command>` names and the full `glass core ...` namespace forward to the monorepo executable. CLI argument/stdin/stdout/exit pass-through and help have integration coverage. Top-level failures use the shared width-aware Glass error report on terminals and a concise `Error: …` line on piped stderr; a real `glass daemon status` regression verifies the missing-daemon recovery instruction, exit status 1, and empty stdout. Core human reports retain the shared Glass TUI heading and report style; Browser human start/doctor/profile/install/error output uses the same width-aware renderer. Glass Dev `agent status` now uses a concise human report with engine/version, readiness, negotiated runtime protocol, and provider/model; `doctor` shows component status and next steps while omitting machine paths and internal error details. Agent command results and Project/Harness reports use the same bounded terminal formatter; explicit `--json` and piped output preserve pretty JSON, while Tool/ToolFile protocol output remains JSON. Clap help wraps at terminal width; `workspace`, `agent`, `project`, `harness`, `memory`, `surfaces`, `backend`, `daemon`, `logs`, and `mcp-config` help omit inherited Browser flags without removing their parser compatibility, while browser command help retains those flags. Rebuilt Browser doctor/profile/error and Browser/Glass help PTYs were reviewed at 58, 80, and 120 columns. Piped profile output and JSON doctor output remain on their existing paths. Rebuilt-launcher PTY passed fresh `/`, `/status`, and `/model`; model selection uses the resident session. `/` groups the live Core catalogue and Glass workspace actions; all built-in Core commands declare a presentation disposition; unsupported interactive controls open a Glass-owned notice panel and run no action. Standalone `gc help tools` and `gc help commands` now name built-in `web_search`/`web_fetch`, distinguish the separate native `glass-browser` executable, and state that `glass.browser.*` requires a host-advertised capability. Actual 58×24, 80×24, and 120×36 terminal renders keep the complete tools page visible; `gc model --help` and `gc models --help` instead give the interactive-only `/model` guidance without a TTY. The focused help and non-TTY CLI integration tests pass. The complete destination policy and versioned result contract are documented in [Core command presentation](docs/architecture/core-action-presentation.md). Resolver order is explicit binary, `GLASS_CORE_BINARY`, matching Core adjacent to Glass, then PATH; each selected candidate must report the workspace package version and still pass runtime protocol negotiation. A PTY harness smoke exposed that `GLASS_CORE_BINARY` was being shadowed by an adjacent binary; precedence is now covered explicitly. Direct `target/debug/glass agent doctor` selected monorepo Core 0.3.14 at `target/debug/glass-core`, protocol v2, mixed mode. | The independent GCN product and a standalone `gc` binary are outside this route; the Glass bridge remains pointed at the monorepo executable. |
 | Local tool diagnostics | Glass Core records; Glass CLI presents | Failed provider tool calls write bounded, timestamped, workspace-local JSONL entries with static error classes, sanitized tool/backend names, hashed session/call correlation, and exact provider wire/route names plus schema fingerprints. `glass logs --root PATH [--json] [--catalog]` reads the current and one rotated file. Unix logs are mode 0600; each file is capped at 512 KiB. Focused tests prove redaction of invalid raw arguments and provider schema capture. | This is an actionable failure journal, not a session transcript or successful-call audit; raw errors, prompts, arguments, URLs, page data, and credentials are deliberately omitted. |
 | Conversation | Glass Dev TUI presentation; Glass Core event lifecycle | Human, Core, lifecycle, error, and tool activity have distinct compact labels; tool rows identify Core or Glass origin and expandable output. Ratatui frames verify the role hierarchy at 58×24, 80×24, and 120×36. An isolated fake-Core PTY verifies prompt, assistant result, and attributed tool card stay in the conversation without a catalogue/system dump. Rebuilt-launcher fake-Core PTY captures show the conversation at 58×24, 80×24, and 120×36 (`target/visual-review-20261026/agent-transcript-*.png`); matching ANSI/text captures are retained beside them. A visual review found the narrow transcript footer wrapped; the <=71-column footer now uses a concise, single-line hint and has a width regression. The 80-column frame remains legible. An isolated standalone Core first-run frame at 80×24 provides a credential-free product comparison without a prompt. All resident Core command results and failures use typed owner-scoped panel data and stay out of conversation text; actual assistant turns and attributed tool results remain visible. Projection/state coverage checks catalogue, status, compact result, model picker, Core settings panel, history/todo unsupported cases, error placement, and late-result no-reopen behavior. The refreshed three-size PTY checks `/settings` through Core's settings/model RPCs; the exact `commands/execute` sequence remains `help`, `status`, and deliberate `error`, and the test asserts zero `turn/prompt` calls plus no help/error/unsupported text in the composer frame after closing panels. ANSI streams are saved under `/tmp/glass-command-panels-settings-20261026`. | The standalone Core comparison is its credential-free first-run screen, not a provider-backed transcript. The retained agent-transcript PNGs predate the footer refinement; updated transcript captures still need to be generated. PTY coverage asserts no agent-turn prompt from palette commands but does not inspect an internal transcript-entry count. |
 | Code | Glass Dev editor and workspace | Selecting a file refreshes preview from the selected buffer. Syntax highlighting/editor diagnostics are used; asking from Code attaches visible, removable, bounded context from multiple unsaved buffers and selected ranges, while ordinary Agent messages receive no implicit file context. A rebuilt-launcher PTY verifies the exact attached context reaches the isolated fake Core; state coverage checks multiple selected ranges and selected-only content. `lsp format SERVER PATH` and `lsp range-format SERVER` send unsaved buffer contents; range formatting sends the selected range. Both translate UTF-16 edits against the captured text into exact-base diff proposals, with no mutation before explicit acceptance. `lsp rename` sends all open unsaved buffers (128 documents / 16 MiB limit), then routes a stdio LSP `WorkspaceEdit` through project path validation into per-file proposals; deterministic fixtures verify unsaved source and call-site delivery, range-format coordinates, outside-project rejection, and lock-contention retry without losing the format baseline or multi-file edit. Workspace previews now focus the first edited buffer and open the review editor, so acceptance and save target the proposal's actual path. The language client answers rust-analyzer workspace configuration/folder requests, keeps only one bounded references readiness request in flight, and retries a transient no-reference response only when references confirm that the selected symbol is indexed. A delayed-reference fixture reproduces why concurrent short-timeout probes starved indexing; a separate deterministic fixture covers LSP `ContentModified` retry. The rebuilt-launcher fake-server PTY verifies two-file preview, separate Enter acceptance, and saved output for each file. An opt-in PTY, executed with installed Rust Analyzer 1.97, verified its real cross-file WorkspaceEdit through separate per-file acceptance and on-disk saves. | LSP workspace resource operations (create/rename/delete) are explicitly unsupported. Multi-file proposals are reviewed and accepted independently, not as an atomic transaction; accepting one file while rejecting another can leave a partial rename. Formatting and language-service diagnostics still depend on a configured server. |
@@ -138,7 +138,12 @@ Issue #65 Browser error-path follow-up: navigation preflight now carries the alr
 ## Issue #65 finite acceptance reconciliation (2026-10-27)
 
 This is a source-and-report reconciliation of the filed issue body, not a
-claim that every raw pattern match is a defect. The issue body gives 35
+claim that every raw pattern match is a defect. Across the 108 numbered slots,
+58 have an individual source/report disposition: #1–56 and stale lint examples
+#81–82. The TUI findings #1–25 are covered by current overlay, state,
+rendering, hit-testing, editor-input, and keyboard regression tests listed in
+the source audit below; the stack-overflow report is addressed for its named
+test by the explicit larger native-browser test stack. The issue body gives 35
 numbered entries for #26–60 and two lint examples #81–82. It does not give
 independent source paths or acceptance criteria for #61–80 or #91–108; #83–90
 are broad audit themes, and #57–60 are grouped rather than individually
@@ -934,16 +939,21 @@ observed abort occurs during dynamic-loader startup; the exact loader reason
 and dependency remain unknown. The Mac navigation-preload tests still fail,
 and neither the worker nor the umbrella issue is claimed complete.
 
-The artifact from `40562211038` contains only the `.ips` process metadata
-header: exception, termination, faulting-thread, thread-array, and image-array
-fields are all absent. The collector previously returned as soon as that
-header parsed, even though macOS writes the pretty-printed crash body after the
-header. The collector now continues polling for crash fields within its
-existing bounded wait, and labels a header-only result as incomplete only if
-the wait expires. A sanitizer self-test writes a report in two stages and
-verifies that the result includes its later sanitized signal and native frame.
-This fixes a diagnostic race; it does not yet establish why the Mac worker
-aborts. Hosted verification of the delayed-report path is pending.
+The metadata-only artifact from `40562211038` exposed the collector race fixed
+in `e7940e37`; the complete sanitized stack in `40564722926` verifies that the
+collector now waits for the later `.ips` body.
+
+The same CI cycle exposed a separate test-harness stack overflow in
+`native_content_process_blocks_frame_from_head_meta_csp`, a plain
+`#[tokio::test]` running at the workflow's 4 MiB test-thread stack. The exact
+test passes with `RUST_MIN_STACK=16777216`. It now uses the existing explicit
+8 MiB native browser test helper; its focused run passes with the workflow's
+4 MiB setting. A serial `frame` filter then completed without process abort:
+44 passed, 4 failed. The remaining failures are the same-origin frame script
+projection's untyped QuickJS exception, frame radio-arrow result missing its
+`a` field, checkable keyboard event reporting `undefined` instead of `false`,
+and animated canvas image assignment returning `no setter for property`. These
+are separate reproducible acceptance failures and remain open.
 
 ### Issue #64 MDN video route and frame probe (2026-10-27)
 
@@ -1026,4 +1036,79 @@ Validated in this working tree:
 - Native CSS rule-limit, 4,096-rule bounded/computable, and navigation-deadline tests passed with the `native-engine` feature.
 - The reported quoted `text/html; charset="utf-8"` failure now has a response-header-to-document regression: quoted label extraction is asserted and malformed UTF-8 bytes are replaced per HTML decoding instead of being misreported as an unsupported charset. The focused `glass-browser-core` native-engine test passes. The bounded `glass logs` journal is empty for the captured session, while its durable resident transcript remains in the separate session store; the original session was not replayed.
 - Documentation inventory (1,822 pages/catalog entries), depth, coverage, shortcuts, wiki tests (7), formatting, and diff checks passed. Strict Clippy passed for `glass-dev` lib/bins/tests, `glass-core`, `glass-browser`, and `glass-browser-core` with the native engine feature. Rebuilt Glass, Core, browser, and native content worker; `~/.local/bin/glass --version` and `target/debug/glass-core --version` report 0.3.14. The launcher wrapper points at the rebuilt workspace binaries.
+
+### Issue #65 finite native and filesystem-bound follow-up (2026-10-28)
+
+The complete native-engine integration target passes on this Linux host with
+the workflow's 4 MiB Rust test-thread stack: 958 passed, 0 failed. This run
+includes the same-origin frame, detached-node adoption, template-fragment
+MutationObserver, dynamic-script late attachment, and iframe `srcdoc`
+regressions in this working tree. It is native/Linux evidence; it does not
+replace the still-unavailable macOS dyld startup diagnosis.
+
+The bounded filesystem-input follow-up now caps the test-discovery
+`package.json` read at 512 KiB, editor-checkpoint JSON at the existing 512 KiB
+project-file limit, project framework/package manifest detection at that same
+limit, and persisted session todos at 256 KiB (with 32-item and 4 KiB title
+limits). Readers check file metadata and also read at most limit+1 bytes to
+cover growth during the read. Focused growth/oversize regressions cover each
+path, and `cargo test -p glass-dev --lib --locked` passes 713/713.
+
+This is a finite disposition of the source paths named in this follow-up, not
+closure of the whole issue inventory. Concrete paths still needing review are
+the remaining direct filesystem and structured-value entry points outside the
+bounded readers listed above, complete tool-error propagation and concurrent
+daemon/interleaving cases, and macOS policy behavior. The issue body also does
+not define individual acceptance requirements for the cited #65 ranges 61–80
+and 91–108, so those ranges cannot be called individually verified from the
+available text. No obsolete Glass trust/approval API is restored to fill that
+documentation gap.
+
+### CLI presentation output disposition (2026-10-28)
+
+The human-output audit follows each CLI product's shared output routes rather
+than sampling command names and assuming their output is consistent:
+
+| CLI route | Default terminal output | Machine / content output | Coverage |
+|---|---|---|---|
+| Glass Dev `agent`, `harness`, `project`, and `daemon` commands | Shared Glass report with title, bounded human labels, status, and width-aware wrapping; daemon log tails receive a titled report | Global or command `--json` keeps JSON; pipes retain the existing machine-readable result; explicit tool and tool-file calls remain their JSON protocol | Source route review; `cargo test -p glass-dev --lib` (713 passed); installed launcher PTY for status, doctor, harness list, project inspect/files, missing-file error, and isolated daemon error at 58/80/120 columns |
+| Glass Browser result commands | The shared runner converts the standard result routes and alternative-runtime JSON results into titled Glass reports with an explicit field allowlist | Global `--json`, pipes, MCP stdio, canonical exports, clipboard payloads, page text, and generated workflow/task/snapshot files retain their content or protocol formats | Source route review; `cargo test -p glass-browser --lib cli::runner::tests::` (32 passed); installed launcher PTY for capabilities and errors at 58/80/120 columns, plus explicit `--json`, pipe JSON, and `NO_COLOR` |
+| Forwarded Glass Core commands | Core's own shared CLI page; command examples and references expand to the `glass core` product prefix and share the same semantic terminal styling | Core's explicit JSON/text commands and pipe output retain their existing contracts; Glass forwards arguments, output, and exit codes unchanged | Core and Glass Core-help unit tests; installed launcher PTY for `glass core --help` at 58/80/120 columns against the monorepo Core binary |
+| Help and interactive routes | Clap help and Core help; the interactive Glass workspace remains the TUI | MCP is JSON-RPC stdio; TUI output is terminal UI, not a JSON report | Root and forwarded help PTY at 58/80/120 columns; formatter tests verify `--json`, pipe, and `NO_COLOR` behavior |
+
+The dispatch census covers these command families and their result paths:
+
+- Glass Dev: `agent` (`doctor`, `status`, `delegate`, `hello`, `prompt`,
+  `steer`); `harness` (`list`, `start`); `project` (`inspect`, `files`,
+  `search`, `read`, `edit`, `mkdir`, `rename`, `delete`, `diagnostics`,
+  `run`, `test`, `lint`, `process`, `diff`, `link`, `graph`, `breakpoint`,
+  `timeline`, `replay`, `neovim`, `experiment`, `attach`, `git`, `github`);
+  and `daemon` (`start`, `status`, `stop`, `doctor`, `logs`,
+  `acknowledge-recovery`).
+- Browser management and reports: `update`, `install-chromium`, `certify`,
+  `workspace`, `memory`, `surfaces`, `backend`, `replay`, `capabilities`,
+  `doctor`, `logs`, `mcp-config`, `profiles`, `knowledge`, and `result`.
+  Their JSON result sites share the report formatter; command-specific help,
+  errors, file exports, and content-producing routes are reviewed under the
+  exception rules above.
+- Browser operations: navigation and recovery; click, hover, drag, type,
+  keyboard, form, upload, screenshot, text, DOM, observe, inspect, scroll,
+  wait, dialogs, downloads, targets, frames, evaluation, cookies, PDF,
+  clipboard, batch, workflow, task, IR, intent, verification, checkpoint,
+  and snapshot commands. Structured result variants go through the common
+  report path; direct page text and clipboard/export payloads remain content.
+- Core forwarding: the full unambiguous Core command namespace and explicit
+  `glass core ...` escape hatch execute the selected Core binary directly.
+  Glass does not reinterpret Core arguments, output, or status codes.
+
+The source inventory is finite: Glass Dev dispatch has the four roots above;
+Glass Browser's approximately 98 standard `print_json` result sites plus
+`AlternativeRuntimeOutput::Json` use one report formatter; Core forwarding is
+an exec-style pass-through to the Core CLI; and direct content, artifact, and
+protocol routes are documented exceptions in the table. This records central
+route coverage, not a claim that every provider-backed or browser-mutating
+action was executed during the terminal review. At widths 58, 80, and 120, the
+installed launcher reports were nonempty, fit the terminal width, and did not
+leak JSON on ordinary TTY routes. Explicit `--json` and default pipe output
+parse as JSON, and `NO_COLOR` yields a human report without ANSI escapes.
 

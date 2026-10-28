@@ -78,17 +78,18 @@ impl Page {
         self.row(title, Tone::Accent, true, 0);
         let column = items
             .iter()
-            .map(|(a, _)| glass_tui::text::width(a))
+            .map(|(command, _)| glass_tui::text::width(&present_command_references(command)))
             .max()
             .unwrap_or(0)
             + 3;
         for (command, description) in items {
+            let displayed_command = present_command_references(command);
+            let command_width = glass_tui::text::width(&displayed_command);
             if self.width >= 72 && column < self.width / 2 {
                 let rows = glass_tui::text::wrap_words(description, self.width - column - 2);
                 self.text.push_str("  ");
                 self.append_semantic_spans(command, Tone::Secondary, false);
-                self.text
-                    .push_str(&" ".repeat(column - glass_tui::text::width(command)));
+                self.text.push_str(&" ".repeat(column - command_width));
                 self.text
                     .push_str(rows.first().map(String::as_str).unwrap_or(""));
                 self.text.push('\n');
@@ -1216,6 +1217,31 @@ mod tests {
                 };
                 assert!(heading.text.starts_with(&format!("{brand} · ")));
             }
+        }
+    }
+
+    #[test]
+    fn forwarded_core_help_wraps_after_product_prefix_expansion() {
+        let items = [
+            (
+                "gc run \"explain this project\"",
+                "Run a task from any directory, including outside Git.",
+            ),
+            (
+                "gc run --json \"review this change\"",
+                "Get a script-friendly response over SSH or in automation.",
+            ),
+        ];
+        for width in [58, 80, 120] {
+            let mut page = Page::new_with_frontend("Help", width, false, CliFrontend::GlassCore);
+            page.section("Try it", &items);
+            assert!(
+                page.text
+                    .lines()
+                    .all(|line| glass_tui::text::width(line) <= width),
+                "help line exceeds {width} columns: {}",
+                page.text
+            );
         }
     }
     #[test]

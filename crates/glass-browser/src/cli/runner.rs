@@ -66,7 +66,40 @@ use std::future::Future;
 use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+static CLI_JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
+
+/// Configure human versus machine output for this process after Glass has
+/// extracted the position-independent `--json` switch from its Clap argv.
+pub fn configure_json_output(enabled: bool) {
+    CLI_JSON_OUTPUT.store(enabled, Ordering::Relaxed);
+}
+
+pub fn json_output_requested() -> bool {
+    CLI_JSON_OUTPUT.load(Ordering::Relaxed)
+}
+
+/// Extract the global machine-output switch before Clap parsing. This keeps
+/// `--json` available after any Glass command without colliding with the
+/// command-local JSON flags retained for direct parser consumers.
+pub fn take_json_flag(arguments: Vec<std::ffi::OsString>) -> (Vec<std::ffi::OsString>, bool) {
+    let separator = arguments
+        .iter()
+        .position(|argument| argument == "--")
+        .unwrap_or(arguments.len());
+    let mut output = Vec::with_capacity(arguments.len());
+    let mut json = false;
+    for (index, argument) in arguments.into_iter().enumerate() {
+        if index < separator && argument == "--json" {
+            json = true;
+        } else {
+            output.push(argument);
+        }
+    }
+    (output, json)
+}
 
 /// Record fixed-name, privacy-safe native CLI phase timings alongside the
 /// content-process load trace. Never include the requested URL or page data.
@@ -211,6 +244,12 @@ pub async fn dispatch_browser(cli: Cli) -> BrowserResult<()> {
 }
 
 async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserResult<()> {
+    if let Some(Commands::Doctor { json }) = &mut cli.command {
+        *json |= json_output_requested();
+    }
+    if let Some(Commands::Logs { json, .. }) = &mut cli.command {
+        *json |= json_output_requested();
+    }
     let mut policy = policy_from_cli(&cli)?;
     if cli.experimental_extensions {
         eprintln!(concat!(
@@ -1167,7 +1206,7 @@ fn alternative_json_output<T: Serialize + ?Sized>(
 
 fn print_alternative_runtime_output(output: AlternativeRuntimeOutput) -> BrowserResult<()> {
     match output {
-        AlternativeRuntimeOutput::Json(value) => println!("{}", compact_json(&value)?),
+        AlternativeRuntimeOutput::Json(value) => print_json(&value)?,
         AlternativeRuntimeOutput::Text(value) => println!("{value}"),
         AlternativeRuntimeOutput::Combined(outputs) => {
             for output in outputs {
@@ -4820,13 +4859,549 @@ fn target_archive<T: Serialize>(targets: &[T]) -> BrowserResult<Value> {
 fn print_json_mode<T: Serialize + ?Sized>(value: &T, mode: ResponseMode) -> BrowserResult<()> {
     let value = serde_json::to_value(value)?;
     let projected = project_and_store(value, mode, "cli", default_result_store_path())?;
-    println!("{}", compact_json(&projected)?);
+    if CLI_JSON_OUTPUT.load(Ordering::Relaxed) || !std::io::stdout().is_terminal() {
+        println!("{}", compact_json(&projected)?);
+    } else {
+        print_human_browser_result(current_browser_command(), &projected);
+    }
     Ok(())
 }
 
+pub fn print_cli_result<T: Serialize + ?Sized>(value: &T) -> BrowserResult<()> {
+    print_json(value)
+}
+
 fn print_json<T: Serialize + ?Sized>(value: &T) -> BrowserResult<()> {
-    println!("{}", compact_json(value)?);
+    if CLI_JSON_OUTPUT.load(Ordering::Relaxed) || !std::io::stdout().is_terminal() {
+        println!("{}", compact_json(value)?);
+    } else {
+        let value = serde_json::to_value(value)?;
+        print_human_browser_result(current_browser_command(), &value);
+    }
     Ok(())
+}
+
+fn current_browser_command() -> String {
+    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let roots = [
+        "navigate",
+        "recover",
+        "click",
+        "preflight",
+        "click-at",
+        "click-expect-popup",
+        "double-click",
+        "hover",
+        "drag",
+        "type",
+        "key",
+        "key-down",
+        "key-up",
+        "shortcut",
+        "clear",
+        "check",
+        "uncheck",
+        "select",
+        "upload",
+        "screenshot",
+        "text",
+        "dom",
+        "observe",
+        "inspect-page",
+        "smoke-sites",
+        "find-target",
+        "act-and-verify",
+        "extract-structured",
+        "extract-web-ir",
+        "recover-run",
+        "scroll",
+        "wait",
+        "diagnostics",
+        "accept-dialog",
+        "dismiss-dialog",
+        "dismiss-consent",
+        "download",
+        "targets",
+        "archive-targets",
+        "new-target",
+        "select-target",
+        "close-target",
+        "frames",
+        "select-frame",
+        "evaluate",
+        "cookies",
+        "export-cookies",
+        "import-cookies",
+        "pdf",
+        "fill-form",
+        "batch",
+        "workflow",
+        "task",
+        "ir",
+        "workflow-resume",
+        "resolve-intent",
+        "execute-intent",
+        "verify",
+        "reconcile-refs",
+        "observe-delta",
+        "checkpoint",
+        "snapshot",
+        "clipboard-read",
+        "clipboard-write",
+        "agent",
+        "session",
+        "profiles",
+        "knowledge",
+        "result",
+        "doctor",
+        "logs",
+        "daemon",
+        "capabilities",
+        "certify",
+        "workspace",
+        "backend",
+        "surfaces",
+        "replay",
+        "mcp-config",
+        "update",
+        "install-chromium",
+    ];
+    let value_options = [
+        "--policy",
+        "--policy-allow",
+        "--policy-confirm",
+        "--policy-confirm-once",
+        "--policy-allow-host",
+        "--policy-deny-host",
+        "--profile",
+        "--session",
+        "--target-id",
+        "--frame-id",
+        "--port",
+        "--viewport",
+        "--interaction",
+        "--chrome-path",
+        "--browser-runtime",
+        "--browser-endpoint",
+        "--tui-layout",
+        "--tui-transport",
+        "--tui-graphics",
+        "--tui-rtt-ms",
+        "--tui-throughput-mbps",
+        "--tui-live",
+        "--tui-live-backend",
+        "--tui-live-quality",
+        "--tui-live-fit",
+        "--knowledge-store",
+        "--response-mode",
+    ];
+    let mut index = 0;
+    while index < arguments.len() {
+        let argument = arguments[index].as_str();
+        if value_options.contains(&argument) {
+            index += 2;
+            continue;
+        }
+        if argument.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        if roots.contains(&argument) {
+            break;
+        }
+        index += 1;
+    }
+    if index == arguments.len() {
+        return "Browser command".into();
+    }
+    let root = arguments[index].as_str();
+    let child = arguments.get(index + 1).filter(|arg| {
+        matches!(
+            (root, arg.as_str()),
+            ("session", "start" | "status" | "stop" | "open")
+                | (
+                    "workflow",
+                    "compile"
+                        | "format"
+                        | "preview"
+                        | "diff"
+                        | "record"
+                        | "validate"
+                        | "lint"
+                        | "templates"
+                        | "init"
+                )
+                | ("task", "validate" | "compile" | "execute")
+                | (
+                    "ir",
+                    "validate" | "inspect" | "diff" | "continuity" | "canonical"
+                )
+                | ("checkpoint", "export" | "import")
+                | ("snapshot", "create" | "list" | "inspect" | "diff" | "purge")
+                | ("profiles", "list" | "create" | "delete")
+                | (
+                    "knowledge",
+                    "list"
+                        | "show"
+                        | "explain"
+                        | "stats"
+                        | "export"
+                        | "import"
+                        | "invalidate"
+                        | "purge"
+                )
+                | ("result", "show" | "purge")
+                | (
+                    "daemon",
+                    "start" | "status" | "stop" | "doctor" | "logs" | "acknowledge-recovery"
+                )
+                | (
+                    "workspace",
+                    "list" | "inspect" | "suspend" | "resume" | "delete"
+                )
+                | ("backend", "status" | "capabilities" | "test")
+                | ("surfaces", "inspect" | "coverage")
+                | ("replay", "inspect" | "diff" | "attach")
+                | (
+                    "certify",
+                    "run" | "plan" | "release" | "replay" | "replay-diff"
+                )
+                | (
+                    "agent",
+                    "tool" | "tool-file" | "doctor" | "status" | "hello" | "prompt" | "steer"
+                )
+        )
+    });
+    match child {
+        Some(child) => format!("{} · {}", cli_title(root), cli_title(child)),
+        None => cli_title(root),
+    }
+}
+
+fn cli_title(command: &str) -> String {
+    let known = match command {
+        "start" => "Start",
+        "status" => "Status",
+        "stop" => "Stop",
+        "open" => "Attach command",
+        "list" => "List",
+        "inspect" => "Inspect",
+        "create" => "Create",
+        "delete" => "Delete",
+        "show" => "Show",
+        "explain" => "Explain",
+        "stats" => "Statistics",
+        "export" => "Export",
+        "import" => "Import",
+        "invalidate" => "Invalidate",
+        "purge" => "Purge",
+        "diff" => "Compare",
+        "compile" => "Compile",
+        "format" => "Format",
+        "preview" => "Preview",
+        "record" => "Record",
+        "validate" => "Validate",
+        "lint" => "Lint",
+        "templates" => "Templates",
+        "init" => "Initialize",
+        "execute" => "Execute",
+        "continuity" => "Continuity",
+        "canonical" => "Canonical form",
+        "suspend" => "Suspend",
+        "resume" => "Resume",
+        "coverage" => "Coverage",
+        "test" => "Test",
+        "attach" => "Attach",
+        "run" => "Run",
+        "plan" => "Plan",
+        "release" => "Release",
+        "replay" => "Replay",
+        "replay-diff" => "Replay comparison",
+        "navigate" => "Navigate",
+        "observe" => "Observe",
+        "text" => "Page text",
+        "dom" => "DOM inspection",
+        "doctor" => "Doctor",
+        "logs" => "Logs",
+        "agent" => "Agent",
+        "session" => "Browser session",
+        "profiles" => "Profiles",
+        "knowledge" => "Knowledge",
+        "result" => "Results",
+        "click" | "click-at" | "click-expect-popup" | "double-click" | "hover" | "drag"
+        | "type" | "key" | "key-down" | "key-up" | "shortcut" | "clear" | "check" | "uncheck"
+        | "select" | "upload" | "scroll" | "accept-dialog" | "dismiss-dialog"
+        | "dismiss-consent" => "Browser action",
+        "capabilities" => "Capabilities",
+        "mcp-config" => "MCP configuration",
+        "update" => "Update",
+        "install-chromium" => "Install Chromium",
+        "smoke-sites" => "Site journeys",
+        "inspect-page" => "Page inspection",
+        "find-target" => "Find target",
+        "act-and-verify" => "Verified action",
+        "extract-structured" => "Structured extraction",
+        "extract-web-ir" => "Web IR extraction",
+        "recover-run" => "Run recovery",
+        "diagnostics" => "Diagnostics",
+        "archive-targets" => "Target archive",
+        "new-target" => "New target",
+        "select-target" => "Select target",
+        "close-target" => "Close target",
+        "frames" => "Frames",
+        "select-frame" => "Select frame",
+        "evaluate" => "Evaluate",
+        "cookies" => "Cookies",
+        "export-cookies" => "Export cookies",
+        "import-cookies" => "Import cookies",
+        "pdf" => "PDF export",
+        "fill-form" => "Fill form",
+        "batch" => "Batch actions",
+        "workflow-resume" => "Resume workflow",
+        "resolve-intent" => "Resolve intent",
+        "execute-intent" => "Execute intent",
+        "verify" => "Verify",
+        "reconcile-refs" => "Reconcile references",
+        "observe-delta" => "Observation changes",
+        "clipboard-read" => "Clipboard read",
+        "clipboard-write" => "Clipboard write",
+        "daemon" => "Daemon",
+        "workspace" => "Workspace",
+        "backend" => "Backend",
+        "surfaces" => "Surfaces",
+        "certify" => "Certification",
+        "task" => "Task protocol",
+        "ir" => "Web IR",
+        "workflow" => "Workflow",
+        _ => return title_case_command(command),
+    };
+    known.to_owned()
+}
+
+fn title_case_command(value: &str) -> String {
+    value
+        .split(['-', '_'])
+        .flat_map(|part| {
+            let mut start = 0;
+            let mut words = Vec::new();
+            for (index, character) in part.char_indices() {
+                if character.is_ascii_uppercase() && index > start {
+                    words.push(part[start..index].to_owned());
+                    start = index;
+                }
+            }
+            if start < part.len() {
+                words.push(part[start..].to_owned());
+            }
+            words
+        })
+        .map(|word| {
+            let mut chars = word.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn append_capability_rows(value: &Value, rows: &mut Vec<(String, String)>) {
+    for (key, label) in [
+        ("glassVersion", "Glass version"),
+        ("protocolVersion", "Protocol"),
+    ] {
+        if let Some(item) = value.get(key).filter(|item| !item.is_null()) {
+            rows.push((label.into(), human_scalar(item)));
+        }
+    }
+    if let Some(constraints) = value.get("constraints") {
+        for (key, label) in [
+            ("browserFamily", "Browser family"),
+            ("platform", "Platform"),
+            ("policy", "Policy"),
+            ("maxSessions", "Session limit"),
+        ] {
+            if let Some(item) = constraints.get(key).filter(|item| !item.is_null()) {
+                rows.push((label.into(), human_scalar(item)));
+            }
+        }
+    }
+    let capabilities = value.get("capabilities").and_then(Value::as_object);
+    let statuses = value.get("capabilityStatuses").and_then(Value::as_object);
+    if let Some(capabilities) = capabilities {
+        let enabled = capabilities
+            .values()
+            .filter(|item| **item == Value::Bool(true))
+            .count();
+        rows.push((
+            "Capabilities".into(),
+            format!("{enabled} available · {} total", capabilities.len()),
+        ));
+        for (name, enabled) in capabilities {
+            let state = statuses
+                .and_then(|statuses| statuses.get(name))
+                .and_then(Value::as_str)
+                .unwrap_or(if enabled == true {
+                    "available"
+                } else {
+                    "disabled"
+                });
+            rows.push((title_case_command(name), state.into()));
+        }
+    }
+}
+
+fn print_human_browser_result(title: String, value: &Value) {
+    let status = if value["success"] == false {
+        "failed"
+    } else {
+        value["status"].as_str().unwrap_or("complete")
+    };
+    let mut rows = Vec::<(String, String)>::new();
+    if title == "Capabilities" {
+        append_capability_rows(value, &mut rows);
+    } else {
+        match value {
+            Value::String(body) => rows.push(("Result".into(), body.clone())),
+            Value::Array(items) => {
+                rows.push(("Items".into(), items.len().to_string()));
+                rows.extend(
+                    items
+                        .iter()
+                        .take(12)
+                        .map(|item| ("Entry".into(), human_list_entry(item))),
+                );
+                if items.len() > 12 {
+                    rows.push((
+                        "More".into(),
+                        format!("{} additional entries", items.len() - 12),
+                    ));
+                }
+            }
+            Value::Object(object) => {
+                for (key, label) in [
+                    ("url", "URL"),
+                    ("pageUrl", "Page"),
+                    ("title", "Title"),
+                    ("pageTitle", "Page title"),
+                    ("action", "Action"),
+                    ("target", "Target"),
+                    ("targetId", "Target ID"),
+                    ("frameId", "Frame ID"),
+                    ("revision", "Revision"),
+                    ("state", "State"),
+                    ("status", "Status"),
+                    ("success", "Succeeded"),
+                    ("message", "Message"),
+                    ("reason", "Reason"),
+                    ("profile", "Profile"),
+                    ("engine", "Engine"),
+                    ("runtime", "Runtime"),
+                    ("backend", "Backend"),
+                    ("name", "Name"),
+                    ("id", "ID"),
+                    ("count", "Count"),
+                    ("durationMs", "Duration"),
+                    ("bytes", "Size"),
+                    ("output", "Output"),
+                    ("readyState", "Document"),
+                ] {
+                    if let Some(value) = object.get(key).filter(|value| !value.is_null()) {
+                        let display = if key == "success" {
+                            if value == true { "yes" } else { "no" }.into()
+                        } else {
+                            human_scalar(value)
+                        };
+                        rows.push((label.into(), display));
+                    }
+                }
+                for key in ["text", "summary"] {
+                    if let Some(body) = object.get(key).and_then(Value::as_str)
+                        && !body.trim().is_empty()
+                    {
+                        rows.push((
+                            if key == "text" {
+                                "Page content"
+                            } else {
+                                "Summary"
+                            }
+                            .into(),
+                            body.into(),
+                        ));
+                    }
+                }
+                for (key, label) in [
+                    ("checks", "Checks"),
+                    ("items", "Items"),
+                    ("targets", "Targets"),
+                    ("frames", "Frames"),
+                    ("records", "Records"),
+                    ("results", "Results"),
+                ] {
+                    if let Some(items) = object.get(key).and_then(Value::as_array) {
+                        rows.push((label.into(), items.len().to_string()));
+                        rows.extend(items.iter().take(8).map(|item| {
+                            (label.trim_end_matches('s').into(), human_list_entry(item))
+                        }));
+                        if items.len() > 8 {
+                            rows.push(("More".into(), format!("{} additional", items.len() - 8)));
+                        }
+                    }
+                }
+            }
+            _ => rows.push(("Result".into(), human_scalar(value))),
+        }
+    }
+    if rows.is_empty() {
+        rows.push(("Result".into(), "Completed".into()));
+    }
+    let width = glass_tui::crossterm::terminal::size()
+        .map(|(width, _)| usize::from(width))
+        .unwrap_or(80)
+        .clamp(24, 120);
+    let color = !glass_tui::theme::no_color() && std::env::var("TERM").as_deref() != Ok("dumb");
+    let output = render_human_browser_result_at(&title, status, &rows, width, color);
+    let _ = std::io::stdout().lock().write_all(output.as_bytes());
+}
+
+fn render_human_browser_result_at(
+    title: &str,
+    status: &str,
+    rows: &[(String, String)],
+    width: usize,
+    color: bool,
+) -> String {
+    let refs = rows
+        .iter()
+        .map(|(label, value)| (label.as_str(), value.clone()))
+        .collect::<Vec<_>>();
+    glass_tui::cli::report("Glass", title, status, &refs, width, color)
+}
+
+fn human_scalar(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Bool(value) => if *value { "yes" } else { "no" }.into(),
+        Value::Number(value) => value.to_string(),
+        Value::Array(values) => format!("{} items", values.len()),
+        Value::Object(values) => format!("{} details", values.len()),
+        Value::Null => "Not set".into(),
+    }
+}
+
+fn human_list_entry(value: &Value) -> String {
+    if let Some(text) = value.as_str() {
+        return text.to_owned();
+    }
+    ["label", "title", "name", "url", "id", "path"]
+        .into_iter()
+        .find_map(|key| value.get(key).and_then(Value::as_str))
+        .map(|primary| {
+            let status = value.get("status").and_then(Value::as_str);
+            status.map_or_else(|| primary.into(), |status| format!("{primary} · {status}"))
+        })
+        .unwrap_or_else(|| "Entry available in --json output".into())
 }
 
 fn compact_json<T: Serialize + ?Sized>(value: &T) -> BrowserResult<String> {
@@ -4851,6 +5426,88 @@ mod tests {
     use super::*;
     #[cfg(feature = "native-engine")]
     use clap::Parser;
+
+    #[test]
+    fn global_json_switch_is_removed_before_clap_and_stops_at_separator() {
+        let (arguments, json) = take_json_flag(
+            ["glass", "navigate", "--json", "https://example.com"]
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        );
+        assert!(json);
+        assert_eq!(
+            arguments,
+            ["glass", "navigate", "https://example.com"]
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<std::ffi::OsString>>()
+        );
+
+        let (arguments, json) = take_json_flag(
+            ["glass", "--", "--json"]
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        );
+        assert!(!json);
+        assert_eq!(arguments.last().unwrap(), "--json");
+    }
+
+    #[test]
+    fn human_browser_report_uses_typed_labels_and_width_without_json_dump() {
+        let value = serde_json::json!({
+            "success": true,
+            "url": "https://example.com",
+            "title": "Example Domain",
+            "revision": 3,
+            "internalTrace": {"private": "must not be displayed"}
+        });
+        let text = render_human_browser_result_at(
+            "Navigate",
+            "complete",
+            &[
+                ("URL".into(), value["url"].as_str().unwrap().into()),
+                ("Page title".into(), value["title"].as_str().unwrap().into()),
+                ("Revision".into(), value["revision"].to_string()),
+            ],
+            58,
+            false,
+        );
+        assert!(text.contains("Glass · Navigate"));
+        assert!(text.contains("Example Domain"));
+        assert!(!text.contains("internalTrace"));
+        assert!(!text.contains("{\""));
+        for line in text.lines() {
+            assert!(glass_tui::text::width(line) <= 58);
+        }
+    }
+
+    #[test]
+    fn capability_human_report_names_available_and_policy_disabled_features() {
+        let value = serde_json::json!({
+            "glassVersion": "0.3.14",
+            "protocolVersion": 1,
+            "constraints": {"browserFamily":"native","platform":"linux-arm64","policy":"development","maxSessions":4},
+            "capabilities": {"action":true,"extensions":false,"webIr":true},
+            "capabilityStatuses": {"action":"available","extensions":"disabledByPolicy","webIr":"available"}
+        });
+        let mut rows = Vec::new();
+        append_capability_rows(&value, &mut rows);
+        for width in [58, 80, 120] {
+            let report =
+                render_human_browser_result_at("Capabilities", "complete", &rows, width, false);
+            assert!(report.contains("Glass version"));
+            assert!(report.contains("3 total"));
+            assert!(report.contains("disabledByPolicy"));
+            assert!(!report.contains("{\""));
+            assert!(
+                report
+                    .lines()
+                    .all(|line| glass_tui::text::width(line) <= width)
+            );
+        }
+    }
 
     #[test]
     fn cli_source_reader_rejects_oversized_file_before_json_parse() {

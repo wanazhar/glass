@@ -3,8 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     path::{Component, Path},
 };
+
+const MAX_DEVELOPMENT_GRAPH_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -77,13 +80,15 @@ impl DevelopmentGraph {
         if !path.is_file() {
             return Ok(Self::default());
         }
-        let metadata = fs::metadata(path)?;
-        if metadata.len() > 2 * 1024 * 1024 {
+        let file = fs::File::open(path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() > MAX_DEVELOPMENT_GRAPH_BYTES {
             return Err(DevelopmentError::InvalidInput(
                 "development graph exceeds the 2 MiB storage limit".into(),
             ));
         }
-        let candidate: Self = serde_json::from_slice(&fs::read(path)?)?;
+        let bytes = read_bounded_graph(file, metadata.len())?;
+        let candidate: Self = serde_json::from_slice(&bytes)?;
         let mut validated = Self::default();
         for links in candidate.links.into_values() {
             for link in links {
@@ -98,7 +103,7 @@ impl DevelopmentGraph {
             fs::create_dir_all(parent)?;
         }
         let bytes = serde_json::to_vec_pretty(self)?;
-        if bytes.len() > 2 * 1024 * 1024 {
+        if bytes.len() as u64 > MAX_DEVELOPMENT_GRAPH_BYTES {
             return Err(DevelopmentError::InvalidInput(
                 "development graph exceeds the 2 MiB storage limit".into(),
             ));
@@ -190,6 +195,19 @@ impl DevelopmentGraph {
     }
 }
 
+fn read_bounded_graph(reader: impl Read, expected_len: u64) -> DevelopmentResult<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(expected_len.min(MAX_DEVELOPMENT_GRAPH_BYTES) as usize);
+    reader
+        .take(MAX_DEVELOPMENT_GRAPH_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_DEVELOPMENT_GRAPH_BYTES {
+        return Err(DevelopmentError::InvalidInput(
+            "development graph exceeds the 2 MiB storage limit".into(),
+        ));
+    }
+    Ok(bytes)
+}
+
 fn discover_in_directory(
     root: &Path,
     directory: &Path,
@@ -270,6 +288,14 @@ fn discover_in_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_reader_caps_growth_after_metadata_check() {
+        let bytes = vec![b' '; MAX_DEVELOPMENT_GRAPH_BYTES as usize + 11];
+        let error = read_bounded_graph(std::io::Cursor::new(bytes), 1)
+            .expect_err("graph growth after metadata must remain bounded");
+        assert!(error.to_string().contains("development graph exceeds"));
+    }
 
     #[test]
     fn best_link_preserves_provenance_instead_of_fabricating_certainty() {

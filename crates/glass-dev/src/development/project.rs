@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     process::Command,
     sync::Mutex,
@@ -1958,7 +1958,7 @@ fn load_editor_checkpoints(
     if !path.is_file() {
         return Ok(BTreeMap::new());
     }
-    let data = fs::read(path)?;
+    let data = read_bounded_utf8(path, MAX_FILE_BYTES, "editor checkpoints")?.into_bytes();
     serde_json::from_slice(&data)
         .map_err(|error| DevelopmentError::Config(format!("invalid editor checkpoints: {error}")))
 }
@@ -2130,7 +2130,7 @@ pub fn detect_project(root: impl AsRef<Path>) -> DevelopmentResult<ProjectDetect
 }
 
 fn load_project_config(path: Option<&Path>) -> DevelopmentResult<GlassProjectConfig> {
-    path.map(fs::read_to_string)
+    path.map(read_project_config_text)
         .transpose()?
         .map(|text| {
             toml::from_str::<GlassProjectConfig>(&text)
@@ -2138,6 +2138,32 @@ fn load_project_config(path: Option<&Path>) -> DevelopmentResult<GlassProjectCon
         })
         .transpose()
         .map(Option::unwrap_or_default)
+}
+
+fn read_project_config_text(path: &Path) -> DevelopmentResult<String> {
+    let file = fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(DevelopmentError::InvalidInput(
+            "project configuration is not a regular file".into(),
+        ));
+    }
+    if metadata.len() > MAX_FILE_BYTES as u64 {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "project configuration exceeds the {MAX_FILE_BYTES} byte limit"
+        )));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_FILE_BYTES {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "project configuration exceeds the {MAX_FILE_BYTES} byte limit"
+        )));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        DevelopmentError::InvalidInput("project configuration is not valid UTF-8".into())
+    })
 }
 
 pub(crate) fn canonical_root(root: &Path) -> DevelopmentResult<PathBuf> {
@@ -2267,8 +2293,11 @@ fn git_statuses(root: &Path) -> BTreeMap<String, String> {
 }
 
 fn detect_framework(root: &Path) -> Option<String> {
-    if let Ok(package) = fs::read_to_string(root.join("package.json"))
-        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&package)
+    if let Ok(package) = read_bounded_utf8(
+        &root.join("package.json"),
+        MAX_FILE_BYTES,
+        "package manifest",
+    ) && let Ok(value) = serde_json::from_str::<serde_json::Value>(&package)
     {
         let dependencies = value
             .get("dependencies")
@@ -2287,10 +2316,20 @@ fn detect_framework(root: &Path) -> Option<String> {
             return Some(framework.into());
         }
     }
-    let python = fs::read_to_string(root.join("pyproject.toml"))
-        .or_else(|_| fs::read_to_string(root.join("requirements.txt")))
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let python = read_bounded_utf8(
+        &root.join("pyproject.toml"),
+        MAX_FILE_BYTES,
+        "Python project manifest",
+    )
+    .or_else(|_| {
+        read_bounded_utf8(
+            &root.join("requirements.txt"),
+            MAX_FILE_BYTES,
+            "Python requirements",
+        )
+    })
+    .unwrap_or_default()
+    .to_ascii_lowercase();
     ["django", "flask", "fastapi"]
         .into_iter()
         .find(|framework| python.contains(framework))
@@ -2316,9 +2355,13 @@ fn default_commands(
     }
     if root.join("package.json").is_file() {
         let manager = package_manager.unwrap_or("npm");
-        let package = fs::read_to_string(root.join("package.json"))
-            .ok()
-            .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok());
+        let package = read_bounded_utf8(
+            &root.join("package.json"),
+            MAX_FILE_BYTES,
+            "package manifest",
+        )
+        .ok()
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok());
         let command = |script: &str| {
             package
                 .as_ref()
@@ -2382,6 +2425,36 @@ mod tests {
         .unwrap();
         fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
         root
+    }
+
+    #[test]
+    fn project_config_is_bounded_before_toml_parsing() {
+        let root = fixture();
+        let path = root.join("glass.toml");
+        fs::write(&path, vec![b' '; MAX_FILE_BYTES + 1]).unwrap();
+
+        let error = load_project_config(Some(&path)).expect_err("oversized config is rejected");
+
+        assert!(error.to_string().contains("project configuration exceeds"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_checkpoint_reader_rejects_oversized_json_before_parsing() {
+        let root = fixture();
+        let path = root.join("editor-checkpoints.json");
+        fs::write(&path, vec![b' '; MAX_FILE_BYTES + 1]).unwrap();
+        let error = load_editor_checkpoints(&path).expect_err("oversized checkpoint file");
+        assert!(error.to_string().contains("editor checkpoints exceeds"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn framework_detection_ignores_oversized_package_manifests() {
+        let root = fixture();
+        fs::write(root.join("package.json"), vec![b' '; MAX_FILE_BYTES + 1]).unwrap();
+        assert_eq!(detect_framework(&root), None);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

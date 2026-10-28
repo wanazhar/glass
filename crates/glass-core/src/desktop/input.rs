@@ -13,6 +13,12 @@ pub(super) fn inject(
     action: &str,
     value: &Value,
 ) -> Result<(), InputError> {
+    let click_button = (action == "pointer-click")
+        .then(|| {
+            button_id(value["button"].as_str().unwrap_or_default())
+                .ok_or(InputError::Invalid("button must be left, middle, or right"))
+        })
+        .transpose()?;
     let loaded = XTest::load()?;
     let display_name = CString::new(display).map_err(|_| InputError::Invalid("Invalid display"))?;
     let _auth_lock = AUTH_LOCK.lock().map_err(|_| InputError::Unavailable)?;
@@ -27,7 +33,7 @@ pub(super) fn inject(
         close: loaded.close_display,
     };
     match action {
-        "pointer-move" | "pointer-button" | "scroll" => {
+        "pointer-move" | "pointer-button" | "pointer-click" | "scroll" => {
             let button_event = if action == "pointer-button" {
                 Some((
                     button_id(value["button"].as_str().unwrap_or_default())
@@ -48,6 +54,11 @@ pub(super) fn inject(
             if let Some((button, pressed)) = button_event {
                 unsafe {
                     (loaded.button)(xdisplay, button as c_uint, if pressed { 1 } else { 0 }, 0);
+                }
+            } else if let Some(button) = click_button {
+                unsafe {
+                    (loaded.button)(xdisplay, button as c_uint, 1, 0);
+                    (loaded.button)(xdisplay, button as c_uint, 0, 0);
                 }
             } else if action == "scroll" {
                 let dx = bounded_delta(value.get("deltaX").and_then(Value::as_f64).unwrap_or(0.0));
@@ -80,16 +91,7 @@ pub(super) fn inject(
             let text = value["text"]
                 .as_str()
                 .ok_or(InputError::Invalid("text must be a string"))?;
-            if text.len() > 512
-                || !text.is_ascii()
-                || text
-                    .chars()
-                    .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t'))
-            {
-                return Err(InputError::Invalid(
-                    "text must be at most 512 printable ASCII bytes",
-                ));
-            }
+            validate_text(text)?;
             for character in text.chars() {
                 if character == '\n' {
                     send_key(&loaded, xdisplay, "Return", true)?;
@@ -101,12 +103,16 @@ pub(super) fn inject(
                     send_key(&loaded, xdisplay, "Tab", false)?;
                     continue;
                 }
-                send_character(&loaded, xdisplay, character)?;
+                if character.is_ascii() {
+                    send_character(&loaded, xdisplay, character)?;
+                } else {
+                    send_unicode_character(&loaded, xdisplay, character)?;
+                }
             }
         }
         _ => {
             return Err(InputError::Invalid(
-                "action must be pointer-move, pointer-button, key, text, or scroll",
+                "action must be pointer-move, pointer-button, pointer-click, key, text, or scroll",
             ));
         }
     }
@@ -395,6 +401,48 @@ fn send_key(
     Ok(())
 }
 
+/// GTK/XIM's Unicode compose entry lets XTest type codepoints without adding
+/// a clipboard helper or changing the managed display's keymap.
+fn send_unicode_character(
+    api: &XTest,
+    display: *mut c_void,
+    character: char,
+) -> Result<(), InputError> {
+    send_key(api, display, "Control_L", true)?;
+    if let Err(error) = send_key(api, display, "Shift_L", true) {
+        let _ = send_key(api, display, "Control_L", false);
+        return Err(error);
+    }
+    let start_compose = send_character(api, display, 'u');
+    let release_shift = send_key(api, display, "Shift_L", false);
+    let release_control = send_key(api, display, "Control_L", false);
+    start_compose?;
+    release_shift?;
+    release_control?;
+    for digit in unicode_hex(character).chars() {
+        send_character(api, display, digit)?;
+    }
+    send_key(api, display, "space", true)?;
+    send_key(api, display, "space", false)
+}
+
+fn validate_text(text: &str) -> Result<(), InputError> {
+    if text.len() > 512
+        || text
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t'))
+    {
+        return Err(InputError::Invalid(
+            "text must be at most 512 UTF-8 bytes without control characters except newline and tab",
+        ));
+    }
+    Ok(())
+}
+
+fn unicode_hex(character: char) -> String {
+    format!("{:x}", character as u32)
+}
+
 static AUTH_LOCK: Mutex<()> = Mutex::new(());
 
 struct XTest {
@@ -494,5 +542,39 @@ impl Drop for DisplayGuard {
         unsafe {
             (self.close)(self.display);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn pointer_click_accepts_supported_button_and_normalized_coordinates() {
+        let value = json!({"button":"left","x":0.5,"y":0.25});
+        assert_eq!(button_id(value["button"].as_str().unwrap()), Some(1));
+        assert_eq!(coordinates(&value).unwrap(), (640, 200));
+    }
+
+    #[test]
+    fn pointer_click_rejects_unsupported_button_and_out_of_range_coordinates() {
+        assert_eq!(button_id("wheel"), None);
+        assert!(coordinates(&json!({"x":1.01,"y":0.5})).is_err());
+    }
+
+    #[test]
+    fn bounded_text_accepts_utf8_and_newlines() {
+        assert!(validate_text("Crème brûlée — 東京\nSecond line").is_ok());
+        assert!(validate_text(&"é".repeat(256)).is_ok());
+        assert!(validate_text(&"é".repeat(257)).is_err());
+        assert!(validate_text("a\0b").is_err());
+        assert!(validate_text("a\tb\nc").is_ok());
+    }
+
+    #[test]
+    fn unicode_compose_uses_unpadded_lowercase_hex_codepoints() {
+        assert_eq!(unicode_hex('é'), "e9");
+        assert_eq!(unicode_hex('🐢'), "1f422");
     }
 }

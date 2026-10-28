@@ -106,6 +106,9 @@ impl Drop for ManagedSession {
 pub struct Desktop {
     workspace: PathBuf,
     root: PathBuf,
+    /// Serializes user-visible acts, lease changes, and session lifecycle.
+    /// Accessibility observation does not hold this lock.
+    control: Mutex<()>,
     session: Mutex<Option<ManagedSession>>,
 }
 
@@ -114,6 +117,7 @@ impl Desktop {
         Self {
             workspace,
             root: crate::config::data_dir().join("desktop"),
+            control: Mutex::new(()),
             session: Mutex::new(None),
         }
     }
@@ -132,6 +136,7 @@ impl Desktop {
                 "height": null,
                 "frameSeq": null,
                 "frameAgeMs": null,
+                "frameTimeMs": null,
                 "error": null
             });
         };
@@ -152,6 +157,7 @@ impl Desktop {
             "height": HEIGHT,
             "frameSeq": frames.current.as_ref().map(|frame| frame.seq),
             "frameAgeMs": age.map(|age| age.as_millis()),
+            "frameTimeMs": frames.current.as_ref().map(|frame| frame.since_start_ms),
             "error": if fresh { None } else { frames.error.as_deref().or(Some("Desktop frame source is stale")) }
         })
     }
@@ -160,6 +166,10 @@ impl Desktop {
         if stopping() {
             return Err("Connect desktop service is stopping".into());
         }
+        let _control = self
+            .control
+            .lock()
+            .map_err(|_| "Desktop control unavailable")?;
         let mut guard = self
             .session
             .lock()
@@ -181,6 +191,10 @@ impl Desktop {
     }
 
     pub fn stop(&self) -> Result<Value, String> {
+        let _control = self
+            .control
+            .lock()
+            .map_err(|_| "Desktop control unavailable")?;
         let mut guard = self
             .session
             .lock()
@@ -193,6 +207,10 @@ impl Desktop {
     }
 
     pub fn set_lease(&self, action: &str) -> Result<Value, String> {
+        let _control = self
+            .control
+            .lock()
+            .map_err(|_| "Desktop control unavailable")?;
         let mut guard = self
             .session
             .lock()
@@ -239,6 +257,7 @@ impl Desktop {
     }
 
     pub fn input(&self, role: Lease, value: &Value) -> Result<Value, InputError> {
+        let _control = self.control.lock().map_err(|_| InputError::Unavailable)?;
         let mut guard = self.session.lock().map_err(|_| InputError::Unavailable)?;
         let session = guard.as_mut().ok_or(InputError::NoSession)?;
         require_lease(role, session.lease)?;
@@ -246,6 +265,17 @@ impl Desktop {
             .get("action")
             .and_then(Value::as_str)
             .ok_or(InputError::Invalid("Missing action"))?;
+        if action == "text" {
+            let text = value
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or(InputError::Invalid("text must be a string"))?;
+            if unicode_text_conflicts_with_held_modifiers(text, &session.held_keys) {
+                return Err(InputError::Invalid(
+                    "release Control and Shift before entering Unicode text",
+                ));
+            }
+        }
         if action == "scroll" {
             input::coordinates(value)?;
             let (delta_x, next_x) = scroll_ticks(
@@ -290,81 +320,140 @@ impl Desktop {
             }
             _ => {}
         }
+        session.accessibility_revision = session.accessibility_revision.saturating_add(1);
+        session.accessibility_targets.clear();
         Ok(json!({"sent":true,"lease":session.lease.as_str()}))
     }
 
     pub fn observe_accessibility(
         &self,
         expected_session_id: Option<&str>,
+        query: Option<&str>,
     ) -> Result<Value, String> {
+        let (session_id, session_bus_address, revision) = {
+            let mut guard = self
+                .session
+                .lock()
+                .map_err(|_| "Desktop state unavailable")?;
+            let session = guard
+                .as_mut()
+                .ok_or("No managed desktop session is running")?;
+            if expected_session_id.is_some_and(|expected| expected != session.id) {
+                return Err(
+                    "The managed desktop session changed; call desktop_status and observe again"
+                        .into(),
+                );
+            }
+            session.accessibility_revision = session.accessibility_revision.saturating_add(1);
+            session.accessibility_targets.clear();
+            (
+                session.id.clone(),
+                session.session_bus_address.clone(),
+                session.accessibility_revision,
+            )
+        };
+        // D-Bus can take up to two seconds. Keep the manager mutex free so
+        // frame/status requests and human input are not held behind AT-SPI.
+        let snapshot = accessibility::observe(&session_bus_address, &session_id, revision, query)?;
         let mut guard = self
             .session
             .lock()
             .map_err(|_| "Desktop state unavailable")?;
         let session = guard
             .as_mut()
-            .ok_or("No managed desktop session is running")?;
-        if expected_session_id.is_some_and(|expected| expected != session.id) {
-            return Err(
-                "The managed desktop session changed; call desktop_status and observe again".into(),
-            );
-        }
-        session.accessibility_revision = session.accessibility_revision.saturating_add(1);
-        session.accessibility_targets.clear();
-        let snapshot = accessibility::observe(
-            &session.session_bus_address,
-            &session.id,
-            session.accessibility_revision,
-        )?;
+            .filter(|session| {
+                session.id == session_id && session.accessibility_revision == revision
+            })
+            .ok_or("Accessibility observation changed while it was running; observe again")?;
         session.accessibility_targets = snapshot.targets;
         Ok(snapshot.value)
     }
 
     pub fn act_accessibility(&self, value: &Value) -> Result<Value, String> {
+        let control = self
+            .control
+            .lock()
+            .map_err(|_| "Desktop control unavailable")?;
+        let (session_id, session_bus_address, revision, target, action, text) = {
+            let mut guard = self
+                .session
+                .lock()
+                .map_err(|_| "Desktop state unavailable")?;
+            let session = guard
+                .as_mut()
+                .ok_or("No managed desktop session is running")?;
+            let caller_session = value
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or("sessionId is required from desktop_observe")?;
+            if caller_session != session.id {
+                return Err(
+                    "The managed desktop session changed; call desktop_status and observe again"
+                        .into(),
+                );
+            }
+            require_lease(Lease::Agent, session.lease)
+                .map_err(|error| error.message().to_owned())?;
+            let supplied_revision = value
+                .get("revision")
+                .and_then(Value::as_u64)
+                .ok_or("revision is required from desktop_observe")?;
+            if supplied_revision != session.accessibility_revision {
+                return Err("Accessibility target is stale; call desktop_observe again".into());
+            }
+            let target_id = value
+                .get("targetId")
+                .and_then(Value::as_str)
+                .ok_or("targetId is required from desktop_observe")?;
+            let target = session
+                .accessibility_targets
+                .get(target_id)
+                .cloned()
+                .ok_or("Accessibility target is stale; call desktop_observe again")?;
+            let action = value
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or("action is required")?
+                .to_owned();
+            let text = value.get("text").and_then(Value::as_str).map(str::to_owned);
+            // Reserve a new revision so every target from the old tree is
+            // stale as soon as this action starts.
+            session.accessibility_revision = session.accessibility_revision.saturating_add(1);
+            session.accessibility_targets.clear();
+            (
+                session.id.clone(),
+                session.session_bus_address.clone(),
+                session.accessibility_revision,
+                target,
+                action,
+                text,
+            )
+        };
+        let result = accessibility::act(&session_bus_address, &target, &action, text.as_deref());
+        drop(control);
+        // Refresh without holding manager/control locks. Concurrent input or
+        // observation advances the revision and prevents a stale commit.
+        let observation = accessibility::observe(&session_bus_address, &session_id, revision, None);
         let mut guard = self
             .session
             .lock()
             .map_err(|_| "Desktop state unavailable")?;
-        let session = guard
-            .as_mut()
-            .ok_or("No managed desktop session is running")?;
-        let caller_session = value
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .ok_or("sessionId is required from desktop_observe")?;
-        if caller_session != session.id {
-            return Err(
-                "The managed desktop session changed; call desktop_status and observe again".into(),
+        let current = guard.as_mut().filter(|session| {
+            session.id == session_id && session.accessibility_revision == revision
+        });
+        let mut result = result?;
+        if let (Some(session), Ok(snapshot)) = (current, observation) {
+            session.accessibility_targets = snapshot.targets;
+            if let Some(result) = result.as_object_mut() {
+                result.insert("observation".into(), snapshot.value);
+            }
+        } else if let Some(result) = result.as_object_mut() {
+            result.insert(
+                "observationUnavailable".into(),
+                json!("The desktop changed during this action. Call desktop_observe before continuing."),
             );
         }
-        require_lease(Lease::Agent, session.lease).map_err(|error| error.message().to_owned())?;
-        let revision = value
-            .get("revision")
-            .and_then(Value::as_u64)
-            .ok_or("revision is required from desktop_observe")?;
-        if revision != session.accessibility_revision {
-            return Err("Accessibility target is stale; call desktop_observe again".into());
-        }
-        let target_id = value
-            .get("targetId")
-            .and_then(Value::as_str)
-            .ok_or("targetId is required from desktop_observe")?;
-        let target = session
-            .accessibility_targets
-            .get(target_id)
-            .cloned()
-            .ok_or("Accessibility target is stale; call desktop_observe again")?;
-        let action = value
-            .get("action")
-            .and_then(Value::as_str)
-            .ok_or("action is required")?;
-        let text = value.get("text").and_then(Value::as_str);
-        let result = accessibility::act(&session.session_bus_address, &target, action, text);
-        // Any attempt can alter the accessible tree. Force a new observation
-        // before another target can be acted on, even when an app refuses it.
-        session.accessibility_revision = session.accessibility_revision.saturating_add(1);
-        session.accessibility_targets.clear();
-        result
+        Ok(result)
     }
 
     pub fn frame_after(
@@ -372,27 +461,29 @@ impl Desktop {
         after: u64,
         timeout: Duration,
     ) -> Result<Option<(u64, u64, Vec<u8>)>, String> {
-        let guard = self
-            .session
-            .lock()
-            .map_err(|_| "Desktop state unavailable")?;
-        let session = guard
-            .as_ref()
-            .ok_or("No managed desktop session is running")?;
+        let (session_id, frame_state) = {
+            let guard = self
+                .session
+                .lock()
+                .map_err(|_| "Desktop state unavailable")?;
+            let session = guard
+                .as_ref()
+                .ok_or("No managed desktop session is running")?;
+            (session.id.clone(), session.frames.clone())
+        };
         let deadline = Instant::now() + timeout;
-        loop {
+        let result = loop {
             if STOPPING.load(std::sync::atomic::Ordering::Acquire) {
                 return Err("Connect desktop service is stopping".into());
             }
-            let frames = session
-                .frames
+            let frames = frame_state
                 .lock()
                 .map_err(|_| "Desktop frame state unavailable")?;
             if let Some(frame) = frames.current.as_ref().filter(|frame| frame.seq > after) {
                 if frame.captured_at.elapsed() > FRAME_STALE_AFTER {
                     return Err("Desktop frame source is stale".into());
                 }
-                return Ok(Some((frame.seq, frame.since_start_ms, frame.jpeg.clone())));
+                break Some((frame.seq, frame.since_start_ms, frame.jpeg.clone()));
             }
             if let Some(error) = frames.error.as_ref() {
                 return Err(error.clone());
@@ -402,7 +493,18 @@ impl Desktop {
                 return Ok(None);
             }
             thread::sleep(Duration::from_millis(40));
+        };
+        let guard = self
+            .session
+            .lock()
+            .map_err(|_| "Desktop state unavailable")?;
+        let session_is_current = guard.as_ref().is_some_and(|session| {
+            session.id == session_id && Arc::ptr_eq(&session.frames, &frame_state)
+        });
+        if !session_is_current {
+            return Err("Managed desktop session changed while waiting for a frame".into());
         }
+        Ok(result)
     }
 
     /// Run the private, same-uid bridge used by Core's agent tools. It never
@@ -501,6 +603,13 @@ fn scroll_ticks(delta_pixels: f64, remainder: f64) -> Result<(i64, f64), InputEr
     let ticks = accumulated.trunc().clamp(-20.0, 20.0) as i64;
     let next = accumulated - ticks as f64;
     Ok((ticks, next))
+}
+
+fn unicode_text_conflicts_with_held_modifiers(text: &str, held_keys: &HashSet<String>) -> bool {
+    !text.is_ascii()
+        && held_keys
+            .iter()
+            .any(|key| matches!(key.as_str(), "Control" | "Shift"))
 }
 
 fn require_lease(caller: Lease, owner: Lease) -> Result<(), InputError> {
@@ -705,6 +814,7 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
         Some("status") => Ok(desktop.status()),
         Some("observe") => desktop.observe_accessibility(
             request["value"]["sessionId"].as_str(),
+            request["value"]["query"].as_str(),
         ),
         Some("act") => desktop.act_accessibility(&request["value"]),
         Some("frame") => desktop.frame_after(0, Duration::from_secs(2)).map(|frame| {
@@ -746,9 +856,34 @@ mod tests {
     }
 
     #[test]
-    fn text_input_rejects_unbounded_and_non_ascii_values() {
-        assert!("hello".is_ascii());
-        assert!(!"こんにちは".is_ascii());
+    fn desktop_status_includes_nullable_frame_time() {
+        let desktop = Desktop::new(std::env::temp_dir());
+        let status = desktop.status();
+        assert_eq!(status["frameTimeMs"], Value::Null);
+    }
+
+    #[test]
+    fn unicode_text_rejects_held_shortcut_modifiers() {
+        let mut held_keys = HashSet::new();
+        assert!(!unicode_text_conflicts_with_held_modifiers(
+            "Crème", &held_keys
+        ));
+        held_keys.insert("Control".to_owned());
+        assert!(unicode_text_conflicts_with_held_modifiers(
+            "Crème", &held_keys
+        ));
+        assert!(!unicode_text_conflicts_with_held_modifiers(
+            "Creme", &held_keys
+        ));
+        held_keys.clear();
+        held_keys.insert("Shift".to_owned());
+        assert!(unicode_text_conflicts_with_held_modifiers(
+            "Crème", &held_keys
+        ));
+    }
+
+    #[test]
+    fn text_input_scroll_deltas_are_bounded() {
         assert_eq!(input::bounded_delta(1000.0), 20);
         assert_eq!(input::bounded_delta(-1000.0), -20);
     }
@@ -804,6 +939,8 @@ mod tests {
         let mut desktop = Desktop::new(workspace);
         desktop.root = root.join("sessions");
         desktop.start().unwrap();
+        let expected_saved_value = "glass desktop saved 7142";
+        let saved_value_path = root.join("saved-value.txt");
 
         let (session_id, display, auth_file, session_bus, home) = {
             let guard = desktop.session.lock().unwrap();
@@ -816,12 +953,41 @@ mod tests {
                 session.directory.join("home"),
             )
         };
+        let mut registry_ready = false;
+        let mut previous_applications = None;
+        let registry_deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < registry_deadline {
+            if let Ok(snapshot) = desktop.observe_accessibility(Some(&session_id), None) {
+                let mut applications = snapshot["applications"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>();
+                applications.sort();
+                if !applications.is_empty() && previous_applications.as_ref() == Some(&applications)
+                {
+                    registry_ready = true;
+                    break;
+                }
+                previous_applications = Some(applications);
+            } else {
+                previous_applications = None;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            registry_ready,
+            "isolated AT-SPI registry should accept a bounded observation before launching the test app"
+        );
+        let dialog_stderr_path = root.join("zenity-stderr.txt");
         let mut dialog = Command::new("zenity")
             .args([
                 "--entry",
                 "--title=Glass accessibility test",
                 "--text=Enter a local test value",
-                "--ok-label=Finish",
+                "--ok-label=Save",
             ])
             .env("DISPLAY", display)
             .env("XAUTHORITY", auth_file)
@@ -829,39 +995,129 @@ mod tests {
             .env("GTK_A11Y", "atspi")
             .env("HOME", home)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(std::fs::File::create(&saved_value_path).unwrap())
+            .stderr(std::fs::File::create(&dialog_stderr_path).unwrap())
             .spawn()
             .expect("start local dialog in isolated managed Xfce session");
+
+        thread::scope(|scope| {
+            let observation =
+                scope.spawn(|| desktop.observe_accessibility(Some(&session_id), None));
+            let frame_wait =
+                scope.spawn(|| desktop.frame_after(u64::MAX, Duration::from_millis(400)));
+            thread::sleep(Duration::from_millis(40));
+            let started = Instant::now();
+            let status = desktop.status();
+            let status_elapsed = started.elapsed();
+            assert!(status["available"].as_bool().unwrap_or(false));
+            assert!(status["frameTimeMs"].as_u64().is_some());
+            assert!(
+                status_elapsed < Duration::from_millis(250),
+                "desktop_status should stay responsive during AT-SPI observation, took {status_elapsed:?}"
+            );
+
+            let started = Instant::now();
+            desktop
+                .input(
+                    Lease::Agent,
+                    &json!({"action":"pointer-move","x":0.5,"y":0.5}),
+                )
+                .unwrap();
+            let input_elapsed = started.elapsed();
+            assert!(
+                input_elapsed < Duration::from_millis(250),
+                "raw input should not wait on AT-SPI observation, took {input_elapsed:?}"
+            );
+            assert_eq!(frame_wait.join().unwrap().unwrap(), None);
+            let observed = observation.join().unwrap();
+            assert!(
+                observed.is_ok()
+                    || observed
+                        .unwrap_err()
+                        .contains("changed while it was running")
+            );
+        });
 
         (|| {
             let mut snapshot = None;
             let mut last_snapshot = None;
-            for _ in 0..10 {
+            let dialog_deadline = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < dialog_deadline {
                 if dialog.try_wait().unwrap().is_some() {
                     panic!("test dialog exited before accessibility observation");
                 }
-                if let Ok(value) = desktop.observe_accessibility(Some(&session_id)) {
+                if let Ok(value) = desktop.observe_accessibility(Some(&session_id), None) {
                     last_snapshot = Some(value.clone());
-                    if value["nodes"].as_array().is_some_and(|nodes| {
-                        nodes
-                            .iter()
-                            .any(|node| !node["targetId"].is_null() && !node["value"].is_null())
-                    }) {
+                    let zenity_visible = value["applications"].as_array().is_some_and(|apps| {
+                        apps.iter().any(|app| {
+                            app.as_str()
+                                .is_some_and(|name| name.to_ascii_lowercase().contains("zenity"))
+                        })
+                    });
+                    let focused_dialog = value["focusedWindow"]["application"] == "zenity";
+                    let editable_target = value["nodes"].as_array().is_some_and(|nodes| {
+                        nodes.iter().any(|node| {
+                            node["application"] == "zenity"
+                                && !node["targetId"].is_null()
+                                && !node["value"].is_null()
+                        })
+                    });
+                    if zenity_visible && focused_dialog && editable_target {
                         snapshot = Some(value);
                         break;
                     }
                 }
-                thread::sleep(Duration::from_millis(200));
+                thread::sleep(Duration::from_millis(100));
             }
             let first = snapshot.unwrap_or_else(|| {
+                let stderr = std::fs::read_to_string(&dialog_stderr_path).unwrap_or_default();
+                let diagnostic = stderr
+                    .lines()
+                    .filter(|line| {
+                        let line = line.to_ascii_lowercase();
+                        line.contains("at-spi") || line.contains("accessibility") || line.contains("error")
+                    })
+                    .take(8)
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 panic!(
-                    "managed Xfce accessibility tree becomes observable; latest: {last_snapshot:?}"
+                    "managed Xfce accessibility tree becomes observable; latest: {last_snapshot:?}; Zenity diagnostics: {diagnostic}"
                 )
             });
+            assert!(
+                first["applications"]
+                    .as_array()
+                    .is_some_and(|applications| {
+                        applications.iter().any(|application| {
+                            application
+                                .as_str()
+                                .is_some_and(|name| name.to_ascii_lowercase().contains("zenity"))
+                        })
+                    }),
+                "application list should identify Zenity: {first}"
+            );
+            assert_eq!(
+                first["focusedWindow"]["name"], "Glass accessibility test",
+                "the snapshot should identify the focused test dialog"
+            );
             let first_target = test_target(&first, |node| !node["value"].is_null());
 
-            let second = desktop.observe_accessibility(Some(&session_id)).unwrap();
+            let save_search = desktop
+                .observe_accessibility(Some(&session_id), Some("Save"))
+                .unwrap();
+            assert_eq!(save_search["query"], "Save");
+            assert!(
+                save_search["nodes"].as_array().is_some_and(|nodes| {
+                    nodes
+                        .iter()
+                        .any(|node| node["name"] == "Save" && !node["targetId"].is_null())
+                }),
+                "semantic search should return the actionable Save control: {save_search}"
+            );
+
+            let second = desktop
+                .observe_accessibility(Some(&session_id), None)
+                .unwrap();
             let stale = desktop.act_accessibility(&json!({
                 "sessionId": session_id,
                 "revision": first["revision"],
@@ -885,8 +1141,15 @@ mod tests {
                 edited["verified"], true,
                 "accessible text readback: {edited}"
             );
+            assert_eq!(
+                test_target(&edited["observation"], |node| !node["value"].is_null())["value"],
+                "glass accessibility probe",
+                "desktop_act should return its fresh readback snapshot"
+            );
 
-            let before_lease = desktop.observe_accessibility(Some(&session_id)).unwrap();
+            let before_lease = desktop
+                .observe_accessibility(Some(&session_id), None)
+                .unwrap();
             let field = test_target(&before_lease, |node| !node["value"].is_null());
             desktop.set_lease("take-control").unwrap();
             let blocked = desktop.act_accessibility(&json!({
@@ -902,19 +1165,38 @@ mod tests {
             );
             desktop.set_lease("return-to-agent").unwrap();
 
-            let output = run_accessibility_agent_turn(&desktop, &root, &session_id);
-            assert!(output.contains("accessible Finish action"));
+            let output = if std::env::var_os("GLASS_DESKTOP_A11Y_MODEL_E2E").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+            {
+                run_live_accessibility_agent_turn(
+                    &desktop,
+                    &root,
+                    &session_id,
+                    expected_saved_value,
+                )
+            } else {
+                run_accessibility_agent_turn(&desktop, &root, &session_id, expected_saved_value)
+            };
+            assert!(
+                !output.trim().is_empty(),
+                "the agent should report completion"
+            );
             for _ in 0..30 {
                 if let Some(status) = dialog.try_wait().unwrap() {
                     assert!(
                         status.success(),
-                        "Finish button should accept the local dialog"
+                        "Save button should accept the local dialog"
+                    );
+                    assert_eq!(
+                        std::fs::read_to_string(&saved_value_path).unwrap().trim(),
+                        expected_saved_value,
+                        "the app should save the exact value requested from the agent"
                     );
                     return;
                 }
                 thread::sleep(Duration::from_millis(100));
             }
-            panic!("accessible Finish action did not close the local dialog");
+            panic!("accessible Save action did not close the local dialog");
         })();
         if dialog.try_wait().unwrap().is_none() {
             let _ = dialog.kill();
@@ -938,11 +1220,166 @@ mod tests {
             })
     }
 
-    fn run_accessibility_agent_turn(desktop: &Desktop, root: &Path, session_id: &str) -> String {
+    fn test_accessibility_tools() -> Vec<(String, String, String)> {
+        crate::provider::desktop_tool_schemas(true)
+            .into_iter()
+            .filter(|(name, _, _)| matches!(name.as_str(), "desktop_observe" | "desktop_act"))
+            .collect()
+    }
+
+    fn accessibility_test_prompt(session_id: &str) -> String {
+        format!(
+            "This is a test-owned isolated desktop session `{session_id}` with the agent input lease. Use only `desktop_observe` and `desktop_act` to inspect and operate its visible dialog. Target IDs are tied to the exact observation revision; use the fresh `observation` returned by each action before choosing another target. The dialog has one editable text field and a Save button. Do not use shell, files, screenshots, coordinates, or any other desktop session."
+        )
+    }
+
+    fn run_live_accessibility_agent_turn(
+        desktop: &Desktop,
+        root: &Path,
+        session_id: &str,
+        expected_value: &str,
+    ) -> String {
+        let mut config = crate::config::load(&crate::config::default_path())
+            .unwrap_or_else(|_| panic!("Could not load the configured free provider"));
+        crate::auth::apply(&mut config)
+            .unwrap_or_else(|_| panic!("Could not apply the configured provider connection"));
+        let endpoint = url::Url::parse(&config.base_url)
+            .unwrap_or_else(|_| panic!("The configured free provider endpoint is invalid"));
+        assert_eq!(
+            config.provider, "openai",
+            "the guarded test expects OpenAI-compatible Kilo"
+        );
+        assert!(
+            config.model.to_ascii_lowercase().contains("free"),
+            "the live acceptance test will only call a model explicitly marked free"
+        );
+        assert_eq!(
+            endpoint.host_str(),
+            Some("127.0.0.1"),
+            "the live acceptance test will only call the local provider proxy"
+        );
+        let key = crate::auth::resolve(&config)
+            .unwrap_or_else(|_| panic!("Could not resolve the configured free provider"));
+        let mut provider = crate::provider::build(
+            &config.provider,
+            &config.base_url,
+            key,
+            &config.model,
+            config.adaptive_pacing,
+        )
+        .unwrap_or_else(|_| panic!("Could not construct the configured free provider"));
+        provider.set_session_identity(config.provider_session.as_deref());
+
+        let session_dir = root.join("live-agent-tool-turn");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let mut session = crate::session::Session::create(&session_dir).unwrap();
+        session.append(crate::session::Record::User(format!(
+            "In the isolated dialog, replace the text field with exactly `{expected_value}`, activate Save, then use the fresh accessibility observation to verify the dialog closed. Reply briefly when done."
+        )));
+        let mut state = crate::tools::State::new();
+        let mods = Vec::new();
+        let mut extensions = crate::ext::Registry::empty();
+        let desktop_ref = desktop;
+        let actions = Arc::new(Mutex::new(Vec::<String>::new()));
+        let action_trace = Arc::clone(&actions);
+        let mut agent = crate::agent::Agent::new(
+            provider.as_ref(),
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &session_dir,
+        )
+        .with_prompt(accessibility_test_prompt(session_id), None, None)
+        .with_limits(1536, None, 8)
+        .with_host_tools(
+            test_accessibility_tools(),
+            Box::new(move |call, _, _| {
+                let args = serde_json::from_str::<Value>(&call.arguments).unwrap_or_default();
+                if call.name == "desktop_act" {
+                    action_trace.lock().unwrap().push(format!(
+                        "desktop_act:{}",
+                        args["action"].as_str().unwrap_or("unknown")
+                    ));
+                } else {
+                    action_trace.lock().unwrap().push(call.name.clone());
+                }
+                let result = match call.name.as_str() {
+                    "desktop_observe" => desktop_ref
+                        .observe_accessibility(args["sessionId"].as_str(), args["query"].as_str())
+                        .map(|value| value.to_string()),
+                    "desktop_act" => desktop_ref
+                        .act_accessibility(&args)
+                        .map(|value| value.to_string()),
+                    _ => Err("the test host exposes only accessible observe and act".to_owned()),
+                };
+                if call.name == "desktop_act"
+                    && result.as_ref().is_ok_and(|output| {
+                        serde_json::from_str::<Value>(output)
+                            .is_ok_and(|value| value["observation"].is_object())
+                    })
+                {
+                    action_trace.lock().unwrap().push(format!(
+                        "desktop_act_result:{}:fresh",
+                        args["action"].as_str().unwrap_or("unknown")
+                    ));
+                }
+                crate::agent::HostToolOutcome::plain(match result {
+                    Ok(output) => crate::tools::Outcome::ok(output),
+                    Err(error) => crate::tools::Outcome::err(error),
+                })
+            }),
+        );
+        let turn = agent.run_turn(|_| {});
+        assert!(
+            turn.is_ok(),
+            "the configured free model turn should complete"
+        );
+        let (output, stop) = turn.unwrap();
+        assert_eq!(stop, crate::agent::Stop::Finished);
+        let actions = actions.lock().unwrap();
+        assert!(actions.iter().any(|action| action == "desktop_observe"));
+        let text_position = actions
+            .iter()
+            .position(|action| action == "desktop_act:set_text")
+            .expect("the configured free model should enter the requested value");
+        let click_position = actions
+            .iter()
+            .position(|action| action == "desktop_act:click")
+            .expect("the configured free model should activate Save");
+        assert!(text_position < click_position);
+        assert!(
+            actions[click_position + 1..]
+                .iter()
+                .any(|action| action == "desktop_act_result:click:fresh"),
+            "Save should return a fresh observation for the configured free model to inspect"
+        );
+        drop(actions);
+        drop(agent);
+        drop(extensions);
+        drop(session);
+        std::fs::remove_dir_all(session_dir).unwrap();
+        output.text
+    }
+
+    fn run_accessibility_agent_turn(
+        desktop: &Desktop,
+        root: &Path,
+        session_id: &str,
+        expected_value: &str,
+    ) -> String {
+        #[derive(Default)]
+        struct AccessState {
+            observations: Vec<Value>,
+            errors: Vec<String>,
+            actions: Vec<String>,
+        }
+
         struct AccessibilityTurnProvider {
             turn: AtomicUsize,
-            snapshot: Arc<Mutex<Option<Value>>>,
+            state: Arc<Mutex<AccessState>>,
             session_id: String,
+            expected_value: String,
         }
 
         impl crate::provider::Provider for AccessibilityTurnProvider {
@@ -961,35 +1398,109 @@ mod tests {
                             assert!(request.tools.iter().any(|(name, _, _)| name == tool));
                         }
                         crate::provider::Event::ToolCall {
-                            id: "observe-managed-desktop".into(),
+                            id: "search-save-control".into(),
+                            name: "desktop_observe".into(),
+                            arguments: json!({"sessionId": self.session_id,"query":"Save"})
+                                .to_string(),
+                        }
+                    }
+                    1 => {
+                        let state = self.state.lock().unwrap();
+                        let target_snapshot = state.observations.last().ok_or_else(|| {
+                            crate::provider::Error::Config("desktop_observe did not run".into())
+                        })?;
+                        assert!(
+                            test_target(target_snapshot, |node| node["name"] == "Save")["targetId"]
+                                .is_string()
+                        );
+                        crate::provider::Event::ToolCall {
+                            id: "refresh-full-snapshot".into(),
                             name: "desktop_observe".into(),
                             arguments: json!({"sessionId": self.session_id}).to_string(),
                         }
                     }
-                    1 => {
-                        let snapshot = self.snapshot.lock().unwrap().clone().ok_or_else(|| {
-                            crate::provider::Error::Config(
-                                "desktop_observe did not execute before desktop_act".into(),
-                            )
+                    2 => {
+                        let state = self.state.lock().unwrap();
+                        let stale = state.observations.first().ok_or_else(|| {
+                            crate::provider::Error::Config("initial query did not run".into())
                         })?;
-                        let target = test_target(&snapshot, |node| {
-                            node["name"].as_str().is_some_and(|name| name == "Finish")
-                        });
+                        let target = test_target(stale, |node| node["name"] == "Save");
                         crate::provider::Event::ToolCall {
-                            id: "activate-finish".into(),
+                            id: "deliberately-reuse-stale-target".into(),
                             name: "desktop_act".into(),
                             arguments: json!({
-                                "sessionId": snapshot["sessionId"],
-                                "revision": snapshot["revision"],
+                                "sessionId": stale["sessionId"],
+                                "revision": stale["revision"],
                                 "targetId": target["targetId"],
                                 "action": "click",
                             })
                             .to_string(),
                         }
                     }
-                    _ => crate::provider::Event::Text(
-                        "I closed the dialog with the accessible Finish action.".into(),
-                    ),
+                    3 => {
+                        let state = self.state.lock().unwrap();
+                        assert!(
+                            state
+                                .errors
+                                .last()
+                                .is_some_and(|error| error.contains("stale"))
+                        );
+                        crate::provider::Event::ToolCall {
+                            id: "recover-with-fresh-observation".into(),
+                            name: "desktop_observe".into(),
+                            arguments: json!({"sessionId": self.session_id}).to_string(),
+                        }
+                    }
+                    4 => {
+                        let state = self.state.lock().unwrap();
+                        let snapshot = state.observations.last().ok_or_else(|| {
+                            crate::provider::Error::Config("fresh observation did not run".into())
+                        })?;
+                        let field = test_target(snapshot, |node| node["value"].is_string());
+                        crate::provider::Event::ToolCall {
+                            id: "enter-requested-value".into(),
+                            name: "desktop_act".into(),
+                            arguments: json!({
+                                "sessionId": snapshot["sessionId"],
+                                "revision": snapshot["revision"],
+                                "targetId": field["targetId"],
+                                "action": "set_text",
+                                "text": self.expected_value,
+                            })
+                            .to_string(),
+                        }
+                    }
+                    5 => {
+                        let state = self.state.lock().unwrap();
+                        let snapshot = state.observations.last().ok_or_else(|| {
+                            crate::provider::Error::Config(
+                                "set_text did not refresh the tree".into(),
+                            )
+                        })?;
+                        let field =
+                            test_target(snapshot, |node| node["value"] == self.expected_value);
+                        let save = test_target(snapshot, |node| node["name"] == "Save");
+                        assert!(field["targetId"].is_string());
+                        crate::provider::Event::ToolCall {
+                            id: "save-entered-value".into(),
+                            name: "desktop_act".into(),
+                            arguments: json!({
+                                "sessionId": snapshot["sessionId"],
+                                "revision": snapshot["revision"],
+                                "targetId": save["targetId"],
+                                "action": "click",
+                            })
+                            .to_string(),
+                        }
+                    }
+                    _ => {
+                        let state = self.state.lock().unwrap();
+                        assert!(state.actions.iter().any(|action| action == "set_text"));
+                        assert!(state.actions.iter().any(|action| action == "click"));
+                        crate::provider::Event::Text(
+                            "Saved the requested value using the accessible Save control.".into(),
+                        )
+                    }
                 };
                 Ok(Box::new(
                     vec![event, crate::provider::Event::Done].into_iter(),
@@ -1003,42 +1514,61 @@ mod tests {
 
         let session_dir = root.join("agent-tool-turn");
         std::fs::create_dir_all(&session_dir).unwrap();
-        let snapshot = Arc::new(Mutex::new(None));
+        let state = Arc::new(Mutex::new(AccessState::default()));
         let provider = AccessibilityTurnProvider {
             turn: AtomicUsize::new(0),
-            snapshot: snapshot.clone(),
+            state: state.clone(),
             session_id: session_id.to_owned(),
+            expected_value: expected_value.to_owned(),
         };
         let mut session = crate::session::Session::create(&session_dir).unwrap();
-        session.append(crate::session::Record::User(
-            "Close the local dialog".into(),
-        ));
-        let mut state = crate::tools::State::new();
+        session.append(crate::session::Record::User(format!(
+            "In the isolated dialog, replace the field with exactly `{expected_value}`, activate Save, and verify the dialog closes."
+        )));
+        let mut tool_state = crate::tools::State::new();
         let mods = Vec::new();
         let mut extensions = crate::ext::Registry::empty();
         let desktop_ref = desktop;
+        let desktop_tools = test_accessibility_tools();
         let mut agent = crate::agent::Agent::new(
             &provider,
             &mut session,
-            &mut state,
+            &mut tool_state,
             &mods,
             &mut extensions,
             &session_dir,
         )
-        .with_mixed_host_tools(
-            crate::provider::desktop_tool_schemas(true),
+        .with_prompt(accessibility_test_prompt(session_id), None, None)
+        .with_host_tools(
+            desktop_tools,
             Box::new(move |call, _, _| {
                 let args = serde_json::from_str::<Value>(&call.arguments).unwrap();
                 let result = match call.name.as_str() {
                     "desktop_observe" => desktop_ref
-                        .observe_accessibility(args["sessionId"].as_str())
+                        .observe_accessibility(args["sessionId"].as_str(), args["query"].as_str())
                         .map(|value| {
-                            *snapshot.lock().unwrap() = Some(value.clone());
+                            let mut access_state = state.lock().unwrap();
+                            access_state.observations.push(value.clone());
                             value.to_string()
                         }),
-                    "desktop_act" => desktop_ref
-                        .act_accessibility(&args)
-                        .map(|value| value.to_string()),
+                    "desktop_act" => {
+                        let action = args["action"].as_str().unwrap_or("unknown").to_owned();
+                        let result = desktop_ref.act_accessibility(&args);
+                        let mut access_state = state.lock().unwrap();
+                        match result {
+                            Ok(value) => {
+                                access_state.actions.push(action);
+                                if let Some(observation) = value.get("observation") {
+                                    access_state.observations.push(observation.clone());
+                                }
+                                Ok(value.to_string())
+                            }
+                            Err(error) => {
+                                access_state.errors.push(error.clone());
+                                Err(error)
+                            }
+                        }
+                    }
                     _ => Err(format!("unexpected host tool {}", call.name)),
                 };
                 crate::agent::HostToolOutcome::plain(match result {
@@ -1049,7 +1579,7 @@ mod tests {
         );
         let (output, stop) = agent.run_turn(|_| {}).unwrap();
         assert_eq!(stop, crate::agent::Stop::Finished);
-        assert_eq!(provider.turn.load(Ordering::SeqCst), 3);
+        assert_eq!(provider.turn.load(Ordering::SeqCst), 7);
         drop(agent);
         drop(extensions);
         drop(session);

@@ -1925,7 +1925,23 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
         }
     }
     if path == "/api/desktop/stream" && r.method == "GET" {
-        return desktop_stream(&mut stream, &app.desktop);
+        let width = query
+            .get("width")
+            .map(|value| value.parse::<u32>().map_err(|_| "Invalid stream width"))
+            .transpose();
+        let width = match width {
+            Ok(Some(width @ 320..=1280)) => width,
+            Ok(None) => 1280,
+            Ok(Some(_)) | Err(_) => {
+                return json_response(
+                    &mut stream,
+                    400,
+                    json!({"error":"Stream width must be between 320 and 1280 pixels"}),
+                )
+                .map_err(|e| e.to_string());
+            }
+        };
+        return desktop_stream(&mut stream, &app.desktop, width);
     }
     if path == "/api/desktop/frame" && r.method == "GET" {
         return desktop_frame(&mut stream, &app.desktop);
@@ -2225,7 +2241,11 @@ fn desktop_frame(stream: &mut TcpStream, desktop: &crate::desktop::Desktop) -> R
     }
 }
 
-fn desktop_stream(stream: &mut TcpStream, desktop: &crate::desktop::Desktop) -> Result<(), String> {
+fn desktop_stream(
+    stream: &mut TcpStream,
+    desktop: &crate::desktop::Desktop,
+    width: u32,
+) -> Result<(), String> {
     if desktop.status()["sessionId"].is_null() {
         return json_response(
             stream,
@@ -2267,6 +2287,11 @@ fn desktop_stream(stream: &mut TcpStream, desktop: &crate::desktop::Desktop) -> 
         if seq <= sequence {
             return Ok(());
         }
+        let jpeg = if width == 1280 {
+            jpeg
+        } else {
+            resize_stream_frame(&jpeg, width)?
+        };
         write!(
             stream,
             "--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nX-Frame-Seq: {}\r\nX-Frame-Time-Ms: {}\r\n\r\n",
@@ -2278,6 +2303,25 @@ fn desktop_stream(stream: &mut TcpStream, desktop: &crate::desktop::Desktop) -> 
         stream.flush().map_err(|e| e.to_string())?;
         sequence = seq;
     }
+}
+
+fn resize_stream_frame(jpeg: &[u8], width: u32) -> Result<Vec<u8>, String> {
+    let height = width * 800 / 1280;
+    let decoded =
+        image::load_from_memory(jpeg).map_err(|e| format!("Decoding desktop frame: {e}"))?;
+    let resized = decoded
+        .resize_exact(width, height, image::imageops::FilterType::Triangle)
+        .to_rgb8();
+    let mut output = Vec::with_capacity(jpeg.len().min(64 * 1024));
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, 70)
+        .encode(
+            resized.as_raw(),
+            width,
+            height,
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(|e| format!("Encoding desktop frame: {e}"))?;
+    Ok(output)
 }
 
 fn gateway(cfg: crate::config::Config, settings: Settings) -> Result<(), String> {

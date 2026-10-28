@@ -1,7 +1,13 @@
   const ShadowRootNative = ensureNativeConstructor("ShadowRoot", DocumentFragmentNative);
-  const shadowHostByRoot = new WeakMap();
-  const shadowModeByRoot = new WeakMap();
-  const shadowRootByHost = new WeakMap();
+  const shadowHostByRoot = globalThis.__glassShadowHostByRoot instanceof WeakMap
+    ? globalThis.__glassShadowHostByRoot
+    : (globalThis.__glassShadowHostByRoot = new WeakMap());
+  const shadowModeByRoot = globalThis.__glassShadowModeByRoot instanceof WeakMap
+    ? globalThis.__glassShadowModeByRoot
+    : (globalThis.__glassShadowModeByRoot = new WeakMap());
+  const shadowRootByHost = globalThis.__glassShadowRootByHost instanceof WeakMap
+    ? globalThis.__glassShadowRootByHost
+    : (globalThis.__glassShadowRootByHost = new WeakMap());
   const restoredShadowRoots = globalThis.__glassPendingShadowRoots;
   if (restoredShadowRoots instanceof Map) {{
     for (const [root, pair] of restoredShadowRoots) {{
@@ -74,6 +80,8 @@
       shadowHostByRoot.set(root, this);
       shadowModeByRoot.set(root, init.mode);
       shadowRootByHost.set(this, root);
+      if (cachedHostCollections && cachedHostCollections.shadowRoots instanceof Map)
+        cachedHostCollections.shadowRoots.set(root, {{ host: this, mode: init.mode }});
       mutationCreatedNodes.set(nodeIndex, root);
       scriptNodeObjects.set(nodeIndex, root);
       pushCommand({{

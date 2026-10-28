@@ -991,6 +991,11 @@ impl NativeDocument {
                 reason: "a Document cannot be transferred with adoptNode".into(),
             });
         }
+        if root_node.shadow_host.is_some() {
+            return Err(NativeEngineError::TargetNotActionable {
+                reason: "a ShadowRoot cannot be transferred with adoptNode".into(),
+            });
+        }
 
         let mut subtree = Vec::new();
         let mut seen = BTreeSet::new();
@@ -1029,6 +1034,9 @@ impl NativeDocument {
             if let Some(content) = node.template_content {
                 pending.push((content, child_depth));
             }
+            if let Some(shadow_root) = node.shadow_root {
+                pending.push((shadow_root, child_depth));
+            }
         }
 
         for source_node_index in &subtree {
@@ -1061,7 +1069,11 @@ impl NativeDocument {
         }
         if identity_by_source.len() != subtree.len() {
             return Err(NativeEngineError::TargetNotActionable {
-                reason: "native node transfer identity mapping does not cover the subtree".into(),
+                reason: format!(
+                    "native node transfer identity mapping covers {} of {} subtree nodes",
+                    identity_by_source.len(),
+                    subtree.len(),
+                ),
             });
         }
         for (temporary_index, node_id) in &self.script_node_ids {
@@ -1175,6 +1187,22 @@ impl NativeDocument {
                 },
                 None => None,
             };
+            node.shadow_root = node
+                .shadow_root
+                .map(|shadow_root| {
+                    target_id(shadow_root).ok_or_else(|| NativeEngineError::TargetNotActionable {
+                        reason: "native shadow root is outside its transferred host subtree".into(),
+                    })
+                })
+                .transpose()?;
+            node.shadow_host = node
+                .shadow_host
+                .map(|shadow_host| {
+                    target_id(shadow_host).ok_or_else(|| NativeEngineError::TargetNotActionable {
+                        reason: "native shadow host is outside its transferred root subtree".into(),
+                    })
+                })
+                .transpose()?;
             moved_nodes.push(node);
         }
 
@@ -1262,6 +1290,9 @@ impl NativeDocument {
             tombstone.children.clear();
             tombstone.template_content = None;
             tombstone.template_host = None;
+            tombstone.shadow_root = None;
+            tombstone.shadow_host = None;
+            tombstone.shadow_mode = None;
             tombstone.kind = NativeNodeKind::DocumentFragment;
             tombstone.state = NativeElementState::default();
         }

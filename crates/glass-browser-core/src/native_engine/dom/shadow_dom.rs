@@ -138,7 +138,7 @@ mod tests {
                       const root = this.attachShadow({ mode: "closed" });
                       const label = document.createElement("span");
                       label.id = "shadow-label";
-                      label.textContent = "SHADOW_TEXT";
+                      label.textContent = "CLOSED_SHADOW_TEXT";
                       root.appendChild(label);
                       this.savedClosedRoot = root;
                     }
@@ -187,9 +187,49 @@ mod tests {
 
         let (visible, truncated) = document.visible_text(1024);
         assert!(!truncated);
-        assert!(visible.contains("SHADOW_TEXT"));
+        assert!(visible.contains("CLOSED_SHADOW_TEXT"));
         assert!(visible.contains("OPEN_SHADOW_TEXT"));
         assert!(!visible.contains("LIGHT_TEXT"));
+
+        let refreshed = runtime
+            .evaluate(
+                r##"(() => {
+                  const host = document.querySelector("x-shadow-fixture");
+                  const root = host.savedClosedRoot;
+                  return [host.shadowRoot === null, root.host === host, root.querySelector("#shadow-label") !== null];
+                })()"##,
+                &document,
+                "fixture://shadow-dom.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("shadow host survives a native snapshot refresh");
+        assert_eq!(refreshed.value, serde_json::json!([true, true, true]));
+
+        let shadow_label = document
+            .find_element_by_id("shadow-label")
+            .expect("shadow child is present in the native tree");
+        document
+            .apply_script_commands(&[NativeScriptCommand::RemoveNode {
+                node_index: shadow_label.index(),
+            }])
+            .expect("native shadow child removal applies");
+        let refreshed_after_removal = runtime
+            .evaluate(
+                r##"(() => {
+                  const root = document.querySelector("x-shadow-fixture").savedClosedRoot;
+                  return [root.querySelector("#shadow-label") === null, root.childNodes.length === 0];
+                })()"##,
+                &document,
+                "fixture://shadow-dom.test/",
+                &NativeOrigin::Opaque,
+                Viewport::default(),
+            )
+            .expect("shadow child removal refreshes the persistent host tree");
+        assert_eq!(
+            refreshed_after_removal.value,
+            serde_json::json!([true, true])
+        );
 
         let roundtripped = NativeDocument::from_content_wire(
             document.to_content_wire(),
@@ -199,7 +239,7 @@ mod tests {
         .expect("shadow ownership survives the document wire");
         let (roundtripped_visible, truncated) = roundtripped.visible_text(1024);
         assert!(!truncated);
-        assert!(roundtripped_visible.contains("SHADOW_TEXT"));
+        assert!(!roundtripped_visible.contains("CLOSED_SHADOW_TEXT"));
         assert!(roundtripped_visible.contains("OPEN_SHADOW_TEXT"));
         assert!(!roundtripped_visible.contains("LIGHT_TEXT"));
     }
@@ -207,7 +247,7 @@ mod tests {
     #[test]
     fn slot_projection_uses_assigned_light_nodes_and_falls_back_when_empty() {
         let mut document = NativeDocument::parse(
-            "<!doctype html><html><body><x-host><span slot='label'>ASSIGNED_TEXT</span></x-host></body></html>",
+            "<!doctype html><html><body><x-host><span id='assigned' slot='label'>ASSIGNED_TEXT</span></x-host></body></html>",
             &NativeEngineLimits::default(),
         )
         .expect("document parses");
@@ -280,5 +320,33 @@ mod tests {
         assert!(text.contains("ASSIGNED_TEXT"));
         assert!(!text.contains("ASSIGNED_FALLBACK_MUST_NOT_RENDER"));
         assert!(text.contains("EMPTY_SLOT_FALLBACK"));
+
+        let assigned = document.find_element_by_id("assigned").unwrap();
+        document
+            .apply_script_commands(&[NativeScriptCommand::SetAttribute {
+                node_index: assigned.index(),
+                name: "slot".into(),
+                value: "unmatched".into(),
+                namespace_uri: None,
+            }])
+            .unwrap();
+        let (after_slot_change, truncated) = document.visible_text(1024);
+        assert!(!truncated);
+        assert!(!after_slot_change.contains("ASSIGNED_TEXT"));
+        assert!(after_slot_change.contains("ASSIGNED_FALLBACK_MUST_NOT_RENDER"));
+        assert!(after_slot_change.contains("EMPTY_SLOT_FALLBACK"));
+
+        document
+            .apply_script_commands(&[NativeScriptCommand::SetAttribute {
+                node_index: assigned.index(),
+                name: "slot".into(),
+                value: "label".into(),
+                namespace_uri: None,
+            }])
+            .unwrap();
+        let (restored, truncated) = document.visible_text(1024);
+        assert!(!truncated);
+        assert!(restored.contains("ASSIGNED_TEXT"));
+        assert!(!restored.contains("ASSIGNED_FALLBACK_MUST_NOT_RENDER"));
     }
 }

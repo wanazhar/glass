@@ -73,7 +73,7 @@ def main():
                 t.visible("Not connected")
                 t.send("hello");t.visible("Provider is not ready");t.visible("Open /login");assert not Endpoint.requests
                 t.dismiss();t.visible("❯ hello");key(t,"\x03");t.idle()
-                t.send("/help");t.visible("Help");t.visible("/login");choose(t,"model");t.visible("Choose provider and model");t.dismiss()
+                t.send("/help");t.visible("Help");key(t,"login");t.visible("/login");key(t,"\x15");choose(t,"model");t.visible("Choose provider and model");t.dismiss()
                 t.send("/login");t.visible("Connect a provider");choose(t,"Custom provider");t.visible("Connection name");field(t,"Test provider")
                 t.visible("Choose the wire API");choose(t,"Responses");t.visible("Base URL");field(t,f"http://127.0.0.1:{server.server_port}/v1")
                 t.visible("Choose authentication");choose(t,"Enter API key");t.visible("API key · hidden")

@@ -81,7 +81,7 @@ jobs:
           --output "$RUNNER_TEMP/glass-native-worker-crash-summary.json"
           --wait-seconds 20
       - name: Upload sanitized macOS native worker crash summary
-        if: runner.os == 'macOS' && failure()
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: macos-native-worker-crash-summary-${{ github.run_id }}

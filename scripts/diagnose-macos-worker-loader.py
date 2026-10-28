@@ -85,17 +85,21 @@ def run_probe(worker: Path) -> dict[str, Any]:
         report["status"] = "launch-error"
     else:
         stderr = result.stderr
-        report["status"] = f"exit-{result.returncode}"
+        report["status"] = (
+            f"signal-{-result.returncode}"
+            if result.returncode < 0
+            else f"exit-{result.returncode}"
+        )
 
     report["capturedBytes"] = min(len(stderr), MAX_CAPTURE_BYTES)
     report["captureTruncated"] = len(stderr) > MAX_CAPTURE_BYTES
+    full_text = stderr.decode("utf-8", errors="replace")
+    report["loaderLineCount"] = len(full_text.splitlines())
     stderr = stderr[-MAX_CAPTURE_BYTES:]
     lines = stderr.decode("utf-8", errors="replace").splitlines()
-    report["loaderLineCount"] = len(lines)
-    text = "\n".join(lines)
     report["errorCategories"] = list(
         dict.fromkeys(
-            label for pattern, label in ERROR_PATTERNS if pattern.search(text)
+            label for pattern, label in ERROR_PATTERNS if pattern.search(full_text)
         )
     )
 

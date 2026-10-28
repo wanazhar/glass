@@ -18,7 +18,7 @@ SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.$<>+-]{1,160}$")
 DENIAL_EVENT = re.compile(
     r"Sandbox:\s*[A-Za-z0-9_.-]+\((\d+)\)\s+deny\([^)]*\)\s+([A-Za-z][A-Za-z0-9*-]*)(?:\s+(.*))?"
 )
-DENIED_PATH = re.compile(r"(?<![A-Za-z0-9])(/[^\x00\s\"'<>),;]+)")
+DENIED_PATH = re.compile(r"(?<![A-Za-z0-9])(/[^\x00\s\"'<>),;]*)")
 IMAGE_PATH = re.compile(
     r"/(?:[^\s:'\"<>]+/)*[^\s:'\"<>]+(?:\.dylib|\.framework(?:/[^\s:'\"<>]+)?)"
 )

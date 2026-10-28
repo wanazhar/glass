@@ -26,6 +26,7 @@ DYLD_REASON_PATTERNS = (
     (re.compile(r"\blibrary not loaded\b", re.IGNORECASE), "Library not loaded"),
     (re.compile(r"\blibrary missing\b", re.IGNORECASE), "Library missing"),
     (re.compile(r"\bsymbol not found\b", re.IGNORECASE), "Symbol not found"),
+    (re.compile(r"\bsymbol missing\b", re.IGNORECASE), "Symbol missing"),
     (re.compile(r"\bimage not found\b", re.IGNORECASE), "Image not found"),
     (re.compile(r"\bcode signature (?:invalid|failure|not valid)\b", re.IGNORECASE), "Code signature invalid"),
     (re.compile(r"\bmissing required architecture\b", re.IGNORECASE), "Missing required architecture"),
@@ -770,6 +771,25 @@ def self_test() -> None:
         assert summary is not None
         assert summary["terminationIndicator"] == "Dependent dylib not found"
         assert "/private/" not in json.dumps(summary)
+
+        missing_symbol = root / "glass-native-content-worker-missing-symbol.ips"
+        missing_symbol.write_text(
+            json.dumps(
+                {
+                    "procName": "glass-native-content-worker",
+                    "termination": {
+                        "namespace": "DYLD",
+                        "code": 4,
+                        "indicator": "Symbol missing: _private_secret_symbol",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary = parse_report(missing_symbol, since=since)
+        assert summary is not None
+        assert summary["terminationIndicator"] == "Symbol missing"
+        assert "private_secret_symbol" not in json.dumps(summary)
 
         path_crash = root / "glass-native-content-worker-path.crash"
         path_crash.write_text(

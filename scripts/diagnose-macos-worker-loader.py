@@ -15,6 +15,9 @@ from typing import Any
 MAX_CAPTURE_BYTES = 32 * 1024
 MAX_IMAGES = 12
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.$<>+-]{1,160}$")
+DENIAL_EVENT = re.compile(
+    r"Sandbox:\s*[A-Za-z0-9_.-]+\((\d+)\)\s+deny\([^)]*\)\s+([A-Za-z][A-Za-z0-9*-]*)"
+)
 IMAGE_PATH = re.compile(
     r"/(?:[^\s:'\"<>]+/)*[^\s:'\"<>]+(?:\.dylib|\.framework(?:/[^\s:'\"<>]+)?)"
 )
@@ -51,15 +54,30 @@ def architectures_for(path: Path) -> list[str]:
     return [token for token in result.stdout.split() if safe_token(token)]
 
 
-def sandbox_profile(binary: Path) -> str:
+def sandbox_profile(binary: Path, *, addition: str | None = None) -> str:
     path = str(binary).replace("\\", "\\\\").replace('"', '\\"')
-    return (
+    profile = (
         '(version 1) (deny default) '
         f'(allow process-exec (literal "{path}")) '
         f'(allow file-read* (subpath "/System") (subpath "/usr") '
         f'(subpath "/Library") (literal "{path}")) '
         '(allow network-outbound) (allow sysctl-read) (allow mach-lookup)'
     )
+    if addition == "file-map-system":
+        profile += (
+            ' (allow file-map-executable (subpath "/System") '
+            '(subpath "/usr") (subpath "/Library") '
+            f'(literal "{path}"))'
+        )
+    elif addition == "file-read-metadata-system":
+        profile += (
+            ' (allow file-read-metadata (subpath "/System") '
+            '(subpath "/usr") (subpath "/Library") '
+            f'(literal "{path}"))'
+        )
+    elif addition is not None:
+        raise ValueError("unsupported diagnostic sandbox rule")
+    return profile
 
 
 def clean_environment(*, dyld_print: bool) -> dict[str, str]:
@@ -82,10 +100,14 @@ def run_launch(
     if worker:
         command.append("--native-content-worker")
     if sandboxed:
+        profile_additions = {
+            "production-plus-file-map": "file-map-system",
+            "production-plus-file-read-metadata": "file-read-metadata-system",
+        }
         profile_text = (
             "(version 1) (allow default)"
             if profile == "permissive-control"
-            else sandbox_profile(binary)
+            else sandbox_profile(binary, addition=profile_additions.get(profile))
         )
         command = [
             "/usr/bin/sandbox-exec",
@@ -93,29 +115,32 @@ def run_launch(
             profile_text,
             *command,
         ]
+    process_id: int | None = None
+    stderr = b""
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             command,
-            input=b"",
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=clean_environment(dyld_print=dyld_print),
-            timeout=10,
-            check=False,
         )
-    except subprocess.TimeoutExpired as error:
-        stderr = error.stderr or b""
-        status = "timeout"
+        process_id = process.pid
+        try:
+            _, stderr = process.communicate(input=b"", timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            _, stderr = process.communicate()
+            status = "timeout"
+        else:
+            return_code = process.returncode
+            status = (
+                f"signal-{-return_code}"
+                if return_code < 0
+                else f"exit-{return_code}"
+            )
     except OSError:
-        stderr = b""
         status = "launch-error"
-    else:
-        stderr = result.stderr
-        status = (
-            f"signal-{-result.returncode}"
-            if result.returncode < 0
-            else f"exit-{result.returncode}"
-        )
 
     report: dict[str, Any] = {
         "binary": binary.name,
@@ -129,6 +154,7 @@ def run_launch(
         "images": [],
         "errorCategories": [],
     }
+    report["_processId"] = process_id
     full_text = stderr.decode("utf-8", errors="replace")
     report["loaderLineCount"] = len(full_text.splitlines())
     stderr = stderr[-MAX_CAPTURE_BYTES:]
@@ -166,6 +192,96 @@ def run_launch(
             break
     report["images"] = images
     return report
+
+
+def sandbox_denials(process_cases: dict[int, str]) -> dict[str, Any]:
+    if not process_cases:
+        return {"status": "unavailable", "cases": {}}
+    pid_predicate = " OR ".join(
+        f"processID == {process_id}" for process_id in sorted(process_cases)
+    )
+    predicate = (
+        'subsystem == "com.apple.sandbox.reporting" '
+        'AND category == "violation" '
+        f"AND ({pid_predicate})"
+    )
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/log",
+                "show",
+                "--style",
+                "json",
+                "--last",
+                "2m",
+                "--predicate",
+                predicate,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=12,
+            check=False,
+            text=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {"status": "unavailable", "cases": {}}
+    if result.returncode != 0:
+        return {"status": "unavailable", "cases": {}}
+    try:
+        events = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {"status": "unavailable", "cases": {}}
+
+    operation_allowlist = {
+        "file-read-data",
+        "file-read*",
+        "file-read-metadata",
+        "file-map-executable",
+        "file-test-existence",
+        "file-ioctl",
+        "process-exec",
+        "process-exec*",
+        "process-fork",
+        "process-info",
+        "process-info*",
+        "mach-lookup",
+        "mach-register",
+        "mach-task-name",
+        "network-outbound",
+        "sysctl-read",
+        "sysctl-write",
+        "system-socket",
+        "ipc-posix-sem",
+        "ipc-posix-shm-read-data",
+        "ipc-posix-shm-write-create",
+        "signal",
+        "iokit-open",
+    }
+    counts: dict[str, dict[str, int]] = {name: {} for name in process_cases.values()}
+    matched = 0
+    if isinstance(events, dict):
+        events = events.get("events", [events])
+    for event in events if isinstance(events, list) else []:
+        if not isinstance(event, dict):
+            continue
+        message = event.get("eventMessage")
+        if not isinstance(message, str):
+            continue
+        match = DENIAL_EVENT.search(message)
+        if not match:
+            continue
+        case_name = process_cases.get(int(match.group(1)))
+        if case_name is None:
+            continue
+        operation = match.group(2)
+        if operation not in operation_allowlist:
+            operation = "other"
+        counts[case_name][operation] = counts[case_name].get(operation, 0) + 1
+        matched += 1
+    return {
+        "status": "available" if matched else "no-matching-events",
+        "cases": counts,
+    }
 
 
 def signing_and_quarantine(worker: Path) -> dict[str, str]:
@@ -215,7 +331,50 @@ def run_probe(worker: Path) -> dict[str, Any]:
             False,
             "permissive-control",
         ),
+        (
+            "known-good-sandboxed-production-plus-file-map",
+            Path("/usr/bin/true"),
+            True,
+            False,
+            False,
+            "production-plus-file-map",
+        ),
+        (
+            "worker-sandboxed-production-plus-file-map",
+            worker,
+            True,
+            False,
+            True,
+            "production-plus-file-map",
+        ),
+        (
+            "known-good-sandboxed-production-plus-file-read-metadata",
+            Path("/usr/bin/true"),
+            True,
+            False,
+            False,
+            "production-plus-file-read-metadata",
+        ),
     )
+    case_reports: list[dict[str, Any]] = []
+    process_cases: dict[int, str] = {}
+    for case in cases:
+        launch_report = run_launch(
+            case[1],
+            sandboxed=case[2],
+            dyld_print=case[3],
+            worker=case[4],
+            profile=case[5] if len(case) > 5 else "production",
+        )
+        process_id = launch_report.pop("_processId", None)
+        if isinstance(process_id, int):
+            process_cases[process_id] = case[0]
+        case_reports.append({"name": case[0], **launch_report})
+    denial_summary = sandbox_denials(process_cases)
+    for case_report in case_reports:
+        case_report["sandboxDeniedOperations"] = denial_summary["cases"].get(
+            case_report["name"], {}
+        )
     return {
         "probe": "macos-native-worker-launch-matrix",
         "hostArchitecture": host_architecture,
@@ -226,19 +385,8 @@ def run_probe(worker: Path) -> dict[str, Any]:
             else None
         ),
         **signing_and_quarantine(worker),
-        "cases": [
-            {
-                "name": case[0],
-                **run_launch(
-                    case[1],
-                    sandboxed=case[2],
-                    dyld_print=case[3],
-                    worker=case[4],
-                    profile=case[5] if len(case) > 5 else "production",
-                ),
-            }
-            for case in cases
-        ],
+        "sandboxDenialLogStatus": denial_summary["status"],
+        "cases": case_reports,
     }
 
 

@@ -3558,7 +3558,7 @@ fn connect_desktop_context(status: Option<&serde_json::Value>, read_only: bool) 
     let input = if read_only {
         "Plan/read-only mode offers no desktop input tool."
     } else {
-        "Use `desktop_act` for revision-bound accessible targets; it rejects stale IDs and respects the lease. Call `desktop_observe` again to verify. Use `desktop_input` only as a fallback for controls missing from accessibility and only when the lease is `agent`; the human changes the lease in Connect, and the agent cannot take it implicitly."
+        "Use `desktop_act` for revision-bound accessible targets; it rejects stale IDs and respects the lease. Its result includes a fresh observation when available; verify the expected UI change there before continuing. Use `desktop_input` only as a fallback for controls missing from accessibility and only when the lease is `agent`; the human changes the lease in Connect, and the agent cannot take it implicitly."
     };
     format!(
         "Connect manages a separate desktop shared with the human. {state} Available tools this request: {tool_names}. `desktop_observe` returns a compact bounded tree with revision-bound targets; password values are never returned. `desktop_screenshot` saves a generated artifact under `.gc-artifacts/desktop`; it does not edit project files. {input} These tools exist only while Connect manages a desktop; do not assume desktop access in standalone Core or other hosts."

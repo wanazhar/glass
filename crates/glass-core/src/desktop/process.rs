@@ -11,6 +11,10 @@ use std::{
 
 use super::{Frames, Lease, ManagedSession};
 
+// This reduces measured 1280x800 UI frame size by about 20% versus q:v 6
+// while retaining roughly 31 dB PSNR on a real managed desktop capture.
+const JPEG_QUALITY: &str = "8";
+
 pub(super) fn start_session(workspace: &Path, root: &Path) -> Result<ManagedSession, String> {
     for tool in [
         "Xvfb",
@@ -179,7 +183,7 @@ pub(super) fn start_session(workspace: &Path, root: &Path) -> Result<ManagedSess
             "-c:v",
             "mjpeg",
             "-q:v",
-            "6",
+            JPEG_QUALITY,
             "-f",
             "image2pipe",
             "pipe:1",

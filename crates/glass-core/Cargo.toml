@@ -29,7 +29,7 @@ ring = "0.17"
 url = "2"
 fs2 = "0.4"
 atspi = { version = "=0.30.0", default-features = false, features = ["proxies", "tokio", "zbus"] }
-tokio = { version = "1", features = ["net", "rt", "time"] }
+tokio = { version = "1", features = ["macros", "net", "rt", "time"] }
 
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 

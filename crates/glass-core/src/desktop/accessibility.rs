@@ -4,7 +4,7 @@ use std::{
 };
 
 use atspi::{
-    Interface, ObjectRefOwned, State, StateSet,
+    Interface, ObjectRefOwned, RelationType, State, StateSet,
     proxy::accessible::AccessibleProxy,
     proxy::{accessible::ObjectRefExt, proxy_ext::ProxyExt},
     zbus::{Proxy, connection::Builder},
@@ -17,7 +17,7 @@ const MAX_NAME_CHARS: usize = 120;
 const MAX_VALUE_CHARS: usize = 160;
 const MAX_ACTIONS: usize = 8;
 const DBUS_CALL_TIMEOUT: Duration = Duration::from_millis(500);
-const OBSERVATION_BUDGET: Duration = Duration::from_secs(2);
+const OBSERVATION_BUDGET: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug)]
 pub(super) struct Target {
@@ -38,6 +38,7 @@ pub(super) fn observe(
     session_bus_address: &str,
     session_id: &str,
     revision: u64,
+    query: Option<&str>,
 ) -> Result<Snapshot, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -47,10 +48,10 @@ pub(super) fn observe(
     runtime.block_on(async {
         tokio::time::timeout(
             OBSERVATION_BUDGET,
-            observe_async(session_bus_address, session_id, revision),
+            observe_async(session_bus_address, session_id, revision, query),
         )
         .await
-        .map_err(|_| "Accessibility observation exceeded its 2 second limit".to_owned())?
+        .map_err(|_| "Accessibility observation exceeded its 3 second limit".to_owned())?
     })
 }
 
@@ -58,7 +59,9 @@ async fn observe_async(
     session_bus_address: &str,
     session_id: &str,
     revision: u64,
+    query: Option<&str>,
 ) -> Result<Snapshot, String> {
+    let query_terms = query.map(validate_query).transpose()?;
     validate_private_bus_address(session_bus_address)?;
     let session_bus = Builder::address(session_bus_address)
         .map_err(accessibility_error)?
@@ -96,15 +99,17 @@ async fn observe_async(
     let application_roots = root.get_children().await.map_err(accessibility_error)?;
     let mut pending = VecDeque::new();
     for object in application_roots {
-        pending.push_back((object, 0usize));
+        pending.push_back((object, 0usize, None::<String>, None::<Value>));
     }
 
     let mut nodes = Vec::new();
+    let mut applications = Vec::new();
+    let mut focused_window = None;
     let mut targets = HashMap::new();
     let mut visited = 0usize;
     let mut truncated = false;
     let started = Instant::now();
-    while let Some((object, depth)) = pending.pop_front() {
+    while let Some((object, depth, parent_application, parent_window)) = pending.pop_front() {
         if visited >= MAX_NODES || started.elapsed() >= OBSERVATION_BUDGET {
             truncated = true;
             break;
@@ -117,21 +122,23 @@ async fn observe_async(
                 continue;
             }
         };
-        let role = accessible
-            .get_role_name()
-            .await
-            .unwrap_or_else(|_| "unknown".to_owned());
-        let interfaces = match accessible.get_interfaces().await {
+        // These properties are independent D-Bus calls on one object. Run
+        // them together so tree latency is bounded by the slowest response,
+        // rather than paying three round trips for every node.
+        let (role_result, interfaces_result, states_result) = tokio::join!(
+            accessible.get_role_name(),
+            accessible.get_interfaces(),
+            accessible.get_state(),
+        );
+        let role = role_result.unwrap_or_else(|_| "unknown".to_owned());
+        let interfaces = match interfaces_result {
             Ok(interfaces) => interfaces,
             Err(_) => {
                 truncated = true;
                 continue;
             }
         };
-        let states = accessible
-            .get_state()
-            .await
-            .unwrap_or_else(|_| StateSet::empty());
+        let states = states_result.unwrap_or_else(|_| StateSet::empty());
         let role_lower = role.to_ascii_lowercase();
         let is_password = role_lower.contains("password");
         let is_window = matches!(
@@ -142,7 +149,22 @@ async fn observe_async(
         let supports_focus = interfaces.contains(Interface::Component);
         let supports_text = interfaces.contains(Interface::EditableText);
         let visible = states.contains(State::Visible) || states.contains(State::Showing);
-        let actions = if supports_click {
+        let role_can_activate = matches!(
+            role_lower.as_str(),
+            "button"
+                | "push button"
+                | "toggle button"
+                | "check box"
+                | "radio button"
+                | "link"
+                | "menu item"
+                | "menu button"
+                | "list item"
+                | "tab"
+                | "combo box"
+                | "tree item"
+        );
+        let actions = if supports_click && role_can_activate {
             match accessible.proxies().await {
                 Ok(proxies) => match proxies.action().await {
                     Ok(proxy) => proxy.get_actions().await.unwrap_or_default(),
@@ -162,15 +184,46 @@ async fn observe_async(
         let name = if is_password {
             "Protected field".to_owned()
         } else {
-            accessible
+            let name = accessible
                 .name()
                 .await
                 .unwrap_or_default()
                 .chars()
                 .take(MAX_NAME_CHARS)
-                .collect::<String>()
+                .collect::<String>();
+            if name.trim().is_empty() && (supports_text || role_can_activate || is_window) {
+                accessible_context_name(&accessible, &accessibility).await
+            } else {
+                name
+            }
         };
         let node_is_relevant = depth == 0 || is_window || (visible && is_actionable);
+        let application = if depth == 0 {
+            let application_name = (!name.trim().is_empty()).then(|| name.clone());
+            if let Some(name) = application_name.as_ref()
+                && applications.len() < 12
+                && !applications.contains(name)
+            {
+                applications.push(name.clone());
+            }
+            application_name
+        } else {
+            parent_application
+        };
+        let window = if is_window {
+            Some(json!({
+                "role": role.clone(),
+                "name": name.clone(),
+                "application": application.clone(),
+            }))
+        } else {
+            parent_window
+        };
+        // Window-manager helpers can themselves expose a window role and a
+        // focused state. Prefer a focused control's actual owning app window.
+        if states.contains(State::Focused) && !is_window && focused_window.is_none() {
+            focused_window = window.clone();
+        }
         if node_is_relevant {
             let target_id = is_actionable.then(|| {
                 format!(
@@ -192,7 +245,7 @@ async fn observe_async(
                     },
                 );
             }
-            let value = if supports_text && !is_password {
+            let value = if supports_text && !is_password && query.is_none() {
                 read_text_value(&accessible, MAX_VALUE_CHARS).await
             } else {
                 None
@@ -202,6 +255,7 @@ async fn observe_async(
                 "depth": depth,
                 "role": role,
                 "name": name,
+                "application": application.clone(),
                 "states": state_names(states),
                 "actions": action_names,
                 "value": value,
@@ -211,11 +265,15 @@ async fn observe_async(
         if depth < MAX_DEPTH {
             match accessible.get_children().await {
                 Ok(children) => {
-                    for child in children.into_iter().rev() {
-                        if !child.is_null() {
-                            pending.push_front((child, depth + 1));
-                        }
-                    }
+                    let children = children
+                        .into_iter()
+                        .filter(|child| !child.is_null())
+                        .map(|child| (child, depth + 1, application.clone(), window.clone()))
+                        .collect::<Vec<_>>();
+                    // Walk breadth-first so every application root gets a
+                    // chance to contribute its foreground window before a
+                    // large background tree consumes the observation budget.
+                    pending.extend(children);
                 }
                 Err(_) => truncated = true,
             }
@@ -224,16 +282,91 @@ async fn observe_async(
         }
     }
 
+    let matched_targets = if let Some(terms) = query_terms.as_ref() {
+        nodes.retain(|node| query_matches(node, terms));
+        nodes
+            .iter()
+            .filter_map(|node| node["targetId"].as_str().map(ToOwned::to_owned))
+            .collect::<std::collections::HashSet<_>>()
+    } else {
+        targets.keys().cloned().collect()
+    };
+    targets.retain(|target_id, _| matched_targets.contains(target_id));
+
     Ok(Snapshot {
         value: json!({
             "sessionId": session_id,
             "revision": revision,
+            "query": query,
+            "applications": applications,
+            "focusedWindow": focused_window,
             "truncated": truncated || !pending.is_empty(),
             "nodesVisited": visited,
             "nodes": nodes,
         }),
         targets,
     })
+}
+
+async fn accessible_context_name(
+    accessible: &AccessibleProxy<'_>,
+    accessibility: &atspi::zbus::Connection,
+) -> String {
+    if let Ok(relations) = accessible.get_relation_set().await {
+        for (relation, labels) in relations {
+            if relation != RelationType::LabelledBy {
+                continue;
+            }
+            for label in labels {
+                let Ok(label) = label.as_accessible_proxy(accessibility).await else {
+                    continue;
+                };
+                let name = label.name().await.unwrap_or_default();
+                if !name.trim().is_empty() {
+                    return name.chars().take(MAX_NAME_CHARS).collect();
+                }
+            }
+        }
+    }
+    let description = accessible.description().await.unwrap_or_default();
+    if !description.trim().is_empty() {
+        return description.chars().take(MAX_NAME_CHARS).collect();
+    }
+    for (key, value) in accessible.get_attributes().await.unwrap_or_default() {
+        if matches!(
+            key.to_ascii_lowercase().as_str(),
+            "placeholder" | "placeholder-text" | "label" | "accessible-name"
+        ) && !value.trim().is_empty()
+        {
+            return value.chars().take(MAX_NAME_CHARS).collect();
+        }
+    }
+    String::new()
+}
+
+fn validate_query(query: &str) -> Result<Vec<String>, String> {
+    let query = query.trim();
+    if query.is_empty()
+        || query.len() > 120
+        || query.chars().any(char::is_control)
+        || query.split_whitespace().count() > 8
+    {
+        return Err("query must contain 1–8 words and be at most 120 characters".into());
+    }
+    Ok(query.split_whitespace().map(str::to_lowercase).collect())
+}
+
+fn query_matches(node: &Value, terms: &[String]) -> bool {
+    let mut fields = vec![
+        node["role"].as_str().unwrap_or_default(),
+        node["name"].as_str().unwrap_or_default(),
+        node["application"].as_str().unwrap_or_default(),
+    ];
+    if let Some(actions) = node["actions"].as_array() {
+        fields.extend(actions.iter().filter_map(Value::as_str));
+    }
+    let haystack = fields.join(" ").to_lowercase();
+    terms.iter().all(|term| haystack.contains(term))
 }
 
 async fn read_text_value(
@@ -357,7 +490,7 @@ async fn act_async(
                 return Err("The target refused its accessibility action".to_owned());
             }
             Ok(
-                json!({"effect":"performed","verified":false,"action":actions[index].name,"followUp":"Call desktop_observe to verify the resulting UI state."}),
+                json!({"effect":"performed","verified":false,"action":actions[index].name,"followUp":"Check the fresh observation for the expected UI state before continuing."}),
             )
         }
         "focus" => {
@@ -372,7 +505,7 @@ async fn act_async(
             let states = accessible.get_state().await.map_err(accessibility_error)?;
             let verified = states.contains(State::Focused);
             Ok(
-                json!({"effect":"performed","verified":verified,"action":"focus","followUp":"Call desktop_observe after the focus change."}),
+                json!({"effect":"performed","verified":verified,"action":"focus","followUp":"Check the fresh observation for the focused state before continuing."}),
             )
         }
         "set_text" => {
@@ -410,7 +543,7 @@ async fn act_async(
                 "verified":verified,
                 "value":read_back,
                 "protected":target.is_password,
-                "followUp":"Call desktop_observe to refresh target identifiers."
+                "followUp":"Check the fresh observation; target IDs have been refreshed."
             }))
         }
         _ => Err("action must be click, focus, or set_text".to_owned()),
@@ -431,4 +564,31 @@ fn validate_private_bus_address(address: &str) -> Result<(), String> {
 
 fn accessibility_error(error: impl std::fmt::Display) -> String {
     format!("Accessibility interface unavailable: {error}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{query_matches, validate_query};
+    use serde_json::json;
+
+    #[test]
+    fn accessibility_query_is_bounded_and_searches_semantics_not_values() {
+        assert_eq!(
+            validate_query("  Save button ").unwrap(),
+            ["save", "button"]
+        );
+        assert!(validate_query("").is_err());
+        assert!(validate_query("one two three four five six seven eight nine").is_err());
+        assert!(validate_query(&"x".repeat(121)).is_err());
+
+        let button = json!({
+            "role":"push button",
+            "name":"Save",
+            "application":"Zenity",
+            "actions":["click"],
+            "value":"secret text must not be searchable"
+        });
+        assert!(query_matches(&button, &["save".into(), "click".into()]));
+        assert!(!query_matches(&button, &["secret".into()]));
+    }
 }

@@ -493,7 +493,7 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
     let mut tools = vec![
         (
             "desktop_status".to_string(),
-            "Read the live status of the Connect-managed desktop shared with the human. Reports its exact display, workspace, frame freshness, and input lease. Does not start or stop a desktop.".to_string(),
+            "Read the live status of the Connect-managed desktop shared with the human. Reports its exact display, workspace, frame freshness, current frame timestamp (frameTimeMs), and input lease. Does not start or stop a desktop.".to_string(),
             serde_json::json!({"type":"object","properties":{},"additionalProperties":false}).to_string(),
         ),
         (
@@ -503,10 +503,13 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
         ),
         (
             "desktop_observe".to_string(),
-            "Read a compact, bounded accessibility snapshot of visible windows and controls. Returns roles, names, states, supported actions, and revision-bound target IDs. Call again after an action; target IDs from older revisions are rejected. Password fields are identified without returning their values.".to_string(),
+            "Read a compact, bounded accessibility snapshot of visible apps, the focused window, and controls. Optionally search names, roles, and supported actions with a short query to narrow a large UI. Returns revision-bound target IDs; acting refreshes the snapshot and returns fresh target IDs. Password fields are identified without returning their values.".to_string(),
             serde_json::json!({
                 "type":"object",
-                "properties":{"sessionId":{"type":"string","maxLength":64}},
+                "properties":{
+                    "sessionId":{"type":"string","maxLength":64},
+                    "query":{"type":"string","maxLength":120,"description":"Optional 1–8 word search across app names, control names, roles, and supported actions. Does not search editable field contents."}
+                },
                 "additionalProperties":false
             }).to_string(),
         ),
@@ -514,7 +517,7 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
     if include_input {
         tools.push((
             "desktop_act".to_string(),
-            "Act on one target from the latest desktop_observe snapshot using its exact targetId, sessionId, and revision. Supports accessible click, focus, and bounded text replacement; rejects stale IDs and respects the human/agent control lease. Call desktop_observe again to verify the result. If accessibility does not support an action, use desktop_screenshot and explicit desktop_input coordinates only when needed.".to_string(),
+            "Act on one target from the latest desktop_observe snapshot using its exact targetId, sessionId, and revision. Supports accessible click, focus, and bounded text replacement; rejects stale IDs and respects the human/agent control lease. The result includes a fresh bounded accessibility snapshot with new target IDs when available; verify the expected UI change before continuing. If accessibility does not support an action, use desktop_screenshot and explicit desktop_input coordinates only when needed.".to_string(),
             serde_json::json!({
                 "type":"object","additionalProperties":false,"required":["sessionId","revision","targetId","action"],
                 "properties":{
@@ -529,21 +532,24 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
         ));
         tools.push((
             "desktop_input".to_string(),
-            "Fallback for custom-drawn surfaces when desktop_observe exposes no suitable target. Sends one bounded raw input event to the same Connect desktop and is rejected while the human holds the control lease. Prefer desktop_act on accessible targets. Pointer x/y use normalized 0..1 coordinates, scroll deltas use browser pixels, and text is printable ASCII up to 512 bytes.".to_string(),
+            "Fallback for custom-drawn surfaces when desktop_observe exposes no suitable target. Sends one bounded raw input event to the same Connect desktop and is rejected while the human holds the control lease. Prefer desktop_act on accessible targets; for raw pointer interaction, use one `pointer-click` with button and normalized x/y instead of separate down/up events. Pointer x/y use normalized 0..1 coordinates, scroll deltas use browser pixels, and text accepts up to 512 UTF-8 bytes with newline and tab allowed; other control characters are rejected.".to_string(),
             serde_json::json!({
                 "type":"object","additionalProperties":false,"required":["action"],
                 "properties":{
-                    "action":{"type":"string","enum":["pointer-move","pointer-button","key","text","scroll"]},
+                    "action":{"type":"string","enum":["pointer-move","pointer-button","pointer-click","key","text","scroll"]},
                     "x":{"type":"number","minimum":0,"maximum":1},
                     "y":{"type":"number","minimum":0,"maximum":1},
                     "button":{"type":"string","enum":["left","middle","right"]},
                     "pressed":{"type":"boolean"},
                     "key":{"type":"string","maxLength":16},
-                    "text":{"type":"string","maxLength":512},
+                    "text":{"type":"string","maxLength":512,"description":"At most 512 UTF-8 bytes; newline and tab are allowed, other control characters are rejected."},
                     "deltaX":{"type":"number","minimum":-800,"maximum":800},
                     "deltaY":{"type":"number","minimum":-800,"maximum":800}
                 }
-            }).to_string(),
+            ,"allOf":[
+                {"if":{"properties":{"action":{"const":"pointer-click"}}},"then":{"required":["x","y","button"]}},
+                {"if":{"properties":{"action":{"const":"pointer-button"}}},"then":{"required":["button","pressed"]}}
+            ]}).to_string(),
         ));
     }
     tools
@@ -683,10 +689,17 @@ mod tests {
             vec!["desktop_status", "desktop_screenshot", "desktop_observe"]
         );
         assert_eq!(full.len(), 5);
+        assert!(full[0].1.contains("frameTimeMs"));
         let action: Value = serde_json::from_str(&full[3].2).unwrap();
         assert_eq!(action["properties"]["action"]["enum"][0], "click");
         let input: Value = serde_json::from_str(&full[4].2).unwrap();
         assert_eq!(input["properties"]["action"]["enum"][0], "pointer-move");
+        assert!(
+            input["properties"]["action"]["enum"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String("pointer-click".into()))
+        );
         assert_eq!(input["properties"]["deltaX"]["maximum"], 800);
     }
 

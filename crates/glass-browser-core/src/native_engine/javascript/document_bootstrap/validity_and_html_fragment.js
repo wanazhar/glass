@@ -520,24 +520,51 @@
     if (element.tagName === "SOURCE")
       installSharedStringAttribute(prototype, "media", "media");
     if (element.tagName === "IMG") {{
+      if (typeof state.imageComplete === "function") {{
+        Object.defineProperty(element, "__glassImageState", {{
+          enumerable: false,
+          configurable: false,
+          value: state,
+        }});
+      }}
       defineSharedSpecialAttribute(prototype, "complete", {{
         enumerable: true, configurable: true,
         get() {{
+          const imageState = this.__glassImageState;
+          if (imageState && typeof imageState.imageComplete === "function")
+            return Boolean(imageState.imageComplete());
           const entry = this.__glassEntry;
           return entry.imageComplete === undefined ? !this.hasAttribute("src") : Boolean(entry.imageComplete);
         }},
       }});
       defineSharedSpecialAttribute(prototype, "naturalWidth", {{
         enumerable: true, configurable: true,
-        get() {{ return Number(this.__glassEntry.imageNaturalWidth) || 0; }},
+        get() {{
+          const imageState = this.__glassImageState;
+          return typeof imageState?.imageNaturalWidth === "function"
+            ? Number(imageState.imageNaturalWidth()) || 0
+            : Number(this.__glassEntry.imageNaturalWidth) || 0;
+        }},
       }});
       defineSharedSpecialAttribute(prototype, "naturalHeight", {{
         enumerable: true, configurable: true,
-        get() {{ return Number(this.__glassEntry.imageNaturalHeight) || 0; }},
+        get() {{
+          const imageState = this.__glassImageState;
+          return typeof imageState?.imageNaturalHeight === "function"
+            ? Number(imageState.imageNaturalHeight()) || 0
+            : Number(this.__glassEntry.imageNaturalHeight) || 0;
+        }},
       }});
       defineSharedSpecialAttribute(prototype, "currentSrc", {{
         enumerable: true, configurable: true,
         get() {{
+          const imageState = this.__glassImageState;
+          if (imageState && typeof imageState.imageCurrentSrc === "function") {{
+            const selected = String(imageState.imageCurrentSrc() || "");
+            const value = selected || this.getAttribute("src");
+            if (value === null || value === "") return "";
+            try {{ return new URLNative(value, effectiveDocumentBaseUrl()).href; }} catch (_error) {{ return value; }}
+          }}
           const entry = this.__glassEntry;
           const selected = String(entry.imageCurrentSrc || "");
           const value = selected || this.getAttribute("src");

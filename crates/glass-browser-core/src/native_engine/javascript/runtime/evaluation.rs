@@ -800,7 +800,11 @@ impl NativeJavaScriptRuntime {
                 *cached_snapshot = Some(snapshot);
             }
             if let Ok(mut key) = self.host_view_cache_key.lock() {
-                *key = Some(host_state_cache_key);
+                *key = if page_events.frame_script_commands.is_empty() {
+                    Some(host_state_cache_key)
+                } else {
+                    None
+                };
             }
             dispatch_window_proxy_updates(&ctx, &proxy_updates)?;
             dispatch_page_event_batch(ctx.clone(), page_events)?;
@@ -996,8 +1000,13 @@ impl NativeJavaScriptRuntime {
             let commands = read_script_commands(ctx.clone())?;
             if let Ok(mut cached_snapshot) = self.host_view_snapshot.lock()
                 && let Some(snapshot) = cached_snapshot.as_mut()
-                && !update_cached_host_snapshot_from_commands(snapshot, &commands)
+                && (!page_events.frame_script_commands.is_empty()
+                    || !update_cached_host_snapshot_from_commands(snapshot, &commands))
             {
+                // Frame-script commands are queued by `__glassQueueNativeCommands`
+                // without mutating the adopted wrapper in this realm. Treating
+                // them as locally reflected would let the Rust cache advance
+                // while JS keeps a stale collection entry.
                 *cached_snapshot = None;
             }
             let mut document_commands = Vec::with_capacity(commands.len());

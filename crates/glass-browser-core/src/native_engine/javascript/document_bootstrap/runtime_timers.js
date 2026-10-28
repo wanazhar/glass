@@ -39,7 +39,11 @@
     }}
     if (cachedHostCollections && Array.isArray(cachedHostCollections.elements)) {{
       for (const element of cachedHostCollections.elements) {{
-        if (element && typeof element.__glassReleaseHostSnapshot === "function")
+        // Detached DOM nodes can remain observable through page references
+        // after adoption/removal. They will not be refreshed from the next
+        // host tree, so keep their current host entry alive.
+        if (element && element.isConnected
+            && typeof element.__glassReleaseHostSnapshot === "function")
           element.__glassReleaseHostSnapshot();
       }}
     }}

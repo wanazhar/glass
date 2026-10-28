@@ -62,6 +62,7 @@ def run_probe(worker: Path) -> dict[str, Any]:
         "binary": worker.name,
         "status": "unknown",
         "capturedBytes": 0,
+        "captureTruncated": False,
         "loaderLineCount": 0,
         "images": [],
         "errorCategories": [],
@@ -86,8 +87,9 @@ def run_probe(worker: Path) -> dict[str, Any]:
         stderr = result.stderr
         report["status"] = f"exit-{result.returncode}"
 
-    stderr = stderr[:MAX_CAPTURE_BYTES]
-    report["capturedBytes"] = len(stderr)
+    report["capturedBytes"] = min(len(stderr), MAX_CAPTURE_BYTES)
+    report["captureTruncated"] = len(stderr) > MAX_CAPTURE_BYTES
+    stderr = stderr[-MAX_CAPTURE_BYTES:]
     lines = stderr.decode("utf-8", errors="replace").splitlines()
     report["loaderLineCount"] = len(lines)
     text = "\n".join(lines)

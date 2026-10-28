@@ -407,8 +407,14 @@ async fn native_async_http_history_traversal_reloads_through_content_process() {
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_script_exposes_same_document_history_api() {
+#[test]
+fn native_content_process_script_exposes_same_document_history_api() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_script_exposes_same_document_history_api_inner());
+    });
+}
+
+async fn native_content_process_script_exposes_same_document_history_api_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1546,8 +1552,17 @@ async fn native_content_process_navigate_to_blocks_link_and_location_navigation_
     engine.close_async().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_propagates_dynamic_navigate_to_to_parent_navigation_owner() {
+#[test]
+fn native_content_process_propagates_dynamic_navigate_to_to_parent_navigation_owner() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_propagates_dynamic_navigate_to_to_parent_navigation_owner_inner(
+            ),
+        );
+    });
+}
+
+async fn native_content_process_propagates_dynamic_navigate_to_to_parent_navigation_owner_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

@@ -22,6 +22,41 @@ mod text;
 pub(in crate::native_engine) const MAX_LAYOUT_TEXT_WIDTH_CACHE_ENTRIES: usize = 4096;
 pub(in crate::native_engine) const MAX_LAYOUT_TEXT_WIDTH_CACHE_TEXT_BYTES: usize = 128;
 
+static NATIVE_LAYOUT_DIAGNOSTIC_SCOPES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+fn begin_layout_diagnostic_stage(
+    name: &'static str,
+    depth: usize,
+    kind: &'static str,
+) -> Option<crate::native_engine::content_process::ContentLoadStage> {
+    if !crate::native_engine::content_process::runtime_diagnostic_trace_enabled()
+        || NATIVE_LAYOUT_DIAGNOSTIC_SCOPES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            >= 2048
+    {
+        return None;
+    }
+    Some(
+        crate::native_engine::content_process::ContentLoadStage::begin_with_resource(
+            0,
+            name,
+            Some(depth),
+            Some(kind),
+        ),
+    )
+}
+
+fn layout_display_kind(display: DisplayValue) -> &'static str {
+    match display {
+        DisplayValue::Block => "block",
+        DisplayValue::Flex => "flex",
+        DisplayValue::Grid => "grid",
+        DisplayValue::Contents => "contents",
+        DisplayValue::Inline | DisplayValue::Auto | DisplayValue::Other => "inline",
+        DisplayValue::None => "none",
+    }
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(in crate::native_engine) struct NativeTextWidthCacheKey {
     font_family: NativeFontFamilyList,
@@ -315,11 +350,20 @@ impl<'a> LayoutBuilder<'a> {
         depth: usize,
         containing_block: PositionedContainingBlock,
     ) {
+        let parent_kind = self
+            .document
+            .node(parent)
+            .and_then(|node| node.element_name())
+            .map(|_| layout_display_kind(self.effective_display(parent)))
+            .unwrap_or("document");
+        let diagnostic_stage =
+            begin_layout_diagnostic_stage("native_layout_process_children", depth, parent_kind);
         let children = self
             .document
             .node(parent)
             .map(|node| node.children().to_vec())
             .unwrap_or_default();
+        let child_count = children.len();
         let mut positioned_children = Vec::new();
         for child in children {
             let Some(node) = self.document.node(child) else {
@@ -377,6 +421,11 @@ impl<'a> LayoutBuilder<'a> {
                         DisplayValue::Block | DisplayValue::Flex | DisplayValue::Grid => {
                             self.flush_line(flow);
                             let margin = self.document.computed_style_for_layout(child).margin();
+                            let element_stage = begin_layout_diagnostic_stage(
+                                "native_layout_element",
+                                depth,
+                                layout_display_kind(display),
+                            );
                             let size = self.layout_element(
                                 child,
                                 flow.start_x.saturating_add(margin.left()),
@@ -384,6 +433,9 @@ impl<'a> LayoutBuilder<'a> {
                                 flow.available_width.saturating_sub(margin.horizontal()),
                                 depth,
                             );
+                            if let Some(stage) = element_stage {
+                                stage.finish(None);
+                            }
                             flow.max_right = flow.max_right.max(
                                 flow.start_x
                                     .saturating_add(margin.left())
@@ -397,6 +449,11 @@ impl<'a> LayoutBuilder<'a> {
                             let margin = style.margin();
                             let available_width =
                                 flow.available_width.saturating_sub(margin.horizontal());
+                            let intrinsic_stage = begin_layout_diagnostic_stage(
+                                "native_layout_inline_intrinsic_width",
+                                depth,
+                                "inline",
+                            );
                             let candidate_width = self.outer_width(
                                 child,
                                 style,
@@ -404,6 +461,9 @@ impl<'a> LayoutBuilder<'a> {
                                 available_width,
                                 !self.explicit_width_can_overflow(child),
                             );
+                            if let Some(stage) = intrinsic_stage {
+                                stage.finish(None);
+                            }
                             let candidate_width =
                                 candidate_width.saturating_add(margin.horizontal());
                             let separator_width =
@@ -419,6 +479,11 @@ impl<'a> LayoutBuilder<'a> {
                             }
                             let box_start = self.boxes.len();
                             let text_start = self.text_runs.len();
+                            let element_stage = begin_layout_diagnostic_stage(
+                                "native_layout_element",
+                                depth,
+                                "inline",
+                            );
                             let size = self.layout_element(
                                 child,
                                 flow.x.saturating_add(margin.left()),
@@ -426,6 +491,9 @@ impl<'a> LayoutBuilder<'a> {
                                 available_width,
                                 depth,
                             );
+                            if let Some(stage) = element_stage {
+                                stage.finish(None);
+                            }
                             if flow
                                 .place_inline(
                                     size.width.saturating_add(margin.horizontal()),
@@ -448,6 +516,9 @@ impl<'a> LayoutBuilder<'a> {
             }
         }
         self.layout_positioned_children(positioned_children, containing_block, depth);
+        if let Some(stage) = diagnostic_stage {
+            stage.finish(Some(child_count));
+        }
     }
 
     fn layout_element(

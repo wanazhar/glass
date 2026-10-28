@@ -591,7 +591,7 @@
       const mediaCurrentSource = () => {{
         const selected = mediaState().currentSrc || mediaSelectedSource();
         if (!selected) return "";
-        try {{ return new URLNative(selected, baseUrl).href; }} catch (_error) {{ return selected; }}
+        try {{ return new URLNative(selected, effectiveDocumentBaseUrl()).href; }} catch (_error) {{ return selected; }}
       }};
       let mediaCurrentTime = 0;
       let mediaPaused = true;

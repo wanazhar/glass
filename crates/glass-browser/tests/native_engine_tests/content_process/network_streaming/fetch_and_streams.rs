@@ -728,8 +728,16 @@ async fn native_content_process_inherits_document_referrer_policy_for_page_fetch
     }
     assert_eq!(target_requests.len(), 17);
 }
-#[tokio::test]
-async fn native_content_process_selected_file_reaches_fetch_and_form_navigation() {
+#[test]
+fn native_content_process_selected_file_reaches_fetch_and_form_navigation() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_selected_file_reaches_fetch_and_form_navigation_inner(),
+        );
+    });
+}
+
+async fn native_content_process_selected_file_reaches_fetch_and_form_navigation_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

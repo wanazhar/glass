@@ -15,18 +15,35 @@ BIN = Path(os.environ.get("GLASS_CORE_TEST_BINARY", ROOT.parent.parent / "target
 ASSETS = Path(os.environ.get("GC_WEB_ASSETS", ROOT / "web/dist")).resolve()
 
 
-def request(port, path, token=None, method="GET", value=None, read_body=True):
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+def request(
+    port,
+    path,
+    token=None,
+    method="GET",
+    value=None,
+    read_body=True,
+    desktop_origin=True,
+    extra_headers=None,
+):
+    # XFCE can need the full X server and visible-frame startup window before
+    # Connect returns from the session start request.
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
     headers = {}
     body = None
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if method == "POST" and path.startswith("/api/desktop/") and desktop_origin:
+        headers["Origin"] = f"http://127.0.0.1:{port}"
+    if extra_headers:
+        headers.update(extra_headers)
     if value is not None:
         headers["Content-Type"] = "application/json"
         body = json.dumps(value)
     connection.request(method, path, body=body, headers=headers)
     response = connection.getresponse()
     data = response.read() if read_body else b""
+    if read_body:
+        connection.close()
     return connection, response, response.status, response.headers, data
 
 
@@ -104,6 +121,30 @@ def main():
 
             _, _, denied, _, _ = request(port, "/api/desktop/status")
             assert denied == 403, f"desktop status was not authenticated: {denied}"
+            denied_post = request(
+                port,
+                "/api/desktop/input",
+                token,
+                "POST",
+                {},
+                desktop_origin=False,
+            )
+            assert denied_post[2] == 403, (
+                "desktop mutation without Origin was accepted",
+                denied_post[2],
+            )
+            cross_origin = request(
+                port,
+                "/api/desktop/input",
+                token,
+                "POST",
+                {},
+                extra_headers={"Origin": "http://attacker.invalid"},
+            )
+            assert cross_origin[2] == 403, (
+                "cross-origin desktop mutation was accepted",
+                cross_origin[2],
+            )
             _, _, status, _, body = request(port, "/api/desktop/status", token)
             assert status == 200, body
             assert json.loads(body)["sessionId"] is None

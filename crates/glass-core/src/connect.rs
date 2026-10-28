@@ -678,6 +678,7 @@ impl Bridge {
 struct App {
     settings: Settings,
     cfg: crate::config::Config,
+    desktop: Arc<crate::desktop::Desktop>,
     bridges: Mutex<HashMap<String, Arc<Bridge>>>,
     clients: AtomicUsize,
 }
@@ -1713,6 +1714,9 @@ fn event_stream(mut stream: TcpStream, b: Arc<Bridge>, since: u64) -> std::io::R
                 .unwrap()
                 .0;
         }
+        if crate::desktop::stopping() {
+            return Ok(());
+        }
         let reset =
             event_stream_requires_reset(cursor, f.seq, f.events.front().map(|(seq, _, _)| *seq));
         let data = if reset {
@@ -1897,6 +1901,58 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
                     .map_err(|e| e.to_string());
             }
         }
+    }
+    if path == "/api/desktop/stream" && r.method == "GET" {
+        return desktop_stream(&mut stream, &app.desktop);
+    }
+    if path == "/api/desktop/frame" && r.method == "GET" {
+        return desktop_frame(&mut stream, &app.desktop);
+    }
+    if path == "/api/desktop/status" && r.method == "GET" {
+        return json_response(&mut stream, 200, app.desktop.status()).map_err(|e| e.to_string());
+    }
+    if path == "/api/desktop/session" && r.method == "POST" {
+        let result = (|| {
+            let value: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
+            match value["action"].as_str() {
+                Some("start") => app.desktop.start(),
+                Some("stop") => app.desktop.stop(),
+                _ => Err("action must be start or stop".into()),
+            }
+        })();
+        return match result {
+            Ok(value) => json_response(&mut stream, 200, value).map_err(|e| e.to_string()),
+            Err(error) => {
+                json_response(&mut stream, 400, json!({"error":error})).map_err(|e| e.to_string())
+            }
+        };
+    }
+    if path == "/api/desktop/lease" && r.method == "POST" {
+        let result = (|| {
+            let value: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
+            app.desktop
+                .set_lease(value["action"].as_str().ok_or("Missing action")?)
+        })();
+        return match result {
+            Ok(value) => json_response(&mut stream, 200, value).map_err(|e| e.to_string()),
+            Err(error) => {
+                json_response(&mut stream, 400, json!({"error":error})).map_err(|e| e.to_string())
+            }
+        };
+    }
+    if path == "/api/desktop/input" && r.method == "POST" {
+        let result = serde_json::from_slice::<Value>(&r.body)
+            .map_err(|e| crate::desktop::InputError::Display(e.to_string()))
+            .and_then(|value| app.desktop.input(crate::desktop::Lease::Human, &value));
+        return match result {
+            Ok(value) => json_response(&mut stream, 200, value).map_err(|e| e.to_string()),
+            Err(error) => json_response(
+                &mut stream,
+                if error.lease().is_some() { 409 } else { 400 },
+                json!({"error":error.message(),"lease":error.lease()}),
+            )
+            .map_err(|e| e.to_string()),
+        };
     }
     let result: Result<Value, String> = (|| match (r.method.as_str(), path) {
         ("GET", "/api/status") => Ok(
@@ -2118,16 +2174,118 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
     }
     .map_err(|e| e.to_string())
 }
+
+fn desktop_frame(stream: &mut TcpStream, desktop: &crate::desktop::Desktop) -> Result<(), String> {
+    if desktop.status()["sessionId"].is_null() {
+        return json_response(
+            stream,
+            409,
+            json!({"error":"No managed desktop session is running"}),
+        )
+        .map_err(|e| e.to_string());
+    }
+    match desktop.frame_after(0, Duration::from_millis(250)) {
+        Ok(Some((seq, time_ms, jpeg))) => response(
+            stream,
+            200,
+            "image/jpeg",
+            &jpeg,
+            &format!("X-Frame-Seq: {seq}\r\nX-Frame-Time-Ms: {time_ms}\r\n"),
+        )
+        .map_err(|e| e.to_string()),
+        Ok(None) => json_response(
+            stream,
+            409,
+            json!({"error":"No fresh desktop frame is available"}),
+        )
+        .map_err(|e| e.to_string()),
+        Err(error) => json_response(stream, 503, json!({"error":error})).map_err(|e| e.to_string()),
+    }
+}
+
+fn desktop_stream(stream: &mut TcpStream, desktop: &crate::desktop::Desktop) -> Result<(), String> {
+    if desktop.status()["sessionId"].is_null() {
+        return json_response(
+            stream,
+            409,
+            json!({"error":"No managed desktop session is running"}),
+        )
+        .map_err(|e| e.to_string());
+    }
+    let first = match desktop.frame_after(0, Duration::from_secs(5)) {
+        Ok(Some(frame)) => frame,
+        Ok(None) => {
+            return json_response(
+                stream,
+                503,
+                json!({"error":"Desktop frame source did not become ready"}),
+            )
+            .map_err(|e| e.to_string());
+        }
+        Err(error) => {
+            return json_response(stream, 503, json!({"error":error})).map_err(|e| e.to_string());
+        }
+    };
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=glassframe\r\nCache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Accel-Buffering: no\r\n\r\n"
+    )
+    .map_err(|e| e.to_string())?;
+    stream.flush().map_err(|e| e.to_string())?;
+    let mut next = Some(first);
+    let mut sequence = 0;
+    loop {
+        let (seq, time_ms, jpeg) = match next.take() {
+            Some(frame) => frame,
+            None => match desktop.frame_after(sequence, Duration::from_secs(2)) {
+                Ok(Some(frame)) => frame,
+                Ok(None) | Err(_) => return Ok(()),
+            },
+        };
+        if seq <= sequence {
+            return Ok(());
+        }
+        write!(
+            stream,
+            "--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nX-Frame-Seq: {}\r\nX-Frame-Time-Ms: {}\r\n\r\n",
+            jpeg.len(), seq, time_ms
+        )
+        .map_err(|e| e.to_string())?;
+        stream.write_all(&jpeg).map_err(|e| e.to_string())?;
+        stream.write_all(b"\r\n").map_err(|e| e.to_string())?;
+        stream.flush().map_err(|e| e.to_string())?;
+        sequence = seq;
+    }
+}
+
 fn gateway(cfg: crate::config::Config, settings: Settings) -> Result<(), String> {
     let listener = TcpListener::bind(("127.0.0.1", settings.port)).map_err(|e| e.to_string())?;
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    crate::desktop::arm_shutdown();
+    let desktop = Arc::new(crate::desktop::Desktop::new(settings.workspace.clone()));
+    let desktop_agent = desktop.clone();
+    let desktop_agent_thread = std::thread::spawn(move || {
+        if let Err(error) = desktop_agent.serve_agent_socket() {
+            eprintln!("Connect desktop agent socket stopped: {error}");
+        }
+    });
     let app = Arc::new(App {
         settings,
         cfg,
+        desktop,
         bridges: Mutex::new(HashMap::new()),
         clients: AtomicUsize::new(0),
     });
-    for stream in listener.incoming() {
-        let stream = stream.map_err(|e| e.to_string())?;
+    while !crate::desktop::stopping() {
+        let stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(30));
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.to_string()),
+        };
         if app.clients.fetch_add(1, Ordering::SeqCst) >= 32 {
             app.clients.fetch_sub(1, Ordering::SeqCst);
             drop(stream);
@@ -2139,6 +2297,11 @@ fn gateway(cfg: crate::config::Config, settings: Settings) -> Result<(), String>
             app.clients.fetch_sub(1, Ordering::SeqCst);
         });
     }
+    // HTTP and the private agent bridge retain Arc<App>/Arc<Desktop> while
+    // their handlers unwind. Clear the owned processes before the gateway's
+    // final references leave scope so Connect stop cannot orphan the desktop.
+    let _ = app.desktop.stop();
+    let _ = desktop_agent_thread.join();
     Ok(())
 }
 #[cfg(test)]

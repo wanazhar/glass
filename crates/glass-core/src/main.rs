@@ -23,6 +23,7 @@ mod compact;
 mod completions;
 mod concurrency;
 mod config;
+mod desktop;
 mod connect;
 mod context_audit;
 mod contracts;

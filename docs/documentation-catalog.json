@@ -83975,6 +83975,11 @@
         },
         {
           "level": "2",
+          "title": "Shared desktop",
+          "anchor": "shared-desktop"
+        },
+        {
+          "level": "2",
           "title": "Reading and previews",
           "anchor": "reading-and-previews"
         },

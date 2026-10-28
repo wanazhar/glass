@@ -16,6 +16,12 @@ the shared task modal; no extension is required.
 as bounded text. Both are native Core tools; their configuration, source
 handling and limits are in [Web search and fetch](web-tools.md).
 
+When GC Connect is running, agent sessions also receive `desktop_status`,
+`desktop_screenshot`, and `desktop_input`. They target the same isolated desktop
+shown in Connect. The human input lease blocks agent input until the human
+explicitly returns control; desktop tools are not added to standalone sessions.
+Pointer coordinates are normalized to `0..1`; scroll deltas use browser pixels.
+
 The CLI and tool interfaces share implementation, confinement and file semantics.
 Schemas stay compact; performance checks cover startup, input, redraw and history.
 Interactive agents also receive `ask_user_question` for decisions that require

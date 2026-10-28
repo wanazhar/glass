@@ -138,6 +138,11 @@
           </div>
           <div class="toolbar-actions">
             <button type="button" id="agent-activity" class="icon-button" aria-label="Agent activity" title="Agent activity">›_</button>
+            <button type="button" id="desktop-toggle" class="icon-button" aria-label="Shared desktop" title="Shared desktop">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="13" rx="1"></rect><path d="M8 21h8M12 17v4"></path>
+              </svg>
+            </button>
             <button
               type="button"
               id="changes-toggle"
@@ -397,6 +402,67 @@
         </div>
       </header>
       <div id="preview-body"></div>
+    </dialog>
+    <dialog id="desktop-viewer" class="desktop-viewer" aria-labelledby="desktop-title">
+      <header class="desktop-header">
+        <div>
+          <h2 id="desktop-title">Shared desktop</h2>
+          <p>Managed on this host · shared with GC desktop tools</p>
+        </div>
+        <button type="button" id="desktop-close" class="icon-button" aria-label="Close desktop viewer">×</button>
+      </header>
+      <section class="desktop-session-brief" aria-label="Desktop target">
+        <div><span>Display</span><strong id="desktop-display">—</strong></div>
+        <div class="desktop-workspace-brief"><span>Workspace</span><code id="desktop-workspace">—</code></div>
+        <details id="desktop-details">
+          <summary>Details</summary>
+          <div><span>Workspace root</span><code id="desktop-workspace-full">—</code><span>Resolution</span><strong id="desktop-resolution">—</strong><span>Managed desktop on this host · shared with GC desktop tools</span></div>
+        </details>
+      </section>
+      <div class="desktop-controls" aria-label="Desktop controls">
+        <span id="desktop-owner" class="desktop-owner" aria-live="polite">Checking…</span>
+        <button type="button" id="desktop-take" class="primary">Take control</button>
+        <button type="button" id="desktop-return" class="quiet">Return to agent</button>
+        <button type="button" id="desktop-start" class="primary">Start desktop</button>
+        <button type="button" id="desktop-keyboard-open" class="quiet" aria-label="Open keyboard">Keyboard</button>
+        <details id="desktop-more" class="desktop-more">
+          <summary aria-label="More desktop actions">More</summary>
+          <div class="desktop-more-menu">
+            <button type="button" id="desktop-reconnect" class="quiet">Reconnect stream</button>
+            <button type="button" id="desktop-stop" class="quiet">Stop desktop</button>
+          </div>
+        </details>
+        <span id="desktop-status" role="status" aria-live="polite">Checking the host display…</span>
+      </div>
+      <p id="desktop-lease-note" class="desktop-lease-note" hidden>Closing keeps your input lease until you return it; GC stays paused.</p>
+      <div class="desktop-mobile-tools" aria-label="Touch controls">
+        <div class="desktop-touch-modes" role="group" aria-label="Touch pointer mode">
+          <button type="button" id="desktop-trackpad" class="quiet" aria-pressed="true">Trackpad</button>
+          <button type="button" id="desktop-touch-mode" class="quiet" aria-pressed="false">Direct touch</button>
+        </div>
+        <span id="desktop-touch-hint">Drag to move · tap to click · two fingers to scroll · hold for right-click</span>
+        <button type="button" id="desktop-view-reset" class="quiet" hidden>Reset view</button>
+      </div>
+      <div id="desktop-shortcuts" class="desktop-shortcuts" aria-label="Keyboard shortcuts" hidden>
+        <button type="button" id="desktop-mod-control" class="quiet" aria-pressed="false">Ctrl</button>
+        <button type="button" id="desktop-mod-alt" class="quiet" aria-pressed="false">Alt</button>
+        <button type="button" data-desktop-key="Escape" class="quiet">Esc</button>
+        <button type="button" data-desktop-key="Tab" class="quiet">Tab</button>
+        <button type="button" data-desktop-key="ArrowUp" class="quiet" aria-label="Arrow up">↑</button>
+        <button type="button" data-desktop-key="ArrowDown" class="quiet" aria-label="Arrow down">↓</button>
+        <button type="button" data-desktop-key="ArrowLeft" class="quiet" aria-label="Arrow left">←</button>
+        <button type="button" data-desktop-key="ArrowRight" class="quiet" aria-label="Arrow right">→</button>
+      </div>
+      <div id="desktop-keyboard-row" class="desktop-keyboard-row" hidden>
+        <label class="sr-only" for="desktop-text">Type text to send to the desktop</label>
+        <input id="desktop-text" type="text" inputmode="text" maxlength="512" autocomplete="off" placeholder="Type text to desktop…" disabled>
+        <button type="button" id="desktop-send-text" class="quiet" disabled>Send text</button>
+      </div>
+      <div id="desktop-viewport" class="desktop-viewport" tabindex="0" aria-label="Shared desktop display">
+        <img id="desktop-stream" alt="Live view of the managed desktop" draggable="false">
+        <div id="desktop-cursor" class="desktop-cursor" aria-hidden="true" hidden></div>
+        <div id="desktop-placeholder" class="desktop-placeholder" role="status">Checking the host display…</div>
+      </div>
     </dialog>
   </body>
 </html>

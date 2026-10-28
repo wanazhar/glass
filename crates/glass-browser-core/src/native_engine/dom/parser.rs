@@ -409,6 +409,7 @@ impl NativeDocument {
             max_dom_depth: limits.max_dom_depth,
             quirks_mode: super::super::html_parser::HtmlParsedQuirksMode::NoQuirks,
             document_referrer_policy: NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
+            inherited_base_url: None,
             nodes: vec![NativeNode {
                 id: root,
                 parent: None,

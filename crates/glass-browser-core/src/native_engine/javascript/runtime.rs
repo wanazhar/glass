@@ -196,6 +196,7 @@ impl NativeJavaScriptRuntime {
             context,
             host_view_installer: Mutex::new(None),
             host_view_cache_key: Mutex::new(None),
+            host_view_snapshot: Mutex::new(None),
             deadline,
             environment: Arc::new(Mutex::new(NativeEnvironmentOverrides::default())),
             module_sources,

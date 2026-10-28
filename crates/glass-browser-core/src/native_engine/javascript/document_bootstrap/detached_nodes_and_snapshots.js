@@ -884,14 +884,14 @@
   const previousNodes = globalThis.__glassHostNodes instanceof Map
     ? globalThis.__glassHostNodes
     : new Map();
-  const snapshotNodes = Array.isArray(state.nodes) ? state.nodes : [];
-  const snapshotElements = Array.isArray(state.elements) ? state.elements : [];
+  let snapshotNodes = Array.isArray(state.nodes) ? state.nodes : [];
+  let snapshotElements = Array.isArray(state.elements) ? state.elements : [];
   // The native exact-state key plus these private closure references prove
   // the cached collections match. Public maps are fresh copies below, so
   // page code cannot mutate the private maps and force an O(nodes) admission
   // scan on every unchanged host install.
   const cachedCollectionsMatchCurrentView = Boolean(
-    reuseCachedHostSnapshotState
+    (reuseCachedHostSnapshotState || (host.reuse_host_tree === true && hostStateDelta !== null))
       && cachedHostCollections
       && cachedHostCollections.elementsByIndexView === previousElements
       && cachedHostCollections.nodesByIndexView === previousNodes
@@ -899,17 +899,26 @@
       && Array.isArray(cachedHostCollections.textNodes)
       && Array.isArray(cachedHostCollections.commentNodes)
       && Array.isArray(cachedHostCollections.documentTypeNodes)
-      && Array.isArray(cachedHostCollections.fragmentNodes),
+      && Array.isArray(cachedHostCollections.fragmentNodes)
+      && cachedHostCollections.snapshotNodesByIndex instanceof Map
+      && cachedHostCollections.snapshotElementsByIndex instanceof Map
+      && cachedHostCollections.snapshotTreeNodeIndexes instanceof Set,
   );
   const reuseExistingHostTree = cachedCollectionsMatchCurrentView;
-  const snapshotNodesByIndex = new Map(snapshotNodes
-    .filter((entry) => entry && Number.isSafeInteger(Number(entry.nodeIndex)))
-    .map((entry) => [Number(entry.nodeIndex), entry]));
-  const snapshotElementsByIndex = new Map(snapshotElements
-    .filter((entry) => entry && Number.isSafeInteger(Number(entry.nodeIndex)))
-    .map((entry) => [Number(entry.nodeIndex), entry]));
-  const snapshotTreeNodeIndexes = new Set();
-  const rootTreeSnapshotEntry = snapshotNodesByIndex.get(0);
+  let snapshotNodesByIndex = reuseExistingHostTree
+    ? cachedHostCollections.snapshotNodesByIndex
+    : new Map(snapshotNodes
+      .filter((entry) => entry && Number.isSafeInteger(Number(entry.nodeIndex)))
+      .map((entry) => [Number(entry.nodeIndex), entry]));
+  let snapshotElementsByIndex = reuseExistingHostTree
+    ? cachedHostCollections.snapshotElementsByIndex
+    : new Map(snapshotElements
+      .filter((entry) => entry && Number.isSafeInteger(Number(entry.nodeIndex)))
+      .map((entry) => [Number(entry.nodeIndex), entry]));
+  let snapshotTreeNodeIndexes = reuseExistingHostTree
+    ? cachedHostCollections.snapshotTreeNodeIndexes
+    : new Set();
+  let rootTreeSnapshotEntry = snapshotNodesByIndex.get(0);
   if (rootTreeSnapshotEntry && Array.isArray(rootTreeSnapshotEntry.children)) {{
     const pendingSnapshotIndexes = [0];
     while (pendingSnapshotIndexes.length > 0
@@ -936,7 +945,7 @@
   );
   if (typeof globalThis.__glassNativeHostViewMark === "function")
     globalThis.__glassNativeHostViewMark("tree_admission_checked");
-  const snapshotTextContentForNode = reuseExistingHostTree
+  let snapshotTextContentForNode = reuseExistingHostTree
     ? null
     : createSnapshotTextContentResolver(snapshotNodes);
   if (typeof globalThis.__glassNativeHostViewMark === "function")
@@ -944,6 +953,12 @@
   let elementBuildIndex = -1;
   let elementBuildMode = "none";
   const elements = reuseExistingHostTree ? cachedHostCollections.elements : [];
+  if (reuseExistingHostTree && hostStateDelta !== null) {{
+    for (const element of elements) {{
+      const entry = snapshotElementsByIndex.get(Number(element && element.nodeIndex));
+      if (entry && typeof element.__glassRefresh === "function") element.__glassRefresh(entry);
+    }}
+  }}
   try {{
     if (!reuseExistingHostTree) for (let index = 0; index < snapshotElements.length; index += 1) {{
       const entry = snapshotElements[index];
@@ -1134,6 +1149,9 @@
     fragmentNodes,
     elementsByIndex,
     nodesByIndex,
+    snapshotNodesByIndex,
+    snapshotElementsByIndex,
+    snapshotTreeNodeIndexes,
     elementsByIndexView,
     nodesByIndexView,
   }};

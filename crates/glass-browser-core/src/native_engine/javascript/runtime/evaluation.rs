@@ -1,6 +1,333 @@
 use super::*;
 
+const MAX_NATIVE_HOST_SNAPSHOT_DELTA_BYTES: usize = 4 * 1024 * 1024;
+
+fn native_host_snapshot_delta(
+    previous: &serde_json::Value,
+    next: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    fn compare(
+        path: &mut Vec<serde_json::Value>,
+        previous: &serde_json::Value,
+        next: &serde_json::Value,
+        operations: &mut Vec<serde_json::Value>,
+    ) -> bool {
+        if previous == next {
+            return true;
+        }
+        if path.len() > 64 {
+            return false;
+        }
+        match (previous, next) {
+            (serde_json::Value::Object(previous), serde_json::Value::Object(next)) => {
+                for key in previous.keys() {
+                    if !next.contains_key(key) {
+                        path.push(serde_json::Value::String(key.clone()));
+                        operations.push(serde_json::json!([1, path]));
+                        path.pop();
+                        if operations.len() > 16_384 {
+                            return false;
+                        }
+                    }
+                }
+                for (key, next_value) in next {
+                    path.push(serde_json::Value::String(key.clone()));
+                    let compatible = if let Some(previous_value) = previous.get(key) {
+                        compare(path, previous_value, next_value, operations)
+                    } else {
+                        operations.push(serde_json::json!([0, path, next_value]));
+                        true
+                    };
+                    path.pop();
+                    if !compatible || operations.len() > 16_384 {
+                        return false;
+                    }
+                }
+                true
+            }
+            (serde_json::Value::Array(previous), serde_json::Value::Array(next)) => {
+                if previous.len() != next.len() {
+                    let common_prefix = previous
+                        .iter()
+                        .zip(next)
+                        .take_while(|(previous, next)| previous == next)
+                        .count();
+                    let common_suffix = previous[common_prefix..]
+                        .iter()
+                        .rev()
+                        .zip(next[common_prefix..].iter().rev())
+                        .take_while(|(previous, next)| previous == next)
+                        .count();
+                    let previous_middle_end = previous.len() - common_suffix;
+                    let next_middle_end = next.len() - common_suffix;
+                    operations.push(serde_json::json!([
+                        2,
+                        path,
+                        common_prefix,
+                        previous_middle_end - common_prefix,
+                        &next[common_prefix..next_middle_end],
+                    ]));
+                    return operations.len() <= 16_384;
+                }
+                for (index, (previous_value, next_value)) in
+                    previous.iter().zip(next.iter()).enumerate()
+                {
+                    path.push(serde_json::Value::from(index));
+                    let compatible = compare(path, previous_value, next_value, operations);
+                    path.pop();
+                    if !compatible || operations.len() > 16_384 {
+                        return false;
+                    }
+                }
+                true
+            }
+            _ => {
+                operations.push(serde_json::json!([0, path, next]));
+                operations.len() <= 16_384
+            }
+        }
+    }
+
+    let mut operations = Vec::new();
+    if compare(&mut Vec::new(), previous, next, &mut operations) {
+        Some(serde_json::Value::Array(operations))
+    } else {
+        None
+    }
+}
+
+fn native_host_tree_topology_matches(
+    previous: &serde_json::Value,
+    next: &serde_json::Value,
+) -> bool {
+    if previous.get("nodes") != next.get("nodes") {
+        return false;
+    }
+    let (Some(previous_elements), Some(next_elements)) = (
+        previous
+            .get("elements")
+            .and_then(serde_json::Value::as_array),
+        next.get("elements").and_then(serde_json::Value::as_array),
+    ) else {
+        return false;
+    };
+    const TOPOLOGY_FIELDS: [&str; 5] = [
+        "nodeIndex",
+        "tagName",
+        "namespaceUri",
+        "parentIndex",
+        "templateContentIndex",
+    ];
+    let geometry_indexes_match = match (
+        previous
+            .get("geometry")
+            .and_then(serde_json::Value::as_array),
+        next.get("geometry").and_then(serde_json::Value::as_array),
+    ) {
+        (Some(previous), Some(next)) => {
+            previous.len() == next.len()
+                && previous
+                    .iter()
+                    .zip(next)
+                    .all(|(previous, next)| previous.get("nodeIndex") == next.get("nodeIndex"))
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    geometry_indexes_match
+        && previous_elements.len() == next_elements.len()
+        && previous_elements
+            .iter()
+            .zip(next_elements)
+            .all(|(previous, next)| {
+                TOPOLOGY_FIELDS
+                    .iter()
+                    .all(|field| previous.get(*field) == next.get(*field))
+            })
+}
+
+fn prepare_native_host_view_payload(
+    host_state_json: &str,
+    previous_host: Option<&serde_json::Value>,
+) -> Result<(String, Option<serde_json::Value>, bool), NativeEngineError> {
+    let mut host: serde_json::Value =
+        serde_json::from_str(host_state_json).map_err(|_| NativeEngineError::Worker {
+            operation: "compact JavaScript host view".into(),
+            reason: "native JavaScript host view could not be decoded for refresh".into(),
+        })?;
+    let Some(next_state) = host.get("state").filter(|state| !state.is_null()) else {
+        return Ok((host_state_json.to_owned(), None, false));
+    };
+    let next_state = next_state.clone();
+    let next_host = host.clone();
+    let previous_state = previous_host.and_then(|previous| previous.get("state"));
+    let topology_matches = previous_state.is_some_and(|previous_state| {
+        native_host_tree_topology_matches(previous_state, &next_state)
+    });
+    let delta_candidate = previous_state
+        .filter(|_| topology_matches)
+        .and_then(|previous_state| native_host_snapshot_delta(previous_state, &next_state));
+    if let Some(delta) = delta_candidate {
+        let delta_bytes = serde_json::to_vec(&delta).map_err(|_| NativeEngineError::Worker {
+            operation: "compact JavaScript host view delta".into(),
+            reason: "native JavaScript host view delta could not be serialized".into(),
+        })?;
+        if delta_bytes.len() < host_state_json.len() / 2
+            && delta_bytes.len() <= MAX_NATIVE_HOST_SNAPSHOT_DELTA_BYTES
+        {
+            host["state"] = serde_json::Value::Null;
+            host["reuse_state"] = serde_json::Value::Bool(true);
+            host["reuse_host_tree"] = serde_json::Value::Bool(true);
+            host["state_delta"] = delta;
+            let compacted =
+                serde_json::to_string(&host).map_err(|_| NativeEngineError::Worker {
+                    operation: "compact JavaScript host view delta".into(),
+                    reason: "native JavaScript host view delta could not be encoded".into(),
+                })?;
+            return Ok((compacted, Some(next_host), true));
+        }
+    }
+    Ok((host_state_json.to_owned(), Some(next_host), false))
+}
+
+fn update_cached_host_snapshot_from_commands(
+    host_snapshot: &mut serde_json::Value,
+    commands: &[NativeScriptCommand],
+) -> bool {
+    let Some(state) = host_snapshot.get_mut("state") else {
+        return false;
+    };
+    for command in commands {
+        match command {
+            NativeScriptCommand::SetAttribute {
+                node_index,
+                name,
+                value,
+                namespace_uri,
+            } => {
+                let Some(element) = state
+                    .get_mut("elements")
+                    .and_then(serde_json::Value::as_array_mut)
+                    .and_then(|elements| {
+                        elements.iter_mut().find(|element| {
+                            element.get("nodeIndex").and_then(serde_json::Value::as_u64)
+                                == Some(u64::from(*node_index))
+                        })
+                    })
+                else {
+                    return false;
+                };
+                let Some(attributes) = element
+                    .get_mut("attributes")
+                    .and_then(serde_json::Value::as_object_mut)
+                else {
+                    return false;
+                };
+                attributes.insert(name.clone(), serde_json::Value::String(value.clone()));
+                if let Some(namespace_uri) = namespace_uri.as_deref().filter(|uri| !uri.is_empty())
+                {
+                    let Some(namespaces) = element
+                        .get_mut("attributeNamespaces")
+                        .and_then(serde_json::Value::as_object_mut)
+                    else {
+                        return false;
+                    };
+                    namespaces.insert(
+                        name.clone(),
+                        serde_json::Value::String(namespace_uri.to_owned()),
+                    );
+                } else if let Some(namespaces) = element
+                    .get_mut("attributeNamespaces")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    namespaces.remove(name);
+                }
+            }
+            NativeScriptCommand::RemoveAttribute {
+                node_index,
+                name,
+                namespace_uri: _,
+            } => {
+                let Some(element) = state
+                    .get_mut("elements")
+                    .and_then(serde_json::Value::as_array_mut)
+                    .and_then(|elements| {
+                        elements.iter_mut().find(|element| {
+                            element.get("nodeIndex").and_then(serde_json::Value::as_u64)
+                                == Some(u64::from(*node_index))
+                        })
+                    })
+                else {
+                    return false;
+                };
+                let Some(attributes) = element
+                    .get_mut("attributes")
+                    .and_then(serde_json::Value::as_object_mut)
+                else {
+                    return false;
+                };
+                attributes.remove(name);
+                if let Some(namespaces) = element
+                    .get_mut("attributeNamespaces")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    namespaces.remove(name);
+                }
+            }
+            NativeScriptCommand::SetDocumentTitle { value } => {
+                state["title"] = serde_json::Value::String(value.clone());
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
 impl NativeJavaScriptRuntime {
+    fn release_previous_host_view_snapshot(&self) -> Result<(), NativeEngineError> {
+        self.context.with(|ctx| {
+            let installer = {
+                let cached =
+                    self.host_view_installer
+                        .lock()
+                        .map_err(|_| NativeEngineError::Worker {
+                            operation: "access JavaScript host view installer".into(),
+                            reason: "native JavaScript host view installer state is unavailable"
+                                .into(),
+                        })?;
+                cached
+                    .as_ref()
+                    .ok_or_else(|| NativeEngineError::Worker {
+                        operation: "release previous JavaScript host snapshot".into(),
+                        reason: "previous native JavaScript host view installer is unavailable"
+                            .into(),
+                    })?
+                    .0
+                    .clone()
+                    .restore(&ctx)
+                    .map_err(|error| NativeEngineError::Worker {
+                        operation: "restore JavaScript host view installer".into(),
+                        reason: format!(
+                            "native JavaScript host view installer could not be restored: {}",
+                            CaughtError::from_error(&ctx, error)
+                        ),
+                    })?
+            };
+            installer
+                .call::<_, ()>((Option::<&str>::None, true))
+                .map_err(|error| NativeEngineError::Worker {
+                    operation: "release previous JavaScript host snapshot".into(),
+                    reason: format!(
+                        "previous native JavaScript host snapshot could not be released: {}",
+                        CaughtError::from_error(&ctx, error)
+                    ),
+                })
+        })?;
+        // Run the full QuickJS collection after the context guard has dropped.
+        self.runtime.run_gc();
+        Ok(())
+    }
+
     pub(crate) fn evaluate(
         &self,
         source: &str,
@@ -133,11 +460,11 @@ impl NativeJavaScriptRuntime {
             scroll_offset,
             &nested_scroll_offsets,
         );
-        let runtime_has_matching_host_state = self
+        let (runtime_has_previous_host_state, runtime_has_matching_host_state) = self
             .host_view_cache_key
             .lock()
-            .map(|key| key.as_ref() == Some(&host_state_cache_key))
-            .unwrap_or(false);
+            .map(|key| (key.is_some(), key.as_ref() == Some(&host_state_cache_key)))
+            .unwrap_or((false, false));
         let host_state_key_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
             crate::native_engine::content_process::ContentLoadStage::begin(
                 0,
@@ -192,6 +519,29 @@ impl NativeJavaScriptRuntime {
                     .saturating_add(bootstrap.host_state_json.len()),
             ));
         }
+        let (host_state_json, next_host_snapshot, uses_host_state_delta) =
+            if runtime_has_matching_host_state {
+                (bootstrap.host_state_json.clone(), None, false)
+            } else {
+                let previous_host_snapshot = self
+                    .host_view_snapshot
+                    .lock()
+                    .map_err(|_| NativeEngineError::Worker {
+                        operation: "access JavaScript host snapshot cache".into(),
+                        reason: "native JavaScript host snapshot cache is unavailable".into(),
+                    })?
+                    .clone();
+                prepare_native_host_view_payload(
+                    &bootstrap.host_state_json,
+                    previous_host_snapshot.as_ref(),
+                )?
+            };
+        if runtime_has_previous_host_state
+            && !runtime_has_matching_host_state
+            && !uses_host_state_delta
+        {
+            self.release_previous_host_view_snapshot()?;
+        }
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
             *current = Some(deadline);
@@ -229,7 +579,7 @@ impl NativeJavaScriptRuntime {
                 operation: "install native dialog host callback".into(),
                 reason: "native JavaScript dialog host callback could not be installed".into(),
             })?;
-            let host_view_bytes = bootstrap.host_state_json.len();
+            let host_view_bytes = host_state_json.len();
             let host_view_stage = std::env::var_os("GLASS_RUNTIME_DIAGNOSTIC_TRACE").map(|_| {
                 crate::native_engine::content_process::ContentLoadStage::begin(
                     0,
@@ -385,7 +735,7 @@ impl NativeJavaScriptRuntime {
                         })?;
                     let host_view_failure_for_error = Arc::clone(&host_view_failure);
                     let installation = installer
-                        .call::<_, ()>((bootstrap.host_state_json.as_str(),))
+                        .call::<_, ()>((host_state_json.as_str(), false))
                         .map_err(|error| {
                             let base = format!(
                                 "native JavaScript host snapshot could not be installed: {}",
@@ -410,7 +760,7 @@ impl NativeJavaScriptRuntime {
                     return installation;
                 }
                 let installation = installer
-                    .call::<_, ()>((bootstrap.host_state_json.as_str(),))
+                    .call::<_, ()>((host_state_json.as_str(), false))
                     .map_err(|error| NativeEngineError::Worker {
                         operation: "install JavaScript host snapshot".into(),
                         reason: format!(
@@ -435,12 +785,20 @@ impl NativeJavaScriptRuntime {
             if let Ok(mut current) = self.deadline.lock() {
                 *current = Some(Instant::now() + NATIVE_SCRIPT_TIMEOUT);
             }
-            if host_view_result.is_err()
-                && let Ok(mut key) = self.host_view_cache_key.lock()
-            {
-                *key = None;
+            if host_view_result.is_err() {
+                if let Ok(mut key) = self.host_view_cache_key.lock() {
+                    *key = None;
+                }
+                if let Ok(mut cached_snapshot) = self.host_view_snapshot.lock() {
+                    *cached_snapshot = None;
+                }
             }
             host_view_result?;
+            if let Some(snapshot) = next_host_snapshot
+                && let Ok(mut cached_snapshot) = self.host_view_snapshot.lock()
+            {
+                *cached_snapshot = Some(snapshot);
+            }
             if let Ok(mut key) = self.host_view_cache_key.lock() {
                 *key = Some(host_state_cache_key);
             }
@@ -636,6 +994,12 @@ impl NativeJavaScriptRuntime {
                 dispatch_promise_rejections(&ctx, event_type, &reasons, cancelable)?;
             }
             let commands = read_script_commands(ctx.clone())?;
+            if let Ok(mut cached_snapshot) = self.host_view_snapshot.lock()
+                && let Some(snapshot) = cached_snapshot.as_mut()
+                && !update_cached_host_snapshot_from_commands(snapshot, &commands)
+            {
+                *cached_snapshot = None;
+            }
             let mut document_commands = Vec::with_capacity(commands.len());
             for command in commands {
                 if self
@@ -2407,6 +2771,11 @@ impl NativeJavaScriptRuntime {
             scroll_offset,
             &nested_scroll_offsets,
         );
+        let runtime_has_previous_host_state = self
+            .host_view_cache_key
+            .lock()
+            .map(|key| key.is_some())
+            .unwrap_or(false);
         let history_state = self.history_state();
         let history_length = self.history_length();
         let document_creation_url = self.document_creation_url_for(document, document_url)?;
@@ -2439,6 +2808,9 @@ impl NativeJavaScriptRuntime {
             &self.environment(),
             false,
         )?;
+        if runtime_has_previous_host_state {
+            self.release_previous_host_view_snapshot()?;
+        }
         let deadline = Instant::now() + NATIVE_SCRIPT_TIMEOUT;
         if let Ok(mut current) = self.deadline.lock() {
             *current = Some(deadline);
@@ -2493,7 +2865,10 @@ impl NativeJavaScriptRuntime {
                 }
             };
             let host_view_result = installer
-                .call::<_, ()>((bootstrap.host_state_json.as_str(),))
+                .call::<_, ()>((
+                    bootstrap.host_state_json.as_str(),
+                    false,
+                ))
                 .map_err(|error| NativeEngineError::Worker {
                     operation: "install JavaScript host snapshot".into(),
                     reason: format!(
@@ -2613,5 +2988,251 @@ impl NativeJavaScriptRuntime {
             *current = None;
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod host_snapshot_delta_tests {
+    use super::*;
+    use crate::native_engine::NativeEngineLimits;
+
+    fn large_host_snapshot(document: &NativeDocument) -> String {
+        document_bootstrap(
+            document,
+            "fixture://large-host-view.test/",
+            "fixture://large-host-view.test/",
+            "large-host-view-fixture",
+            "",
+            None,
+            "",
+            "",
+            &NativeOrigin::Opaque,
+            Viewport::default(),
+            NativePoint { x: 0, y: 0 },
+            &BTreeMap::new(),
+            &serde_json::Value::Null,
+            1,
+            "complete",
+            0,
+            &NativeWebStorageView::default(),
+            &NativeIndexedDbOrigin::default(),
+            &[],
+            "",
+            &[],
+            None,
+            &[],
+            false,
+            true,
+            &NativeEnvironmentOverrides::default(),
+            false,
+        )
+        .expect("fixture host snapshot must build")
+        .host_state_json
+    }
+
+    #[test]
+    fn host_snapshot_delta_covers_object_removal_and_array_shape_replacement() {
+        let previous = serde_json::json!({
+            "attributes": {"class": "row accent", "data-observed": "yes"},
+            "computedStyles": [{"fontWeight": "bold"}, {"fontWeight": "normal"}],
+        });
+        let next = serde_json::json!({
+            "attributes": {"class": "row changed"},
+            "computedStyles": [{"fontWeight": "normal"}],
+        });
+
+        let delta = native_host_snapshot_delta(&previous, &next)
+            .expect("small object and array shape changes must be representable");
+        assert!(
+            delta
+                .as_array()
+                .is_some_and(|operations| operations.len() == 3)
+        );
+        assert!(
+            delta
+                .as_array()
+                .is_some_and(|operations| { operations.iter().any(|operation| operation[0] == 2) })
+        );
+        assert!(delta.to_string().contains("computedStyles"));
+        assert!(delta.to_string().contains("data-observed"));
+    }
+
+    #[test]
+    fn host_tree_reuse_requires_stable_nodes_and_geometry_indexes() {
+        let previous = serde_json::json!({
+            "nodes": [{"nodeIndex": 1, "parentIndex": 0, "children": [2]}],
+            "elements": [{
+                "nodeIndex": 1, "tagName": "div", "namespaceUri": "http://www.w3.org/1999/xhtml",
+                "parentIndex": 0, "templateContentIndex": null, "attributes": {"class": "old"}
+            }],
+            "geometry": [{"nodeIndex": 1, "x": 0}]
+        });
+        let mut attributes_changed = previous.clone();
+        attributes_changed["elements"][0]["attributes"]["class"] = "new".into();
+        assert!(native_host_tree_topology_matches(
+            &previous,
+            &attributes_changed
+        ));
+
+        let mut nodes_changed = attributes_changed.clone();
+        nodes_changed["nodes"][0]["children"] = serde_json::json!([2, 3]);
+        assert!(!native_host_tree_topology_matches(
+            &previous,
+            &nodes_changed
+        ));
+
+        let mut geometry_changed = attributes_changed;
+        geometry_changed["geometry"][0]["nodeIndex"] = 3.into();
+        assert!(!native_host_tree_topology_matches(
+            &previous,
+            &geometry_changed
+        ));
+    }
+
+    #[test]
+    fn host_snapshot_delta_keeps_large_compatible_refresh_under_wire_budget() {
+        let styles = |length: usize| {
+            (0..length)
+                .map(|index| {
+                    serde_json::json!({
+                        "color": format!("rgb({}, {}, {})", index % 256, index / 256, index % 97),
+                        "fontWeight": if index % 2 == 0 { "bold" } else { "normal" },
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        let unchanged_projection = "x".repeat(5 * 1024 * 1024);
+        let previous = serde_json::json!({
+            "state": {
+                "nodes": [],
+                "elements": [],
+                "computedStyles": styles(8_501),
+                "title": "",
+                "unchangedProjection": unchanged_projection,
+            }
+        });
+        let next_host = serde_json::json!({
+            "state": {
+                "nodes": [],
+                "elements": [],
+                "computedStyles": styles(8_500),
+                "title": "",
+                "unchangedProjection": "x".repeat(5 * 1024 * 1024),
+            },
+            "generation": 1,
+        });
+        let full = serde_json::to_string(&next_host).expect("fixture JSON must serialize");
+
+        let (payload, cached, uses_delta) =
+            prepare_native_host_view_payload(&full, Some(&previous))
+                .expect("compatible snapshot delta must serialize");
+        assert!(uses_delta, "changed style table should use a subtree delta");
+        assert!(payload.len() < full.len() / 2);
+        assert!(payload.len() <= MAX_NATIVE_HOST_SNAPSHOT_DELTA_BYTES);
+        assert_eq!(cached, Some(next_host));
+    }
+
+    #[test]
+    fn large_host_snapshot_delta_represents_real_style_table_shape_change() {
+        const ELEMENTS: usize = 8_500;
+        const NESTED_WRAPPERS: usize = 20;
+        let mut markup =
+            String::from("<style>.accent { font-weight: 700; }</style><main><section>");
+        for _ in 0..NESTED_WRAPPERS {
+            markup.push_str("<div class='nested'>");
+        }
+        for index in 0..ELEMENTS {
+            let class = if index % 2 == 0 { "row accent" } else { "row" };
+            let tag = [
+                "div", "span", "p", "a", "button", "article", "section", "img",
+            ][index % 8];
+            if tag == "img" {
+                markup.push_str(&format!(
+                    "<img id='item-{index}' class='{class}' data-index='{index}' aria-label='image {index}' style='color:#{index:06x}' src='/image/{index}.png' alt='preview'>"
+                ));
+            } else if tag == "a" {
+                markup.push_str(&format!(
+                    "<a id='item-{index}' class='{class}' data-index='{index}' aria-label='link {index}' style='color:#{index:06x}' href='/item/{index}'>x</a>"
+                ));
+            } else {
+                markup.push_str(&format!(
+                    "<{tag} id='item-{index}' class='{class}' data-index='{index}' aria-label='row {index}' style='color:#{index:06x}'>x</{tag}>"
+                ));
+            }
+        }
+        for _ in 0..NESTED_WRAPPERS {
+            markup.push_str("</div>");
+        }
+        markup.push_str("</section></main>");
+        let changed_markup = markup.replacen(
+            "id='item-0' class='row accent'",
+            "id='item-0' class='row changed'",
+            1,
+        );
+        let document = NativeDocument::parse(&markup, &NativeEngineLimits::default())
+            .expect("large fixture document must parse");
+        let changed_document =
+            NativeDocument::parse(&changed_markup, &NativeEngineLimits::default())
+                .expect("changed fixture document must parse");
+        let previous = large_host_snapshot(&document);
+        let next = large_host_snapshot(&changed_document);
+        let previous_value: serde_json::Value =
+            serde_json::from_str(&previous).expect("previous host snapshot must be JSON");
+
+        let (payload, _, uses_delta) =
+            prepare_native_host_view_payload(&next, Some(&previous_value))
+                .expect("large host delta must serialize");
+        assert!(
+            uses_delta,
+            "real style-table shape change should use a delta"
+        );
+        assert!(payload.len() < next.len() / 2);
+        assert!(payload.len() <= MAX_NATIVE_HOST_SNAPSHOT_DELTA_BYTES);
+    }
+
+    #[test]
+    fn host_snapshot_delta_falls_back_when_operation_budget_is_exceeded() {
+        let previous = serde_json::Value::Object(
+            (0..16_385)
+                .map(|index| (format!("key-{index}"), serde_json::Value::Null))
+                .collect(),
+        );
+        let next = serde_json::Value::Object(
+            (0..16_385)
+                .map(|index| (format!("key-{index}"), serde_json::Value::Bool(true)))
+                .collect(),
+        );
+
+        assert!(native_host_snapshot_delta(&previous, &next).is_none());
+    }
+
+    #[test]
+    fn host_snapshot_command_cache_update_treats_empty_namespace_as_none() {
+        let mut host = serde_json::json!({
+            "state": {
+                "elements": [{
+                    "nodeIndex": 5,
+                    "attributes": {"class": "body"},
+                    "attributeNamespaces": {"data-observed": "urn:old"},
+                }]
+            }
+        });
+        let commands = [NativeScriptCommand::SetAttribute {
+            node_index: 5,
+            name: "data-observed".into(),
+            value: "yes".into(),
+            namespace_uri: Some(String::new()),
+        }];
+
+        assert!(update_cached_host_snapshot_from_commands(
+            &mut host, &commands
+        ));
+        let element = &host["state"]["elements"][0];
+        assert_eq!(element["attributes"]["data-observed"], "yes");
+        assert!(
+            element["attributeNamespaces"]
+                .get("data-observed")
+                .is_none()
+        );
     }
 }

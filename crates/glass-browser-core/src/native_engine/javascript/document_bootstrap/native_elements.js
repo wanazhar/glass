@@ -175,10 +175,6 @@
       imageNaturalWidth = 0;
       imageNaturalHeight = 0;
       imageCurrentSrc = "";
-      entry.imageComplete = complete;
-      entry.imageNaturalWidth = 0;
-      entry.imageNaturalHeight = 0;
-      entry.imageCurrentSrc = "";
     }};
     const resetMediaState = () => {{
       mediaReadyState = 0;

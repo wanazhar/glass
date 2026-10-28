@@ -87,7 +87,7 @@
     __glassGetTemplateContentsOwnerDocument() {{ return getTemplateContentsOwnerDocument(); }},
     URL: host.url,
     documentURI: host.url,
-    get baseURI() {{ return String(host.base_url || host.url || ""); }},
+    get baseURI() {{ return effectiveDocumentBaseUrl(); }},
     compatMode: host.compat_mode === "BackCompat" ? "BackCompat" : "CSS1Compat",
     hidden: false,
     visibilityState: "visible",

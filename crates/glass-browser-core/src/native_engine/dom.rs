@@ -811,6 +811,9 @@ pub struct NativeScriptDocumentSnapshot {
     pub(crate) title: String,
     #[serde(default)]
     pub(crate) base_url: String,
+    /// URL used when no attached `<base href>` overrides this document.
+    #[serde(default)]
+    pub(crate) base_fallback_url: String,
     pub(crate) visible_text: String,
     pub elements: Vec<NativeScriptElementSnapshot>,
     #[serde(default)]

@@ -1620,6 +1620,10 @@ async fn native_content_process_video_poster_resolves_against_document_base_url(
         removed_base_poster,
         serde_json::json!(format!("http://{address}/cover.png"))
     );
+    assert_eq!(
+        engine.evaluate_async("document.baseURI").await.unwrap(),
+        serde_json::json!(format!("http://{address}/page"))
+    );
     server.await.unwrap();
     engine.close_async().await.unwrap();
 }

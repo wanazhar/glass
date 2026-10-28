@@ -2141,7 +2141,7 @@
       __glassGetTemplateContentsOwnerDocument() {{ return getFrameTemplateContentsOwnerDocument(); }},
       URL: String(currentBinding.url),
       documentURI: String(currentBinding.url),
-      get baseURI() {{ return String(snapshot.baseUrl || currentBinding.url || ""); }},
+      get baseURI() {{ return String(snapshot.baseFallbackUrl || snapshot.baseUrl || currentBinding.url || ""); }},
       get title() {{
         const titleElement = frameElements.find((element) => element.__glassAttached && element.tagName === "TITLE");
         return titleElement ? titleElement.textContent : frameDocumentTitle;

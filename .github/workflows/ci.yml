@@ -61,7 +61,7 @@ jobs:
           cargo test --package glass-browser --lib --features native-engine --locked async_effect -- --nocapture
           cargo test --package glass-browser --lib --features native-engine --locked dropping_runtime_backend -- --nocapture
       - name: Mark macOS native worker diagnostics window
-        if: always() && runner.os == 'macOS'
+        if: runner.os == 'macOS'
         run: date +%s > "$RUNNER_TEMP/glass-native-worker-test-started"
       - name: Probe macOS native worker launch matrix
         if: runner.os == 'macOS'
@@ -81,7 +81,7 @@ jobs:
           --output "$RUNNER_TEMP/glass-native-worker-crash-summary.json"
           --wait-seconds 20
       - name: Upload sanitized macOS native worker crash summary
-        if: runner.os == 'macOS'
+        if: always() && runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: macos-native-worker-crash-summary-${{ github.run_id }}

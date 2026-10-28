@@ -126,7 +126,7 @@ pub(super) fn decode_cookie(hex: &str) -> Result<[u8; 16], String> {
         _ => None,
     };
     let mut bytes = [0u8; 16];
-    for (index, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         bytes[index] = digit(pair[0]).ok_or("Invalid managed desktop cookie")? * 16
             + digit(pair[1]).ok_or("Invalid managed desktop cookie")?;
     }

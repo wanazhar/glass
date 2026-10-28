@@ -9,15 +9,18 @@ const source = (path) => readFile(new URL(path, webRoot), "utf8");
 let session = null;
 let lease = "agent";
 let nextSession = 1;
+let nextFrameSeq = 18;
+let hostReachable = true;
 const actions = [];
 const input = [];
 const jpg = Buffer.from(
-  "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABD/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/EB//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/EB//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAwE/EB//2Q==",
+  "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAKABADASIAAhEBAxEB/8QAFgABAQEAAAAAAAAAAAAAAAAABwIE/8QAIxAAAQQCAQMFAAAAAAAAAAAAAQIDBAUREgBBUWEGExQxgf/EABQBAQAAAAAAAAAAAAAAAAAAAAP/xAAYEQEBAAMAAAAAAAAAAAAAAAABAAISIv/aAAwDAQACEQMRAD8AMrAOxrKQwlwpS2UgAJT1SD1HnmqkjOT3ZCVq3DYQRkAYzt2Hjjc96epJDqnXqevccV9rXFQSf0jlx6SpibfGq4TO2NvbjoTnHfA4S8xOJrf/2Q==",
   "base64",
 );
 const testModule = `
   import { desktopSurface } from "/src/desktop.js";
-  const api = async (path, data, signal) => {
+  const api = async (path, data, signal, options) => {
+    if (path === "desktop/session" && data?.action === "start") window.__desktopStartTimeout = options?.timeoutMs;
     const response = await fetch("/api/" + path, {
       method: data === undefined ? "GET" : "POST",
       headers: data === undefined ? {} : { "Content-Type": "application/json" },
@@ -29,6 +32,7 @@ const testModule = `
   };
   const surface = desktopSurface({ api });
   document.querySelector("#desktop-toggle").addEventListener("click", () => surface.open());
+  window.setDesktopHostReachable = (reachable) => fetch("/__test/host?reachable=" + reachable);
 `;
 
 const server = createServer(async (request, response) => {
@@ -47,6 +51,11 @@ const server = createServer(async (request, response) => {
   if (url.pathname === "/desktop-test.js") {
     response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
     response.end(testModule);
+    return;
+  }
+  if (url.pathname === "/__test/host") {
+    hostReachable = url.searchParams.get("reachable") === "true";
+    response.writeHead(204).end();
     return;
   }
   if (url.pathname === "/src/desktop.js") {
@@ -70,12 +79,17 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (url.pathname === "/api/desktop/status") {
+    if (!hostReachable) {
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "Host timed out. Tap the connection indicator to reconnect." }));
+      return;
+    }
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({
       available: Boolean(session), sessionId: session, mode: session ? "managedVirtualSession" : null,
       displayId: session ? ":81" : null, workspaceRoot: "/work/glass", lease,
       width: session ? 1280 : null, height: session ? 800 : null,
-      frameSeq: session ? 18 : null, frameAgeMs: session ? 24 : null, error: null,
+      frameSeq: session ? nextFrameSeq++ : null, frameAgeMs: session ? 24 : null, error: null,
     }));
     return;
   }
@@ -143,10 +157,27 @@ const errors = [];
 page.on("pageerror", (error) => errors.push(String(error)));
 try {
   await page.goto(`http://127.0.0.1:${port}/`);
+  await page.evaluate(() => window.setDesktopHostReachable(false));
   await page.locator("#desktop-toggle").click();
   await page.locator("#desktop-viewer").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#desktop-close").evaluate((button) => button === document.activeElement), true);
+  await page.locator("#desktop-retry").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#desktop-status").textContent(), "Host connection unavailable", await page.locator("#desktop-placeholder").textContent());
+  assert.equal(await page.locator("#desktop-start").isDisabled(), true);
+  assert.equal(await page.locator("#desktop-keyboard-open").isVisible(), false);
+  assert.equal(await page.locator(".desktop-mobile-tools").isVisible(), false);
+  assert.match(await page.locator("#desktop-placeholder").textContent(), /Reconnect when the host is available/);
+  const offlineViewport = await page.locator("#desktop-viewport").boundingBox();
+  assert(offlineViewport && offlineViewport.height < 360, "offline viewer should keep the empty stage compact");
+  if (process.env.DESKTOP_OFFLINE_PREVIEW)
+    await page.screenshot({ path: process.env.DESKTOP_OFFLINE_PREVIEW, fullPage: true });
+  await page.evaluate(() => window.setDesktopHostReachable(true));
+  await page.locator("#desktop-retry").click();
+  await page.getByText("Ready to start").waitFor();
+  assert.equal(await page.locator("#desktop-retry").isVisible(), false);
   await page.locator("#desktop-start").click();
   await page.getByText("View only · GC may control").waitFor();
+  assert.equal(await page.evaluate(() => window.__desktopStartTimeout), 30_000);
   await page.locator("#desktop-take").click();
   await page.getByText("You control · GC paused").waitFor();
   assert.equal(await page.locator("#desktop-return").isVisible(), true);
@@ -160,12 +191,33 @@ try {
   if (process.env.DESKTOP_PREVIEW)
     await page.screenshot({ path: process.env.DESKTOP_PREVIEW, fullPage: true });
   await page.locator("#desktop-stream").dispatchEvent("error");
-  await page.getByText("Stream disconnected · desktop session continues").waitFor();
+  await page.getByText("Stream disconnected", { exact: true }).waitFor();
+  assert.equal(await page.locator("#desktop-stream").isHidden(), true, "broken image alt text should stay hidden");
+  assert.equal(await page.locator("#desktop-retry").isVisible(), true);
   assert.equal(lease, "human", "stream failure must leave the human lease in place");
   assert(!actions.includes("return-to-agent"), "stream failure must not return control implicitly");
   await page.locator("#desktop-more > summary").click();
+  assert.equal(await page.locator("#desktop-more").evaluate((details) => details.open), true);
   await page.locator("#desktop-reconnect").click();
+  assert.equal(await page.locator("#desktop-more").evaluate((details) => details.open), false);
+  assert.equal(await page.locator("#desktop-more > summary").evaluate((summary) => summary === document.activeElement), true);
   await page.getByText(/^Live · updated/).waitFor();
+  assert.equal(await page.locator("#desktop-stream").evaluate((image) => image.naturalWidth / image.naturalHeight), 1.6);
+  assert.equal(await page.locator("#desktop-placeholder").isHidden(), true);
+  await page.locator("#desktop-more > summary").click();
+  await page.locator("#desktop-title").click();
+  assert.equal(await page.locator("#desktop-more").evaluate((details) => details.open), false, "outside pointer should close More");
+  const moreSummary = page.locator("#desktop-more > summary");
+  const moreBox = await moreSummary.boundingBox();
+  assert(moreBox);
+  await page.touchscreen.tap(moreBox.x + moreBox.width / 2, moreBox.y + moreBox.height / 2);
+  assert.equal(await page.locator("#desktop-more").evaluate((details) => details.open), true, "touch should open More");
+  if (process.env.DESKTOP_MORE_PREVIEW)
+    await page.screenshot({ path: process.env.DESKTOP_MORE_PREVIEW, fullPage: true });
+  await page.keyboard.press("Escape");
+  assert.equal(await page.locator("#desktop-more").evaluate((details) => details.open), false, "Escape should close More");
+  assert.equal(await page.locator("#desktop-viewer").evaluate((dialog) => dialog.open), true, "Escape should keep the viewer open when More was open");
+  assert.equal(await moreSummary.evaluate((summary) => summary === document.activeElement), true, "Escape should restore focus to More");
   await page.locator("#desktop-more > summary").click();
   await page.locator("#desktop-keyboard-open").click();
   assert.equal(await page.locator("#desktop-keyboard-row").isVisible(), true);
@@ -194,17 +246,32 @@ try {
   const directPoint = await page.locator("#desktop-viewport").boundingBox();
   assert(directPoint);
   await page.touchscreen.tap(directPoint.x + directPoint.width * 0.65, directPoint.y + directPoint.height * 0.65);
-  assert(input.some((event) => event.action === "pointer-move" && event.x > 0.5 && event.y > 0.5));
+  await page.waitForTimeout(50);
+  assert(input.some((event) => event.action === "pointer-button" && event.button === "left" && event.x > 0.5 && event.y > 0.5));
   const cdp = await page.context().newCDPSession(page);
   const midX = directPoint.x + directPoint.width / 2;
   const midY = directPoint.y + directPoint.height / 2;
+  const dragX = midX - 70;
+  const dragY = midY - 20;
+  const beforeDrag = input.length;
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
+    { id: 19, x: dragX, y: dragY, radiusX: 4, radiusY: 4, force: 1 },
+  ] });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [
+    { id: 19, x: dragX + 36, y: dragY + 18, radiusX: 4, radiusY: 4, force: 1 },
+  ] });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await page.waitForTimeout(80);
+  assert(input.some((event) => event.action === "pointer-button" && event.button === "left" && event.pressed));
+  assert(input.some((event) => event.action === "pointer-button" && event.button === "left" && !event.pressed));
+  assert(input.slice(beforeDrag).some((event) => event.action === "pointer-move"));
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
     { id: 20, x: midX - 20, y: midY + 20, radiusX: 4, radiusY: 4, force: 1 },
   ] });
-  await page.waitForTimeout(510);
+  await page.waitForTimeout(560);
   assert(input.some((event) => event.action === "pointer-button" && event.button === "right" && event.pressed));
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await page.waitForTimeout(60);
+  await page.waitForTimeout(100);
   assert(input.some((event) => event.action === "pointer-button" && event.button === "right" && !event.pressed));
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
     { id: 21, x: midX - 28, y: midY, radiusX: 4, radiusY: 4, force: 1 },
@@ -224,10 +291,10 @@ try {
   await page.locator("#desktop-text").focus();
   await page.keyboard.press("a");
   await page.locator('[data-desktop-key="Escape"]').click();
-  await page.waitForTimeout(40);
+  await page.waitForTimeout(120);
   assert(input.some((event) => event.action === "key" && event.key === "Control" && event.pressed));
   assert(input.some((event) => event.action === "key" && event.key === "A" && event.pressed));
-  assert(input.some((event) => event.action === "key" && event.key === "Escape" && event.pressed));
+  assert(input.some((event) => event.action === "key" && event.key === "Escape" && event.pressed), JSON.stringify(input.slice(-12)));
   await page.locator("#desktop-trackpad").click();
   const beforeTwoFingerScroll = input.filter((event) => event.action === "scroll").length;
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
@@ -252,6 +319,7 @@ try {
 
   await page.locator("#desktop-close").click();
   await page.waitForFunction(() => !document.querySelector("#desktop-viewer").open);
+  assert.equal(await page.locator("#desktop-toggle").evaluate((button) => button === document.activeElement), true);
   assert.equal(lease, "human", "closing the viewer must leave the human lease in place");
   assert(!actions.includes("return-to-agent"), "viewer close must not return control implicitly");
   await page.locator("#desktop-toggle").click();
@@ -280,7 +348,7 @@ try {
   await page.locator("#desktop-more > summary").click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.locator("#desktop-stop").click();
-  await page.getByText("No managed desktop is running on this host.").waitFor();
+  await page.getByText("No desktop is open. Start a desktop to see the workspace here.").waitFor();
   assert.deepEqual(actions.filter((action) => action === "start" || action === "stop"), ["start", "stop"]);
   assert.deepEqual(errors, []);
 } finally {

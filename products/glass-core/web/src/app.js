@@ -102,7 +102,7 @@ window.addEventListener("pagehide", () => {
   saveDraft();
   drafts.flush();
 });
-async function api(path, data, signal) {
+async function api(path, data, signal, options = {}) {
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener("abort", abort, { once: true });
@@ -111,7 +111,7 @@ async function api(path, data, signal) {
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, 12000);
+  }, options.timeoutMs ?? 12000);
   try {
     const r = await fetch("/api/" + path, {
       method: data === undefined ? "GET" : "POST",

@@ -1258,6 +1258,17 @@ impl NativeDocument {
         self.visible_text_with_hidden(max_bytes, &hidden_by_index)
     }
 
+    pub(crate) fn visible_text_projection_with_counts(
+        &self,
+        max_bytes: usize,
+    ) -> (String, bool, usize, usize) {
+        let hidden_by_index = self.effective_hidden_by_index();
+        let hidden_nodes = hidden_by_index.values().filter(|hidden| **hidden).count();
+        let node_count = hidden_by_index.len();
+        let (text, truncated) = self.visible_text_with_hidden(max_bytes, &hidden_by_index);
+        (text, truncated, node_count, hidden_nodes)
+    }
+
     pub(super) fn visible_text_with_hidden(
         &self,
         max_bytes: usize,

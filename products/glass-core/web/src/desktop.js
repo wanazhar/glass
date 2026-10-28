@@ -35,6 +35,7 @@ export function desktopSurface({ api }) {
   const more = $("desktop-more");
   const moreSummary = more.querySelector("summary");
   let snapshot = null;
+  let snapshotObservedAt = 0;
   let connectionError = null;
   let requestController = null;
   let pollTimer = 0;
@@ -43,6 +44,8 @@ export function desktopSurface({ api }) {
   let streamSession = null;
   let streamFrameSeqAtStart = null;
   let streamDecodedSeq = 0;
+  let streamDecodedFrameTimeMs = null;
+  let streamProfileWidth = null;
   let streamGeneration = 0;
   let streamController = null;
   let streamLatestFrame = null;
@@ -58,6 +61,8 @@ export function desktopSurface({ api }) {
   const heldButtons = new Set();
   const heldKeys = new Set();
   const maxQueuedInput = 128;
+  const maxVisibleFrameAgeMs = 3000;
+  const freshFrameAgeMs = 1000;
   const pendingFrameTimings = [];
   let directTouch = false;
   let pointerX = 0.5;
@@ -98,6 +103,8 @@ export function desktopSurface({ api }) {
     streamController = null;
     streamLatestFrame = null;
     streamLoaded = false;
+    streamDecodedFrameTimeMs = null;
+    streamProfileWidth = null;
     if (streamObjectUrl) URL.revokeObjectURL(streamObjectUrl);
     streamObjectUrl = null;
     stream.removeAttribute("src");
@@ -105,6 +112,7 @@ export function desktopSurface({ api }) {
 
   function setStream(available) {
     const session = snapshot?.sessionId || null;
+    const requestedWidth = coarsePointer.matches || window.innerWidth <= 600 ? 480 : null;
     if (!available || !session) {
       stopStream();
       streamSession = null;
@@ -112,16 +120,57 @@ export function desktopSurface({ api }) {
       stream.hidden = true;
       return;
     }
-    if (streamSession !== session || !streamController) {
+    if (streamSession !== session || !streamController || streamProfileWidth !== requestedWidth) {
+      if (streamController) stopStream();
       streamFailed = false;
       streamLoaded = false;
       streamSession = session;
       streamFrameSeqAtStart = Number(snapshot?.frameSeq) || 0;
       streamDecodedSeq = 0;
+      streamDecodedFrameTimeMs = null;
+      streamProfileWidth = requestedWidth;
       streamController = new AbortController();
       void consumeStream(session, ++streamGeneration, streamController);
     }
     stream.hidden = !streamLoaded || streamFailed;
+  }
+
+  function estimatedFrameAgeMs(frameTimeMs, seq = streamDecodedSeq) {
+    const statusAge = Number(snapshot?.frameAgeMs);
+    const statusTime = Number(snapshot?.frameTimeMs);
+    const elapsed = snapshotObservedAt ? performance.now() - snapshotObservedAt : 0;
+    if (Number.isFinite(statusAge) && Number.isFinite(statusTime) && Number.isFinite(frameTimeMs)) {
+      return Math.max(0, statusAge + statusTime - frameTimeMs + elapsed);
+    }
+    const statusSeq = Number(snapshot?.frameSeq);
+    const approximateFrameAge = Number.isFinite(statusAge) ? statusAge : 0;
+    return approximateFrameAge + (Number.isFinite(statusSeq) ? Math.max(0, statusSeq - seq) * 200 : 0) + elapsed;
+  }
+
+  function updateStreamPresentation() {
+    if (!snapshot?.available || !snapshot?.sessionId || streamFailed) return;
+    const hasDecodedFrame = stream.naturalWidth > 0
+      && stream.naturalHeight > 0
+      && streamLoaded
+      && streamSession === snapshot.sessionId
+      && Number.isFinite(streamDecodedFrameTimeMs)
+      && streamDecodedSeq > (streamFrameSeqAtStart ?? 0);
+    const ageMs = hasDecodedFrame ? estimatedFrameAgeMs(streamDecodedFrameTimeMs) : Infinity;
+    const visible = hasDecodedFrame && ageMs <= maxVisibleFrameAgeMs;
+    stream.hidden = !visible;
+    placeholder.hidden = visible;
+    placeholder.textContent = hasDecodedFrame && !visible
+      ? "The latest image is delayed. Waiting for a recent frame…"
+      : "Connecting to the managed desktop…";
+    if (visible && ageMs >= freshFrameAgeMs) {
+      setStatus(`Delayed · ${Math.max(1, Math.ceil(ageMs / 1000))} sec`, false);
+    } else if (visible) {
+      setStatus(`Live · updated ${ageMs < 1000 ? "just now" : `${Math.round(ageMs / 1000)} sec ago`}`, false);
+    } else if (hasDecodedFrame) {
+      setStatus("Waiting for a recent frame", false);
+    } else {
+      setStatus("Connecting to the managed desktop…", false);
+    }
   }
 
   function findBytes(haystack, needle, start = 0) {
@@ -148,8 +197,10 @@ export function desktopSurface({ api }) {
       while (streamLatestFrame && isOpen()) {
         const frame = streamLatestFrame;
         streamLatestFrame = null;
-        const statusSeq = Number(snapshot?.frameSeq) || 0;
-        if (frame.seq < statusSeq - 1) continue;
+        if (frame.generation !== streamGeneration
+          || frame.seq <= streamDecodedSeq
+          || frame.seq <= (streamFrameSeqAtStart ?? 0)
+          || estimatedFrameAgeMs(frame.timeMs, frame.seq) > maxVisibleFrameAgeMs) continue;
         const objectUrl = URL.createObjectURL(frame.blob);
         const decoded = new Image();
         decoded.src = objectUrl;
@@ -159,12 +210,12 @@ export function desktopSurface({ api }) {
           URL.revokeObjectURL(objectUrl);
           throw new Error("The desktop sent an image that could not be decoded.");
         }
-        if (!isOpen() || streamSession !== snapshot?.sessionId) {
+        if (!isOpen() || frame.generation !== streamGeneration || streamSession !== snapshot?.sessionId) {
           URL.revokeObjectURL(objectUrl);
           return;
         }
-        const newestSeq = Number(snapshot?.frameSeq) || frame.seq;
-        if (frame.seq < newestSeq - 1 || (streamLatestFrame && streamLatestFrame.seq > frame.seq)) {
+        if (estimatedFrameAgeMs(frame.timeMs, frame.seq) > maxVisibleFrameAgeMs
+          || (streamLatestFrame && streamLatestFrame.seq > frame.seq)) {
           URL.revokeObjectURL(objectUrl);
           continue;
         }
@@ -182,8 +233,10 @@ export function desktopSurface({ api }) {
           return;
         }
         streamDecodedSeq = frame.seq;
+        streamDecodedFrameTimeMs = frame.timeMs;
         streamLoaded = true;
         if (previousUrl) URL.revokeObjectURL(previousUrl);
+        updateStreamPresentation();
       }
     } catch (error) {
       if (isOpen()) {
@@ -207,7 +260,8 @@ export function desktopSurface({ api }) {
     const headerDelimiter = new Uint8Array([13, 10, 13, 10]);
     let buffer = new Uint8Array(0);
     try {
-      const response = await fetch("/api/desktop/stream", {
+      const streamPath = streamProfileWidth ? `/api/desktop/stream?width=${streamProfileWidth}` : "/api/desktop/stream";
+      const response = await fetch(streamPath, {
         credentials: "same-origin",
         cache: "no-store",
         signal: controller.signal,
@@ -234,19 +288,23 @@ export function desktopSurface({ api }) {
           const headerText = new TextDecoder().decode(buffer.slice(boundary.length, headerAt));
           const length = Number(headerText.match(/(?:^|\r\n)Content-Length:\s*(\d+)/i)?.[1]);
           const seq = Number(headerText.match(/(?:^|\r\n)X-Frame-Seq:\s*(\d+)/i)?.[1]);
+          const timeMs = Number(headerText.match(/(?:^|\r\n)X-Frame-Time-Ms:\s*(\d+(?:\.\d+)?)/i)?.[1]);
           if (!Number.isSafeInteger(length) || length <= 0 || length > 4 * 1024 * 1024 || !Number.isSafeInteger(seq)) {
             throw new Error("Desktop stream sent an invalid frame header.");
           }
+          if (!Number.isFinite(timeMs)) throw new Error("Desktop stream sent an invalid frame timestamp.");
           const frameAt = headerAt + headerDelimiter.length;
           const afterFrame = frameAt + length;
           if (buffer.length < afterFrame) break;
           const frame = {
             seq,
+            timeMs,
+            generation,
             blob: new Blob([buffer.slice(frameAt, afterFrame)], { type: "image/jpeg" }),
           };
           buffer = buffer.slice(afterFrame);
-          const newestStatusSeq = Number(snapshot?.frameSeq) || 0;
-          if (seq >= newestStatusSeq - 1 && seq > streamDecodedSeq) {
+          if (seq > streamDecodedSeq && seq > (streamFrameSeqAtStart ?? 0)
+            && estimatedFrameAgeMs(timeMs, seq) <= maxVisibleFrameAgeMs) {
             streamLatestFrame = frame;
             void decodeNewestFrame();
           }
@@ -268,6 +326,7 @@ export function desktopSurface({ api }) {
   function render(next) {
     const priorFrameSeq = Number(snapshot?.frameSeq) || 0;
     snapshot = next;
+    snapshotObservedAt = performance.now();
     const running = Boolean(next?.sessionId);
     const available = Boolean(next?.available && running);
     const humanOwnsInput = next?.lease === "human";
@@ -340,39 +399,11 @@ export function desktopSurface({ api }) {
     }
 
     setStream(true);
+    updateStreamPresentation();
     const frameSeq = Number(next.frameSeq);
-    const ageMs = Number(next.frameAgeMs);
-    const hasDecodedFreshFrame = stream.naturalWidth > 0
-      && stream.naturalHeight > 0
-      && streamSession === next.sessionId
-      && Number.isFinite(frameSeq)
-      && streamDecodedSeq >= frameSeq - 1
-      && frameSeq > (streamFrameSeqAtStart ?? frameSeq - 1)
-      && Number.isFinite(ageMs)
-      && ageMs < 1000;
-    if (hasDecodedFreshFrame && !streamFailed) {
-      streamLoaded = true;
-      stream.hidden = false;
-    }
-    const connected = hasDecodedFreshFrame && streamLoaded && !streamFailed;
-    if (!connected) stream.hidden = true;
-    placeholder.hidden = connected;
-    placeholder.textContent = streamFailed
-      ? "The desktop keeps running. Reconnect the stream to continue."
-      : "Connecting to the managed desktop…";
-    const recency = Number.isFinite(ageMs)
-      ? ageMs < 1000
-        ? "just now"
-        : `${Math.round(ageMs / 1000)} sec ago`
-      : null;
-    setStatus(
-      streamFailed
-        ? "Stream disconnected · desktop is still running"
-        : connected
-          ? `Live · updated ${recency || "recently"}`
-          : "Connecting to the managed desktop…",
-      streamFailed,
-    );
+    const currentAgeMs = estimatedFrameAgeMs(streamDecodedFrameTimeMs);
+    const connected = streamLoaded && streamDecodedSeq > (streamFrameSeqAtStart ?? 0)
+      && currentAgeMs <= maxVisibleFrameAgeMs && !streamFailed;
     if (connected && frameSeq > priorFrameSeq) {
       const now = performance.now();
       for (let index = pendingFrameTimings.length - 1; index >= 0; index -= 1) {

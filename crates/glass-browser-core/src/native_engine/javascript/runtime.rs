@@ -118,7 +118,12 @@ impl NativeJavaScriptRuntime {
         let rejection_queue = Arc::clone(&unhandled_promise_rejections);
         runtime.set_host_promise_rejection_tracker(Some(Box::new(
             move |ctx, promise, reason, is_handled| {
-                let key = format!("{promise:?}");
+                // A rejected Promise may be unreachable immediately after
+                // its rejection callback runs. QuickJS can then reuse its
+                // object address for a later Promise, so the debug identity
+                // alone is not a unique queue key for the lifetime of the
+                // page.
+                let identity = format!("{promise:?}");
                 let fallback = format!("{reason:?}");
                 let reason = Coerced::<std::string::String>::from_js(&ctx, reason)
                     .map(|value| value.0)
@@ -126,27 +131,37 @@ impl NativeJavaScriptRuntime {
                 let reason = bounded_unhandled_promise_rejection_reason(reason);
                 if let Ok(mut queue) = rejection_queue.lock() {
                     if is_handled {
-                        if queue.pending.remove(&key).is_none()
-                            && let Some((_, reason)) = queue.reported.remove(&key)
+                        // Match the newest outstanding occurrence of this
+                        // address. Older entries belong to now-collected
+                        // Promises whose addresses QuickJS has reused.
+                        let pending_key = queue
+                            .pending
+                            .iter()
+                            .filter(|(key, _)| key.starts_with(&format!("{identity}#")))
+                            .max_by_key(|(_, (order, _))| *order)
+                            .map(|(key, _)| key.clone());
+                        if pending_key
+                            .and_then(|key| queue.pending.remove(&key))
+                            .is_none()
+                            && let Some(reported_key) = queue
+                                .reported
+                                .iter()
+                                .filter(|(key, _)| key.starts_with(&format!("{identity}#")))
+                                .max_by_key(|(_, (order, _))| *order)
+                                .map(|(key, _)| key.clone())
+                            && let Some((_, reason)) = queue.reported.remove(&reported_key)
                             && queue.handled.len() < MAX_NATIVE_UNHANDLED_REJECTIONS
                         {
                             let order = queue.next_order;
                             queue.next_order = queue.next_order.saturating_add(1);
-                            queue.handled.insert(key, (order, reason));
+                            queue.handled.insert(reported_key, (order, reason));
                         }
-                    } else if queue.pending.len() < MAX_NATIVE_UNHANDLED_REJECTIONS
-                        || queue.pending.contains_key(&key)
-                    {
-                        let order = queue
+                    } else if queue.pending.len() < MAX_NATIVE_UNHANDLED_REJECTIONS {
+                        let order = queue.next_order;
+                        queue.next_order = queue.next_order.saturating_add(1);
+                        queue
                             .pending
-                            .get(&key)
-                            .map(|(order, _)| *order)
-                            .unwrap_or_else(|| {
-                                let order = queue.next_order;
-                                queue.next_order = queue.next_order.saturating_add(1);
-                                order
-                            });
-                        queue.pending.insert(key, (order, reason));
+                            .insert(format!("{identity}#{order}"), (order, reason));
                     }
                 }
             },

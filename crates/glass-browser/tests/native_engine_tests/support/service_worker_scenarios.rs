@@ -940,6 +940,7 @@ pub(super) async fn native_content_process_idle_timer_image_media_events_broker_
     blocked_listener.set_nonblocking(true).unwrap();
     let blocked_address = blocked_listener.local_addr().unwrap();
     let png = native_test_png_bytes();
+    let media_bytes = native_test_wav_bytes();
     let page = r#"<!doctype html><html><head><script>
 globalThis.resourceEventTrace = [];
 document.addEventListener('load', event => resourceEventTrace.push(event.type + ':' + event.target.tagName), true);
@@ -997,7 +998,7 @@ setTimeout(() => {
     });
   });
   audio.addEventListener('error', () => {});
-  audio.src = '/timer.webm';
+  audio.src = '/timer.wav';
   document.body.appendChild(audio);
 }, 25);
 </script></head><body><main>timer image and media event handoff</main></body></html>"#
@@ -1026,16 +1027,15 @@ setTimeout(() => {
                     response.extend_from_slice(&png);
                     response
                 }
-                "/timer.webm" => {
+                "/timer.wav" => {
                     assert!(request.contains("event_seed=secret"));
                     assert!(request.contains("event_image=accepted"));
-                    let body = b"\x1a\x45\xdf\xa3";
                     let mut response = format!(
-                        "HTTP/1.1 200 OK\r\nSet-Cookie: event_media=accepted; Path=/; HttpOnly; SameSite=Lax\r\nContent-Type: audio/webm\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: event_media=accepted; Path=/; HttpOnly; SameSite=Lax\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        media_bytes.len()
                     )
                     .into_bytes();
-                    response.extend_from_slice(body);
+                    response.extend_from_slice(&media_bytes);
                     response
                 }
                 "/image-check" => {
@@ -1119,7 +1119,7 @@ setTimeout(() => {
         .iter()
         .map(|request| request.split_whitespace().nth(1).unwrap_or_default())
         .collect::<Vec<_>>();
-    assert_eq!(&paths[..3], ["/page", "/timer.png", "/timer.webm"]);
+    assert_eq!(&paths[..3], ["/page", "/timer.png", "/timer.wav"]);
     let mut callback_paths = paths[3..].to_vec();
     callback_paths.sort_unstable();
     assert_eq!(

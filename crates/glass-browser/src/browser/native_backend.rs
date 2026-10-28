@@ -410,6 +410,7 @@ struct NativeFrameState {
     next_frame_number: u64,
     discovered_generation: Option<u32>,
     discovered_documents: BTreeMap<String, NativeFrameDiscoveryStamp>,
+    discovered_frame_sources: BTreeMap<(String, u32), String>,
     observed_frame_owner_removal_sequences: BTreeMap<(String, u32, u32), u64>,
     pending_retired: Vec<NativeRetiredFrame>,
 }
@@ -432,6 +433,7 @@ impl NativeFrameState {
             next_frame_number: 1,
             discovered_generation: None,
             discovered_documents: BTreeMap::new(),
+            discovered_frame_sources: BTreeMap::new(),
             observed_frame_owner_removal_sequences: BTreeMap::new(),
             pending_retired: Vec::new(),
         }
@@ -448,6 +450,7 @@ impl NativeFrameState {
             next_frame_number: 1,
             discovered_generation: None,
             discovered_documents: BTreeMap::new(),
+            discovered_frame_sources: BTreeMap::new(),
             observed_frame_owner_removal_sequences: BTreeMap::new(),
             pending_retired: Vec::new(),
         }
@@ -521,6 +524,7 @@ fn native_frame_state_matches_snapshot(
         && current.next_frame_number == snapshot.next_frame_number
         && current.discovered_generation == snapshot.discovered_generation
         && current.discovered_documents == snapshot.discovered_documents
+        && current.discovered_frame_sources == snapshot.discovered_frame_sources
         && current.observed_frame_owner_removal_sequences
             == snapshot.observed_frame_owner_removal_sequences
         && current.parked.len() == snapshot.parked.len()
@@ -11492,6 +11496,21 @@ async fn reconcile_native_frames(
         .iter()
         .map(|(node_index, _, _)| *node_index)
         .collect::<BTreeSet<_>>();
+    let changed_source_owner_indices = sources
+        .iter()
+        .filter_map(|(node_index, source, _)| {
+            let frame_id = frames.parked.iter().find_map(|(frame_id, frame)| {
+                (frame.parent_id.as_deref() == Some(active_frame_id.as_str())
+                    && frame.owner_node_index == Some(*node_index))
+                .then_some(frame_id)
+            })?;
+            (frames
+                .discovered_frame_sources
+                .get(&(frame_id.to_owned(), *node_index))
+                != Some(source))
+            .then_some(*node_index)
+        })
+        .collect::<BTreeSet<_>>();
     let generation_changed =
         previous_stamp.is_none_or(|previous| previous.document_generation != generation);
     let mut retired_roots = frames
@@ -11502,6 +11521,7 @@ async fn reconcile_native_frames(
             let owner_node_index = frame.owner_node_index?;
             (generation_changed
                 || !source_owner_indices.contains(&owner_node_index)
+                || changed_source_owner_indices.contains(&owner_node_index)
                 || removed_owner_indices.contains(&owner_node_index))
             .then_some(frame_id.clone())
         })
@@ -11563,16 +11583,25 @@ async fn reconcile_native_frames(
         }
         child.set_frame_id(frame_id.clone());
         child.inherit_service_worker_clients(&parent_service_worker_clients);
+        let inherited_base_url = engine
+            .embedded_frame_inherited_base_url(node_index)
+            .map_err(native_error)?;
+        if inherited_base_url.is_some() {
+            child
+                .inherit_srcdoc_resource_policy_from(engine)
+                .map_err(native_error)?;
+        }
         child.set_embedding_frame_policy(
             embedding_document_url.clone(),
             embedding_frame_sources.clone(),
+            inherited_base_url,
         );
         if let Err(error) = child.initialize_async().await {
             let _ = child.close_async().await;
             return Err(native_error(error));
         }
         frames.parked.insert(
-            frame_id,
+            frame_id.clone(),
             NativeParkedFrame {
                 engine: Arc::new(tokio::sync::Mutex::new(child)),
                 parent_id: Some(active_frame_id.clone()),
@@ -11580,6 +11609,9 @@ async fn reconcile_native_frames(
                 sandboxed_modals,
             },
         );
+        frames
+            .discovered_frame_sources
+            .insert((frame_id, node_index), source);
     }
     if frames
         .focused_frame_id
@@ -11598,6 +11630,13 @@ fn retire_native_frame_subtree(frames: &mut NativeFrameState, root_frame_id: &st
     frame_ids.push(root_frame_id.to_owned());
     for frame_id in frame_ids {
         if let Some(frame) = frames.parked.remove(&frame_id) {
+            if let (Some(parent_id), Some(owner_node_index)) =
+                (frame.parent_id.as_deref(), frame.owner_node_index)
+            {
+                frames
+                    .discovered_frame_sources
+                    .remove(&(parent_id.to_owned(), owner_node_index));
+            }
             frames.pending_retired.push(NativeRetiredFrame {
                 frame_id: frame_id.clone(),
                 engine: frame.engine,

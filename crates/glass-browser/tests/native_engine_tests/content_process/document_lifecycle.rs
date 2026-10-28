@@ -1680,8 +1680,14 @@ async fn native_content_process_blocks_csp_disallowed_frame_before_request_inner
     session.close().await.unwrap();
     server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_blocks_frame_from_head_meta_csp() {
+#[test]
+fn native_content_process_blocks_frame_from_head_meta_csp() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_blocks_frame_from_head_meta_csp_inner());
+    });
+}
+
+async fn native_content_process_blocks_frame_from_head_meta_csp_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

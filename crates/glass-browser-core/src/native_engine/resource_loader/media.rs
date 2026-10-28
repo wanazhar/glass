@@ -100,15 +100,6 @@ impl NativeResourceLoader {
         media_metadata_from_bytes(file_media_type(&path), &bytes)
     }
 
-    pub(crate) async fn load_media_async(
-        &mut self,
-        document_url: &str,
-        src: &str,
-    ) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {
-        self.load_media_async_with_object_url(document_url, src, None)
-            .await
-    }
-
     /// Load a data URL media resource without entering the network owner.
     /// Embedded bytes remain subject to the same bounded media metadata
     /// admission as Blob and HTTP(S) resources.

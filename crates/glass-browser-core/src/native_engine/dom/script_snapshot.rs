@@ -387,6 +387,7 @@ impl NativeDocument {
         let snapshot = NativeScriptDocumentSnapshot {
             revision: self.revision,
             title,
+            base_url: String::new(),
             visible_text,
             elements,
             nodes,

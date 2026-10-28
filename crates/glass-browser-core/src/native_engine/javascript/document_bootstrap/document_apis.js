@@ -87,6 +87,7 @@
     __glassGetTemplateContentsOwnerDocument() {{ return getTemplateContentsOwnerDocument(); }},
     URL: host.url,
     documentURI: host.url,
+    get baseURI() {{ return String(host.base_url || host.url || ""); }},
     compatMode: host.compat_mode === "BackCompat" ? "BackCompat" : "CSS1Compat",
     hidden: false,
     visibilityState: "visible",
@@ -210,12 +211,34 @@
   globalThis.__glassHostDocument = document;
   if (reuseExistingHostTree) {{
     // The serialized tree and its nodes are reused, but the Document wrapper
-    // is recreated for every bootstrap. Keep the root links pointed at this
-    // wrapper so parentNode/getRootNode and document-targeted observers remain
-    // coherent across an otherwise unchanged snapshot.
+    // is recreated for every bootstrap. Refresh every link because text,
+    // comment, and doctype wrappers can otherwise retain an ancestor wrapper
+    // from the previous bootstrap.
+    const pendingParents = [[document, rootChildren]];
+    const linkedNodes = new Set();
+    while (pendingParents.length > 0) {{
+      const [parent, children] = pendingParents.pop();
+      for (const child of children || []) {{
+        if (!child || typeof child !== "object" || linkedNodes.has(child)) continue;
+        linkedNodes.add(child);
+        child.__glassParent = parent;
+        if (Array.isArray(child.__glassChildren)) pendingParents.push([child, child.__glassChildren]);
+        // Template contents are a separate fragment tree whose children keep
+        // that fragment as their parent; its own parent remains null.
+        if (child.content && Array.isArray(child.content.__glassChildren)) {{
+          pendingParents.push([child.content, child.content.__glassChildren]);
+        }}
+      }}
+    }}
+  }} else {{
+    // Snapshot node zero is represented by this Document wrapper rather than
+    // by an entry in nodesByIndex, so link its direct children explicitly on a
+    // fresh host tree as well.
     for (const child of rootChildren) {{
       if (child && typeof child === "object") child.__glassParent = document;
     }}
+  }}
+  if (reuseExistingHostTree) {{
     if (previousHostDocument && previousHostDocument !== document) {{
       for (const observer of mutationObservers) {{
         for (const registration of observer.__glassRegistrations || []) {{

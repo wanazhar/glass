@@ -355,6 +355,7 @@ impl NativeDocument {
             viewport: self.viewport,
             quirks_mode: self.quirks_mode,
             document_referrer_policy: self.document_referrer_policy.as_str().to_owned(),
+            inherited_base_url: self.inherited_base_url.clone(),
             font_resources,
             blocked_inline_style_nodes: self
                 .nodes
@@ -440,6 +441,7 @@ impl NativeDocument {
                     reason: "content process returned an invalid Document referrer policy".into(),
                 }
             })?;
+        let inherited_base_url = wire.inherited_base_url.take();
         let embedded_frame_owner_removal_sequences = wire.embedded_frame_owner_removal_sequences;
         let next_embedded_frame_owner_removal_sequence =
             wire.next_embedded_frame_owner_removal_sequence;
@@ -1549,6 +1551,7 @@ impl NativeDocument {
             max_dom_depth: limits.max_dom_depth,
             quirks_mode,
             document_referrer_policy,
+            inherited_base_url,
             nodes,
             stylesheet: NativeStylesheet::default(),
             font_resources: font_resources.clone(),

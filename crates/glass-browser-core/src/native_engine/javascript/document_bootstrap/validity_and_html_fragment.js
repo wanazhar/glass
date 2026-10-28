@@ -93,6 +93,7 @@
     createText,
     createComment,
     contextElement = fragment,
+    suppressMutations = false,
   ) => {{
     // Parser output is already a complete, detached tree. Link it into the
     // JavaScript mirror directly instead of calling the public appendChild
@@ -115,14 +116,16 @@
         ? Number(parent.nodeIndex)
         : null;
       if (typeof parent.__glassSyncContent === "function") parent.__glassSyncContent();
-      queueMutation({{
-        type: "childList",
-        target: parent,
-        addedNodes: [child],
-        removedNodes: [],
-        previousSibling,
-        nextSibling: null,
-      }});
+      if (!suppressMutations) {{
+        queueMutation({{
+          type: "childList",
+          target: parent,
+          addedNodes: [child],
+          removedNodes: [],
+          previousSibling,
+          nextSibling: null,
+        }});
+      }}
     }};
     const source = String(markup);
     if (source.length > storageValueLimit) {{
@@ -356,7 +359,7 @@
       ].includes(mediaType);
   }};
   const effectiveDocumentBaseUrl = () => {{
-    const fallback = String(host.url || host.base_url || "");
+    const fallback = String(host.base_url || host.url || "");
     const ownerDocument = globalThis.document;
     const pending = Array.isArray(ownerDocument && ownerDocument.__glassChildren)
       ? ownerDocument.__glassChildren.slice().reverse()

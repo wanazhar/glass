@@ -259,13 +259,7 @@
     element.getAttributeNode = getAttributeNode;
     element.getAttributeNodeNS = getAttributeNodeNS;
     element.setAttributeNode = setAttributeNode;
-    element.setAttributeNodeNS = (namespace, attribute) => {{
-      const namespaceURI = normalizeAttributeNamespace(namespace);
-      if ((attribute && (attribute.namespaceURI || null)) !== namespaceURI) {{
-        throw attributeNodeException("The attribute namespace does not match", "NamespaceError");
-      }}
-      return setAttributeNode(attribute);
-    }};
+    element.setAttributeNodeNS = (attribute) => setAttributeNode(attribute);
     element.removeAttributeNode = removeAttributeNode;
     const namedNodeMap = {{
       get length() {{ return element.getAttributeNames().length; }},
@@ -277,7 +271,7 @@
       getNamedItem(name) {{ return getAttributeNode(name); }},
       getNamedItemNS(namespace, name) {{ return getAttributeNodeNS(namespace, name); }},
       setNamedItem(attribute) {{ return setAttributeNode(attribute); }},
-      setNamedItemNS(namespace, attribute) {{ return element.setAttributeNodeNS(namespace, attribute); }},
+      setNamedItemNS(attribute) {{ return element.setAttributeNodeNS(attribute); }},
       removeNamedItem(name) {{
         const attribute = getAttributeNode(name);
         if (!attribute) throw attributeNodeException("The attribute was not found", "NotFoundError");
@@ -326,7 +320,8 @@
     attributeNodeSurfaceStates.set(element, state);
     return state;
   }};
-  const installAttributeNodeSurface = () => {{}};
+  const installAttributeNodeSurface = (element, ownerDocumentResolver) =>
+    ensureAttributeNodeSurface(element, ownerDocumentResolver);
   Object.defineProperties(nativeElementSharedPrototype, {{
     attributes: {{
       enumerable: true,
@@ -348,9 +343,9 @@
       ensureAttributeNodeSurface(this);
       return this.setAttributeNode(attribute);
     }} }},
-    setAttributeNodeNS: {{ configurable: true, writable: true, value(namespace, attribute) {{
+    setAttributeNodeNS: {{ configurable: true, writable: true, value(attribute) {{
       ensureAttributeNodeSurface(this);
-      return this.setAttributeNodeNS(namespace, attribute);
+      return this.setAttributeNodeNS(attribute);
     }} }},
     removeAttributeNode: {{ configurable: true, writable: true, value(attribute) {{
       ensureAttributeNodeSurface(this);

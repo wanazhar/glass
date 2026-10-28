@@ -734,7 +734,18 @@
         if (!owner || typeof owner.insertBefore !== "function") throw new TypeError("outerHTML requires an attached element");
         const fragment = document.createDocumentFragment();
         populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText, makeDetachedComment, owner);
-        for (const child of fragment.__glassChildren.slice()) owner.insertBefore(child, element);
+        const queueParsedDescendants = (parent) => {{
+          for (const child of parent.__glassChildren || []) {{
+            if (child.__glassSetByTextContent !== true) {{
+              pushCommand({{ kind: "appendChild", parent_index: parent.nodeIndex, child_index: child.nodeIndex }});
+            }}
+            queueParsedDescendants(child);
+          }}
+        }};
+        for (const child of fragment.__glassChildren.slice()) {{
+          queueParsedDescendants(child);
+          owner.insertBefore(child, element);
+        }}
         element.remove();
       }},
     }});
@@ -759,6 +770,12 @@
       mediaLoad: () => pushCommand({{ kind: "mediaLoad", node_index: entry.nodeIndex }}),
       mediaFrameTime: (timeMillis, playing, playbackRate) => pushCommand({{ kind: "mediaFrameTime", node_index: entry.nodeIndex, time_millis: Math.max(0, Math.trunc(Number(timeMillis) || 0)), playing: Boolean(playing), playback_rate: Number(playbackRate) }}),
     }});
+    // Keep the reflected boolean-attribute accessors authoritative. The
+    // initial snapshot fields above are writable data properties and would
+    // otherwise shadow disabled/hidden/multiple setters.
+    delete element.disabled;
+    delete element.hidden;
+    delete element.multiple;
     refreshInlineAttributeHandlers();
     nativeCanvasInstallElement(element, entry);
     Object.defineProperty(element, "__glassAttributeSource", {{
@@ -796,6 +813,7 @@
               // the authoritative native mutation; emitting a second append
               // can outlive this suppression scope during async continuations.
               const child = makeDetachedText(value);
+              Object.defineProperty(child, "__glassSetByTextContent", {{ value: true }});
               element.__glassChildren.push(child);
               child.__glassParent = element;
               child.parentIndex = entry.nodeIndex;
@@ -848,7 +866,8 @@
         if (value.length > storageValueLimit) throw new RangeError("native element innerHTML exceeds its limit");
         if (element.localName === "template") {{
           const content = element.content;
-          for (const child of content.__glassChildren) {{
+          const oldChildren = content.__glassChildren.slice();
+          for (const child of oldChildren) {{
             child.__glassParent = null;
             child.parentIndex = null;
           }}
@@ -863,6 +882,8 @@
               makeDetachedElement,
               makeDetachedText,
               makeDetachedComment,
+              undefined,
+              true,
             );
             const suppressReactions = globalThis.__glassWithNativeCustomElementReactionsSuppressed;
             if (typeof suppressReactions === "function") suppressReactions(populate);
@@ -872,6 +893,8 @@
           }}
           innerHtml = value;
           element.__glassSyncContent(true);
+          if (typeof globalThis.__glassQueueInnerHtmlMutation === "function")
+            globalThis.__glassQueueInnerHtmlMutation(content, oldChildren, content.__glassChildren);
           pushCommand({{ kind: "setInnerHtml", node_index: entry.nodeIndex, value }});
           const nativeInnerHtmlNodeIndexes = globalThis.__glassNativeInnerHtmlNodeIndexes;
           if (typeof nativeInnerHtmlNodeIndexes === "function") {{
@@ -903,6 +926,8 @@
             makeDetachedElement,
             makeDetachedText,
             makeDetachedComment,
+            element,
+            true,
           );
           const suppressReactions = globalThis.__glassWithNativeCustomElementReactionsSuppressed;
           if (typeof suppressReactions === "function") suppressReactions(populate);
@@ -911,6 +936,11 @@
           suppressHostCommands -= 1;
         }}
         element.__glassSyncContent(true);
+        // Connected replacements are observed from the authoritative host
+        // mutation once the command batch is applied. Keep a local record for
+        // detached trees, where the host snapshot cannot report the change.
+        if (!wasConnected && typeof globalThis.__glassQueueInnerHtmlMutation === "function")
+          globalThis.__glassQueueInnerHtmlMutation(element, oldChildren, element.__glassChildren);
         pushCommand({{ kind: "setInnerHtml", node_index: entry.nodeIndex, value }});
         const nativeInnerHtmlNodeIndexes = globalThis.__glassNativeInnerHtmlNodeIndexes;
         if (typeof nativeInnerHtmlNodeIndexes === "function") {{
@@ -956,7 +986,7 @@
           return;
         }}
         value = nextValue;
-        if (selectionStart !== null) {{
+        if (hasTextSelection) {{
           selectionStart = selectionLength();
           selectionEnd = selectionStart;
           selectionDirection = "none";
@@ -1058,17 +1088,17 @@
         element.focusAnchorNodeIndex = nextEntry.focusAnchorNodeIndex ?? null;
         element.hovered = nextEntry.hovered === true;
         element.userInteracted = nextEntry.userInteracted === true;
-        value = nextEntry.value === null
+        value = nextEntry.value == null
           ? (nextEntry.tagName.toLowerCase() === "option"
-            ? (nextEntry.attributes.value === undefined ? nextEntry.text : nextEntry.attributes.value)
+            ? (nextEntry.attributes.value === undefined ? String(nextEntry.text || "") : nextEntry.attributes.value)
             : "")
           : nextEntry.value;
         selectionStart = nextEntry.selectionStart;
         selectionEnd = nextEntry.selectionEnd;
         selectionDirection = nextEntry.selectionDirection || "none";
-        checked = nextEntry.checked;
+        checked = Boolean(nextEntry.checked);
         indeterminate = Boolean(nextEntry.indeterminate);
-        selected = nextEntry.selected;
+        selected = Boolean(nextEntry.selected);
         files = Array.isArray(nextEntry.files) && nextEntry.files.length > 0
           ? makeNativeFileList(nextEntry.files)
           : files && files.length === 0 ? files : null;
@@ -1249,7 +1279,21 @@
     appendChild: {{ configurable: true, writable: true, value(child) {{
       if (child && child.__glassFragment === true) {{
         const children = child.__glassChildren.slice();
-        for (const fragmentChild of children) this.appendChild(fragmentChild);
+        const queueParsedDescendants = (parent) => {{
+          for (const descendant of parent.__glassChildren || []) {{
+            if (descendant.__glassSetByTextContent !== true) {{
+              pushCommand({{ kind: "appendChild", parent_index: parent.nodeIndex, child_index: descendant.nodeIndex }});
+            }}
+            queueParsedDescendants(descendant);
+          }}
+        }};
+        for (const fragmentChild of children) {{
+          // The native HTML fragment parser builds detached descendants in the
+          // JS projection without individual host append commands. Recreate
+          // each subtree before attaching its top-level child to the host.
+          queueParsedDescendants(fragmentChild);
+          this.appendChild(fragmentChild);
+        }}
         child.__glassChildren = [];
         return child;
       }}
@@ -1283,7 +1327,18 @@
     insertBefore: {{ configurable: true, writable: true, value(child, before) {{
       if (child && child.__glassFragment === true) {{
         const children = child.__glassChildren.slice();
-        for (const fragmentChild of children) this.insertBefore(fragmentChild, before);
+        const queueParsedDescendants = (parent) => {{
+          for (const descendant of parent.__glassChildren || []) {{
+            if (descendant.__glassSetByTextContent !== true) {{
+              pushCommand({{ kind: "appendChild", parent_index: parent.nodeIndex, child_index: descendant.nodeIndex }});
+            }}
+            queueParsedDescendants(descendant);
+          }}
+        }};
+        for (const fragmentChild of children) {{
+          queueParsedDescendants(fragmentChild);
+          this.insertBefore(fragmentChild, before);
+        }}
         child.__glassChildren = [];
         return child;
       }}

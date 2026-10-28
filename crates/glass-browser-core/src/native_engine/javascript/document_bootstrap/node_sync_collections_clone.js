@@ -1123,6 +1123,35 @@
       const right = other.__glassChildren || [];
       return left.length === right.length && left.every((child, index) => child.isEqualNode(right[index]));
     }} }},
+    compareDocumentPosition: {{ configurable: true, value(other) {{
+      if (!other || typeof other !== "object") return 1 | 32;
+      if (this === other) return 0;
+      const rootOf = (candidate) => candidate && typeof candidate.getRootNode === "function"
+        ? candidate.getRootNode()
+        : candidate;
+      if (rootOf(this) !== rootOf(other)) return 1 | 32;
+      const containsNode = (ancestor, candidate) => {{
+        let current = candidate;
+        for (let depth = 0; current && depth <= {max_commands}; depth += 1) {{
+          current = current.parentNode || null;
+          if (current === ancestor) return true;
+        }}
+        return false;
+      }};
+      if (containsNode(this, other)) return 4 | 16;
+      if (containsNode(other, this)) return 2 | 8;
+      const ordered = [];
+      const visit = (candidate) => {{
+        if (!candidate || ordered.includes(candidate)) return;
+        ordered.push(candidate);
+        for (const child of Array.isArray(candidate.__glassChildren) ? candidate.__glassChildren : []) visit(child);
+      }};
+      visit(rootOf(this));
+      const left = ordered.indexOf(this);
+      const right = ordered.indexOf(other);
+      if (left < 0 || right < 0) return 1 | 32;
+      return right > left ? 4 : 2;
+    }} }},
     normalize: {{ configurable: true, value() {{
       let previousText = null;
       for (const child of (this.__glassChildren || []).slice()) {{

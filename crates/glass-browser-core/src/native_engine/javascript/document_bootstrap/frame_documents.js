@@ -669,7 +669,16 @@
           if (!owner || typeof owner.insertBefore !== "function") throw new TypeError("outerHTML requires an attached element");
           const fragment = makeFrameDocumentFragment();
           populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment, owner);
-          for (const child of fragment.__glassChildren.slice()) owner.insertBefore(child, projected);
+          const queueParsedDescendants = (parent) => {{
+            for (const child of parent.__glassChildren || []) {{
+              queueFrameCommand(currentBinding, {{ kind: "appendChild", parent_index: parent.nodeIndex, child_index: child.nodeIndex }});
+              queueParsedDescendants(child);
+            }}
+          }};
+          for (const child of fragment.__glassChildren.slice()) {{
+            queueParsedDescendants(child);
+            owner.insertBefore(child, projected);
+          }}
           projected.remove();
         }},
       }});
@@ -781,9 +790,12 @@
           textContent = "";
           suppressHostCommands += 1;
           try {{
-          populateDetachedFragment(projected, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment);
+          populateDetachedFragment(projected, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment, projected, true);
           }} finally {{
             suppressHostCommands -= 1;
+          }}
+          if (projected.__glassAttached) {{
+            for (const child of projected.__glassChildren) registerFrameSubtree(child);
           }}
           projected.__glassSyncContent(true);
           queueFrameCommand(currentBinding, {{ kind: "setInnerHtml", node_index: entry.nodeIndex, value }});
@@ -908,6 +920,12 @@
         }},
       }});
       try {{ Object.setPrototypeOf(projected, elementPrototypeFor(projected.tagName)); }} catch (_error) {{}}
+      // These own data properties shadow the reflected boolean-attribute
+      // accessors copied onto HTMLElement prototypes. Let the shared accessors
+      // update the frame's local state through setAttribute/removeAttribute.
+      delete projected.disabled;
+      delete projected.hidden;
+      delete projected.multiple;
       return projected;
     }});
     const frameNodeSnapshots = Array.isArray(snapshot.nodes) ? snapshot.nodes : [];
@@ -1520,7 +1538,16 @@
           if (!owner || typeof owner.insertBefore !== "function") throw new TypeError("outerHTML requires an attached element");
           const fragment = makeFrameDocumentFragment();
           populateDetachedFragment(fragment, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment, owner);
-          for (const child of fragment.__glassChildren.slice()) owner.insertBefore(child, projected);
+          const queueParsedDescendants = (parent) => {{
+            for (const child of parent.__glassChildren || []) {{
+              queueFrameCommand(currentBinding, {{ kind: "appendChild", parent_index: parent.nodeIndex, child_index: child.nodeIndex }});
+              queueParsedDescendants(child);
+            }}
+          }};
+          for (const child of fragment.__glassChildren.slice()) {{
+            queueParsedDescendants(child);
+            owner.insertBefore(child, projected);
+          }}
           projected.remove();
         }},
       }});
@@ -1587,9 +1614,12 @@
           textContent = "";
           suppressHostCommands += 1;
           try {{
-            populateDetachedFragment(projected, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment);
+            populateDetachedFragment(projected, value, makeFrameDetachedElement, makeFrameDetachedText, makeFrameDetachedComment, projected, true);
           }} finally {{
             suppressHostCommands -= 1;
+          }}
+          if (projected.__glassAttached) {{
+            for (const child of projected.__glassChildren) registerFrameSubtree(child);
           }}
           projected.__glassSyncContent(true);
           queueFrameCommand(currentBinding, {{ kind: "setInnerHtml", node_index: nodeIndex, value }});
@@ -1630,6 +1660,9 @@
       }});
       installAttributeNodeSurface(projected, () => frameTemplateContentsOwnerDocumentForNode(projected));
       try {{ Object.setPrototypeOf(projected, elementPrototypeFor(projected.tagName)); }} catch (_error) {{}}
+      delete projected.disabled;
+      delete projected.hidden;
+      delete projected.multiple;
       defineTreeAccessors(projected);
       installClassList(projected);
       installElementStyleAndDataset(projected);
@@ -2108,6 +2141,7 @@
       __glassGetTemplateContentsOwnerDocument() {{ return getFrameTemplateContentsOwnerDocument(); }},
       URL: String(currentBinding.url),
       documentURI: String(currentBinding.url),
+      get baseURI() {{ return String(snapshot.baseUrl || currentBinding.url || ""); }},
       get title() {{
         const titleElement = frameElements.find((element) => element.__glassAttached && element.tagName === "TITLE");
         return titleElement ? titleElement.textContent : frameDocumentTitle;

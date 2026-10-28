@@ -2628,11 +2628,11 @@ async fn native_content_process_keyboard_checkable_activation_and_frame_routing_
         .unwrap();
     assert_eq!(
         session
-            .script("({checked: document.getElementById('checkbox').checked, activated: globalThis.events.some(event => event.startsWith('click:checkbox:'))})")
+            .script("({checked: document.getElementById('checkbox').checked, type: document.getElementById('checkbox').type, typeAttribute: document.getElementById('checkbox').getAttribute('type'), activated: globalThis.events.some(event => event.startsWith('click:checkbox:'))})")
             .await
             .unwrap()
             .value,
-        serde_json::json!({"checked": false, "activated": false})
+        serde_json::json!({"checked": false, "type": "radio", "typeAttribute": "radio", "activated": false})
     );
 
     session

@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn native_content_process_script_exposes_web_idl_identity() {
+#[test]
+fn native_content_process_script_exposes_web_idl_identity() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_script_exposes_web_idl_identity_inner());
+    });
+}
+
+async fn native_content_process_script_exposes_web_idl_identity_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -2885,6 +2891,7 @@ async fn native_content_process_inherits_referrer_policy_through_dynamic_module_
 #[tokio::test]
 async fn native_content_process_loads_blob_object_url_media_subresources() {
     let _guard = native_content_process_test_lock().lock().await;
+    let wav_bytes = serde_json::to_string(&native_test_wav_bytes()).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -2906,9 +2913,7 @@ async fn native_content_process_loads_blob_object_url_media_subresources() {
     engine.initialize_async().await.unwrap();
     assert_eq!(
         engine
-            .evaluate_async(
-                "(() => { const audio = document.getElementById('audio'); const url = URL.createObjectURL(new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])], { type: 'audio/webm' })); audio.src = url; return url; })()",
-            )
+            .evaluate_async(&format!("(() => {{ const audio = document.getElementById('audio'); const url = URL.createObjectURL(new Blob([new Uint8Array({wav_bytes})], {{ type: 'audio/wav' }})); audio.src = url; return url; }})()"))
             .await
             .unwrap(),
         serde_json::json!(format!("blob:http://{address}/glass-native-1"))
@@ -2916,13 +2921,13 @@ async fn native_content_process_loads_blob_object_url_media_subresources() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const audio = document.getElementById('audio'); return [mediaEvents, audio.readyState, audio.networkState, audio.currentSrc, audio.error, audio.canPlayType('audio/webm')]; })()",
+                "(() => { const audio = document.getElementById('audio'); return [mediaEvents, audio.readyState, audio.networkState, audio.currentSrc, audio.error, audio.canPlayType('audio/wav')]; })()",
             )
             .await
             .unwrap(),
         serde_json::json!([
             ["load"],
-            1,
+            2,
             1,
             format!("blob:http://{address}/glass-native-1"),
             serde_json::Value::Null,
@@ -2936,6 +2941,7 @@ async fn native_content_process_loads_blob_object_url_media_subresources() {
 #[tokio::test]
 async fn native_content_process_blocks_csp_disallowed_blob_media_subresources() {
     let _guard = native_content_process_test_lock().lock().await;
+    let wav_bytes = serde_json::to_string(&native_test_wav_bytes()).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -2957,9 +2963,7 @@ async fn native_content_process_blocks_csp_disallowed_blob_media_subresources() 
     engine.initialize_async().await.unwrap();
     assert_eq!(
         engine
-            .evaluate_async(
-                "(() => { const audio = document.getElementById('audio'); const url = URL.createObjectURL(new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])], { type: 'audio/webm' })); audio.src = url; return url; })()",
-            )
+            .evaluate_async(&format!("(() => {{ const audio = document.getElementById('audio'); const url = URL.createObjectURL(new Blob([new Uint8Array({wav_bytes})], {{ type: 'audio/wav' }})); audio.src = url; return url; }})()"))
             .await
             .unwrap(),
         serde_json::json!(format!("blob:http://{address}/glass-native-1"))
@@ -2986,22 +2990,23 @@ async fn native_content_process_blocks_csp_disallowed_blob_media_subresources() 
 #[tokio::test]
 async fn native_content_process_loads_static_http_media_subresource() {
     let _guard = native_content_process_test_lock().lock().await;
+    let media_bytes = native_test_wav_bytes();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for expected_path in ["/page", "/media.webm"] {
+        for expected_path in ["/page", "/media.wav"] {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut stream).await;
             assert_eq!(request.split_whitespace().nth(1), Some(expected_path));
-            if expected_path == "/media.webm" {
-                stream
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Type: audio/webm\r\nContent-Length: 4\r\nConnection: close\r\n\r\n\x1a\x45\xdf\xa3",
-                    )
-                    .await
-                    .unwrap();
+            if expected_path == "/media.wav" {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    media_bytes.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&media_bytes).await.unwrap();
             } else {
-                let body = "<audio id='audio' src='/media.webm'></audio><script>globalThis.mediaEvents = []; const audio = document.getElementById('audio'); audio.addEventListener('load', () => mediaEvents.push('load')); audio.addEventListener('error', () => mediaEvents.push('error'));</script>";
+                let body = "<audio id='audio' src='/media.wav'></audio><script>globalThis.mediaEvents = []; const audio = document.getElementById('audio'); audio.addEventListener('load', () => mediaEvents.push('load')); audio.addEventListener('error', () => mediaEvents.push('error'));</script>";
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Security-Policy: script-src 'unsafe-inline'; media-src 'self'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
@@ -3019,15 +3024,15 @@ async fn native_content_process_loads_static_http_media_subresource() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const audio = document.getElementById('audio'); return [mediaEvents, audio.readyState, audio.networkState, audio.currentSrc, audio.error, audio.canPlayType('audio/webm')]; })()",
+                "(() => { const audio = document.getElementById('audio'); return [mediaEvents, audio.readyState, audio.networkState, audio.currentSrc, audio.error, audio.canPlayType('audio/wav')]; })()",
             )
             .await
             .unwrap(),
         serde_json::json!([
             ["load"],
+            2,
             1,
-            1,
-            format!("http://{address}/media.webm"),
+            format!("http://{address}/media.wav"),
             serde_json::Value::Null,
             "maybe"
         ])

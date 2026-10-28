@@ -688,6 +688,7 @@ impl NativeDocument {
             max_dom_depth: MAX_NATIVE_DOM_DEPTH,
             quirks_mode: super::super::html_parser::HtmlParsedQuirksMode::NoQuirks,
             document_referrer_policy: NativeFetchReferrerPolicy::StrictOriginWhenCrossOrigin,
+            inherited_base_url: None,
             nodes: vec![NativeNode {
                 id: root,
                 parent: None,
@@ -744,7 +745,8 @@ impl NativeDocument {
     }
 
     pub(crate) fn effective_base_url(&self, document_url: &str) -> String {
-        let Ok(fallback_url) = Url::parse(document_url) else {
+        let fallback = self.inherited_base_url.as_deref().unwrap_or(document_url);
+        let Ok(fallback_url) = Url::parse(fallback) else {
             return document_url.to_owned();
         };
         let mut pending = vec![self.root];
@@ -764,6 +766,14 @@ impl NativeDocument {
             pending.extend(node.children.iter().rev().copied());
         }
         fallback_url.to_string()
+    }
+
+    pub(crate) fn set_inherited_base_url(&mut self, base_url: Option<String>) {
+        self.inherited_base_url = base_url.filter(|value| Url::parse(value).is_ok());
+    }
+
+    pub(crate) fn inherited_base_url(&self) -> Option<&str> {
+        self.inherited_base_url.as_deref()
     }
 
     pub(crate) fn image_referrer_policy_for_node(

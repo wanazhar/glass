@@ -214,7 +214,8 @@
       for (const name of [
         "childNodes", "firstChild", "lastChild", "nextSibling", "previousSibling",
         "nextElementSibling", "previousElementSibling", "hasChildNodes", "contains",
-        "isConnected", "getRootNode", "cloneNode", "isSameNode", "isEqualNode", "normalize",
+        "isConnected", "getRootNode", "cloneNode", "isSameNode", "isEqualNode",
+        "compareDocumentPosition", "normalize",
       ]) {{
         const descriptor = Object.getOwnPropertyDescriptor(nativeElementSharedPrototype, name);
         if (descriptor) Object.defineProperty(sharedTextTreePrototype, name, descriptor);

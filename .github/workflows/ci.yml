@@ -63,6 +63,13 @@ jobs:
       - name: Mark macOS native worker diagnostics window
         if: runner.os == 'macOS'
         run: date +%s > "$RUNNER_TEMP/glass-native-worker-test-started"
+      - name: Probe macOS native worker loader in its sandbox
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: >-
+          python3 scripts/diagnose-macos-worker-loader.py
+          --binary target/debug/glass-native-content-worker
+          --output "$RUNNER_TEMP/glass-native-worker-loader-probe.json"
       - name: Run native-engine navigation preload process tests
         if: runner.os != 'Linux'
         run: cargo test --package glass-browser --test native_engine --features native-engine --locked navigation_preload -- --nocapture --test-threads=1
@@ -78,7 +85,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-native-worker-crash-summary-${{ github.run_id }}
-          path: ${{ runner.temp }}/glass-native-worker-crash-summary.json
+          path: |
+            ${{ runner.temp }}/glass-native-worker-crash-summary.json
+            ${{ runner.temp }}/glass-native-worker-loader-probe.json
           if-no-files-found: ignore
           retention-days: 3
       - name: Run glass-dev browser-free contract tests

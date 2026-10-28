@@ -251,6 +251,7 @@ pub(super) fn document_bootstrap(
             include_str!("document_bootstrap/selectors_and_styles.js"),
             include_str!("document_bootstrap/document_apis.js"),
             include_str!("document_bootstrap/custom_elements.js"),
+            include_str!("document_bootstrap/shadow_dom.js"),
             include_str!("document_bootstrap/frame_routing.js"),
             include_str!("document_bootstrap/frame_documents.js"),
             include_str!("document_bootstrap/window_events.js"),

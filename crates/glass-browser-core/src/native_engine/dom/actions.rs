@@ -1365,6 +1365,48 @@ impl NativeDocument {
                     )?;
                     script_nodes.insert(*node_index, id);
                 }
+                NativeScriptCommand::CreateShadowRoot {
+                    host_index,
+                    node_index,
+                    mode,
+                } => {
+                    if *node_index < SCRIPT_TEMP_NODE_BASE || script_nodes.contains_key(node_index)
+                    {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "shadow root node index is invalid".into(),
+                        });
+                    }
+                    if mode != "open" && mode != "closed" {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "shadow root mode must be open or closed".into(),
+                        });
+                    }
+                    let host = self.resolve_script_node_id(*host_index, &script_nodes);
+                    let host_node = self
+                        .raw_node(host)
+                        .ok_or(NativeEngineError::DetachedTarget)?;
+                    if !matches!(host_node.kind(), NativeNodeKind::Element { .. }) {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "shadow root host must be an element".into(),
+                        });
+                    }
+                    if host_node.shadow_root.is_some() {
+                        return Err(NativeEngineError::TargetNotActionable {
+                            reason: "element already has a shadow root".into(),
+                        });
+                    }
+                    let root =
+                        self.add_detached_node(NativeNodeKind::DocumentFragment, self.max_nodes)?;
+                    if let Some(root_node) = self.raw_node_mut(root) {
+                        root_node.shadow_host = Some(host);
+                        root_node.shadow_mode = Some(mode.clone());
+                    }
+                    if let Some(host_node) = self.raw_node_mut(host) {
+                        host_node.shadow_root = Some(root);
+                        host_node.shadow_mode = Some(mode.clone());
+                    }
+                    script_nodes.insert(*node_index, root);
+                }
                 NativeScriptCommand::AppendChild {
                     parent_index,
                     child_index,

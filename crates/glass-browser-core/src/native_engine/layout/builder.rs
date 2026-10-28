@@ -358,11 +358,7 @@ impl<'a> LayoutBuilder<'a> {
             .unwrap_or("document");
         let diagnostic_stage =
             begin_layout_diagnostic_stage("native_layout_process_children", depth, parent_kind);
-        let children = self
-            .document
-            .node(parent)
-            .map(|node| node.children().to_vec())
-            .unwrap_or_default();
+        let children = self.document.composed_children(parent);
         let child_count = children.len();
         let mut positioned_children = Vec::new();
         for child in children {
@@ -569,21 +565,17 @@ impl<'a> LayoutBuilder<'a> {
 
     fn positioned_children(&self, parent: NativeNodeId) -> Vec<NativeNodeId> {
         self.document
-            .node(parent)
-            .map(|node| {
-                node.children()
-                    .iter()
-                    .copied()
-                    .filter(|child| {
-                        self.document.node(*child).is_some_and(|node| {
-                            matches!(node.kind(), NativeNodeKind::Element { .. })
-                        }) && self.is_out_of_flow(*child)
-                            && !self.is_non_rendered(*child)
-                            && !self.document.is_hidden_for_layout(*child)
-                    })
-                    .collect()
+            .composed_children(parent)
+            .into_iter()
+            .filter(|child| {
+                self.document
+                    .node(*child)
+                    .is_some_and(|node| matches!(node.kind(), NativeNodeKind::Element { .. }))
+                    && self.is_out_of_flow(*child)
+                    && !self.is_non_rendered(*child)
+                    && !self.document.is_hidden_for_layout(*child)
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     fn layout_positioned_children(
@@ -1008,11 +1000,7 @@ impl<'a> LayoutBuilder<'a> {
         available_width: u32,
         depth: usize,
     ) -> FlowSize {
-        let children = self
-            .document
-            .node(parent)
-            .map(|node| node.children().to_vec())
-            .unwrap_or_default();
+        let children = self.document.composed_children(parent);
         let mut max_right = x;
         let mut max_bottom = y;
         for child in children {

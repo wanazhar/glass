@@ -462,6 +462,11 @@ pub enum NativeScriptCommand {
         public_id: String,
         system_id: String,
     },
+    CreateShadowRoot {
+        host_index: u32,
+        node_index: u32,
+        mode: String,
+    },
     AppendChild {
         parent_index: u32,
         child_index: u32,

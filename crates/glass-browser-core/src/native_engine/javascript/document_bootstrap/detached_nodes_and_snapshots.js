@@ -1135,6 +1135,15 @@
       nodesByIndex.set(nodeIndex, node);
     }}
   }}
+  const pendingShadowRoots = new Map();
+  for (const entry of snapshotNodes) {{
+    if (!entry || entry.shadowHostIndex == null) continue;
+    const root = nodesByIndex.get(Number(entry.nodeIndex));
+    const shadowHost = elementsByIndex.get(Number(entry.shadowHostIndex));
+    if (!root || !shadowHost) continue;
+    pendingShadowRoots.set(root, {{ host: shadowHost, mode: entry.shadowMode === "closed" ? "closed" : "open" }});
+  }}
+  globalThis.__glassPendingShadowRoots = pendingShadowRoots;
   if (typeof globalThis.__glassNativeHostViewMark === "function")
     globalThis.__glassNativeHostViewMark("collections_ready");
   const elementsByIndexView = new Map(elementsByIndex);

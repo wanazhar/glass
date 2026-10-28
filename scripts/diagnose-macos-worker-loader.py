@@ -16,7 +16,7 @@ MAX_CAPTURE_BYTES = 32 * 1024
 MAX_IMAGES = 12
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.$<>+-]{1,160}$")
 DENIAL_EVENT = re.compile(
-    r"Sandbox:\s*[A-Za-z0-9_.-]+\((\d+)\)\s+deny\([^)]*\)\s+([A-Za-z][A-Za-z0-9*-]*)"
+    r"Sandbox:\s*[A-Za-z0-9_.-]+\((\d+)\)\s+deny\([^)]*\)\s+([A-Za-z][A-Za-z0-9*-]*)(?:\s+(.*))?"
 )
 IMAGE_PATH = re.compile(
     r"/(?:[^\s:'\"<>]+/)*[^\s:'\"<>]+(?:\.dylib|\.framework(?:/[^\s:'\"<>]+)?)"
@@ -31,6 +31,28 @@ ERROR_PATTERNS = (
     (re.compile(r"\bcode signature\b", re.IGNORECASE), "Code signature"),
     (re.compile(r"\b(?:operation not permitted|permission denied|sandbox deny)\b", re.IGNORECASE), "Access denied"),
 )
+PATH_CLASS_ROOTS = {
+    "System": ("/System",),
+    "usr": ("/usr",),
+    "Library": ("/Library",),
+    "privatevar": ("/private/var", "/var"),
+    "dev": ("/dev",),
+    "etc": ("/etc",),
+}
+
+
+def denied_path_class(raw_path: str | None) -> str:
+    if not raw_path:
+        return "other"
+    path = raw_path.strip()
+    if path.startswith('"'):
+        path = path[1:].split('"', 1)[0]
+    else:
+        path = path.split(None, 1)[0]
+    for path_class, roots in PATH_CLASS_ROOTS.items():
+        if any(path == root or path.startswith(root + "/") for root in roots):
+            return path_class
+    return "other"
 
 
 def safe_token(value: str) -> str | None:
@@ -63,6 +85,10 @@ def sandbox_profile(binary: Path, *, addition: str | None = None) -> str:
         f'(subpath "/Library") (literal "{path}")) '
         '(allow network-outbound) (allow sysctl-read) (allow mach-lookup)'
     )
+    file_read_data_roots = {
+        f"file-read-data-{path_class.lower()}": roots
+        for path_class, roots in PATH_CLASS_ROOTS.items()
+    }
     if addition == "file-map-system":
         profile += (
             ' (allow file-map-executable (subpath "/System") '
@@ -75,6 +101,11 @@ def sandbox_profile(binary: Path, *, addition: str | None = None) -> str:
             '(subpath "/usr") (subpath "/Library") '
             f'(literal "{path}"))'
         )
+    elif addition in file_read_data_roots:
+        paths = " ".join(
+            f'(subpath "{root}")' for root in file_read_data_roots[addition]
+        )
+        profile += f" (allow file-read-data {paths})"
     elif addition is not None:
         raise ValueError("unsupported diagnostic sandbox rule")
     return profile
@@ -104,6 +135,14 @@ def run_launch(
             "production-plus-file-map": "file-map-system",
             "production-plus-file-read-metadata": "file-read-metadata-system",
         }
+        profile_additions.update(
+            {
+                f"production-plus-file-read-data-{path_class.lower()}": (
+                    f"file-read-data-{path_class.lower()}"
+                )
+                for path_class in PATH_CLASS_ROOTS
+            }
+        )
         profile_text = (
             "(version 1) (allow default)"
             if profile == "permissive-control"
@@ -259,6 +298,11 @@ def sandbox_denials(process_cases: dict[int, str]) -> dict[str, Any]:
         "iokit-open",
     }
     counts: dict[str, dict[str, int]] = {name: {} for name in process_cases.values()}
+    path_classes = (*PATH_CLASS_ROOTS, "other")
+    path_counts = {
+        name: {path_class: 0 for path_class in path_classes}
+        for name in process_cases.values()
+    }
     matched = 0
     if isinstance(events, dict):
         events = events.get("events", [events])
@@ -275,6 +319,7 @@ def sandbox_denials(process_cases: dict[int, str]) -> dict[str, Any]:
         if case_name is None:
             continue
         operation = match.group(2)
+        path_counts[case_name][denied_path_class(match.group(3))] += 1
         if operation not in operation_allowlist:
             operation = "other"
         counts[case_name][operation] = counts[case_name].get(operation, 0) + 1
@@ -282,6 +327,7 @@ def sandbox_denials(process_cases: dict[int, str]) -> dict[str, Any]:
     return {
         "status": "available" if matched else "no-matching-events",
         "cases": counts,
+        "pathClasses": path_counts,
     }
 
 
@@ -357,6 +403,29 @@ def run_probe(worker: Path) -> dict[str, Any]:
             "production-plus-file-read-metadata",
         ),
     )
+    cases = list(cases)
+    for path_class in PATH_CLASS_ROOTS:
+        profile_name = f"production-plus-file-read-data-{path_class.lower()}"
+        cases.extend(
+            (
+                (
+                    f"known-good-sandboxed-{profile_name}",
+                    Path("/usr/bin/true"),
+                    True,
+                    False,
+                    False,
+                    profile_name,
+                ),
+                (
+                    f"worker-sandboxed-{profile_name}",
+                    worker,
+                    True,
+                    False,
+                    True,
+                    profile_name,
+                ),
+            )
+        )
     case_reports: list[dict[str, Any]] = []
     process_cases: dict[int, str] = {}
     for case in cases:
@@ -376,6 +445,9 @@ def run_probe(worker: Path) -> dict[str, Any]:
         case_report["sandboxDeniedOperations"] = denial_summary["cases"].get(
             case_report["name"], {}
         )
+        case_report["sandboxDeniedPathClasses"] = denial_summary[
+            "pathClasses"
+        ].get(case_report["name"], {})
     return {
         "probe": "macos-native-worker-launch-matrix",
         "hostArchitecture": host_architecture,

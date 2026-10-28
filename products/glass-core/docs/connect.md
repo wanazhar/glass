@@ -97,6 +97,32 @@ replayed automatically. Unsent text drafts are stored locally in this browser, s
 The store retains at most 24 drafts for 30 days, with a 60,000-character limit
 per draft. Storage failures are reported; saving a draft never submits it.
 
+## Shared desktop
+
+The **Computer** workspace shows a desktop session on the same host as GC. It
+does not attach to the host's login screen or reuse a user's existing display.
+Choose **Start desktop** to create an isolated, managed Xvfb and XFCE session;
+GC reports the display ID and the workspace directory used to start it. The
+session runs at 1280 × 800 and streams fresh JPEG frames over the authenticated
+Connect origin. Audio is not included. If Xvfb, XFCE, Xauthority, or FFmpeg is
+unavailable, Connect reports the missing dependency and leaves the session
+stopped; it does not install packages or restart the host desktop.
+
+Viewing is read-only until **Take control** is selected. That action transfers
+the session's single input lease to the human, and GC desktop input tools are
+rejected while the human holds it. Closing a tab or losing the stream does not
+stop the desktop or transfer the lease back. Choose **Return to agent** when GC
+should resume input, or choose **Stop desktop** to end the managed session
+explicitly. `gc connect stop` also shuts down the Connect-owned desktop process
+group. Screenshots and input use this same display; GC's screenshot tool returns
+a workspace-relative artifact that can be inspected with `view_image`.
+
+On phones, **Trackpad** mode is the default: drag to move, tap to click, use two
+fingers to scroll, or long-press for right-click. **Direct touch** maps taps and
+drags to the desktop, supports long-press right-click, and allows pinch-to-zoom
+and panning around the enlarged view. The keyboard control sends text and offers
+desktop key shortcuts.
+
 Approvals pause the agent and show the exact operation and justification. Only
 the input owner can allow it once or deny it. Questions support choices, multiple
 selection, and custom answers. Cancellation is never approval. An unanswered

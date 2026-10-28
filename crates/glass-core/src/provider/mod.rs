@@ -487,6 +487,44 @@ pub fn builtin_tools() -> Vec<(String, String, String)> {
     tools
 }
 
+/// Optional tools for a live Connect desktop. Kept outside the default catalog
+/// so standalone GC sessions pay no schema cost when Connect is not running.
+pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)> {
+    let mut tools = vec![
+        (
+            "desktop_status".to_string(),
+            "Read the live status of the Connect-managed desktop shared with the human. Reports its exact display, workspace, frame freshness, and input lease. Does not start or stop a desktop.".to_string(),
+            serde_json::json!({"type":"object","properties":{},"additionalProperties":false}).to_string(),
+        ),
+        (
+            "desktop_screenshot".to_string(),
+            "Capture a fresh frame from the same Connect desktop. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. Does not change the input lease.".to_string(),
+            serde_json::json!({"type":"object","properties":{},"additionalProperties":false}).to_string(),
+        ),
+    ];
+    if include_input {
+        tools.push((
+            "desktop_input".to_string(),
+            "Send one bounded input event to the same Connect desktop. This is rejected while the human holds the control lease; the agent cannot take control implicitly. Pointer x/y use normalized 0..1 coordinates, scroll deltas use browser pixels, and text is printable ASCII up to 512 bytes.".to_string(),
+            serde_json::json!({
+                "type":"object","additionalProperties":false,"required":["action"],
+                "properties":{
+                    "action":{"type":"string","enum":["pointer-move","pointer-button","key","text","scroll"]},
+                    "x":{"type":"number","minimum":0,"maximum":1},
+                    "y":{"type":"number","minimum":0,"maximum":1},
+                    "button":{"type":"string","enum":["left","middle","right"]},
+                    "pressed":{"type":"boolean"},
+                    "key":{"type":"string","maxLength":16},
+                    "text":{"type":"string","maxLength":512},
+                    "deltaX":{"type":"number","minimum":-800,"maximum":800},
+                    "deltaY":{"type":"number","minimum":-800,"maximum":800}
+                }
+            }).to_string(),
+        ));
+    }
+    tools
+}
+
 /// Schemas for the opt-in model-invoked context tools (wave C).
 /// Appended to the tool list only when `checkpoint_tools = true`, so the
 /// core default costs nothing extra and the byte-stable frozen list
@@ -607,6 +645,23 @@ mod tests {
             let v: Value = serde_json::from_str(&schema).expect("schema must parse");
             assert_eq!(v["type"], "object");
         }
+    }
+
+    #[test]
+    fn desktop_tools_are_optional_and_input_can_be_omitted() {
+        let read_only = desktop_tool_schemas(false);
+        let full = desktop_tool_schemas(true);
+        assert_eq!(
+            read_only
+                .iter()
+                .map(|(name, _, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["desktop_status", "desktop_screenshot"]
+        );
+        assert_eq!(full.len(), 3);
+        let input: Value = serde_json::from_str(&full[2].2).unwrap();
+        assert_eq!(input["properties"]["action"]["enum"][0], "pointer-move");
+        assert_eq!(input["properties"]["deltaX"]["maximum"], 800);
     }
 
     #[test]

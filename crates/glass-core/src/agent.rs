@@ -591,6 +591,9 @@ impl<'a> Agent<'a> {
             }
             tools
         };
+        if crate::desktop::service_running() {
+            tools.extend(crate::provider::desktop_tool_schemas(!self.read_only));
+        }
         if let Some((host_tools, _)) = &self.mixed_hosted {
             tools.extend(host_tools.iter().cloned());
         }
@@ -1959,12 +1962,12 @@ impl<'a> Agent<'a> {
                 if self.steer.is_some() {
                     break;
                 }
-                let outcome = if call.name == "inspect" {
-                    crate::inspect::run(call, self.workspace)
-                } else {
-                    tools::Outcome::err(
-                        "Plan mode blocks execution: only read-only inspect is available",
-                    )
+                let outcome = match call.name.as_str() {
+                    "inspect" => crate::inspect::run(call, self.workspace),
+                    "desktop_status" => crate::desktop::execute_tool(call, self.workspace),
+                    _ => tools::Outcome::err(
+                        "Plan mode blocks execution: only read-only inspect and desktop status are available",
+                    ),
                 };
                 self.finish_tool(call, outcome);
             }
@@ -2173,6 +2176,7 @@ impl<'a> Agent<'a> {
             self.run_file_pumped(call, pump);
         } else if call.name == "bash"
             || crate::web_tools::is_tool(&call.name)
+            || crate::desktop::is_tool(&call.name)
             || self.extensions.has_tool(&call.name)
         {
             self.run_tool_pumped(call, pump);
@@ -2295,6 +2299,7 @@ impl<'a> Agent<'a> {
     fn run_tool_pumped(&mut self, call: &ToolCall, pump: &mut impl FnMut(&mut Option<String>)) {
         if call.name != "bash"
             && !crate::web_tools::is_tool(&call.name)
+            && !crate::desktop::is_tool(&call.name)
             && !self.extensions.has_tool(&call.name)
         {
             self.run_tool(call);
@@ -2356,6 +2361,10 @@ impl<'a> Agent<'a> {
         }
         if crate::web_tools::is_tool(&call.name) {
             self.run_web_observably(call, pump);
+            return;
+        }
+        if crate::desktop::is_tool(&call.name) {
+            self.run_desktop_observably(call, pump);
             return;
         }
         // Read-before-write is checked here rather than in `run_tool`, because a
@@ -2452,6 +2461,51 @@ impl<'a> Agent<'a> {
             }
             pump(&mut self.steer);
             std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn run_desktop_observably(
+        &mut self,
+        call: &ToolCall,
+        pump: &mut impl FnMut(&mut Option<String>),
+    ) {
+        let inner = call.clone();
+        let workspace = self.workspace.to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::desktop::execute_tool(&inner, &workspace));
+        });
+        loop {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.finish_tool(call, result);
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.finish_tool(
+                        call,
+                        tools::Outcome::err("desktop request worker ended without a result"),
+                    );
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    pump(&mut self.steer);
+                    if self.steer.is_some() {
+                        // Desktop events are short, atomic operations. Finish the
+                        // request before honoring a steer so its result is recorded.
+                        if let Ok(result) = rx.recv_timeout(std::time::Duration::from_secs(3)) {
+                            self.finish_tool(call, result);
+                        } else {
+                            self.finish_tool(
+                                call,
+                                tools::Outcome::err("desktop request did not finish before timeout"),
+                            );
+                        }
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
         }
     }
 
@@ -2831,6 +2885,7 @@ impl<'a> Agent<'a> {
             || call.name == "bash"
             || call.name == "state"
             || crate::web_tools::is_tool(&call.name)
+            || crate::desktop::is_tool(&call.name)
             || (self.checkpoint_tools
                 && matches!(call.name.as_str(), "checkpoint" | "rewind" | "wait"))
             || self.extensions.has_tool(&call.name)
@@ -2911,6 +2966,8 @@ impl<'a> Agent<'a> {
             outcome = r;
         } else if crate::web_tools::is_tool(&call.name) {
             outcome = crate::web_tools::execute(call);
+        } else if crate::desktop::is_tool(&call.name) {
+            outcome = crate::desktop::execute_tool(call, self.workspace);
         } else if self.checkpoint_tools
             && matches!(call.name.as_str(), "checkpoint" | "rewind" | "wait")
         {

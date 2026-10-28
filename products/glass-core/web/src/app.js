@@ -4131,6 +4131,17 @@ function workflow() {
     }),
   ));
 }
+let desktopPromise;
+$("#desktop-toggle").onclick = async () => {
+  try {
+    const surface = await (desktopPromise ||= import("./desktop.js").then(
+      ({ desktopSurface }) => desktopSurface({ api }),
+    ));
+    surface.open();
+  } catch (error) {
+    notice(error.message || "Shared desktop is unavailable.", true);
+  }
+};
 for (const [id, name] of [
   ["model", "model"],
   ["profile", "profiles"],

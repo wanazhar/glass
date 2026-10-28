@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_engine::font::MAX_NATIVE_FONT_TOTAL_BYTES;
 
 pub(in crate::native_engine::content_process) fn decode_fetch_response(
     response: &Value,
@@ -737,6 +738,7 @@ pub(in crate::native_engine::content_process) async fn load_font_faces(
     mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
 ) -> Result<(), NativeEngineError> {
     let mut resources = Vec::new();
+    let mut total_font_bytes = 0usize;
     let system_fonts = NativeFontBook::system();
     for rule in document
         .font_face_rules()
@@ -778,11 +780,64 @@ pub(in crate::native_engine::content_process) async fn load_font_faces(
                     }
                 }
             };
-            if let Some(bytes) = bytes {
+            if let Some(bytes) = bytes
+                && reserve_native_font_resource_bytes(&mut total_font_bytes, bytes.len())
+            {
                 resources.push(NativeFontFaceResource::from_rule(rule, bytes));
                 break;
             }
         }
     }
     document.set_font_resources(resources)
+}
+
+/// Keep a document's optional web-font resources within the same aggregate
+/// bound enforced by `NativeDocument::set_font_resources`. A page can declare
+/// many independently valid font faces; exhausting this budget should omit
+/// only the later face instead of failing the entire navigation.
+fn reserve_native_font_resource_bytes(total_bytes: &mut usize, resource_bytes: usize) -> bool {
+    if resource_bytes == 0 || resource_bytes > MAX_NATIVE_FONT_BYTES {
+        return false;
+    }
+    let Some(next_total) = total_bytes.checked_add(resource_bytes) else {
+        return false;
+    };
+    if next_total > MAX_NATIVE_FONT_TOTAL_BYTES {
+        return false;
+    }
+    *total_bytes = next_total;
+    true
+}
+
+#[cfg(test)]
+mod font_resource_budget_tests {
+    use super::{
+        MAX_NATIVE_FONT_BYTES, MAX_NATIVE_FONT_TOTAL_BYTES, reserve_native_font_resource_bytes,
+    };
+
+    #[test]
+    fn aggregate_font_budget_keeps_admitted_faces_and_skips_only_overflow() {
+        let mut total = 0;
+        let face_bytes = [3 * 1024 * 1024, 3 * 1024 * 1024, 2 * 1024 * 1024, 1];
+        let admitted =
+            face_bytes.map(|bytes| reserve_native_font_resource_bytes(&mut total, bytes));
+
+        assert_eq!(admitted, [true, true, true, false]);
+        assert_eq!(total, MAX_NATIVE_FONT_TOTAL_BYTES);
+    }
+
+    #[test]
+    fn font_resource_budget_rejects_empty_oversized_and_overflowing_sizes() {
+        let mut total = 0;
+        assert!(!reserve_native_font_resource_bytes(&mut total, 0));
+        assert!(!reserve_native_font_resource_bytes(
+            &mut total,
+            MAX_NATIVE_FONT_BYTES + 1
+        ));
+        assert_eq!(total, 0);
+
+        total = usize::MAX - 1;
+        assert!(!reserve_native_font_resource_bytes(&mut total, 8));
+        assert_eq!(total, usize::MAX - 1);
+    }
 }

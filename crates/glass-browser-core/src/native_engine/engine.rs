@@ -114,6 +114,10 @@ const MAX_NATIVE_LOCAL_STYLESHEETS: usize = 16;
 const MAX_NATIVE_LOCAL_STYLESHEET_BYTES: usize = 512 * 1024;
 const MAX_NATIVE_LOCAL_IMAGES: usize = 64;
 const MAX_NATIVE_LOCAL_MEDIA: usize = 64;
+const MAX_NATIVE_OBSERVATION_PROJECTION_DIAGNOSTICS: usize = 64;
+
+static NATIVE_OBSERVATION_PROJECTION_DIAGNOSTICS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 #[derive(Debug)]
 struct NativeRequestLedger {
@@ -1722,9 +1726,32 @@ impl NativeEngine {
 
     fn snapshot_unchecked(&self) -> NativeEngineSnapshot {
         let (title, title_truncated) = self.document.title(self.config.limits.max_text_bytes);
-        let (visible_text, text_truncated) = self
-            .document
-            .visible_text(self.config.limits.max_text_bytes);
+        let (visible_text, text_truncated) =
+            if super::content_process::runtime_diagnostic_trace_enabled()
+                && NATIVE_OBSERVATION_PROJECTION_DIAGNOSTICS
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    < MAX_NATIVE_OBSERVATION_PROJECTION_DIAGNOSTICS
+            {
+                let text_stage = super::content_process::ContentLoadStage::begin(
+                    0,
+                    "native_observation_visible_text",
+                );
+                let (visible_text, text_truncated, node_count, hidden_count) = self
+                    .document
+                    .visible_text_projection_with_counts(self.config.limits.max_text_bytes);
+                text_stage.finish(Some(visible_text.len()));
+                let hidden_stage = super::content_process::ContentLoadStage::begin_with_resource(
+                    0,
+                    "native_observation_hidden_nodes",
+                    Some(node_count),
+                    Some("dom_nodes"),
+                );
+                hidden_stage.finish(Some(hidden_count));
+                (visible_text, text_truncated)
+            } else {
+                self.document
+                    .visible_text(self.config.limits.max_text_bytes)
+            };
         NativeEngineSnapshot {
             lifecycle: self.lifecycle,
             url: self.url.clone(),

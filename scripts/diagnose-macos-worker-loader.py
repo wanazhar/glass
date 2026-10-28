@@ -198,7 +198,8 @@ def sandbox_denials(process_cases: dict[int, str]) -> dict[str, Any]:
     if not process_cases:
         return {"status": "unavailable", "cases": {}}
     pid_predicate = " OR ".join(
-        f"processID == {process_id}" for process_id in sorted(process_cases)
+        f'(processID == {process_id} OR eventMessage CONTAINS "({process_id})")'
+        for process_id in sorted(process_cases)
     )
     predicate = (
         'subsystem == "com.apple.sandbox.reporting" '

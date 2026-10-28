@@ -151,7 +151,7 @@ def main() -> int:
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     arguments = parser.parse_args()
-    report = run_probe(arguments.binary)
+    report = run_probe(arguments.binary.resolve())
     arguments.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"sanitized macOS loader probe: {report['status']}")
     return 0

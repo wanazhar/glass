@@ -2,6 +2,8 @@
 export function desktopSurface({ api }) {
   const $ = (id) => document.getElementById(id);
   const dialog = $("desktop-viewer");
+  const opener = $("desktop-toggle");
+  const closeButton = $("desktop-close");
   const viewport = $("desktop-viewport");
   const stream = $("desktop-stream");
   const placeholder = $("desktop-placeholder");
@@ -29,11 +31,16 @@ export function desktopSurface({ api }) {
   const reconnect = $("desktop-reconnect");
   const start = $("desktop-start");
   const stop = $("desktop-stop");
+  const retry = $("desktop-retry");
+  const more = $("desktop-more");
+  const moreSummary = more.querySelector("summary");
   let snapshot = null;
+  let connectionError = null;
   let requestController = null;
   let pollTimer = 0;
   let pollGeneration = 0;
   let streamSession = null;
+  let streamFrameSeqAtStart = null;
   let streamLoaded = false;
   let streamFailed = false;
   let activePointer = null;
@@ -77,6 +84,7 @@ export function desktopSurface({ api }) {
     if (!available || !session) {
       stream.removeAttribute("src");
       streamSession = null;
+      streamFrameSeqAtStart = null;
       streamLoaded = false;
       stream.hidden = true;
       return;
@@ -85,6 +93,7 @@ export function desktopSurface({ api }) {
       streamFailed = false;
       streamLoaded = false;
       streamSession = session;
+      streamFrameSeqAtStart = Number(snapshot?.frameSeq) || 0;
       stream.src = "/api/desktop/stream";
     }
     stream.hidden = false;
@@ -96,10 +105,14 @@ export function desktopSurface({ api }) {
     const available = Boolean(next?.available && running);
     const humanOwnsInput = next?.lease === "human";
     owner.textContent = humanOwnsInput
-      ? "You control · GC paused"
+      ? connectionError ? "Last confirmed: you control" : "You control · GC paused"
       : available
         ? "View only · GC may control"
-        : "No active input owner";
+        : connectionError
+          ? running ? "Last confirmed: GC" : "Input owner unavailable"
+          : running
+            ? "Desktop connection unavailable"
+            : "No active input owner";
     display.textContent = next?.displayId || "No display";
     workspace.textContent = next?.workspaceRoot || "—";
     workspace.title = next?.workspaceRoot || "Workspace root unavailable";
@@ -114,12 +127,24 @@ export function desktopSurface({ api }) {
     start.hidden = running;
     stop.hidden = !running || next?.mode !== "managedVirtualSession";
     reconnect.hidden = !running;
-    $("desktop-more").hidden = !running;
+    more.hidden = !running;
+    if (!running) $("desktop-details").open = false;
+    if (more.hidden && more.contains(document.activeElement)) {
+      start.focus({ preventScroll: true });
+    }
+    retry.hidden = !(connectionError || (running && (!available || streamFailed)));
+    retry.textContent = connectionError ? "Retry connection" : "Reconnect stream";
+    start.disabled = Boolean(connectionError);
+    stop.disabled = Boolean(connectionError);
+    take.disabled = Boolean(connectionError);
+    returnToAgent.disabled = Boolean(connectionError);
     keyboardOpen.textContent = keyboardRow.hidden ? "Keyboard" : "Done";
     keyboardOpen.setAttribute("aria-label", keyboardRow.hidden ? "Open keyboard" : "Hide keyboard");
     textInput.disabled = !available || !humanOwnsInput;
     sendText.disabled = !available || !humanOwnsInput || !textInput.value;
     touchMode.disabled = !available;
+    document.querySelector(".desktop-mobile-tools").hidden = !available;
+    keyboardOpen.hidden = !available || !humanOwnsInput;
     keyboardOpen.disabled = !available || !humanOwnsInput;
     trackpadMode.disabled = !available;
     if (!available || !humanOwnsInput) closeKeyboard();
@@ -129,24 +154,39 @@ export function desktopSurface({ api }) {
     cursor.hidden = !coarsePointer.matches || directTouch || !controlled();
 
     if (!running) {
-      placeholder.textContent = next?.error || "No managed desktop is running on this host.";
+      placeholder.textContent = connectionError
+        ? "Reconnect when the host is available."
+        : "No desktop is open. Start a desktop to see the workspace here.";
       placeholder.hidden = false;
-      setStatus(next?.error || "Start a managed desktop to view this host.", Boolean(next?.error));
+      setStatus(connectionError ? "Host connection unavailable" : "Ready to start", Boolean(connectionError));
       setStream(false);
       return;
     }
     if (!available) {
-      placeholder.textContent = next?.error || "The desktop stream is unavailable.";
+      placeholder.textContent = connectionError
+        ? "Reconnect to check the desktop."
+        : "Waiting for a fresh desktop image. The session is still running.";
       placeholder.hidden = false;
-      setStatus(next?.error || "Desktop session is running; its live stream is unavailable.", true);
+      setStatus(connectionError ? "Host connection unavailable" : "Desktop image unavailable", true);
       setStream(false);
       return;
     }
 
     setStream(true);
-    placeholder.hidden = !streamFailed && streamLoaded;
+    const frameSeq = Number(next.frameSeq);
+    const hasDecodedFreshFrame = stream.naturalWidth > 0
+      && stream.naturalHeight > 0
+      && streamSession === next.sessionId
+      && Number.isFinite(frameSeq)
+      && frameSeq > (streamFrameSeqAtStart ?? frameSeq - 1);
+    if (hasDecodedFreshFrame && !streamFailed) {
+      streamLoaded = true;
+      stream.hidden = false;
+    }
+    const connected = hasDecodedFreshFrame && streamLoaded && !streamFailed;
+    placeholder.hidden = connected;
     placeholder.textContent = streamFailed
-      ? "Stream disconnected. The desktop is still running. Reconnect the stream or close this viewer."
+      ? "The desktop keeps running. Reconnect the stream to continue."
       : "Connecting to the managed desktop…";
     const ageMs = Number(next.frameAgeMs);
     const recency = Number.isFinite(ageMs)
@@ -154,10 +194,9 @@ export function desktopSurface({ api }) {
         ? "just now"
         : `${Math.round(ageMs / 1000)} sec ago`
       : null;
-    const connected = streamLoaded && !streamFailed;
     setStatus(
       streamFailed
-        ? "Stream disconnected · desktop session continues"
+        ? "Stream disconnected · desktop is still running"
         : connected
           ? `Live · updated ${recency || "recently"}`
           : "Connecting to the managed desktop…",
@@ -169,9 +208,13 @@ export function desktopSurface({ api }) {
     if (!isOpen()) return;
     try {
       const next = await api("desktop/status", undefined, requestController.signal);
-      if (isOpen()) render(next);
+      if (isOpen()) {
+        connectionError = null;
+        render(next);
+      }
     } catch (error) {
       if (!isOpen()) return;
+      connectionError = error.message || "Connect is temporarily unavailable.";
       if (!snapshot) {
         render({
           available: false,
@@ -182,10 +225,11 @@ export function desktopSurface({ api }) {
           lease: "agent",
           width: null,
           height: null,
-          error: error.message || "Desktop status is unavailable.",
+          error: null,
         });
       } else {
-        setStatus(error.message || "Desktop status is unavailable.", true);
+        const previous = snapshot;
+        render({ ...previous, available: false });
       }
     }
   }
@@ -328,6 +372,7 @@ export function desktopSurface({ api }) {
     streamLoaded = false;
     stream.removeAttribute("src");
     streamSession = null;
+    streamFrameSeqAtStart = null;
     streamLoaded = false;
     stream.hidden = false;
     placeholder.hidden = false;
@@ -341,10 +386,17 @@ export function desktopSurface({ api }) {
     start.disabled = true;
     setStatus("Starting a managed desktop on this host…");
     try {
-      await api("desktop/session", { action: "start" }, requestController.signal);
+      await api("desktop/session", { action: "start" }, requestController.signal, { timeoutMs: 30_000 });
       await refresh();
     } catch (error) {
-      if (isOpen()) setStatus(error.message || "Could not start the managed desktop.", true);
+      if (!isOpen()) return;
+      if (/timed out|connection unavailable/i.test(error.message || "")) {
+        connectionError = error.message;
+        await refresh();
+        if (connectionError) setStatus("Host connection unavailable", true);
+      } else {
+        setStatus(error.message || "Could not start the managed desktop.", true);
+      }
     } finally {
       if (isOpen()) start.disabled = false;
     }
@@ -370,6 +422,9 @@ export function desktopSurface({ api }) {
     requestController?.abort();
     requestController = null;
     activePointer = null;
+    more.open = false;
+    $("desktop-details").open = false;
+    closeKeyboard();
     stream.removeAttribute("src");
     streamSession = null;
     // Closing disconnects the view but deliberately keeps the human input lease.
@@ -377,6 +432,9 @@ export function desktopSurface({ api }) {
 
   function open() {
     if (!dialog.open) dialog.showModal();
+    closeButton.focus({ preventScroll: true });
+    more.open = false;
+    $("desktop-details").open = false;
     requestController?.abort();
     requestController = new AbortController();
     const generation = ++pollGeneration;
@@ -387,26 +445,74 @@ export function desktopSurface({ api }) {
     void refresh().then(() => schedulePoll(generation));
   }
 
-  $("desktop-close").addEventListener("click", () => dialog.close());
-  dialog.addEventListener("close", close);
+  closeButton.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("close", () => {
+    close();
+    opener.focus({ preventScroll: true });
+  });
   take.addEventListener("click", () => void setLease("take-control"));
   returnToAgent.addEventListener("click", () => void setLease("return-to-agent"));
-  reconnect.addEventListener("click", () => void reconnectStream());
+  function closeMore({ focus = false } = {}) {
+    if (!more.open) return;
+    more.open = false;
+    if (focus && isOpen()) moreSummary.focus({ preventScroll: true });
+  }
+  function closeMoreAfterAction() {
+    closeMore({ focus: true });
+  }
+  reconnect.addEventListener("click", () => {
+    closeMoreAfterAction();
+    void reconnectStream();
+  });
+  retry.addEventListener("click", () => {
+    if (connectionError) void refresh();
+    else if (snapshot?.sessionId) void reconnectStream();
+    else void refresh();
+  });
   start.addEventListener("click", () => void startDesktop());
-  stop.addEventListener("click", () => void stopDesktop());
+  stop.addEventListener("click", () => {
+    closeMoreAfterAction();
+    void stopDesktop();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!more.open || more.contains(event.target)) return;
+    closeMore();
+  }, true);
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !more.open) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeMore({ focus: true });
+  }, true);
   stream.addEventListener("load", () => {
     if (!isOpen()) return;
+    if (!stream.naturalWidth || !stream.naturalHeight) {
+      streamLoaded = false;
+      streamFailed = true;
+      stream.hidden = true;
+      retry.hidden = false;
+      retry.textContent = "Reconnect stream";
+      placeholder.hidden = false;
+      placeholder.textContent = "Reconnect the stream to see the desktop again.";
+      setStatus("Desktop image unavailable", true);
+      return;
+    }
     streamFailed = false;
     streamLoaded = true;
+    stream.hidden = false;
+    retry.hidden = true;
     placeholder.hidden = true;
   });
   stream.addEventListener("error", () => {
     if (!isOpen()) return;
     streamFailed = true;
     streamLoaded = false;
+    stream.hidden = true;
+    retry.hidden = false;
+    retry.textContent = "Reconnect stream";
     placeholder.hidden = false;
-    placeholder.textContent = "Stream disconnected. The desktop is still running. Reconnect the stream or close this viewer.";
-    setStatus("Stream disconnected · desktop session continues", true);
+    placeholder.textContent = "The desktop keeps running. Reconnect the stream to continue.";
+    setStatus("Stream disconnected", true);
   });
   viewport.addEventListener("pointerdown", (event) => {
     if (!controlled() && !(event.pointerType === "touch" && directTouch && snapshot?.available)) return;

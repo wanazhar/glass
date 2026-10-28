@@ -3172,7 +3172,7 @@ dialog.floating-palette {
 #desktop-viewer {
   display: none;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
     max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   overflow: hidden;
@@ -3197,8 +3197,9 @@ dialog.floating-palette {
   align-items: center;
   gap: 10px;
   min-height: 28px;
-  padding: 3px 8px;
+  padding: 6px 10px;
   border: 1px solid var(--line);
+  border-radius: 13px;
   background: var(--surface);
 }
 .desktop-session-brief > div { display: flex; align-items: center; gap: 7px; min-width: 0; }
@@ -3235,6 +3236,7 @@ dialog.floating-palette {
   min-width: 250px;
   padding: 10px;
   border: 1px solid var(--line);
+  border-radius: 12px;
   background: var(--surface);
   box-shadow: var(--shadow);
 }
@@ -3246,6 +3248,8 @@ dialog.floating-palette {
   min-height: 36px;
   padding: 0 10px;
   border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
 }
 .desktop-more[hidden] { display: none; }
 .desktop-more-menu {
@@ -3258,6 +3262,7 @@ dialog.floating-palette {
   min-width: 170px;
   padding: 6px;
   border: 1px solid var(--line);
+  border-radius: 13px;
   background: var(--surface);
   box-shadow: var(--shadow);
 }
@@ -3267,8 +3272,12 @@ dialog.floating-palette {
   align-items: center;
   flex: 0 0 auto;
   flex-wrap: wrap;
-  gap: 7px;
-  min-height: 36px;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
 }
 .desktop-controls > button, .desktop-keyboard-row > button { min-height: 36px; }
 .desktop-controls button[hidden] { display: none; }
@@ -3276,6 +3285,7 @@ dialog.floating-palette {
 .desktop-owner { color: var(--text); font-size: 12px; font-weight: 550; }
 #desktop-status { flex: 1 1 180px; min-width: 140px; color: var(--muted); font-size: 11px; }
 #desktop-status[data-error="true"] { color: var(--red); }
+#desktop-retry { min-height: 34px; padding: 6px 10px; border-radius: 9px; }
 .desktop-lease-note {
   flex: 0 0 auto;
   margin: -4px 0 0;
@@ -3298,7 +3308,7 @@ dialog.floating-palette {
   min-height: 40px;
   padding: 8px 11px;
   border: 1px solid var(--line);
-  border-radius: 0;
+  border-radius: 10px;
   background: var(--surface);
   color: var(--text);
   font-size: 16px;
@@ -3324,12 +3334,21 @@ dialog.floating-palette {
   min-height: 120px;
   overflow: hidden;
   border: 1px solid var(--line);
+  border-radius: 15px;
   background: #090b09;
   touch-action: none;
   overscroll-behavior: contain;
   outline-offset: -3px;
 }
 .desktop-viewport[data-available="false"] { cursor: default; }
+.desktop-viewport[data-available="false"] {
+  flex: 0 1 auto;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  max-height: min(42vh, 360px);
+  min-height: 120px;
+}
+.desktop-viewport[data-available="true"] { flex: 1 1 0; }
 .desktop-viewport[data-available="true"][data-control="human"] { cursor: crosshair; }
 .desktop-viewport img {
   display: block;
@@ -3355,6 +3374,7 @@ dialog.floating-palette {
 }
 .desktop-placeholder[hidden] { display: none; }
 .desktop-mobile-tools, .desktop-shortcuts { display: none; }
+.desktop-mobile-tools[hidden] { display: none; }
 .desktop-shortcuts[hidden] { display: none; }
 .desktop-cursor {
   position: absolute;
@@ -3409,14 +3429,17 @@ dialog.floating-palette {
   .desktop-session-brief { grid-template-columns: 62px minmax(0, 1fr) auto; gap: 7px; min-height: 26px; }
   .desktop-session-brief span { font-size: 9px; }
   .desktop-session-brief strong, .desktop-session-brief code { font-size: 10px; }
-  .desktop-controls { gap: 5px; min-height: 34px; }
-  .desktop-controls > button, .desktop-keyboard-row > button { min-height: 36px; }
+  .desktop-controls { gap: 5px; min-height: 34px; padding: 4px 6px; }
+  .desktop-controls > button, .desktop-keyboard-row > button { min-height: 34px; padding: 6px 8px; font-size: 11px; }
+  .desktop-controls > .primary { padding: 7px 10px; }
+  .desktop-more > summary { min-height: 34px; padding: 0 8px; font-size: 11px; }
   .desktop-owner { font-size: 10px; }
   #desktop-status { order: 1; flex: 1 0 100%; min-height: 14px; }
   .desktop-lease-note { margin-top: -5px; font-size: 9px; }
   .desktop-keyboard-row input { flex: 1 1 0; width: 0; }
   .desktop-keyboard-row > span { display: none; }
-  .desktop-viewport { min-height: 80px; }
+  .desktop-viewport[data-available="false"] { min-height: 100px; }
+  .desktop-viewport[data-available="true"] { min-height: 80px; }
 }
 @media (max-height: 540px) and (orientation: landscape) {
   #desktop-viewer { gap: 5px; }

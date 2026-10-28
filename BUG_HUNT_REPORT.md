@@ -1075,8 +1075,8 @@ than sampling command names and assuming their output is consistent:
 
 | CLI route | Default terminal output | Machine / content output | Coverage |
 |---|---|---|---|
-| Glass Dev `agent`, `harness`, `project`, and `daemon` commands | Shared Glass report with title, bounded human labels, status, and width-aware wrapping; daemon log tails receive a titled report | Global or command `--json` keeps JSON; pipes retain the existing machine-readable result; explicit tool and tool-file calls remain their JSON protocol | Source route review; `cargo test -p glass-dev --lib` (713 passed); installed launcher PTY for status, doctor, harness list, project inspect/files, missing-file error, and isolated daemon error at 58/80/120 columns |
-| Glass Browser result commands | The shared runner converts the standard result routes and alternative-runtime JSON results into titled Glass reports with an explicit field allowlist | Global `--json`, pipes, MCP stdio, canonical exports, clipboard payloads, page text, and generated workflow/task/snapshot files retain their content or protocol formats | Source route review; `cargo test -p glass-browser --lib cli::runner::tests::` (32 passed); installed launcher PTY for capabilities and errors at 58/80/120 columns, plus explicit `--json`, pipe JSON, and `NO_COLOR` |
+| Glass Dev `agent`, `harness`, `project`, and `daemon` commands | Shared Glass report with title, bounded human labels, status, and width-aware wrapping; daemon log tails receive a titled report | Global or command `--json` keeps JSON for structured results; daemon log tails remain text; tool and tool-file calls remain JSON protocol | Source route review; `cargo test -p glass-dev --lib` (713 passed); installed launcher PTY for status, doctor, harness list, project inspect/files, missing-file error, and isolated daemon error at 58/80/120 columns |
+| Glass Browser result commands | The shared runner converts the standard result routes and alternative-runtime JSON results into titled Glass reports with an explicit field allowlist; profile actions have human confirmations | Global `--json` covers structured reports and profile actions; default profile-list pipe text, MCP stdio, canonical exports, clipboard payloads, page text, and generated workflow/task/snapshot files retain their content or protocol formats | Source route review; `cargo test -p glass-browser --lib cli::runner::tests::` (32 passed); installed launcher PTY for capabilities/errors at 58/80/120 and JSON profile list/create/delete, plus pipe/NO_COLOR checks |
 | Forwarded Glass Core commands | Core's own shared CLI page; command examples and references expand to the `glass core` product prefix and share the same semantic terminal styling | Core's explicit JSON/text commands and pipe output retain their existing contracts; Glass forwards arguments, output, and exit codes unchanged | Core and Glass Core-help unit tests; installed launcher PTY for `glass core --help` at 58/80/120 columns against the monorepo Core binary |
 | Help and interactive routes | Clap help and Core help; the interactive Glass workspace remains the TUI | MCP is JSON-RPC stdio; TUI output is terminal UI, not a JSON report | Root and forwarded help PTY at 58/80/120 columns; formatter tests verify `--json`, pipe, and `NO_COLOR` behavior |
 
@@ -1115,4 +1115,9 @@ action was executed during the terminal review. At widths 58, 80, and 120, the
 installed launcher reports were nonempty, fit the terminal width, and did not
 leak JSON on ordinary TTY routes. Explicit `--json` and default pipe output
 parse as JSON, and `NO_COLOR` yields a human report without ANSI escapes.
+Browser profile list/create/delete and the `delete-profile` alias also honor
+explicit TTY JSON; the default piped profile list remains its existing plain
+newline list. The installed Glass command processes now default tracing to
+warnings so INFO diagnostics do not interleave with presentation or leak
+implementation paths; `RUST_LOG` remains the opt-in for more detail.
 

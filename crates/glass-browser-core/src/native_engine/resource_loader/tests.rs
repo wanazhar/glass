@@ -35,6 +35,102 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use url::Url;
 
+#[tokio::test]
+async fn http_document_loader_accepts_exact_limit_and_rejects_limit_plus_one() {
+    let max_document_bytes = NativeEngineConfig::default().limits.max_document_bytes;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut at_limit_stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 2048];
+        let read = at_limit_stream.read(&mut request).await.unwrap();
+        assert!(read > 0);
+        let at_limit_body = vec![b'x'; max_document_bytes];
+        let at_limit_header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            at_limit_body.len(),
+        );
+        at_limit_stream
+            .write_all(at_limit_header.as_bytes())
+            .await
+            .unwrap();
+        at_limit_stream.write_all(&at_limit_body).await.unwrap();
+
+        let (mut declared_over_limit_stream, _) = listener.accept().await.unwrap();
+        let read = declared_over_limit_stream.read(&mut request).await.unwrap();
+        assert!(read > 0);
+        let declared_over_limit_header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            max_document_bytes + 1,
+        );
+        declared_over_limit_stream
+            .write_all(declared_over_limit_header.as_bytes())
+            .await
+            .unwrap();
+
+        let (mut streamed_over_limit_stream, _) = listener.accept().await.unwrap();
+        let read = streamed_over_limit_stream.read(&mut request).await.unwrap();
+        assert!(read > 0);
+        streamed_over_limit_stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let chunk_header = format!("{max_document_bytes:X}\r\n");
+        streamed_over_limit_stream
+            .write_all(chunk_header.as_bytes())
+            .await
+            .unwrap();
+        streamed_over_limit_stream
+            .write_all(&at_limit_body)
+            .await
+            .unwrap();
+        streamed_over_limit_stream
+            .write_all(b"\r\n1\r\nx\r\n0\r\n\r\n")
+            .await
+            .unwrap();
+    });
+
+    let mut loader = NativeResourceLoader::new(&NativeEngineConfig::default()).unwrap();
+    let at_limit = loader
+        .load_async(&format!("http://{address}/at-limit"))
+        .await
+        .expect("a document exactly at the byte limit is accepted");
+    assert_eq!(at_limit.body.len(), max_document_bytes);
+
+    let declared_over_limit = loader
+        .load_async(&format!("http://{address}/declared-over-limit"))
+        .await
+        .expect_err("Content-Length above the limit is rejected before body read");
+    assert!(matches!(
+        declared_over_limit,
+        NativeEngineError::LimitExceeded {
+            resource,
+            limit,
+            actual,
+        } if resource == "HTTP document"
+            && limit == max_document_bytes
+            && actual == max_document_bytes + 1
+    ));
+
+    let streamed_over_limit = loader
+        .load_async(&format!("http://{address}/streamed-over-limit"))
+        .await
+        .expect_err("chunked response bodies are bounded while streaming");
+    assert!(matches!(
+        streamed_over_limit,
+        NativeEngineError::LimitExceeded {
+            resource,
+            limit,
+            actual,
+        } if resource == "HTTP document"
+            && limit == max_document_bytes
+            && actual > max_document_bytes
+    ));
+    server.await.unwrap();
+}
+
 fn one_sample_pcm_wav() -> [u8; 45] {
     let mut wav = [0_u8; 45];
     wav[0..4].copy_from_slice(b"RIFF");

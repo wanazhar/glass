@@ -40,7 +40,17 @@ try {
   await page.goto(`${baseUrl.replace(/\/$/, "")}/#${encodeURIComponent(token)}`);
   await page.waitForFunction(() => document.querySelector("#launch")?.hidden === true, { timeout: 30000 });
   await page.locator("#desktop-toggle").click();
-  await page.getByText("View only · GC may control").waitFor();
+  try {
+    await page.getByText("View only · GC may control").waitFor({ timeout: 10000 });
+  } catch (error) {
+    const diagnostics = await page.evaluate(async () => ({
+      owner: document.querySelector("#desktop-owner")?.textContent,
+      status: document.querySelector("#desktop-status")?.textContent,
+      placeholder: document.querySelector("#desktop-placeholder")?.textContent,
+      host: await fetch("/api/desktop/status").then(async (response) => ({ status: response.status, body: await response.json() })),
+    }));
+    throw Error(`Desktop did not become viewable: ${JSON.stringify(diagnostics)}; ${error.message}`);
+  }
   await page.getByText(/^Live · updated/).waitFor({ timeout: 30000 });
   const sessionBeforeTap = await agentRequest({ action: "status" });
   const hasFileManagerWindow = (snapshot) => snapshot.nodes?.some((node) => node.depth === 1

@@ -35,6 +35,23 @@ def safe_token(value: str) -> str | None:
     return value if SAFE_TOKEN.fullmatch(value) else None
 
 
+def architectures_for(path: Path) -> list[str]:
+    try:
+        result = subprocess.run(
+            ["/usr/bin/lipo", "-archs", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            check=False,
+            text=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    return [token for token in result.stdout.split() if safe_token(token)]
+
+
 def sandbox_profile(worker: Path) -> str:
     path = str(worker).replace("\\", "\\\\").replace('"', '\\"')
     return (
@@ -50,6 +67,8 @@ def run_probe(worker: Path) -> dict[str, Any]:
     environment = os.environ.copy()
     environment["DYLD_PRINT_LIBRARIES"] = "1"
     environment["DYLD_PRINT_RPATHS"] = "1"
+    host_architecture = safe_token(platform.machine())
+    binary_architectures = architectures_for(worker)
     command = [
         "/usr/bin/sandbox-exec",
         "-p",
@@ -60,6 +79,13 @@ def run_probe(worker: Path) -> dict[str, Any]:
     report: dict[str, Any] = {
         "probe": "macos-sandboxed-worker-loader",
         "binary": worker.name,
+        "hostArchitecture": host_architecture,
+        "binaryArchitectures": binary_architectures,
+        "binaryArchitectureMatchesHost": (
+            host_architecture in binary_architectures
+            if host_architecture and binary_architectures
+            else None
+        ),
         "status": "unknown",
         "capturedBytes": 0,
         "captureTruncated": False,
@@ -114,25 +140,7 @@ def run_probe(worker: Path) -> dict[str, Any]:
             architecture_target = image_path
             if image_path.suffix == ".framework" and image_path.is_dir():
                 architecture_target = image_path / image_path.stem
-            architectures: list[str] = []
-            try:
-                lipo = subprocess.run(
-                    ["/usr/bin/lipo", "-archs", str(architecture_target)],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    timeout=3,
-                    check=False,
-                    text=True,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-            else:
-                if lipo.returncode == 0:
-                    architectures = [
-                        token
-                        for token in lipo.stdout.split()
-                        if safe_token(token)
-                    ]
+            architectures = architectures_for(architecture_target)
             images.append(
                 {
                     "name": name,

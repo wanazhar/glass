@@ -70,15 +70,27 @@ def clean_environment(*, dyld_print: bool) -> dict[str, str]:
     return environment
 
 
-def run_launch(binary: Path, *, sandboxed: bool, dyld_print: bool, worker: bool) -> dict[str, Any]:
+def run_launch(
+    binary: Path,
+    *,
+    sandboxed: bool,
+    dyld_print: bool,
+    worker: bool,
+    profile: str = "production",
+) -> dict[str, Any]:
     command = [str(binary)]
     if worker:
         command.append("--native-content-worker")
     if sandboxed:
+        profile_text = (
+            "(version 1) (allow default)"
+            if profile == "permissive-control"
+            else sandbox_profile(binary)
+        )
         command = [
             "/usr/bin/sandbox-exec",
             "-p",
-            sandbox_profile(binary),
+            profile_text,
             *command,
         ]
     try:
@@ -108,6 +120,7 @@ def run_launch(binary: Path, *, sandboxed: bool, dyld_print: bool, worker: bool)
     report: dict[str, Any] = {
         "binary": binary.name,
         "sandboxed": sandboxed,
+        "sandboxProfile": profile if sandboxed else "none",
         "dyldPrint": dyld_print,
         "status": status,
         "capturedBytes": min(len(stderr), MAX_CAPTURE_BYTES),
@@ -192,7 +205,16 @@ def run_probe(worker: Path) -> dict[str, Any]:
         ("worker-sandboxed-clean", worker, True, False, True),
         ("worker-unsandboxed-dyld-print", worker, False, True, True),
         ("worker-sandboxed-dyld-print", worker, True, True, True),
+        ("known-good-unsandboxed-clean", Path("/usr/bin/true"), False, False, False),
         ("known-good-sandboxed-clean", Path("/usr/bin/true"), True, False, False),
+        (
+            "known-good-sandboxed-permissive-control",
+            Path("/usr/bin/true"),
+            True,
+            False,
+            False,
+            "permissive-control",
+        ),
     )
     return {
         "probe": "macos-native-worker-launch-matrix",
@@ -206,15 +228,16 @@ def run_probe(worker: Path) -> dict[str, Any]:
         **signing_and_quarantine(worker),
         "cases": [
             {
-                "name": name,
+                "name": case[0],
                 **run_launch(
-                    binary,
-                    sandboxed=sandboxed,
-                    dyld_print=dyld_print,
-                    worker=is_worker,
+                    case[1],
+                    sandboxed=case[2],
+                    dyld_print=case[3],
+                    worker=case[4],
+                    profile=case[5] if len(case) > 5 else "production",
                 ),
             }
-            for name, binary, sandboxed, dyld_print, is_worker in cases
+            for case in cases
         ],
     }
 

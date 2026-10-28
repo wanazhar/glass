@@ -14,7 +14,8 @@ let hostReachable = true;
 let inputDelayMs = 0;
 let streamResponse = null;
 let streamTimer = 0;
-let staleStream = false;
+let streamFrameDelayMs = 0;
+const streamWidths = [];
 const actions = [];
 const input = [];
 async function waitForInput(predicate, timeoutMs = 2000) {
@@ -46,7 +47,7 @@ const testModule = `
   window.setDesktopHostReachable = (reachable) => fetch("/__test/host?reachable=" + reachable);
   window.setDesktopInputDelay = (ms) => fetch("/__test/input-delay?ms=" + ms);
   window.disconnectDesktopStream = () => fetch("/__test/stream-close");
-  window.setStaleDesktopStream = (enabled) => fetch("/__test/stream-stale?enabled=" + enabled);
+  window.setStaleDesktopStream = (delayMs) => fetch("/__test/stream-stale?delayMs=" + delayMs);
   window.__inputTimings = [];
   window.__frameTimings = [];
   window.addEventListener("glass-desktop-input-timing", (event) => window.__inputTimings.push(event.detail));
@@ -90,8 +91,13 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (url.pathname === "/__test/stream-stale") {
-    staleStream = url.searchParams.get("enabled") === "true";
+    streamFrameDelayMs = Math.max(0, Math.min(10_000, Number(url.searchParams.get("delayMs")) || 0));
     response.writeHead(204).end();
+    return;
+  }
+  if (url.pathname === "/__test/stream-widths") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(streamWidths));
     return;
   }
   if (url.pathname === "/src/desktop.js") {
@@ -121,15 +127,17 @@ const server = createServer(async (request, response) => {
       return;
     }
     response.writeHead(200, { "content-type": "application/json" });
+    const frameSeq = session ? nextFrameSeq++ : null;
     response.end(JSON.stringify({
       available: Boolean(session), sessionId: session, mode: session ? "managedVirtualSession" : null,
       displayId: session ? ":81" : null, workspaceRoot: "/work/glass", lease,
       width: session ? 1280 : null, height: session ? 800 : null,
-      frameSeq: session ? nextFrameSeq++ : null, frameAgeMs: session ? 24 : null, error: null,
+      frameSeq, frameAgeMs: session ? 24 : null, frameTimeMs: session ? frameSeq * 100 : null, error: null,
     }));
     return;
   }
   if (url.pathname === "/api/desktop/stream") {
+    streamWidths.push(url.searchParams.get("width"));
     if (!session) {
       response.writeHead(409, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "No managed desktop session", lease }));
@@ -139,8 +147,9 @@ const server = createServer(async (request, response) => {
     streamResponse = response;
     const writeFrame = () => {
       if (!streamResponse || streamResponse.destroyed) return;
-      const seq = staleStream ? Math.max(1, nextFrameSeq - 12) : nextFrameSeq++;
-      response.write(`--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpg.length}\r\nX-Frame-Seq: ${seq}\r\nX-Frame-Time-Ms: ${seq * 100}\r\n\r\n`);
+      const seq = nextFrameSeq++;
+      const frameTimeMs = Math.max(0, seq * 100 - streamFrameDelayMs);
+      response.write(`--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpg.length}\r\nX-Frame-Seq: ${seq}\r\nX-Frame-Time-Ms: ${frameTimeMs}\r\n\r\n`);
       response.write(jpg);
       response.write("\r\n");
     };
@@ -257,13 +266,21 @@ try {
       && !document.querySelector("#desktop-stream").hidden;
   }, { timeout: 5000 });
   assert.equal(await page.locator("#desktop-stream").evaluate((image) => image.naturalWidth / image.naturalHeight), 1.6);
+  assert((await page.evaluate(async () => await (await fetch("/__test/stream-widths")).json())).includes("480"),
+    "phone viewer should request the bandwidth-friendly 480px stream");
   assert.equal(await page.locator("#desktop-placeholder").isHidden(), true);
-  await page.evaluate(() => window.setStaleDesktopStream(true));
-  await page.waitForFunction(() => document.querySelector("#desktop-stream").hidden, { timeout: 3000 });
-  assert.equal(await page.locator("#desktop-placeholder").isVisible(), true, "lagging multipart frames must be hidden instead of presented as live");
-  await page.evaluate(() => window.setStaleDesktopStream(false));
+  await page.evaluate(() => window.setStaleDesktopStream(1500));
+  await page.getByText(/^Delayed ·/).waitFor({ timeout: 3000 });
+  assert.equal(await page.locator("#desktop-stream").isVisible(), true, "a decoded frame within the delay bound should remain visible");
+  assert.equal(await page.locator("#desktop-placeholder").isHidden(), true, "a decoded delayed frame should not black-screen the stage");
+  await page.evaluate(() => window.setStaleDesktopStream(0));
   await page.getByText(/^Live · updated/).waitFor({ timeout: 5000 });
   await page.locator("#desktop-placeholder").waitFor({ state: "hidden" });
+  await page.evaluate(() => window.setStaleDesktopStream(5000));
+  await page.waitForFunction(() => document.querySelector("#desktop-stream").hidden, { timeout: 5000 });
+  assert.match(await page.locator("#desktop-status").textContent(), /Waiting for a recent frame/);
+  await page.evaluate(() => window.setStaleDesktopStream(0));
+  await page.getByText(/^Live · updated/).waitFor({ timeout: 5000 });
   await page.locator("#desktop-more > summary").click();
   await page.locator("#desktop-title").click();
   assert.equal(await page.locator("#desktop-more").evaluate((details) => details.open), false, "outside pointer should close More");

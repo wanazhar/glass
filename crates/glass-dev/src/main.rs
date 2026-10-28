@@ -60,7 +60,7 @@ fn run() -> MainResult {
 
     let interactive_tui = uses_interactive_tui(&cli);
     let log_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
     if interactive_tui {
         // Tracing output on stderr draws over Ratatui's alternate screen. In
         // particular, Chromium startup diagnostics include its profile path

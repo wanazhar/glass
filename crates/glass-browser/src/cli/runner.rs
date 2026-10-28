@@ -281,7 +281,12 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
         }
         Some(Commands::InstallChromium { update }) => {
             let path = crate::browser::chrome::download_chromium(*update).await?;
-            if std::io::stdout().is_terminal() {
+            if CLI_JSON_OUTPUT.load(Ordering::Relaxed) {
+                print_json(&serde_json::json!({
+                    "status": "installed",
+                    "chromium": path.display().to_string(),
+                }))?;
+            } else if std::io::stdout().is_terminal() {
                 print_human_cli_report(
                     "Browser runtime",
                     "installed",
@@ -335,7 +340,9 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
         Some(Commands::DeleteProfile { name }) => {
             policy.require(PolicyCapability::PersistentProfile)?;
             profile_manager_for_cli(&cli).delete_profile(name)?;
-            if std::io::stdout().is_terminal() {
+            if CLI_JSON_OUTPUT.load(Ordering::Relaxed) {
+                print_json(&serde_json::json!({"deleted": true, "profile": name}))?;
+            } else if std::io::stdout().is_terminal() {
                 print_human_cli_report("Browser profiles", "deleted", &[("Profile", name.clone())]);
             } else {
                 println!("deleted profile {name}");
@@ -2930,7 +2937,9 @@ fn dispatch_profiles(cli: &Cli, action: Option<&ProfileCommand>) -> BrowserResul
     match action {
         None | Some(ProfileCommand::List) => {
             let profiles = manager.list_profiles()?;
-            if std::io::stdout().is_terminal() {
+            if CLI_JSON_OUTPUT.load(Ordering::Relaxed) {
+                print_json(&serde_json::json!({"profiles": profiles}))?;
+            } else if std::io::stdout().is_terminal() {
                 let rows = if profiles.is_empty() {
                     vec![("Profiles", "No saved browser profiles".to_string())]
                 } else {
@@ -2958,7 +2967,9 @@ fn dispatch_profiles(cli: &Cli, action: Option<&ProfileCommand>) -> BrowserResul
         }
         Some(ProfileCommand::Create { name }) => {
             manager.create_profile(name)?;
-            if std::io::stdout().is_terminal() {
+            if CLI_JSON_OUTPUT.load(Ordering::Relaxed) {
+                print_json(&serde_json::json!({"created": true, "profile": name}))?;
+            } else if std::io::stdout().is_terminal() {
                 print_human_cli_report("Browser profiles", "created", &[("Profile", name.clone())]);
             } else {
                 println!("created profile {name}");
@@ -2966,7 +2977,9 @@ fn dispatch_profiles(cli: &Cli, action: Option<&ProfileCommand>) -> BrowserResul
         }
         Some(ProfileCommand::Delete { name }) => {
             manager.delete_profile(name)?;
-            if std::io::stdout().is_terminal() {
+            if CLI_JSON_OUTPUT.load(Ordering::Relaxed) {
+                print_json(&serde_json::json!({"deleted": true, "profile": name}))?;
+            } else if std::io::stdout().is_terminal() {
                 print_human_cli_report("Browser profiles", "deleted", &[("Profile", name.clone())]);
             } else {
                 println!("deleted profile {name}");

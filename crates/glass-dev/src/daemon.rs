@@ -3937,7 +3937,10 @@ while True:
                 assert!(inspected.ok);
                 assert_eq!(
                     inspected.result["workspace"]["root"],
-                    project.display().to_string()
+                    std::fs::canonicalize(&project)
+                        .unwrap()
+                        .display()
+                        .to_string()
                 );
 
                 let mut tool = base_request("tool", "operation.submit");

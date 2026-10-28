@@ -2242,7 +2242,9 @@ mod tests {
             fs::read_to_string(root.join("handoff-cwd"))
                 .expect("read cwd marker")
                 .trim(),
-            root.to_string_lossy()
+            fs::canonicalize(&root)
+                .expect("canonicalize fixture workspace")
+                .to_string_lossy()
         );
         fs::remove_dir_all(root).expect("remove fixture workspace");
     }

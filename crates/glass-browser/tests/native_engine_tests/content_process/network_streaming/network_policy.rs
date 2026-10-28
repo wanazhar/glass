@@ -1246,8 +1246,14 @@ async fn native_content_process_requires_cors_for_cross_origin_integrity_resourc
     page_server.await.unwrap();
     resource_server.await.unwrap();
 }
-#[tokio::test]
-async fn native_content_process_ignores_csp_path_on_frame_redirect() {
+#[test]
+fn native_content_process_ignores_csp_path_on_frame_redirect() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_content_process_ignores_csp_path_on_frame_redirect_inner());
+    });
+}
+
+async fn native_content_process_ignores_csp_path_on_frame_redirect_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

@@ -967,6 +967,20 @@ fn authorized(settings: &Settings, r: &Request) -> bool {
         r.headers.get("tailscale-user-login") == Some(&settings.login)
     }
 }
+fn same_origin_desktop_mutation(settings: &Settings, r: &Request) -> bool {
+    if r.method != "POST" {
+        return true;
+    }
+    let (Some(host), Some(request_origin)) = (r.headers.get("host"), r.headers.get("origin"))
+    else {
+        return false;
+    };
+    [origin(settings), https_url(settings)]
+        .iter()
+        .any(|expected| {
+            origin_authority(expected) == Some(host.as_str()) && expected == request_origin
+        })
+}
 fn history(id: &str, before: usize) -> Result<Value, String> {
     history_path(&thread_path(id)?, before)
 }
@@ -1792,6 +1806,14 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
         )
         .map_err(|e| e.to_string());
     }
+    if path.starts_with("/api/desktop/") && !same_origin_desktop_mutation(&app.settings, &r) {
+        return json_response(
+            &mut stream,
+            403,
+            json!({"error":"Desktop actions require the same authenticated origin"}),
+        )
+        .map_err(|e| e.to_string());
+    }
     if is_asset {
         if r.method != "GET" {
             return Err("Unsupported method".into());
@@ -2398,6 +2420,37 @@ mod tests {
         r.headers
             .insert("tailscale-user-login".into(), "other".into());
         assert!(!authorized(&s, &r));
+    }
+    #[test]
+    fn desktop_mutations_require_exact_origin_and_host_for_http_and_https() {
+        let mut s = settings();
+        let mut r = Request {
+            method: "POST".into(),
+            path: "/api/desktop/input".into(),
+            headers: HashMap::from([
+                ("host".into(), "host.tail.ts.net:8443".into()),
+                ("origin".into(), "https://host.tail.ts.net:8443".into()),
+            ]),
+            body: Vec::new(),
+        };
+        assert!(same_origin_desktop_mutation(&s, &r));
+        r.headers.remove("origin");
+        assert!(!same_origin_desktop_mutation(&s, &r));
+        r.headers
+            .insert("origin".into(), "https://evil.test".into());
+        assert!(!same_origin_desktop_mutation(&s, &r));
+        r.headers.insert("host".into(), "evil.test".into());
+        assert!(!same_origin_desktop_mutation(&s, &r));
+
+        s.http = 8083;
+        s.http_host = "100.98.115.95".into();
+        r.headers.insert("host".into(), "100.98.115.95:8083".into());
+        r.headers
+            .insert("origin".into(), "http://100.98.115.95:8083".into());
+        assert!(same_origin_desktop_mutation(&s, &r));
+        r.method = "GET".into();
+        r.headers.remove("origin");
+        assert!(same_origin_desktop_mutation(&s, &r));
     }
     #[test]
     fn origin_authority_rejects_malformed_values_without_panicking() {

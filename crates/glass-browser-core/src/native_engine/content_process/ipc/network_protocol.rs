@@ -818,7 +818,8 @@ pub(in crate::native_engine::content_process) async fn load_parent_page_video_po
 
 pub(in crate::native_engine::content_process) async fn load_parent_page_media_async(
     loader: &mut NativeResourceLoader,
-    document_url: &str,
+    policy_document_url: &str,
+    base_url: &str,
     href: &str,
     value: &Value,
 ) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {
@@ -836,24 +837,23 @@ pub(in crate::native_engine::content_process) async fn load_parent_page_media_as
             "media metadata contains an unknown field",
         ));
     }
-    validate_url_text("parent media document URL", document_url)?;
+    validate_url_text("parent media policy document URL", policy_document_url)?;
+    validate_url_text("parent media base URL", base_url)?;
     validate_url_text("parent media target URL", href)?;
-    let document = Url::parse(without_fragment(document_url)).map_err(|_| {
+    let base = Url::parse(without_fragment(base_url)).map_err(|_| {
         NativeEngineError::worker_failure(
             "decode parent media request",
             NativeWorkerFailureKind::Protocol,
-            "media document URL is invalid",
+            "media base URL is invalid",
         )
     })?;
-    let target = Url::parse(href)
-        .or_else(|_| document.join(href))
-        .map_err(|_| {
-            NativeEngineError::worker_failure(
-                "decode parent media request",
-                NativeWorkerFailureKind::Protocol,
-                "media target URL is invalid",
-            )
-        })?;
+    let target = Url::parse(href).or_else(|_| base.join(href)).map_err(|_| {
+        NativeEngineError::worker_failure(
+            "decode parent media request",
+            NativeWorkerFailureKind::Protocol,
+            "media target URL is invalid",
+        )
+    })?;
     if !is_network_url(target.as_str()) {
         return Err(NativeEngineError::worker_failure(
             "decode parent media request",
@@ -861,7 +861,9 @@ pub(in crate::native_engine::content_process) async fn load_parent_page_media_as
             "parent media broker accepts only HTTP(S) targets",
         ));
     }
-    loader.load_media_async(document_url, href).await
+    loader
+        .load_media_async_with_context(policy_document_url, base_url, href, None)
+        .await
 }
 
 pub(in crate::native_engine::content_process) async fn load_parent_page_font_response_async(

@@ -216,6 +216,23 @@
     }}
     scheduleMutationDelivery();
   }};
+  Object.defineProperty(globalThis, "__glassQueueInnerHtmlMutation", {{
+    enumerable: false,
+    configurable: true,
+    value(target, removedNodes, addedNodes) {{
+      const removed = Array.from(removedNodes || []);
+      const added = Array.from(addedNodes || []);
+      if (removed.length === 0 && added.length === 0) return;
+      queueMutation({{
+        type: "childList",
+        target,
+        removedNodes: removed,
+        addedNodes: added,
+        previousSibling: null,
+        nextSibling: null,
+      }});
+    }},
+  }});
   const queueFragmentChildRemoval = (parent, child) => {{
     if (!parent || parent.__glassFragment !== true || !child) return;
     const children = Array.isArray(parent.__glassChildren) ? parent.__glassChildren : [];

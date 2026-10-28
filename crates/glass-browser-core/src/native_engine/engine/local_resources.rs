@@ -871,20 +871,21 @@ pub(super) fn load_local_initial_media(
     loader: &NativeResourceLoader,
     document_url: &str,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
+    let media_base_url = document.effective_base_url(document_url);
     let mut events = Vec::new();
     for (node_index, source) in document.external_media_links() {
         let is_data = source
             .get(..5)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"));
-        let is_file = is_file_subresource_source(document_url, &source);
+        let is_file = is_file_subresource_source(&media_base_url, &source);
         if !is_data && !is_file {
             continue;
         }
         document.mark_media_load(node_index, source.clone())?;
         let metadata = if is_file {
-            loader.load_local_file_media(document_url, &source)?
+            loader.load_local_file_media(&media_base_url, &source)?
         } else {
-            loader.load_data_media(document_url, &source)?
+            loader.load_data_media(&media_base_url, &source)?
         };
         let event_kind = match metadata {
             Some(metadata) => {

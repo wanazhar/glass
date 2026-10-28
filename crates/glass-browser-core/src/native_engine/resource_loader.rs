@@ -1854,6 +1854,23 @@ pub(crate) struct NativeScriptLoadRequest<'a> {
 }
 
 impl NativeResourceLoader {
+    pub(crate) fn inherit_document_policy_from(
+        &mut self,
+        parent: &Self,
+        document_url: &str,
+    ) -> Result<(), NativeEngineError> {
+        let parsed = Url::parse(without_fragment(document_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "inherited resource policy URL is invalid".into(),
+            }
+        })?;
+        let key = cache_key(&parsed);
+        if let Some(policy) = parent.network.document_policies.get(&key) {
+            self.network.document_policies.insert(key, policy.clone());
+        }
+        Ok(())
+    }
+
     pub(crate) fn new(config: &NativeEngineConfig) -> Result<Self, NativeEngineError> {
         Self::new_with_cookie_jar(config, None)
     }
@@ -2113,21 +2130,29 @@ impl NativeResourceLoader {
         Ok(())
     }
 
-    pub(crate) async fn load_media_async_with_object_url(
+    pub(crate) async fn load_media_async_with_context(
         &mut self,
-        document_url: &str,
+        policy_document_url: &str,
+        base_url: &str,
         src: &str,
         object_url: Option<&NativeObjectUrlResource>,
     ) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {
-        validate_url_text("document URL", document_url)?;
+        validate_url_text("media policy document URL", policy_document_url)?;
+        validate_url_text("media base URL", base_url)?;
         validate_url_text("media URL", src)?;
-        let document_url = Url::parse(without_fragment(document_url)).map_err(|_| {
+        let document_url = Url::parse(without_fragment(policy_document_url)).map_err(|_| {
             NativeEngineError::UnsupportedUrl {
-                reason: "media owner URL is not valid URL syntax".into(),
+                reason: "media policy document URL is not valid URL syntax".into(),
+            }
+        })?;
+        let base_url = Url::parse(without_fragment(base_url)).map_err(|_| {
+            NativeEngineError::UnsupportedUrl {
+                reason: "media base URL is not valid URL syntax".into(),
             }
         })?;
         reject_credentials(&document_url)?;
-        let Some(target_url) = resolve_media_url(&document_url, src)? else {
+        reject_credentials(&base_url)?;
+        let Some(target_url) = resolve_media_url(&base_url, src)? else {
             return Ok(None);
         };
         if target_url.scheme().eq_ignore_ascii_case("file") {

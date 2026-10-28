@@ -1605,6 +1605,8 @@ impl NativeContentFetchBroker<'_> {
     pub(super) async fn load_media(
         &mut self,
         document_url: &str,
+        policy_document_url: &str,
+        base_url: &str,
         href: &str,
     ) -> Result<Option<NativeMediaMetadata>, NativeEngineError> {
         self.next_content_resource_fetch_id = self
@@ -1626,6 +1628,8 @@ impl NativeContentFetchBroker<'_> {
                 "id": self.request_id,
                 "fetch_id": fetch_id,
                 "document_url": document_url,
+                "policy_document_url": policy_document_url,
+                "base_url": base_url,
                 "owner": self.owner,
                 "cookie_writes": cookie_writes,
                 "page_meta_csp": self.page_meta_content_security_policies,

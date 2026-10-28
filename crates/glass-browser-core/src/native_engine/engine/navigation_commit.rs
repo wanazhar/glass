@@ -72,6 +72,7 @@ impl NativeEngine {
             generation,
             self.loader.document_referrer_policy(&resource.url)?,
         )?;
+        document.set_inherited_base_url(self.embedding_base_url.clone());
         document.set_viewport(self.config.viewport)?;
         let initial_events = if is_file_url(&resource.url) {
             self.loader.apply_meta_content_security_policies(
@@ -108,6 +109,7 @@ impl NativeEngine {
                 Some(&allowed_inline_style_nodes),
                 self.loader.document_referrer_policy(&resource.url)?,
             )?;
+            document.set_inherited_base_url(self.embedding_base_url.clone());
             document.mark_inline_style_reports_seen();
             document.mark_content_security_policy_meta_processed();
             document.set_external_stylesheet_states(stylesheet_states);
@@ -274,6 +276,7 @@ impl NativeEngine {
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
         self.document_navigate_to_sources = prepared.navigate_to_sources;
+        self.embedding_base_url = None;
         self.scroll_offset = fragment_scroll_offset;
         self.sync_javascript_scroll_offset();
         let _ = self.apply_scroll_commands(&self.document.clone(), &initial_scroll_commands)?;
@@ -457,6 +460,7 @@ impl NativeEngine {
         self.origin = prepared.resource.origin;
         self.document_frame_sources = prepared.frame_sources;
         self.document_navigate_to_sources = prepared.navigate_to_sources;
+        self.embedding_base_url = None;
         self.scroll_offset = fragment_scroll_offset;
         self.sync_javascript_scroll_offset();
         let _ = self.apply_scroll_commands(&self.document.clone(), &initial_scroll_commands)?;

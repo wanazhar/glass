@@ -502,6 +502,7 @@ async fn native_local_dynamic_blob_media_play_resolves_for_known_duration() {
             .unwrap(),
         serde_json::json!([["play", "playing"], false, false])
     );
+    tokio::time::sleep(Duration::from_millis(20)).await;
     assert_eq!(
         engine
             .evaluate_async(
@@ -533,11 +534,11 @@ async fn native_local_dynamic_blob_media_play_resolves_for_known_duration() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const time = mediaPlaybackAudio.currentTime; return [time > 0.25, time < 1, mediaPlaybackAudio.ended, mediaPlaybackAudio.played.length, mediaPlaybackAudio.played.end(0) > 0.25]; })()",
+                "(() => { const time = mediaPlaybackAudio.currentTime; return [time > 0.25, time < 1, mediaPlaybackAudio.ended, mediaPlaybackAudio.played.length, mediaPlaybackAudio.played.end(0) > 0, mediaPlaybackAudio.played.start(1) >= 0.25, mediaPlaybackAudio.played.end(1) > 0.25]; })()",
             )
             .await
             .unwrap(),
-        serde_json::json!([true, true, false, 1, true])
+        serde_json::json!([true, true, false, 2, true, true, true])
     );
     engine
             .evaluate_async(
@@ -568,33 +569,29 @@ async fn native_local_dynamic_blob_media_selects_supported_source() {
         .with_initial_url("fixture://blob-media-source-selection");
     let mut engine = NativeEngine::new(config).unwrap();
     engine.initialize_async().await.unwrap();
+    let wav_bytes = serde_json::to_string(&native_test_wav_bytes()).unwrap();
+    let setup_script = format!(
+        r#"(() => {{
+            globalThis.mediaSourceLog = [];
+            const audio = document.createElement('audio');
+            const unsupported = document.createElement('source');
+            unsupported.type = 'audio/x-not-supported';
+            unsupported.src = URL.createObjectURL(new Blob(['bad'], {{ type: 'audio/x-not-supported' }}));
+            const supported = document.createElement('source');
+            supported.type = 'audio/wav';
+            supported.src = URL.createObjectURL(new Blob([new Uint8Array({wav_bytes})], {{ type: 'audio/wav' }}));
+            audio.addEventListener('load', () => mediaSourceLog.push('load'));
+            audio.addEventListener('error', () => mediaSourceLog.push('error'));
+            audio.append(unsupported, supported);
+            document.getElementById('host').appendChild(audio);
+            globalThis.mediaSourceAudio = audio;
+            return [unsupported.src, supported.src];
+        }})()"#
+    );
 
     assert_eq!(
-        engine
-            .evaluate_async(
-                r#"(() => {
-                    globalThis.mediaSourceLog = [];
-                    const audio = document.createElement('audio');
-                    const unsupported = document.createElement('source');
-                    unsupported.type = 'audio/x-not-supported';
-                    unsupported.src = URL.createObjectURL(new Blob(['bad'], { type: 'audio/x-not-supported' }));
-                    const supported = document.createElement('source');
-                    supported.type = 'audio/webm';
-                    supported.src = URL.createObjectURL(new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])], { type: 'audio/webm' }));
-                    audio.addEventListener('load', () => mediaSourceLog.push('load'));
-                    audio.addEventListener('error', () => mediaSourceLog.push('error'));
-                    audio.append(unsupported, supported);
-                    document.getElementById('host').appendChild(audio);
-                    globalThis.mediaSourceAudio = audio;
-                    return [unsupported.src, supported.src];
-                })()"#,
-            )
-            .await
-            .unwrap(),
-        serde_json::json!([
-            "blob:null/glass-native-1",
-            "blob:null/glass-native-2"
-        ])
+        engine.evaluate_async(&setup_script).await.unwrap(),
+        serde_json::json!(["blob:null/glass-native-1", "blob:null/glass-native-2"])
     );
     assert_eq!(
         engine
@@ -605,7 +602,7 @@ async fn native_local_dynamic_blob_media_selects_supported_source() {
             .unwrap(),
         serde_json::json!([
             ["load"],
-            1,
+            2,
             1,
             "blob:null/glass-native-2",
             serde_json::Value::Null
@@ -618,7 +615,7 @@ async fn native_local_dynamic_blob_media_selects_supported_source() {
             )
             .await
             .unwrap(),
-        serde_json::json!("NotSupportedError")
+        serde_json::json!("played")
     );
     engine.close_async().await.unwrap();
 }
@@ -2240,6 +2237,7 @@ async fn native_local_unhandled_rejection_dispatches_window_event() {
             r#"
                 <script>
                     globalThis.rejectionEvents = [];
+                    globalThis.rejectionReasons = [];
                     globalThis.handlerEvents = [];
                     globalThis.handledEvents = [];
                     globalThis.handledHandlerEvents = [];
@@ -2253,6 +2251,9 @@ async fn native_local_unhandled_rejection_dispatches_window_event() {
                         event.cancelable,
                         event.target === window,
                     ]));
+                    window.addEventListener('unhandledrejection', event => {
+                        rejectionReasons.push(String(event.reason));
+                    });
                     window.onunhandledrejection = event => handlerEvents.push([
                         String(event.reason).includes('first unhandled'),
                         String(event.reason).includes('second unhandled'),
@@ -2297,6 +2298,13 @@ async fn native_local_unhandled_rejection_dispatches_window_event() {
             [false, true, false, true, true, false, true, true],
             [false, false, true, true, true, false, true, true],
         ])
+    );
+    assert_eq!(
+        engine
+            .evaluate_async("globalThis.rejectionReasons")
+            .await
+            .unwrap(),
+        serde_json::json!(["first unhandled", "second unhandled", "late handled"])
     );
     assert_eq!(
         engine

@@ -47,6 +47,167 @@ async fn native_runtime_dynamic_iframe_srcdoc_property_updates_the_attribute_inn
 }
 
 #[test]
+fn native_runtime_template_composed_iframe_srcdoc_bootstraps_embedded_media_document() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_runtime_template_composed_iframe_srcdoc_bootstraps_embedded_media_document_inner(
+            ),
+        );
+    });
+}
+
+async fn native_runtime_template_composed_iframe_srcdoc_bootstraps_embedded_media_document_inner() {
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_fixture(
+                "fixture://mdn-srcdoc.test/demo",
+                "<!doctype html><template id='head'><title>%title%</title></template><template id='body'><main id='output'>%html%</main></template><iframe id='output-iframe' src='about:blank'></iframe>",
+            )
+            .unwrap()
+            .with_initial_url("fixture://mdn-srcdoc.test/demo"),
+    )
+    .await
+    .unwrap();
+    let initial_frames = session.native_list_frames().await.unwrap();
+    let initial_child_id = initial_frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("the static iframe should begin with its initial about:blank child")
+        .id
+        .clone();
+
+    // This follows the MDN tabbed example: read separate template.innerHTML
+    // fragments, interpolate a document, and assign it to an about:blank iframe.
+    let result = session
+        .script(
+            "(() => { const head = document.querySelector('#head').innerHTML.replace('%title%', 'Embedded video'); const body = document.querySelector('#body').innerHTML.replace('%html%', '<video controls><source src=\"/media/flower.webm\" type=\"video/webm\"></video>'); const frame = document.querySelector('#output-iframe'); frame.srcdoc = '<!doctype html><html><head>' + head + '</head><body>' + body + '</body></html>'; return [frame.srcdoc.includes('<video'), frame.getAttribute('srcdoc').includes('/media/flower.webm')]; })()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.value, serde_json::json!([true, true]));
+
+    let frames = session.native_list_frames().await.unwrap();
+    assert_eq!(
+        frames.len(),
+        2,
+        "srcdoc should replace the initial about:blank child"
+    );
+    let child_id = frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("the template-composed iframe should have a child context")
+        .id
+        .clone();
+    assert_ne!(
+        child_id, initial_child_id,
+        "changing srcdoc must replace the child document"
+    );
+    let stable_frames = session.native_list_frames().await.unwrap();
+    assert_eq!(
+        stable_frames
+            .iter()
+            .map(|frame| &frame.id)
+            .collect::<Vec<_>>(),
+        frames.iter().map(|frame| &frame.id).collect::<Vec<_>>(),
+        "unchanged srcdoc must keep a stable child frame"
+    );
+    session.native_select_frame(&child_id).await.unwrap();
+    let child = session
+        .script("[document.title, document.querySelector('video') !== null, document.querySelector('source').getAttribute('src')]")
+        .await
+        .unwrap();
+    assert_eq!(
+        child.value,
+        serde_json::json!(["Embedded video", true, "/media/flower.webm"])
+    );
+    session.close().await.unwrap();
+}
+
+#[test]
+fn native_runtime_srcdoc_inherits_parent_base_for_relative_media_loading() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_runtime_srcdoc_inherits_parent_base_for_relative_media_loading_inner(),
+        );
+    });
+}
+
+async fn native_runtime_srcdoc_inherits_parent_base_for_relative_media_loading_inner() {
+    let root =
+        std::env::temp_dir().join(format!("glass-native-srcdoc-base-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let media_path = root.join("flower.webm");
+    let page_path = root.join("index.html");
+    fs::write(
+        &media_path,
+        include_bytes!(
+            "../../../../glass-browser-core/tests/fixtures/native-media/two-color-frames-vp8.webm"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &page_path,
+        "<!doctype html><template id='head'><title>%title%</title></template><template id='body'>%html%</template><iframe id='output-iframe' src='about:blank'></iframe>",
+    )
+    .unwrap();
+    let page_url = native_test_file_url(&page_path);
+    let session = BrowserRuntimeSession::connect_native(
+        NativeEngineConfig::default()
+            .with_initial_url(page_url.clone())
+            .with_allowed_file_root(root.clone()),
+    )
+    .await
+    .unwrap();
+
+    let initial_child_id = session
+        .native_list_frames()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("static src should create the initial about:blank frame")
+        .id;
+    session
+        .script(
+            "(() => { const head = document.querySelector('#head').innerHTML.replace('%title%', 'Inherited media base'); const body = document.querySelector('#body').innerHTML.replace('%html%', '<video id=\"sample\"><source src=\"./flower.webm\" type=\"video/webm; codecs=vp8\"></video>'); const frame = document.querySelector('#output-iframe'); frame.srcdoc = '<!doctype html><html><head>' + head + '</head><body>' + body + '</body></html>'; return true; })()",
+        )
+        .await
+        .unwrap();
+    let frames = session.native_list_frames().await.unwrap();
+    let child_id = frames
+        .iter()
+        .find(|frame| frame.parent_id.as_deref() == Some("native-context:main"))
+        .expect("srcdoc should have a child frame")
+        .id
+        .clone();
+    assert_ne!(child_id, initial_child_id);
+    assert_eq!(
+        session
+            .native_list_frames()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|frame| frame.id)
+            .collect::<Vec<_>>(),
+        frames.into_iter().map(|frame| frame.id).collect::<Vec<_>>(),
+        "unchanged srcdoc should preserve the child frame"
+    );
+    session.native_select_frame(&child_id).await.unwrap();
+    let media = session
+        .script("[document.baseURI, document.querySelector('video').readyState, document.querySelector('video').currentSrc, document.querySelector('video').duration]")
+        .await
+        .unwrap();
+    assert_eq!(
+        media.value,
+        serde_json::json!([page_url, 2, "./flower.webm", 1]),
+        "inherited baseURI resolves and loads the local VP8 media; currentSrc currently reflects the literal source attribute"
+    );
+    session.close().await.unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn native_runtime_session_exposes_agent_inspection_and_target_discovery() {
     run_native_browser_worker_test(|runtime| {
         runtime

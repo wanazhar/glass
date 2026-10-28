@@ -508,6 +508,7 @@ pub struct NativeEngine {
     frame_script_context: Option<NativeFrameScriptContext>,
     embedding_document_url: Option<String>,
     embedding_frame_sources: Option<Vec<Vec<String>>>,
+    embedding_base_url: Option<String>,
     revision: u64,
     scroll_offset: NativePoint,
     nested_scroll_offsets: BTreeMap<u32, NativePoint>,
@@ -647,6 +648,7 @@ impl NativeEngine {
             frame_script_context: None,
             embedding_document_url: None,
             embedding_frame_sources: None,
+            embedding_base_url: None,
             revision: 0,
             scroll_offset: NativePoint { x: 0, y: 0 },
             nested_scroll_offsets: BTreeMap::new(),
@@ -1115,12 +1117,14 @@ impl NativeEngine {
         &self,
     ) -> Result<NativeScriptDocumentSnapshot, NativeEngineError> {
         self.require_running("frame script projection")?;
-        self.document.script_snapshot_with_layout(
+        let mut snapshot = self.document.script_snapshot_with_layout(
             crate::limits::MAX_TEXT_BYTES,
             self.config.viewport,
             self.scroll_offset,
             &self.nested_scroll_offsets,
-        )
+        )?;
+        snapshot.base_url = self.document.effective_base_url(&self.url);
+        Ok(snapshot)
     }
 
     pub fn document_generation(&self) -> Result<u32, NativeEngineError> {
@@ -1212,6 +1216,19 @@ impl NativeEngine {
             .collect())
     }
 
+    pub fn embedded_frame_inherited_base_url(
+        &self,
+        owner_node_index: u32,
+    ) -> Result<Option<String>, NativeEngineError> {
+        self.require_running("frame discovery")?;
+        let node_id = NativeNodeId::from_parts(self.document.generation(), owner_node_index);
+        Ok(self
+            .document
+            .node(node_id)
+            .filter(|node| node.attribute("srcdoc").is_some())
+            .map(|_| self.document.effective_base_url(&self.url)))
+    }
+
     pub fn resolve_embedded_frame_url(&self, source: &str) -> Result<String, NativeEngineError> {
         self.require_running("frame discovery")?;
         self.resolve_link_href(source)
@@ -1251,9 +1268,20 @@ impl NativeEngine {
         &mut self,
         document_url: String,
         frame_sources: Option<Vec<Vec<String>>>,
+        inherited_base_url: Option<String>,
     ) {
         self.embedding_document_url = Some(document_url);
         self.embedding_frame_sources = frame_sources;
+        self.embedding_base_url = inherited_base_url;
+    }
+
+    pub fn inherit_srcdoc_resource_policy_from(
+        &mut self,
+        parent: &NativeEngine,
+    ) -> Result<(), NativeEngineError> {
+        parent.require_running("srcdoc resource policy inheritance")?;
+        self.loader
+            .inherit_document_policy_from(&parent.loader, &parent.url)
     }
 
     fn install_dialogs(

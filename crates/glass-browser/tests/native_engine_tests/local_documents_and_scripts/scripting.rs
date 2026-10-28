@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn native_local_script_exposes_web_idl_identity_and_dom_collections() {
+#[test]
+fn native_local_script_exposes_web_idl_identity_and_dom_collections() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(native_local_script_exposes_web_idl_identity_and_dom_collections_inner());
+    });
+}
+
+async fn native_local_script_exposes_web_idl_identity_and_dom_collections_inner() {
     let mut engine = NativeEngine::new(
         NativeEngineConfig::default().with_initial_url(
             "data:text/html,%3Chtml%3E%3Cbody%3E%3Cform%3E%3Cinput%20id%3D%27name%27%3E%3C%2Fform%3E%3C%2Fbody%3E%3C%2Fhtml%3E",
@@ -183,14 +189,14 @@ async fn native_local_script_exposes_comments_and_doctype_nodes() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const doctype = document.doctype; const rootComment = document.childNodes[1]; const bodyComment = document.body.firstChild; globalThis.__doctype = doctype; globalThis.__rootComment = rootComment; globalThis.__bodyComment = bodyComment; bodyComment.data = 'inside-updated'; return { doctype: [doctype instanceof Node, doctype instanceof DocumentType, doctype.nodeType, doctype.name, doctype.nodeName, doctype.nodeValue, doctype.parentNode === document], rootComment: [rootComment instanceof Node, rootComment instanceof CharacterData, rootComment instanceof Comment, rootComment.nodeType, rootComment.nodeName, rootComment.data, rootComment.parentNode === document], bodyComment: [bodyComment.nodeType, bodyComment.data, bodyComment.parentNode === document.body], visible: document.body.textContent, markup: document.body.innerHTML }; })()",
+                "(() => { const doctype = document.doctype; const rootComment = document.childNodes[1]; const bodyComment = document.body.firstChild; globalThis.__doctype = doctype; globalThis.__rootComment = rootComment; globalThis.__bodyComment = bodyComment; bodyComment.data = 'inside-updated'; return { doctype: [doctype instanceof Node, doctype instanceof DocumentType, doctype.nodeType, doctype.name, doctype.nodeName, doctype.nodeValue, doctype.parentNode === document, doctype.nextSibling === rootComment], rootComment: [rootComment instanceof Node, rootComment instanceof CharacterData, rootComment instanceof Comment, rootComment.nodeType, rootComment.nodeName, rootComment.data, rootComment.parentNode === document, rootComment.previousSibling === doctype, rootComment.nextSibling === document.documentElement], bodyComment: [bodyComment.nodeType, bodyComment.data, bodyComment.parentNode === document.body, bodyComment instanceof Comment, bodyComment.nextSibling === document.body.lastChild], visible: document.body.textContent, markup: document.body.innerHTML }; })()",
             )
             .await
             .unwrap(),
         serde_json::json!({
-            "doctype": [true, true, 10, "html", "html", null, true],
-            "rootComment": [true, true, true, 8, "#comment", "before", true],
-            "bodyComment": [8, "inside-updated", true],
+            "doctype": [true, true, 10, "html", "html", null, true, true],
+            "rootComment": [true, true, true, 8, "#comment", "before", true, true, true],
+            "bodyComment": [8, "inside-updated", true, true, true],
             "visible": "Visible",
             "markup": "<!--inside-updated-->Visible",
         })
@@ -198,11 +204,11 @@ async fn native_local_script_exposes_comments_and_doctype_nodes() {
     assert_eq!(
         engine
             .evaluate_async(
-                "[globalThis.__doctype === document.doctype, globalThis.__rootComment === document.childNodes[1], globalThis.__bodyComment === document.body.firstChild, globalThis.__bodyComment.data, document.body.innerHTML]",
+                "[globalThis.__doctype === document.doctype, globalThis.__doctype instanceof DocumentType, globalThis.__doctype.nextSibling === globalThis.__rootComment, globalThis.__rootComment === document.childNodes[1], globalThis.__rootComment instanceof Comment, globalThis.__rootComment.previousSibling === document.doctype, globalThis.__bodyComment === document.body.firstChild, globalThis.__bodyComment.data, globalThis.__bodyComment.nextSibling === document.body.lastChild, document.body.innerHTML]",
             )
             .await
             .unwrap(),
-        serde_json::json!([true, true, true, "inside-updated", "<!--inside-updated-->Visible"])
+        serde_json::json!([true, true, true, true, true, true, true, "inside-updated", true, "<!--inside-updated-->Visible"])
     );
     engine.close_async().await.unwrap();
 }
@@ -237,11 +243,11 @@ async fn native_local_script_creates_and_persists_comment_nodes() {
     assert_eq!(
         engine
             .evaluate_async(
-                "(() => { const current = Array.from(document.body.childNodes).find(node => node.nodeType === 8 && node.data === 'direct'); return [current === globalThis.__createdComment, globalThis.__createdComment.data, current.parentNode === document.body, document.body.textContent]; })()",
+                "(() => { const current = Array.from(document.body.childNodes).find(node => node.nodeType === 8 && node.data === 'direct'); return [current === globalThis.__createdComment, globalThis.__createdComment.data, current.parentNode === document.body, current.previousSibling === document.body.firstChild, current.nextSibling === document.body.childNodes[2], document.body.textContent, document.body.innerHTML, Array.from(document.body.childNodes).map(node => [node.nodeName, node.textContent, node.innerHTML])]; })()",
             )
             .await
             .unwrap(),
-        serde_json::json!([true, "direct", true, "startab"])
+        serde_json::json!([true, "direct", true, true, true, "startab", "<p>start</p><!--direct-->a<!--fragment--><b>b</b>", [["P", "start", "start"], ["#comment", "direct", null], ["#text", "a", null], ["#comment", "fragment", null], ["B", "b", "b"]]])
     );
     engine.close_async().await.unwrap();
 }
@@ -271,14 +277,15 @@ async fn native_local_script_creates_and_persists_document_types() {
             "clone": [true, true, true, true],
         })
     );
+    let persisted = engine
+        .evaluate_async(
+            "(() => { const current = document.doctype; const root = document.documentElement; return [current === globalThis.__createdDocumentType, current.name, current.publicId, current.systemId, current.parentNode === document, root.__glassParent === document, root.previousSibling === current]; })()",
+        )
+        .await
+        .unwrap();
     assert_eq!(
-        engine
-            .evaluate_async(
-                "(() => { const current = document.doctype; return [current === globalThis.__createdDocumentType, current.name, current.publicId, current.systemId, current.parentNode === document, document.documentElement.previousSibling === current]; })()",
-            )
-            .await
-            .unwrap(),
-        serde_json::json!([true, "html", "public-id", "system-id", true, true])
+        persisted,
+        serde_json::json!([true, "html", "public-id", "system-id", true, true, true])
     );
     engine.close_async().await.unwrap();
 }
@@ -309,11 +316,18 @@ async fn native_local_dynamic_inline_script_runs_once_after_late_attachment() {
     assert_eq!(
         engine
             .evaluate_async(
-                "document.body.appendChild(dynamicScript); [dynamicLog, document.body.getAttribute('data-dynamic')]",
+                "document.body.appendChild(dynamicScript); [dynamicLog, document.body.getAttribute('data-dynamic'), dynamicScript.__glassDynamicScriptStarted, dynamicScript.textContent, dynamicScript.parentNode === document.body, document.body.parentNode === document.documentElement]",
             )
             .await
             .unwrap(),
-        serde_json::json!([["ran"], "yes"])
+        serde_json::json!([
+            ["ran"],
+            "yes",
+            true,
+            "dynamicLog.push('ran'); document.body.setAttribute('data-dynamic', 'yes');",
+            true,
+            true
+        ])
     );
     assert_eq!(
         engine

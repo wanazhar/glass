@@ -286,7 +286,9 @@ async fn native_direct_click_owns_external_link_navigation() {
         })
         .await
         .unwrap();
-    assert_eq!(engine.revision(), initial_revision + 2);
+    // A direct navigation owns three visible revisions: the click event, its
+    // beforeunload lifecycle dispatch, and the destination document commit.
+    assert_eq!(engine.revision(), initial_revision + 3);
     let snapshot = engine.snapshot().unwrap();
     assert_eq!(snapshot.url, format!("http://{address}/destination"));
     assert_eq!(snapshot.title, "Destination");

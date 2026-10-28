@@ -1376,7 +1376,7 @@ async fn native_namespaced_attributes_preserve_attr_identity_and_commands() {
                 const afterSetter = icon.getAttributeNS(xlink, 'href');
                 const created = document.createAttributeNS(xlink, 'xlink:title');
                 created.value = 'title';
-                const replaced = icon.setAttributeNodeNS(xlink, created);
+                const replaced = icon.setAttributeNodeNS(created);
                 const createdOwner = created.ownerElement === icon;
                 const clone = icon.cloneNode(false);
                 const clonedHref = clone.getAttributeNodeNS(xlink, 'href');

@@ -1372,6 +1372,14 @@ impl NativeContentProcess {
                         })?,
                         "content process parent media owner",
                     )?;
+                    let media_policy_document_url = response
+                        .get("policy_document_url")
+                        .and_then(Value::as_str)
+                        .unwrap_or(document_url);
+                    let media_base_url = response
+                        .get("base_url")
+                        .and_then(Value::as_str)
+                        .unwrap_or(document_url);
                     if !parent_broker_owner_matches_operation(
                         self,
                         &request,
@@ -1388,9 +1396,14 @@ impl NativeContentProcess {
                     for write in &cookie_writes {
                         loader.set_document_cookie(&write.owner.document_url, &write.value)?;
                     }
-                    let media =
-                        load_parent_page_media_async(loader, document_url, href, page_media_load)
-                            .await;
+                    let media = load_parent_page_media_async(
+                        loader,
+                        media_policy_document_url,
+                        media_base_url,
+                        href,
+                        page_media_load,
+                    )
+                    .await;
                     let mut broker_response =
                         parent_media_response_payload(request_id, fetch_id, media);
                     broker_response["document_cookie"] =

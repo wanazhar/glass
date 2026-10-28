@@ -338,6 +338,8 @@ pub(crate) struct NativeDocumentWire {
     pub(crate) quirks_mode: super::html_parser::HtmlParsedQuirksMode,
     #[serde(default)]
     pub(crate) document_referrer_policy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) inherited_base_url: Option<String>,
     #[serde(default)]
     pub(crate) viewport: Viewport,
     #[serde(default)]
@@ -807,6 +809,8 @@ pub struct NativeScriptDocumentSnapshot {
     #[serde(default)]
     pub(crate) revision: u64,
     pub(crate) title: String,
+    #[serde(default)]
+    pub(crate) base_url: String,
     pub(crate) visible_text: String,
     pub elements: Vec<NativeScriptElementSnapshot>,
     #[serde(default)]
@@ -1135,6 +1139,7 @@ pub struct NativeDocument {
     max_dom_depth: usize,
     quirks_mode: super::html_parser::HtmlParsedQuirksMode,
     document_referrer_policy: NativeFetchReferrerPolicy,
+    inherited_base_url: Option<String>,
     nodes: Vec<NativeNode>,
     stylesheet: NativeStylesheet,
     font_resources: Vec<NativeFontFaceResource>,

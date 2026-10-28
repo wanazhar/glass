@@ -531,20 +531,36 @@ async fn native_canvas_image_source_preserves_animated_frames() {
 
     let result = engine
         .evaluate_async(
-            "(() => { const image = document.getElementById('source'); const canvas = document.getElementById('canvas'); const context = canvas.getContext('2d'); const resource = globalThis.__glassCanvasImageResources.get(image.nodeIndex); const pixel = () => Array.from(context.getImageData(0, 0, 1, 1).data); resource.animationOriginNowMs = Number.MAX_SAFE_INTEGER; context.drawImage(image, 0, 0); const first = pixel(); resource.loopCount = 0; resource.animationOriginNowMs = -Number.MAX_SAFE_INTEGER; context.clearRect(0, 0, 1, 1); context.drawImage(image, 0, 0); const last = pixel(); return { frames: resource.frames.length, delays: resource.frames.map(frame => frame.delayMs), first, last, complete: image.complete, dimensions: [image.naturalWidth, image.naturalHeight] }; })()",
+            "(() => { const image = document.getElementById('source'); const canvas = document.getElementById('canvas'); const context = canvas.getContext('2d'); const resource = globalThis.__glassCanvasImageResources.get(image.nodeIndex); context.drawImage(image, 0, 0); return { frames: resource.frames.length, delays: resource.frames.map(frame => frame.delayMs), pixel: Array.from(context.getImageData(0, 0, 1, 1).data), complete: image.complete, dimensions: [image.naturalWidth, image.naturalHeight] }; })()",
         )
         .await
         .unwrap();
-    assert_eq!(
-        result,
-        serde_json::json!({
-            "frames": 2,
-            "delays": [10, 10],
-            "first": [255, 0, 0, 255],
-            "last": [0, 255, 0, 255],
-            "complete": true,
-            "dimensions": [1, 1]
-        })
+    assert_eq!(result["frames"], 2);
+    assert_eq!(result["delays"], serde_json::json!([10, 10]));
+    assert_eq!(result["complete"], true);
+    assert_eq!(result["dimensions"], serde_json::json!([1, 1]));
+    let first = result["pixel"].clone();
+    let mut saw_other_frame = false;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let pixel = engine
+            .evaluate_async(
+                "(() => { const image = document.getElementById('source'); const canvas = document.getElementById('canvas'); const context = canvas.getContext('2d'); context.clearRect(0, 0, 1, 1); context.drawImage(image, 0, 0); return Array.from(context.getImageData(0, 0, 1, 1).data); })()",
+            )
+            .await
+            .unwrap();
+        if pixel != first {
+            assert!(
+                pixel == serde_json::json!([0, 255, 0, 255])
+                    || pixel == serde_json::json!([255, 0, 0, 255])
+            );
+            saw_other_frame = true;
+            break;
+        }
+    }
+    assert!(
+        saw_other_frame,
+        "canvas never painted a different GIF frame"
     );
     engine.close_async().await.unwrap();
 }

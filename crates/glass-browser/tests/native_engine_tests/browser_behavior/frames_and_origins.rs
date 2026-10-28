@@ -329,7 +329,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract_inne
     );
     let frame_namespaced_attributes = session
         .script(
-            "(() => { const xlink = 'http://www.w3.org/1999/xlink'; const child = document.getElementById('child').contentDocument; const svg = child.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttributeNS(xlink, 'xlink:href', '#frame'); const attr = child.createAttributeNS(xlink, 'xlink:title'); attr.value = 'frame-title'; svg.attributes.setNamedItemNS(xlink, attr); child.body.appendChild(svg); const href = svg.getAttributeNodeNS(xlink, 'href'); const clone = svg.cloneNode(false); const cloneHref = clone.getAttributeNodeNS(xlink, 'href'); const attrOwner = attr.ownerElement === svg; const removed = svg.attributes.removeNamedItemNS(xlink, 'title'); return [svg.getAttributeNS(xlink, 'href'), href && [href.namespaceURI, href.localName, href.value], attrOwner, clone.namespaceURI, cloneHref && cloneHref.value, removed === attr, attr.ownerElement === null]; })()",
+            "(() => { const xlink = 'http://www.w3.org/1999/xlink'; const child = document.getElementById('child').contentDocument; const svg = child.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttributeNS(xlink, 'xlink:href', '#frame'); const attr = child.createAttributeNS(xlink, 'xlink:title'); attr.value = 'frame-title'; svg.attributes.setNamedItemNS(attr); child.body.appendChild(svg); const href = svg.getAttributeNodeNS(xlink, 'href'); const clone = svg.cloneNode(false); const cloneHref = clone.getAttributeNodeNS(xlink, 'href'); const attrOwner = attr.ownerElement === svg; const removed = svg.attributes.removeNamedItemNS(xlink, 'title'); return [svg.getAttributeNS(xlink, 'href'), href && [href.namespaceURI, href.localName, href.value], attrOwner, clone.namespaceURI, cloneHref && cloneHref.value, removed === attr, attr.ownerElement === null]; })()",
         )
         .await
         .unwrap();
@@ -678,7 +678,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract_inne
     assert_eq!(
         session
             .script(
-                "(() => { const child = document.getElementById('child').contentDocument; const target = child.createElement('article'); child.body.appendChild(target); const log = []; const observer = new MutationObserver(records => log.push(records.map(record => ({ type: record.type, added: record.addedNodes.map(node => node.localName || node.nodeName), removed: record.removedNodes.map(node => node.localName || node.nodeName) })))); observer.observe(target, { childList: true }); target.innerHTML = '<div id=inner><span>Hi &amp; there</span></div>tail'; globalThis.frameElementInnerHtmlMutationLog = log; return [target.innerHTML, target.textContent, target.querySelector('#inner') !== null, target.querySelector('span').textContent, child.getElementById('inner') !== null, target.childNodes.length]; })()",
+                "(() => { const child = document.getElementById('child').contentDocument; const target = child.createElement('article'); child.body.appendChild(target); const log = []; const observer = new MutationObserver(records => log.push(records.map(record => ({ target: record.target.localName || record.target.nodeName, type: record.type, added: record.addedNodes.map(node => node.localName || node.nodeName), removed: record.removedNodes.map(node => node.localName || node.nodeName) })))); observer.observe(target, { childList: true }); target.innerHTML = '<div id=inner><span>Hi &amp; there</span></div>tail'; globalThis.frameElementInnerHtmlMutationLog = log; return [target.innerHTML, target.textContent, target.querySelector('#inner') !== null, target.querySelector('span').textContent, child.getElementById('inner') !== null, target.childNodes.length]; })()",
             )
             .await
             .unwrap()
@@ -693,6 +693,7 @@ async fn native_same_origin_frame_script_projection_matches_window_contract_inne
             .value,
         serde_json::json!([[
             {
+                "target": "article",
                 "type": "childList",
                 "added": ["div", "#text"],
                 "removed": [],

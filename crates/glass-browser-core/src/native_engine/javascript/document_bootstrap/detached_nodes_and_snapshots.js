@@ -621,7 +621,8 @@
       set(next) {{
         const value = String(next);
         if (value.length > storageValueLimit) throw new RangeError("native fragment innerHTML exceeds its limit");
-        for (const child of fragment.__glassChildren) {{
+        const oldChildren = fragment.__glassChildren.slice();
+        for (const child of oldChildren) {{
           child.__glassParent = null;
           child.parentIndex = null;
         }}
@@ -633,14 +634,16 @@
         if (host) {{
           suppressHostCommands += 1;
           try {{
-            populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText, makeDetachedComment);
+            populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText, makeDetachedComment, undefined, true);
           }} finally {{
             suppressHostCommands -= 1;
           }}
           pushCommand({{ kind: "setInnerHtml", node_index: host.nodeIndex, value }});
         }} else {{
-          populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText, makeDetachedComment);
+          populateDetachedFragment(fragment, value, makeDetachedElement, makeDetachedText, makeDetachedComment, undefined, true);
         }}
+        if (typeof globalThis.__glassQueueInnerHtmlMutation === "function")
+          globalThis.__glassQueueInnerHtmlMutation(fragment, oldChildren, fragment.__glassChildren);
       }},
     }});
     if (defineTreeAccessorsForNativeFragments) defineTreeAccessorsForNativeFragments(fragment);
@@ -832,6 +835,17 @@
       set(next) {{ text.textContent = next; }},
     }});
     Object.defineProperty(text, "ownerDocument", {{ enumerable: false, configurable: false, get() {{ return templateContentsOwnerDocumentForNode(text); }} }});
+    Object.defineProperty(text, "parentNode", {{
+      enumerable: false,
+      configurable: false,
+      get() {{
+        if (text.__glassParent) return text.__glassParent;
+        const owner = globalThis.document;
+        return owner && Array.isArray(owner.__glassChildren) && owner.__glassChildren.includes(text)
+          ? owner
+          : null;
+      }},
+    }});
     Object.defineProperty(text, "textContent", {{
       enumerable: true,
       configurable: false,
@@ -858,6 +872,10 @@
         textContent = String(nextEntry.nodeValue || "");
       }},
     }});
+    try {{
+      Object.setPrototypeOf(text, isComment ? CommentNative.prototype : TextNative.prototype);
+    }} catch (_error) {{}}
+    if (defineTreeAccessorsForNativeFragments) defineTreeAccessorsForNativeFragments(text);
     return text;
   }};
   const previousElements = globalThis.__glassHostElements instanceof Map
@@ -884,18 +902,40 @@
       && Array.isArray(cachedHostCollections.fragmentNodes),
   );
   const reuseExistingHostTree = cachedCollectionsMatchCurrentView;
+  const snapshotNodesByIndex = new Map(snapshotNodes
+    .filter((entry) => entry && Number.isSafeInteger(Number(entry.nodeIndex)))
+    .map((entry) => [Number(entry.nodeIndex), entry]));
+  const snapshotElementsByIndex = new Map(snapshotElements
+    .filter((entry) => entry && Number.isSafeInteger(Number(entry.nodeIndex)))
+    .map((entry) => [Number(entry.nodeIndex), entry]));
+  const snapshotTreeNodeIndexes = new Set();
+  const rootTreeSnapshotEntry = snapshotNodesByIndex.get(0);
+  if (rootTreeSnapshotEntry && Array.isArray(rootTreeSnapshotEntry.children)) {{
+    const pendingSnapshotIndexes = [0];
+    while (pendingSnapshotIndexes.length > 0
+        && snapshotTreeNodeIndexes.size <= {native_dom_max_nodes}) {{
+      const nodeIndex = Number(pendingSnapshotIndexes.pop());
+      if (!Number.isSafeInteger(nodeIndex) || snapshotTreeNodeIndexes.has(nodeIndex)) continue;
+      snapshotTreeNodeIndexes.add(nodeIndex);
+      const node = snapshotNodesByIndex.get(nodeIndex);
+      if (node && Array.isArray(node.children)) pendingSnapshotIndexes.push(...node.children);
+      const element = snapshotElementsByIndex.get(nodeIndex);
+      if (element && element.templateContentIndex != null) {{
+        pendingSnapshotIndexes.push(Number(element.templateContentIndex));
+      }}
+    }}
+  }} else {{
+    for (const entry of [...snapshotNodes, ...snapshotElements]) {{
+      if (entry && Number.isSafeInteger(Number(entry.nodeIndex)))
+        snapshotTreeNodeIndexes.add(Number(entry.nodeIndex));
+    }}
+  }}
+  const preserveDetachedCreatedNode = (node) => Boolean(
+    node && node.__glassCreated === true
+      && !snapshotTreeNodeIndexes.has(Number(node.nodeIndex)),
+  );
   if (typeof globalThis.__glassNativeHostViewMark === "function")
     globalThis.__glassNativeHostViewMark("tree_admission_checked");
-  const belongsToDetachedCreatedSubtree = (node) => {{
-    let current = node;
-    for (let depth = 0; current && depth <= {max_commands}; depth += 1) {{
-      if (current.__glassCreated === true
-          && current.parentIndex === null
-          && current.__glassParent === null) return true;
-      current = current.__glassParent || null;
-    }}
-    return false;
-  }};
   const snapshotTextContentForNode = reuseExistingHostTree
     ? null
     : createSnapshotTextContentResolver(snapshotNodes);
@@ -911,9 +951,8 @@
       const existing = scriptNodeAliasesByIndex.get(entry.nodeIndex) || previousElements.get(entry.nodeIndex);
       if (existing && typeof existing.__glassRefresh === "function") {{
         elementBuildMode = "refresh";
-        if (!reuseExistingHostTree && !belongsToDetachedCreatedSubtree(existing)) {{
+        if (!preserveDetachedCreatedNode(existing))
           existing.__glassRefresh(entry, snapshotTextContentForNode);
-        }}
         elements.push(existing);
         continue;
       }}
@@ -940,7 +979,7 @@
       const scriptAlias = scriptNodeAliasesByIndex.get(entry.nodeIndex);
       const reusable = scriptAlias || existing;
       if (reusable && typeof reusable.__glassRefresh === "function") {{
-        if (!reuseExistingHostTree && !belongsToDetachedCreatedSubtree(reusable)) reusable.__glassRefresh(entry);
+        if (!preserveDetachedCreatedNode(reusable)) reusable.__glassRefresh(entry);
         textNodes.push(reusable);
         continue;
       }}
@@ -1003,7 +1042,8 @@
         }});
       }}
       if (!reuseExistingHostTree) {{
-        if (existing && typeof documentType.__glassRefresh === "function") documentType.__glassRefresh(entry);
+        if (existing && typeof documentType.__glassRefresh === "function"
+            && !preserveDetachedCreatedNode(documentType)) documentType.__glassRefresh(entry);
         documentType.parentIndex = entry.parentIndex == null ? null : entry.parentIndex;
         documentType.name = String(entry.nodeName || "");
         documentType.nodeName = documentType.name;
@@ -1040,6 +1080,8 @@
           }},
         }});
       }}
+      try {{ Object.setPrototypeOf(documentType, DocumentTypeNative.prototype); }} catch (_error) {{}}
+      if (defineTreeAccessorsForNativeFragments) defineTreeAccessorsForNativeFragments(documentType);
       documentTypeNodes.push(documentType);
   }}
   if (typeof globalThis.__glassNativeHostViewMark === "function")
@@ -1056,7 +1098,8 @@
       const fragment = existing && typeof existing.__glassRefresh === "function"
         ? existing
         : makeDocumentFragment(entry);
-      if (!reuseExistingHostTree && typeof fragment.__glassRefresh === "function") fragment.__glassRefresh(entry);
+      if (!reuseExistingHostTree && typeof fragment.__glassRefresh === "function"
+          && !preserveDetachedCreatedNode(fragment)) fragment.__glassRefresh(entry);
       if (hostIndex != null) templateContentsCache.set(hostIndex, fragment);
       fragmentNodes.push(fragment);
   }}
@@ -1096,34 +1139,35 @@
   }};
   if (!reuseExistingHostTree) {{
     for (const element of elements) {{
-      if (belongsToDetachedCreatedSubtree(element)) continue;
+      if (preserveDetachedCreatedNode(element)) continue;
       element.__glassChildren = [];
       element.__glassParent = null;
     }}
     for (const text of textNodes) {{
-      if (belongsToDetachedCreatedSubtree(text)) continue;
+      if (preserveDetachedCreatedNode(text)) continue;
       text.__glassChildren = [];
       text.__glassParent = null;
     }}
     for (const comment of commentNodes) {{
-      if (belongsToDetachedCreatedSubtree(comment)) continue;
+      if (preserveDetachedCreatedNode(comment)) continue;
       comment.__glassChildren = [];
       comment.__glassParent = null;
     }}
     for (const documentType of documentTypeNodes) {{
-      if (belongsToDetachedCreatedSubtree(documentType)) continue;
+      if (preserveDetachedCreatedNode(documentType)) continue;
       documentType.__glassChildren = [];
       documentType.__glassParent = null;
     }}
     for (const fragment of fragmentNodes) {{
-      if (belongsToDetachedCreatedSubtree(fragment)) continue;
+      if (preserveDetachedCreatedNode(fragment)) continue;
       fragment.__glassChildren = [];
       fragment.__glassParent = null;
     }}
     if (snapshotNodes.length > 0) {{
       for (const snapshotNode of snapshotNodes) {{
         const parent = nodesByIndex.get(snapshotNode.nodeIndex);
-        if (!parent || !Array.isArray(snapshotNode.children)) continue;
+        if (!parent || preserveDetachedCreatedNode(parent)
+            || !Array.isArray(snapshotNode.children)) continue;
         for (const childIndex of snapshotNode.children) {{
           const child = nodesByIndex.get(childIndex);
           if (!child) continue;

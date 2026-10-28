@@ -180,7 +180,7 @@ async fn native_load_trace_times_bounded_resource_stages_without_page_data() {
     for stage in [
         "javascript_host_view_eval",
         "page_script_execution",
-        "content_process_mutation",
+        "content_process_lifecycle_mutation",
         "lifecycle_listener_lookup",
     ] {
         assert!(

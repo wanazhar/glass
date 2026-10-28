@@ -26,6 +26,7 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let font_bytes = native_test_color_font_bytes();
+    let media_bytes = native_test_wav_bytes();
     let server = tokio::spawn(async move {
         let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
             .await
@@ -33,7 +34,7 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             .unwrap();
         let request = read_http_request(&mut stream).await;
         let body = format!(
-            "<!doctype html><html><head><meta http-equiv='Content-Security-Policy' content=\"img-src 'self'\"><link rel='stylesheet' href='/initial.css'></head><body><img src='/image.png'><img src='http://localhost:{}/blocked.png'><audio src='/media.wav'></audio><script src='/initial.js'></script><script>window.initialDocumentCookie = document.cookie; const dynamic = document.createElement('script'); dynamic.src = '/initial-dynamic.js'; document.head.appendChild(dynamic);</script></body></html>",
+            "<!doctype html><html><head><meta http-equiv='Content-Security-Policy' content=\"img-src 'self'\"><link rel='stylesheet' href='/initial.css'></head><body><img src='/image.png'><img src='http://localhost:{}/blocked.png'><audio src='/media.wav'></audio><script>window.mediaSettled = new Promise(resolve => {{ const media = document.querySelector('audio'); media.addEventListener('load', resolve); media.addEventListener('error', resolve); }});</script><script src='/initial.js'></script><script>window.initialDocumentCookie = document.cookie; const dynamic = document.createElement('script'); dynamic.src = '/initial-dynamic.js'; document.head.appendChild(dynamic);</script></body></html>",
             address.port()
         );
         let response = format!(
@@ -132,7 +133,6 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             .expect("parent-brokered page media should reach the local server")
             .unwrap();
         let media_request = read_http_request(&mut stream).await;
-        let media = b"media";
         let media_response = format!(
             concat!(
                 "HTTP/1.1 200 OK\r\n",
@@ -141,10 +141,10 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
                 "Content-Type: audio/wav\r\n",
                 "Content-Length: {}\r\nConnection: close\r\n\r\n"
             ),
-            media.len()
+            media_bytes.len()
         );
         stream.write_all(media_response.as_bytes()).await.unwrap();
-        stream.write_all(media).await.unwrap();
+        stream.write_all(&media_bytes).await.unwrap();
         let (mut stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
             .await
             .expect("parent-brokered parser script should reach the local server")
@@ -261,11 +261,7 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
             .unwrap(),
         serde_json::json!(204)
     );
-    for expression in [
-        "window.parserScriptCookie",
-        "window.initialDocumentCookie",
-        "document.cookie",
-    ] {
+    for expression in ["window.parserScriptCookie", "window.initialDocumentCookie"] {
         let cookies = engine.evaluate_async(expression).await.unwrap();
         let cookies = cookies.as_str().unwrap_or_default();
         assert!(
@@ -286,10 +282,6 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
         );
         assert!(
             cookies.contains("image_visible=present"),
-            "{expression}: {cookies}"
-        );
-        assert!(
-            cookies.contains("media_visible=present"),
             "{expression}: {cookies}"
         );
         assert!(
@@ -316,6 +308,23 @@ async fn native_content_process_http_navigation_uses_parent_cookie_authority() {
         assert!(!cookies.contains("media_secret"), "{expression}: {cookies}");
         assert!(!cookies.contains("font_secret"), "{expression}: {cookies}");
     }
+    // Audio is a non-blocking parser subresource. Its response cookie is not
+    // guaranteed to precede parser-blocking scripts; it must be visible once
+    // its own load/error turn has completed.
+    engine
+        .evaluate_async("await window.mediaSettled")
+        .await
+        .unwrap();
+    let cookies = engine.evaluate_async("document.cookie").await.unwrap();
+    let cookies = cookies.as_str().unwrap_or_default();
+    assert!(
+        cookies.contains("media_visible=present"),
+        "document.cookie: {cookies}"
+    );
+    assert!(
+        !cookies.contains("media_secret"),
+        "document.cookie: {cookies}"
+    );
     let dynamic_script_cookie = engine
         .evaluate_async("window.initialDynamicScriptCookie")
         .await

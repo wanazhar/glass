@@ -1506,6 +1506,11 @@ pub(super) async fn load_external_media(
     mut parent_fetch_broker: Option<&mut NativeContentFetchBroker<'_>>,
     trace_request_id: Option<u64>,
 ) -> Result<Vec<(u32, NativeEventKind)>, NativeEngineError> {
+    let media_document_url = document.effective_base_url(document_url);
+    let policy_document_url = document
+        .inherited_base_url()
+        .unwrap_or(document_url)
+        .to_owned();
     let mut media_events = Vec::new();
     for (ordinal, (node_index, source)) in document
         .external_media_links()
@@ -1523,10 +1528,17 @@ pub(super) async fn load_external_media(
         document.mark_media_load(node_index, source.clone())?;
         let resource_stage = trace_request_id
             .map(|request_id| ContentLoadStage::begin_resource(request_id, "media", ordinal));
-        let metadata = if !is_blob && is_parent_owned_network_target(document_url, &source) {
+        let metadata = if !is_blob && is_parent_owned_network_target(&media_document_url, &source) {
             if let Some(broker) = parent_fetch_broker.as_deref_mut() {
                 refresh_parent_broker_meta_csp(loader, Some(broker))?;
-                broker.load_media(document_url, &source).await?
+                broker
+                    .load_media(
+                        document_url,
+                        &policy_document_url,
+                        &media_document_url,
+                        &source,
+                    )
+                    .await?
             } else {
                 return Err(missing_parent_network_authority("media load"));
             }
@@ -1534,9 +1546,22 @@ pub(super) async fn load_external_media(
             match (is_blob, runtime) {
                 (true, Some(runtime)) => {
                     let object_url = runtime.object_url_resource(&source)?;
-                    loader.load_local_blob_media(document_url, &source, object_url.as_ref())?
+                    loader.load_local_blob_media(
+                        &policy_document_url,
+                        &source,
+                        object_url.as_ref(),
+                    )?
                 }
-                _ => loader.load_media_async(document_url, &source).await?,
+                _ => {
+                    loader
+                        .load_media_async_with_context(
+                            &policy_document_url,
+                            &media_document_url,
+                            &source,
+                            None,
+                        )
+                        .await?
+                }
             }
         };
         if let Some(resource_stage) = resource_stage {

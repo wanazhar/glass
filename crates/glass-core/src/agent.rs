@@ -3531,9 +3531,9 @@ const DESKTOP_CONTEXT_MARKER: &str = "\n\n[Connect desktop capability]";
 
 fn connect_desktop_context(status: Option<&serde_json::Value>, read_only: bool) -> String {
     let tool_names = if read_only {
-        "`desktop_status`, `desktop_screenshot`"
+        "`desktop_status`, `desktop_screenshot`, `desktop_observe`"
     } else {
-        "`desktop_status`, `desktop_screenshot`, `desktop_input`"
+        "`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`"
     };
     let state = match status {
         None => "Connect is running, but the managed desktop status could not be refreshed. Call `desktop_status` before acting.".to_string(),
@@ -3558,10 +3558,10 @@ fn connect_desktop_context(status: Option<&serde_json::Value>, read_only: bool) 
     let input = if read_only {
         "Plan/read-only mode offers no desktop input tool."
     } else {
-        "Use `desktop_input` only when the lease is `agent`; the human changes the lease in Connect, and the agent cannot take it implicitly."
+        "Use `desktop_act` for revision-bound accessible targets; it rejects stale IDs and respects the lease. Call `desktop_observe` again to verify. Use `desktop_input` only as a fallback for controls missing from accessibility and only when the lease is `agent`; the human changes the lease in Connect, and the agent cannot take it implicitly."
     };
     format!(
-        "Connect manages a separate desktop shared with the human. {state} Available tools this request: {tool_names}. Call `desktop_status` after reconnects or lease changes. `desktop_screenshot` is observational and saves a generated artifact under `.gc-artifacts/desktop`; that artifact does not edit project files. {input} These tools exist only while Connect is managing a desktop; do not assume or invent desktop access in standalone Core or other hosts."
+        "Connect manages a separate desktop shared with the human. {state} Available tools this request: {tool_names}. `desktop_observe` returns a compact bounded tree with revision-bound targets; password values are never returned. `desktop_screenshot` saves a generated artifact under `.gc-artifacts/desktop`; it does not edit project files. {input} These tools exist only while Connect manages a desktop; do not assume desktop access in standalone Core or other hosts."
     )
 }
 
@@ -3572,9 +3572,9 @@ fn run_read_only_tool(
 ) -> tools::Outcome {
     match call.name.as_str() {
         "inspect" => crate::inspect::run(call, workspace),
-        "desktop_status" | "desktop_screenshot" => run_desktop(call, workspace),
+        "desktop_status" | "desktop_screenshot" | "desktop_observe" => run_desktop(call, workspace),
         _ => tools::Outcome::err(
-            "Plan mode blocks execution: only read-only inspect, desktop status, and desktop screenshots are available",
+            "Plan mode blocks execution: only read-only inspect, desktop status, screenshots, and accessibility observation are available",
         ),
     }
 }
@@ -3991,12 +3991,14 @@ mod warm_integration {
         let writable = connect_desktop_context(Some(&status), false);
         assert!(writable.contains("desktop-session-1"));
         assert!(writable.contains("input control lease is `human`"));
-        assert!(writable.contains("`desktop_status`, `desktop_screenshot`, `desktop_input`"));
+        assert!(writable.contains("`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`"));
+        assert!(writable.contains("revision-bound accessible targets"));
         assert!(writable.contains("cannot take it implicitly"));
 
         let readonly = connect_desktop_context(Some(&status), true);
-        assert!(readonly.contains("`desktop_status`, `desktop_screenshot`"));
+        assert!(readonly.contains("`desktop_status`, `desktop_screenshot`, `desktop_observe`"));
         assert!(!readonly.contains("`desktop_input`"));
+        assert!(!readonly.contains("`desktop_act`"));
         assert!(readonly.contains("generated artifact"));
     }
 
@@ -4009,7 +4011,7 @@ mod warm_integration {
         });
         let context = connect_desktop_context(Some(&status), false);
         assert!(context.contains("no active managed desktop session"));
-        assert!(context.contains("`desktop_status`, `desktop_screenshot`, `desktop_input`"));
+        assert!(context.contains("`desktop_status`, `desktop_screenshot`, `desktop_observe`, `desktop_act`, `desktop_input`"));
     }
 
     #[test]
@@ -4028,6 +4030,19 @@ mod warm_integration {
         assert!(dispatched);
         assert_eq!(outcome.body, "frame saved");
 
+        let observe = ToolCall {
+            id: "observe".into(),
+            name: "desktop_observe".into(),
+            arguments: "{}".into(),
+        };
+        let mut observed = false;
+        let outcome = run_read_only_tool(&observe, workspace, |call, _| {
+            observed = call.name == "desktop_observe";
+            tools::Outcome::ok(r#"{"revision":1,"nodes":[]}"#.into())
+        });
+        assert!(observed);
+        assert!(outcome.body.contains("revision"));
+
         let input = ToolCall {
             id: "input".into(),
             name: "desktop_input".into(),
@@ -4038,6 +4053,16 @@ mod warm_integration {
         });
         assert!(outcome.exit_code.is_none());
         assert!(outcome.body.contains("read-only"));
+
+        let act = ToolCall {
+            id: "act".into(),
+            name: "desktop_act".into(),
+            arguments: "{}".into(),
+        };
+        let outcome = run_read_only_tool(&act, workspace, |_, _| {
+            panic!("read-only mode must not dispatch accessibility actions")
+        });
+        assert!(outcome.exit_code.is_none());
     }
 
     #[test]
@@ -4096,6 +4121,8 @@ mod warm_integration {
         assert!(mixed_names.contains(&"glass.workspace.list".to_string()));
         assert!(mixed_names.contains(&"desktop_status".to_string()));
         assert!(mixed_names.contains(&"desktop_screenshot".to_string()));
+        assert!(mixed_names.contains(&"desktop_observe".to_string()));
+        assert!(mixed_names.contains(&"desktop_act".to_string()));
         assert!(mixed_names.contains(&"desktop_input".to_string()));
         let standalone_names = mixed
             .tool_set_for_connect(false)
@@ -4200,13 +4227,13 @@ mod warm_integration {
         assert!(output.text.contains("ready for observation"));
         assert_eq!(*executed.lock().unwrap(), ["desktop_status"]);
         assert_eq!(tools_seen.lock().unwrap().len(), 2);
-        assert!(tools_seen
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|tools| tools.contains(&"desktop_status".to_string())
+        assert!(tools_seen.lock().unwrap().iter().all(|tools| {
+            tools.contains(&"desktop_status".to_string())
                 && tools.contains(&"desktop_screenshot".to_string())
-                && tools.contains(&"desktop_input".to_string())));
+                && tools.contains(&"desktop_observe".to_string())
+                && tools.contains(&"desktop_act".to_string())
+                && tools.contains(&"desktop_input".to_string())
+        }));
 
         drop(agent);
         drop(extensions);

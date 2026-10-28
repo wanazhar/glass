@@ -501,11 +501,35 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
             "Capture a fresh frame from the same Connect desktop. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. This observation is available in read-only mode and saves only a generated artifact under `.gc-artifacts/desktop`; it does not edit project files or change the input lease.".to_string(),
             serde_json::json!({"type":"object","properties":{},"additionalProperties":false}).to_string(),
         ),
+        (
+            "desktop_observe".to_string(),
+            "Read a compact, bounded accessibility snapshot of visible windows and controls. Returns roles, names, states, supported actions, and revision-bound target IDs. Call again after an action; target IDs from older revisions are rejected. Password fields are identified without returning their values.".to_string(),
+            serde_json::json!({
+                "type":"object",
+                "properties":{"sessionId":{"type":"string","maxLength":64}},
+                "additionalProperties":false
+            }).to_string(),
+        ),
     ];
     if include_input {
         tools.push((
+            "desktop_act".to_string(),
+            "Act on one target from the latest desktop_observe snapshot using its exact targetId, sessionId, and revision. Supports accessible click, focus, and bounded text replacement; rejects stale IDs and respects the human/agent control lease. Call desktop_observe again to verify the result. If accessibility does not support an action, use desktop_screenshot and explicit desktop_input coordinates only when needed.".to_string(),
+            serde_json::json!({
+                "type":"object","additionalProperties":false,"required":["sessionId","revision","targetId","action"],
+                "properties":{
+                    "sessionId":{"type":"string","maxLength":64},
+                    "revision":{"type":"integer","minimum":1},
+                    "targetId":{"type":"string","maxLength":96},
+                    "action":{"type":"string","enum":["click","focus","set_text"]},
+                    "text":{"type":"string","maxLength":512}
+                },
+                "allOf":[{"if":{"properties":{"action":{"const":"set_text"}}},"then":{"required":["text"]}}]
+            }).to_string(),
+        ));
+        tools.push((
             "desktop_input".to_string(),
-            "Send one bounded input event to the same Connect desktop. This is rejected while the human holds the control lease; the agent cannot take control implicitly. Pointer x/y use normalized 0..1 coordinates, scroll deltas use browser pixels, and text is printable ASCII up to 512 bytes.".to_string(),
+            "Fallback for custom-drawn surfaces when desktop_observe exposes no suitable target. Sends one bounded raw input event to the same Connect desktop and is rejected while the human holds the control lease. Prefer desktop_act on accessible targets. Pointer x/y use normalized 0..1 coordinates, scroll deltas use browser pixels, and text is printable ASCII up to 512 bytes.".to_string(),
             serde_json::json!({
                 "type":"object","additionalProperties":false,"required":["action"],
                 "properties":{
@@ -656,10 +680,12 @@ mod tests {
                 .iter()
                 .map(|(name, _, _)| name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["desktop_status", "desktop_screenshot"]
+            vec!["desktop_status", "desktop_screenshot", "desktop_observe"]
         );
-        assert_eq!(full.len(), 3);
-        let input: Value = serde_json::from_str(&full[2].2).unwrap();
+        assert_eq!(full.len(), 5);
+        let action: Value = serde_json::from_str(&full[3].2).unwrap();
+        assert_eq!(action["properties"]["action"]["enum"][0], "click");
+        let input: Value = serde_json::from_str(&full[4].2).unwrap();
         assert_eq!(input["properties"]["action"]["enum"][0], "pointer-move");
         assert_eq!(input["properties"]["deltaX"]["maximum"], 800);
     }

@@ -1,6 +1,6 @@
 use serde_json::Value;
 use std::{
-    io::Write,
+    io::{BufRead, BufReader, Read, Write},
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -281,6 +281,32 @@ fn mcp_combines_browser_and_resident_dev_tools_on_clean_json_rpc_stdout() {
         .spawn()
         .expect("MCP server should start");
     let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (response_sender, response_receiver) = std::sync::mpsc::channel();
+    let stdout_reader = std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if response_sender.send(Ok(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = response_sender.send(Err(error.to_string()));
+                    break;
+                }
+            }
+        }
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut output = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut output);
+        output
+    });
     for request in [
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -334,14 +360,36 @@ fn mcp_combines_browser_and_resident_dev_tools_on_clean_json_rpc_stdout() {
     ] {
         writeln!(stdin, "{request}").unwrap();
     }
+    stdin.flush().unwrap();
+    let mut lines = String::new();
+    for _ in 0..5 {
+        match response_receiver.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(Ok(line)) => lines.push_str(&line),
+            Ok(Err(error)) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let stderr = stderr_reader.join().unwrap_or_default();
+                panic!("MCP stdout could not be read: {error}; stderr: {stderr}");
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let stderr = stderr_reader.join().unwrap_or_default();
+                panic!("MCP response stream ended before five replies: {error}; stderr: {stderr}");
+            }
+        }
+    }
     drop(stdin);
-    let output = child.wait_with_output().expect("MCP server should exit");
-    assert!(
-        output.status.success(),
-        "MCP process failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let lines = String::from_utf8(output.stdout).unwrap();
+    let status = child.wait().expect("MCP server should exit");
+    stdout_reader
+        .join()
+        .expect("MCP stdout reader should finish");
+    let stderr = stderr_reader
+        .join()
+        .expect("MCP stderr reader should finish");
+    assert!(status.success(), "MCP process failed: {}", stderr);
     let responses = lines
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("stdout must be JSON-RPC JSONL"))

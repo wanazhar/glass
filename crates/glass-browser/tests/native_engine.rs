@@ -291,6 +291,114 @@ fn versioned_native_journey_selects_observed_responsive_duplicate_by_region() {
     });
 }
 
+#[test]
+fn versioned_native_journey_projects_mutating_repository_slots() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(versioned_native_journey_projects_mutating_repository_slots_inner());
+    });
+}
+
+async fn versioned_native_journey_projects_mutating_repository_slots_inner() {
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/native-journeys-v1.json"))
+            .expect("native journey corpus must be valid JSON");
+    let journey = corpus["journeys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|journey| journey["id"] == "local-repository-shadow-directory-slots")
+        .expect("repository shadow-slot journey is required");
+    assert_eq!(journey["backend"], "native");
+    assert!(
+        journey["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|capability| capability == "slot-mutation")
+    );
+
+    let home = r#"<title>Rust repository</title>
+      <x-repository-tree><a id="library-link" slot="directory" href="fixture://journey-shadow-repository.test/library">library</a></x-repository-tree>
+      <script>
+        const root = document.querySelector('x-repository-tree').attachShadow({ mode: 'open' });
+        const firstSlot = document.createElement('slot');
+        firstSlot.setAttribute('name', 'directory');
+        firstSlot.appendChild(document.createTextNode('No directory selected'));
+        root.appendChild(firstSlot);
+        const duplicateSlot = document.createElement('slot');
+        duplicateSlot.setAttribute('name', 'directory');
+        duplicateSlot.appendChild(document.createTextNode('Duplicate slot fallback'));
+        root.appendChild(duplicateSlot);
+      </script>"#;
+    let library = "<title>Rust library</title><main>Core library source</main>";
+    let config = NativeEngineConfig::default()
+        .with_initial_url("fixture://journey-shadow-repository.test/")
+        .with_fixture("fixture://journey-shadow-repository.test/", home)
+        .unwrap()
+        .with_fixture("fixture://journey-shadow-repository.test/library", library)
+        .unwrap();
+    let session = BrowserRuntimeSession::connect_native(config).await.unwrap();
+    assert_eq!(
+        session
+            .script("Array.from(document.querySelector('x-repository-tree').shadowRoot.querySelectorAll('slot')).filter(slot => slot.getAttribute('name') === 'directory').length")
+            .await
+            .unwrap()
+            .value,
+        serde_json::json!(2),
+    );
+
+    let observed_link = |observation: &glass_browser::browser::session::SemanticObservation| {
+        observation
+            .regions
+            .iter()
+            .flat_map(|region| region.targets.iter())
+            .any(|target| target.role == "link" && target.name == "library")
+    };
+    assert!(observed_link(&session.observe().await.unwrap()));
+    let mutation_expression = |step_id: &str| {
+        journey["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["id"] == step_id)
+            .and_then(|step| step["expression"].as_str())
+            .expect("slot mutation expression is present")
+    };
+    session
+        .script(mutation_expression("remove-library-assignment"))
+        .await
+        .unwrap();
+    assert!(!observed_link(&session.observe().await.unwrap()));
+    session
+        .script(mutation_expression("restore-library-assignment"))
+        .await
+        .unwrap();
+    assert!(observed_link(&session.observe().await.unwrap()));
+
+    let outcome = session
+        .native_run_batch(
+            &[BatchStep::ClickObserved {
+                role: "link".into(),
+                name_contains: String::new(),
+                name_equals: Some("library".into()),
+            }],
+            false,
+            BatchMode::Unguarded,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        outcome.success,
+        "repository slot click outcome: {outcome:#?}"
+    );
+    assert_eq!(
+        session.evidence(EvidenceLevel::Compact).await.unwrap().url,
+        "fixture://journey-shadow-repository.test/library"
+    );
+    session.close().await.unwrap();
+}
+
 async fn versioned_native_journey_selects_observed_responsive_duplicate_by_region_inner() {
     let corpus: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/native-journeys-v1.json"))

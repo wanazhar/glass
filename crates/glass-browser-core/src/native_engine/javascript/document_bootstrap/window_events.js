@@ -288,6 +288,37 @@
   cachedHostState = state;
   cachedGeometrySnapshot = state.geometry;
   cachedGeometryMap = geometryByIndex;
+  releaseCurrentHostSnapshot = () => {{
+    const currentState = state;
+    if (currentState && typeof currentState === "object") {{
+      const {{
+        elements: _elements,
+        nodes: _nodes,
+        geometry: _geometry,
+        visibleText: _visibleText,
+        computedStyles: _computedStyles,
+        ...preservedState
+      }} = currentState;
+      state = {{
+        ...preservedState,
+        elements: [],
+        nodes: [],
+        geometry: [],
+        visibleText: "",
+        computedStyles: [],
+      }};
+      host.state = state;
+    }}
+    snapshotComputedStyles = [];
+    snapshotGeometry = [];
+    snapshotNodes = [];
+    snapshotElements = [];
+    snapshotNodesByIndex = null;
+    snapshotElementsByIndex = null;
+    snapshotTreeNodeIndexes = null;
+    rootTreeSnapshotEntry = null;
+    snapshotTextContentForNode = null;
+  }};
   if (typeof globalThis.__glassNativeHostViewMark === "function")
     globalThis.__glassNativeHostViewMark("installer_complete");
   }};

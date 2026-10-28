@@ -2959,6 +2959,7 @@ pub(crate) struct NativeJavaScriptRuntime {
     context: Context,
     host_view_installer: Mutex<Option<PersistentHostViewInstaller>>,
     host_view_cache_key: Mutex<Option<NativeHostViewCacheKey>>,
+    host_view_snapshot: Mutex<Option<serde_json::Value>>,
     deadline: Arc<Mutex<Option<Instant>>>,
     environment: Arc<Mutex<NativeEnvironmentOverrides>>,
     module_sources: Arc<Mutex<BTreeMap<String, String>>>,

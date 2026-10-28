@@ -1063,12 +1063,22 @@
         if (selectionDirection !== null) selectionDirection = "none";
       }},
     }});
+    Object.defineProperty(element, "__glassReleaseHostSnapshot", {{
+      enumerable: false,
+      configurable: false,
+      value() {{
+        entry = null;
+        exactTextForNode = null;
+        element.__glassEntry = null;
+      }},
+    }});
     nativeElementBuildPhase = "install_refresh_method";
     Object.defineProperty(element, "__glassRefresh", {{
       enumerable: false,
       configurable: false,
       value(nextEntry, nextExactTextForNode = exactTextForNode) {{
         entry = nextEntry;
+        exactTextForNode = nextExactTextForNode;
         element.__glassEntry = nextEntry;
         computedStyle = nextEntry.computedStyle && typeof nextEntry.computedStyle === "object"
           ? nextEntry.computedStyle

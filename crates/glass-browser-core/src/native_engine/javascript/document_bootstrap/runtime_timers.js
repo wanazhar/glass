@@ -16,17 +16,123 @@
   let cachedCanvasResources = null;
   let cachedCanvasImageResourceSource = null;
   let cachedCanvasImageResources = null;
+  let releaseCurrentHostSnapshot = null;
   const nativeElementClassListCache = new WeakMap();
   const nativeElementStyleCache = new WeakMap();
   const nativeElementDatasetCache = new WeakMap();
-  return (__glassHostViewJson) => {{
-  const host = JSON.parse(__glassHostViewJson);
+  return (__glassHostViewJson, releasePreviousSnapshot = false) => {{
+  // A changed host view can arrive while the prior cached snapshot is large.
+  // Drop snapshot-only caches before parsing the replacement so the old and
+  // new JSON object graphs do not overlap at peak QuickJS heap usage. Keep the
+  // private node collections: they preserve wrapper identity across refreshes.
+  if (releasePreviousSnapshot) {{
+    if (releaseCurrentHostSnapshot) {{
+      releaseCurrentHostSnapshot();
+      releaseCurrentHostSnapshot = null;
+    }}
+    if (cachedHostState && typeof cachedHostState === "object") {{
+      for (const key of ["elements", "nodes", "geometry", "canvasResources", "imageResources"]) {{
+        const value = cachedHostState[key];
+        if (Array.isArray(value)) value.length = 0;
+      }}
+      if (typeof cachedHostState.visibleText === "string") cachedHostState.visibleText = "";
+    }}
+    if (cachedHostCollections && Array.isArray(cachedHostCollections.elements)) {{
+      for (const element of cachedHostCollections.elements) {{
+        if (element && typeof element.__glassReleaseHostSnapshot === "function")
+          element.__glassReleaseHostSnapshot();
+      }}
+    }}
+    if (cachedGeometryMap instanceof Map) cachedGeometryMap.clear();
+    cachedHostState = null;
+    cachedGeometrySnapshot = null;
+    cachedGeometryMap = null;
+    cachedMutationShadow = null;
+    cachedCanvasLiveIndexSource = null;
+    cachedCanvasLiveIndexes = null;
+    cachedCanvasResourceSource = null;
+    cachedCanvasResources = null;
+    cachedCanvasImageResourceSource = null;
+    cachedCanvasImageResources = null;
+  }}
+  if (__glassHostViewJson === null || __glassHostViewJson === undefined) return;
+  let host = JSON.parse(__glassHostViewJson);
   // Do not keep the large wire string alive while the object graph and host
   // wrappers are being materialized.
   __glassHostViewJson = "";
   if (host.reuse_state) {{
     if (cachedHostState === null) throw new Error("native host snapshot reuse has no prior state");
     host.state = cachedHostState;
+  }}
+  const hostStateDelta = Array.isArray(host.state_delta) ? host.state_delta : null;
+  if (hostStateDelta) {{
+    const validatedHostStateDelta = [];
+    for (const operation of hostStateDelta) {{
+      if (!Array.isArray(operation) || !Array.isArray(operation[1])
+        || (operation[0] === 0 && operation.length !== 3)
+        || (operation[0] === 1 && operation.length !== 2)
+        || (operation[0] === 2 && operation.length !== 5)
+        || (operation[0] !== 0 && operation[0] !== 1 && operation[0] !== 2))
+        throw new TypeError("native host snapshot delta is invalid");
+      const path = operation[1];
+      if (path.length === 0) throw new TypeError("native host snapshot delta path is empty");
+      let target = host.state;
+      if (operation[0] === 2) {{
+        for (const key of path) {{
+          if ((typeof key !== "string" && !Number.isSafeInteger(key))
+            || !target || typeof target !== "object"
+            || !Object.prototype.hasOwnProperty.call(target, key))
+            throw new TypeError("native host snapshot delta path is invalid");
+          target = target[key];
+        }}
+        const index = operation[2];
+        const deleteCount = operation[3];
+        const items = operation[4];
+        if (!Array.isArray(target) || !Number.isSafeInteger(index) || index < 0
+          || !Number.isSafeInteger(deleteCount) || deleteCount < 0
+          || index > target.length || deleteCount > target.length - index
+          || !Array.isArray(items) || target.length - deleteCount + items.length > 16384)
+          throw new TypeError("native host snapshot delta splice is invalid");
+        validatedHostStateDelta.push([2, target, index, deleteCount, items]);
+        continue;
+      }}
+      for (let index = 0; index < path.length - 1; index += 1) {{
+        const key = path[index];
+        if ((typeof key !== "string" && !Number.isSafeInteger(key))
+          || !target || typeof target !== "object"
+          || !Object.prototype.hasOwnProperty.call(target, key))
+          throw new TypeError("native host snapshot delta path is invalid");
+        target = target[key];
+      }}
+      if (!target || typeof target !== "object")
+        throw new TypeError("native host snapshot delta target is invalid");
+      const key = path[path.length - 1];
+      if ((Array.isArray(target) && (!Number.isSafeInteger(key) || key < 0 || key >= target.length))
+        || (!Array.isArray(target) && typeof key !== "string")
+        || (operation[0] === 1
+          && (!Object.prototype.hasOwnProperty.call(target, key) || Array.isArray(target))))
+        throw new TypeError("native host snapshot delta key is invalid");
+      validatedHostStateDelta.push(
+        operation[0] === 0 ? [0, target, key, operation[2]] : [1, target, key],
+      );
+    }}
+    for (const operation of validatedHostStateDelta) {{
+      if (operation[0] === 2) {{
+        operation[1].splice(operation[2], operation[3], ...operation[4]);
+      }} else if (operation[0] === 0) {{
+        const [, target, key, value] = operation;
+        Object.defineProperty(target, key, {{
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value,
+        }});
+      }} else {{
+        const [, target, key] = operation;
+        delete target[key];
+      }}
+    }}
+    delete host.state_delta;
   }}
   const bootstrapParams = host.__glassBootstrap || {{}};
   delete host.__glassBootstrap;
@@ -49,13 +155,14 @@
   let captureDynamicReferrerMetaPolicy = null;
   globalThis.__glassMessageRealmKey = "page:" + String(host.context_id || "native");
   const initialPageCryptoBytes = bootstrapParams.initialPageCryptoBytes;
-  const state = host.state;
+  let state = host.state;
   if (typeof globalThis.__glassNativeHostViewMark === "function")
     globalThis.__glassNativeHostViewMark("json_state_parsed");
   const reuseCachedHostSnapshotState = Boolean(
-    host.reuse_state && cachedHostState !== null && state === cachedHostState,
+    host.reuse_state && hostStateDelta === null
+      && cachedHostState !== null && state === cachedHostState,
   );
-  const snapshotComputedStyles = Array.isArray(state.computedStyles) ? state.computedStyles : [];
+  let snapshotComputedStyles = Array.isArray(state.computedStyles) ? state.computedStyles : [];
   if (!reuseCachedHostSnapshotState) {{
     for (const element of Array.isArray(state.elements) ? state.elements : []) {{
       if (!element || !Number.isSafeInteger(Number(element.cs))) continue;
@@ -92,21 +199,28 @@
     }};
     return (nodeIndex) => resolve(nodeIndex, new Set());
   }};
-  const snapshotGeometry = Array.isArray(state.geometry) ? state.geometry : [];
+  let snapshotGeometry = Array.isArray(state.geometry) ? state.geometry : [];
   const cachedGeometryStillMatchesSnapshot = Boolean(
     cachedGeometryMap instanceof Map
       && cachedGeometryMap.size === snapshotGeometry.filter((entry) => entry && entry.nodeIndex !== undefined).length
       && snapshotGeometry.every((entry) => !entry || entry.nodeIndex === undefined
         || cachedGeometryMap.get(Number(entry.nodeIndex)) === entry),
   );
-  const reuseCachedGeometry = Boolean(
-    reuseCachedHostSnapshotState
-      && cachedGeometrySnapshot === state.geometry
-      && cachedGeometryStillMatchesSnapshot
+  const refreshCachedGeometryInPlace = Boolean(
+    host.reuse_host_tree === true
+      && hostStateDelta !== null
+      && cachedGeometryMap instanceof Map
       && globalThis.__glassHostGeometry === cachedGeometryMap,
   );
+  const reuseCachedGeometry = Boolean(
+    refreshCachedGeometryInPlace
+      || (reuseCachedHostSnapshotState
+        && cachedGeometrySnapshot === state.geometry
+        && cachedGeometryStillMatchesSnapshot
+        && globalThis.__glassHostGeometry === cachedGeometryMap),
+  );
   const geometryByIndex = reuseCachedGeometry ? cachedGeometryMap : new Map();
-  if (!reuseCachedGeometry) {{
+  if (!reuseCachedGeometry || refreshCachedGeometryInPlace) {{
     for (const entry of snapshotGeometry) {{
       if (!entry || entry.nodeIndex === undefined) continue;
       geometryByIndex.set(Number(entry.nodeIndex), entry);

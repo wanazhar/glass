@@ -419,9 +419,9 @@ try {
     { id: 32, x: midX + 12, y: midY + 32, radiusX: 4, radiusY: 4, force: 1 },
   ] });
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await page.waitForFunction(() => true);
-  await page.waitForTimeout(40);
+  await page.waitForFunction(() => window.__inputTimings.some((timing) => timing.action === "scroll" && timing.accepted));
   assert(input.filter((event) => event.action === "scroll").length > beforeTwoFingerScroll);
+  assert(input.some((event) => event.action === "scroll" && event.deltaY !== 0), "two-finger trackpad movement must send a vertical scroll delta");
 
   for (const width of [390, 768, 1440]) {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
@@ -434,6 +434,7 @@ try {
     }
   }
 
+  const humanSessionBeforeReconnect = await page.evaluate(async () => await (await fetch("/api/desktop/status")).json());
   await page.locator("#desktop-close").click();
   await page.waitForFunction(() => !document.querySelector("#desktop-viewer").open);
   assert.equal(await page.locator("#desktop-toggle").evaluate((button) => button === document.activeElement), true);
@@ -441,6 +442,10 @@ try {
   assert(!actions.includes("return-to-agent"), "viewer close must not return control implicitly");
   await page.locator("#desktop-toggle").click();
   await page.getByText("You control · GC paused").waitFor();
+  const humanSessionAfterReconnect = await page.evaluate(async () => await (await fetch("/api/desktop/status")).json());
+  assert.equal(humanSessionAfterReconnect.sessionId, humanSessionBeforeReconnect.sessionId, "viewer reconnect must preserve the desktop session");
+  assert.equal(humanSessionAfterReconnect.displayId, humanSessionBeforeReconnect.displayId, "viewer reconnect must preserve the display");
+  assert.equal(humanSessionAfterReconnect.lease, "human", "viewer reconnect must preserve human input ownership");
   await page.locator("#desktop-return").click();
   await page.getByText("View only · GC may control").waitFor();
   const viewOnlyInputCount = input.length;
@@ -458,6 +463,12 @@ try {
     { id: 42, x: viewMidX + 36, y: viewMidY, radiusX: 4, radiusY: 4, force: 1 },
   ] });
   await page.waitForFunction(() => Number(document.querySelector("#desktop-stream").style.getPropertyValue("--desktop-zoom")) > 1);
+  const panBefore = await page.locator("#desktop-stream").evaluate((image) => image.style.getPropertyValue("--desktop-pan-y"));
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [
+    { id: 41, x: viewMidX - 36, y: viewMidY + 24, radiusX: 4, radiusY: 4, force: 1 },
+    { id: 42, x: viewMidX + 36, y: viewMidY + 24, radiusX: 4, radiusY: 4, force: 1 },
+  ] });
+  await page.waitForFunction((previous) => document.querySelector("#desktop-stream").style.getPropertyValue("--desktop-pan-y") !== previous, panBefore);
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   assert.equal(input.length, viewOnlyInputCount, "view-only pinch must not send desktop input");
   await page.locator("#desktop-view-reset").click();

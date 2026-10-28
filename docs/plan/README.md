@@ -5927,11 +5927,15 @@ The completed sandbox-launch batch is
 [native-engine-browser-009](tasks/native-engine-browser-009.md). Linux now
 requires Bubblewrap with isolated user/PID/UTS/IPC namespaces, read-only
 runtime mounts, private `/tmp`, parent-death cleanup, and `no_new_privs`;
-macOS uses a deny-by-default Seatbelt profile; Windows uses a retained Job
-Object with process-count and kill-on-close limits. Missing policy support is a
-typed startup failure, never an implicit unsandboxed fallback. Full origin/site
-isolation, network mediation, restricted Windows tokens, cross-platform
-containment evidence, and the remaining browser gates remain open.
+macOS uses a deny-by-default Seatbelt profile with one literal root-entry
+`file-read-data` grant for dyld firmlink resolution; Windows uses a retained
+Job Object with process-count and kill-on-close limits. The literal grant does
+not allow reads beneath the root, and the hosted navigation-preload worker test
+verifies production-profile startup. Missing policy support is a typed startup
+failure, never an implicit unsandboxed fallback.
+Full origin/site isolation, network mediation, restricted Windows tokens,
+cross-platform containment evidence, and the remaining browser gates remain
+open.
 
 The completed redirect/charset batch is
 [native-engine-browser-010](tasks/native-engine-browser-010.md). The shared

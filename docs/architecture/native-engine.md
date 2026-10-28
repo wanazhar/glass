@@ -6694,8 +6694,11 @@ The completed sandbox-launch batch is recorded in
 [`native-engine-browser-009`](../plan/tasks/native-engine-browser-009.md).
 Linux launches through required Bubblewrap namespaces and read-only runtime
 mounts with private `/tmp` and `no_new_privs`; macOS uses a deny-by-default
-Seatbelt profile; Windows uses a retained Job Object with active-process and
-kill-on-close limits. Missing policy support returns a typed failure rather
+Seatbelt profile that grants dyld data access to the literal filesystem root
+entry for firmlink resolution; Windows uses a retained Job Object with
+active-process and kill-on-close limits. The root grant does not allow reads
+beneath `/`, and hosted navigation-preload coverage starts the worker under
+the production profile. Missing policy support returns a typed failure rather
 than silently running an ordinary child. Network mediation, origin/site
 isolation, restricted tokens, and complete cross-platform security evidence
 remain separate promotion gates.

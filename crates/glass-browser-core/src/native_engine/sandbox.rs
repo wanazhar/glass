@@ -266,6 +266,22 @@ fn prepare_macos(
             "macOS native content requires /usr/bin/sandbox-exec; refusing to run the worker unsandboxed",
         ));
     }
+    let profile = macos_sandbox_profile(worker_path, storage_path, allowed_file_roots);
+    let mut command = Command::new(seatbelt);
+    command
+        .arg("-p")
+        .arg(profile)
+        .arg(worker_path)
+        .arg("--native-content-worker");
+    Ok((command, NativeContentSandbox {}))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_sandbox_profile(
+    worker_path: &Path,
+    storage_path: Option<&Path>,
+    allowed_file_roots: &[PathBuf],
+) -> String {
     let worker = quote_profile_path(worker_path);
     let storage_rules = storage_path
         .and_then(Path::parent)
@@ -285,15 +301,9 @@ fn prepare_macos(
         })
         .collect::<String>();
     let profile = format!(
-        "(version 1) (deny default) (allow process-exec (literal \"{worker}\")) (allow file-read* (subpath \"/System\") (subpath \"/usr\") (subpath \"/Library\") (literal \"{worker}\")) (allow network-outbound) (allow sysctl-read) (allow mach-lookup){storage_rules}{file_root_rules}"
+        "(version 1) (deny default) (allow process-exec (literal \"{worker}\")) (allow file-read* (subpath \"/System\") (subpath \"/usr\") (subpath \"/Library\") (literal \"{worker}\")) (allow file-read-data (literal \"/\")) (allow network-outbound) (allow sysctl-read) (allow mach-lookup){storage_rules}{file_root_rules}"
     );
-    let mut command = Command::new(seatbelt);
-    command
-        .arg("-p")
-        .arg(profile)
-        .arg(worker_path)
-        .arg("--native-content-worker");
-    Ok((command, NativeContentSandbox {}))
+    profile
 }
 
 #[cfg(windows)]
@@ -569,9 +579,22 @@ mod tests {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn quote_profile_path(path: &Path) -> String {
     path.to_string_lossy()
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod macos_profile_tests {
+    use super::*;
+
+    #[test]
+    fn macos_content_profile_allows_only_root_directory_data_for_dyld() {
+        let profile = macos_sandbox_profile(Path::new("/tmp/glass-native-worker"), None, &[]);
+
+        assert!(profile.contains("(allow file-read-data (literal \"/\"))"));
+        assert!(!profile.contains("(subpath \"/\")"));
+    }
 }

@@ -39,13 +39,26 @@ export function desktopSurface({ api }) {
   let requestController = null;
   let pollTimer = 0;
   let pollGeneration = 0;
+  let moveTimer = 0;
   let streamSession = null;
   let streamFrameSeqAtStart = null;
+  let streamDecodedSeq = 0;
+  let streamGeneration = 0;
+  let streamController = null;
+  let streamLatestFrame = null;
+  let streamDecodeRunning = false;
+  let streamObjectUrl = null;
   let streamLoaded = false;
   let streamFailed = false;
   let activePointer = null;
   let lastMoveAt = 0;
-  let inputTail = Promise.resolve();
+  let inputQueue = [];
+  let pendingMove = null;
+  let inputPumpRunning = false;
+  const heldButtons = new Set();
+  const heldKeys = new Set();
+  const maxQueuedInput = 128;
+  const pendingFrameTimings = [];
   let directTouch = false;
   let pointerX = 0.5;
   let pointerY = 0.5;
@@ -79,27 +92,181 @@ export function desktopSurface({ api }) {
     }
   }
 
+  function stopStream() {
+    streamGeneration += 1;
+    streamController?.abort();
+    streamController = null;
+    streamLatestFrame = null;
+    streamLoaded = false;
+    if (streamObjectUrl) URL.revokeObjectURL(streamObjectUrl);
+    streamObjectUrl = null;
+    stream.removeAttribute("src");
+  }
+
   function setStream(available) {
     const session = snapshot?.sessionId || null;
     if (!available || !session) {
-      stream.removeAttribute("src");
+      stopStream();
       streamSession = null;
       streamFrameSeqAtStart = null;
-      streamLoaded = false;
       stream.hidden = true;
       return;
     }
-    if (streamSession !== session || !stream.getAttribute("src")) {
+    if (streamSession !== session || !streamController) {
       streamFailed = false;
       streamLoaded = false;
       streamSession = session;
       streamFrameSeqAtStart = Number(snapshot?.frameSeq) || 0;
-      stream.src = "/api/desktop/stream";
+      streamDecodedSeq = 0;
+      streamController = new AbortController();
+      void consumeStream(session, ++streamGeneration, streamController);
     }
-    stream.hidden = false;
+    stream.hidden = !streamLoaded || streamFailed;
+  }
+
+  function findBytes(haystack, needle, start = 0) {
+    outer: for (let index = start; index <= haystack.length - needle.length; index += 1) {
+      for (let offset = 0; offset < needle.length; offset += 1) {
+        if (haystack[index + offset] !== needle[offset]) continue outer;
+      }
+      return index;
+    }
+    return -1;
+  }
+
+  function appendBytes(first, second) {
+    const joined = new Uint8Array(first.length + second.length);
+    joined.set(first);
+    joined.set(second, first.length);
+    return joined;
+  }
+
+  async function decodeNewestFrame() {
+    if (streamDecodeRunning) return;
+    streamDecodeRunning = true;
+    try {
+      while (streamLatestFrame && isOpen()) {
+        const frame = streamLatestFrame;
+        streamLatestFrame = null;
+        const statusSeq = Number(snapshot?.frameSeq) || 0;
+        if (frame.seq < statusSeq - 1) continue;
+        const objectUrl = URL.createObjectURL(frame.blob);
+        const decoded = new Image();
+        decoded.src = objectUrl;
+        try {
+          await decoded.decode();
+        } catch {
+          URL.revokeObjectURL(objectUrl);
+          throw new Error("The desktop sent an image that could not be decoded.");
+        }
+        if (!isOpen() || streamSession !== snapshot?.sessionId) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        const newestSeq = Number(snapshot?.frameSeq) || frame.seq;
+        if (frame.seq < newestSeq - 1 || (streamLatestFrame && streamLatestFrame.seq > frame.seq)) {
+          URL.revokeObjectURL(objectUrl);
+          continue;
+        }
+        const previousUrl = streamObjectUrl;
+        streamObjectUrl = objectUrl;
+        stream.src = objectUrl;
+        stream.hidden = false;
+        await stream.decode();
+        if (!isOpen() || streamFailed || !streamController || streamSession !== snapshot?.sessionId) {
+          if (streamObjectUrl === objectUrl) streamObjectUrl = null;
+          if (previousUrl) URL.revokeObjectURL(previousUrl);
+          URL.revokeObjectURL(objectUrl);
+          if (stream.src === objectUrl) stream.removeAttribute("src");
+          stream.hidden = true;
+          return;
+        }
+        streamDecodedSeq = frame.seq;
+        streamLoaded = true;
+        if (previousUrl) URL.revokeObjectURL(previousUrl);
+      }
+    } catch (error) {
+      if (isOpen()) {
+        streamController?.abort();
+        streamFailed = true;
+        streamLoaded = false;
+        stream.hidden = true;
+        retry.hidden = false;
+        placeholder.hidden = false;
+        placeholder.textContent = "The desktop keeps running. Reconnect the stream to continue.";
+        setStatus(error.message || "Desktop image unavailable", true);
+      }
+    } finally {
+      streamDecodeRunning = false;
+      if (streamLatestFrame && isOpen()) void decodeNewestFrame();
+    }
+  }
+
+  async function consumeStream(session, generation, controller) {
+    const boundary = new TextEncoder().encode("--glassframe");
+    const headerDelimiter = new Uint8Array([13, 10, 13, 10]);
+    let buffer = new Uint8Array(0);
+    try {
+      const response = await fetch("/api/desktop/stream", {
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        let message = "Desktop stream is unavailable.";
+        try { message = (await response.json()).error || message; } catch {}
+        throw new Error(message);
+      }
+      const reader = response.body.getReader();
+      while (isOpen() && generation === streamGeneration && session === snapshot?.sessionId) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error("Desktop stream ended.");
+        buffer = appendBytes(buffer, value);
+        while (true) {
+          const boundaryAt = findBytes(buffer, boundary);
+          if (boundaryAt < 0) {
+            if (buffer.length > boundary.length) buffer = buffer.slice(buffer.length - boundary.length);
+            break;
+          }
+          if (boundaryAt > 0) buffer = buffer.slice(boundaryAt);
+          const headerAt = findBytes(buffer, headerDelimiter, boundary.length);
+          if (headerAt < 0) break;
+          const headerText = new TextDecoder().decode(buffer.slice(boundary.length, headerAt));
+          const length = Number(headerText.match(/(?:^|\r\n)Content-Length:\s*(\d+)/i)?.[1]);
+          const seq = Number(headerText.match(/(?:^|\r\n)X-Frame-Seq:\s*(\d+)/i)?.[1]);
+          if (!Number.isSafeInteger(length) || length <= 0 || length > 4 * 1024 * 1024 || !Number.isSafeInteger(seq)) {
+            throw new Error("Desktop stream sent an invalid frame header.");
+          }
+          const frameAt = headerAt + headerDelimiter.length;
+          const afterFrame = frameAt + length;
+          if (buffer.length < afterFrame) break;
+          const frame = {
+            seq,
+            blob: new Blob([buffer.slice(frameAt, afterFrame)], { type: "image/jpeg" }),
+          };
+          buffer = buffer.slice(afterFrame);
+          const newestStatusSeq = Number(snapshot?.frameSeq) || 0;
+          if (seq >= newestStatusSeq - 1 && seq > streamDecodedSeq) {
+            streamLatestFrame = frame;
+            void decodeNewestFrame();
+          }
+        }
+      }
+    } catch (error) {
+      if (controller.signal.aborted || generation !== streamGeneration || !isOpen()) return;
+      streamFailed = true;
+      streamLoaded = false;
+      stream.hidden = true;
+      retry.hidden = false;
+      retry.textContent = "Reconnect stream";
+      placeholder.hidden = false;
+      placeholder.textContent = "The desktop keeps running. Reconnect the stream to continue.";
+      setStatus("Stream disconnected", true);
+    }
   }
 
   function render(next) {
+    const priorFrameSeq = Number(snapshot?.frameSeq) || 0;
     snapshot = next;
     const running = Boolean(next?.sessionId);
     const available = Boolean(next?.available && running);
@@ -174,21 +341,25 @@ export function desktopSurface({ api }) {
 
     setStream(true);
     const frameSeq = Number(next.frameSeq);
+    const ageMs = Number(next.frameAgeMs);
     const hasDecodedFreshFrame = stream.naturalWidth > 0
       && stream.naturalHeight > 0
       && streamSession === next.sessionId
       && Number.isFinite(frameSeq)
-      && frameSeq > (streamFrameSeqAtStart ?? frameSeq - 1);
+      && streamDecodedSeq >= frameSeq - 1
+      && frameSeq > (streamFrameSeqAtStart ?? frameSeq - 1)
+      && Number.isFinite(ageMs)
+      && ageMs < 1000;
     if (hasDecodedFreshFrame && !streamFailed) {
       streamLoaded = true;
       stream.hidden = false;
     }
     const connected = hasDecodedFreshFrame && streamLoaded && !streamFailed;
+    if (!connected) stream.hidden = true;
     placeholder.hidden = connected;
     placeholder.textContent = streamFailed
       ? "The desktop keeps running. Reconnect the stream to continue."
       : "Connecting to the managed desktop…";
-    const ageMs = Number(next.frameAgeMs);
     const recency = Number.isFinite(ageMs)
       ? ageMs < 1000
         ? "just now"
@@ -202,6 +373,22 @@ export function desktopSurface({ api }) {
           : "Connecting to the managed desktop…",
       streamFailed,
     );
+    if (connected && frameSeq > priorFrameSeq) {
+      const now = performance.now();
+      for (let index = pendingFrameTimings.length - 1; index >= 0; index -= 1) {
+        const timing = pendingFrameTimings[index];
+        if (frameSeq <= timing.afterSeq) continue;
+        window.dispatchEvent(new CustomEvent("glass-desktop-frame-timing", {
+          detail: {
+            action: timing.action,
+            eventToFrameMs: now - timing.eventAt,
+            requestToFrameMs: now - timing.requestFinished,
+            frameSeq,
+          },
+        }));
+        pendingFrameTimings.splice(index, 1);
+      }
+    }
   }
 
   async function refresh() {
@@ -234,54 +421,163 @@ export function desktopSurface({ api }) {
     }
   }
 
-  function schedulePoll(generation) {
+  function schedulePoll(generation, delay = null) {
     clearTimeout(pollTimer);
     pollTimer = setTimeout(async () => {
       if (!isOpen() || generation !== pollGeneration) return;
       await refresh();
       schedulePoll(generation);
-    }, 1800);
+    }, delay ?? (pendingFrameTimings.length ? 100 : snapshot?.available ? 450 : 1800));
   }
 
-  function postInput(payload) {
-    if (!controlled()) return Promise.resolve();
-    inputTail = inputTail
-      .catch(() => {})
-      .then(async () => {
-        if (!controlled()) return;
-        try {
-          await api("desktop/input", payload, requestController.signal);
-        } catch (error) {
-          if (!isOpen()) return;
-          setStatus(error.message || "Desktop input was not accepted.", true);
-          await refresh();
+  function flushPendingMove() {
+    if (!pendingMove) return;
+    clearTimeout(moveTimer);
+    moveTimer = 0;
+    inputQueue.push(pendingMove);
+    pendingMove = null;
+  }
+
+  function discardPendingMove() {
+    clearTimeout(moveTimer);
+    moveTimer = 0;
+    pendingMove = null;
+  }
+
+  function settleInput(entry) {
+    for (const resolve of entry.resolvers || []) resolve();
+  }
+
+  function pumpInputQueue() {
+    if (inputPumpRunning) return;
+    inputPumpRunning = true;
+    void (async () => {
+      while (inputQueue.length || pendingMove) {
+        const entry = inputQueue.length ? inputQueue.shift() : pendingMove;
+        if (entry === pendingMove) pendingMove = null;
+        if (!controlled()) {
+          settleInput(entry);
+          continue;
         }
-      });
-    return inputTail;
+        const requestStarted = performance.now();
+        let succeeded = false;
+        if (entry.payload.action === "pointer-button" && entry.payload.pressed) {
+          heldButtons.add(entry.payload.button);
+        }
+        if (entry.payload.action === "key" && entry.payload.pressed) heldKeys.add(entry.payload.key);
+        try {
+          await api("desktop/input", entry.payload, requestController.signal);
+          succeeded = true;
+        } catch (error) {
+          if (isOpen()) {
+            setStatus(error.message || "Desktop input was not accepted.", true);
+            void refresh();
+          }
+        }
+        const requestFinished = performance.now();
+        window.dispatchEvent(new CustomEvent("glass-desktop-input-timing", {
+          detail: {
+            action: entry.payload.action,
+            queuedMs: Math.max(0, requestStarted - entry.queuedAt),
+            requestMs: requestFinished - requestStarted,
+            totalMs: requestFinished - entry.queuedAt,
+            accepted: succeeded,
+          },
+        }));
+        if (succeeded) {
+          if (entry.payload.action === "pointer-button") {
+            if (entry.payload.pressed) heldButtons.add(entry.payload.button);
+            else heldButtons.delete(entry.payload.button);
+          }
+          if (entry.payload.action === "key") {
+            if (entry.payload.pressed) heldKeys.add(entry.payload.key);
+            else heldKeys.delete(entry.payload.key);
+          }
+          pendingFrameTimings.push({
+            action: entry.payload.action,
+            eventAt: entry.queuedAt,
+            requestFinished,
+            afterSeq: Number(snapshot?.frameSeq) || 0,
+          });
+          if (pendingFrameTimings.length > 32) pendingFrameTimings.splice(0, pendingFrameTimings.length - 32);
+          schedulePoll(pollGeneration);
+        }
+        settleInput(entry);
+      }
+    })().finally(() => {
+      inputPumpRunning = false;
+      if (inputQueue.length || pendingMove) pumpInputQueue();
+    });
   }
 
-  function moveInput(payload) {
+  function postInput(payload, eventAt = performance.now()) {
+    if (!controlled()) return Promise.resolve();
+    if (["pointer-button", "pointer-click", "key", "text", "scroll"].includes(payload.action)) {
+      discardPendingMove();
+    } else {
+      flushPendingMove();
+    }
+    return new Promise((resolve) => {
+      const entry = { payload: { ...payload }, queuedAt: eventAt, resolvers: [resolve] };
+      const last = inputQueue.at(-1);
+      if (payload.action === "scroll" && last?.payload.action === "scroll") {
+        last.payload.deltaX = Math.max(-800, Math.min(800, last.payload.deltaX + payload.deltaX));
+        last.payload.deltaY = Math.max(-800, Math.min(800, last.payload.deltaY + payload.deltaY));
+        last.payload.x = payload.x;
+        last.payload.y = payload.y;
+        last.resolvers.push(resolve);
+      } else if (payload.action === "text" && last?.payload.action === "text"
+        && last.payload.text.length + payload.text.length <= 512) {
+        last.payload.text += payload.text;
+        last.resolvers.push(resolve);
+      } else {
+        if (inputQueue.length >= maxQueuedInput) {
+          setStatus("Desktop input is backed up. Wait a moment and try again.", true);
+          window.dispatchEvent(new CustomEvent("glass-desktop-input-timing", {
+            detail: { action: payload.action, queuedMs: 0, requestMs: 0, totalMs: 0, accepted: false },
+          }));
+          resolve();
+          return;
+        }
+        inputQueue.push(entry);
+      }
+      pumpInputQueue();
+    });
+  }
+
+  function moveInput(payload, eventAt = performance.now()) {
     const now = performance.now();
-    if (now - lastMoveAt < 35) return;
-    lastMoveAt = now;
-    void postInput(payload);
+    if (!controlled()) return;
+    pendingMove = { payload: { ...payload }, queuedAt: Number.isFinite(eventAt) ? eventAt : now, resolvers: [] };
+    if (inputPumpRunning) return;
+    const delay = Math.max(0, 35 - (now - lastMoveAt));
+    clearTimeout(moveTimer);
+    if (delay > 0) {
+      moveTimer = setTimeout(() => {
+        moveTimer = 0;
+        lastMoveAt = performance.now();
+        pumpInputQueue();
+      }, delay);
+    } else {
+      lastMoveAt = now;
+      pumpInputQueue();
+    }
   }
 
-  function setPointerPosition(x, y, transmit = true) {
+  function setPointerPosition(x, y, transmit = true, eventAt = performance.now()) {
     pointerX = Math.min(1, Math.max(0, x));
     pointerY = Math.min(1, Math.max(0, y));
     updateCursor();
-    if (transmit) moveInput({ action: "pointer-move", x: pointerX, y: pointerY });
+    if (transmit) moveInput({ action: "pointer-move", x: pointerX, y: pointerY }, eventAt);
   }
 
-  function buttonAt(button, pressed, coordinates = { x: pointerX, y: pointerY }) {
-    void postInput({ action: "pointer-button", button, pressed, ...coordinates });
+  function buttonAt(button, pressed, coordinates = { x: pointerX, y: pointerY }, eventAt = performance.now()) {
+    void postInput({ action: "pointer-button", button, pressed, ...coordinates }, eventAt);
   }
 
-  function clickAt(button, coordinates) {
-    if (coordinates) setPointerPosition(coordinates.x, coordinates.y);
-    buttonAt(button, true, coordinates);
-    buttonAt(button, false, coordinates);
+  function clickAt(button, coordinates, eventAt = performance.now()) {
+    if (coordinates) setPointerPosition(coordinates.x, coordinates.y, false, eventAt);
+    void postInput({ action: "pointer-click", button, x: pointerX, y: pointerY }, eventAt);
   }
 
   function point(event) {
@@ -352,7 +648,7 @@ export function desktopSurface({ api }) {
     if (!button) return;
     const coordinates = point(event);
     if (!coordinates) return;
-    void postInput({ action: "pointer-button", button, pressed, ...coordinates });
+    void postInput({ action: "pointer-button", button, pressed, ...coordinates }, event.timeStamp);
   }
 
   function setLease(action) {
@@ -370,10 +666,9 @@ export function desktopSurface({ api }) {
     if (!isOpen() || !snapshot?.available || !snapshot.sessionId) return;
     streamFailed = false;
     streamLoaded = false;
-    stream.removeAttribute("src");
+    stopStream();
     streamSession = null;
     streamFrameSeqAtStart = null;
-    streamLoaded = false;
     stream.hidden = false;
     placeholder.hidden = false;
     placeholder.textContent = "Reconnecting to the managed desktop…";
@@ -418,14 +713,27 @@ export function desktopSurface({ api }) {
 
   function close() {
     clearTimeout(pollTimer);
+    clearTimeout(moveTimer);
     pollGeneration += 1;
     requestController?.abort();
     requestController = null;
+    pendingMove = null;
+    inputQueue.splice(0).forEach(settleInput);
+    for (const button of heldButtons) {
+      void api("desktop/input", { action: "pointer-button", button, pressed: false, x: pointerX, y: pointerY })
+        .then(() => heldButtons.delete(button))
+        .catch(() => {});
+    }
+    for (const key of heldKeys) {
+      void api("desktop/input", { action: "key", key, pressed: false })
+        .then(() => heldKeys.delete(key))
+        .catch(() => {});
+    }
     activePointer = null;
     more.open = false;
     $("desktop-details").open = false;
     closeKeyboard();
-    stream.removeAttribute("src");
+    stopStream();
     streamSession = null;
     // Closing disconnects the view but deliberately keeps the human input lease.
   }
@@ -484,36 +792,6 @@ export function desktopSurface({ api }) {
     event.stopPropagation();
     closeMore({ focus: true });
   }, true);
-  stream.addEventListener("load", () => {
-    if (!isOpen()) return;
-    if (!stream.naturalWidth || !stream.naturalHeight) {
-      streamLoaded = false;
-      streamFailed = true;
-      stream.hidden = true;
-      retry.hidden = false;
-      retry.textContent = "Reconnect stream";
-      placeholder.hidden = false;
-      placeholder.textContent = "Reconnect the stream to see the desktop again.";
-      setStatus("Desktop image unavailable", true);
-      return;
-    }
-    streamFailed = false;
-    streamLoaded = true;
-    stream.hidden = false;
-    retry.hidden = true;
-    placeholder.hidden = true;
-  });
-  stream.addEventListener("error", () => {
-    if (!isOpen()) return;
-    streamFailed = true;
-    streamLoaded = false;
-    stream.hidden = true;
-    retry.hidden = false;
-    retry.textContent = "Reconnect stream";
-    placeholder.hidden = false;
-    placeholder.textContent = "The desktop keeps running. Reconnect the stream to continue.";
-    setStatus("Stream disconnected", true);
-  });
   viewport.addEventListener("pointerdown", (event) => {
     if (!controlled() && !(event.pointerType === "touch" && directTouch && snapshot?.available)) return;
     if (event.pointerType === "touch") {
@@ -525,6 +803,7 @@ export function desktopSurface({ api }) {
         if (!coordinates) return;
         gesture = {
           id: event.pointerId,
+          startTime: event.timeStamp,
           startX: event.clientX,
           startY: event.clientY,
           lastX: event.clientX,
@@ -535,12 +814,12 @@ export function desktopSurface({ api }) {
           timer: setTimeout(() => {
             if (!controlled() || !gesture || gesture.id !== event.pointerId || gesture.moved) return;
             gesture.pressed = "right";
-            buttonAt("right", true, directTouch ? gesture.startCoordinates : undefined);
+            buttonAt("right", true, directTouch ? gesture.startCoordinates : undefined, gesture.startTime);
           }, 480),
         };
       } else if (touchPoints.size === 2) {
         if (gesture?.timer) clearTimeout(gesture.timer);
-        if (gesture?.pressed) buttonAt(gesture.pressed, false);
+        if (gesture?.pressed) buttonAt(gesture.pressed, false, undefined, event.timeStamp);
         gesture = null;
         if (directTouch) {
           const [first, second] = [...touchPoints.values()];
@@ -586,7 +865,7 @@ export function desktopSurface({ api }) {
             deltaY: previous.y - event.clientY,
             x: pointerX,
             y: pointerY,
-          });
+          }, event.timeStamp);
         }
         return;
       }
@@ -602,22 +881,22 @@ export function desktopSurface({ api }) {
         if (!directTouch) {
           if (!gesture.pressed) {
             gesture.pressed = "left";
-            buttonAt("left", true);
+            buttonAt("left", true, undefined, event.timeStamp);
           }
           const bounds = viewport.getBoundingClientRect();
-          setPointerPosition(pointerX + dx * 1.4 / bounds.width, pointerY + dy * 1.4 / bounds.height);
+          setPointerPosition(pointerX + dx * 1.4 / bounds.width, pointerY + dy * 1.4 / bounds.height, true, event.timeStamp);
         } else {
           if (!gesture.pressed) {
             gesture.pressed = "left";
-            setPointerPosition(gesture.startCoordinates.x, gesture.startCoordinates.y);
-            buttonAt("left", true, gesture.startCoordinates);
+            setPointerPosition(gesture.startCoordinates.x, gesture.startCoordinates.y, false, event.timeStamp);
+            buttonAt("left", true, gesture.startCoordinates, event.timeStamp);
           }
           const coordinates = point(event);
-          if (coordinates) setPointerPosition(coordinates.x, coordinates.y);
+          if (coordinates) setPointerPosition(coordinates.x, coordinates.y, true, event.timeStamp);
         }
       } else if (gesture.pressed === "right") {
         const coordinates = directTouch ? point(event) : null;
-        if (coordinates) setPointerPosition(coordinates.x, coordinates.y);
+        if (coordinates) setPointerPosition(coordinates.x, coordinates.y, true, event.timeStamp);
       }
       return;
     }
@@ -634,10 +913,10 @@ export function desktopSurface({ api }) {
       if (gesture?.id === event.pointerId) {
         clearTimeout(gesture.timer);
         if (controlled() && gesture.pressed) {
-          buttonAt(gesture.pressed, false, directTouch ? point(event) || gesture.startCoordinates : undefined);
+          buttonAt(gesture.pressed, false, directTouch ? point(event) || gesture.startCoordinates : undefined, event.timeStamp);
         } else if (controlled() && !gesture.moved) {
           const coordinates = directTouch ? point(event) : { x: pointerX, y: pointerY };
-          clickAt("left", coordinates);
+          clickAt("left", coordinates, event.timeStamp);
         }
         gesture = null;
       }
@@ -660,7 +939,7 @@ export function desktopSurface({ api }) {
     const coordinates = point(event);
     if (!coordinates) return;
     event.preventDefault();
-    void postInput({ action: "scroll", deltaX: event.deltaX, deltaY: event.deltaY, ...coordinates });
+    void postInput({ action: "scroll", deltaX: event.deltaX, deltaY: event.deltaY, ...coordinates }, event.timeStamp);
   }, { passive: false });
   viewport.addEventListener("keydown", (event) => {
     if (!controlled() || event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
@@ -762,7 +1041,7 @@ export function desktopSurface({ api }) {
   document.addEventListener("visibilitychange", () => {
     if (!isOpen()) return;
     if (document.visibilityState === "hidden") {
-      stream.removeAttribute("src");
+      stopStream();
       streamSession = null;
       streamLoaded = false;
     } else {

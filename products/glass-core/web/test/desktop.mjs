@@ -11,8 +11,19 @@ let lease = "agent";
 let nextSession = 1;
 let nextFrameSeq = 18;
 let hostReachable = true;
+let inputDelayMs = 0;
+let streamResponse = null;
+let streamTimer = 0;
+let staleStream = false;
 const actions = [];
 const input = [];
+async function waitForInput(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!input.some(predicate)) {
+    assert(Date.now() < deadline, "expected desktop input was not sent");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 const jpg = Buffer.from(
   "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAKABADASIAAhEBAxEB/8QAFgABAQEAAAAAAAAAAAAAAAAABwIE/8QAIxAAAQQCAQMFAAAAAAAAAAAAAQIDBAUREgBBUWEGExQxgf/EABQBAQAAAAAAAAAAAAAAAAAAAAP/xAAYEQEBAAMAAAAAAAAAAAAAAAABAAISIv/aAAwDAQACEQMRAD8AMrAOxrKQwlwpS2UgAJT1SD1HnmqkjOT3ZCVq3DYQRkAYzt2Hjjc96epJDqnXqevccV9rXFQSf0jlx6SpibfGq4TO2NvbjoTnHfA4S8xOJrf/2Q==",
   "base64",
@@ -33,6 +44,13 @@ const testModule = `
   const surface = desktopSurface({ api });
   document.querySelector("#desktop-toggle").addEventListener("click", () => surface.open());
   window.setDesktopHostReachable = (reachable) => fetch("/__test/host?reachable=" + reachable);
+  window.setDesktopInputDelay = (ms) => fetch("/__test/input-delay?ms=" + ms);
+  window.disconnectDesktopStream = () => fetch("/__test/stream-close");
+  window.setStaleDesktopStream = (enabled) => fetch("/__test/stream-stale?enabled=" + enabled);
+  window.__inputTimings = [];
+  window.__frameTimings = [];
+  window.addEventListener("glass-desktop-input-timing", (event) => window.__inputTimings.push(event.detail));
+  window.addEventListener("glass-desktop-frame-timing", (event) => window.__frameTimings.push(event.detail));
 `;
 
 const server = createServer(async (request, response) => {
@@ -55,6 +73,24 @@ const server = createServer(async (request, response) => {
   }
   if (url.pathname === "/__test/host") {
     hostReachable = url.searchParams.get("reachable") === "true";
+    response.writeHead(204).end();
+    return;
+  }
+  if (url.pathname === "/__test/input-delay") {
+    inputDelayMs = Math.max(0, Math.min(1000, Number(url.searchParams.get("ms")) || 0));
+    response.writeHead(204).end();
+    return;
+  }
+  if (url.pathname === "/__test/stream-close") {
+    clearInterval(streamTimer);
+    streamTimer = 0;
+    streamResponse?.end();
+    streamResponse = null;
+    response.writeHead(204).end();
+    return;
+  }
+  if (url.pathname === "/__test/stream-stale") {
+    staleStream = url.searchParams.get("enabled") === "true";
     response.writeHead(204).end();
     return;
   }
@@ -100,9 +136,21 @@ const server = createServer(async (request, response) => {
       return;
     }
     response.writeHead(200, { "content-type": "multipart/x-mixed-replace; boundary=glassframe" });
-    response.write(`--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpg.length}\r\nX-Frame-Seq: 18\r\nX-Frame-Time-Ms: 24\r\n\r\n`);
-    response.write(jpg);
-    response.write(`\r\n--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpg.length}\r\nX-Frame-Seq: 19\r\nX-Frame-Time-Ms: 25\r\n\r\n`);
+    streamResponse = response;
+    const writeFrame = () => {
+      if (!streamResponse || streamResponse.destroyed) return;
+      const seq = staleStream ? Math.max(1, nextFrameSeq - 12) : nextFrameSeq++;
+      response.write(`--glassframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpg.length}\r\nX-Frame-Seq: ${seq}\r\nX-Frame-Time-Ms: ${seq * 100}\r\n\r\n`);
+      response.write(jpg);
+      response.write("\r\n");
+    };
+    writeFrame();
+    streamTimer = setInterval(writeFrame, 100);
+    response.on("close", () => {
+      clearInterval(streamTimer);
+      streamTimer = 0;
+      if (streamResponse === response) streamResponse = null;
+    });
     return;
   }
   if (url.pathname.startsWith("/api/desktop/")) {
@@ -135,6 +183,7 @@ const server = createServer(async (request, response) => {
         response.end(JSON.stringify({ error: "Input belongs to the other participant", lease }));
         return;
       }
+      if (inputDelayMs) await new Promise((resolve) => setTimeout(resolve, inputDelayMs));
       input.push(body);
       response.end(JSON.stringify({ sent: true, lease }));
       return;
@@ -190,8 +239,8 @@ try {
   await page.locator("#desktop-details > summary").click();
   if (process.env.DESKTOP_PREVIEW)
     await page.screenshot({ path: process.env.DESKTOP_PREVIEW, fullPage: true });
-  await page.locator("#desktop-stream").dispatchEvent("error");
-  await page.getByText("Stream disconnected", { exact: true }).waitFor();
+  await page.evaluate(() => window.disconnectDesktopStream());
+  await page.getByText(/^Stream disconnected/).waitFor();
   assert.equal(await page.locator("#desktop-stream").isHidden(), true, "broken image alt text should stay hidden");
   assert.equal(await page.locator("#desktop-retry").isVisible(), true);
   assert.equal(lease, "human", "stream failure must leave the human lease in place");
@@ -201,9 +250,20 @@ try {
   await page.locator("#desktop-reconnect").click();
   assert.equal(await page.locator("#desktop-more").evaluate((details) => details.open), false);
   assert.equal(await page.locator("#desktop-more > summary").evaluate((summary) => summary === document.activeElement), true);
-  await page.getByText(/^Live · updated/).waitFor();
+  await page.waitForFunction(() => {
+    const status = document.querySelector("#desktop-status").textContent;
+    return status.startsWith("Live · updated")
+      && document.querySelector("#desktop-placeholder").hidden
+      && !document.querySelector("#desktop-stream").hidden;
+  }, { timeout: 5000 });
   assert.equal(await page.locator("#desktop-stream").evaluate((image) => image.naturalWidth / image.naturalHeight), 1.6);
   assert.equal(await page.locator("#desktop-placeholder").isHidden(), true);
+  await page.evaluate(() => window.setStaleDesktopStream(true));
+  await page.waitForFunction(() => document.querySelector("#desktop-stream").hidden, { timeout: 3000 });
+  assert.equal(await page.locator("#desktop-placeholder").isVisible(), true, "lagging multipart frames must be hidden instead of presented as live");
+  await page.evaluate(() => window.setStaleDesktopStream(false));
+  await page.getByText(/^Live · updated/).waitFor({ timeout: 5000 });
+  await page.locator("#desktop-placeholder").waitFor({ state: "hidden" });
   await page.locator("#desktop-more > summary").click();
   await page.locator("#desktop-title").click();
   assert.equal(await page.locator("#desktop-more").evaluate((details) => details.open), false, "outside pointer should close More");
@@ -212,6 +272,10 @@ try {
   assert(moreBox);
   await page.touchscreen.tap(moreBox.x + moreBox.width / 2, moreBox.y + moreBox.height / 2);
   assert.equal(await page.locator("#desktop-more").evaluate((details) => details.open), true, "touch should open More");
+  const mobileMenu = await page.locator(".desktop-more-menu").boundingBox();
+  const mobileStage = await page.locator("#desktop-viewport").boundingBox();
+  assert(mobileMenu && mobileStage && mobileMenu.y >= mobileStage.y + mobileStage.height,
+    "mobile More menu should sit below the desktop image instead of covering touch controls or the stage");
   if (process.env.DESKTOP_MORE_PREVIEW)
     await page.screenshot({ path: process.env.DESKTOP_MORE_PREVIEW, fullPage: true });
   await page.keyboard.press("Escape");
@@ -235,10 +299,9 @@ try {
   await page.mouse.up();
   await page.touchscreen.tap(viewport.x + viewport.width * 0.65, viewport.y + viewport.height * 0.65);
   await page.mouse.wheel(2, 40);
-  await page.waitForTimeout(50);
   assert(input.some((event) => event.action === "text" && event.text === "hello host"));
   assert(input.some((event) => event.action === "key" && event.key === "Enter" && event.pressed));
-  assert(input.some((event) => event.action === "scroll" && event.deltaY === 40));
+  await waitForInput((event) => event.action === "scroll" && event.deltaY === 40);
   assert(input.some((event) => event.action === "pointer-button" && event.button === "left" && event.pressed));
   await page.locator("#desktop-touch-mode").click();
   assert.equal(await page.locator("#desktop-touch-mode").getAttribute("aria-pressed"), "true");
@@ -246,8 +309,7 @@ try {
   const directPoint = await page.locator("#desktop-viewport").boundingBox();
   assert(directPoint);
   await page.touchscreen.tap(directPoint.x + directPoint.width * 0.65, directPoint.y + directPoint.height * 0.65);
-  await page.waitForTimeout(50);
-  assert(input.some((event) => event.action === "pointer-button" && event.button === "left" && event.x > 0.5 && event.y > 0.5));
+  await waitForInput((event) => event.action === "pointer-click" && event.button === "left" && event.x > 0.5 && event.y > 0.5);
   const cdp = await page.context().newCDPSession(page);
   const midX = directPoint.x + directPoint.width / 2;
   const midY = directPoint.y + directPoint.height / 2;
@@ -262,9 +324,43 @@ try {
   ] });
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await page.waitForTimeout(80);
-  assert(input.some((event) => event.action === "pointer-button" && event.button === "left" && event.pressed));
-  assert(input.some((event) => event.action === "pointer-button" && event.button === "left" && !event.pressed));
-  assert(input.slice(beforeDrag).some((event) => event.action === "pointer-move"));
+  const directDragActions = input.slice(beforeDrag);
+  assert(directDragActions.some((event) => event.action === "pointer-button" && event.button === "left" && event.pressed));
+  const directDragRelease = directDragActions.find((event) => event.action === "pointer-button" && event.button === "left" && !event.pressed);
+  assert(directDragRelease, "direct touch drag must always release its left button");
+  assert(Math.abs(directDragRelease.x - (dragX + 36 - directPoint.x) / directPoint.width) < 0.03,
+    "direct touch release must carry the latest drag coordinate even when pending movement is bypassed");
+
+  // A slow endpoint must not turn a phone drag into a long queue of stale coordinates.
+  await page.evaluate(() => window.setDesktopInputDelay(120));
+  const beforeSlowDrag = input.length;
+  const slowDragStartX = midX - 65;
+  const slowDragStartY = midY + 8;
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
+    { id: 23, x: slowDragStartX, y: slowDragStartY, radiusX: 4, radiusY: 4, force: 1 },
+  ] });
+  await Promise.all(Array.from({ length: 18 }, (_, index) => {
+    const step = index + 1;
+    return cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [
+      { id: 23, x: slowDragStartX + step * 3, y: slowDragStartY + step, radiusX: 4, radiusY: 4, force: 1 },
+    ] });
+  }));
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await page.waitForFunction(() => document.querySelectorAll("#desktop-viewer").length === 1);
+  await page.waitForTimeout(500);
+  await page.evaluate(() => window.setDesktopInputDelay(0));
+  const slowDragActions = input.slice(beforeSlowDrag);
+  const slowMoves = slowDragActions.filter((event) => event.action === "pointer-move");
+  const slowButtons = slowDragActions.filter((event) => event.action === "pointer-button");
+  assert(slowMoves.length <= 4, `slow drag sent too many stale moves: ${slowMoves.length}`);
+  assert.deepEqual(slowButtons.map((event) => event.pressed), [true, false], "drag button down/up order must be preserved");
+  const slowStage = await page.locator("#desktop-viewport").boundingBox();
+  const expectedSlowX = (slowDragStartX + 54 - slowStage.x) / slowStage.width;
+  const expectedSlowY = (slowDragStartY + 18 - slowStage.y) / slowStage.height;
+  const finalCoordinates = slowMoves.at(-1) || slowButtons.at(-1);
+  assert(Math.abs(finalCoordinates.x - expectedSlowX) < 0.03 && Math.abs(finalCoordinates.y - expectedSlowY) < 0.03,
+    `last coalesced move or release should reach the latest touch coordinate (got ${JSON.stringify(finalCoordinates)}, expected ${expectedSlowX},${expectedSlowY})`);
+  assert((await page.evaluate(() => window.__inputTimings)).some((timing) => timing.requestMs >= 100), "latency instrumentation should report the injected API delay");
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
     { id: 20, x: midX - 20, y: midY + 20, radiusX: 4, radiusY: 4, force: 1 },
   ] });
@@ -315,6 +411,10 @@ try {
     const box = await page.locator("#desktop-viewer").boundingBox();
     assert(box && box.x === 0 && box.y === 0 && box.width === width, `viewer geometry failed at ${width}px`);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `horizontal overflow at ${width}px`);
+    if (width === 390) {
+      const stage = await page.locator("#desktop-viewport").boundingBox();
+      assert(stage && Math.abs(stage.width / stage.height - 1.6) < 0.15, "mobile desktop image should use a landscape stage, not a tall portrait viewport");
+    }
   }
 
   await page.locator("#desktop-close").click();

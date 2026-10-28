@@ -3439,7 +3439,20 @@ dialog.floating-palette {
   .desktop-keyboard-row input { flex: 1 1 0; width: 0; }
   .desktop-keyboard-row > span { display: none; }
   .desktop-viewport[data-available="false"] { min-height: 100px; }
-  .desktop-viewport[data-available="true"] { min-height: 80px; }
+  .desktop-viewport[data-available="true"] {
+    flex: 0 1 auto;
+    width: 100%;
+    aspect-ratio: 16 / 10;
+    max-height: min(64vw, 420px);
+    min-height: 150px;
+  }
+  .desktop-more-menu {
+    position: fixed;
+    top: auto;
+    right: max(12px, env(safe-area-inset-right));
+    bottom: max(12px, env(safe-area-inset-bottom));
+    min-width: min(190px, calc(100vw - 24px));
+  }
 }
 @media (max-height: 540px) and (orientation: landscape) {
   #desktop-viewer { gap: 5px; }

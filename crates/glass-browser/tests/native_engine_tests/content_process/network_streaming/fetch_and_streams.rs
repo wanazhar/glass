@@ -371,8 +371,16 @@ async fn native_content_process_script_fetch_uses_parent_cookie_authority() {
     assert!(inspect_cookie.contains("same_turn=present"));
     assert!(inspect_cookie.contains("standalone=owned"));
 }
-#[tokio::test]
-async fn native_content_process_inherits_document_referrer_policy_for_page_fetch() {
+#[test]
+fn native_content_process_inherits_document_referrer_policy_for_page_fetch() {
+    run_native_browser_worker_test(|runtime| {
+        runtime.block_on(
+            native_content_process_inherits_document_referrer_policy_for_page_fetch_inner(),
+        );
+    });
+}
+
+async fn native_content_process_inherits_document_referrer_policy_for_page_fetch_inner() {
     let _guard = native_content_process_test_lock().lock().await;
     let page_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let page_address = page_listener.local_addr().unwrap();

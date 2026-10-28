@@ -360,6 +360,10 @@ pub struct Agent<'a> {
     /// Hashed schema identities for the exact provider tool catalogue in the
     /// current request; included in local diagnostics only after a failure.
     active_tool_catalog: Option<serde_json::Value>,
+    /// Original request-local schemas used to validate the response from the
+    /// exact provider request that offered them. Connect availability can
+    /// change while a session is open.
+    request_tool_schemas: Option<Vec<(String, serde_json::Value)>>,
     /// Backend from the most recent successful browser tool result.
     browser_backend: Option<String>,
     /// The cancellation token every extension tool call this turn runs
@@ -512,6 +516,7 @@ impl<'a> Agent<'a> {
             loop_window: crate::loop_detect::LoopWindow::new(),
             tool_call_index: 0,
             active_tool_catalog: None,
+            request_tool_schemas: None,
             browser_backend: None,
             turn_cancel: crate::ext::Cancel::new(),
         }
@@ -569,6 +574,13 @@ impl<'a> Agent<'a> {
     }
 
     fn tool_set(&self) -> Vec<(String, String, String)> {
+        self.tool_set_for_connect(crate::desktop::service_running())
+    }
+
+    fn tool_set_for_connect(
+        &self,
+        connect_desktop_available: bool,
+    ) -> Vec<(String, String, String)> {
         if let Some((tools, _)) = &self.hosted {
             return tools.clone();
         }
@@ -591,7 +603,7 @@ impl<'a> Agent<'a> {
             }
             tools
         };
-        if crate::desktop::service_running() {
+        if connect_desktop_available {
             tools.extend(crate::provider::desktop_tool_schemas(!self.read_only));
         }
         if let Some((host_tools, _)) = &self.mixed_hosted {
@@ -903,6 +915,17 @@ impl<'a> Agent<'a> {
                 tools.push((n, d, s));
             }
         }
+        self.request_tool_schemas = Some(
+            tools
+                .iter()
+                .map(|(name, _, schema)| {
+                    (
+                        name.clone(),
+                        serde_json::from_str(schema).unwrap_or(serde_json::Value::Bool(false)),
+                    )
+                })
+                .collect(),
+        );
         let provider_tool_names = provider_tool_aliases(&mut tools);
         self.active_tool_catalog = Some(crate::session_diagnostics::provider_tool_catalog(
             &tools,
@@ -1475,7 +1498,6 @@ impl<'a> Agent<'a> {
         self.empty_recovered = false;
         self.loop_window.clear();
         let mut repairs = 0;
-        let mut repair_tools = None;
         let mut checklist_continuations = 0;
         let mut checklist_revision = None;
         for round in 0..self.max_tool_rounds {
@@ -1642,23 +1664,7 @@ impl<'a> Agent<'a> {
             // Validation is separate from execution errors: reject a malformed
             // batch before any side effect, resolve every call, then re-ask.
             let tool_validation_started = std::time::Instant::now();
-            let schemas = repair_tools.get_or_insert_with(|| {
-                let mut tools = self.tool_set();
-                for (name, description, schema) in self.extensions.declared_tools().0 {
-                    if !tools.iter().any(|(n, _, _)| n == &name) {
-                        tools.push((name, description, schema));
-                    }
-                }
-                tools
-                    .into_iter()
-                    .map(|(n, _, schema)| {
-                        (
-                            n,
-                            serde_json::from_str(&schema).unwrap_or(serde_json::Value::Bool(false)),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            });
+            let schemas = self.request_tool_schemas.as_deref().unwrap_or_default();
             let errors: Vec<_> = out
                 .tool_calls
                 .iter()
@@ -1962,13 +1968,8 @@ impl<'a> Agent<'a> {
                 if self.steer.is_some() {
                     break;
                 }
-                let outcome = match call.name.as_str() {
-                    "inspect" => crate::inspect::run(call, self.workspace),
-                    "desktop_status" => crate::desktop::execute_tool(call, self.workspace),
-                    _ => tools::Outcome::err(
-                        "Plan mode blocks execution: only read-only inspect and desktop status are available",
-                    ),
-                };
+                let outcome =
+                    run_read_only_tool(call, self.workspace, crate::desktop::execute_tool);
                 self.finish_tool(call, outcome);
             }
             return;
@@ -2498,7 +2499,9 @@ impl<'a> Agent<'a> {
                         } else {
                             self.finish_tool(
                                 call,
-                                tools::Outcome::err("desktop request did not finish before timeout"),
+                                tools::Outcome::err(
+                                    "desktop request did not finish before timeout",
+                                ),
                             );
                         }
                         return;
@@ -3189,24 +3192,49 @@ impl<'a> Agent<'a> {
     /// history keeps the prompt it was made under, until the next
     /// compaction re-captures the current one.
     fn effective_system(&self) -> String {
-        if self.hosted.is_some() {
-            return self.system_prompt();
+        let system = if self.hosted.is_some() || self.read_only {
+            self.system_prompt()
+        } else {
+            let system = latest_system_checkpoint(&self.session.history_records())
+                .unwrap_or_else(|| self.system_prompt());
+            crate::permissions::model_context(
+                crate::guidance::teammate_context(
+                    crate::guidance::model_context(crate::neuralnets::refresh_context(
+                        system,
+                        self.project_instructions.as_deref(),
+                    )),
+                    crate::team::enabled(&self.session.id),
+                ),
+                self.input_keys.is_some() || self.human.is_some(),
+            )
+        };
+        self.refresh_desktop_context(system)
+    }
+
+    /// Desktop availability is owned by Connect and can change while a Core
+    /// session stays open. Refresh this short prompt suffix alongside the
+    /// request-local schemas instead of freezing it into a session checkpoint.
+    fn refresh_desktop_context(&self, system: String) -> String {
+        let base = system
+            .split(DESKTOP_CONTEXT_MARKER)
+            .next()
+            .unwrap_or(&system)
+            .to_owned();
+        if self.hosted.is_some() || !crate::desktop::service_running() {
+            return base;
         }
-        if self.read_only {
-            return self.system_prompt();
-        }
-        let system = latest_system_checkpoint(&self.session.history_records())
-            .unwrap_or_else(|| self.system_prompt());
-        crate::permissions::model_context(
-            crate::guidance::teammate_context(
-                crate::guidance::model_context(crate::neuralnets::refresh_context(
-                    system,
-                    self.project_instructions.as_deref(),
-                )),
-                crate::team::enabled(&self.session.id),
-            ),
-            self.input_keys.is_some() || self.human.is_some(),
-        )
+
+        let call = ToolCall {
+            id: "connect-desktop-context".into(),
+            name: "desktop_status".into(),
+            arguments: "{}".into(),
+        };
+        let outcome = crate::desktop::execute_tool(&call, self.workspace);
+        let status = (outcome.exit_code == Some(0))
+            .then(|| serde_json::from_str::<serde_json::Value>(&outcome.body).ok())
+            .flatten();
+        let context = connect_desktop_context(status.as_ref(), self.read_only);
+        format!("{base}{DESKTOP_CONTEXT_MARKER}\n{context}")
     }
 
     /// Assemble the system prompt: base, then mod contributions, then skills.
@@ -3497,6 +3525,58 @@ fn provider_tool_aliases(
         aliases.insert(alias, original);
     }
     aliases
+}
+
+const DESKTOP_CONTEXT_MARKER: &str = "\n\n[Connect desktop capability]";
+
+fn connect_desktop_context(status: Option<&serde_json::Value>, read_only: bool) -> String {
+    let tool_names = if read_only {
+        "`desktop_status`, `desktop_screenshot`"
+    } else {
+        "`desktop_status`, `desktop_screenshot`, `desktop_input`"
+    };
+    let state = match status {
+        None => "Connect is running, but the managed desktop status could not be refreshed. Call `desktop_status` before acting.".to_string(),
+        Some(status) => {
+            let session_id = status["sessionId"].as_str();
+            let lease = status["lease"].as_str().unwrap_or("unknown");
+            let fresh = status["available"].as_bool().unwrap_or(false);
+            match session_id {
+                Some(session_id) => {
+                    let session_id: String = session_id
+                        .chars()
+                        .take(64)
+                        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+                        .collect();
+                    let frame = if fresh { "fresh" } else { "stale or unavailable" };
+                    format!("Managed session `{session_id}` is present; its latest frame is {frame}; the current input control lease is `{lease}`.")
+                }
+                None => "Connect is running, but there is no active managed desktop session; control lease is not applicable.".to_string(),
+            }
+        }
+    };
+    let input = if read_only {
+        "Plan/read-only mode offers no desktop input tool."
+    } else {
+        "Use `desktop_input` only when the lease is `agent`; the human changes the lease in Connect, and the agent cannot take it implicitly."
+    };
+    format!(
+        "Connect manages a separate desktop shared with the human. {state} Available tools this request: {tool_names}. Call `desktop_status` after reconnects or lease changes. `desktop_screenshot` is observational and saves a generated artifact under `.gc-artifacts/desktop`; that artifact does not edit project files. {input} These tools exist only while Connect is managing a desktop; do not assume or invent desktop access in standalone Core or other hosts."
+    )
+}
+
+fn run_read_only_tool(
+    call: &ToolCall,
+    workspace: &Path,
+    run_desktop: impl FnOnce(&ToolCall, &Path) -> tools::Outcome,
+) -> tools::Outcome {
+    match call.name.as_str() {
+        "inspect" => crate::inspect::run(call, workspace),
+        "desktop_status" | "desktop_screenshot" => run_desktop(call, workspace),
+        _ => tools::Outcome::err(
+            "Plan mode blocks execution: only read-only inspect, desktop status, and desktop screenshots are available",
+        ),
+    }
 }
 
 fn latest_system_checkpoint(records: &[Record]) -> Option<String> {
@@ -3899,6 +3979,240 @@ mod warm_integration {
     /// A provider that answers immediately and asks for no
     /// tools, so a turn finishes in one round.
     struct MockTurnProvider;
+
+    #[test]
+    fn connect_desktop_context_reports_request_local_tools_session_and_lease() {
+        let status = serde_json::json!({
+            "available": true,
+            "sessionId": "desktop-session-1",
+            "lease": "human",
+            "frameAgeMs": 12
+        });
+        let writable = connect_desktop_context(Some(&status), false);
+        assert!(writable.contains("desktop-session-1"));
+        assert!(writable.contains("input control lease is `human`"));
+        assert!(writable.contains("`desktop_status`, `desktop_screenshot`, `desktop_input`"));
+        assert!(writable.contains("cannot take it implicitly"));
+
+        let readonly = connect_desktop_context(Some(&status), true);
+        assert!(readonly.contains("`desktop_status`, `desktop_screenshot`"));
+        assert!(!readonly.contains("`desktop_input`"));
+        assert!(readonly.contains("generated artifact"));
+    }
+
+    #[test]
+    fn connect_desktop_context_does_not_claim_a_session_when_none_is_active() {
+        let status = serde_json::json!({
+            "available": false,
+            "sessionId": null,
+            "lease": "agent"
+        });
+        let context = connect_desktop_context(Some(&status), false);
+        assert!(context.contains("no active managed desktop session"));
+        assert!(context.contains("`desktop_status`, `desktop_screenshot`, `desktop_input`"));
+    }
+
+    #[test]
+    fn read_only_desktop_screenshot_is_observational_but_input_is_blocked() {
+        let workspace = Path::new(".");
+        let screenshot = ToolCall {
+            id: "screenshot".into(),
+            name: "desktop_screenshot".into(),
+            arguments: "{}".into(),
+        };
+        let mut dispatched = false;
+        let outcome = run_read_only_tool(&screenshot, workspace, |call, _| {
+            dispatched = call.name == "desktop_screenshot";
+            tools::Outcome::ok("frame saved".into())
+        });
+        assert!(dispatched);
+        assert_eq!(outcome.body, "frame saved");
+
+        let input = ToolCall {
+            id: "input".into(),
+            name: "desktop_input".into(),
+            arguments: r#"{"action":"key","key":"ENTER"}"#.into(),
+        };
+        let outcome = run_read_only_tool(&input, workspace, |_, _| {
+            panic!("read-only mode must not dispatch desktop input")
+        });
+        assert!(outcome.exit_code.is_none());
+        assert!(outcome.body.contains("read-only"));
+    }
+
+    #[test]
+    fn connect_tools_are_mixed_host_only_and_refresh_from_each_request() {
+        let dir = std::env::temp_dir().join(format!(
+            "gc-connect-tool-catalog-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = Session::create(&dir).unwrap();
+        let mut state = State::new();
+        let mods = Vec::new();
+        let mut extensions = Registry::empty();
+        let host_tools = vec![(
+            "glass.workspace.list".into(),
+            "List Glass workspaces".into(),
+            r#"{"type":"object"}"#.into(),
+        )];
+
+        let exclusive = Agent::new(
+            &MockTurnProvider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &dir,
+        )
+        .with_host_tools(host_tools.clone(), Box::new(|_, _, _| unreachable!()));
+        let exclusive_names = exclusive
+            .tool_set_for_connect(true)
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect::<Vec<_>>();
+        assert_eq!(exclusive_names, ["glass.workspace.list"]);
+        drop(exclusive);
+
+        let mixed = Agent::new(
+            &MockTurnProvider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &dir,
+        )
+        .with_mixed_host_tools(host_tools, Box::new(|_, _, _| unreachable!()));
+        let mixed_names = mixed
+            .tool_set_for_connect(true)
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect::<Vec<_>>();
+        assert!(mixed_names.contains(&"bash".to_string()));
+        assert!(mixed_names.contains(&"glass.workspace.list".to_string()));
+        assert!(mixed_names.contains(&"desktop_status".to_string()));
+        assert!(mixed_names.contains(&"desktop_screenshot".to_string()));
+        assert!(mixed_names.contains(&"desktop_input".to_string()));
+        let standalone_names = mixed
+            .tool_set_for_connect(false)
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect::<Vec<_>>();
+        assert!(!standalone_names.contains(&"desktop_status".to_string()));
+        drop(mixed);
+
+        drop(extensions);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn offline_mixed_agent_turn_discovers_and_executes_desktop_status() {
+        struct DesktopTurnProvider {
+            requests: AtomicU64,
+            tools_seen: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+        }
+
+        impl Provider for DesktopTurnProvider {
+            fn id(&self) -> &str {
+                "offline-desktop"
+            }
+
+            fn stream(
+                &self,
+                request: &Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+                self.tools_seen.lock().unwrap().push(
+                    request
+                        .tools
+                        .iter()
+                        .map(|(name, _, _)| name.clone())
+                        .collect(),
+                );
+                let event = if self.requests.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Event::ToolCall {
+                        id: "desktop-status".into(),
+                        name: "desktop_status".into(),
+                        arguments: "{}".into(),
+                    }
+                } else {
+                    Event::Text("The Connect desktop is ready for observation.".into())
+                };
+                Ok(Box::new(vec![event, Event::Done].into_iter()))
+            }
+
+            fn context_window(&self) -> u32 {
+                200_000
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "gc-offline-connect-turn-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tools_seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let provider = DesktopTurnProvider {
+            requests: AtomicU64::new(0),
+            tools_seen: tools_seen.clone(),
+        };
+        let executed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = executed.clone();
+        let mut session = Session::create(&dir).unwrap();
+        session.append(Record::User("Check the shared desktop".into()));
+        let mut state = State::new();
+        let mods = Vec::new();
+        let mut extensions = Registry::empty();
+        let mut agent = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &dir,
+        )
+        .with_mixed_host_tools(
+            crate::provider::desktop_tool_schemas(true),
+            Box::new(move |call, _, _| {
+                observed.lock().unwrap().push(call.name.clone());
+                HostToolOutcome::plain(tools::Outcome::ok(
+                    serde_json::json!({
+                        "available": true,
+                        "sessionId": "offline-session",
+                        "lease": "agent",
+                        "frameAgeMs": 4
+                    })
+                    .to_string(),
+                ))
+            }),
+        );
+
+        let (output, stop) = agent.run_turn(no_pump).unwrap();
+        assert_eq!(stop, Stop::Finished);
+        assert!(output.text.contains("ready for observation"));
+        assert_eq!(*executed.lock().unwrap(), ["desktop_status"]);
+        assert_eq!(tools_seen.lock().unwrap().len(), 2);
+        assert!(tools_seen
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|tools| tools.contains(&"desktop_status".to_string())
+                && tools.contains(&"desktop_screenshot".to_string())
+                && tools.contains(&"desktop_input".to_string())));
+
+        drop(agent);
+        drop(extensions);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn bash_rewrite_nested_state_is_persisted() {

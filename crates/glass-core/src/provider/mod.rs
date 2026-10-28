@@ -498,7 +498,7 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
         ),
         (
             "desktop_screenshot".to_string(),
-            "Capture a fresh frame from the same Connect desktop. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. Does not change the input lease.".to_string(),
+            "Capture a fresh frame from the same Connect desktop. Returns a workspace-relative screenshot path; call view_image with that path to inspect the pixels. This observation is available in read-only mode and saves only a generated artifact under `.gc-artifacts/desktop`; it does not edit project files or change the input lease.".to_string(),
             serde_json::json!({"type":"object","properties":{},"additionalProperties":false}).to_string(),
         ),
     ];

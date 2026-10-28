@@ -13,7 +13,7 @@ Discover recipes with state {guidance:{action:search,query}} then {guidance:{act
 Topics: checklist, files, background, agents, context, learning, workspace, research,
 integrations, sessions, delivery, extensions, recovery, ui. Discover tools with
 state {capabilities:{search:query}}. CLI: \"$GC_BIN\" <command> --help.
-Slash menus and login are human controls.";
+Slash menus and login are human controls. Host-managed tools are request-local: use only exact tools offered this turn. Connect desktop tools appear only while Connect manages a desktop; check `desktop_status` and its current input lease. Never assume desktop access in standalone Core or another host.";
 
 /// Replace a generated paragraph without accumulating old versions after resume.
 /// Only paragraph-aligned markers are recognized; surrounding instructions stay intact.
@@ -105,7 +105,7 @@ const RECIPES: &[(&str, &str)] = &[
     ),
     (
         "integrations",
-        "For diagnostics, symbols, references or interactive debugging, search state capabilities for configured language or debug tools. Read returned schemas before invocation. gc mcp --help discovers integration management; gc doctor and gc status diagnose configuration. Do not start servers or install dependencies merely to discover tools. Missing integrations are unavailable, not a reason to invent calls. Use native files and bash fallbacks within existing permissions.",
+        "For diagnostics, symbols, references or interactive debugging, search state capabilities for configured language or debug tools. Read returned schemas before invocation. gc mcp --help discovers integration management; gc doctor and gc status diagnose configuration. Do not start servers or install dependencies merely to discover tools. Missing integrations are unavailable, not a reason to invent calls. Use native files and bash fallbacks within existing permissions. Host-managed Connect desktop tools are offered only while Connect manages a desktop; use only the exact tools in this turn's catalogue, check `desktop_status` for the current session and input lease, and do not assume host desktop access elsewhere.",
     ),
     (
         "sessions",

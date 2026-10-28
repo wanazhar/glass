@@ -695,6 +695,9 @@ impl NativeDocument {
                 children: Vec::new(),
                 template_content: None,
                 template_host: None,
+                shadow_host: None,
+                shadow_root: None,
+                shadow_mode: None,
                 kind: NativeNodeKind::Document,
                 state: NativeElementState::default(),
             }],
@@ -1625,6 +1628,9 @@ impl NativeDocument {
             children: Vec::new(),
             template_content: None,
             template_host: None,
+            shadow_host: None,
+            shadow_root: None,
+            shadow_mode: None,
             kind,
             state,
         });
@@ -1715,6 +1721,9 @@ impl NativeDocument {
             children: Vec::new(),
             template_content: None,
             template_host: None,
+            shadow_host: None,
+            shadow_root: None,
+            shadow_mode: None,
             kind,
             state,
         });
@@ -1742,7 +1751,10 @@ impl NativeDocument {
             if current == self.root {
                 return true;
             }
-            let Some(parent) = self.raw_node(current).and_then(NativeNode::parent) else {
+            let Some(parent) = self
+                .raw_node(current)
+                .and_then(|node| node.parent().or(node.shadow_host))
+            else {
                 return false;
             };
             if parent == current {
@@ -2775,7 +2787,7 @@ impl NativeDocument {
             if self.computed_style_for_layout(current_id).hidden() {
                 return true;
             }
-            current = node.parent();
+            current = node.parent().or(node.shadow_host);
         }
         false
     }
@@ -2795,7 +2807,12 @@ impl NativeDocument {
                     .is_some_and(|_| self.computed_style_for_layout(id).hidden());
             let hidden = inherited_hidden || own_hidden;
             hidden_by_index.insert(id.index(), hidden);
-            pending.extend(node.children().iter().rev().map(|child| (*child, hidden)));
+            pending.extend(
+                self.composed_children(id)
+                    .into_iter()
+                    .rev()
+                    .map(|child| (child, hidden)),
+            );
             if let Some(template_content) = node.template_content {
                 // Template descendants are attached for DOM snapshots, but
                 // their parent chain does not inherit from the template host.
@@ -2814,7 +2831,7 @@ impl NativeDocument {
             if node.attribute_in_namespace(None, "inert").is_some() {
                 return true;
             }
-            current = node.parent();
+            current = node.parent().or(node.shadow_host);
         }
         false
     }
@@ -2910,9 +2927,9 @@ impl NativeDocument {
                 append_collapsed_text(output, value, max_bytes, truncated);
             }
             NativeNodeKind::Document | NativeNodeKind::DocumentFragment => {
-                for child in node.children() {
+                for child in self.composed_children(id) {
                     self.collect_visible(
-                        *child,
+                        child,
                         hidden_parent,
                         hidden_by_index,
                         output,
@@ -2933,9 +2950,9 @@ impl NativeDocument {
                         "head" | "script" | "style" | "template" | "title"
                     )
                     || hidden_by_index.get(&id.index()).copied().unwrap_or(false);
-                for child in node.children() {
+                for child in self.composed_children(id) {
                     self.collect_visible(
-                        *child,
+                        child,
                         hidden,
                         hidden_by_index,
                         output,

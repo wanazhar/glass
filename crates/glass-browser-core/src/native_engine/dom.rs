@@ -88,6 +88,8 @@ mod parser;
 mod script_mutations;
 #[path = "dom/script_snapshot.rs"]
 mod script_snapshot;
+#[path = "dom/shadow_dom.rs"]
+mod shadow_dom;
 use forms::*;
 #[path = "dom/locators.rs"]
 mod locators;
@@ -576,6 +578,12 @@ pub(crate) struct NativeNodeWire {
     pub(crate) template_content: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) template_host: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) shadow_host: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) shadow_root: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) shadow_mode: Option<String>,
     pub(crate) kind: NativeNodeKindWire,
     #[serde(default, skip_serializing_if = "is_default_snapshot_value")]
     pub(crate) state: NativeElementStateWire,
@@ -642,6 +650,9 @@ pub struct NativeNode {
     children: Vec<NativeNodeId>,
     template_content: Option<NativeNodeId>,
     template_host: Option<NativeNodeId>,
+    shadow_host: Option<NativeNodeId>,
+    shadow_root: Option<NativeNodeId>,
+    shadow_mode: Option<String>,
     kind: NativeNodeKind,
     state: NativeElementState,
 }
@@ -875,6 +886,12 @@ pub(crate) struct NativeScriptNodeSnapshot {
     pub(crate) template_content_index: Option<u32>,
     #[serde(default)]
     pub(crate) template_host_index: Option<u32>,
+    #[serde(default)]
+    pub(crate) shadow_host_index: Option<u32>,
+    #[serde(default)]
+    pub(crate) shadow_root_index: Option<u32>,
+    #[serde(default)]
+    pub(crate) shadow_mode: Option<String>,
     pub(crate) node_type: u8,
     pub(crate) node_name: String,
     pub(crate) node_value: Option<String>,

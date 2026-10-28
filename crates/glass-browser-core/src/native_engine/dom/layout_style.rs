@@ -96,8 +96,15 @@ impl NativeDocument {
             let Some(current_id) = current else {
                 break;
             };
-            chain.push(current_id);
-            current = self.node(current_id).and_then(NativeNode::parent);
+            let Some(node) = self.node(current_id) else {
+                break;
+            };
+            if let Some(host) = node.shadow_host {
+                current = Some(host);
+            } else {
+                chain.push(current_id);
+                current = node.parent();
+            }
         }
 
         let mut inherited_color = Some(NativeColor::BLACK);

@@ -62,6 +62,9 @@ impl NativeDocument {
                 children: node.children.iter().map(|child| child.index).collect(),
                 template_content: node.template_content.map(|fragment| fragment.index),
                 template_host: node.template_host.map(|host| host.index),
+                shadow_host: node.shadow_host.map(|host| host.index),
+                shadow_root: node.shadow_root.map(|root| root.index),
+                shadow_mode: node.shadow_mode.clone(),
                 kind: match &node.kind {
                     NativeNodeKind::Document => NativeNodeKindWire::Document,
                     NativeNodeKind::DocumentFragment => NativeNodeKindWire::DocumentFragment,
@@ -762,6 +765,13 @@ impl NativeDocument {
                 children,
                 template_content,
                 template_host,
+                shadow_host: wire_node
+                    .shadow_host
+                    .map(|index| NativeNodeId { generation, index }),
+                shadow_root: wire_node
+                    .shadow_root
+                    .map(|index| NativeNodeId { generation, index }),
+                shadow_mode: wire_node.shadow_mode.clone(),
                 kind,
                 state: NativeElementState {
                     namespace_uri,
@@ -849,6 +859,65 @@ impl NativeDocument {
                     });
                 }
                 _ => {}
+            }
+        }
+        for node in &nodes {
+            if let Some(root_id) = node.shadow_root {
+                let root =
+                    nodes
+                        .get(root_id.index as usize)
+                        .ok_or_else(|| NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "content process returned an invalid shadow root".into(),
+                        })?;
+                if !matches!(node.kind(), NativeNodeKind::Element { .. })
+                    || node
+                        .shadow_mode
+                        .as_deref()
+                        .is_none_or(|mode| mode != "open" && mode != "closed")
+                    || root.shadow_host != Some(node.id())
+                    || root.shadow_mode != node.shadow_mode
+                    || !matches!(root.kind(), NativeNodeKind::DocumentFragment)
+                    || root.parent().is_some()
+                    || root.template_host.is_some()
+                {
+                    return Err(NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "content process returned inconsistent shadow-root links".into(),
+                    });
+                }
+            }
+            if let Some(host_id) = node.shadow_host {
+                let host =
+                    nodes
+                        .get(host_id.index as usize)
+                        .ok_or_else(|| NativeEngineError::Parse {
+                            offset: 0,
+                            reason: "content process returned an invalid shadow host".into(),
+                        })?;
+                if !matches!(node.kind(), NativeNodeKind::DocumentFragment)
+                    || node.parent().is_some()
+                    || node.template_host.is_some()
+                    || host.shadow_root != Some(node.id())
+                    || node
+                        .shadow_mode
+                        .as_deref()
+                        .is_none_or(|mode| mode != "open" && mode != "closed")
+                {
+                    return Err(NativeEngineError::Parse {
+                        offset: 0,
+                        reason: "content process returned inconsistent shadow-host links".into(),
+                    });
+                }
+            }
+            if node.shadow_mode.is_some()
+                && node.shadow_host.is_none()
+                && node.shadow_root.is_none()
+            {
+                return Err(NativeEngineError::Parse {
+                    offset: 0,
+                    reason: "content process returned an orphan shadow mode".into(),
+                });
             }
         }
         if wire.image_resources.len() > limits.max_nodes {

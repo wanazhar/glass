@@ -316,11 +316,11 @@ async fn dispatch_product(mut cli: Cli, _development_enabled: bool) -> BrowserRe
             let _ = action;
             return Err("project commands belong to the `glass` development product".into());
         }
-        Some(Commands::Agent { action }) => {
+        Some(Commands::Agent { action, .. }) => {
             let _ = action;
             return Err("agent harness commands belong to the `glass` development product".into());
         }
-        Some(Commands::Harness { action }) => {
+        Some(Commands::Harness { action, .. }) => {
             let _ = action;
             return Err("harness commands belong to the `glass` development product".into());
         }

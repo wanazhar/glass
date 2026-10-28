@@ -453,16 +453,25 @@ pub enum Commands {
         /// Confirm the exact project operation.
         #[arg(long, global = true)]
         yes: bool,
+        /// Emit the command result as JSON.
+        #[arg(long, global = true)]
+        json: bool,
         #[command(subcommand)]
         action: ProjectCommand,
     },
     /// Send a prompt or control request to the local Glass harness.
     Agent {
+        /// Emit the command result as JSON.
+        #[arg(long, global = true)]
+        json: bool,
         #[command(subcommand)]
         action: AgentCommand,
     },
     /// Discover and launch installed external coding harnesses.
     Harness {
+        /// Emit the command result as JSON.
+        #[arg(long, global = true)]
+        json: bool,
         #[command(subcommand)]
         action: HarnessCommand,
     },
@@ -1845,6 +1854,7 @@ mod tests {
                     Some(Commands::Project {
                         allow_mutation: true,
                         yes: true,
+                        json: false,
                         action: ProjectCommand::Git {
                             action: ProjectGitCommand::Stage { .. },
                             ..
@@ -1856,12 +1866,19 @@ mod tests {
                 assert!(matches!(
                     cli.command,
                     Some(Commands::Project {
+                        json: false,
                         action: ProjectCommand::Github {
                             action: ProjectGithubCommand::Review,
                             ..
                         },
                         ..
                     })
+                ));
+                assert!(matches!(
+                    try_parse_cli(["glass", "project", "--json", "search", "needle"])
+                        .unwrap()
+                        .command,
+                    Some(Commands::Project { json: true, .. })
                 ));
             })
             .unwrap()
@@ -1914,6 +1931,7 @@ mod tests {
                         Some(Commands::Project {
                             allow_mutation: true,
                             yes: true,
+                            json: false,
                             action: ProjectCommand::Edit { .. },
                         })
                     ));
@@ -2231,8 +2249,33 @@ mod tests {
                 assert!(matches!(
                     try_parse_cli(["glass", "agent", "doctor"]).unwrap().command,
                     Some(Commands::Agent {
+                        json: false,
                         action: AgentCommand::Doctor
                     })
+                ));
+                assert!(matches!(
+                    try_parse_cli(["glass", "agent", "doctor", "--json"])
+                        .unwrap()
+                        .command,
+                    Some(Commands::Agent {
+                        json: true,
+                        action: AgentCommand::Doctor
+                    })
+                ));
+                assert!(matches!(
+                    try_parse_cli(["glass", "agent", "status", "--json"])
+                        .unwrap()
+                        .command,
+                    Some(Commands::Agent {
+                        json: true,
+                        action: AgentCommand::Status
+                    })
+                ));
+                assert!(matches!(
+                    try_parse_cli(["glass", "agent", "hello", "--json"])
+                        .unwrap()
+                        .command,
+                    Some(Commands::Agent { json: true, .. })
                 ));
                 assert!(
                     try_parse_cli(["glass", "agent", "setup"])
@@ -2251,6 +2294,7 @@ mod tests {
         assert!(matches!(
             try_parse_cli(["glass", "harness", "list"]).unwrap().command,
             Some(Commands::Harness {
+                json: false,
                 action: HarnessCommand::List
             })
         ));
@@ -2259,8 +2303,15 @@ mod tests {
                 .unwrap()
                 .command,
             Some(Commands::Harness {
+                json: false,
                 action: HarnessCommand::Start { ref name, ref root }
             }) if name == "codex" && root == std::path::Path::new("/tmp/project")
+        ));
+        assert!(matches!(
+            try_parse_cli(["glass", "harness", "list", "--json"])
+                .unwrap()
+                .command,
+            Some(Commands::Harness { json: true, .. })
         ));
     }
 

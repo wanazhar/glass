@@ -12,5 +12,7 @@ mod interaction;
 mod media_and_rendering;
 #[path = "browser_behavior/messaging_and_modules.rs"]
 mod messaging_and_modules;
+#[path = "browser_behavior/shadow_adoption.rs"]
+mod shadow_adoption;
 #[path = "browser_behavior/web_platform_data.rs"]
 mod web_platform_data;

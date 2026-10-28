@@ -81,6 +81,95 @@ fn native_document_subtree_transfer_is_identity_mapped_and_atomic() {
 }
 
 #[test]
+fn native_document_subtree_transfer_preserves_shadow_root_host_links() {
+    let limits = NativeEngineLimits::default();
+    let mut source = NativeDocument::parse(
+        "<main><x-host id='moving'>LIGHT_TEXT</x-host></main>",
+        &limits,
+    )
+    .unwrap();
+    let mut destination = NativeDocument::parse("<main id='target'></main>", &limits).unwrap();
+    let host = source.find_element_by_id("moving").unwrap();
+    let shadow_root_index = u32::MAX - 3;
+    let child_index = u32::MAX - 2;
+    let text_index = u32::MAX - 1;
+    source
+        .apply_script_commands(&[
+            NativeScriptCommand::CreateShadowRoot {
+                host_index: host.index(),
+                node_index: shadow_root_index,
+                mode: "closed".into(),
+            },
+            NativeScriptCommand::CreateElement {
+                node_index: child_index,
+                tag_name: "span".into(),
+                namespace_uri: None,
+            },
+            NativeScriptCommand::CreateTextNode {
+                node_index: text_index,
+                value: "SHADOW_TEXT".into(),
+            },
+            NativeScriptCommand::AppendChild {
+                parent_index: child_index,
+                child_index: text_index,
+            },
+            NativeScriptCommand::AppendChild {
+                parent_index: shadow_root_index,
+                child_index,
+            },
+        ])
+        .unwrap();
+    let shadow_root = source.raw_node(host).unwrap().shadow_root.unwrap();
+    let identities = transfer_identities(&source, host);
+    let temporary_index_for = |id: NativeNodeId| {
+        identities
+            .iter()
+            .find(|identity| identity.source_index == id.index())
+            .expect("every shadow-including descendant has an identity")
+            .destination_temporary_index
+    };
+    let host_temporary_index = temporary_index_for(host);
+    let shadow_root_temporary_index = temporary_index_for(shadow_root);
+
+    source
+        .transfer_script_node_to(&mut destination, host.index(), &identities)
+        .expect("host and its shadow-including subtree transfer atomically");
+    assert!(source.raw_node(host).unwrap().shadow_root.is_none());
+    assert!(source.raw_node(shadow_root).unwrap().shadow_host.is_none());
+    let moved_host = destination.script_node_ids[&host_temporary_index];
+    let moved_shadow_root = destination.script_node_ids[&shadow_root_temporary_index];
+    assert_eq!(
+        destination.raw_node(moved_host).unwrap().shadow_root,
+        Some(moved_shadow_root)
+    );
+    let moved_root_node = destination.raw_node(moved_shadow_root).unwrap();
+    assert_eq!(moved_root_node.shadow_host, Some(moved_host));
+    assert_eq!(moved_root_node.shadow_mode.as_deref(), Some("closed"));
+
+    let destination_host = destination.find_element_by_id("target").unwrap();
+    destination
+        .apply_script_commands(&[NativeScriptCommand::AppendChild {
+            parent_index: destination_host.index(),
+            child_index: host_temporary_index,
+        }])
+        .unwrap();
+    let (visible, truncated) = destination.visible_text(1024);
+    assert!(!truncated);
+    assert!(visible.contains("SHADOW_TEXT"));
+    assert!(!visible.contains("LIGHT_TEXT"));
+
+    let root_identities = transfer_identities(&destination, moved_shadow_root);
+    let old_destination = destination.clone();
+    assert!(
+        destination
+            .transfer_script_node_to(&mut source, moved_shadow_root.index(), &root_identities)
+            .is_err(),
+        "a ShadowRoot itself is not adoptable"
+    );
+    assert_eq!(destination, old_destination);
+}
+
+#[test]
 fn native_document_subtree_transfer_rejects_destination_capacity_atomically() {
     let source_limits = NativeEngineLimits::default();
     let destination_limits = NativeEngineLimits {

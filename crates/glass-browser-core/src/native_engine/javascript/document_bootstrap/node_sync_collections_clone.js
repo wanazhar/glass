@@ -484,6 +484,7 @@
           const type = Number(node.nodeType);
           if (type === 2) continue;
           if (type === 11 && node.__glassFragment === true
+              && !shadowHostByRoot.has(node)
               && (typeof node.nodeIndex !== "number"
                 || !Number.isSafeInteger(node.nodeIndex)
                 || node.nodeIndex >= 4294963200)) {{
@@ -513,6 +514,10 @@
           const children = Array.isArray(node.__glassChildren) ? node.__glassChildren : [];
           for (let index = children.length - 1; index >= 0; index -= 1) {{
             pending.push({{ node: children[index], depth: nextDepth }});
+          }}
+          if (type === 1) {{
+            const shadowRoot = shadowRootByHost.get(node);
+            if (shadowRoot) pending.push({{ node: shadowRoot, depth: nextDepth }});
           }}
           if (type === 1 && node.namespaceURI === HTML_NAMESPACE && node.localName === "template") {{
             const content = node.content;

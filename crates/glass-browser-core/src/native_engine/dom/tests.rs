@@ -25,6 +25,9 @@ fn transfer_identities(
         if let Some(content) = node.template_content {
             pending.push(content);
         }
+        if let Some(shadow_root) = node.shadow_root {
+            pending.push(shadow_root);
+        }
     }
     identities
 }

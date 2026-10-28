@@ -928,6 +928,8 @@
       snapshotTreeNodeIndexes.add(nodeIndex);
       const node = snapshotNodesByIndex.get(nodeIndex);
       if (node && Array.isArray(node.children)) pendingSnapshotIndexes.push(...node.children);
+      if (node && node.shadowRootIndex != null)
+        pendingSnapshotIndexes.push(Number(node.shadowRootIndex));
       const element = snapshotElementsByIndex.get(nodeIndex);
       if (element && element.templateContentIndex != null) {{
         pendingSnapshotIndexes.push(Number(element.templateContentIndex));
@@ -956,7 +958,9 @@
   if (reuseExistingHostTree && hostStateDelta !== null) {{
     for (const element of elements) {{
       const entry = snapshotElementsByIndex.get(Number(element && element.nodeIndex));
-      if (entry && typeof element.__glassRefresh === "function") element.__glassRefresh(entry);
+      if (entry && typeof element.__glassRefresh === "function") {{
+        element.__glassRefresh(entry);
+      }}
     }}
   }}
   try {{
@@ -966,8 +970,9 @@
       const existing = scriptNodeAliasesByIndex.get(entry.nodeIndex) || previousElements.get(entry.nodeIndex);
       if (existing && typeof existing.__glassRefresh === "function") {{
         elementBuildMode = "refresh";
-        if (!preserveDetachedCreatedNode(existing))
+        if (!preserveDetachedCreatedNode(existing)) {{
           existing.__glassRefresh(entry, snapshotTextContentForNode);
+        }}
         elements.push(existing);
         continue;
       }}
@@ -1109,7 +1114,9 @@
       if (!entry || Number(entry.nodeType) !== 11) continue;
       const hostIndex = entry.templateHostIndex == null ? null : Number(entry.templateHostIndex);
       const cached = hostIndex == null ? null : templateContentsCache.get(hostIndex);
-      const existing = cached || previousNodes.get(entry.nodeIndex);
+      const existing = cached
+        || scriptNodeAliasesByIndex.get(entry.nodeIndex)
+        || previousNodes.get(entry.nodeIndex);
       const fragment = existing && typeof existing.__glassRefresh === "function"
         ? existing
         : makeDocumentFragment(entry);
@@ -1143,6 +1150,11 @@
     if (!root || !shadowHost) continue;
     pendingShadowRoots.set(root, {{ host: shadowHost, mode: entry.shadowMode === "closed" ? "closed" : "open" }});
   }}
+  if (pendingShadowRoots.size === 0 && reuseExistingHostTree
+      && cachedHostCollections.shadowRoots instanceof Map) {{
+    for (const [root, pair] of cachedHostCollections.shadowRoots)
+      pendingShadowRoots.set(root, pair);
+  }}
   globalThis.__glassPendingShadowRoots = pendingShadowRoots;
   if (typeof globalThis.__glassNativeHostViewMark === "function")
     globalThis.__glassNativeHostViewMark("collections_ready");
@@ -1161,6 +1173,7 @@
     snapshotNodesByIndex,
     snapshotElementsByIndex,
     snapshotTreeNodeIndexes,
+    shadowRoots: pendingShadowRoots,
     elementsByIndexView,
     nodesByIndexView,
   }};

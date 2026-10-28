@@ -1,8 +1,8 @@
 //! Glass Dev-owned project CLI dispatch.
 
 use crate::development::{
-    Actor, ExperimentManager, HarnessRequest, LinkProvenance, LocalHarness, ProcessSnapshot,
-    ProjectWorkspace, SemanticBreakpoint, SemanticSnapshot,
+    Actor, ExperimentManager, HarnessRequest, LinkProvenance, LocalHarness, MAX_FILE_BYTES,
+    ProcessSnapshot, ProjectWorkspace, SemanticBreakpoint, SemanticSnapshot,
 };
 use glass_browser::cli::args::{
     AgentCommand, ExperimentCommand, ExternalAgentSandbox, HarnessCommand, NeovimCommand,
@@ -10,15 +10,30 @@ use glass_browser::cli::args::{
     ProjectProcessCommand,
 };
 use serde::Serialize;
-use std::io::Read;
+use std::io::{IsTerminal, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 type CliResult<T> = Result<T, Box<dyn std::error::Error>>;
+static JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
 
-pub(crate) fn dispatch_agent(action: &AgentCommand) -> CliResult<()> {
+pub(crate) fn dispatch_agent(action: &AgentCommand, json: bool) -> CliResult<()> {
+    JSON_OUTPUT.store(json, Ordering::Relaxed);
     match action {
         AgentCommand::Doctor | AgentCommand::Status => {
-            return print_json(&crate::resident_harness::resident_readiness()?);
+            let readiness = crate::resident_harness::resident_readiness()?;
+            if should_emit_json(json, std::io::stdout().is_terminal()) {
+                return print_json(&readiness);
+            }
+            let output = if matches!(action, AgentCommand::Status) {
+                format_agent_status(&readiness)
+            } else {
+                format_agent_doctor(&readiness)
+            };
+            let mut stdout = std::io::stdout().lock();
+            stdout.write_all(output.as_bytes())?;
+            stdout.write_all(b"\n")?;
+            return Ok(());
         }
         _ => {}
     }
@@ -100,7 +115,8 @@ pub(crate) fn dispatch_agent(action: &AgentCommand) -> CliResult<()> {
     Ok(())
 }
 
-pub(crate) fn dispatch_harness(action: &HarnessCommand) -> CliResult<()> {
+pub(crate) fn dispatch_harness(action: &HarnessCommand, json: bool) -> CliResult<()> {
+    JSON_OUTPUT.store(json, Ordering::Relaxed);
     match action {
         HarnessCommand::List => {
             let harnesses = crate::harness::discover()
@@ -153,7 +169,9 @@ pub(crate) fn dispatch_project(
     action: &ProjectCommand,
     allow_mutation: bool,
     confirmed: bool,
+    json: bool,
 ) -> CliResult<()> {
+    JSON_OUTPUT.store(json, Ordering::Relaxed);
     if project_command_requires_mutation(action)
         && !crate::development::ToolAuthorization::factors_permit_mutation(
             allow_mutation,
@@ -374,8 +392,9 @@ pub(crate) fn dispatch_project(
         } => {
             let mut workspace = ProjectWorkspace::open(root)?;
             workspace.discover_runtime_links()?;
-            let before: SemanticSnapshot = serde_json::from_slice(&std::fs::read(before)?)?;
-            let after: SemanticSnapshot = serde_json::from_slice(&std::fs::read(after)?)?;
+            let before: SemanticSnapshot =
+                serde_json::from_slice(&read_semantic_snapshot(before)?)?;
+            let after: SemanticSnapshot = serde_json::from_slice(&read_semantic_snapshot(after)?)?;
             let breakpoint = match kind.as_str() {
                 "disappears" => SemanticBreakpoint::EntityDisappears { entity_id: entity.clone() },
                 "name-missing" => SemanticBreakpoint::AccessibleNameMissing { entity_id: Some(entity.clone()) },
@@ -438,6 +457,67 @@ pub(crate) fn dispatch_project(
         }
     }
     Ok(())
+}
+
+fn read_semantic_snapshot(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "semantic snapshot is not a regular file",
+        ));
+    }
+    if metadata.len() > MAX_FILE_BYTES as u64 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("semantic snapshot exceeds the {MAX_FILE_BYTES} byte limit"),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("semantic snapshot exceeds the {MAX_FILE_BYTES} byte limit"),
+        ));
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod semantic_snapshot_reader_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+
+    fn fixture_path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "glass-semantic-snapshot-{}-{}",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[test]
+    fn semantic_snapshot_reader_accepts_bounded_json() {
+        let path = fixture_path();
+        std::fs::write(&path, b"{}\n").unwrap();
+        assert_eq!(read_semantic_snapshot(&path).unwrap(), b"{}\n");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn semantic_snapshot_reader_rejects_oversized_input() {
+        let path = fixture_path();
+        std::fs::write(&path, vec![b' '; MAX_FILE_BYTES + 1]).unwrap();
+        let error = read_semantic_snapshot(&path).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("byte limit"));
+        std::fs::remove_file(path).unwrap();
+    }
 }
 
 fn project_command_requires_mutation(action: &ProjectCommand) -> bool {
@@ -679,8 +759,275 @@ fn parse_link_provenance(value: &str) -> CliResult<LinkProvenance> {
 }
 
 fn print_json<T: Serialize + ?Sized>(value: &T) -> CliResult<()> {
-    println!("{}", serde_json::to_string_pretty(value)?);
+    print_cli_value(
+        &cli_command_title(),
+        value,
+        JSON_OUTPUT.load(Ordering::Relaxed),
+    )
+}
+
+fn print_cli_value<T: Serialize + ?Sized>(title: &str, value: &T, json: bool) -> CliResult<()> {
+    if should_emit_json(json, std::io::stdout().is_terminal()) {
+        println!("{}", serde_json::to_string_pretty(value)?);
+        return Ok(());
+    }
+    let value = serde_json::to_value(value)?;
+    let status = if value["success"] == false {
+        "failed"
+    } else if let Some(status) = value["status"].as_str() {
+        status
+    } else {
+        "complete"
+    };
+    let rows = cli_value_rows(&value);
+    let rendered = render_human_report(title, status, &rows);
+    std::io::stdout().lock().write_all(rendered.as_bytes())?;
     Ok(())
+}
+
+fn should_emit_json(explicit_json: bool, stdout_is_terminal: bool) -> bool {
+    explicit_json || !stdout_is_terminal
+}
+
+fn render_human_report(title: &str, status: &str, rows: &[(String, String)]) -> String {
+    let width = glass_tui::crossterm::terminal::size()
+        .map(|(width, _)| usize::from(width))
+        .unwrap_or(80)
+        .clamp(24, 120);
+    let color = cli_color_enabled(
+        glass_tui::theme::no_color(),
+        std::env::var("TERM").ok().as_deref(),
+    );
+    render_human_report_at(title, status, rows, width, color)
+}
+
+fn cli_color_enabled(no_color: bool, term: Option<&str>) -> bool {
+    !no_color && term != Some("dumb")
+}
+
+fn render_human_report_at(
+    title: &str,
+    status: &str,
+    rows: &[(String, String)],
+    width: usize,
+    color: bool,
+) -> String {
+    let rows = rows
+        .iter()
+        .map(|(label, value)| (label.as_str(), value.clone()))
+        .collect::<Vec<_>>();
+    glass_tui::cli::report("Glass", title, status, &rows, width.clamp(24, 120), color)
+}
+
+fn cli_command_title() -> String {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let command_index = args
+        .iter()
+        .position(|arg| matches!(arg.as_str(), "agent" | "harness" | "project"));
+    let parts = command_index
+        .into_iter()
+        .flat_map(|index| args[index..].iter())
+        .filter(|arg| !arg.starts_with('-'))
+        .take(2)
+        .map(|arg| {
+            arg.split(['-', '_'])
+                .filter(|part| !part.is_empty())
+                .map(|part| {
+                    let mut chars = part.chars();
+                    chars
+                        .next()
+                        .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        "Command result".to_owned()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+fn cli_value_rows(value: &serde_json::Value) -> Vec<(String, String)> {
+    const MAX_ROWS: usize = 32;
+    const MAX_SCALAR_CHARS: usize = 900;
+
+    fn bounded(value: &str) -> String {
+        let mut chars = value.chars();
+        let clipped = chars.by_ref().take(MAX_SCALAR_CHARS).collect::<String>();
+        if chars.next().is_some() {
+            format!("{clipped}… (truncated)")
+        } else {
+            clipped
+        }
+    }
+
+    fn walk(
+        label: &str,
+        value: &serde_json::Value,
+        depth: usize,
+        rows: &mut Vec<(String, String)>,
+    ) {
+        if rows.len() >= MAX_ROWS {
+            return;
+        }
+        match value {
+            serde_json::Value::Object(fields) if depth < 4 => {
+                for (key, value) in fields {
+                    if key == "status" || key == "success" {
+                        continue;
+                    }
+                    let child = if label.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{label} · {key}")
+                    };
+                    walk(&child, value, depth + 1, rows);
+                    if rows.len() >= MAX_ROWS {
+                        break;
+                    }
+                }
+            }
+            serde_json::Value::Object(fields) if depth >= 4 => {
+                rows.push((label.to_owned(), format!("{} fields", fields.len())));
+            }
+            serde_json::Value::Array(items) => {
+                if items.is_empty() {
+                    rows.push((
+                        if label.is_empty() { "Items" } else { label }.to_owned(),
+                        "None".to_owned(),
+                    ));
+                    return;
+                }
+                for (index, item) in items.iter().take(12).enumerate() {
+                    let item_label = if label.is_empty() {
+                        format!("Item {}", index + 1)
+                    } else {
+                        format!("{label} {}", index + 1)
+                    };
+                    walk(&item_label, item, depth + 1, rows);
+                    if rows.len() >= MAX_ROWS {
+                        break;
+                    }
+                }
+                if items.len() > 12 && rows.len() < MAX_ROWS {
+                    rows.push((
+                        if label.is_empty() { "Items" } else { label }.to_owned(),
+                        format!("{} more items", items.len() - 12),
+                    ));
+                }
+            }
+            serde_json::Value::String(text) => rows.push((
+                if label.is_empty() { "Result" } else { label }.to_owned(),
+                bounded(text),
+            )),
+            serde_json::Value::Null => rows.push((
+                if label.is_empty() { "Result" } else { label }.to_owned(),
+                "None".to_owned(),
+            )),
+            scalar => rows.push((
+                if label.is_empty() { "Result" } else { label }.to_owned(),
+                scalar.to_string(),
+            )),
+        }
+    }
+
+    let mut rows = Vec::new();
+    walk("", value, 0, &mut rows);
+    if rows.is_empty() {
+        rows.push(("Result".to_owned(), "No details".to_owned()));
+    }
+    rows
+}
+
+fn format_agent_status(readiness: &crate::resident_harness::ResidentReadiness) -> String {
+    use crate::core_runtime::{CoreReadinessState, GLASS_CORE_PROTOCOL_VERSION};
+
+    let status = if readiness.ready { "ready" } else { "degraded" };
+    let engine = readiness
+        .glass_core
+        .binary
+        .version
+        .as_deref()
+        .map(|version| format!("Glass Core {version}"))
+        .unwrap_or_else(|| "Glass Core".to_owned());
+    let protocol = if readiness.glass_core.protocol.state == CoreReadinessState::Ready {
+        format!("JSON-RPC {GLASS_CORE_PROTOCOL_VERSION} · mixed tools negotiated")
+    } else {
+        match readiness.glass_core.protocol.state {
+            CoreReadinessState::Missing => "engine unavailable",
+            CoreReadinessState::Incompatible => "needs update",
+            CoreReadinessState::Unauthenticated => "provider setup needed",
+            CoreReadinessState::Unknown => "could not verify",
+            CoreReadinessState::Ready => unreachable!(),
+        }
+        .to_owned()
+    };
+    let provider = match (&readiness.glass_core.provider, &readiness.glass_core.model) {
+        (Some(provider), Some(model)) => format!("{provider} · {model}"),
+        (Some(provider), None) => provider.clone(),
+        (None, _) => match readiness.glass_core.authentication.state {
+            CoreReadinessState::Ready => "connected",
+            CoreReadinessState::Unauthenticated => "not connected",
+            CoreReadinessState::Missing => "engine unavailable",
+            CoreReadinessState::Incompatible => "needs update",
+            CoreReadinessState::Unknown => "could not verify",
+        }
+        .to_owned(),
+    };
+    render_human_report(
+        "Agent status",
+        status,
+        &[
+            ("Engine".into(), engine),
+            ("Runtime".into(), protocol),
+            ("Provider".into(), provider),
+        ],
+    )
+}
+
+fn format_agent_doctor(readiness: &crate::resident_harness::ResidentReadiness) -> String {
+    use crate::core_runtime::CoreReadinessState;
+
+    fn component_row(
+        label: &str,
+        component: &crate::core_runtime::CoreReadinessComponent,
+    ) -> (String, String) {
+        let state = match component.state {
+            CoreReadinessState::Ready => "available",
+            CoreReadinessState::Missing => "not installed",
+            CoreReadinessState::Incompatible => "needs update",
+            CoreReadinessState::Unauthenticated => "provider setup needed",
+            CoreReadinessState::Unknown => "could not verify",
+        };
+        (label.to_owned(), state.to_owned())
+    }
+
+    let status = if readiness.ready { "ready" } else { "degraded" };
+    let mut rows = vec![
+        component_row("Engine", &readiness.glass_core.binary),
+        component_row("Runtime", &readiness.glass_core.protocol),
+        component_row("Provider", &readiness.glass_core.authentication),
+    ];
+    if let Some(provider) = &readiness.glass_core.provider {
+        let model = readiness
+            .glass_core
+            .model
+            .as_deref()
+            .unwrap_or("model unknown");
+        rows.push(("Selected".into(), format!("{provider} · {model}")));
+    }
+    if !readiness.remediation.is_empty() {
+        rows.extend(
+            readiness
+                .remediation
+                .iter()
+                .map(|step| ("Next step".into(), step.clone())),
+        );
+    }
+    render_human_report("Agent doctor", status, &rows)
 }
 
 #[cfg(test)]
@@ -703,7 +1050,7 @@ mod project_authorization_tests {
             root: root.clone(),
         };
         for (allow_mutation, confirmed) in [(false, false), (false, true), (true, false)] {
-            let error = dispatch_project(&action, allow_mutation, confirmed)
+            let error = dispatch_project(&action, allow_mutation, confirmed, false)
                 .expect_err("incomplete project authorization must fail");
             assert!(error.to_string().contains("--allow-mutation and --yes"));
             assert!(!root.join("authorized-dir").exists());
@@ -725,12 +1072,132 @@ mod project_authorization_tests {
                 },
             },
         ] {
-            let error = dispatch_project(&action, true, false)
+            let error = dispatch_project(&action, true, false, false)
                 .expect_err("Git and GitHub writes require separate confirmation");
             assert!(error.to_string().contains("--allow-mutation and --yes"));
         }
-        dispatch_project(&action, true, true).unwrap();
+        dispatch_project(&action, true, true, false).unwrap();
         assert!(root.join("authorized-dir").is_dir());
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod agent_readiness_presentation_tests {
+    use super::*;
+    use crate::core_runtime::{CoreReadiness, CoreReadinessComponent, CoreReadinessState};
+    use crate::resident_harness::{ResidentHarnessKind, ResidentReadiness};
+
+    fn readiness(ready: bool) -> ResidentReadiness {
+        let component = |state, detail: &str, version: Option<&str>| CoreReadinessComponent {
+            state,
+            version: version.map(str::to_owned),
+            path: None,
+            detail: detail.into(),
+        };
+        ResidentReadiness {
+            selected: ResidentHarnessKind::GlassCore,
+            ready,
+            detail: "internal detail deliberately not shown by status".into(),
+            glass_core: CoreReadiness {
+                ready,
+                binary: component(CoreReadinessState::Ready, "engine available", Some("1.2.3")),
+                protocol: component(CoreReadinessState::Ready, "protocol negotiated", None),
+                authentication: component(
+                    if ready {
+                        CoreReadinessState::Ready
+                    } else {
+                        CoreReadinessState::Unauthenticated
+                    },
+                    "provider configuration accepted",
+                    None,
+                ),
+                provider: Some("fixture-provider".into()),
+                model: Some("fixture-model".into()),
+                session: None,
+                storage_dir: Default::default(),
+                remediation: if ready {
+                    Vec::new()
+                } else {
+                    vec!["Connect a provider".into()]
+                },
+            },
+            remediation: if ready {
+                Vec::new()
+            } else {
+                vec!["Connect a provider".into()]
+            },
+        }
+    }
+
+    #[test]
+    fn agent_status_is_a_concise_human_summary() {
+        let rendered = format_agent_status(&readiness(true));
+        assert!(rendered.contains("Agent status"));
+        assert!(rendered.contains("1.2.3"));
+        assert!(rendered.contains("JSON-RPC 2"));
+        assert!(rendered.contains("fixture-provider · fixture-model"));
+        assert!(!rendered.contains("internal detail"));
+    }
+
+    #[test]
+    fn agent_doctor_shows_component_states_and_repair_steps() {
+        let rendered = format_agent_doctor(&readiness(false));
+        assert!(rendered.contains("Agent doctor"));
+        assert!(rendered.contains("not installed") || rendered.contains("available"));
+        assert!(rendered.contains("provider setup needed"));
+        assert!(rendered.contains("Connect a provider"));
+        assert!(!rendered.contains("internal detail"));
+    }
+
+    #[test]
+    fn generic_cli_report_flattens_nested_values_and_bounds_large_fields() {
+        let value = serde_json::json!({
+            "status": "ready",
+            "project": {"root": "/workspace", "config": {"name": "fixture"}},
+            "checks": [{"name": "build", "success": true}],
+            "content": "x".repeat(1200),
+        });
+        let rows = cli_value_rows(&value);
+        assert!(
+            rows.iter()
+                .any(|(label, value)| { label == "project · root" && value == "/workspace" })
+        );
+        assert!(
+            rows.iter()
+                .any(|(label, value)| { label == "checks 1 · name" && value == "build" })
+        );
+        assert!(
+            rows.iter()
+                .any(|(label, value)| { label == "content" && value.ends_with("… (truncated)") })
+        );
+        assert!(!rows.iter().any(|(_, value)| value.starts_with('{')));
+    }
+
+    #[test]
+    fn terminal_report_wraps_and_respects_color_settings() {
+        let rows = vec![("Detail".into(), "wide content ".repeat(12))];
+        let plain = render_human_report_at("Project", "complete", &rows, 24, false);
+        assert!(!plain.contains('\u{1b}'));
+        assert!(plain.lines().count() > 3);
+
+        let colored = render_human_report_at("Project", "complete", &rows, 80, true);
+        assert!(colored.contains('\u{1b}'));
+        assert!(!cli_color_enabled(true, Some("xterm-256color")));
+        assert!(!cli_color_enabled(false, Some("dumb")));
+        assert!(cli_color_enabled(false, Some("xterm-256color")));
+        assert!(should_emit_json(false, false));
+        assert!(should_emit_json(true, true));
+        assert!(!should_emit_json(false, true));
+    }
+
+    #[test]
+    fn doctor_human_report_omits_machine_paths() {
+        let mut readiness = readiness(false);
+        readiness.glass_core.binary.detail = "/private/install/glass-core not found".into();
+        readiness.glass_core.storage_dir = "/private/sessions".into();
+        let rendered = format_agent_doctor(&readiness);
+        assert!(!rendered.contains("/private/install"));
+        assert!(!rendered.contains("/private/sessions"));
     }
 }

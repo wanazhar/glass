@@ -40,16 +40,6 @@ PATH_CLASS_ROOTS = {
     "dev": ("/dev",),
     "etc": ("/etc",),
 }
-DEVICE_RESOURCE_PATHS = {
-    "null": "/dev/null",
-    "zero": "/dev/zero",
-    "random": "/dev/random",
-    "urandom": "/dev/urandom",
-    "fd": "/dev/fd",
-    "dtracehelper": "/dev/dtracehelper",
-}
-
-
 def denied_paths(raw_path: str | None) -> list[str]:
     if not raw_path:
         return []
@@ -131,6 +121,8 @@ def sandbox_profile(
     elif addition == "file-read-data-exact" and addition_path:
         exact_path = addition_path.replace("\\", "\\\\").replace('"', '\\"')
         profile += f' (allow file-read-data (literal "{exact_path}"))'
+    elif addition == "file-read-data-root":
+        profile += ' (allow file-read-data (literal "/"))'
     elif addition is not None:
         raise ValueError("unsupported diagnostic sandbox rule")
     return profile
@@ -160,6 +152,7 @@ def run_launch(
         profile_additions = {
             "production-plus-file-map": "file-map-system",
             "production-plus-file-read-metadata": "file-read-metadata-system",
+            "production-plus-file-read-data-root": "file-read-data-root",
         }
         profile_additions.update(
             {
@@ -176,15 +169,6 @@ def run_launch(
                 binary,
                 addition="file-read-data-exact",
                 addition_path=addition_path,
-            )
-        elif profile.startswith("production-plus-file-read-data-device-"):
-            resource_id = profile.removeprefix(
-                "production-plus-file-read-data-device-"
-            )
-            profile_text = sandbox_profile(
-                binary,
-                addition="file-read-data-exact",
-                addition_path=DEVICE_RESOURCE_PATHS.get(resource_id),
             )
         else:
             profile_text = sandbox_profile(
@@ -461,28 +445,6 @@ def run_probe(worker: Path) -> dict[str, Any]:
         ),
     )
     cases = list(cases)
-    for resource_id in DEVICE_RESOURCE_PATHS:
-        profile_name = f"production-plus-file-read-data-device-{resource_id}"
-        cases.extend(
-            (
-                (
-                    f"known-good-sandboxed-{profile_name}",
-                    Path("/usr/bin/true"),
-                    True,
-                    False,
-                    False,
-                    profile_name,
-                ),
-                (
-                    f"worker-sandboxed-{profile_name}",
-                    worker,
-                    True,
-                    False,
-                    True,
-                    profile_name,
-                ),
-            )
-        )
     for path_class in PATH_CLASS_ROOTS:
         profile_name = f"production-plus-file-read-data-{path_class.lower()}"
         cases.extend(
@@ -505,6 +467,27 @@ def run_probe(worker: Path) -> dict[str, Any]:
                 ),
             )
         )
+    root_profile = "production-plus-file-read-data-root"
+    cases.extend(
+        (
+            (
+                f"known-good-sandboxed-{root_profile}",
+                Path("/usr/bin/true"),
+                True,
+                False,
+                False,
+                root_profile,
+            ),
+            (
+                f"worker-sandboxed-{root_profile}",
+                worker,
+                True,
+                False,
+                True,
+                root_profile,
+            ),
+        )
+    )
     case_reports: list[dict[str, Any]] = []
     process_cases: dict[int, str] = {}
     for case in cases:

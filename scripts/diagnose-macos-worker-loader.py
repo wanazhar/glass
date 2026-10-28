@@ -115,6 +115,8 @@ def sandbox_profile(
             '(subpath "/usr") (subpath "/Library") '
             f'(literal "{path}"))'
         )
+    elif addition == "file-read-data-dtracehelper":
+        profile += ' (allow file-read-data (literal "/dev/dtracehelper"))'
     elif addition in file_read_data_roots:
         paths = " ".join(
             f'(subpath "{root}")' for root in file_read_data_roots[addition]
@@ -152,6 +154,9 @@ def run_launch(
         profile_additions = {
             "production-plus-file-map": "file-map-system",
             "production-plus-file-read-metadata": "file-read-metadata-system",
+            "production-plus-file-read-data-dtracehelper": (
+                "file-read-data-dtracehelper"
+            ),
         }
         profile_additions.update(
             {
@@ -444,6 +449,26 @@ def run_probe(worker: Path) -> dict[str, Any]:
         ),
     )
     cases = list(cases)
+    cases.extend(
+        (
+            (
+                "known-good-sandboxed-production-plus-file-read-data-dtracehelper",
+                Path("/usr/bin/true"),
+                True,
+                False,
+                False,
+                "production-plus-file-read-data-dtracehelper",
+            ),
+            (
+                "worker-sandboxed-production-plus-file-read-data-dtracehelper",
+                worker,
+                True,
+                False,
+                True,
+                "production-plus-file-read-data-dtracehelper",
+            ),
+        )
+    )
     for path_class in PATH_CLASS_ROOTS:
         profile_name = f"production-plus-file-read-data-{path_class.lower()}"
         cases.extend(

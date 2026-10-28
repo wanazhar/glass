@@ -23,6 +23,10 @@ WORKER_PROCESS_PREFIX = "glass-native-con"
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.$<>:+-]{1,160}$")
 DYLD_REASON_PATTERNS = (
     (re.compile(r"\bdependent dylib\b.*\bnot found\b", re.IGNORECASE), "Dependent dylib not found"),
+    (re.compile(r"\b(?:wrong|incompatible) architecture\b", re.IGNORECASE), "Wrong architecture"),
+    (re.compile(r"\bno suitable image found\b", re.IGNORECASE), "No suitable image found"),
+    (re.compile(r"\bwrong version\b", re.IGNORECASE), "Wrong version"),
+    (re.compile(r"\bmalformed mach[- ]o\b", re.IGNORECASE), "Malformed Mach-O"),
     (re.compile(r"\blibrary not loaded\b", re.IGNORECASE), "Library not loaded"),
     (re.compile(r"\blibrary missing\b", re.IGNORECASE), "Library missing"),
     (re.compile(r"\bsymbol not found\b", re.IGNORECASE), "Symbol not found"),
@@ -31,6 +35,7 @@ DYLD_REASON_PATTERNS = (
     (re.compile(r"\bcode signature (?:invalid|failure|not valid)\b", re.IGNORECASE), "Code signature invalid"),
     (re.compile(r"\bmissing required architecture\b", re.IGNORECASE), "Missing required architecture"),
 )
+TERMINATION_NAMESPACE_ALIASES = {"<0x23>": "LIBIGNITION"}
 OLD_FRAME = re.compile(
     r"^\s*(\d+)\s+([^\s]+)\s+0x[0-9a-fA-F]+\s+(.+?)(?:\s+\+\s+\d+)?\s*$"
 )
@@ -218,7 +223,7 @@ def ips_summary(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(termination, dict):
         namespace = safe_token(termination.get("namespace"), limit=64)
         if namespace:
-            summary["terminationNamespace"] = namespace
+            summary["terminationNamespace"] = TERMINATION_NAMESPACE_ALIASES.get(namespace, namespace)
         code = termination.get("code")
         if isinstance(code, int) and not isinstance(code, bool) and -(1 << 31) <= code < (1 << 32):
             summary["terminationCode"] = code
@@ -227,6 +232,17 @@ def ips_summary(payload: dict[str, Any]) -> dict[str, Any]:
             if code_token:
                 summary["terminationCode"] = code_token
         indicator = safe_termination_reason(termination.get("indicator"))
+        reasons = termination.get("reasons")
+        reasons = reasons[:8] if isinstance(reasons, list) else []
+        if not indicator:
+            indicator = next(
+                (
+                    category
+                    for reason in reasons
+                    if (category := safe_termination_reason(reason)) is not None
+                ),
+                None,
+            )
         if indicator:
             summary["terminationIndicator"] = indicator
 
@@ -244,6 +260,11 @@ def ips_summary(payload: dict[str, Any]) -> dict[str, Any]:
     summary["reportShape"] = {
         "exceptionPresent": isinstance(exception, dict),
         "terminationPresent": isinstance(termination, dict),
+        "terminationReasonsPresent": isinstance(termination, dict)
+        and isinstance(termination.get("reasons"), list),
+        "terminationReasonCount": min(len(termination.get("reasons", [])), 8)
+        if isinstance(termination, dict) and isinstance(termination.get("reasons"), list)
+        else 0,
         "faultingThreadPresent": isinstance(crashed_thread, int),
         "threadsPresent": isinstance(threads, list),
         "threadCount": min(len(threads), 10_000) if isinstance(threads, list) else 0,
@@ -547,6 +568,8 @@ def self_test() -> None:
         assert summary["reportShape"] == {
             "exceptionPresent": False,
             "terminationPresent": False,
+            "terminationReasonsPresent": False,
+            "terminationReasonCount": 0,
             "faultingThreadPresent": False,
             "threadsPresent": False,
             "threadCount": 0,
@@ -790,6 +813,32 @@ def self_test() -> None:
         assert summary is not None
         assert summary["terminationIndicator"] == "Symbol missing"
         assert "private_secret_symbol" not in json.dumps(summary)
+
+        libignition = root / "glass-native-content-worker-libignition.ips"
+        libignition.write_text(
+            json.dumps(
+                {
+                    "procName": "glass-native-content-worker",
+                    "termination": {
+                        "namespace": "<0x23>",
+                        "code": 2,
+                        "reasons": [
+                            "could not load image at /private/secret/not-a-real.dylib: wrong architecture"
+                        ],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary = parse_report(libignition, since=since)
+        assert summary is not None
+        assert summary["terminationNamespace"] == "LIBIGNITION"
+        assert summary["terminationCode"] == 2
+        assert summary["terminationIndicator"] == "Wrong architecture"
+        assert summary["reportShape"]["terminationReasonsPresent"] is True
+        assert summary["reportShape"]["terminationReasonCount"] == 1
+        assert "/private/" not in json.dumps(summary)
+        assert "not-a-real.dylib" not in json.dumps(summary)
 
         path_crash = root / "glass-native-content-worker-path.crash"
         path_crash.write_text(

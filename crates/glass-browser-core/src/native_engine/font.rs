@@ -1623,6 +1623,12 @@ impl NativeTextMetrics {
             .iter()
             .map(|info| cluster_index(value, info.cluster))
             .collect::<Option<Vec<_>>>()?;
+        // Cluster indices are monotonic in the output direction, but cluster
+        // spacing needs the next boundary in ascending text order. Sorting the
+        // unique indices avoids rescanning every glyph for each cluster.
+        let mut sorted_cluster_indices = cluster_indices.clone();
+        sorted_cluster_indices.sort_unstable();
+        sorted_cluster_indices.dedup();
         let mut glyphs = Vec::with_capacity(infos.len());
         let mut pen_x = 0i64;
         let mut previous_cluster = None;
@@ -1644,11 +1650,11 @@ impl NativeTextMetrics {
             let is_last_for_cluster = infos
                 .get(index + 1)
                 .is_none_or(|next| next.cluster != info.cluster);
-            let cluster_end = cluster_indices
-                .iter()
+            let cluster_end = sorted_cluster_indices
+                .binary_search(&cluster)
+                .ok()
+                .and_then(|index| sorted_cluster_indices.get(index.saturating_add(1)))
                 .copied()
-                .filter(|next| *next > cluster)
-                .min()
                 .unwrap_or(character_count);
             let cluster_spacing = if is_last_for_cluster {
                 spacing_for_characters(

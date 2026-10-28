@@ -2511,6 +2511,39 @@ fn shaped_ltr_runs_keep_clusters_and_justified_spaces() {
 }
 
 #[test]
+fn large_shaped_runs_keep_cluster_positions() {
+    let families = NativeFontFamilyList::single(NativeFontFamilyValue::Generic(
+        NativeGenericFontFamily::SansSerif,
+    ));
+    let metrics = NativeTextMetrics::for_style(
+        families,
+        DEFAULT_NATIVE_FONT_SIZE,
+        FontWeightValue::Normal,
+        FontStyleValue::Normal,
+        DirectionValue::Ltr,
+    );
+    let Some(face) = metrics.faces.first() else {
+        return;
+    };
+    if face.shaper_data().is_none() {
+        return;
+    }
+
+    let text = "A".repeat(4_096);
+    let Some(shaped) = metrics.shape(&text, 0, 0) else {
+        return;
+    };
+    assert_eq!(shaped.glyphs.len(), text.chars().count());
+    assert!(shaped.width > 0);
+    assert!(
+        shaped
+            .glyphs
+            .windows(2)
+            .all(|glyphs| glyphs[0].cluster <= glyphs[1].cluster)
+    );
+}
+
+#[test]
 fn shaped_rtl_runs_reverse_clusters_and_visual_coordinates() {
     let families = NativeFontFamilyList::single(NativeFontFamilyValue::Generic(
         NativeGenericFontFamily::SansSerif,

@@ -44,6 +44,8 @@
       }}
     }}
     if (cachedGeometryMap instanceof Map) cachedGeometryMap.clear();
+    if (cachedCanvasResources instanceof Map) cachedCanvasResources.clear();
+    if (cachedCanvasImageResources instanceof Map) cachedCanvasImageResources.clear();
     cachedHostState = null;
     cachedGeometrySnapshot = null;
     cachedGeometryMap = null;
@@ -51,9 +53,7 @@
     cachedCanvasLiveIndexSource = null;
     cachedCanvasLiveIndexes = null;
     cachedCanvasResourceSource = null;
-    cachedCanvasResources = null;
     cachedCanvasImageResourceSource = null;
-    cachedCanvasImageResources = null;
   }}
   if (__glassHostViewJson === null || __glassHostViewJson === undefined) return;
   let host = JSON.parse(__glassHostViewJson);
@@ -67,6 +67,8 @@
   const hostStateDelta = Array.isArray(host.state_delta) ? host.state_delta : null;
   if (hostStateDelta) {{
     const validatedHostStateDelta = [];
+    let invalidateCanvasResourceCache = false;
+    let invalidateImageResourceCache = false;
     for (const operation of hostStateDelta) {{
       if (!Array.isArray(operation) || !Array.isArray(operation[1])
         || (operation[0] === 0 && operation.length !== 3)
@@ -76,6 +78,8 @@
         throw new TypeError("native host snapshot delta is invalid");
       const path = operation[1];
       if (path.length === 0) throw new TypeError("native host snapshot delta path is empty");
+      if (path[0] === "canvasResources") invalidateCanvasResourceCache = true;
+      if (path[0] === "imageResources") invalidateImageResourceCache = true;
       let target = host.state;
       if (operation[0] === 2) {{
         for (const key of path) {{
@@ -132,6 +136,8 @@
         delete target[key];
       }}
     }}
+    if (invalidateCanvasResourceCache) cachedCanvasResourceSource = null;
+    if (invalidateImageResourceCache) cachedCanvasImageResourceSource = null;
     delete host.state_delta;
   }}
   const bootstrapParams = host.__glassBootstrap || {{}};

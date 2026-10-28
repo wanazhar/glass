@@ -350,7 +350,7 @@ fn repeated_host_views_reuse_decoded_canvas_image_resources_and_repair_public_ma
         .expect("replacement image resource must be accepted");
     let updated = runtime
         .evaluate(
-            "(() => { const canvas = document.getElementById('target'); const persistedCanvasPixels = canvas.__glassCanvasSurface.pixels.slice(0, 4); canvas.getContext('2d').clearRect(0, 0, 1, 1); canvas.getContext('2d').drawImage(document.getElementById('source'), 0, 0); return [globalThis.__glassCanvasImageResources.size, persistedCanvasPixels, canvas.__glassCanvasSurface.pixels.slice(0, 4)]; })()",
+            "(() => { const canvas = document.getElementById('target'); const persistedResource = globalThis.__glassCanvasResources.values().next().value; const persistedResourcePixels = persistedResource && persistedResource.pixels.slice(0, 4); const persistedCanvasPixels = canvas.__glassCanvasSurface.pixels.slice(0, 4); canvas.getContext('2d').clearRect(0, 0, 1, 1); canvas.getContext('2d').drawImage(document.getElementById('source'), 0, 0); return [globalThis.__glassCanvasImageResources.size, persistedResourcePixels, persistedCanvasPixels, canvas.__glassCanvasSurface.pixels.slice(0, 4)]; })()",
             &document,
             "fixture://canvas-cache.test/",
             &NativeOrigin::Opaque,
@@ -359,7 +359,12 @@ fn repeated_host_views_reuse_decoded_canvas_image_resources_and_repair_public_ma
         .expect("changed image resource snapshot must invalidate its decoded cache");
     assert_eq!(
         updated.value,
-        serde_json::json!([1, [17, 34, 51, 255], [201, 202, 203, 255]])
+        serde_json::json!([
+            1,
+            [17, 34, 51, 255],
+            [17, 34, 51, 255],
+            [201, 202, 203, 255]
+        ])
     );
 }
 

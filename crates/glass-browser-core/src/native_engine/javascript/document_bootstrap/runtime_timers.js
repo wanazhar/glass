@@ -43,8 +43,8 @@
         // after adoption/removal. They will not be refreshed from the next
         // host tree, so keep their current host entry alive.
         if (element && element.isConnected
-            && typeof element.__glassReleaseHostSnapshot === "function")
-          element.__glassReleaseHostSnapshot();
+            && typeof element.__glassRefresh === "function")
+          element.__glassRefresh(null, null);
       }}
     }}
     if (cachedGeometryMap instanceof Map) cachedGeometryMap.clear();
@@ -70,7 +70,6 @@
   }}
   const hostStateDelta = Array.isArray(host.state_delta) ? host.state_delta : null;
   if (hostStateDelta) {{
-    const validatedHostStateDelta = [];
     let invalidateCanvasResourceCache = false;
     let invalidateImageResourceCache = false;
     for (const operation of hostStateDelta) {{
@@ -101,7 +100,6 @@
           || index > target.length || deleteCount > target.length - index
           || !Array.isArray(items) || target.length - deleteCount + items.length > 16384)
           throw new TypeError("native host snapshot delta splice is invalid");
-        validatedHostStateDelta.push([2, target, index, deleteCount, items]);
         continue;
       }}
       for (let index = 0; index < path.length - 1; index += 1) {{
@@ -120,24 +118,29 @@
         || (operation[0] === 1
           && (!Object.prototype.hasOwnProperty.call(target, key) || Array.isArray(target))))
         throw new TypeError("native host snapshot delta key is invalid");
-      validatedHostStateDelta.push(
-        operation[0] === 0 ? [0, target, key, operation[2]] : [1, target, key],
-      );
     }}
-    for (const operation of validatedHostStateDelta) {{
+    // The delta payload already owns its operation and path arrays. Validate
+    // the complete batch first, then resolve targets again while applying it
+    // instead of allocating a second array for every operation. Large style
+    // table deltas can contain thousands of operations, and the duplicate
+    // bookkeeping used to consume the remaining QuickJS heap headroom.
+    for (const operation of hostStateDelta) {{
+      let target = host.state;
+      const path = operation[1];
+      const pathLength = operation[0] === 2 ? path.length : path.length - 1;
+      for (let index = 0; index < pathLength; index += 1) target = target[path[index]];
       if (operation[0] === 2) {{
-        operation[1].splice(operation[2], operation[3], ...operation[4]);
+        target.splice(operation[2], operation[3], ...operation[4]);
       }} else if (operation[0] === 0) {{
-        const [, target, key, value] = operation;
+        const key = path[path.length - 1];
         Object.defineProperty(target, key, {{
           configurable: true,
           enumerable: true,
           writable: true,
-          value,
+          value: operation[2],
         }});
       }} else {{
-        const [, target, key] = operation;
-        delete target[key];
+        delete target[path[path.length - 1]];
       }}
     }}
     if (invalidateCanvasResourceCache) cachedCanvasResourceSource = null;

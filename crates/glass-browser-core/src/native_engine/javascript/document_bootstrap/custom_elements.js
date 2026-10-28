@@ -769,6 +769,15 @@
   const nativeFormAssociatedReconcile = (extraRoot = null) => {{
     if (suppressHostCommands > 0
         || Number(globalThis.__glassNativeCustomElementReactionSuppression) > 0) return;
+    // Avoid walking every host node on documents with no eligible registry entry.
+    let hasFormAssociatedDefinition = false;
+    for (const definition of nativeCustomElementState.definitionsByName.values()) {{
+      if (definition.formAssociated && !definition.extends) {{
+        hasFormAssociatedDefinition = true;
+        break;
+      }}
+    }}
+    if (!hasFormAssociatedDefinition) return;
     const documentElements = nativeCustomElementElementsInTree(document);
     const documentFirstElementById = nativeFormAssociatedFirstElementById(documentElements);
     const candidates = documentElements.slice();

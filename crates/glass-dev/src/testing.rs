@@ -10,6 +10,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_TEST_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_TEST_MANIFEST_BYTES: u64 = 512 * 1024;
 const MAX_TEST_SUITES: usize = 64;
 const MAX_TEST_RUNS: usize = 256;
 const DEFAULT_TEST_TIMEOUT: Duration = Duration::from_secs(600);
@@ -383,8 +384,11 @@ fn discover_suites(root: &Path) -> TestResult<Vec<TestSuite>> {
     }
     let package_json = root.join("package.json");
     if package_json.is_file() {
-        let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&package_json)?)
-            .map_err(|error| TestError::InvalidInput(format!("invalid package.json: {error}")))?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&read_bounded_file(&package_json, MAX_TEST_MANIFEST_BYTES)?)
+                .map_err(|error| {
+                    TestError::InvalidInput(format!("invalid package.json: {error}"))
+                })?;
         if value
             .get("scripts")
             .and_then(|scripts| scripts.get("test"))
@@ -420,6 +424,25 @@ fn discover_suites(root: &Path) -> TestResult<Vec<TestSuite>> {
     }
     suites.truncate(MAX_TEST_SUITES);
     Ok(suites)
+}
+
+fn read_bounded_file(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} exceeds the {limit} byte limit", path.display()),
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} exceeds the {limit} byte limit", path.display()),
+        ));
+    }
+    Ok(bytes)
 }
 
 fn finish_run(mut running: RunningTest, status: ExitStatus) -> TestResult<TestRun> {
@@ -568,6 +591,25 @@ mod tests {
                 TestFramework::Pnpm,
                 TestFramework::Pytest
             ]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn package_manifest_reader_rejects_growth_after_metadata_check() {
+        let root = root();
+        let path = root.join("package.json");
+        std::fs::write(&path, vec![b' '; MAX_TEST_MANIFEST_BYTES as usize + 1]).unwrap();
+        assert_eq!(
+            read_bounded_file(&path, MAX_TEST_MANIFEST_BYTES)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        std::fs::write(&path, b"{} ").unwrap();
+        assert_eq!(
+            read_bounded_file(&path, MAX_TEST_MANIFEST_BYTES).unwrap(),
+            b"{} "
         );
         std::fs::remove_dir_all(root).unwrap();
     }

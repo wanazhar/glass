@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -20,6 +20,7 @@ const MAX_TASK_TEXT_BYTES: usize = 128 * 1024;
 const MAX_VERIFIER_COMMAND_BYTES: usize = 16 * 1024;
 const TASK_CHECKPOINT_VERSION: u32 = 1;
 const MAX_TASK_CHECKPOINT_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_CREW_WAKE_BYTES: u64 = MAX_TASK_CHECKPOINT_BYTES;
 const TASK_CHECKPOINT_MUTATION_RESERVE: usize = 256;
 const TASK_CHECKPOINT_RELATIVE_PATH: &str = ".glass/tasks/scheduler.json";
 static NEXT_CHECKPOINT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -412,9 +413,14 @@ fn append_wake_section(lines: &mut Vec<String>, title: &str, body: &str, limit: 
 
 /// Persist a crew wake object and replace `{root}/.glass/crew/latest.json`.
 pub(crate) fn persist_crew_wake(root: &Path, wake: &CrewWake) -> DevelopmentResult<()> {
+    let encoded = serde_json::to_vec_pretty(wake)?;
+    if encoded.len() as u64 > MAX_CREW_WAKE_BYTES {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "crew wake exceeds {MAX_CREW_WAKE_BYTES} bytes"
+        )));
+    }
     let dir = root.join(".glass").join("crew");
     std::fs::create_dir_all(&dir)?;
-    let encoded = serde_json::to_vec_pretty(wake)?;
     std::fs::write(dir.join(format!("{}.json", wake.id)), &encoded)?;
     std::fs::write(dir.join("latest.json"), encoded)?;
     Ok(())
@@ -423,7 +429,15 @@ pub(crate) fn persist_crew_wake(root: &Path, wake: &CrewWake) -> DevelopmentResu
 /// Load the most recently queued overnight crew, if one exists.
 pub fn load_latest_crew_wake(root: &Path) -> Option<CrewWake> {
     let path = root.join(".glass").join("crew").join("latest.json");
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+    let file = std::fs::File::open(path).ok()?;
+    let mut encoded = Vec::new();
+    file.take(MAX_CREW_WAKE_BYTES + 1)
+        .read_to_end(&mut encoded)
+        .ok()?;
+    if encoded.len() as u64 > MAX_CREW_WAKE_BYTES {
+        return None;
+    }
+    serde_json::from_slice(&encoded).ok()
 }
 
 struct TaskRecord {
@@ -1845,7 +1859,7 @@ fn load_task_checkpoint(
             MAX_TASK_CHECKPOINT_BYTES
         )));
     }
-    let bytes = fs::read(path)?;
+    let bytes = read_bounded_task_checkpoint(fs::File::open(path)?, metadata.len())?;
     let checkpoint: TaskSchedulerCheckpoint = serde_json::from_slice(&bytes).map_err(|error| {
         DevelopmentError::InvalidInput(format!("invalid task checkpoint: {error}"))
     })?;
@@ -1928,6 +1942,23 @@ fn load_task_checkpoint(
         }
     }
     Ok((tasks, checkpoint.next_task))
+}
+
+fn read_bounded_task_checkpoint(
+    reader: impl Read,
+    expected_len: u64,
+) -> DevelopmentResult<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(expected_len.min(MAX_TASK_CHECKPOINT_BYTES) as usize);
+    reader
+        .take(MAX_TASK_CHECKPOINT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_TASK_CHECKPOINT_BYTES {
+        return Err(DevelopmentError::InvalidInput(format!(
+            "task checkpoint exceeds {} bytes",
+            MAX_TASK_CHECKPOINT_BYTES
+        )));
+    }
+    Ok(bytes)
 }
 
 enum VerificationOutcome {
@@ -2672,6 +2703,14 @@ mod tests {
     }
 
     #[test]
+    fn task_checkpoint_reader_caps_growth_after_metadata_check() {
+        let bytes = vec![b' '; MAX_TASK_CHECKPOINT_BYTES as usize + 17];
+        let error = read_bounded_task_checkpoint(std::io::Cursor::new(bytes), 1)
+            .expect_err("a file that grows after metadata must still be bounded");
+        assert!(error.to_string().contains("task checkpoint exceeds"));
+    }
+
+    #[test]
     fn task_checkpoint_is_bound_to_project_and_preserves_the_next_id() {
         let (root, mut scheduler, mut agents) = scheduler();
         let first = scheduler
@@ -3266,5 +3305,46 @@ mod tests {
         assert!(legacy.diff.is_empty());
         assert_eq!(legacy.accept, "");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn crew_wake_loader_rejects_over_limit_file() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-crew-wake-oversized-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let latest = root.join(".glass/crew/latest.json");
+        std::fs::create_dir_all(latest.parent().unwrap()).unwrap();
+        std::fs::write(&latest, vec![b' '; MAX_CREW_WAKE_BYTES as usize + 1]).unwrap();
+
+        assert!(load_latest_crew_wake(&root).is_none());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn crew_wake_persist_rejects_over_limit_serialized_output() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-crew-wake-too-large-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let wake = CrewWake {
+            id: "oversized".into(),
+            diff: "x".repeat(MAX_CREW_WAKE_BYTES as usize),
+            ..CrewWake::default()
+        };
+
+        assert!(persist_crew_wake(&root, &wake).is_err());
+        assert!(!root.join(".glass/crew/latest.json").exists());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -758,12 +758,29 @@ fn parse_link_provenance(value: &str) -> CliResult<LinkProvenance> {
     }
 }
 
-fn print_json<T: Serialize + ?Sized>(value: &T) -> CliResult<()> {
+pub(crate) fn configure_json_output(json: bool) {
+    JSON_OUTPUT.store(json, Ordering::Relaxed);
+}
+
+pub(crate) fn print_json<T: Serialize + ?Sized>(value: &T) -> CliResult<()> {
     print_cli_value(
         &cli_command_title(),
         value,
         JSON_OUTPUT.load(Ordering::Relaxed),
     )
+}
+
+pub(crate) fn print_text(title: &str, body: &str) -> CliResult<()> {
+    if JSON_OUTPUT.load(Ordering::Relaxed) {
+        return print_json(&serde_json::json!({"text": body}));
+    }
+    if std::io::stdout().is_terminal() {
+        let output = render_human_report(title, "ready", &[("Recent output".into(), body.into())]);
+        std::io::stdout().lock().write_all(output.as_bytes())?;
+    } else {
+        std::io::stdout().lock().write_all(body.as_bytes())?;
+    }
+    Ok(())
 }
 
 fn print_cli_value<T: Serialize + ?Sized>(title: &str, value: &T, json: bool) -> CliResult<()> {
@@ -774,10 +791,8 @@ fn print_cli_value<T: Serialize + ?Sized>(title: &str, value: &T, json: bool) ->
     let value = serde_json::to_value(value)?;
     let status = if value["success"] == false {
         "failed"
-    } else if let Some(status) = value["status"].as_str() {
-        status
     } else {
-        "complete"
+        value["status"].as_str().unwrap_or("complete")
     };
     let rows = cli_value_rows(&value);
     let rendered = render_human_report(title, status, &rows);
@@ -823,7 +838,7 @@ fn cli_command_title() -> String {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let command_index = args
         .iter()
-        .position(|arg| matches!(arg.as_str(), "agent" | "harness" | "project"));
+        .position(|arg| matches!(arg.as_str(), "agent" | "harness" | "project" | "daemon"));
     let parts = command_index
         .into_iter()
         .flat_map(|index| args[index..].iter())
@@ -864,82 +879,148 @@ fn cli_value_rows(value: &serde_json::Value) -> Vec<(String, String)> {
         }
     }
 
-    fn walk(
-        label: &str,
-        value: &serde_json::Value,
-        depth: usize,
-        rows: &mut Vec<(String, String)>,
-    ) {
-        if rows.len() >= MAX_ROWS {
-            return;
+    let mut rows = Vec::new();
+    let Some(fields) = value.as_object() else {
+        rows.push((
+            "Result".into(),
+            match value {
+                serde_json::Value::String(text) => bounded(text),
+                serde_json::Value::Null => "None".into(),
+                scalar => scalar.to_string(),
+            },
+        ));
+        return rows;
+    };
+
+    for (key, value) in fields {
+        if rows.len() >= MAX_ROWS
+            || matches!(
+                key.as_str(),
+                "status" | "success" | "socket" | "socketPath" | "statusPath" | "logPath"
+            )
+        {
+            continue;
         }
+        let label = human_cli_label(key);
         match value {
-            serde_json::Value::Object(fields) if depth < 4 => {
-                for (key, value) in fields {
-                    if key == "status" || key == "success" {
-                        continue;
-                    }
-                    let child = if label.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{label} · {key}")
-                    };
-                    walk(&child, value, depth + 1, rows);
-                    if rows.len() >= MAX_ROWS {
-                        break;
-                    }
-                }
-            }
-            serde_json::Value::Object(fields) if depth >= 4 => {
-                rows.push((label.to_owned(), format!("{} fields", fields.len())));
-            }
             serde_json::Value::Array(items) => {
-                if items.is_empty() {
-                    rows.push((
-                        if label.is_empty() { "Items" } else { label }.to_owned(),
-                        "None".to_owned(),
-                    ));
-                    return;
-                }
-                for (index, item) in items.iter().take(12).enumerate() {
-                    let item_label = if label.is_empty() {
-                        format!("Item {}", index + 1)
+                rows.push((
+                    label.clone(),
+                    if items.is_empty() {
+                        "None".into()
                     } else {
-                        format!("{label} {}", index + 1)
-                    };
-                    walk(&item_label, item, depth + 1, rows);
+                        format!("{} entries", items.len())
+                    },
+                ));
+                for item in items.iter().take(8) {
                     if rows.len() >= MAX_ROWS {
                         break;
                     }
+                    rows.push((label.clone(), human_cli_entry(item)));
                 }
-                if items.len() > 12 && rows.len() < MAX_ROWS {
-                    rows.push((
-                        if label.is_empty() { "Items" } else { label }.to_owned(),
-                        format!("{} more items", items.len() - 12),
-                    ));
+                if items.len() > 8 && rows.len() < MAX_ROWS {
+                    rows.push((label, format!("{} more entries", items.len() - 8)));
                 }
             }
-            serde_json::Value::String(text) => rows.push((
-                if label.is_empty() { "Result" } else { label }.to_owned(),
-                bounded(text),
-            )),
-            serde_json::Value::Null => rows.push((
-                if label.is_empty() { "Result" } else { label }.to_owned(),
-                "None".to_owned(),
-            )),
-            scalar => rows.push((
-                if label.is_empty() { "Result" } else { label }.to_owned(),
-                scalar.to_string(),
-            )),
+            serde_json::Value::Object(nested) => {
+                rows.push((label, human_cli_object_entry(nested)));
+            }
+            serde_json::Value::String(text) => rows.push((label, bounded(text))),
+            serde_json::Value::Null => rows.push((label, "None".into())),
+            scalar => rows.push((label, scalar.to_string())),
         }
     }
-
-    let mut rows = Vec::new();
-    walk("", value, 0, &mut rows);
     if rows.is_empty() {
         rows.push(("Result".to_owned(), "No details".to_owned()));
     }
     rows
+}
+
+fn human_cli_label(key: &str) -> String {
+    let label = match key {
+        "project" => "Project",
+        "root" => "Workspace",
+        "config" => "Configuration",
+        "checks" => "Checks",
+        "content" => "Content",
+        "success" => "Succeeded",
+        "revision" => "Revision",
+        "path" => "Path",
+        "files" => "Files",
+        "processes" => "Processes",
+        "diagnostics" => "Diagnostics",
+        "runtime" => "Runtime",
+        "status" => "Status",
+        "message" => "Message",
+        "reason" => "Reason",
+        "url" => "URL",
+        "title" => "Title",
+        "name" => "Name",
+        "id" => "ID",
+        "count" => "Count",
+        "results" => "Results",
+        "items" => "Items",
+        _ => return split_cli_key(key),
+    };
+    label.to_owned()
+}
+
+fn split_cli_key(key: &str) -> String {
+    key.split(['-', '_'])
+        .flat_map(|part| {
+            let mut start = 0;
+            let mut words = Vec::new();
+            for (index, character) in part.char_indices() {
+                if character.is_ascii_uppercase() && index > start {
+                    words.push(part[start..index].to_owned());
+                    start = index;
+                }
+            }
+            if start < part.len() {
+                words.push(part[start..].to_owned());
+            }
+            words
+        })
+        .map(|word| {
+            let mut chars = word.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn human_cli_entry(value: &serde_json::Value) -> String {
+    if let Some(text) = value.as_str() {
+        return text.to_owned();
+    }
+    let Some(fields) = value.as_object() else {
+        return value.to_string();
+    };
+    human_cli_object_entry(fields)
+}
+
+fn human_cli_object_entry(fields: &serde_json::Map<String, serde_json::Value>) -> String {
+    let primary = ["label", "title", "name", "path", "url", "id", "root"]
+        .iter()
+        .find_map(|key| fields.get(*key).and_then(serde_json::Value::as_str));
+    let status = fields
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            fields
+                .get("success")
+                .and_then(serde_json::Value::as_bool)
+                .map(|ok| if ok { "done" } else { "failed" }.to_owned())
+        });
+    match (primary, status) {
+        (Some(primary), Some(status)) => format!("{primary} · {status}"),
+        (Some(primary), None) => primary.to_owned(),
+        (None, _) => format!("{} details", fields.len()),
+    }
 }
 
 fn format_agent_status(readiness: &crate::resident_harness::ResidentReadiness) -> String {
@@ -1151,7 +1232,7 @@ mod agent_readiness_presentation_tests {
     }
 
     #[test]
-    fn generic_cli_report_flattens_nested_values_and_bounds_large_fields() {
+    fn generic_cli_report_uses_human_labels_and_bounds_large_fields() {
         let value = serde_json::json!({
             "status": "ready",
             "project": {"root": "/workspace", "config": {"name": "fixture"}},
@@ -1161,16 +1242,21 @@ mod agent_readiness_presentation_tests {
         let rows = cli_value_rows(&value);
         assert!(
             rows.iter()
-                .any(|(label, value)| { label == "project · root" && value == "/workspace" })
+                .any(|(label, value)| { label == "Project" && value == "/workspace" })
         );
         assert!(
             rows.iter()
-                .any(|(label, value)| { label == "checks 1 · name" && value == "build" })
+                .any(|(label, value)| { label == "Checks" && value == "1 entries" })
         );
         assert!(
             rows.iter()
-                .any(|(label, value)| { label == "content" && value.ends_with("… (truncated)") })
+                .any(|(label, value)| { label == "Checks" && value == "build · done" })
         );
+        assert!(
+            rows.iter()
+                .any(|(label, value)| { label == "Content" && value.ends_with("… (truncated)") })
+        );
+        assert!(!rows.iter().any(|(label, _)| label.contains('·')));
         assert!(!rows.iter().any(|(_, value)| value.starts_with('{')));
     }
 

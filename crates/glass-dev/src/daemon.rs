@@ -450,31 +450,22 @@ pub struct DevelopmentDaemonResponse {
 pub(crate) async fn dispatch(action: &DaemonCommand) -> Result<(), Box<dyn std::error::Error>> {
     match action {
         DaemonCommand::Start { socket, status } => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&start(socket.as_deref(), status.as_deref()).await?,)?
-            );
+            crate::cli::print_json(&start(socket.as_deref(), status.as_deref()).await?)?;
         }
         DaemonCommand::Status { socket, status } | DaemonCommand::Doctor { socket, status } => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&read_status_checked(
-                    socket.as_deref(),
-                    status.as_deref()
-                )?)?
-            );
+            crate::cli::print_json(&read_status_checked(socket.as_deref(), status.as_deref())?)?;
         }
         DaemonCommand::Stop { socket, status } => {
             stop(socket.as_deref(), status.as_deref())?;
-            println!("{{\"status\":\"stopped\"}}");
+            crate::cli::print_json(&serde_json::json!({"status": "stopped"}))?;
         }
         DaemonCommand::Logs { status } => {
             let (_, default_status) = default_paths();
             let status = status.as_deref().unwrap_or(&default_status);
-            print!("{}", bounded_log(status)?);
+            crate::cli::print_text("Daemon logs", &bounded_log(status)?)?;
         }
         DaemonCommand::AcknowledgeRecovery { .. } => {
-            println!("{{\"status\":\"no-recovery-required\"}}");
+            crate::cli::print_json(&serde_json::json!({"status": "no-recovery-required"}))?;
         }
         DaemonCommand::Serve { socket, status } => serve(socket, status).await?,
     }

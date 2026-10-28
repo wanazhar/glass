@@ -326,6 +326,16 @@
           "level": "2",
           "title": "Verification in this working tree",
           "anchor": "verification-in-this-working-tree"
+        },
+        {
+          "level": "3",
+          "title": "Issue #65 finite native and filesystem-bound follow-up (2026-10-28)",
+          "anchor": "issue-65-finite-native-and-filesystem-bound-follow-up-2026-10-28"
+        },
+        {
+          "level": "3",
+          "title": "CLI presentation output disposition (2026-10-28)",
+          "anchor": "cli-presentation-output-disposition-2026-10-28"
         }
       ]
     },

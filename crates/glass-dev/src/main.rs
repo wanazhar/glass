@@ -51,10 +51,12 @@ fn run() -> MainResult {
         return forward_core_cli(&core_args, presentation);
     }
     let command = command.after_help(
-        "Glass Core commands are also available as `glass <core-command> ...` when the name does not conflict with a Glass command. Use `glass core <args...>` as the complete, exact Core CLI escape hatch; `glass core --help` shows Core's own commands and options.",
+        "Glass Core commands are also available as `glass <core-command> ...` when the name does not conflict with a Glass command. Use `glass core <args...>` as the complete, exact Core CLI escape hatch; `glass core --help` shows Core's own commands and options.\n\nAdd `--json` before or after a Glass command for machine-readable terminal output; pipes remain machine-readable by default.",
     );
     let command = hide_browser_options_from_glass_help(command);
+    let (args, json_output) = glass_browser::cli::runner::take_json_flag(args);
     let cli = parse_glass_args(command, args).unwrap_or_else(|error| error.exit());
+    glass_browser::cli::runner::configure_json_output(json_output);
 
     let interactive_tui = uses_interactive_tui(&cli);
     let log_filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -138,9 +140,54 @@ fn core_cli_forward_args(
     args: &[OsString],
     glass_command: &clap::Command,
 ) -> Option<Vec<OsString>> {
-    let first = args.get(1)?.to_str()?;
+    let value_options = [
+        "--policy",
+        "--policy-allow",
+        "--policy-confirm",
+        "--policy-confirm-once",
+        "--policy-allow-host",
+        "--policy-deny-host",
+        "--profile",
+        "--session",
+        "--target-id",
+        "--frame-id",
+        "--port",
+        "--viewport",
+        "--interaction",
+        "--chrome-path",
+        "--browser-runtime",
+        "--browser-endpoint",
+        "--tui-layout",
+        "--tui-transport",
+        "--tui-graphics",
+        "--tui-rtt-ms",
+        "--tui-throughput-mbps",
+        "--tui-live",
+        "--tui-live-backend",
+        "--tui-live-quality",
+        "--tui-live-fit",
+        "--knowledge-store",
+        "--response-mode",
+    ];
+    let mut command_index = 1;
+    while let Some(argument) = args.get(command_index).and_then(|value| value.to_str()) {
+        if argument == "--" {
+            command_index += 1;
+            break;
+        }
+        if value_options.contains(&argument) {
+            command_index += 2;
+            continue;
+        }
+        if argument.starts_with('-') {
+            command_index += 1;
+            continue;
+        }
+        break;
+    }
+    let first = args.get(command_index)?.to_str()?;
     if first == "core" {
-        let mut forwarded = args.get(2..)?.to_vec();
+        let mut forwarded = args.get(command_index + 1..)?.to_vec();
         if forwarded.is_empty() {
             forwarded.push(OsString::from("--help"));
         }

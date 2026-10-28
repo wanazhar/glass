@@ -6,9 +6,12 @@
 
 use crate::development::{DevelopmentError, DevelopmentResult};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const MAX_TODOS: usize = 32;
+const MAX_TODO_TITLE_BYTES: usize = 4096;
+const MAX_TODO_FILE_BYTES: u64 = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,9 +50,17 @@ pub struct SessionTodoList {
 impl SessionTodoList {
     pub fn load(root: &Path) -> Self {
         let path = todo_path(root);
-        std::fs::read(&path)
-            .ok()
+        read_todo_file(&path)
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .filter(|list: &SessionTodoList| {
+                list.items.len() <= MAX_TODOS
+                    && list.items.iter().all(|item| {
+                        !item.id.is_empty()
+                            && item.id.len() <= 64
+                            && !item.title.trim().is_empty()
+                            && item.title.len() <= MAX_TODO_TITLE_BYTES
+                    })
+            })
             .unwrap_or_default()
     }
 
@@ -59,6 +70,11 @@ impl SessionTodoList {
             DevelopmentError::Process(format!("todo directory unavailable: {error}"))
         })?;
         let bytes = serde_json::to_vec_pretty(self)?;
+        if bytes.len() as u64 > MAX_TODO_FILE_BYTES {
+            return Err(DevelopmentError::InvalidInput(format!(
+                "todo file exceeds the {MAX_TODO_FILE_BYTES} byte limit"
+            )));
+        }
         std::fs::write(todo_path(root), bytes)
             .map_err(|error| DevelopmentError::Process(format!("todo write failed: {error}")))
     }
@@ -72,9 +88,13 @@ impl SessionTodoList {
         let mut seen = std::collections::BTreeSet::new();
         let mut active = 0;
         for item in &items {
-            if item.id.is_empty() || item.id.len() > 64 || item.title.trim().is_empty() {
+            if item.id.is_empty()
+                || item.id.len() > 64
+                || item.title.trim().is_empty()
+                || item.title.len() > MAX_TODO_TITLE_BYTES
+            {
                 return Err(DevelopmentError::InvalidInput(
-                    "todo items need an id and a title".into(),
+                    "todo items need a bounded id and title".into(),
                 ));
             }
             if !seen.insert(&item.id) {
@@ -189,6 +209,19 @@ fn todo_path(root: &Path) -> PathBuf {
     root.join(".glass/todos/session.json")
 }
 
+fn read_todo_file(path: &Path) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_TODO_FILE_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(metadata.len().min(MAX_TODO_FILE_BYTES) as usize);
+    file.take(MAX_TODO_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= MAX_TODO_FILE_BYTES).then_some(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,6 +259,19 @@ mod tests {
         list.activate("todo-2", &root).unwrap();
         assert_eq!(list.items[0].status, TodoStatus::Pending);
         assert_eq!(list.items[2].status, TodoStatus::Active);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn load_rejects_oversized_todo_file_before_parsing() {
+        let root = std::env::temp_dir().join(format!("glass-todos-large-{}", std::process::id()));
+        std::fs::create_dir_all(root.join(".glass/todos")).unwrap();
+        std::fs::write(
+            todo_path(&root),
+            vec![b' '; MAX_TODO_FILE_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert_eq!(SessionTodoList::load(&root), SessionTodoList::default());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

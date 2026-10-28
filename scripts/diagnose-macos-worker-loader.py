@@ -40,6 +40,14 @@ PATH_CLASS_ROOTS = {
     "dev": ("/dev",),
     "etc": ("/etc",),
 }
+DEVICE_RESOURCE_PATHS = {
+    "null": "/dev/null",
+    "zero": "/dev/zero",
+    "random": "/dev/random",
+    "urandom": "/dev/urandom",
+    "fd": "/dev/fd",
+    "dtracehelper": "/dev/dtracehelper",
+}
 
 
 def denied_paths(raw_path: str | None) -> list[str]:
@@ -115,8 +123,6 @@ def sandbox_profile(
             '(subpath "/usr") (subpath "/Library") '
             f'(literal "{path}"))'
         )
-    elif addition == "file-read-data-dtracehelper":
-        profile += ' (allow file-read-data (literal "/dev/dtracehelper"))'
     elif addition in file_read_data_roots:
         paths = " ".join(
             f'(subpath "{root}")' for root in file_read_data_roots[addition]
@@ -154,9 +160,6 @@ def run_launch(
         profile_additions = {
             "production-plus-file-map": "file-map-system",
             "production-plus-file-read-metadata": "file-read-metadata-system",
-            "production-plus-file-read-data-dtracehelper": (
-                "file-read-data-dtracehelper"
-            ),
         }
         profile_additions.update(
             {
@@ -173,6 +176,15 @@ def run_launch(
                 binary,
                 addition="file-read-data-exact",
                 addition_path=addition_path,
+            )
+        elif profile.startswith("production-plus-file-read-data-device-"):
+            resource_id = profile.removeprefix(
+                "production-plus-file-read-data-device-"
+            )
+            profile_text = sandbox_profile(
+                binary,
+                addition="file-read-data-exact",
+                addition_path=DEVICE_RESOURCE_PATHS.get(resource_id),
             )
         else:
             profile_text = sandbox_profile(
@@ -449,26 +461,28 @@ def run_probe(worker: Path) -> dict[str, Any]:
         ),
     )
     cases = list(cases)
-    cases.extend(
-        (
+    for resource_id in DEVICE_RESOURCE_PATHS:
+        profile_name = f"production-plus-file-read-data-device-{resource_id}"
+        cases.extend(
             (
-                "known-good-sandboxed-production-plus-file-read-data-dtracehelper",
-                Path("/usr/bin/true"),
-                True,
-                False,
-                False,
-                "production-plus-file-read-data-dtracehelper",
-            ),
-            (
-                "worker-sandboxed-production-plus-file-read-data-dtracehelper",
-                worker,
-                True,
-                False,
-                True,
-                "production-plus-file-read-data-dtracehelper",
-            ),
+                (
+                    f"known-good-sandboxed-{profile_name}",
+                    Path("/usr/bin/true"),
+                    True,
+                    False,
+                    False,
+                    profile_name,
+                ),
+                (
+                    f"worker-sandboxed-{profile_name}",
+                    worker,
+                    True,
+                    False,
+                    True,
+                    profile_name,
+                ),
+            )
         )
-    )
     for path_class in PATH_CLASS_ROOTS:
         profile_name = f"production-plus-file-read-data-{path_class.lower()}"
         cases.extend(

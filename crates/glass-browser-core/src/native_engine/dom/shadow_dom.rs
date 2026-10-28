@@ -18,6 +18,7 @@ impl NativeDocument {
 
         if node.element_name() == Some("slot")
             && let Some(host) = self.shadow_host_for_node(parent)
+            && self.is_first_slot_for_name(parent)
         {
             let slot_name = node.attribute("name").unwrap_or_default();
             let assigned = self
@@ -55,6 +56,94 @@ impl NativeDocument {
             id = node.parent()?;
         }
         None
+    }
+
+    pub(super) fn is_assigned_shadow_child(&self, host: NativeNodeId, child: NativeNodeId) -> bool {
+        let Some(host_node) = self.node(host) else {
+            return false;
+        };
+        let Some(root) = host_node.shadow_root else {
+            return false;
+        };
+        let Some(child_node) = self.node(child) else {
+            return false;
+        };
+        let slot_name = match child_node.kind() {
+            NativeNodeKind::Element { .. } => child_node.attribute("slot").unwrap_or_default(),
+            NativeNodeKind::Text(_) => "",
+            NativeNodeKind::Document
+            | NativeNodeKind::DocumentFragment
+            | NativeNodeKind::DocumentType { .. }
+            | NativeNodeKind::Comment(_) => return false,
+        };
+        let mut pending = self
+            .node(root)
+            .map(|node| node.children().iter().rev().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut visited = 0;
+        while let Some(candidate) = pending.pop() {
+            visited += 1;
+            if visited > self.max_nodes {
+                return false;
+            }
+            let Some(candidate_node) = self.node(candidate) else {
+                continue;
+            };
+            if candidate_node.element_name() == Some("slot")
+                && candidate_node.attribute("name").unwrap_or_default() == slot_name
+            {
+                return true;
+            }
+            pending.extend(candidate_node.children().iter().rev().copied());
+        }
+        false
+    }
+
+    fn is_first_slot_for_name(&self, slot: NativeNodeId) -> bool {
+        let Some(slot_node) = self.node(slot) else {
+            return false;
+        };
+        let slot_name = slot_node.attribute("name").unwrap_or_default();
+        let mut current = slot;
+        let mut root = None;
+        for _ in 0..=self.max_dom_depth {
+            let Some(node) = self.node(current) else {
+                return false;
+            };
+            if node.shadow_host.is_some() {
+                root = Some(current);
+                break;
+            }
+            let Some(parent) = node.parent() else {
+                break;
+            };
+            current = parent;
+        }
+        let Some(root) = root else {
+            return false;
+        };
+
+        let mut pending = self
+            .node(root)
+            .map(|node| node.children().iter().rev().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut visited = 0;
+        while let Some(candidate) = pending.pop() {
+            visited += 1;
+            if visited > self.max_nodes {
+                return false;
+            }
+            let Some(candidate_node) = self.node(candidate) else {
+                continue;
+            };
+            if candidate_node.element_name() == Some("slot")
+                && candidate_node.attribute("name").unwrap_or_default() == slot_name
+            {
+                return candidate == slot;
+            }
+            pending.extend(candidate_node.children().iter().rev().copied());
+        }
+        false
     }
 }
 
@@ -247,7 +336,7 @@ mod tests {
     #[test]
     fn slot_projection_uses_assigned_light_nodes_and_falls_back_when_empty() {
         let mut document = NativeDocument::parse(
-            "<!doctype html><html><body><x-host><span id='assigned' slot='label'>ASSIGNED_TEXT</span></x-host></body></html>",
+            "<!doctype html><html><body><x-host><a id='assigned' href='/library' slot='label'>ASSIGNED_TEXT</a></x-host></body></html>",
             &NativeEngineLimits::default(),
         )
         .expect("document parses");
@@ -257,8 +346,10 @@ mod tests {
         let root_index = u32::MAX - 8;
         let assigned_slot_index = u32::MAX - 7;
         let assigned_fallback_index = u32::MAX - 6;
-        let empty_slot_index = u32::MAX - 5;
-        let empty_fallback_index = u32::MAX - 4;
+        let duplicate_slot_index = u32::MAX - 5;
+        let duplicate_fallback_index = u32::MAX - 4;
+        let empty_slot_index = u32::MAX - 3;
+        let empty_fallback_index = u32::MAX - 2;
         document
             .apply_script_commands(&[
                 NativeScriptCommand::CreateShadowRoot {
@@ -315,10 +406,39 @@ mod tests {
             ])
             .expect("shadow slot subtree attaches");
 
+        document
+            .apply_script_commands(&[
+                NativeScriptCommand::CreateElement {
+                    node_index: duplicate_slot_index,
+                    tag_name: "slot".into(),
+                    namespace_uri: None,
+                },
+                NativeScriptCommand::SetAttribute {
+                    node_index: duplicate_slot_index,
+                    name: "name".into(),
+                    value: "label".into(),
+                    namespace_uri: None,
+                },
+                NativeScriptCommand::CreateTextNode {
+                    node_index: duplicate_fallback_index,
+                    value: "DUPLICATE_SLOT_FALLBACK".into(),
+                },
+                NativeScriptCommand::AppendChild {
+                    parent_index: duplicate_slot_index,
+                    child_index: duplicate_fallback_index,
+                },
+                NativeScriptCommand::AppendChild {
+                    parent_index: root_index,
+                    child_index: duplicate_slot_index,
+                },
+            ])
+            .expect("duplicate named slot attaches");
+
         let (text, truncated) = document.visible_text(1024);
         assert!(!truncated);
         assert!(text.contains("ASSIGNED_TEXT"));
         assert!(!text.contains("ASSIGNED_FALLBACK_MUST_NOT_RENDER"));
+        assert!(text.contains("DUPLICATE_SLOT_FALLBACK"));
         assert!(text.contains("EMPTY_SLOT_FALLBACK"));
 
         let assigned = document.find_element_by_id("assigned").unwrap();
@@ -334,7 +454,18 @@ mod tests {
         assert!(!truncated);
         assert!(!after_slot_change.contains("ASSIGNED_TEXT"));
         assert!(after_slot_change.contains("ASSIGNED_FALLBACK_MUST_NOT_RENDER"));
+        assert!(after_slot_change.contains("DUPLICATE_SLOT_FALLBACK"));
         assert!(after_slot_change.contains("EMPTY_SLOT_FALLBACK"));
+        let unassigned_snapshot = document.script_snapshot_for_viewport(1024, Viewport::default());
+        assert!(
+            unassigned_snapshot
+                .elements
+                .iter()
+                .find(|element| element.node_index == assigned.index())
+                .unwrap()
+                .hidden
+        );
+        assert!(document.semantic_node(assigned).unwrap().hidden);
 
         document
             .apply_script_commands(&[NativeScriptCommand::SetAttribute {
@@ -348,5 +479,16 @@ mod tests {
         assert!(!truncated);
         assert!(restored.contains("ASSIGNED_TEXT"));
         assert!(!restored.contains("ASSIGNED_FALLBACK_MUST_NOT_RENDER"));
+        assert!(restored.contains("DUPLICATE_SLOT_FALLBACK"));
+        let restored_snapshot = document.script_snapshot_for_viewport(1024, Viewport::default());
+        assert!(
+            !restored_snapshot
+                .elements
+                .iter()
+                .find(|element| element.node_index == assigned.index())
+                .unwrap()
+                .hidden
+        );
+        assert!(!document.semantic_node(assigned).unwrap().hidden);
     }
 }

@@ -64,6 +64,13 @@ that follows an observed link into the Rust repository's `library` directory.
 The GitHub journey checks repository identity, follows the observed `library`
 link into the Rust repository, then asserts the subpage URL and directory
 content. On 25 October the native run passed all six steps in 50.62 seconds.
+Its local companion models a repository directory link projected through an
+open shadow root with duplicate same-name slots. The first slot receives the
+light-DOM link, the later slot shows fallback content, and changing the link's
+`slot` attribute removes it from fresh semantic observations until the
+attribute is restored. The local journey then follows the re-observed link to
+its directory fixture. This covers slot assignment and mutation without
+implying that the public GitHub page uses this component structure.
 The responsive duplicate link is resolved from fresh semantic evidence and
 dispatched at that observation revision; no CSS selector or node ID is baked
 into the public journey. Earlier click-deadline failures remain historical

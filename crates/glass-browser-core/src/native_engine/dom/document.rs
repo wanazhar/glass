@@ -1324,9 +1324,16 @@ impl NativeDocument {
 
     /// Return a bounded semantic projection in deterministic document order.
     pub fn semantic_nodes(&self) -> Vec<NativeSemanticNode> {
+        let hidden_by_index = self.effective_hidden_by_index();
         self.nodes
             .iter()
-            .filter_map(|node| self.semantic_node(node.id))
+            .filter_map(|node| {
+                let hidden = hidden_by_index
+                    .get(&node.id.index())
+                    .copied()
+                    .unwrap_or_else(|| self.is_hidden(node.id));
+                self.semantic_node_with_hidden(node.id, hidden)
+            })
             .collect()
     }
 
@@ -2290,6 +2297,14 @@ impl NativeDocument {
     }
 
     pub(super) fn semantic_node(&self, id: NativeNodeId) -> Option<NativeSemanticNode> {
+        self.semantic_node_with_hidden(id, self.is_hidden(id))
+    }
+
+    fn semantic_node_with_hidden(
+        &self,
+        id: NativeNodeId,
+        hidden: bool,
+    ) -> Option<NativeSemanticNode> {
         let node = self.node(id)?;
         let tag_name = node.element_name()?.to_string();
         let role = self.semantic_role(id)?.to_string();
@@ -2319,7 +2334,7 @@ impl NativeDocument {
             empty,
             checked,
             selected,
-            hidden: self.is_hidden(id),
+            hidden,
             disabled: self.is_disabled(id),
             read_only: self.is_read_only(id),
             required: self.is_required(id),
@@ -2818,13 +2833,25 @@ impl NativeDocument {
             if self.computed_style_for_layout(current_id).hidden() {
                 return true;
             }
-            current = node.parent().or(node.shadow_host);
+            if let Some(parent) = node.parent() {
+                if self
+                    .node(parent)
+                    .is_some_and(|parent_node| parent_node.shadow_root.is_some())
+                    && !self.is_assigned_shadow_child(parent, current_id)
+                {
+                    return true;
+                }
+                current = Some(parent);
+            } else {
+                current = node.shadow_host;
+            }
         }
         false
     }
 
     /// Capture effective hidden state in document order so snapshot walks do
-    /// not repeat an ancestor scan for every descendant element.
+    /// not repeat an ancestor scan for every descendant element. Nodes omitted
+    /// by slot composition remain hidden in the raw JavaScript snapshot.
     pub(super) fn effective_hidden_by_index(&self) -> HashMap<u32, bool> {
         let mut hidden_by_index = HashMap::with_capacity(self.nodes.len());
         let mut pending = vec![(self.root, false)];
@@ -2848,6 +2875,36 @@ impl NativeDocument {
                 // Template descendants are attached for DOM snapshots, but
                 // their parent chain does not inherit from the template host.
                 pending.push((template_content, false));
+            }
+        }
+
+        // The composed walk intentionally omits light children that are not
+        // assigned to a slot. They remain in the raw DOM snapshot for script
+        // queries, but must not appear as visible or accessible content.
+        let mut attached_by_index = vec![false; self.nodes.len()];
+        let mut raw_pending = vec![self.root];
+        while let Some(id) = raw_pending.pop() {
+            if id.generation != self.generation {
+                continue;
+            }
+            let Some(attached) = attached_by_index.get_mut(id.index as usize) else {
+                continue;
+            };
+            if *attached {
+                continue;
+            }
+            *attached = true;
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            raw_pending.extend(node.children().iter().copied());
+            raw_pending.extend(node.shadow_root);
+            raw_pending.extend(node.template_content);
+        }
+        for (index, attached) in attached_by_index.into_iter().enumerate() {
+            let index = index as u32;
+            if attached && !hidden_by_index.contains_key(&index) {
+                hidden_by_index.insert(index, true);
             }
         }
         hidden_by_index

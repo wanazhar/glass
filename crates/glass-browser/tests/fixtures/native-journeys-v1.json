@@ -64,6 +64,23 @@
       ]
     },
     {
+      "id": "local-repository-shadow-directory-slots",
+      "backend": "native",
+      "scope": "local-fixture",
+      "capabilities": ["navigation", "shadow-dom", "slot-assignment", "slot-mutation", "semantic-targeting"],
+      "timeoutMs": 10000,
+      "steps": [
+        {"id":"repository-tree","action":"navigate","url":"fixture://journey-shadow-repository.test/"},
+        {"id":"assert-first-slot-assignment","action":"assert","expression":"Array.from(document.querySelector('x-repository-tree').shadowRoot.querySelectorAll('slot')).filter(slot => slot.getAttribute('name') === 'directory').length === 2 && document.querySelector('#library-link').getAttribute('slot') === 'directory'"},
+        {"id":"remove-library-assignment","action":"evaluate","expression":"document.querySelector('#library-link').setAttribute('slot', 'unassigned')"},
+        {"id":"observe-without-assignment","action":"observe"},
+        {"id":"restore-library-assignment","action":"evaluate","expression":"document.querySelector('#library-link').setAttribute('slot', 'directory')"},
+        {"id":"observe-restored-assignment","action":"observe"},
+        {"id":"open-observed-library","action":"clickObserved","role":"link","nameEquals":"library","targetSource":"fresh-observation"},
+        {"id":"assert-directory","action":"assert","expression":"location.pathname === '/library' && document.title === 'Rust library'"}
+      ]
+    },
+    {
       "id": "public-documentation-deep-page",
       "backend": "native",
       "scope": "public-read-only",

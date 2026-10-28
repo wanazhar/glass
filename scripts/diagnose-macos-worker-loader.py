@@ -18,6 +18,7 @@ SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.$<>+-]{1,160}$")
 DENIAL_EVENT = re.compile(
     r"Sandbox:\s*[A-Za-z0-9_.-]+\((\d+)\)\s+deny\([^)]*\)\s+([A-Za-z][A-Za-z0-9*-]*)(?:\s+(.*))?"
 )
+DENIED_PATH = re.compile(r"(?<![A-Za-z0-9])(/[^\x00\s\"'<>),;]+)")
 IMAGE_PATH = re.compile(
     r"/(?:[^\s:'\"<>]+/)*[^\s:'\"<>]+(?:\.dylib|\.framework(?:/[^\s:'\"<>]+)?)"
 )
@@ -41,16 +42,24 @@ PATH_CLASS_ROOTS = {
 }
 
 
-def denied_path_class(raw_path: str | None) -> str:
+def denied_paths(raw_path: str | None) -> list[str]:
     if not raw_path:
-        return "other"
-    path = raw_path.strip()
-    if path.startswith('"'):
-        path = path[1:].split('"', 1)[0]
-    else:
-        path = path.split(None, 1)[0]
+        return []
+    return [
+        candidate.rstrip(".,;:)")
+        for candidate in DENIED_PATH.findall(raw_path)
+        if len(candidate) <= 1024
+    ]
+
+
+def denied_path_class(raw_path: str | None) -> str:
+    paths = denied_paths(raw_path)
     for path_class, roots in PATH_CLASS_ROOTS.items():
-        if any(path == root or path.startswith(root + "/") for root in roots):
+        if any(
+            path == root or path.startswith(root + "/")
+            for path in paths
+            for root in roots
+        ):
             return path_class
     return "other"
 
@@ -76,7 +85,12 @@ def architectures_for(path: Path) -> list[str]:
     return [token for token in result.stdout.split() if safe_token(token)]
 
 
-def sandbox_profile(binary: Path, *, addition: str | None = None) -> str:
+def sandbox_profile(
+    binary: Path,
+    *,
+    addition: str | None = None,
+    addition_path: str | None = None,
+) -> str:
     path = str(binary).replace("\\", "\\\\").replace('"', '\\"')
     profile = (
         '(version 1) (deny default) '
@@ -106,6 +120,9 @@ def sandbox_profile(binary: Path, *, addition: str | None = None) -> str:
             f'(subpath "{root}")' for root in file_read_data_roots[addition]
         )
         profile += f" (allow file-read-data {paths})"
+    elif addition == "file-read-data-exact" and addition_path:
+        exact_path = addition_path.replace("\\", "\\\\").replace('"', '\\"')
+        profile += f' (allow file-read-data (literal "{exact_path}"))'
     elif addition is not None:
         raise ValueError("unsupported diagnostic sandbox rule")
     return profile
@@ -126,6 +143,7 @@ def run_launch(
     dyld_print: bool,
     worker: bool,
     profile: str = "production",
+    addition_path: str | None = None,
 ) -> dict[str, Any]:
     command = [str(binary)]
     if worker:
@@ -143,11 +161,18 @@ def run_launch(
                 for path_class in PATH_CLASS_ROOTS
             }
         )
-        profile_text = (
-            "(version 1) (allow default)"
-            if profile == "permissive-control"
-            else sandbox_profile(binary, addition=profile_additions.get(profile))
-        )
+        if profile == "permissive-control":
+            profile_text = "(version 1) (allow default)"
+        elif profile.startswith("production-plus-file-read-data-exact-"):
+            profile_text = sandbox_profile(
+                binary,
+                addition="file-read-data-exact",
+                addition_path=addition_path,
+            )
+        else:
+            profile_text = sandbox_profile(
+                binary, addition=profile_additions.get(profile)
+            )
         command = [
             "/usr/bin/sandbox-exec",
             "-p",
@@ -233,9 +258,11 @@ def run_launch(
     return report
 
 
-def sandbox_denials(process_cases: dict[int, str]) -> dict[str, Any]:
+def sandbox_denials(
+    process_cases: dict[int, str],
+) -> tuple[dict[str, Any], dict[str, list[str]]]:
     if not process_cases:
-        return {"status": "unavailable", "cases": {}}
+        return {"status": "unavailable", "cases": {}}, {}
     pid_predicate = " OR ".join(
         f'(processID == {process_id} OR eventMessage CONTAINS "({process_id})")'
         for process_id in sorted(process_cases)
@@ -264,13 +291,13 @@ def sandbox_denials(process_cases: dict[int, str]) -> dict[str, Any]:
             text=True,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return {"status": "unavailable", "cases": {}}
+        return {"status": "unavailable", "cases": {}}, {}
     if result.returncode != 0:
-        return {"status": "unavailable", "cases": {}}
+        return {"status": "unavailable", "cases": {}}, {}
     try:
         events = json.loads(result.stdout)
     except json.JSONDecodeError:
-        return {"status": "unavailable", "cases": {}}
+        return {"status": "unavailable", "cases": {}}, {}
 
     operation_allowlist = {
         "file-read-data",
@@ -303,6 +330,9 @@ def sandbox_denials(process_cases: dict[int, str]) -> dict[str, Any]:
         name: {path_class: 0 for path_class in path_classes}
         for name in process_cases.values()
     }
+    file_read_paths: dict[str, list[str]] = {
+        name: [] for name in process_cases.values()
+    }
     matched = 0
     if isinstance(events, dict):
         events = events.get("events", [events])
@@ -319,16 +349,26 @@ def sandbox_denials(process_cases: dict[int, str]) -> dict[str, Any]:
         if case_name is None:
             continue
         operation = match.group(2)
+        event_paths = denied_paths(match.group(3))
+        if operation == "file-read-data":
+            for path in event_paths:
+                if path not in file_read_paths[case_name] and len(
+                    file_read_paths[case_name]
+                ) < 3:
+                    file_read_paths[case_name].append(path)
         path_counts[case_name][denied_path_class(match.group(3))] += 1
         if operation not in operation_allowlist:
             operation = "other"
         counts[case_name][operation] = counts[case_name].get(operation, 0) + 1
         matched += 1
-    return {
-        "status": "available" if matched else "no-matching-events",
-        "cases": counts,
-        "pathClasses": path_counts,
-    }
+    return (
+        {
+            "status": "available" if matched else "no-matching-events",
+            "cases": counts,
+            "pathClasses": path_counts,
+        },
+        file_read_paths,
+    )
 
 
 def signing_and_quarantine(worker: Path) -> dict[str, str]:
@@ -435,12 +475,46 @@ def run_probe(worker: Path) -> dict[str, Any]:
             dyld_print=case[3],
             worker=case[4],
             profile=case[5] if len(case) > 5 else "production",
+            addition_path=case[6] if len(case) > 6 else None,
         )
         process_id = launch_report.pop("_processId", None)
         if isinstance(process_id, int):
             process_cases[process_id] = case[0]
         case_reports.append({"name": case[0], **launch_report})
-    denial_summary = sandbox_denials(process_cases)
+
+    _, observed_file_read_paths = sandbox_denials(process_cases)
+    exact_path_candidates: list[str] = []
+    for source_case in (
+        "known-good-sandboxed-clean",
+        "worker-sandboxed-clean",
+    ):
+        for path in observed_file_read_paths.get(source_case, []):
+            if path not in exact_path_candidates and len(exact_path_candidates) < 3:
+                exact_path_candidates.append(path)
+
+    exact_path_status = "available" if exact_path_candidates else "no-denied-path"
+    for index, exact_path in enumerate(exact_path_candidates, start=1):
+        profile_name = f"production-plus-file-read-data-exact-{index}"
+        for case_name, binary, worker_case in (
+            (f"known-good-sandboxed-{profile_name}", Path("/usr/bin/true"), False),
+            (f"worker-sandboxed-{profile_name}", worker, True),
+        ):
+            launch_report = run_launch(
+                binary,
+                sandboxed=True,
+                dyld_print=False,
+                worker=worker_case,
+                profile=profile_name,
+                addition_path=exact_path,
+            )
+            process_id = launch_report.pop("_processId", None)
+            if isinstance(process_id, int):
+                process_cases[process_id] = case_name
+            case_reports.append({"name": case_name, **launch_report})
+
+    exact_path_candidates.clear()
+    observed_file_read_paths.clear()
+    denial_summary, _ = sandbox_denials(process_cases)
     for case_report in case_reports:
         case_report["sandboxDeniedOperations"] = denial_summary["cases"].get(
             case_report["name"], {}
@@ -459,6 +533,7 @@ def run_probe(worker: Path) -> dict[str, Any]:
         ),
         **signing_and_quarantine(worker),
         "sandboxDenialLogStatus": denial_summary["status"],
+        "exactPathDiagnosticStatus": exact_path_status,
         "cases": case_reports,
     }
 

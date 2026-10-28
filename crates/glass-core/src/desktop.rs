@@ -7,7 +7,7 @@
 use base64::Engine;
 use serde_json::{Value, json};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Read, Write},
     os::unix::{
         fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
@@ -20,6 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod accessibility;
 mod capture;
 mod input;
 mod process;
@@ -81,6 +82,9 @@ struct ManagedSession {
     desktop: Child,
     capture: Child,
     frames: Arc<Mutex<Frames>>,
+    session_bus_address: String,
+    accessibility_revision: u64,
+    accessibility_targets: HashMap<String, accessibility::Target>,
     lease: Lease,
     held_buttons: HashSet<u8>,
     held_keys: HashSet<String>,
@@ -210,6 +214,8 @@ impl Desktop {
                 session.scroll_x_remainder = 0.0;
                 session.scroll_y_remainder = 0.0;
                 session.lease = Lease::Human;
+                session.accessibility_revision = session.accessibility_revision.saturating_add(1);
+                session.accessibility_targets.clear();
             }
             "return-to-agent" => {
                 input::release_held(
@@ -224,6 +230,8 @@ impl Desktop {
                 session.scroll_x_remainder = 0.0;
                 session.scroll_y_remainder = 0.0;
                 session.lease = Lease::Agent;
+                session.accessibility_revision = session.accessibility_revision.saturating_add(1);
+                session.accessibility_targets.clear();
             }
             _ => return Err("action must be take-control or return-to-agent".into()),
         }
@@ -283,6 +291,80 @@ impl Desktop {
             _ => {}
         }
         Ok(json!({"sent":true,"lease":session.lease.as_str()}))
+    }
+
+    pub fn observe_accessibility(
+        &self,
+        expected_session_id: Option<&str>,
+    ) -> Result<Value, String> {
+        let mut guard = self
+            .session
+            .lock()
+            .map_err(|_| "Desktop state unavailable")?;
+        let session = guard
+            .as_mut()
+            .ok_or("No managed desktop session is running")?;
+        if expected_session_id.is_some_and(|expected| expected != session.id) {
+            return Err(
+                "The managed desktop session changed; call desktop_status and observe again".into(),
+            );
+        }
+        session.accessibility_revision = session.accessibility_revision.saturating_add(1);
+        session.accessibility_targets.clear();
+        let snapshot = accessibility::observe(
+            &session.session_bus_address,
+            &session.id,
+            session.accessibility_revision,
+        )?;
+        session.accessibility_targets = snapshot.targets;
+        Ok(snapshot.value)
+    }
+
+    pub fn act_accessibility(&self, value: &Value) -> Result<Value, String> {
+        let mut guard = self
+            .session
+            .lock()
+            .map_err(|_| "Desktop state unavailable")?;
+        let session = guard
+            .as_mut()
+            .ok_or("No managed desktop session is running")?;
+        let caller_session = value
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .ok_or("sessionId is required from desktop_observe")?;
+        if caller_session != session.id {
+            return Err(
+                "The managed desktop session changed; call desktop_status and observe again".into(),
+            );
+        }
+        require_lease(Lease::Agent, session.lease).map_err(|error| error.message().to_owned())?;
+        let revision = value
+            .get("revision")
+            .and_then(Value::as_u64)
+            .ok_or("revision is required from desktop_observe")?;
+        if revision != session.accessibility_revision {
+            return Err("Accessibility target is stale; call desktop_observe again".into());
+        }
+        let target_id = value
+            .get("targetId")
+            .and_then(Value::as_str)
+            .ok_or("targetId is required from desktop_observe")?;
+        let target = session
+            .accessibility_targets
+            .get(target_id)
+            .cloned()
+            .ok_or("Accessibility target is stale; call desktop_observe again")?;
+        let action = value
+            .get("action")
+            .and_then(Value::as_str)
+            .ok_or("action is required")?;
+        let text = value.get("text").and_then(Value::as_str);
+        let result = accessibility::act(&session.session_bus_address, &target, action, text);
+        // Any attempt can alter the accessible tree. Force a new observation
+        // before another target can be acted on, even when an app refuses it.
+        session.accessibility_revision = session.accessibility_revision.saturating_add(1);
+        session.accessibility_targets.clear();
+        result
     }
 
     pub fn frame_after(
@@ -365,6 +447,14 @@ impl Desktop {
         Self::agent_request(&json!({"action":"input","value":value}))
     }
 
+    pub fn agent_observe(value: &Value) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"observe","value":value}))
+    }
+
+    pub fn agent_act(value: &Value) -> Result<Value, String> {
+        Self::agent_request(&json!({"action":"act","value":value}))
+    }
+
     fn agent_status() -> Result<Value, String> {
         Self::agent_request(&json!({"action":"status"}))
     }
@@ -424,7 +514,11 @@ fn require_lease(caller: Lease, owner: Lease) -> Result<(), InputError> {
 pub fn is_tool(name: &str) -> bool {
     matches!(
         name,
-        "desktop_status" | "desktop_screenshot" | "desktop_input"
+        "desktop_status"
+            | "desktop_screenshot"
+            | "desktop_input"
+            | "desktop_observe"
+            | "desktop_act"
     )
 }
 
@@ -439,6 +533,8 @@ pub fn execute_tool(call: &glass_mod_api::ToolCall, workspace: &Path) -> crate::
     let result = match call.name.as_str() {
         "desktop_status" => Desktop::agent_status().map(|value| value.to_string()),
         "desktop_input" => Desktop::agent_input(&args).map(|value| value.to_string()),
+        "desktop_observe" => Desktop::agent_observe(&args).map(|value| value.to_string()),
+        "desktop_act" => Desktop::agent_act(&args).map(|value| value.to_string()),
         "desktop_screenshot" => {
             Desktop::agent_frame().and_then(|value| save_agent_frame(workspace, &value))
         }
@@ -607,6 +703,10 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
     let result = match request["action"].as_str() {
         Some("input") => desktop.input(Lease::Agent, &request["value"]).map_err(|error| error.message().to_owned()),
         Some("status") => Ok(desktop.status()),
+        Some("observe") => desktop.observe_accessibility(
+            request["value"]["sessionId"].as_str(),
+        ),
+        Some("act") => desktop.act_accessibility(&request["value"]),
         Some("frame") => desktop.frame_after(0, Duration::from_secs(2)).map(|frame| {
             match frame {
                 Some((seq, captured, jpeg)) => json!({"sessionId":desktop.status()["sessionId"],"workspaceRoot":desktop.status()["workspaceRoot"],"seq":seq,"capturedAtMs":captured,"jpeg":base64::engine::general_purpose::STANDARD.encode(jpeg)}),
@@ -626,6 +726,11 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        process::{Command, Stdio},
+        sync::atomic::{AtomicUsize, Ordering},
+        thread,
+    };
 
     #[test]
     fn coordinate_mapping_bounds_to_managed_framebuffer() {
@@ -676,5 +781,279 @@ mod tests {
         assert_eq!(scroll_ticks(800.0, 0.0).unwrap(), (20, 0.0));
         assert!(scroll_ticks(800.1, 0.0).is_err());
         assert!(scroll_ticks(f64::NAN, 0.0).is_err());
+    }
+
+    #[test]
+    fn managed_xfce_accessibility_observe_act_and_lease_e2e() {
+        if std::env::var_os("GLASS_DESKTOP_A11Y_E2E").as_deref() != Some(std::ffi::OsStr::new("1"))
+        {
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "glass-desktop-a11y-e2e-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut desktop = Desktop::new(workspace);
+        desktop.root = root.join("sessions");
+        desktop.start().unwrap();
+
+        let (session_id, display, auth_file, session_bus, home) = {
+            let guard = desktop.session.lock().unwrap();
+            let session = guard.as_ref().unwrap();
+            (
+                session.id.clone(),
+                session.display.clone(),
+                session.directory.join("Xauthority"),
+                session.session_bus_address.clone(),
+                session.directory.join("home"),
+            )
+        };
+        let mut dialog = Command::new("zenity")
+            .args([
+                "--entry",
+                "--title=Glass accessibility test",
+                "--text=Enter a local test value",
+                "--ok-label=Finish",
+            ])
+            .env("DISPLAY", display)
+            .env("XAUTHORITY", auth_file)
+            .env("DBUS_SESSION_BUS_ADDRESS", session_bus)
+            .env("GTK_A11Y", "atspi")
+            .env("HOME", home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start local dialog in isolated managed Xfce session");
+
+        (|| {
+            let mut snapshot = None;
+            let mut last_snapshot = None;
+            for _ in 0..10 {
+                if dialog.try_wait().unwrap().is_some() {
+                    panic!("test dialog exited before accessibility observation");
+                }
+                if let Ok(value) = desktop.observe_accessibility(Some(&session_id)) {
+                    last_snapshot = Some(value.clone());
+                    if value["nodes"].as_array().is_some_and(|nodes| {
+                        nodes
+                            .iter()
+                            .any(|node| !node["targetId"].is_null() && !node["value"].is_null())
+                    }) {
+                        snapshot = Some(value);
+                        break;
+                    }
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+            let first = snapshot.unwrap_or_else(|| {
+                panic!(
+                    "managed Xfce accessibility tree becomes observable; latest: {last_snapshot:?}"
+                )
+            });
+            let first_target = test_target(&first, |node| !node["value"].is_null());
+
+            let second = desktop.observe_accessibility(Some(&session_id)).unwrap();
+            let stale = desktop.act_accessibility(&json!({
+                "sessionId": session_id,
+                "revision": first["revision"],
+                "targetId": first_target["targetId"],
+                "action": "set_text",
+                "text": "glass stale token",
+            }));
+            assert!(stale.unwrap_err().contains("stale"));
+
+            let field = test_target(&second, |node| !node["value"].is_null());
+            let edited = desktop
+                .act_accessibility(&json!({
+                    "sessionId": session_id,
+                    "revision": second["revision"],
+                    "targetId": field["targetId"],
+                    "action": "set_text",
+                    "text": "glass accessibility probe",
+                }))
+                .unwrap_or_else(|error| panic!("could not edit target {field}: {error}"));
+            assert_eq!(
+                edited["verified"], true,
+                "accessible text readback: {edited}"
+            );
+
+            let before_lease = desktop.observe_accessibility(Some(&session_id)).unwrap();
+            let field = test_target(&before_lease, |node| !node["value"].is_null());
+            desktop.set_lease("take-control").unwrap();
+            let blocked = desktop.act_accessibility(&json!({
+                "sessionId": session_id,
+                "revision": before_lease["revision"],
+                "targetId": field["targetId"],
+                "action": "set_text",
+                "text": "must not be entered",
+            }));
+            assert_eq!(
+                blocked.unwrap_err(),
+                "Desktop input lease is held by the other participant"
+            );
+            desktop.set_lease("return-to-agent").unwrap();
+
+            let output = run_accessibility_agent_turn(&desktop, &root, &session_id);
+            assert!(output.contains("accessible Finish action"));
+            for _ in 0..30 {
+                if let Some(status) = dialog.try_wait().unwrap() {
+                    assert!(
+                        status.success(),
+                        "Finish button should accept the local dialog"
+                    );
+                    return;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            panic!("accessible Finish action did not close the local dialog");
+        })();
+        if dialog.try_wait().unwrap().is_none() {
+            let _ = dialog.kill();
+            let _ = dialog.wait();
+        }
+        desktop.stop().unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn test_target(snapshot: &Value, predicate: impl Fn(&Value) -> bool) -> Value {
+        snapshot["nodes"]
+            .as_array()
+            .and_then(|nodes| {
+                nodes
+                    .iter()
+                    .find(|node| !node["targetId"].is_null() && predicate(node))
+            })
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!("expected accessible target missing from snapshot: {snapshot}")
+            })
+    }
+
+    fn run_accessibility_agent_turn(desktop: &Desktop, root: &Path, session_id: &str) -> String {
+        struct AccessibilityTurnProvider {
+            turn: AtomicUsize,
+            snapshot: Arc<Mutex<Option<Value>>>,
+            session_id: String,
+        }
+
+        impl crate::provider::Provider for AccessibilityTurnProvider {
+            fn id(&self) -> &str {
+                "offline-accessibility-turn"
+            }
+
+            fn stream(
+                &self,
+                request: &crate::provider::Request<'_>,
+            ) -> Result<Box<dyn Iterator<Item = crate::provider::Event> + '_>, crate::provider::Error>
+            {
+                let event = match self.turn.fetch_add(1, Ordering::SeqCst) {
+                    0 => {
+                        for tool in ["desktop_observe", "desktop_act"] {
+                            assert!(request.tools.iter().any(|(name, _, _)| name == tool));
+                        }
+                        crate::provider::Event::ToolCall {
+                            id: "observe-managed-desktop".into(),
+                            name: "desktop_observe".into(),
+                            arguments: json!({"sessionId": self.session_id}).to_string(),
+                        }
+                    }
+                    1 => {
+                        let snapshot = self.snapshot.lock().unwrap().clone().ok_or_else(|| {
+                            crate::provider::Error::Config(
+                                "desktop_observe did not execute before desktop_act".into(),
+                            )
+                        })?;
+                        let target = test_target(&snapshot, |node| {
+                            node["name"].as_str().is_some_and(|name| name == "Finish")
+                        });
+                        crate::provider::Event::ToolCall {
+                            id: "activate-finish".into(),
+                            name: "desktop_act".into(),
+                            arguments: json!({
+                                "sessionId": snapshot["sessionId"],
+                                "revision": snapshot["revision"],
+                                "targetId": target["targetId"],
+                                "action": "click",
+                            })
+                            .to_string(),
+                        }
+                    }
+                    _ => crate::provider::Event::Text(
+                        "I closed the dialog with the accessible Finish action.".into(),
+                    ),
+                };
+                Ok(Box::new(
+                    vec![event, crate::provider::Event::Done].into_iter(),
+                ))
+            }
+
+            fn context_window(&self) -> u32 {
+                200_000
+            }
+        }
+
+        let session_dir = root.join("agent-tool-turn");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let snapshot = Arc::new(Mutex::new(None));
+        let provider = AccessibilityTurnProvider {
+            turn: AtomicUsize::new(0),
+            snapshot: snapshot.clone(),
+            session_id: session_id.to_owned(),
+        };
+        let mut session = crate::session::Session::create(&session_dir).unwrap();
+        session.append(crate::session::Record::User(
+            "Close the local dialog".into(),
+        ));
+        let mut state = crate::tools::State::new();
+        let mods = Vec::new();
+        let mut extensions = crate::ext::Registry::empty();
+        let desktop_ref = desktop;
+        let mut agent = crate::agent::Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &session_dir,
+        )
+        .with_mixed_host_tools(
+            crate::provider::desktop_tool_schemas(true),
+            Box::new(move |call, _, _| {
+                let args = serde_json::from_str::<Value>(&call.arguments).unwrap();
+                let result = match call.name.as_str() {
+                    "desktop_observe" => desktop_ref
+                        .observe_accessibility(args["sessionId"].as_str())
+                        .map(|value| {
+                            *snapshot.lock().unwrap() = Some(value.clone());
+                            value.to_string()
+                        }),
+                    "desktop_act" => desktop_ref
+                        .act_accessibility(&args)
+                        .map(|value| value.to_string()),
+                    _ => Err(format!("unexpected host tool {}", call.name)),
+                };
+                crate::agent::HostToolOutcome::plain(match result {
+                    Ok(output) => crate::tools::Outcome::ok(output),
+                    Err(error) => crate::tools::Outcome::err(error),
+                })
+            }),
+        );
+        let (output, stop) = agent.run_turn(|_| {}).unwrap();
+        assert_eq!(stop, crate::agent::Stop::Finished);
+        assert_eq!(provider.turn.load(Ordering::SeqCst), 3);
+        drop(agent);
+        drop(extensions);
+        drop(session);
+        std::fs::remove_dir_all(session_dir).unwrap();
+        output.text
     }
 }

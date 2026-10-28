@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     os::unix::fs::PermissionsExt,
     os::unix::process::CommandExt,
     path::Path,
@@ -15,7 +15,9 @@ pub(super) fn start_session(workspace: &Path, root: &Path) -> Result<ManagedSess
     for tool in [
         "Xvfb",
         "xauth",
+        "xsetroot",
         "dbus-run-session",
+        "sh",
         "xfce4-session",
         "xfwm4",
         "xfdesktop",
@@ -98,10 +100,41 @@ pub(super) fn start_session(workspace: &Path, root: &Path) -> Result<ManagedSess
         let _ = std::fs::remove_dir_all(&directory);
         return Err(error);
     }
-    let desktop = match command("dbus-run-session", &["--", "xfce4-session"])
+    let background = Command::new("xsetroot")
+        .args(["-solid", "#202124"])
+        .env("DISPLAY", &display)
+        .env("XAUTHORITY", &auth_file)
+        .status();
+    let background = match background {
+        Ok(status) => status,
+        Err(error) => {
+            super::capture::stop_child(&mut xvfb);
+            let _ = std::fs::remove_dir_all(&directory);
+            return Err(format!("Setting managed desktop background: {error}"));
+        }
+    };
+    if !background.success() {
+        super::capture::stop_child(&mut xvfb);
+        let _ = std::fs::remove_dir_all(&directory);
+        return Err("Could not initialize managed desktop background".into());
+    }
+    let session_bus_file = directory.join("session-bus.address");
+    let session_bus_file_arg = session_bus_file
+        .to_str()
+        .ok_or("Invalid session bus address path")?;
+    let desktop_args = [
+        "--",
+        "sh",
+        "-c",
+        "umask 077; printf '%s' \"$DBUS_SESSION_BUS_ADDRESS\" > \"$1\"; exec xfce4-session",
+        "glass-xfce-session",
+        session_bus_file_arg,
+    ];
+    let mut desktop = match command("dbus-run-session", &desktop_args)
         .env("DISPLAY", &display)
         .env("XAUTHORITY", &auth_file)
         .env("XDG_SESSION_TYPE", "x11")
+        .env("GTK_A11Y", "atspi")
         .env("HOME", &session_home)
         .env("XDG_CONFIG_HOME", session_home.join(".config"))
         .env("XDG_CACHE_HOME", session_home.join(".cache"))
@@ -115,6 +148,15 @@ pub(super) fn start_session(workspace: &Path, root: &Path) -> Result<ManagedSess
             super::capture::stop_child(&mut xvfb);
             let _ = std::fs::remove_dir_all(&directory);
             return Err(format!("Starting isolated XFCE session: {error}"));
+        }
+    };
+    let session_bus_address = match wait_for_session_bus(&session_bus_file, &mut desktop) {
+        Ok(address) => address,
+        Err(error) => {
+            super::capture::stop_child(&mut desktop);
+            super::capture::stop_child(&mut xvfb);
+            let _ = std::fs::remove_dir_all(&directory);
+            return Err(error);
         }
     };
     let frames = Arc::new(Mutex::new(Frames::default()));
@@ -185,12 +227,41 @@ pub(super) fn start_session(workspace: &Path, root: &Path) -> Result<ManagedSess
         desktop,
         capture,
         frames,
+        session_bus_address,
+        accessibility_revision: 0,
+        accessibility_targets: HashMap::new(),
         lease: Lease::Agent,
         held_buttons: HashSet::new(),
         held_keys: HashSet::new(),
         scroll_x_remainder: 0.0,
         scroll_y_remainder: 0.0,
     })
+}
+
+fn wait_for_session_bus(path: &Path, child: &mut Child) -> Result<String, String> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if child
+            .try_wait()
+            .map_err(|error| format!("Checking isolated XFCE startup: {error}"))?
+            .is_some()
+        {
+            return Err("The isolated XFCE session exited during startup".into());
+        }
+        if let Ok(address) = std::fs::read_to_string(path) {
+            let address = address.trim();
+            if (address.starts_with("unix:path=") || address.starts_with("unix:abstract="))
+                && atspi::zbus::address::Address::try_from(address).is_ok()
+            {
+                return Ok(address.to_owned());
+            }
+            return Err(
+                "The isolated XFCE session returned an invalid private D-Bus address".into(),
+            );
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    Err("The isolated XFCE session did not publish its private D-Bus address".into())
 }
 
 fn command(program: &str, args: &[&str]) -> Command {

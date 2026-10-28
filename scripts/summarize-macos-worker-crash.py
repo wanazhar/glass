@@ -21,6 +21,15 @@ MAX_OUTPUT_BYTES = 16 * 1024
 WORKER_PROCESS_NAME = "glass-native-content-worker"
 WORKER_PROCESS_PREFIX = "glass-native-con"
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.$<>:+-]{1,160}$")
+DYLD_REASON_PATTERNS = (
+    (re.compile(r"\bdependent dylib\b.*\bnot found\b", re.IGNORECASE), "Dependent dylib not found"),
+    (re.compile(r"\blibrary not loaded\b", re.IGNORECASE), "Library not loaded"),
+    (re.compile(r"\blibrary missing\b", re.IGNORECASE), "Library missing"),
+    (re.compile(r"\bsymbol not found\b", re.IGNORECASE), "Symbol not found"),
+    (re.compile(r"\bimage not found\b", re.IGNORECASE), "Image not found"),
+    (re.compile(r"\bcode signature (?:invalid|failure|not valid)\b", re.IGNORECASE), "Code signature invalid"),
+    (re.compile(r"\bmissing required architecture\b", re.IGNORECASE), "Missing required architecture"),
+)
 OLD_FRAME = re.compile(
     r"^\s*(\d+)\s+([^\s]+)\s+0x[0-9a-fA-F]+\s+(.+?)(?:\s+\+\s+\d+)?\s*$"
 )
@@ -33,6 +42,16 @@ def safe_token(value: Any, *, limit: int = 160) -> str | None:
     if len(value) > limit or not SAFE_TOKEN.fullmatch(value):
         return None
     return value
+
+
+def safe_termination_reason(value: Any) -> str | None:
+    """Return only known dyld reason categories, never report-provided text."""
+    if not isinstance(value, str):
+        return None
+    return next(
+        (category for pattern, category in DYLD_REASON_PATTERNS if pattern.search(value)),
+        None,
+    )
 
 
 def image_name(value: Any) -> str | None:
@@ -196,10 +215,19 @@ def ips_summary(payload: dict[str, Any]) -> dict[str, Any]:
 
     termination = payload.get("termination")
     if isinstance(termination, dict):
-        for key in ("namespace", "code"):
-            token = safe_token(termination.get(key), limit=64)
-            if token:
-                summary[f"termination{key.title()}"] = token
+        namespace = safe_token(termination.get("namespace"), limit=64)
+        if namespace:
+            summary["terminationNamespace"] = namespace
+        code = termination.get("code")
+        if isinstance(code, int) and not isinstance(code, bool) and -(1 << 31) <= code < (1 << 32):
+            summary["terminationCode"] = code
+        else:
+            code_token = safe_token(code, limit=64)
+            if code_token:
+                summary["terminationCode"] = code_token
+        indicator = safe_termination_reason(termination.get("indicator"))
+        if indicator:
+            summary["terminationIndicator"] = indicator
 
     crashed_thread = payload.get("faultingThread")
     if isinstance(crashed_thread, int) and 0 <= crashed_thread < 10_000:
@@ -278,6 +306,9 @@ def ips_summary(payload: dict[str, Any]) -> dict[str, Any]:
 def old_crash_summary(text: str) -> dict[str, Any] | None:
     process: str | None = None
     exception: str | None = None
+    termination_namespace: str | None = None
+    termination_code: str | None = None
+    termination_indicator: str | None = None
     crashed = False
     frames: list[dict[str, Any]] = []
     for line in text.splitlines()[:100_000]:
@@ -289,6 +320,12 @@ def old_crash_summary(text: str) -> dict[str, Any] | None:
             match = re.match(r"Exception Type:\s+([^\s(]+)", line)
             if match:
                 exception = safe_token(match.group(1), limit=64)
+        elif line.startswith("Termination Reason:"):
+            match = re.match(r"Termination Reason:\s*([A-Za-z0-9_.$<>+-]+)\s+([^\s]+)(?:\s+(.*))?", line)
+            if match:
+                termination_namespace = safe_token(match.group(1), limit=64)
+                termination_code = safe_token(match.group(2), limit=64)
+                termination_indicator = safe_termination_reason(match.group(3))
         elif re.match(r"Thread\s+\d+\s+Crashed:", line):
             crashed = True
         elif re.match(r"Thread\s+\d+\s+", line):
@@ -328,6 +365,12 @@ def old_crash_summary(text: str) -> dict[str, Any] | None:
     }
     if exception:
         summary["exception"] = exception
+    if termination_namespace:
+        summary["terminationNamespace"] = termination_namespace
+    if termination_code:
+        summary["terminationCode"] = termination_code
+    if termination_indicator:
+        summary["terminationIndicator"] = termination_indicator
     return summary
 
 
@@ -438,6 +481,12 @@ def self_test() -> None:
                             "procPath": "/private/tmp/secret-profile/worker",
                             "processArguments": ["secret-page-title"],
                             "exception": {"type": "EXC_CRASH", "signal": "SIGABRT"},
+                            "termination": {
+                                "namespace": "DYLD",
+                                "code": 9,
+                                "indicator": "Library not loaded",
+                                "reason": "/private/tmp/secret-profile/libbad.dylib",
+                            },
                             "faultingThread": 0,
                             "usedImages": [{"name": "/usr/lib/libsystem_kernel.dylib"}],
                             "threads": [
@@ -460,6 +509,10 @@ def self_test() -> None:
         assert "__pthread_kill" in rendered
         assert "secret" not in rendered and "https://" not in rendered
         assert "/private/" not in rendered and "token" not in rendered
+        assert summary["terminationCode"] == 9
+        assert summary["terminationNamespace"] == "DYLD"
+        assert summary["terminationIndicator"] == "Library not loaded"
+        assert "libbad.dylib" not in rendered
 
         truncated = root / "glass-native-content-worker-truncated.ips"
         truncated.write_text(
@@ -665,6 +718,7 @@ def self_test() -> None:
         crash = root / "glass-native-content-worker-test.crash"
         crash.write_text(
             "Process: glass-native-content-worker [42]\n"
+            "Termination Reason: DYLD 1 Library missing\n"
             "Exception Type: EXC_CRASH (SIGABRT)\n"
             "Thread 0 Crashed:\n"
             "0   libsystem_kernel.dylib 0x0000000100000000 __pthread_kill + 4\n"
@@ -674,6 +728,47 @@ def self_test() -> None:
         )
         summary = parse_report(crash, since=since)
         assert summary is not None and len(summary["frames"]) == 2
+        assert summary["terminationNamespace"] == "DYLD"
+        assert summary["terminationCode"] == "1"
+        assert summary["terminationIndicator"] == "Library missing"
+        assert "/private/" not in json.dumps(summary)
+
+        unsafe_reason = root / "glass-native-content-worker-unsafe-reason.ips"
+        unsafe_reason.write_text(
+            json.dumps(
+                {
+                    "procName": "glass-native-content-worker",
+                    "termination": {
+                        "namespace": "DYLD",
+                        "code": 1,
+                        "indicator": "Library not loaded: /private/secret/libbad.dylib",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary = parse_report(unsafe_reason, since=since)
+        assert summary is not None and summary["terminationCode"] == 1
+        assert summary["terminationIndicator"] == "Library not loaded"
+        assert "/private/" not in json.dumps(summary)
+
+        missing_dependency = root / "glass-native-content-worker-missing-dependency.ips"
+        missing_dependency.write_text(
+            json.dumps(
+                {
+                    "procName": "glass-native-content-worker",
+                    "termination": {
+                        "namespace": "DYLD",
+                        "code": 1,
+                        "indicator": "dependent dylib '@rpath/private-secret.dylib' not found for '/private/secret/worker'",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary = parse_report(missing_dependency, since=since)
+        assert summary is not None
+        assert summary["terminationIndicator"] == "Dependent dylib not found"
         assert "/private/" not in json.dumps(summary)
 
         path_crash = root / "glass-native-content-worker-path.crash"

@@ -17,6 +17,8 @@ let sessionEnvironment = null;
 let sessionLifecycle = null;
 let inputDelayMs = 0;
 let startDelayMs = 0;
+let statusDelayNextMs = 0;
+let statusRequests = 0;
 let statusFailuresDuringStart = 0;
 let streamResponse = null;
 let streamTimer = 0;
@@ -60,6 +62,7 @@ const testModule = `
   document.querySelector("#desktop-toggle").addEventListener("click", () => surface.open());
   window.setDesktopHostReachable = (reachable) => fetch("/__test/host?reachable=" + reachable);
   window.setDesktopStartDelay = (ms) => fetch("/__test/start-delay?ms=" + ms);
+  window.setDesktopStatusDelay = (ms) => fetch("/__test/status-delay?ms=" + ms);
   window.setDesktopInputDelay = (ms) => fetch("/__test/input-delay?ms=" + ms);
   window.disconnectDesktopStream = () => fetch("/__test/stream-close");
   window.setStaleDesktopStream = (delayMs) => fetch("/__test/stream-stale?delayMs=" + delayMs);
@@ -113,6 +116,16 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify({ count: statusFailuresDuringStart }));
     return;
   }
+  if (url.pathname === "/__test/status-requests") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ count: statusRequests }));
+    return;
+  }
+  if (url.pathname === "/__test/status-delay") {
+    statusDelayNextMs = Math.max(0, Math.min(5000, Number(url.searchParams.get("ms")) || 0));
+    response.writeHead(204).end();
+    return;
+  }
   if (url.pathname === "/__test/stream-close") {
     clearInterval(streamTimer);
     streamTimer = 0;
@@ -152,13 +165,18 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (url.pathname === "/api/desktop/status") {
+    statusRequests += 1;
+    const reachableAtRequest = hostReachable;
+    const delay = statusDelayNextMs;
+    statusDelayNextMs = 0;
     if (startDelayMs > 0) {
       statusFailuresDuringStart += 1;
       response.writeHead(503, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "Host timed out. Tap the connection indicator to reconnect." }));
       return;
     }
-    if (!hostReachable) {
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    if (!reachableAtRequest) {
       response.writeHead(503, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "Host timed out. Tap the connection indicator to reconnect." }));
       return;
@@ -291,9 +309,19 @@ try {
   assert(offlineViewport && offlineViewport.height < 360, "offline viewer should keep the empty stage compact");
   if (process.env.DESKTOP_OFFLINE_PREVIEW)
     await page.screenshot({ path: process.env.DESKTOP_OFFLINE_PREVIEW, fullPage: true });
+  const requestsBeforeDelayedPoll = await page.evaluate(async () => (await (await fetch("/__test/status-requests")).json()).count);
+  await page.evaluate(() => window.setDesktopStatusDelay(2500));
+  await page.waitForFunction(async (before) =>
+    (await (await fetch("/__test/status-requests")).json()).count > before,
+    requestsBeforeDelayedPoll,
+    { timeout: 5000 },
+  );
   await page.evaluate(() => window.setDesktopHostReachable(true));
   await page.locator("#desktop-retry").click();
   await page.getByText("Ready to start").waitFor();
+  await page.waitForTimeout(2600);
+  assert.equal(await page.locator("#desktop-retry").isVisible(), false, "a delayed stale failure must not undo a successful reconnect");
+  assert.equal(await page.locator("#desktop-start").isDisabled(), false, "Start must remain enabled after a newer status request succeeds");
   assert.equal(await page.locator("#desktop-retry").isVisible(), false);
   assert.equal(await page.locator("#desktop-preset-quick").isChecked(), true);
   assert.equal(await page.locator("#desktop-preset-reusable").evaluate((radio) => radio.disabled), true);

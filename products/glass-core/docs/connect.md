@@ -298,6 +298,15 @@ returning it. Secret values are not written to the chat transcript or Connect
 event stream. This request path does not support arbitrary headers, other
 origins, HTTP, or other host tools.
 
+While a session retains redactors, GC redacts exact submitted values from tool
+results before extensions, mods, progress events, transcript records, or later
+model context receive them. Bash output capture remains in memory and does not
+write overflow spill files. If stdout or stderr exceeds the inline capture
+limit, GC omits that entire stream so a value split at the limit cannot appear
+as a partial capture. Starting or feeding a background job is blocked because
+its durable log could retain a secret; existing jobs can still be listed,
+polled, or stopped, and their returned output follows the same redaction path.
+
 ### Accessibility and agent tools
 
 The desktop tools exist only while Connect manages a desktop. They use the same

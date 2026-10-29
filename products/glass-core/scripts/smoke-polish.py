@@ -96,37 +96,40 @@ def main():
                     # Escape must erase the managed palette, not merely repaint
                     # the composer below a stale modal in the middle of the screen.
                     for query in ('/', '/not-a-command'):
-                        key(t,query);t.visible('Commands');back(t);t.idle();assert ('❯ '+query) not in t.screen.text(), t.screen.text()
-                        assert 'Commands' not in t.screen.text(), t.screen.text()
+                        key(t,query);t.visible('Search actions');back(t);t.idle();assert ('❯ '+query) not in t.screen.text(), t.screen.text()
+                        assert 'Search actions' not in t.screen.text(), t.screen.text()
                         assert 'No matching commands' not in t.screen.text(), t.screen.text()
                         key(t,'\x03');t.idle()
-                    key(t,'/');t.visible('Commands');key(t,'context');t.visible('› /context');key(t,'\r');t.visible('Context');t.visible('› Inspect')
-                    key(t,'\r');t.visible('Context details');back(t);t.visible('› Inspect');back(t);t.idle()
+                    key(t,'/');t.visible('Search actions');key(t,'context');t.visible('/context');key(t,'\r');t.visible('Context');t.visible('Inspect')
+                    key(t,'\r');t.visible('Context details');back(t);t.visible('Inspect');back(t)
+                    # A palette-dispatched modal restores its parent palette;
+                    # a separate Escape closes that palette back to the draft.
+                    t.visible('Search actions');back(t);t.idle()
                     # A palette-dispatched modal keeps a non-command draft.
-                    key(t,'draft');key(t,'\x10');t.visible('Commands');key(t,'status\r');t.visible('Connection');t.dismiss();t.visible('❯ draft');key(t,'\x03');t.idle()
+                    key(t,'draft');key(t,'\x10');t.visible('Search actions');key(t,'status\r');t.visible('Connection');t.dismiss();t.visible('❯ draft');key(t,'\x03');t.idle()
                     # File/path picker and snapshot attachment stay usable on a small screen.
                     t.send('/attach');t.visible('Files');key(t,'note.txt');t.visible('› note.txt');key(t,'\x1bOP');t.visible('Selection details');back(t);t.visible('Files');key(t,'\r');t.visible('Attach context');key(t,'\r');t.wait('Attached note.txt');t.idle()
                     t.send('attachment check');t.wait('Polished reply.');t.idle();assert 'ATTACHED-SNAPSHOT-CONTENT' in json.dumps(Endpoint.requests[-1])
-                    t.send('/context');t.visible('Context');t.received='';choose(t,'Remove');t.wait('\x1b[2J');t.visible('Context');back(t);t.idle();t.send('attachment removed');t.wait('Polished reply.');t.idle();assert 'ATTACHED-SNAPSHOT-CONTENT' not in json.dumps(Endpoint.requests[-1])
+                    t.send('/context');t.visible('Context');t.received='';choose(t,'Remove');t.wait('\x1b[2J');t.visible('Context');back(t);t.visible('Search actions');back(t);t.idle();t.send('attachment removed');t.wait('Polished reply.');t.idle();assert 'ATTACHED-SNAPSHOT-CONTENT' not in json.dumps(Endpoint.requests[-1])
                     t.send('/review');t.visible('Task review');key(t,'\x1b[F');t.dismiss();t.idle()
                     key(t,'\x12');t.visible('Prompt history');choose(t,'attachment check');t.visible('❯ attachment');key(t,'\x03');t.idle()
                     # Paste newlines and edit without submitting, even past the viewport.
                     key(t,'\x1b[200~one\ntwo\nthree\nfour\nfive\nsix\x1b[201~');t.visible('six');assert t.screen.saved is not None
                     key(t,'\x03');t.idle()
-                    t.send('/model');t.visible('Provider');key(t,'\x1b');t.wait('\x1b[?25h');t.idle()
+                    t.send('/model');t.visible('Provider');back(t);t.visible('Search actions');back(t);t.idle()
                     t.send('/login');t.visible('Connect a provider');choose(t,'Continue with ChatGPT');t.visible('sign-in' if size[0]<50 else 'Continue with ChatGPT');key(t,'l');t.visible('ChatGPT login link');back(t);t.visible('sign-in' if size[0]<50 else 'Continue with ChatGPT');key(t,'p');t.visible('Paste the final');t.dismiss();t.idle()
                     key(t,'\x07');t.visible('following');key(t,'\x1b[H');t.visible('attachment');t.visible('check');t.dismiss();t.idle()
                     assert not t.screen.invalid_positions,(size,t.screen.invalid_positions)
                 finally:t.close()
             t=f.Terminal(repo,env)
             try:
-                t.idle();key(t,'resize draft');t.resize(20,8);t.visible('❯ resize draft');t.received='';key(t,'\x10');t.wait('Commands');t.resize(40,12);t.visible('Commands');t.dismiss();t.visible('❯ resize draft');key(t,'\x03');t.idle()
+                t.idle();key(t,'resize draft');t.visible('❯ resize draft');t.resize(20,8);t.visible('❯ resize draft');t.received='';key(t,'\x10');t.visible('Search actions');t.resize(40,12);t.visible('Search actions');t.dismiss();t.visible('❯ resize draft');key(t,'\x03');t.idle()
                 key(t,'\x18');t.visible('external editor');key(t,'\x03');t.idle()
                 # Interactive session actions: preview, rename, resume and branch.
-                t.send('/sessions');t.visible('Sessions');choose(t,'seeded conversation');t.visible('Resume conversation');choose(t,'Preview');t.visible('Conversation preview');back(t);t.visible('Sessions')
-                choose(t,'seeded conversation');t.visible('Resume conversation');choose(t,'Rename');t.visible('Rename session');key(t,'\x15Renamed seed\r');t.visible('Sessions');choose(t,'Renamed seed');t.visible('Resume conversation');choose(t,'Resume');t.wait('Resumed Renamed seed');t.idle()
-                t.send('/sessions');t.visible('Sessions');choose(t,'Renamed seed');t.visible('Resume conversation');choose(t,'Branch');t.visible('Branch session');key(t,'\r');t.wait('Resumed Renamed seed (branch)');t.idle()
-                t.send('/sessions');t.visible('Sessions');choose(t,sid);t.visible('Resume conversation');choose(t,'Delete');t.visible('Delete conversation?');choose(t,'Delete conversation permanently');t.visible('Sessions');back(t);t.idle();assert not (root/'data/glass-core'/f'{sid}.jsonl').exists()
+                t.send('/sessions');t.visible('Conversations');choose(t,'seeded conversation');t.visible('Conversation');key(t,'p');t.visible('Log');back(t);t.visible('Conversation')
+                key(t,'n');t.visible('Rename conversation');key(t,'\x15Renamed seed\r');t.visible('Conversations');choose(t,'Renamed seed');t.visible('Status: finished · model: mock');key(t,'r');t.wait('Resumed Renamed seed');t.idle()
+                t.send('/sessions');t.visible('Conversations');choose(t,'Renamed seed');t.visible('Conversation');key(t,'f');t.visible('Fork conversation');key(t,'\r');t.wait('Resumed Renamed seed (branch)');t.idle()
+                t.send('/sessions');t.visible('Conversations');choose(t,sid);t.visible('Conversation');key(t,'d');t.visible('Delete conversation?');choose(t,'Delete permanently');t.visible('Conversations');back(t);t.visible('Search actions');back(t);t.idle();assert not (root/'data/glass-core'/f'{sid}.jsonl').exists()
                 Endpoint.mode='transient';before=Endpoint.calls;t.send('transient test');t.wait('retry 1');t.wait('Polished reply.');t.idle();assert Endpoint.calls==before+2
                 Endpoint.mode='partial';t.send('partial test');wait_wrapped(t,'simulated stream failure');t.idle()
                 count=Endpoint.calls;Endpoint.mode='normal';t.send('/retry');t.visible('Recover response');choose(t,'Retry response')
@@ -139,7 +142,7 @@ def main():
                 counter=root/'counter';Endpoint.task_command=f"python3 -c 'from pathlib import Path; p=Path(\"{counter}\"); p.write_text(p.read_text()+\"x\" if p.exists() else \"x\")'"
                 Endpoint.mode='tool';t.send('recovery test');wait_wrapped(t,'simulated failure after completed tool');t.idle();assert counter.exists(),Endpoint.requests[-1];assert counter.read_text()=='x'
                 Endpoint.mode='recovery';t.send('/retry');t.visible('Recover response');choose(t,'Retry response');t.wait('Recovered answer.');t.idle();assert counter.read_text()=='x'
-                t.send('/details');t.visible('Tool details');key(t,'\r');t.visible('Tool actions');choose(t,'Read command and recorded output');t.visible('$ python3');key(t,'\x1b[F');t.visible('Complete recorded inline output.');back(t);t.visible('Tool actions');back(t);t.visible('Tool details');back(t);t.idle()
+                t.send('/details');t.visible('Outputs');key(t,'\x1b[B');key(t,'\r');t.visible('Shell · exit 0');t.visible('python3 -c');back(t);t.visible('Outputs');back(t);t.visible('Search actions');back(t);t.idle()
                 Endpoint.mode='waiting';t.send('wait cancellation');t.wait('Waiting for provider');key(t,'queued follow-up\x1b\r');t.wait('queued');start=time.monotonic();key(t,'\x03');t.wait('Cancelled');t.idle();assert time.monotonic()-start<2
                 script=root/'slow.sh';pid=root/'owned.pid';script.write_text(f'#!/bin/sh\necho $$ > "{pid}"\nexec sleep 10\n');script.chmod(0o700)
                 Endpoint.mode='slow';Endpoint.task_command=str(script);t.send('tool cancellation');t.wait('bash running');deadline=time.monotonic()+3

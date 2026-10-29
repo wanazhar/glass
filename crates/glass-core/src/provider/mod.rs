@@ -503,12 +503,12 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
         ),
         (
             "desktop_observe".to_string(),
-            "Read a compact, bounded accessibility snapshot of visible apps, the focused window, and controls. Optionally search names, roles, and supported actions with a short query to narrow a large UI. Returns revision-bound target IDs; acting refreshes the snapshot and returns fresh target IDs. Password fields are identified without returning their values.".to_string(),
+            "Read a compact, bounded accessibility snapshot of visible apps, the focused or active window, and controls. Nodes identify whether accessible text editing is supported and may include a bounded value from text interfaces; password fields never return values. Before acting, require the target states to include `visible` and `showing`; use set_text only when editable is true. Visible actionable nodes may include a normalized `pointerTarget` center from AT-SPI screen extents for explicit raw-input fallback when an accessible action is not verified. For a deep search, query with an observed app name plus a distinctive control label and role (for example, `Chrome Understanding Ownership link`); this narrows traversal to matching app root(s). Check each result's owningWindow. Act only when exactly one actionable node matches, queryAmbiguous is false, and truncated is false. If results are ambiguous or truncated, add a nearby label or window clue and observe again; if no result is found and truncated is true, treat the search as incomplete. Do not assume an absent control or choose the first match when search is incomplete. Queries search names, roles, app names, and supported actions, never editable values. Returns revision-bound target IDs; acting refreshes the snapshot and returns fresh target IDs.".to_string(),
             serde_json::json!({
                 "type":"object",
                 "properties":{
                     "sessionId":{"type":"string","maxLength":64},
-                    "query":{"type":"string","maxLength":120,"description":"Optional 1–8 word search across app names, control names, roles, and supported actions. Does not search editable field contents."}
+                    "query":{"type":"string","maxLength":120,"description":"Optional 1–8 word search across app names, control names, roles, and supported actions; never searches editable field values. For deep controls, include an observed app name plus a distinctive label and role. Check owningWindow; act only if exactly one actionable node matches, queryAmbiguous=false, and truncated=false. Refine ambiguous or truncated results."}
                 },
                 "additionalProperties":false
             }).to_string(),
@@ -517,7 +517,7 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
     if include_input {
         tools.push((
             "desktop_act".to_string(),
-            "Act on one target from the latest desktop_observe snapshot using its exact targetId, sessionId, and revision. Supports accessible click, focus, and bounded text replacement; rejects stale IDs and respects the human/agent control lease. The result includes a fresh bounded accessibility snapshot with new target IDs when available; verify the expected UI change before continuing. If accessibility does not support an action, use desktop_screenshot and explicit desktop_input coordinates only when needed.".to_string(),
+            "Act on one exact target from the latest desktop_observe snapshot using its targetId, sessionId, and revision. Supports accessible click, focus, and bounded text replacement; rejects stale targets and respects the human/agent control lease. Act only on targets whose states include `visible` and `showing`, and use set_text only when editable is true. A stale target, revision, or session means observe again and choose from the new snapshot. The result includes a fresh bounded accessibility snapshot with new target IDs when available; verify the expected UI change before continuing. If a click is performed but unverified and the UI did not change, use the matching visible node's fresh `pointerTarget` with one `desktop_input` pointer-click, then observe again. Do not reuse pointer coordinates from an older snapshot. If no pointerTarget exists, use desktop_screenshot and explicit desktop_input coordinates only when needed.".to_string(),
             serde_json::json!({
                 "type":"object","additionalProperties":false,"required":["sessionId","revision","targetId","action"],
                 "properties":{
@@ -532,16 +532,17 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
         ));
         tools.push((
             "desktop_input".to_string(),
-            "Fallback for custom-drawn surfaces when desktop_observe exposes no suitable target. Sends one bounded raw input event to the same Connect desktop and is rejected while the human holds the control lease. Prefer desktop_act on accessible targets; for raw pointer interaction, use one `pointer-click` with button and normalized x/y instead of separate down/up events. Pointer x/y use normalized 0..1 coordinates, scroll deltas use browser pixels, and text accepts up to 512 UTF-8 bytes with newline and tab allowed; other control characters are rejected.".to_string(),
+            "Fallback for custom-drawn surfaces when desktop_observe exposes no suitable target. Sends one bounded raw input event to the current Connect desktop and is rejected while the human holds the control lease. It is already bound to this Connect session and does not accept a sessionId; desktop_act and desktop_launch_app do require the sessionId from the latest desktop_status/desktop_observe. Prefer desktop_act on accessible targets. Use `key-tap` to press and release one key; use `key-chord` with modifiers first and one key last. The exact modifier names are `Control`, `Alt`, `Shift`, and `Meta` (use `Control`, not `Ctrl`). Special key spellings include `Enter`, `Escape`, `Tab`, `BackSpace`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`, `Space`, and `F1` through `F12`; one ASCII letter or digit is also accepted. Examples: Control+L is `keys:[\"Control\",\"L\"]`; Alt+F2 is `keys:[\"Alt\",\"F2\"]`; Enter is `key:\"Enter\"`; Page Down is `key:\"PageDown\"`. `key` is a held-key down/up event and requires `pressed`. For raw pointer interaction, use one `pointer-click` with button and normalized x/y instead of separate down/up events. Pointer x/y use normalized 0..1 coordinates, scroll deltas use browser pixels, and text accepts up to 512 UTF-8 bytes with newline and tab allowed; other control characters are rejected.".to_string(),
             serde_json::json!({
                 "type":"object","additionalProperties":false,"required":["action"],
                 "properties":{
-                    "action":{"type":"string","enum":["pointer-move","pointer-button","pointer-click","key","text","scroll"]},
+                    "action":{"type":"string","enum":["pointer-move","pointer-button","pointer-click","key","key-tap","key-chord","text","scroll"]},
                     "x":{"type":"number","minimum":0,"maximum":1},
                     "y":{"type":"number","minimum":0,"maximum":1},
                     "button":{"type":"string","enum":["left","middle","right"]},
                     "pressed":{"type":"boolean"},
                     "key":{"type":"string","maxLength":16},
+                    "keys":{"type":"array","minItems":2,"maxItems":4,"items":{"type":"string","maxLength":16},"description":"Modifiers first, then one key; for example [\"Alt\",\"F2\"]."},
                     "text":{"type":"string","maxLength":512,"description":"At most 512 UTF-8 bytes; newline and tab are allowed, other control characters are rejected."},
                     "deltaX":{"type":"number","minimum":-800,"maximum":800},
                     "deltaY":{"type":"number","minimum":-800,"maximum":800}
@@ -549,7 +550,25 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
             ,"allOf":[
                 {"if":{"properties":{"action":{"const":"pointer-click"}}},"then":{"required":["x","y","button"]}},
                 {"if":{"properties":{"action":{"const":"pointer-button"}}},"then":{"required":["button","pressed"]}}
+                ,{"if":{"properties":{"action":{"const":"key"}}},"then":{"required":["key","pressed"]}}
+                ,{"if":{"properties":{"action":{"const":"key-tap"}}},"then":{"required":["key"]}}
+                ,{"if":{"properties":{"action":{"const":"key-chord"}}},"then":{"required":["keys"]}}
             ]}).to_string(),
+        ));
+        tools.push((
+            "desktop_launch_app".to_string(),
+            "List installed desktop applications with their exact desktopEntryId, then launch one by that ID in the same managed Connect session. The ID must come from the current list and the sessionId from desktop_status. This does not accept command lines, URIs, or arguments. Launch is bounded and reports verified=false; call desktop_observe to confirm the application window opened. Launch requires the agent input lease.".to_string(),
+            serde_json::json!({
+                "type":"object",
+                "properties":{
+                    "action":{"type":"string","enum":["list","launch"]},
+                    "sessionId":{"type":"string","maxLength":64},
+                    "desktopEntryId":{"type":"string","maxLength":128}
+                },
+                "required":["action","sessionId"],
+                "additionalProperties":false,
+                "allOf":[{"if":{"properties":{"action":{"const":"launch"}}},"then":{"required":["desktopEntryId"]}}]
+            }).to_string(),
         ));
     }
     tools
@@ -688,7 +707,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["desktop_status", "desktop_screenshot", "desktop_observe"]
         );
-        assert_eq!(full.len(), 5);
+        assert_eq!(full.len(), 6);
         assert!(full[0].1.contains("frameTimeMs"));
         let action: Value = serde_json::from_str(&full[3].2).unwrap();
         assert_eq!(action["properties"]["action"]["enum"][0], "click");
@@ -700,7 +719,34 @@ mod tests {
                 .unwrap()
                 .contains(&Value::String("pointer-click".into()))
         );
+        assert!(
+            input["properties"]["action"]["enum"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String("key-chord".into()))
+        );
+        assert!(full[4].1.contains("[\"Alt\",\"F2\"]"));
         assert_eq!(input["properties"]["deltaX"]["maximum"], 800);
+        assert_eq!(full[5].0, "desktop_launch_app");
+        assert!(full[5].1.contains("verified=false"));
+        let launch: Value = serde_json::from_str(&full[5].2).unwrap();
+        assert_eq!(launch["properties"]["action"]["enum"][0], "list");
+        assert_eq!(launch["properties"]["action"]["enum"][1], "launch");
+        assert_eq!(launch["additionalProperties"], false);
+        let observe = full
+            .iter()
+            .find(|tool| tool.0 == "desktop_observe")
+            .expect("desktop observe schema should be present");
+        assert!(observe.1.contains("owningWindow"));
+        assert!(observe.1.contains("queryAmbiguous"));
+        assert!(observe.1.contains("truncated is true"));
+        let observe_schema: Value = serde_json::from_str(&observe.2).unwrap();
+        assert!(
+            observe_schema["properties"]["query"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("owningWindow")
+        );
     }
 
     #[test]

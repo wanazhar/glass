@@ -34,7 +34,9 @@ and tool execution; Git-based checkpoints and change review require a repository
 
 For the optional web workspace, use `GC_INSTALL_WEB=1 ./scripts/install.sh`.
 Then run `gc connect`. See [Remote workspace](connect.md) for Tailscale and iPhone
-setup. Normal installation does not require Node.
+setup. Normal installation does not require Node. The web asset build does not
+install the Linux X server, XFCE, or FFmpeg packages used by the managed desktop.
+See the Connect guide for the desktop's host requirements and current availability.
 
 ## Choose an execution mode
 
@@ -68,9 +70,10 @@ runtimes can use no authentication. ChatGPT sign-in uses a browser authorization
 flow; on a remote terminal, paste the final callback URL when prompted. Tokens
 refresh before new turns. Revoked sessions require sign-in again.
 
-Saved connections and credentials use `~/.config/glass-core/auth.json`, or the XDG
-config location, with private atomic writes on Unix. Multiple accounts are stored
-separately. glass-core does not import credentials from other coding agents.
+Saved connections and credentials use `~/.config/glass-core/auth.json`, or the
+XDG (X Desktop Group) config location, with private atomic writes on Unix.
+Multiple accounts are stored separately. glass-core does not import credentials
+from other coding agents.
 `/logout` removes the saved connection from this application; it does not revoke
 the provider grant or unset an environment variable.
 

@@ -27,7 +27,8 @@ application needs neither Node nor a frontend build tool. Alternatively, run
 Binary distributions can provide the web assets separately; point that variable
 to their extracted directory.
 
-GC prints a private HTTPS URL. Open it in Safari on your iPhone, then choose
+GC prints a private HTTPS (Hypertext Transfer Protocol Secure) URL. Open it in
+Safari on your iPhone, then choose
 **Share → Add to Home Screen**. First-time Tailscale Serve setup may require
 enabling HTTPS in the tailnet. GC does not enable Funnel or publish a public URL.
 
@@ -42,7 +43,7 @@ unrelated routes are not replaced. Stopping removes GC's route only if it still
 points to GC's recorded loopback endpoint. It does not reset Tailscale Serve or
 stop session workers. Use `gc stop THREAD_ID` separately to stop an idle worker.
 
-For direct HTTP access by Tailscale IP, use:
+For direct HTTP (Hypertext Transfer Protocol) access by Tailscale IP, use:
 
 ```sh
 gc connect stop # only if the gateway is already running
@@ -53,7 +54,8 @@ This prints `http://TAILSCALE_IP:PORT` and keeps the HTTPS endpoint when availab
 Tailscale owner identity checks. The HTTP listener uses an available port from
 8080 through 8083. It stays inside the tailnet; it is not a public listener.
 Plain HTTP supports the online workspace, but browsers require HTTPS for service
-worker caching and some clipboard features. Use HTTPS for the full PWA experience.
+worker caching and some clipboard features. Use HTTPS for the full progressive
+web application (PWA) experience.
 `gc connect stop` removes both GC routes while preserving session workers.
 Tailscale's HTTP router normalizes IP hosts with the tailnet DNS suffix. GC adds
 and removes that exact alias through the local daemon API using version checks,
@@ -99,59 +101,173 @@ per draft. Storage failures are reported; saving a draft never submits it.
 
 ## Shared desktop
 
-The **Computer** workspace shows a desktop session on the same host as GC. It
-does not attach to the host's login screen or reuse a user's existing display.
-Managed virtual desktops are supported on Linux hosts only.
-Choose **Quick desktop** to create an isolated, disposable Xvfb and XFCE session;
-GC reports the display ID and workspace directory. The session runs at
-1280 × 800 and streams fresh JPEG frames over the authenticated Connect origin.
-Audio is not included. If Xvfb, XFCE, Xauthority, or FFmpeg is unavailable,
-Connect reports the missing dependency and leaves the session stopped; it does
-not install packages or restart the host desktop.
+**Status: Local only.** This section describes the current source checkout. The
+managed desktop changes are not part of published `0.3.14`; do not assume that
+an installed binary includes them.
 
-**Reusable workspace** keeps its HOME and workspace files after Stop, and a
-Connect gateway restart reattaches to the same running desktop. Deleting the
-saved workspace is a separate action. The GNOME reusable option is disabled on
-this host until an isolated GNOME session passes frame, input, and accessibility
-acceptance; the current GNOME Xvfb smoke produced a blank display. No user login
-display is attached.
+The **Computer** workspace shows a virtual desktop on the same host as GC. It
+does not attach to the host login screen or reuse a user's display. Managed
+virtual desktops are supported on Linux only. Connect starts them in a separate
+X server with private X authority, HOME, XDG (X Desktop Group) directories,
+D-Bus (Desktop Bus) session, and accessibility bus. The desktop receives the
+same pointer, keyboard, and screen used by the human viewer and the GC desktop
+tools.
 
-Viewing is read-only until **Take control** is selected. That action transfers
-the session's single input lease to the human, and GC desktop input tools are
-rejected while the human holds it. Closing a tab or losing the stream does not
-stop the desktop or transfer the lease back. Choose **Return to agent** when GC
-should resume input, or choose **Stop desktop** to end the managed session
-explicitly. `gc connect stop` also shuts down the Connect-owned desktop process
-group. Screenshots and input use this same display; GC's screenshot tool returns
-a workspace-relative artifact that can be inspected with `view_image`.
+### Available desktop choices
 
-On phones, **Trackpad** mode is the default: drag to move, tap to click, use two
-fingers to scroll, or long-press for right-click. **Direct touch** maps taps and
-drags to the desktop, supports long-press right-click, and allows pinch-to-zoom
-and panning around the enlarged view. The keyboard control sends text and offers
-desktop key shortcuts.
+Choose **Quick desktop** to start a disposable XFCE session. Connect creates a
+private Xvfb (X virtual framebuffer) display at 1280 × 800. FFmpeg captures
+JPEG (Joint Photographic Experts Group) frames at 5 frames per second with no
+audio. The stream uses the authenticated Connect origin. The
+desktop viewer requests 480-pixel-wide frames on narrow or coarse-pointer
+screens; other viewers use 1280 pixels. The stream endpoint accepts widths from
+320 through 1280 pixels. These are capture and stream limits, not a guarantee
+that a network will deliver five frames each second.
 
-In a local slow-link acceptance run on 2026-10-28, a 390 px phone viewport used
-480 px desktop frames over a simulated 1 Mbps connection with 250 ms round-trip
-latency. Pointer-move and scroll acknowledgements took 293 ms and 313 ms; the
-corresponding input-to-visible-frame times were 452 ms and 720 ms (two samples
-of each). The viewer showed a delayed frame while the link was shaped and
-returned to **Live** after bandwidth was restored. This is a recorded run, not a
-latency guarantee. It used the Core binary with SHA-256
-`5d80014bbbc8c4f28761c8064516831bce55c4b4aa924af755fb2c5adb1bcb43`.
+The Quick desktop session HOME and its private runtime files are removed when
+the session stops. The reported `workspaceRoot` is separate. Files saved there
+remain in the selected GC workspace after the desktop stops. Before saving a
+file, check the `workspaceRoot` in desktop status.
 
-Managed desktop accessibility uses a session-private AT-SPI bus and is available
-for Linux XFCE sessions. It does not fall back to the host's accessibility bus.
-`desktop_observe` returns a bounded tree of at most 160 visited nodes and 12
-levels; large application windows can be marked truncated. A focused application
-query can make room for its controls. Text values are capped at 160 characters,
-password values are withheld, and actions require a current visible and showing
-target from the latest observation. Some applications do not register with the
-private accessibility bus; their controls then remain unavailable to semantic
-desktop actions. XFCE's D-Bus-activated panel receives the session-private
-AT-SPI address through that session's activation environment. The desktop does
-not fall back to the host accessibility bus when an application fails to
-register.
+The current source also contains a reusable desktop supervisor and one private
+`default` profile. A reusable session can keep its HOME and workspace after
+**Stop** and can reattach after a Connect gateway restart. Stopping the session
+and deleting the profile are separate operations. **Delete saved workspace**
+removes the profile only after its session has stopped.
+
+The current Connect interface offers **Reusable workspace** as a GNOME session.
+This source keeps that capability disabled until GNOME passes isolated Xvfb checks for
+screen capture, input, and accessibility. The local GNOME attempt produced a
+blank display. Installed GNOME packages do not enable this option. The local
+reusable lifecycle test passed with XFCE, but that test does not establish that
+GNOME works or make the disabled GNOME option available. Do not use the disabled
+option as a persistent desktop. Connect does not attach to a user login display
+or restart the host desktop.
+
+Quick XFCE requires `Xvfb`, `xauth`, `xsetroot`, `dbus-run-session`,
+`dbus-update-activation-environment`, `gdbus`, `sed`, `ffmpeg`, `xdpyinfo`,
+`xfce4-session`, `xfwm4`, `xfdesktop`, and `xfce4-panel`. It also requires the
+panel template at `/etc/xdg/xfce4/panel/default.xml`. Connect reports a missing
+dependency and leaves the session stopped. GC does not install system packages
+or change host login services. Stop the desktop before removing its profile or
+changing the Connect data directory.
+
+### Viewing and control
+
+The viewer starts in read-only mode. **Take control** transfers the session's
+single input lease to the human. While the human holds that lease, GC's
+`desktop_act`, `desktop_input`, and application-launch tools cannot send input.
+Status, accessibility observation, and screenshots remain read-only operations.
+The agent can inspect screenshot pixels and non-password text returned by
+accessibility observation. Use the managed display for content you intend to
+share with the agent.
+Choose **Return to agent** to transfer input back to GC. The agent cannot take
+the lease implicitly.
+
+Closing the viewer or losing its stream does not stop the desktop or change the
+lease. Reconnecting shows the same session and lease. This is deliberate: a
+temporary phone or network disconnect does not hand input to another controller.
+Use **Stop desktop** to end the current managed session. Stopping a reusable
+session preserves its profile. Deleting the saved workspace is a separate
+operation. Stopping the Connect gateway ends a disposable session. A reusable
+supervisor continues to own its desktop and profile so a later gateway can
+reattach. `gc connect stop` and **Stop desktop** therefore have different
+effects for a reusable session.
+
+The default stream is an authenticated multipart JPEG stream. The viewer tracks
+frame sequence and capture time. It labels delayed frames as delayed and removes
+a displayed frame when it is more than three seconds old; a stale frame is not
+presented as live. On a slow connection the displayed image can lag behind
+accepted input. The viewer keeps the newest decodable frame instead of building
+an unbounded image queue. Pinch zoom and panning change only the viewer and do
+not send desktop input.
+
+On phones, **Trackpad** mode is the default. Drag to move the pointer, tap to
+click, use two fingers to scroll, or long-press for right-click. **Direct touch**
+maps taps and drags to the desktop, supports long-press right-click, and allows
+pinch-to-zoom and panning around the enlarged view. The keyboard control sends
+text and desktop key shortcuts. Text input is limited to 512 UTF-8 bytes per
+request. Newline and tab are allowed; other control characters are rejected.
+
+In a local slow-link acceptance run on 2026-10-28, a 390-pixel phone viewport
+used 480-pixel desktop frames over a simulated 1 Mbps connection with 250 ms
+round-trip latency. Pointer-move and scroll acknowledgements took 293 ms and
+313 ms. The corresponding input-to-visible-frame times were 452 ms and 720 ms.
+There were two samples for each measurement. The viewer showed a delayed frame
+while the link was shaped and returned to **Live** after bandwidth was restored.
+This result records one local run. It is not a latency or bandwidth guarantee.
+The run used a Core binary with SHA-256
+`5d80014bbbc8c4f28761c8064516831bce55c4b4aa924af755fb2c5adb1bcb43`; it does
+not identify the binary installed on every host.
+
+### Authorization and HTTP
+
+All desktop API routes require the active Connect authentication. Remote
+Tailscale access checks the host owner's identity. Local access uses the private
+link token exchanged for an HttpOnly, SameSite cookie. A `POST` to a desktop API
+route must also include the exact active Connect `Origin` and matching `Host`;
+missing or mismatched origin headers are rejected. This protects desktop
+mutations from cross-origin browser requests. The desktop session and its input
+lease are still separate from the authentication cookie.
+
+For remote access, the Connect listener stays on loopback behind Tailscale
+Serve. It does not open a public listener or enable Funnel. `gc connect --http`
+uses a plain HTTP URL; GC does not encrypt that route. Keep it inside the
+tailnet and do not expose it through a public reverse proxy. Use the HTTPS URL
+when encrypted transport is required. `gc connect --local` also stays on
+loopback and uses a private link.
+
+### Accessibility and agent tools
+
+The desktop tools exist only while Connect manages a desktop. They use the same
+session, display, and lease as the human viewer. `desktop_status` reports the
+active session, workspace, frame age, frame timestamp, lease, and available
+environment choices. `desktop_screenshot` saves a fresh JPEG under
+`.gc-artifacts/desktop` in the active thread workspace; the tool fails if that
+workspace differs from the desktop's `workspaceRoot`. It keeps at most eight
+captured frames for the current session. Use `view_image` with the returned
+relative path to inspect one.
+
+`desktop_observe` reads a bounded accessibility tree from the session-private
+AT-SPI (Assistive Technology Service Provider Interface) bus. It does not use
+the host's accessibility bus. A whole-desktop
+observation visits at most 160 nodes across at most 12 levels and has a
+three-second time budget. When a multiword query identifies an application,
+the focused search can visit up to 768 nodes across 16 levels and has an
+eight-second budget. Large or slow application trees can still be truncated or
+time out. Text values are capped at 160 characters,
+password values are withheld, and queries search application and control names,
+roles, and supported actions, not editable values. An incomplete or ambiguous
+query returns no actionable target IDs or pointer coordinates. Refine the query
+or use a screenshot when the tree is incomplete.
+
+`desktop_act` accepts `click`, `focus`, and `set_text` for one target from the
+latest observation. Send its `sessionId`, `revision`, and `targetId` together.
+The target must be visible and showing. `set_text` also requires an editable
+target and accepts up to 512 UTF-8 bytes. The agent must observe again after a
+stale-target error. A successful click call does not prove that the application
+changed; check its returned fresh observation or take another observation
+before continuing.
+
+`desktop_input` sends bounded raw keyboard, pointer, or scroll events when an
+accessible action is not available. Pointer coordinates are normalized from 0
+to 1. Scroll values use browser pixels and each request is limited to 800 pixels
+per axis. Text accepts at most 512 UTF-8 bytes. The tool is bound to the current
+Connect session and does not take a `sessionId` argument. It is rejected while
+the human holds the input lease.
+
+`desktop_launch_app` lists installed desktop entry IDs and can launch only an
+ID returned by that list. Send the `sessionId` from current desktop status and
+the exact `desktopEntryId` from the list. It does not accept a command line, a
+URI (Uniform Resource Identifier), or launch arguments. Launch requires the
+agent lease. A launch request is not proof that an application opened; use
+`desktop_observe` to confirm the window.
+
+Some applications do not register with the private accessibility bus. Their
+controls are unavailable to semantic desktop actions. XFCE's D-Bus-activated
+panel receives the session-private AT-SPI address through the session activation
+environment. A missing application registration does not trigger a fallback to
+the host accessibility bus.
 
 Approvals pause the agent and show the exact operation and justification. Only
 the input owner can allow it once or deny it. Questions support choices, multiple

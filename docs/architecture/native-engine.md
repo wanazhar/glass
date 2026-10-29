@@ -5,7 +5,9 @@ runtime in feature-enabled Glass builds. This guide describes the current
 engine and the versioned profile it is working toward. The process-backed
 regressions below cover specific request and event paths; they do not establish
 full browser conformance. Web Platform Tests and cross-platform certification
-remain separate checks.
+remain separate checks. This guide describes the current source checkout; see
+[release evidence](../release-evidence.md) for the exact published source and
+artifacts.
 
 The slice notes below record results from the source snapshot where each test
 ran. Their words “local” and “unpushed” describe those earlier checkpoints,
@@ -545,7 +547,11 @@ Slice 756 implements bounded `adoptNode()` within one browsing-context
 command owner, including top-level and same-origin-frame Documents, inert
 template-owner Documents, nested template contents, and same-Document detach.
 Slice 757 adds identity-preserving transfer among same-origin Documents in one
-top-level/frame tree. The backend coordinates source and destination document
+top-level/frame tree. The focused regression
+`native_cross_document_adoption_preserves_closed_shadow_root_identity` also
+covers closed-root identity when its host moves between a top-level Document
+and a same-origin frame. It does not establish complete Shadow DOM adoption
+conformance. The backend coordinates source and destination document
 candidates, validates both before synchronizing either content worker, attempts
 to restore both snapshots on synchronization failure, and publishes neither Rust
 document until both workers accept the transfer. Retained JavaScript wrappers
@@ -553,8 +559,10 @@ are rebound to the destination identity and route subsequent mutations to the
 new owner after realm refresh. The process-backed regression covers transfer
 in both top/frame directions and between sibling frames. Worker-loss rollback
 has not been fault-injection-tested. Independent top-level targets and popups,
-cross-origin DOM access, custom-element adopted callbacks/registries, and
-Shadow DOM adoption remain outside this slice. Quirks-mode layout,
+cross-origin DOM access, and custom-element adopted callbacks/registries
+remain outside this slice. At this checkpoint, Shadow DOM adoption was also
+outside the slice; the later closed-root regression above is narrower than full
+Shadow DOM conformance. Quirks-mode layout,
 parser-stream reentrancy, remote CI, and cross-platform certification also
 remain open. See the [slice 757 task](../plan/tasks/native-engine-browser-757.md).
 Slice 758 completes the autonomous registry and core lifecycle locally. The

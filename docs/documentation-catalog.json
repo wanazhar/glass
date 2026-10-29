@@ -2000,6 +2000,7 @@
         "products/glass-core/THIRD_PARTY.md",
         "products/glass-core/docs/INDEX.md",
         "products/glass-core/docs/configuration.md",
+        "products/glass-core/docs/connect.md",
         "products/glass-core/docs/getting-started.md",
         "products/glass-core/docs/plan/README.md",
         "products/glass-core/docs/web-tools.md",
@@ -2373,7 +2374,8 @@
       "dependencies": [
         "docs/architecture/development-tui.md",
         "docs/browser-host-rfc.md",
-        "docs/development-runtime.md"
+        "docs/development-runtime.md",
+        "docs/release-evidence.md"
       ],
       "topicRoute": "docs/INDEX.md#workspace-operations",
       "route": "docs/architecture/browser-connection.md#browser-connection-controller-and-remote-view",
@@ -2489,7 +2491,8 @@
       "dependencies": [
         "docs/architecture/connection-presentation.md",
         "docs/architecture/development-tui.md",
-        "docs/development-runtime.md"
+        "docs/development-runtime.md",
+        "docs/release-evidence.md"
       ],
       "topicRoute": "docs/INDEX.md#workspace-operations",
       "route": "docs/architecture/browser-workspace.md#canonical-browser-workspace",
@@ -2636,7 +2639,8 @@
         "docs/architecture/browser-connection.md",
         "docs/architecture/development-tui.md",
         "docs/cli.md",
-        "docs/development-runtime.md"
+        "docs/development-runtime.md",
+        "docs/release-evidence.md"
       ],
       "topicRoute": "docs/INDEX.md#glass-documentation",
       "route": "docs/architecture/connection-presentation.md#connection-aware-browser-presentation",
@@ -2766,7 +2770,8 @@
         "docs/architecture/tui.md",
         "docs/glass-core-harness.md",
         "docs/plan/tasks/issue63-durable-followup-queue-001.md",
-        "docs/plan/tasks/issue64-send-attempt-recovery-001.md"
+        "docs/plan/tasks/issue64-send-attempt-recovery-001.md",
+        "docs/release-evidence.md"
       ],
       "topicRoute": "docs/INDEX.md#maintainer-and-release-guides",
       "route": "docs/architecture/development-tui.md#glass-dev-tui",
@@ -2902,7 +2907,8 @@
       ],
       "dependencies": [
         "docs/architecture/development-tui.md",
-        "docs/architecture/tui.md"
+        "docs/architecture/tui.md",
+        "docs/release-evidence.md"
       ],
       "topicRoute": "docs/INDEX.md#glass-documentation",
       "route": "docs/architecture/mobile-cockpit.md#private-development-cockpit-and-mobile-presentation",
@@ -3177,7 +3183,8 @@
         "docs/plan/tasks/native-engine-browser-869.md",
         "docs/plan/tasks/native-engine-browser-870.md",
         "docs/plan/tasks/native-engine-browser-871.md",
-        "docs/plan/tasks/native-engine-browser-873.md"
+        "docs/plan/tasks/native-engine-browser-873.md",
+        "docs/release-evidence.md"
       ],
       "topicRoute": "docs/INDEX.md#glass-documentation",
       "route": "docs/architecture/native-engine.md#native-browser-engine",
@@ -3414,7 +3421,8 @@
         "docs/architecture/browser-connection.md",
         "docs/architecture/browser-workspace.md",
         "docs/architecture/development-tui.md",
-        "docs/development-runtime.md"
+        "docs/development-runtime.md",
+        "docs/release-evidence.md"
       ],
       "topicRoute": "docs/INDEX.md#glass-documentation",
       "route": "docs/architecture/product-workspace.md#glass-product-workspace",
@@ -3568,7 +3576,8 @@
         "docs/harness-architecture.md"
       ],
       "dependencies": [
-        "docs/architecture/development-tui.md"
+        "docs/architecture/development-tui.md",
+        "docs/release-evidence.md"
       ],
       "topicRoute": "docs/INDEX.md#glass-documentation",
       "route": "docs/architecture/tui.md#standalone-browser-tui",
@@ -81837,6 +81846,14 @@
         "README.md",
         "SECURITY.md",
         "docs/INDEX.md",
+        "docs/architecture/browser-connection.md",
+        "docs/architecture/browser-workspace.md",
+        "docs/architecture/connection-presentation.md",
+        "docs/architecture/development-tui.md",
+        "docs/architecture/mobile-cockpit.md",
+        "docs/architecture/native-engine.md",
+        "docs/architecture/product-workspace.md",
+        "docs/architecture/tui.md",
         "docs/ci-platform-certification.md",
         "docs/maintainers/README.md",
         "docs/migration/0.3.13.md",
@@ -83946,6 +83963,7 @@
       "recommendationReason": "Current source, contributor, or product documentation has a canonical repository route; consolidate claims at the owning guide.",
       "canonicalSuccessor": null,
       "consumers": [
+        "docs/INDEX.md",
         "products/glass-core/README.md",
         "products/glass-core/docs/INDEX.md",
         "products/glass-core/docs/getting-started.md",
@@ -83977,6 +83995,26 @@
           "level": "2",
           "title": "Shared desktop",
           "anchor": "shared-desktop"
+        },
+        {
+          "level": "3",
+          "title": "Available desktop choices",
+          "anchor": "available-desktop-choices"
+        },
+        {
+          "level": "3",
+          "title": "Viewing and control",
+          "anchor": "viewing-and-control"
+        },
+        {
+          "level": "3",
+          "title": "Authorization and HTTP",
+          "anchor": "authorization-and-http"
+        },
+        {
+          "level": "3",
+          "title": "Accessibility and agent tools",
+          "anchor": "accessibility-and-agent-tools"
         },
         {
           "level": "2",

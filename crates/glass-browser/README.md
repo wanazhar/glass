@@ -7,9 +7,12 @@ API. Its portable semantic session can connect to Firefox WebDriver BiDi or
 SafariDriver W3C WebDriver endpoints. It does not bundle a browser, host a
 remote browser service, or infer an autonomous action plan.
 
-**Status: Current 0.3.14 source behavior.** This is the browser-only package.
-The complete development TUI, project runtime, resident-agent harness, editor,
-PTYs, and Remote View belong to `glass-dev` and are not exported here.
+**Status: Current source checkout.** The workspace package version is `0.3.14`;
+this checkout includes changes after the published `0.3.14` release. See the
+[release evidence](https://github.com/wanazhar/glass/blob/main/docs/release-evidence.md)
+for the published source and artifacts. This is the browser-only package. The complete development TUI,
+project runtime, resident-agent harness, editor, PTYs, and Remote View belong to
+`glass-dev` and are not exported here.
 
 
 The package provides:

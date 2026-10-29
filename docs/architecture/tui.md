@@ -1,6 +1,7 @@
 # Standalone Browser TUI
 
-Status: Current standalone Browser TUI reference (Glass 0.3.14 source behavior).
+Status: Current source checkout (workspace version `0.3.14`). See the
+[release evidence](../release-evidence.md) for published scope.
 
 This is the independently installable browser-only terminal product. It owns a
 native runtime session by default and a `BrowserWorkspaceController` with the `Standalone`

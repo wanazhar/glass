@@ -3,6 +3,8 @@
 This Rust package builds the `glass-core` terminal coding harness and its
 `gc` command alias. Glass uses it as the default resident model-session engine;
 the `glass-dev` host owns project access and governed tool execution.
+The `gc` alias refers to this Glass Core binary; it does not invoke the
+separate GCN product's `gcn` executable.
 
 The source package is part of the root Cargo workspace and shares its version
 and lockfile. The product's install workflow, provider setup, authentication,

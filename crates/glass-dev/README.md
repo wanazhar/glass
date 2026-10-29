@@ -6,9 +6,11 @@ bounded project runtime, Ratatui editor, local agent harness, MCP server, PTYs,
 tests, diagnostics, Git diff, and a phone-oriented remote cockpit. The browser
 control plane is an integrated optional app surface for UI work and verification.
 
-**Status: Current 0.3.14 source behavior.** This page documents the checked-in
-source checkout; checkout-only TUI behavior is labeled here rather than
-presented as published-release behavior.
+**Status: Current source checkout.** The workspace package version is `0.3.14`;
+this checkout includes changes after the published `0.3.14` release. See the
+[release evidence](https://github.com/wanazhar/glass/blob/main/docs/release-evidence.md)
+for the published source and artifacts. Checkout-only TUI behavior is labeled
+here rather than presented as published-release behavior.
 
 
 Use `glass-browser` instead when you need only the browser CLI or reusable Rust

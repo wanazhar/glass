@@ -1,6 +1,7 @@
 # Glass Dev TUI
 
-Status: Current 0.3.14 source behavior (current-source changes are included here, not as a published-release claim).
+Status: Current source checkout (workspace version `0.3.14`). See the
+[release evidence](../release-evidence.md) for published scope.
 
 This document is the architecture contract for the `glass`/Glass Dev terminal
 workspace. The standalone browser-only TUI is a different product and reducer;

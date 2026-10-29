@@ -482,6 +482,7 @@ try {
   // A slow endpoint must not turn a phone drag into a long queue of stale coordinates.
   await page.evaluate(() => window.setDesktopInputDelay(120));
   const beforeSlowDrag = input.length;
+  const slowDragTimingStart = await page.evaluate(() => window.__inputTimings.length);
   const slowDragStartX = midX - 65;
   const slowDragStartY = midY + 8;
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
@@ -495,7 +496,9 @@ try {
   }));
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await page.waitForFunction(() => document.querySelectorAll("#desktop-viewer").length === 1);
-  await page.waitForTimeout(500);
+  await page.waitForFunction((start) => window.__inputTimings.slice(start)
+    .filter((timing) => timing.action === "pointer-button" && timing.accepted).length >= 2,
+  slowDragTimingStart, { timeout: 5000 });
   await page.evaluate(() => window.setDesktopInputDelay(0));
   const slowDragActions = input.slice(beforeSlowDrag);
   const slowMoves = slowDragActions.filter((event) => event.action === "pointer-move");

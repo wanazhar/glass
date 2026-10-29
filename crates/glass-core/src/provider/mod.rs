@@ -503,12 +503,13 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
         ),
         (
             "desktop_observe".to_string(),
-            "Read a compact, bounded accessibility snapshot of visible apps, the focused or active window, and controls. Nodes identify whether accessible text editing is supported and may include a bounded value from text interfaces; password fields never return values. Focused-search terms match app names, control names, roles, supported actions, and the `owningWindow` title. Scope a control with an observed app name, distinctive owner-title words, a control label, and role (within the 8-word limit), then check `owningWindow`. Broad snapshots omit `onscreen`; issue a focused query before acting on one of their targets. A matched actionable control with `onscreen:false` is descriptive only: it has no `targetId` or `pointerTarget`. Scroll with `desktop_input`, then repeat the same scoped query; act only on a fresh match with `onscreen:true`, `visible` and `showing` states, a targetId, `queryAmbiguous:false`, and `truncated:false`. A visible non-actionable label with `pointerFallback:true` has no targetId; use its fresh onscreen pointerTarget for one pointer-click only when the query is complete and unique. If desktop_act rejects a click because the control has no accessibility action, repeat the exact query and use only the fresh onscreen pointerTarget from a complete, unique result. Never reuse coordinates or target IDs from an earlier observation. If results are ambiguous or truncated, refine with a distinctive owner title or nearby label and observe again; if a complete query finds no result, broaden it once or inspect a fresh screenshot rather than repeating the same search or guessing. Queries never search editable values. Returns revision-bound target IDs; acting refreshes the snapshot and returns fresh target IDs.".to_string(),
+            "Read a compact, bounded accessibility snapshot of visible apps, windows, and controls. Nodes identify whether accessible text editing is supported and may include bounded text values; password fields never return values. Use a visible `windowId` from the `windows` list or a node's `owningWindow` to scope the next query to that exact window without repeating its title. A windowId is a session-scoped selector, not an action token; it is revalidated on every scoped observation and stops working when the session changes, the window closes, or its title changes. If navigation changes a window title, use the current selector from the latest action's returned `observation.windows`; if no fresh list is available, call `desktop_observe` without `windowId`, then use its current selector. The selector may change. Without windowId, focused-search terms match app names, control names, roles, supported actions, and owningWindow titles. Broad snapshots omit `onscreen` and action tokens; issue a focused query before acting. An actionable `onscreen:false` match is descriptive only and has no `targetId` or `pointerTarget`. Scroll with `desktop_input`, then repeat the same scoped query using the latest windowId; act only on a fresh `onscreen:true` result with visible and showing states, a targetId, `queryAmbiguous:false`, and `truncated:false`. A visible non-actionable label with `pointerFallback:true` has no targetId; use its fresh onscreen pointerTarget for one pointer-click only when the query is complete and unique. If desktop_act rejects a click because the control has no accessibility action, repeat the exact query in the same window scope and use only the fresh onscreen pointerTarget from a complete, unique result. Never reuse coordinates or target IDs from an earlier observation. If results are ambiguous or truncated, use an observed windowId or refine the control label; if a complete query finds no result, broaden it once or inspect a fresh screenshot rather than repeating the same search or guessing. Queries never search editable values. Focused unique results return revision-bound target IDs. The observation returned by an action is for checking the UI state and current window selectors; broad action observations do not include actionable target IDs. Run a new focused `desktop_observe` before acting again.".to_string(),
             serde_json::json!({
                 "type":"object",
                 "properties":{
                     "sessionId":{"type":"string","maxLength":64},
-                    "query":{"type":"string","maxLength":120,"description":"Optional 1–8 word search across app names, control names, roles, supported actions, and owningWindow title. Scope a control with observed app and distinctive owner-title words plus a label and role. An actionable offscreen match has onscreen=false and no targetId/pointerTarget; scroll and repeat the same query, then act only on a fresh onscreen=true result. A visible non-actionable label may have pointerFallback=true, null targetId, and an onscreen pointerTarget; use it only for a complete, unique query. Refine ambiguous or truncated results; never search editable values."}
+                    "query":{"type":"string","maxLength":120,"description":"Optional 1–8 word search across app/window names, control names, roles, and supported actions. Use a visible `windowId` for direct scoped search; without one, include app and distinctive owningWindow title terms. Broad snapshots have no action tokens; a focused query is required before acting. An offscreen match has onscreen=false and no action tokens; scroll and repeat the same query in the same window scope, then act only on fresh onscreen=true or pointerFallback=true results when complete and unique. Refine ambiguous or truncated results; never search editable values."},
+                    "windowId":{"type":"string","maxLength":96,"description":"Optional visible window selector from the latest snapshot's windows list or owningWindow. Scopes this observation to that exact session window; stale, closed, or title-changed windows are rejected. If navigation changes the title, use the latest action observation's windows list or refresh with an unscoped desktop_observe; the selector may differ."}
                 },
                 "additionalProperties":false
             }).to_string(),
@@ -517,7 +518,7 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
     if include_input {
         tools.push((
             "desktop_act".to_string(),
-            "Act on one exact target from the latest desktop_observe snapshot using its targetId, sessionId, and revision. Supports accessible click, focus, and bounded text replacement; rejects stale targets and respects the human/agent control lease. If a broad snapshot lacks `onscreen`, run a focused query and use its fresh target instead. Act only on a fresh actionable result with `onscreen:true`, `visible` and `showing` states, `queryAmbiguous:false`, and `truncated:false`; use set_text only when editable is true. A stale target, revision, or session means observe again and choose from the new snapshot. The result includes a fresh bounded accessibility snapshot with new target IDs when available; verify the expected UI change before continuing. If desktop_act rejects a click because the target has no supported accessibility action, call desktop_observe again with the exact app/window/control query and use a one-time pointer-click only from a fresh onscreen pointerTarget in a complete, unique result. If a click is performed but unverified and the UI did not change, follow the same reobserve rule. Do not use coordinates from an offscreen result or reuse coordinates from an older observation. If the new query has no pointerTarget, use desktop_screenshot and explicit desktop_input coordinates only when needed.".to_string(),
+            "Act on one exact target from the latest focused desktop_observe result using its targetId, sessionId, and revision. Supports accessible click, focus, and bounded text replacement; rejects stale targets and respects the human/agent control lease. Broad observations do not issue target IDs; use a fresh focused query to find an actionable target. Act only on a fresh result with `onscreen:true`, `visible` and `showing` states, `queryAmbiguous:false`, and `truncated:false`; use set_text only when editable is true. A stale target, revision, or session means observe again and choose from the new snapshot. The action result may include a refreshed bounded observation for checking the UI state and current window selectors, but it does not contain actionable target IDs. Verify the expected UI change before continuing, then run a fresh focused desktop_observe before the next action. If desktop_act rejects a click because the target has no supported accessibility action, call desktop_observe again with the exact app/window/control query and use a one-time pointer-click only from a fresh onscreen pointerTarget in a complete, unique result. If a click is performed but unverified and the UI did not change, follow the same reobserve rule. Do not use coordinates from an offscreen result or reuse coordinates from an older observation. If the new query has no pointerTarget, use desktop_screenshot and explicit desktop_input coordinates only when needed.".to_string(),
             serde_json::json!({
                 "type":"object","additionalProperties":false,"required":["sessionId","revision","targetId","action"],
                 "properties":{
@@ -746,15 +747,51 @@ mod tests {
         assert!(observe.1.contains("pointerFallback:true"));
         assert!(observe.1.contains("query is complete and unique"));
         let observe_schema: Value = serde_json::from_str(&observe.2).unwrap();
+        assert!(observe_schema["properties"]["windowId"].is_object());
+        assert!(observe.1.contains("session-scoped selector"));
+        assert!(
+            observe
+                .1
+                .contains("the window closes, or its title changes")
+        );
+        assert!(
+            observe
+                .1
+                .to_ascii_lowercase()
+                .contains("the selector may change")
+        );
+        assert!(
+            observe
+                .1
+                .contains("latest action's returned `observation.windows`")
+        );
+        assert!(
+            observe
+                .1
+                .contains("broad action observations do not include actionable target IDs")
+        );
         let query_description = observe_schema["properties"]["query"]["description"]
             .as_str()
             .unwrap();
         assert!(query_description.contains("owningWindow title"));
         assert!(query_description.contains("onscreen=true"));
+        assert!(query_description.contains("Broad snapshots have no action tokens"));
         assert!(query_description.contains("pointerFallback=true"));
+        assert!(
+            observe_schema["properties"]["windowId"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("unscoped desktop_observe")
+        );
         assert!(full[3].1.contains("onscreen:true"));
         assert!(full[3].1.contains("call desktop_observe again"));
         assert!(full[3].1.contains("no supported accessibility action"));
+        assert!(full[3].1.contains("does not contain actionable target IDs"));
+        assert!(
+            full[3]
+                .1
+                .contains("fresh focused desktop_observe before the next action")
+        );
     }
 
     #[test]

@@ -34,6 +34,7 @@ const HEIGHT: u32 = 800;
 const MAX_FRAME: usize = 4 * 1024 * 1024;
 const FRAME_STALE_AFTER: Duration = Duration::from_millis(1800);
 const LEASE_SOCKET: &str = "desktop-agent.sock";
+const MAX_CACHED_ACCESSIBILITY_WINDOWS: usize = 64;
 const AGENT_MESSAGE_MAX: u64 = 6 * 1024 * 1024;
 const DEFAULT_PROFILE_ID: &str = "default";
 const GNOME_XVFB_ACCEPTED: bool = false;
@@ -114,7 +115,9 @@ struct ManagedSession {
     /// active desktop and its cached lease/input state.
     _profile_lock: Option<File>,
     accessibility_revision: u64,
+    accessibility_registry_ready: bool,
     accessibility_targets: HashMap<String, accessibility::Target>,
+    accessibility_windows: HashMap<String, accessibility::WindowRoot>,
     lease: Lease,
     held_buttons: HashSet<u8>,
     held_keys: HashSet<String>,
@@ -154,6 +157,8 @@ pub struct Desktop {
     /// Serializes user-visible acts, lease changes, and session lifecycle.
     /// Accessibility observation does not hold this lock.
     control: Mutex<()>,
+    /// Ensures concurrent first app launches share one registry warm-up.
+    accessibility_registry_init: Mutex<()>,
     session: Mutex<Option<ManagedSession>>,
 }
 
@@ -163,6 +168,7 @@ impl Desktop {
             workspace,
             root: crate::config::data_dir().join("desktop"),
             control: Mutex::new(()),
+            accessibility_registry_init: Mutex::new(()),
             session: Mutex::new(None),
         }
     }
@@ -485,7 +491,9 @@ impl Desktop {
             session_bus_address,
             _profile_lock: Some(profile_lock),
             accessibility_revision: random_accessibility_revision()?,
+            accessibility_registry_ready: false,
             accessibility_targets: HashMap::new(),
+            accessibility_windows: HashMap::new(),
             lease: if descriptor["lease"].as_str() == Some("human") {
                 Lease::Human
             } else {
@@ -707,13 +715,23 @@ impl Desktop {
         Ok(json!({"sent":true,"lease":session.lease.as_str()}))
     }
 
+    #[cfg(test)]
     pub fn observe_accessibility(
         &self,
         expected_session_id: Option<&str>,
         query: Option<&str>,
     ) -> Result<Value, String> {
+        self.observe_accessibility_scoped(expected_session_id, query, None)
+    }
+
+    pub fn observe_accessibility_scoped(
+        &self,
+        expected_session_id: Option<&str>,
+        query: Option<&str>,
+        requested_window_id: Option<&str>,
+    ) -> Result<Value, String> {
         self.restore_reusable_session()?;
-        let (session_id, session_bus_address, revision) = {
+        let (session_id, session_bus_address, revision, window_root) = {
             let mut guard = self
                 .session
                 .lock()
@@ -727,17 +745,37 @@ impl Desktop {
                         .into(),
                 );
             }
+            let window_root = if let Some(window_id) = requested_window_id {
+                Some(
+                    session
+                        .accessibility_windows
+                        .get(window_id)
+                        .cloned()
+                        .ok_or(
+                            "windowId is stale or belongs to another observation; observe again",
+                        )?,
+                )
+            } else {
+                None
+            };
             session.accessibility_revision = session.accessibility_revision.saturating_add(1);
             session.accessibility_targets.clear();
             (
                 session.id.clone(),
                 session.session_bus_address.clone(),
                 session.accessibility_revision,
+                window_root,
             )
         };
         // D-Bus can take up to two seconds. Keep the manager mutex free so
         // frame/status requests and human input are not held behind AT-SPI.
-        let snapshot = accessibility::observe(&session_bus_address, &session_id, revision, query)?;
+        let snapshot = accessibility::observe_scoped(
+            &session_bus_address,
+            &session_id,
+            revision,
+            query,
+            window_root,
+        )?;
         let mut guard = self
             .session
             .lock()
@@ -749,6 +787,23 @@ impl Desktop {
             })
             .ok_or("Accessibility observation changed while it was running; observe again")?;
         session.accessibility_targets = snapshot.targets;
+        session.accessibility_registry_ready |= accessibility_registry_is_ready(&snapshot.value);
+        if requested_window_id.is_some() {
+            session.accessibility_windows.extend(snapshot.windows);
+            let mut retained = 0usize;
+            session.accessibility_windows.retain(|window_id, _| {
+                if Some(window_id.as_str()) == requested_window_id {
+                    true
+                } else if retained < MAX_CACHED_ACCESSIBILITY_WINDOWS - 1 {
+                    retained += 1;
+                    true
+                } else {
+                    false
+                }
+            });
+        } else {
+            session.accessibility_windows = snapshot.windows;
+        }
         Ok(snapshot.value)
     }
 
@@ -828,6 +883,7 @@ impl Desktop {
         let mut result = result?;
         if let (Some(session), Ok(snapshot)) = (current, observation) {
             session.accessibility_targets = snapshot.targets;
+            session.accessibility_windows = snapshot.windows;
             if let Some(result) = result.as_object_mut() {
                 result.insert("observation".into(), snapshot.value);
             }
@@ -980,6 +1036,9 @@ impl Desktop {
             _ => return Err("action must be list or launch".into()),
         }
         self.restore_reusable_session()?;
+        if action == "launch" {
+            self.ensure_accessibility_registry_ready(expected_session_id)?;
+        }
         let _control = self
             .control
             .lock()
@@ -1053,6 +1112,59 @@ impl Desktop {
         }
     }
 
+    fn ensure_accessibility_registry_ready(&self, expected_session_id: &str) -> Result<(), String> {
+        let _initializing = self
+            .accessibility_registry_init
+            .lock()
+            .map_err(|_| "Desktop accessibility initialization unavailable")?;
+        let ready = {
+            let guard = self
+                .session
+                .lock()
+                .map_err(|_| "Desktop state unavailable")?;
+            let session = guard
+                .as_ref()
+                .ok_or("No managed desktop session is running")?;
+            if session.id != expected_session_id {
+                return Err(
+                    "The managed desktop session changed; call desktop_status and retry".into(),
+                );
+            }
+            require_lease(Lease::Agent, session.lease)
+                .map_err(|error| error.message().to_owned())?;
+            session.accessibility_registry_ready
+        };
+        if ready {
+            return Ok(());
+        }
+
+        // The first AT-SPI request activates the private registry. Doing one
+        // bounded observation before starting an app lets its accessibility
+        // bridge connect to a ready registry instead of racing activation.
+        let snapshot =
+            match self.observe_accessibility_scoped(Some(expected_session_id), None, None) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    let guard = self
+                        .session
+                        .lock()
+                        .map_err(|_| "Desktop state unavailable")?;
+                    if guard.as_ref().is_some_and(|session| {
+                        session.id == expected_session_id && session.accessibility_registry_ready
+                    }) {
+                        return Ok(());
+                    }
+                    return Err(error);
+                }
+            };
+        if !accessibility_registry_is_ready(&snapshot) {
+            return Err(
+                "The managed desktop accessibility registry is not ready; observe the desktop and retry the launch".into(),
+            );
+        }
+        Ok(())
+    }
+
     fn agent_status() -> Result<Value, String> {
         Self::agent_request(&json!({"action":"status"}))
     }
@@ -1087,6 +1199,13 @@ impl Desktop {
             Ok(result)
         }
     }
+}
+
+fn accessibility_registry_is_ready(snapshot: &Value) -> bool {
+    snapshot["applications"]
+        .as_array()
+        .is_some_and(|applications| !applications.is_empty())
+        && snapshot["nodesVisited"].as_u64().unwrap_or_default() > 0
 }
 
 fn scroll_ticks(delta_pixels: f64, remainder: f64) -> Result<(i64, f64), InputError> {
@@ -1310,9 +1429,10 @@ fn handle_agent_request(mut stream: UnixStream, desktop: Arc<Desktop>) -> Result
     let result = match request["action"].as_str() {
         Some("input") => desktop.input(Lease::Agent, &request["value"]).map_err(|error| error.message().to_owned()),
         Some("status") => Ok(desktop.status()),
-        Some("observe") => desktop.observe_accessibility(
+        Some("observe") => desktop.observe_accessibility_scoped(
             request["value"]["sessionId"].as_str(),
             request["value"]["query"].as_str(),
+            request["value"]["windowId"].as_str(),
         ),
         Some("act") => desktop.act_accessibility(&request["value"]),
         Some("launch_app") => desktop.launch_app(&request["value"]),
@@ -1359,6 +1479,22 @@ mod tests {
         let desktop = Desktop::new(std::env::temp_dir());
         let status = desktop.status();
         assert_eq!(status["frameTimeMs"], Value::Null);
+    }
+
+    #[test]
+    fn accessibility_registry_readiness_requires_observed_applications_and_nodes() {
+        assert!(!accessibility_registry_is_ready(&json!({
+            "applications": [],
+            "nodesVisited": 12
+        })));
+        assert!(!accessibility_registry_is_ready(&json!({
+            "applications": ["xfce4-session"],
+            "nodesVisited": 0
+        })));
+        assert!(accessibility_registry_is_ready(&json!({
+            "applications": ["xfce4-session"],
+            "nodesVisited": 1
+        })));
     }
 
     #[test]
@@ -2064,7 +2200,7 @@ mod tests {
         write_test_browser_entry(&managed_home, &browser_binary, &browser_profile)
             .expect("a private managed Chromium desktop entry should be created");
         session.append(crate::session::Record::User(
-            r#"Use only desktop tools in this isolated managed desktop. First call desktop_launch_app list with this sessionId, then launch the listed Managed Chromium (Glass acceptance) entry; launch is unverified, so confirm the browser window with desktop_observe query Chrome. Navigate to the public Rust Book homepage with Control+L, type https://doc.rust-lang.org/book/, and press Enter. Use desktop_observe query Chrome for browser observations and desktop_input key names Control, Enter, ArrowLeft, and ArrowRight; desktop_input is bound to this session and takes no sessionId. After reaching the homepage, do not click the first, Next chapter, or any nearby link from the broad observation. You must call desktop_observe query Chrome Understanding Ownership link and click only the exact Understanding Ownership result. After it opens, call desktop_observe query Chrome References and Borrowing link and click only that exact result. On that page call desktop_observe query Chrome The Slice Type link and use that exact result. Verify the heading and current address/title. From that observed page, find the The Slice Type link, focus it with desktop_act using its current sessionId/revision/targetId, then immediately use Control+Enter to open it in a second tab. Verify both tabs appear together and have distinct titles/addresses, with the original References page still present. In the Slice tab call desktop_observe query Chrome String slices link and follow only that exact returned link; verify the #string-slices address. Then use Alt+ArrowLeft and Alt+ArrowRight and verify the address returns to the base slice URL and then the #string-slices URL. Switch back with Control+Shift+Tab and verify References and Borrowing is still open in the first tab. Never type a deep-link URL directly; each chapter and section route must come from an observed link. Target IDs are bound to the latest observation revision; desktop_act requires sessionId, revision, and targetId from that same snapshot. If an observed link has no supported accessibility click action, reobserve and use only its fresh pointerTarget for one pointer-click. Use only desktop_launch_app, desktop_observe, desktop_act, and desktop_input. Do not use terminal/shell, OS command entry, filesystem, network, CDP, Playwright, browser-specific automation, or any other desktop. Report only pages, tabs, and navigation steps actually verified."#
+            r#"Use only desktop tools in this isolated managed desktop. First call desktop_launch_app list with this sessionId, then launch the listed Managed Chromium (Glass acceptance) entry; launch is unverified, so confirm the browser window with desktop_observe query Chrome. Navigate to the public Rust Book homepage with Control+L, type https://doc.rust-lang.org/book/, and press Enter. Use desktop_observe query Chrome for browser observations and desktop_input key names Control, Enter, ArrowLeft, and ArrowRight; desktop_input is bound to this session and takes no sessionId. The Rust Book homepage's table of contents is collapsed. Query `Chrome Toggle Table of Contents label`; only if the fresh result has pointerFallback:true, onscreen:true, targetId:null, queryAmbiguous:false, and truncated:false, use its pointerTarget in one pointer-click. Then query `Chrome The Rust Programming Language Understanding Ownership link` and choose only the exact Understanding Ownership link in the observed Rust Book window. If desktop_act rejects that link because it has no accessibility click action, repeat the exact query and use only a fresh pointerTarget from a complete, unique, onscreen result. After it opens, call desktop_observe query Chrome References and Borrowing link and click only that exact result. On that page call desktop_observe query Chrome The Slice Type link and use that exact result. Verify the heading and current address/title. From that observed page, find the The Slice Type link, focus it with desktop_act using its current sessionId/revision/targetId, then immediately use Control+Enter to open it in a second tab. Verify both tabs appear together and have distinct titles/addresses, with the original References page still present. In the Slice tab call desktop_observe query Chrome String slices link and follow only that exact returned link; verify the #string-slices address. Then use Alt+ArrowLeft and Alt+ArrowRight and verify the address returns to the base slice URL and then the #string-slices URL. Switch back with Control+Shift+Tab and verify References and Borrowing is still open in the first tab. Never type a deep-link URL directly; each chapter and section route must come from an observed link. Target IDs are bound to the latest observation revision; desktop_act requires sessionId, revision, and targetId from that same snapshot. Use only desktop_launch_app, desktop_observe, desktop_act, and desktop_input. Do not use terminal/shell, OS command entry, filesystem, network, CDP, Playwright, browser-specific automation, or any other desktop. Report only pages, tabs, and navigation steps actually verified."#
                 .into(),
         ));
         let mut state = crate::tools::State::new();
@@ -2102,7 +2238,7 @@ mod tests {
             &session_dir,
         )
         .with_prompt(format!(
-            r#"Work only in managed session {session_id}. Call desktop_launch_app list with that sessionId and launch the listed Managed Chromium (Glass acceptance) entry. Launch is unverified: confirm the browser window with desktop_observe query Chrome. Use Control+L, type https://doc.rust-lang.org/book/, then key-tap Enter. desktop_input is bound to this session and takes no sessionId. Use only desktop_observe query Chrome for browser observations. After reaching the homepage, do not click the first, Next chapter, or any nearby link from the broad observation. You must call desktop_observe query Chrome Understanding Ownership link and click only the exact Understanding Ownership result. After it opens, call desktop_observe query Chrome References and Borrowing link and click only that exact result. On that page call desktop_observe query Chrome The Slice Type link and use only that exact result. Verify the current title/address. On the References page, use the observed The Slice Type link: focus it with desktop_act using its current sessionId/revision/targetId, then press Control+Enter to open it in a second tab. Verify both distinct tabs appear in one observation and the original References page remains open. In the Slice tab call desktop_observe query Chrome String slices link and follow only the exact returned link. Verify the #string-slices address, then use Alt+ArrowLeft and Alt+ArrowRight to verify the base slice URL and return to #string-slices. Switch back with Control+Shift+Tab and verify the first tab remains on References and Borrowing. Never type a deep-link URL directly; navigate deep pages only through observed links. Target IDs require sessionId/revision from the same latest snapshot. If an observed link has no supported accessibility click, reobserve and use only its fresh pointerTarget for one pointer-click. Use only desktop_launch_app, desktop_observe, desktop_act, and desktop_input. Do not use terminal/shell, OS command entry, filesystem, network, CDP, Playwright, browser-specific tools, or another desktop. Report only verified pages and tabs."#
+            r#"Work only in managed session {session_id}. Call desktop_launch_app list with that sessionId and launch the listed Managed Chromium (Glass acceptance) entry. Launch is unverified: confirm the browser window with desktop_observe query Chrome. Use Control+L, type https://doc.rust-lang.org/book/, then key-tap Enter. desktop_input is bound to this session and takes no sessionId. Use only desktop_observe query Chrome for browser observations. The homepage's table of contents is collapsed. Query `Chrome Toggle Table of Contents label`; only if the fresh result has pointerFallback:true, onscreen:true, targetId:null, queryAmbiguous:false, and truncated:false, use its pointerTarget in one pointer-click. Then query `Chrome The Rust Programming Language Understanding Ownership link` and choose only the exact Ownership link in the observed Rust Book window. If desktop_act rejects that link because it has no accessibility click action, repeat the exact query and use only a fresh pointerTarget from a complete, unique, onscreen result. After reaching Ownership, call desktop_observe query Chrome References and Borrowing link and follow only that exact result. On that page call desktop_observe query Chrome The Slice Type link and use only that exact result. Verify the current title/address. On the References page, use the observed The Slice Type link: focus it with desktop_act using its current sessionId/revision/targetId, then press Control+Enter to open it in a second tab. Verify both distinct tabs appear in one observation and the original References page remains open. In the Slice tab call desktop_observe query Chrome String slices link and follow only the exact returned link. Verify the #string-slices address, then use Alt+ArrowLeft and Alt+ArrowRight to verify the base slice URL and return to #string-slices. Switch back with Control+Shift+Tab and verify the first tab remains on References and Borrowing. Never type a deep-link URL directly; navigate deep pages only through observed links. Target IDs require sessionId/revision from the same latest snapshot. Use only desktop_launch_app, desktop_observe, desktop_act, and desktop_input. Do not use terminal/shell, OS command entry, filesystem, network, CDP, Playwright, browser-specific tools, or another desktop. Report only verified pages and tabs."#
         ), None, None)
         .with_limits(8192, None, 100)
         .with_host_tools(live_desktop_tools(), Box::new(move |call, _, _| {

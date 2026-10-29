@@ -4,7 +4,7 @@ use std::{
 };
 
 use atspi::{
-    CoordType, Interface, ObjectRefOwned, RelationType, State, StateSet,
+    CoordType, Interface, InterfaceSet, ObjectRefOwned, RelationType, State, StateSet,
     proxy::accessible::AccessibleProxy,
     proxy::{accessible::ObjectRefExt, proxy_ext::ProxyExt},
     zbus::{Proxy, connection::Builder},
@@ -15,6 +15,7 @@ const MAX_NODES: usize = 160;
 const MAX_DEPTH: usize = 12;
 const MAX_SEARCH_NODES: usize = 768;
 const MAX_SEARCH_DEPTH: usize = 16;
+const MAX_WINDOW_ROOTS: usize = 64;
 const MAX_NAME_CHARS: usize = 120;
 const MAX_VALUE_CHARS: usize = 160;
 const MAX_ACTIONS: usize = 8;
@@ -39,8 +40,17 @@ pub(super) struct Target {
 pub(super) struct Snapshot {
     pub value: Value,
     pub targets: HashMap<String, Target>,
+    pub windows: HashMap<String, WindowRoot>,
     #[cfg(test)]
     pub application_root_names: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct WindowRoot {
+    pub object: ObjectRefOwned,
+    pub application: String,
+    pub role: String,
+    pub identity: String,
 }
 
 pub(super) fn observe(
@@ -49,20 +59,39 @@ pub(super) fn observe(
     revision: u64,
     query: Option<&str>,
 ) -> Result<Snapshot, String> {
+    observe_scoped(session_bus_address, session_id, revision, query, None)
+}
+
+pub(super) fn observe_scoped(
+    session_bus_address: &str,
+    session_id: &str,
+    revision: u64,
+    query: Option<&str>,
+    window_root: Option<WindowRoot>,
+) -> Result<Snapshot, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
         .build()
         .map_err(|error| format!("Could not start accessibility runtime: {error}"))?;
     runtime.block_on(async {
-        let budget = if query.is_some_and(|value| value.split_whitespace().count() > 1) {
+        let budget = if query.is_some_and(|value| value.split_whitespace().count() > 1)
+            || (query.is_some() && window_root.is_some())
+        {
             FOCUSED_SEARCH_BUDGET
         } else {
             OBSERVATION_BUDGET
         };
         tokio::time::timeout(
             budget,
-            observe_async(session_bus_address, session_id, revision, query),
+            observe_async(
+                session_bus_address,
+                session_id,
+                revision,
+                query,
+                None,
+                window_root,
+            ),
         )
         .await
         .map_err(|_| format!("Accessibility observation exceeded its {budget:?} limit"))?
@@ -74,8 +103,14 @@ async fn observe_async(
     session_id: &str,
     revision: u64,
     query: Option<&str>,
+    window_root: Option<WindowRoot>,
+    application_window_scope: Option<WindowRoot>,
 ) -> Result<Snapshot, String> {
     let query_terms = query.map(validate_query).transpose()?;
+    let window_scoped = window_root.is_some() || application_window_scope.is_some();
+    let scoped_window_id = application_window_scope.as_ref().map(|window| {
+        accessibility_window_id(session_id, &window.object, &window.role, &window.identity)
+    });
     validate_private_bus_address(session_bus_address)?;
     let session_bus = Builder::address(session_bus_address)
         .map_err(accessibility_error)?
@@ -104,20 +139,79 @@ async fn observe_async(
         .build()
         .await
         .map_err(accessibility_error)?;
+    if let Some(window_root) = window_root.as_ref().or(application_window_scope.as_ref()) {
+        let window = window_root
+            .object
+            .as_accessible_proxy(&accessibility)
+            .await
+            .map_err(|_| "windowId is stale; observe visible windows again")?;
+        let (role, states, raw_name) =
+            tokio::join!(window.get_role_name(), window.get_state(), window.name(),);
+        let role = role.unwrap_or_default();
+        let states = states.unwrap_or_else(|_| StateSet::empty());
+        let raw_name = raw_name.unwrap_or_default();
+        let fallback = if raw_name.trim().is_empty() {
+            Some(accessible_context_name(&window, &accessibility).await)
+        } else {
+            None
+        };
+        let identity_source = fallback.as_deref().unwrap_or(&raw_name);
+        let identity = window_name_identity(identity_source);
+        if !window_identity_matches(&window_root.role, &window_root.identity, &role, &identity)
+            || !matches!(
+                role.to_ascii_lowercase().as_str(),
+                "frame" | "window" | "dialog"
+            )
+            || !states.contains(State::Visible)
+            || !states.contains(State::Showing)
+        {
+            return Err(
+                "windowId is stale or no longer visible; observe visible windows again".into(),
+            );
+        }
+    }
     let root = AccessibleProxy::builder(&accessibility)
         .destination("org.a11y.atspi.Registry")
         .map_err(accessibility_error)?
         .build()
         .await
         .map_err(accessibility_error)?;
-    let mut application_roots = root.get_children().await.map_err(accessibility_error)?;
+    let mut application_roots = if window_root.is_some() && application_window_scope.is_none() {
+        Vec::new()
+    } else {
+        root.get_children().await.map_err(accessibility_error)?
+    };
     let roots_truncated = application_roots.len() > MAX_NODES;
     application_roots.truncate(MAX_NODES);
-    let mut app_scoped_query = false;
+    let mut app_scoped_query = window_scoped;
     let mut scoped_window_roots = Vec::<(ObjectRefOwned, String)>::new();
+    if let Some(window_root) = window_root {
+        scoped_window_roots.push((window_root.object, window_root.application));
+    }
+    if let Some(window_scope) = application_window_scope.as_ref() {
+        let mut matching_applications = Vec::new();
+        for object in &application_roots {
+            let Ok(app) = object.as_accessible_proxy(&accessibility).await else {
+                continue;
+            };
+            let application_name = app.name().await.unwrap_or_default();
+            if application_name.eq_ignore_ascii_case(&window_scope.application) {
+                matching_applications.push(object.clone());
+            }
+        }
+        if matching_applications.is_empty() {
+            return Err(
+                "windowId application is no longer registered; observe visible windows again"
+                    .into(),
+            );
+        }
+        application_roots = matching_applications;
+    }
     #[cfg(test)]
     let mut application_root_names = Vec::new();
-    if let Some(terms) = query_terms.as_deref() {
+    if application_window_scope.is_none()
+        && let Some(terms) = query_terms.as_deref()
+    {
         let mut matching_roots = Vec::new();
         for object in &application_roots {
             let Ok(app) = object.as_accessible_proxy(&accessibility).await else {
@@ -200,17 +294,24 @@ async fn observe_async(
         }
     }
     #[cfg(test)]
-    let owner_window_scoped = !discovered.is_empty()
-        && pending
-            .iter()
-            .all(|(_, depth, application, _, _)| *depth > 0 && application.is_some());
+    let owner_window_scoped = application_window_scope.is_some()
+        || (!discovered.is_empty()
+            && pending
+                .iter()
+                .all(|(_, depth, application, _, _)| *depth > 0 && application.is_some()));
 
     let mut nodes = Vec::new();
     let mut applications = scoped_application_names;
     let mut focused_window = None;
     let mut active_window = None;
     let mut targets = HashMap::new();
-    let focused_search = query_terms.as_ref().is_some_and(|terms| terms.len() > 1);
+    let mut windows = HashMap::new();
+    let mut visible_windows = Vec::new();
+    let focused_search = query_is_focused(query_terms.as_deref(), window_scoped);
+    let document_content_query = focused_search
+        && query_terms
+            .as_deref()
+            .is_some_and(query_prefers_document_content);
     let node_budget = if focused_search {
         MAX_SEARCH_NODES
     } else {
@@ -230,6 +331,13 @@ async fn observe_async(
     let mut truncated = roots_truncated;
     let mut query_ambiguous = false;
     let mut matched_actionable_count = 0usize;
+    let mut scoped_window_root_seen = false;
+    #[cfg(test)]
+    let mut test_role_counts = HashMap::<String, usize>::new();
+    #[cfg(test)]
+    let mut test_visited_samples = Vec::<Value>::new();
+    #[cfg(test)]
+    let mut test_pruned_branches = Vec::<Value>::new();
     let started = Instant::now();
     while let Some((object, depth, parent_application, parent_window, parent_window_object)) =
         pending.pop_front()
@@ -246,31 +354,29 @@ async fn observe_async(
                 continue;
             }
         };
-        // These properties are independent D-Bus calls on one object. Run
-        // them together so tree latency is bounded by the slowest response,
-        // rather than paying three round trips for every node.
+        // Focused searches read interfaces only after role/name/window fields
+        // match the query. A long page otherwise pays one extra D-Bus call
+        // for every irrelevant accessible node.
         let children_future = async {
-            if focused_search && depth < depth_budget {
+            if focused_search && !document_content_query && depth < depth_budget {
                 Some(accessible.get_children().await)
             } else {
                 None
             }
         };
-        let (role_result, interfaces_result, states_result, name_result, prefetched_children) = tokio::join!(
+        let (role_result, states_result, name_result, prefetched_children) = tokio::join!(
             accessible.get_role_name(),
-            accessible.get_interfaces(),
             accessible.get_state(),
             accessible.name(),
             children_future,
         );
         let role = role_result.unwrap_or_else(|_| "unknown".to_owned());
-        let interfaces = match interfaces_result {
-            Ok(interfaces) => interfaces,
-            Err(_) => {
-                truncated = true;
-                continue;
-            }
-        };
+        #[cfg(test)]
+        {
+            *test_role_counts
+                .entry(role.to_ascii_lowercase())
+                .or_default() += 1;
+        }
         let states = states_result.unwrap_or_else(|_| StateSet::empty());
         let role_lower = role.to_ascii_lowercase();
         let is_password = is_password_role(&role_lower);
@@ -278,21 +384,66 @@ async fn observe_async(
             role_lower.as_str(),
             "frame" | "window" | "dialog" | "alert" | "file chooser"
         );
+        let visible = states.contains(State::Visible) && states.contains(State::Showing);
+        let tree_visible = states.contains(State::Visible);
+        let can_activate_role = role_can_activate(&role_lower);
+        let full_raw_name = if is_password {
+            "Protected field".to_owned()
+        } else {
+            name_result.unwrap_or_default()
+        };
+        let raw_name = bounded_accessible_name(full_raw_name.clone());
+        let preliminary_application = if depth == 0 {
+            (!raw_name.trim().is_empty()).then(|| raw_name.clone())
+        } else {
+            parent_application.clone()
+        };
+        let preliminary_window = if is_window {
+            Some(json!({
+                "role": role.clone(),
+                "name": raw_name.clone(),
+                "application": preliminary_application.clone(),
+            }))
+        } else {
+            parent_window.clone()
+        };
+        let preliminary_node = json!({
+            "role": role.clone(),
+            "name": raw_name.clone(),
+            "application": preliminary_application,
+            "owningWindow": preliminary_window,
+            "actions": [],
+        });
+        let preliminary_match = query_terms
+            .as_ref()
+            .is_none_or(|terms| query_matches(&preliminary_node, terms));
+        let query_needs_action_names = query_terms.as_ref().is_none_or(|terms| {
+            terms
+                .iter()
+                .any(|term| matches!(term.as_str(), "click" | "press" | "activate" | "open"))
+        });
+        let needs_interfaces = !focused_search
+            || preliminary_match
+            || is_window
+            || (can_activate_role && query_needs_action_names);
+        let interfaces = if needs_interfaces {
+            match accessible.get_interfaces().await {
+                Ok(interfaces) => interfaces,
+                Err(_) => {
+                    truncated = true;
+                    continue;
+                }
+            }
+        } else {
+            InterfaceSet::empty()
+        };
         let supports_click =
             interfaces.contains(Interface::Action) && role_can_activate(&role_lower);
         let supports_focus =
             interfaces.contains(Interface::Component) && states.contains(State::Focusable);
         let supports_text =
             interfaces.contains(Interface::EditableText) && !states.contains(State::ReadOnly);
-        let visible = states.contains(State::Visible) && states.contains(State::Showing);
-        let tree_visible = states.contains(State::Visible);
-        let role_can_activate = role_can_activate(&role_lower);
-        let query_needs_action_names = query_terms.as_ref().is_none_or(|terms| {
-            terms
-                .iter()
-                .any(|term| matches!(term.as_str(), "click" | "press" | "activate" | "open"))
-        });
-        let actions = if supports_click && role_can_activate && query_needs_action_names {
+        let actions = if supports_click && can_activate_role && query_needs_action_names {
             match accessible.proxies().await {
                 Ok(proxies) => match proxies.action().await {
                     Ok(proxy) => proxy.get_actions().await.unwrap_or_default(),
@@ -309,25 +460,29 @@ async fn observe_async(
             .map(|action| action.name.chars().take(MAX_NAME_CHARS).collect::<String>())
             .collect::<Vec<_>>();
         let is_actionable = supports_click || supports_focus || supports_text;
-        let observed_name = (!is_password).then(|| {
-            name_result
-                .unwrap_or_default()
-                .chars()
-                .take(MAX_NAME_CHARS)
-                .collect::<String>()
-        });
+        let observed_name = (!is_password).then(|| raw_name.clone());
         let name = if is_password {
             "Protected field".to_owned()
         } else {
             let raw_name = observed_name.clone().unwrap_or_default();
             let fallback = if raw_name.trim().is_empty()
-                && (supports_text || role_can_activate || is_window)
+                && (supports_text || can_activate_role || is_window)
             {
                 Some(accessible_context_name(&accessible, &accessibility).await)
             } else {
                 None
             };
             display_accessible_name(raw_name, fallback)
+        };
+        let identity_source = if full_raw_name.trim().is_empty() {
+            name.as_str()
+        } else {
+            full_raw_name.as_str()
+        };
+        let identity = if is_window {
+            Some(window_name_identity(identity_source))
+        } else {
+            None
         };
         let application = if depth == 0 {
             #[cfg(test)]
@@ -347,21 +502,79 @@ async fn observe_async(
         } else {
             parent_application
         };
-        let window = if is_window {
-            Some(json!({
-                "role": role.clone(),
-                "name": name.clone(),
-                "application": application.clone(),
-            }))
-        } else {
-            parent_window
-        };
         let window_object = if is_window {
             Some(object.clone())
         } else {
             parent_window_object
         };
-        if is_window && visible && states.contains(State::Active) {
+        let window_id = if is_window && visible && depth <= 1 {
+            let identity = identity.as_deref().unwrap_or_default();
+            let window_id = accessibility_window_id(session_id, &object, &role, identity);
+            if scoped_window_id.as_deref() == Some(window_id.as_str()) {
+                scoped_window_root_seen = true;
+            }
+            if !window_id_is_in_scope(Some(&window_id), scoped_window_id.as_deref()) {
+                None
+            } else if let Some(application) = application.as_ref()
+                && (windows.len() < MAX_WINDOW_ROOTS || windows.contains_key(&window_id))
+            {
+                windows.insert(
+                    window_id.clone(),
+                    WindowRoot {
+                        object: object.clone(),
+                        application: application.clone(),
+                        role: role.clone(),
+                        identity: identity.to_owned(),
+                    },
+                );
+                Some(window_id)
+            } else {
+                None
+            }
+        } else {
+            parent_window
+                .as_ref()
+                .and_then(|window| window["windowId"].as_str())
+                .map(ToOwned::to_owned)
+        };
+        let window = if is_window {
+            Some(json!({
+                "role": role.clone(),
+                "name": name.clone(),
+                "application": application.clone(),
+                "windowId": window_id,
+            }))
+        } else {
+            parent_window
+        };
+        let window_is_in_scope = window_id_is_in_scope(
+            window
+                .as_ref()
+                .and_then(|window| window["windowId"].as_str()),
+            scoped_window_id.as_deref(),
+        );
+        #[cfg(test)]
+        if test_visited_samples.len() < 40 {
+            test_visited_samples.push(json!({
+                "depth":depth,
+                "role":role_lower,
+                "name":name,
+                "application":application,
+                "windowName":window.as_ref().and_then(|window|window["name"].as_str()),
+                "windowId":window.as_ref().and_then(|window|window["windowId"].as_str()),
+                "inScope":window_is_in_scope,
+            }));
+        }
+        if is_window
+            && visible
+            && window_is_in_scope
+            && depth <= 1
+            && visible_windows.len() < MAX_WINDOW_ROOTS
+            && let Some(window) = window.as_ref()
+        {
+            visible_windows.push(window.clone());
+        }
+        if is_window && visible && window_is_in_scope && states.contains(State::Active) {
             let is_window_manager = application
                 .as_deref()
                 .is_some_and(|name| name.eq_ignore_ascii_case("xfwm4"));
@@ -371,7 +584,12 @@ async fn observe_async(
         }
         // Window-manager helpers can themselves expose a window role and a
         // focused state. Prefer a focused control's actual owning app window.
-        if visible && states.contains(State::Focused) && !is_window && focused_window.is_none() {
+        if visible
+            && window_is_in_scope
+            && states.contains(State::Focused)
+            && !is_window
+            && focused_window.is_none()
+        {
             focused_window = window.clone();
         }
         let mut skip_matched_target_subtree = false;
@@ -382,10 +600,24 @@ async fn observe_async(
             visible,
         );
         let focused_search_candidate = focused_search
+            && window_is_in_scope
             && window.is_some()
             && tree_visible
             && (is_actionable || pointer_fallback_candidate || is_search_context_role(&role_lower));
-        if node_is_relevant(depth, is_window, visible, is_actionable) || focused_search_candidate {
+        if focused_search
+            && focused_query_role_is_leaf(&role_lower)
+            && (role_lower == "static" || !name.trim().is_empty())
+        {
+            // Semantic leaves and static text cannot contain another
+            // actionable desktop target. Long browser documents expose
+            // hundreds of these nodes; fetching their children adds a D-Bus
+            // round trip without improving focused control search.
+            skip_matched_target_subtree = true;
+        }
+        if window_is_in_scope
+            && (node_is_relevant(depth, is_window, visible, is_actionable)
+                || focused_search_candidate)
+        {
             // An offscreen match can guide scrolling, but it must not authorize
             // an action until a fresh observation confirms it is showing.
             let mut target_id = None;
@@ -431,10 +663,10 @@ async fn observe_async(
                 // intersection, not merely AT-SPI's Visible state.
                 node["onscreen"] = json!(screen_target_value.is_some());
             }
-            let target_is_visible = target_can_be_exposed(
+            let target_is_visible = query_can_issue_action_tokens(
+                query.is_some(),
                 is_actionable,
                 visible,
-                query.is_some(),
                 screen_target_value.is_some(),
             );
             if matches_query && target_is_visible {
@@ -449,10 +681,10 @@ async fn observe_async(
             {
                 node["pointerTarget"] = screen_target_value.clone().unwrap_or(Value::Null);
             }
-            skip_matched_target_subtree = query.is_some()
+            skip_matched_target_subtree |= query.is_some()
                 && matches_query
                 && target_id.is_some()
-                && (supports_text || role_can_activate);
+                && (supports_text || can_activate_role);
             if matches_query {
                 if visible
                     && (supports_text || exposes_text)
@@ -503,7 +735,9 @@ async fn observe_async(
         let checked_menu_control = matches!(role_lower.as_str(), "toggle button" | "menu button")
             && visible
             && states.contains(State::Checked);
-        if app_scoped_query && visible && (checked_menu_control || is_window) {
+        let mut embedded_document_found = false;
+        if app_scoped_query && window_is_in_scope && visible && (checked_menu_control || is_window)
+        {
             if depth >= depth_budget {
                 truncated = true;
                 continue;
@@ -518,6 +752,9 @@ async fn observe_async(
                     .into_iter()
                     .filter(|related| !related.is_null())
                 {
+                    if relation == RelationType::Embeds {
+                        embedded_document_found = true;
+                    }
                     if visited + pending.len() >= node_budget {
                         truncated = true;
                         break;
@@ -530,13 +767,16 @@ async fn observe_async(
                             window.clone(),
                             window_object.clone(),
                         );
-                        // A frame's embedded document can be much larger than
-                        // the browser chrome. Queue it after the frame's
-                        // ordinary children so a focused app query can return
-                        // address-bar and toolbar targets before spending its
-                        // fixed node/time budget on page content.
+                        // Browser content queries need the document before the
+                        // browser chrome; otherwise a long page can consume
+                        // the focused-search budget on toolbar and tab nodes.
+                        // Address-bar/toolbar queries keep the original order.
                         if relation == RelationType::Embeds {
-                            pending.push_back(entry);
+                            if document_content_query {
+                                pending.push_front(entry);
+                            } else {
+                                pending.push_back(entry);
+                            }
                         } else {
                             pending.push_front(entry);
                         }
@@ -548,14 +788,46 @@ async fn observe_async(
         // application query to inspect menus in that application's bounded
         // subtree. This is needed for visible application/category menus,
         // whose entries otherwise never become addressable to the agent.
-        let skip_menu_subtree =
-            !app_scoped_query && matches!(role_lower.as_str(), "menu bar" | "menu" | "menu item");
+        let skip_menu_subtree = (!app_scoped_query || query_skips_app_menus(&query_terms))
+            && matches!(role_lower.as_str(), "menu bar" | "menu" | "menu item");
+        #[cfg(test)]
+        let child_prune_reason = if depth >= depth_budget {
+            Some("depth_budget")
+        } else if skip_menu_subtree {
+            Some("menu_subtree")
+        } else if skip_matched_target_subtree {
+            Some("matched_target_subtree")
+        } else if document_content_query && is_window && embedded_document_found {
+            Some("embedded_document_window_children")
+        } else if !(depth == 0
+            || visible
+            || (focused_search && window.is_some() && !is_window && tree_visible))
+        {
+            Some("invisible_ancestor")
+        } else {
+            None
+        };
+        #[cfg(test)]
+        if test_pruned_branches.len() < 32
+            && let Some(reason) = child_prune_reason
+        {
+            test_pruned_branches.push(json!({
+                "depth":depth,
+                "role":role_lower,
+                "name":name,
+                "reason":reason,
+                "windowName":window.as_ref().and_then(|window|window["name"].as_str()),
+                "windowId":window.as_ref().and_then(|window|window["windowId"].as_str()),
+            }));
+        }
         // Invisible background windows and their descendants cannot produce
         // actionable targets. Avoid walking their often large document trees
         // when a focused application observation is already budgeted.
         if depth < depth_budget
+            && (depth == 0 || window_is_in_scope)
             && !skip_menu_subtree
             && !skip_matched_target_subtree
+            && !(document_content_query && is_window && embedded_document_found)
             && (depth == 0
                 || visible
                 || (focused_search && window.is_some() && !is_window && tree_visible))
@@ -595,6 +867,7 @@ async fn observe_async(
             && (visible || (focused_search && window.is_some() && !is_window && tree_visible))
             && !skip_menu_subtree
             && !skip_matched_target_subtree
+            && !(document_content_query && is_window && embedded_document_found)
             && accessible.child_count().await.unwrap_or_default() > 0
         {
             truncated = true;
@@ -619,12 +892,20 @@ async fn observe_async(
         truncated,
     );
 
+    if scoped_window_id.is_some() && !scoped_window_root_seen {
+        return Err(
+            "windowId is no longer a visible child of its application; observe visible windows again"
+                .into(),
+        );
+    }
+
     let value = json!({
         "sessionId": session_id,
         "revision": revision,
         "query": query,
         "applications": applications,
         "focusedWindow": focused_window.or(active_window),
+        "windows": visible_windows,
         "truncated": truncated || !pending.is_empty(),
         "nodesVisited": visited,
         "queryAmbiguous": query_ambiguous,
@@ -634,11 +915,15 @@ async fn observe_async(
     let value = {
         let mut value = value;
         value["_testOwnerWindowScoped"] = json!(owner_window_scoped);
+        value["_testRoleCounts"] = json!(test_role_counts);
+        value["_testVisitedSamples"] = json!(test_visited_samples);
+        value["_testPrunedBranches"] = json!(test_pruned_branches);
         value
     };
     Ok(Snapshot {
         value,
         targets,
+        windows,
         #[cfg(test)]
         application_root_names,
     })
@@ -650,6 +935,10 @@ fn focused_search_result_is_actionable(
     truncated: bool,
 ) -> bool {
     !search_query || (!query_ambiguous && !truncated)
+}
+
+fn query_is_focused(terms: Option<&[String]>, window_scoped: bool) -> bool {
+    window_scoped || terms.is_some_and(|terms| terms.len() > 1)
 }
 
 fn withhold_unverified_query_tokens(
@@ -766,6 +1055,39 @@ fn window_title_terms(terms: &[String], application_name: &str) -> Vec<String> {
         .collect()
 }
 
+fn query_prefers_document_content(terms: &[String]) -> bool {
+    let has_document_role = terms
+        .iter()
+        .any(|term| matches!(term.as_str(), "link" | "heading" | "paragraph" | "document"));
+    let is_table_of_contents_toggle = ["label", "toggle", "table", "contents"]
+        .into_iter()
+        .all(|needle| terms.iter().any(|term| term == needle));
+    has_document_role || is_table_of_contents_toggle
+}
+
+fn query_skips_app_menus(terms: &Option<Vec<String>>) -> bool {
+    terms.as_deref().is_some_and(|terms| {
+        terms
+            .iter()
+            .any(|term| matches!(term.as_str(), "link" | "heading" | "paragraph" | "document"))
+    })
+}
+
+fn focused_query_role_is_leaf(role: &str) -> bool {
+    matches!(
+        role,
+        "link"
+            | "push button"
+            | "toggle button"
+            | "check box"
+            | "radio button"
+            | "tab"
+            | "text"
+            | "static"
+            | "image"
+    )
+}
+
 fn is_role_hint(term: &str) -> bool {
     matches!(
         term,
@@ -856,6 +1178,28 @@ fn target_can_be_exposed(
     actionable && visible && (!geometry_required || intersects_screen)
 }
 
+fn query_can_issue_action_tokens(
+    query_present: bool,
+    actionable: bool,
+    visible: bool,
+    intersects_screen: bool,
+) -> bool {
+    query_present && target_can_be_exposed(actionable, visible, true, intersects_screen)
+}
+
+fn window_id_is_in_scope(candidate: Option<&str>, selected: Option<&str>) -> bool {
+    selected.is_none_or(|selected| candidate == Some(selected))
+}
+
+fn window_identity_matches(
+    observed_role: &str,
+    observed_identity: &str,
+    current_role: &str,
+    current_identity: &str,
+) -> bool {
+    observed_role.eq_ignore_ascii_case(current_role) && observed_identity == current_identity
+}
+
 fn should_follow_related_object(
     is_window: bool,
     checked_menu_control: bool,
@@ -880,6 +1224,50 @@ fn accessibility_target_id(session_id: &str, revision: u64, node_index: usize) -
         "ax-{}-{revision}-{node_index}",
         session_id.chars().take(12).collect::<String>()
     )
+}
+
+fn accessibility_window_id(
+    session_id: &str,
+    object: &ObjectRefOwned,
+    role: &str,
+    name: &str,
+) -> String {
+    accessibility_window_id_from_parts(
+        session_id,
+        object.name_as_str().unwrap_or_default(),
+        object.path_as_str(),
+        role,
+        name,
+    )
+}
+
+fn accessibility_window_id_from_parts(
+    session_id: &str,
+    service: &str,
+    path: &str,
+    role: &str,
+    identity: &str,
+) -> String {
+    let mut material = Vec::with_capacity(
+        session_id.len() + service.len() + path.len() + role.len() + identity.len() + 40,
+    );
+    for component in [session_id, service, path, role, identity] {
+        material.extend_from_slice(&(component.len() as u64).to_be_bytes());
+        material.extend_from_slice(component.as_bytes());
+    }
+    let hash = crate::hashing::sha256(&material);
+    format!(
+        "axw-{}-{hash}",
+        session_id.chars().take(12).collect::<String>()
+    )
+}
+
+fn window_name_identity(name: &str) -> String {
+    crate::hashing::sha256(name.as_bytes())
+}
+
+fn bounded_accessible_name(name: String) -> String {
+    name.chars().take(MAX_NAME_CHARS).collect()
 }
 
 fn pointer_target_from_extents(extents: (i32, i32, i32, i32)) -> Option<Value> {
@@ -917,7 +1305,7 @@ fn unverified_click_result(action_name: &str) -> Value {
         "effect": "performed",
         "verified": false,
         "action": action_name,
-        "followUp": "Check the fresh observation for the expected UI state before continuing."
+        "followUp": "Check the returned observation for the expected UI state, then run a fresh focused desktop_observe before the next action."
     })
 }
 
@@ -1049,7 +1437,7 @@ async fn act_async(
         return Err("Accessibility target is not currently visible and sensitive".into());
     }
     if target.screen_bound
-        && (target.supports_click || target.supports_focus)
+        && (target.supports_click || target.supports_focus || target.supports_text)
         && query_screen_target(&accessible).await.is_none()
     {
         return Err(
@@ -1156,7 +1544,7 @@ async fn act_async(
                 "verified":verified,
                 "value":read_back,
                 "protected":target.is_password,
-                "followUp":"Check the fresh observation; target IDs have been refreshed."
+                "followUp":"Check the returned observation for the expected UI state, then run a fresh focused desktop_observe before the next action."
             }))
         }
         _ => Err("action must be click, focus, or set_text".to_owned()),
@@ -1250,12 +1638,15 @@ fn accessibility_error(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_DEPTH, MAX_SEARCH_DEPTH, RelationType, accessibility_target_id,
-        display_accessible_name, focused_search_result_is_actionable, is_password_role,
+        MAX_DEPTH, MAX_NAME_CHARS, MAX_SEARCH_DEPTH, RelationType, accessibility_target_id,
+        accessibility_window_id_from_parts, bounded_accessible_name, display_accessible_name,
+        focused_query_role_is_leaf, focused_search_result_is_actionable, is_password_role,
         is_pointer_fallback_candidate, node_is_relevant, owner_is_within_ancestor_limit,
-        pointer_target_from_extents, protect_text_value, query_matches, role_matches_hint,
-        should_follow_related_object, target_can_be_exposed, text_edit_is_supported,
-        unverified_click_result, validate_query, window_title_terms,
+        pointer_target_from_extents, protect_text_value, query_can_issue_action_tokens,
+        query_is_focused, query_matches, query_prefers_document_content, query_skips_app_menus,
+        role_matches_hint, should_follow_related_object, target_can_be_exposed,
+        text_edit_is_supported, unverified_click_result, validate_query, window_id_is_in_scope,
+        window_identity_matches, window_name_identity, window_title_terms,
         withhold_unverified_query_tokens,
     };
     use serde_json::json;
@@ -1524,12 +1915,77 @@ mod tests {
     }
 
     #[test]
+    fn focused_document_queries_prioritize_embedded_web_content() {
+        assert!(query_prefers_document_content(&[
+            "chrome".into(),
+            "slice".into(),
+            "link".into()
+        ]));
+        assert!(query_prefers_document_content(&[
+            "chrome".into(),
+            "toggle".into(),
+            "label".into(),
+            "table".into(),
+            "contents".into()
+        ]));
+        assert!(!query_prefers_document_content(&[
+            "chrome".into(),
+            "address".into(),
+            "textbox".into()
+        ]));
+        assert!(!query_skips_app_menus(&Some(vec![
+            "app".into(),
+            "menu".into(),
+            "label".into()
+        ])));
+        assert!(query_skips_app_menus(&Some(vec![
+            "chrome".into(),
+            "link".into()
+        ])));
+        assert!(!query_prefers_document_content(&[
+            "chrome".into(),
+            "main".into(),
+            "menu".into(),
+            "label".into()
+        ]));
+    }
+
+    #[test]
+    fn focused_query_prunes_named_semantic_leaves_but_keeps_containers() {
+        for role in ["link", "push button", "tab", "text", "image"] {
+            assert!(focused_query_role_is_leaf(role), "{role}");
+        }
+        assert!(focused_query_role_is_leaf("static"));
+        for role in ["frame", "panel", "list", "menu", "table"] {
+            assert!(!focused_query_role_is_leaf(role), "{role}");
+        }
+    }
+
+    #[test]
+    fn one_word_window_scoped_queries_get_focused_search_budget() {
+        assert!(query_is_focused(Some(&["link".into()]), true));
+        assert!(!query_is_focused(Some(&["link".into()]), false));
+        assert!(query_is_focused(
+            Some(&["slice".into(), "link".into()]),
+            false
+        ));
+    }
+
+    #[test]
     fn offscreen_and_unmeasured_controls_never_receive_action_tokens() {
         assert!(target_can_be_exposed(true, true, false, false));
         assert!(target_can_be_exposed(true, true, true, true));
         assert!(!target_can_be_exposed(true, false, true, true));
         assert!(!target_can_be_exposed(true, true, true, false));
         assert!(!target_can_be_exposed(false, true, true, true));
+    }
+
+    #[test]
+    fn broad_snapshots_cannot_issue_unmeasured_action_tokens() {
+        assert!(!query_can_issue_action_tokens(false, true, true, true));
+        assert!(!query_can_issue_action_tokens(true, true, true, false));
+        assert!(!query_can_issue_action_tokens(true, true, false, true));
+        assert!(query_can_issue_action_tokens(true, true, true, true));
     }
 
     #[test]
@@ -1547,5 +2003,109 @@ mod tests {
         let next = accessibility_target_id("0123456789abcdef", 18, 3);
         assert_eq!(first, "ax-0123456789ab-17-3");
         assert_ne!(first, next);
+    }
+
+    #[test]
+    fn window_ids_are_session_scoped_object_selectors() {
+        let first = accessibility_window_id_from_parts(
+            "session-a",
+            ":1.8",
+            "/window/3",
+            "frame",
+            "References and Borrowing",
+        );
+        assert_eq!(
+            first,
+            accessibility_window_id_from_parts(
+                "session-a",
+                ":1.8",
+                "/window/3",
+                "frame",
+                "References and Borrowing",
+            )
+        );
+        assert_ne!(
+            first,
+            accessibility_window_id_from_parts(
+                "session-a",
+                ":1.8",
+                "/window/4",
+                "frame",
+                "References and Borrowing",
+            )
+        );
+        assert_ne!(
+            first,
+            accessibility_window_id_from_parts(
+                "session-b",
+                ":1.8",
+                "/window/3",
+                "frame",
+                "References and Borrowing",
+            )
+        );
+        assert_ne!(
+            first,
+            accessibility_window_id_from_parts(
+                "session-a",
+                ":1.8",
+                "/window/3",
+                "frame",
+                "Downloads",
+            )
+        );
+    }
+
+    #[test]
+    fn window_selector_rejects_reused_role_with_changed_identity() {
+        assert!(window_identity_matches(
+            "frame",
+            "References and Borrowing",
+            "FRAME",
+            "References and Borrowing",
+        ));
+        assert!(!window_identity_matches(
+            "frame",
+            "References and Borrowing",
+            "frame",
+            "Downloads",
+        ));
+    }
+
+    #[test]
+    fn long_window_titles_use_bounded_display_and_full_identity() {
+        let mut first = "t".repeat(MAX_NAME_CHARS);
+        let mut replacement = first.clone();
+        first.push('a');
+        replacement.push('b');
+        assert_eq!(
+            bounded_accessible_name(first.clone()).chars().count(),
+            MAX_NAME_CHARS
+        );
+        assert_eq!(
+            bounded_accessible_name(first.clone()),
+            bounded_accessible_name(replacement.clone()),
+        );
+        let first_identity = window_name_identity(&first);
+        let replacement_identity = window_name_identity(&replacement);
+        assert_ne!(first_identity, replacement_identity);
+        assert!(!window_identity_matches(
+            "frame",
+            &first_identity,
+            "frame",
+            &replacement_identity,
+        ));
+    }
+
+    #[test]
+    fn scoped_observation_withholds_sibling_window_candidates() {
+        let selected = "window-selected";
+        assert!(window_id_is_in_scope(Some(selected), Some(selected)));
+        assert!(!window_id_is_in_scope(
+            Some("window-sibling"),
+            Some(selected)
+        ));
+        assert!(!window_id_is_in_scope(None, Some(selected)));
+        assert!(window_id_is_in_scope(None, None));
     }
 }

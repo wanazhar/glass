@@ -32,6 +32,13 @@ async function waitForInput(predicate, timeoutMs = 2000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+async function waitForInputSince(start, predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!input.slice(start).some(predicate)) {
+    assert(Date.now() < deadline, "expected new desktop input was not sent");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 const jpg = Buffer.from(
   "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAKABADASIAAhEBAxEB/8QAFgABAQEAAAAAAAAAAAAAAAAABwIE/8QAIxAAAQQCAQMFAAAAAAAAAAAAAQIDBAUREgBBUWEGExQxgf/EABQBAQAAAAAAAAAAAAAAAAAAAAP/xAAYEQEBAAMAAAAAAAAAAAAAAAABAAISIv/aAAwDAQACEQMRAD8AMrAOxrKQwlwpS2UgAJT1SD1HnmqkjOT3ZCVq3DYQRkAYzt2Hjjc96epJDqnXqevccV9rXFQSf0jlx6SpibfGq4TO2NvbjoTnHfA4S8xOJrf/2Q==",
   "base64",
@@ -435,7 +442,8 @@ try {
     { id: 19, x: dragX + 36, y: dragY + 18, radiusX: 4, radiusY: 4, force: 1 },
   ] });
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await page.waitForTimeout(80);
+  await waitForInputSince(beforeDrag, (event) => event.action === "pointer-button" && event.button === "left" && event.pressed);
+  await waitForInputSince(beforeDrag, (event) => event.action === "pointer-button" && event.button === "left" && !event.pressed);
   const directDragActions = input.slice(beforeDrag);
   assert(directDragActions.some((event) => event.action === "pointer-button" && event.button === "left" && event.pressed));
   const directDragRelease = directDragActions.find((event) => event.action === "pointer-button" && event.button === "left" && !event.pressed);

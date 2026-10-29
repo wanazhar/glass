@@ -62,6 +62,7 @@ export function desktopSurface({ api }) {
   let streamFailed = false;
   let startPending = false;
   let startAttempt = 0;
+  let statusRequest = 0;
   let activePointer = null;
   let lastMoveAt = 0;
   let inputQueue = [];
@@ -500,9 +501,10 @@ export function desktopSurface({ api }) {
   async function refresh() {
     if (!isOpen()) return;
     const requestAttempt = startAttempt;
+    const requestId = ++statusRequest;
     try {
       const next = await api("desktop/status", undefined, requestController.signal);
-      if (isOpen() && requestAttempt === startAttempt && !startPending) {
+      if (isOpen() && requestId === statusRequest && requestAttempt === startAttempt && !startPending) {
         connectionError = null;
         render(next);
       }
@@ -511,7 +513,7 @@ export function desktopSurface({ api }) {
       // display and desktop are ready. Status requests made before or during
       // that work can time out even though Connect is healthy. Do not let one
       // of those responses overwrite the in-progress start state.
-      if (!isOpen() || requestAttempt !== startAttempt || startPending) return;
+      if (!isOpen() || requestId !== statusRequest || requestAttempt !== startAttempt || startPending) return;
       connectionError = error.message || "Connect is temporarily unavailable.";
       if (!snapshot) {
         render({

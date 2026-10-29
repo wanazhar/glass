@@ -224,9 +224,17 @@ requested. Entry is masked. Connect accepts a browser-submitted value
 only through its HTTPS-designated loopback ingress, with the exact HTTPS `Host`
 and `Origin`, the existing Connect authentication, and a currently pending
 secret request. The HTTP route and `--local` route reject browser submissions;
-forwarded-protocol headers do not authorize them. Open the HTTPS Connect URL
-before entering a secret. If HTTPS is unavailable, use the local GC terminal
-prompt instead.
+forwarded-protocol headers do not authorize them. These checks distinguish the
+HTTPS-designated listener from the ordinary HTTP listener, but they do not prove
+that a request arrived through a TLS connection: Tailscale Serve terminates TLS
+and forwards HTTP to loopback, and the backend cannot distinguish that proxy
+connection from a direct local TCP connection. A process running under another
+local user can connect to the loopback port and forge the expected HTTP origin
+and Tailscale identity headers. Treat the host's local users and processes as
+trusted when entering a secret remotely. Do not use remote secret entry on a
+shared or multi-user host; use the local GC terminal prompt instead. Open the
+HTTPS Connect URL before entering a secret so the browser-to-Tailscale leg is
+encrypted.
 
 GC keeps the value in memory for up to five minutes and returns only a random
 `secretRef` to the agent. It is bound to that GC session, the named HTTPS

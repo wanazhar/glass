@@ -217,6 +217,29 @@ tailnet and do not expose it through a public reverse proxy. Use the HTTPS URL
 when encrypted transport is required. `gc connect --local` also stays on
 loopback and uses a private link.
 
+In the current checkout, secret requests use a separate interaction and never
+use the ordinary answer or chat endpoint. This flow is not part of published
+version `0.3.14`. The card shows the purpose and HTTPS destination the agent
+requested. Entry is masked. Connect accepts a browser-submitted value
+only through its HTTPS-designated loopback ingress, with the exact HTTPS `Host`
+and `Origin`, the existing Connect authentication, and a currently pending
+secret request. The HTTP route and `--local` route reject browser submissions;
+forwarded-protocol headers do not authorize them. Open the HTTPS Connect URL
+before entering a secret. If HTTPS is unavailable, use the local GC terminal
+prompt instead.
+
+GC keeps the value in memory for up to five minutes and returns only a random
+`secretRef` to the agent. It is bound to that GC session, the named HTTPS
+request operation, and the exact HTTPS origin; it can be used once or revoked
+with `revoke_secret`. Closing the session discards its handles. The first
+consumer, `web_secret_request`, permits only GET or POST to a relative path on
+the approved origin. GC adds the value as a Bearer authorization header,
+disables redirects, limits the JSON request body and response body to 16 KiB,
+and removes the exact secret value from the response before recording or
+returning it. Secret values are not written to the chat transcript or Connect
+event stream. This request path does not support arbitrary headers, other
+origins, HTTP, or other host tools.
+
 ### Accessibility and agent tools
 
 The desktop tools exist only while Connect manages a desktop. They use the same

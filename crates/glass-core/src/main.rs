@@ -89,6 +89,7 @@ mod sandbox;
 mod serve;
 mod session;
 mod session_diagnostics;
+mod secrets;
 mod settings;
 mod signals;
 mod skills;

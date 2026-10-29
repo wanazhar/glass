@@ -6,6 +6,7 @@ use glass_tui::{
 };
 use std::io::Write;
 use std::time::Duration;
+use zeroize::{Zeroize, Zeroizing};
 
 thread_local! { static BACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
@@ -527,6 +528,9 @@ pub fn validated_field(
 ) -> Option<String> {
     let screen = Screen::new();
     let mut editor = Editor::new();
+    if secret {
+        editor.set_sensitive();
+    }
     editor.set_text(initial);
     let mut error = String::new();
     loop {
@@ -586,8 +590,9 @@ pub fn validated_field(
             Event::Key(k) if cancelled(k.code, k.modifiers) => return None,
             Event::Key(k) => {
                 if let Edit::Submit(s) = editor.key(k) {
-                    let value = s.trim();
-                    match if value.is_empty() {
+                    let s = Zeroizing::new(s);
+                    let value = if secret { s.as_str() } else { s.trim() };
+                    match if value.trim().is_empty() {
                         Err("Enter a value.".into())
                     } else {
                         validate(value)
@@ -600,7 +605,15 @@ pub fn validated_field(
                     }
                 }
             }
-            Event::Paste(s) => editor.insert_str(&s.replace(['\r', '\n'], "")),
+            Event::Paste(mut s) => {
+                if secret {
+                    let cleaned = Zeroizing::new(s.replace(['\r', '\n'], ""));
+                    s.zeroize();
+                    editor.insert_str(&cleaned);
+                } else {
+                    editor.insert_str(&s.replace(['\r', '\n'], ""));
+                }
+            }
             _ => {}
         }
     }

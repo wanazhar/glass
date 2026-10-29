@@ -324,6 +324,10 @@ pub struct Agent<'a> {
     /// Headless/ACP agents leave this unset and never advertise elicitation support.
     input_keys: Option<&'a crate::input::KeyReader>,
     human: Option<HumanDecision<'a>>,
+    /// Session-only secret handles. Raw values are available only through the
+    /// narrowly scoped HTTPS request consumer and are redacted before results
+    /// are recorded or sent to the provider.
+    secrets: crate::secrets::SecretVault,
     approved_calls: std::collections::HashMap<String, String>,
     /// Cached system-prompt contribution from extensions.
     ext_prompt: String,
@@ -494,6 +498,7 @@ impl<'a> Agent<'a> {
             on_progress: None,
             input_keys: None,
             human: None,
+            secrets: crate::secrets::SecretVault::default(),
             approved_calls: std::collections::HashMap::new(),
             ext_prompt: String::new(),
             prefix_bytes: 0,
@@ -597,6 +602,9 @@ impl<'a> Agent<'a> {
             }
             if self.input_keys.is_some() || self.human.is_some() {
                 tools.push(crate::questions::schema());
+                tools.push(crate::secrets::request_schema());
+                tools.push(crate::secrets::revoke_schema());
+                tools.push(crate::web_tools::secret_request_schema());
             }
             if self.checkpoint_tools {
                 tools.extend(crate::provider::checkpoint_tool_schemas());
@@ -1904,10 +1912,9 @@ impl<'a> Agent<'a> {
             return;
         }
         if let Some((schemas, mut execute)) = self.mixed_hosted.take() {
-            if let Some(index) = calls
-                .iter()
-                .position(|call| call.name == "ask_user_question")
-            {
+            if let Some(index) = calls.iter().position(|call| {
+                matches!(call.name.as_str(), "ask_user_question" | "request_secret")
+            }) {
                 let question = &calls[index];
                 self.run_tool_batch(std::slice::from_ref(question), pump);
                 for (other_index, call) in calls.iter().enumerate() {
@@ -1950,7 +1957,7 @@ impl<'a> Agent<'a> {
         // the whole batch, including mutations listed before the question.
         if let Some(index) = calls
             .iter()
-            .position(|call| call.name == "ask_user_question")
+            .position(|call| matches!(call.name.as_str(), "ask_user_question" | "request_secret"))
         {
             let question = &calls[index];
             self.loop_guard(question);
@@ -1981,6 +1988,7 @@ impl<'a> Agent<'a> {
         if calls.iter().any(|call| {
             crate::files::is_tool(&call.name)
                 || call.name == "ask_user_question"
+                || call.name == "request_secret"
                 || call.arg_raw("permission").is_some()
         }) || !self.mods.is_empty()
             || !self.extensions.is_empty()
@@ -2128,7 +2136,9 @@ impl<'a> Agent<'a> {
         call: &ToolCall,
         pump: &mut impl FnMut(&mut Option<String>),
     ) {
-        if call.arg_raw("permission").is_some() || call.name == "ask_user_question" {
+        if call.arg_raw("permission").is_some()
+            || matches!(call.name.as_str(), "ask_user_question" | "request_secret")
+        {
             pump(&mut self.steer);
             if self.steer.is_some() {
                 self.finish_tool(call,tools::Outcome::err("Skipped before interaction because the user interrupted or steered the task"));
@@ -2166,6 +2176,119 @@ impl<'a> Agent<'a> {
                     self.finish_tool(call, tools::Outcome::err(error));
                 }
             }
+            return;
+        }
+        if call.name == "request_secret" {
+            self.emit_tool_start(call);
+            if self.read_only || (self.input_keys.is_none() && self.human.is_none()) {
+                self.finish_tool(
+                    call,
+                    tools::Outcome::err(
+                        "Secret entry is available only in an interactive writable session",
+                    ),
+                );
+                return;
+            }
+            let outcome = serde_json::from_str(&call.arguments)
+                .map_err(|_| "Invalid secret request".to_owned())
+                .and_then(|value| crate::secrets::SecretRequest::parse(&value))
+                .and_then(|request| {
+                    if !self
+                        .tool_set()
+                        .iter()
+                        .any(|(name, _, _)| name == &request.tool_name)
+                    {
+                        return Err(
+                            "The requested secret consumer is not available in this session".into(),
+                        );
+                    }
+                    let secret = if let Some(human) = &self.human {
+                        let mut response = human(&serde_json::json!({
+                            "kind":"secret",
+                            "request":{
+                                "purpose":&request.purpose,
+                                "destination":&request.destination,
+                                "tool":&request.tool_name,
+                                "operation":&request.operation
+                            }
+                        }))?;
+                        if response["status"] == "cancelled" {
+                            return Ok(serde_json::json!({"status":"cancelled"}));
+                        }
+                        if response["status"] != "answered" {
+                            return Err("Secret response was not accepted".into());
+                        }
+                        match std::mem::replace(&mut response["secret"], serde_json::Value::Null) {
+                            serde_json::Value::String(secret) => zeroize::Zeroizing::new(secret),
+                            _ => return Err("Secret response was incomplete".into()),
+                        }
+                    } else if let Some(keys) = self.input_keys {
+                        let Some(secret) = crate::secrets::prompt(&request, keys) else {
+                            return Ok(serde_json::json!({"status":"cancelled"}));
+                        };
+                        zeroize::Zeroizing::new(secret)
+                    } else {
+                        return Err("No interactive human is connected to enter this secret".into());
+                    };
+                    let scope = request.scope(&self.session.id);
+                    let secret_ref = self.secrets.issue_zeroizing(scope, secret)?;
+                    Ok(serde_json::json!({
+                        "status":"provided",
+                        "secretRef":secret_ref,
+                        "destination":request.destination,
+                        "tool":request.tool_name,
+                        "operation":request.operation,
+                        "expiresInSeconds":300
+                    }))
+                });
+            match outcome {
+                Ok(value) if value["status"] == "cancelled" => {
+                    self.steer = Some(String::new());
+                    self.finish_tool(call, tools::Outcome::ok(value.to_string()));
+                }
+                Ok(value) => self.finish_tool(call, tools::Outcome::ok(value.to_string())),
+                Err(error) => self.finish_tool(call, tools::Outcome::err(error)),
+            }
+            return;
+        }
+        if call.name == "web_secret_request" {
+            if self.read_only {
+                self.finish_tool(
+                    call,
+                    tools::Outcome::err(
+                        "HTTPS secret requests are unavailable in read-only sessions",
+                    ),
+                );
+                return;
+            }
+            self.run_secret_web_pumped(call, pump);
+            return;
+        }
+        if call.name == "revoke_secret" {
+            self.emit_tool_start(call);
+            if self.read_only {
+                self.finish_tool(
+                    call,
+                    tools::Outcome::err("Secret handles are unavailable in read-only sessions"),
+                );
+                return;
+            }
+            let outcome = serde_json::from_str::<serde_json::Value>(&call.arguments)
+                .map_err(|_| "Invalid secretRef".to_owned())
+                .and_then(|value| {
+                    let handle = value["secretRef"]
+                        .as_str()
+                        .filter(|handle| handle.len() <= 96 && handle.starts_with("secret_"))
+                        .ok_or_else(|| "Invalid secretRef".to_owned())?;
+                    Ok(serde_json::json!({"revoked":self.secrets.revoke(handle)}).to_string())
+                });
+            self.finish_tool(
+                call,
+                match outcome {
+                    Ok(body) => tools::Outcome::ok(body),
+                    Err(error) => tools::Outcome::err(error),
+                },
+            );
             return;
         }
         if call.name == "view_image" && !self.image_input {
@@ -2455,6 +2578,61 @@ impl<'a> Agent<'a> {
                     self.finish_tool(
                         call,
                         tools::Outcome::err("web request worker ended without a result"),
+                    );
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            pump(&mut self.steer);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Consume an approved secret handle before dispatching the exact bounded
+    /// HTTPS request on a worker. The raw value remains outside tool arguments,
+    /// result events, and the session transcript.
+    fn run_secret_web_pumped(
+        &mut self,
+        call: &ToolCall,
+        pump: &mut impl FnMut(&mut Option<String>),
+    ) {
+        self.emit_tool_start(call);
+        let parsed = serde_json::from_str::<serde_json::Value>(&call.arguments)
+            .map_err(|_| "Invalid HTTPS secret request".to_owned())
+            .and_then(|value| {
+                crate::web_tools::parse_secret_request(&value)
+                    .map(|(handle, operation, _)| (value, handle, operation))
+            });
+        let (arguments, handle, operation) = match parsed {
+            Ok(parsed) => parsed,
+            Err(error) => return self.finish_tool(call, tools::Outcome::err(error)),
+        };
+        let (secret, destination) =
+            match self
+                .secrets
+                .take_web_request_secret(&handle, &self.session.id, &operation)
+            {
+                Ok(value) => value,
+                Err(error) => return self.finish_tool(call, tools::Outcome::err(error)),
+            };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::web_tools::secret_request(
+                &arguments,
+                secret,
+                &destination,
+            ));
+        });
+        loop {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.finish_tool(call, result);
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.finish_tool(
+                        call,
+                        tools::Outcome::err("HTTPS secret request worker ended without a result"),
                     );
                     return;
                 }
@@ -2893,6 +3071,8 @@ impl<'a> Agent<'a> {
             || call.name == "bash"
             || call.name == "state"
             || crate::web_tools::is_tool(&call.name)
+            || call.name == "web_secret_request"
+            || call.name == "revoke_secret"
             || crate::desktop::is_tool(&call.name)
             || (self.checkpoint_tools
                 && matches!(call.name.as_str(), "checkpoint" | "rewind" | "wait"))
@@ -3111,6 +3291,10 @@ impl<'a> Agent<'a> {
     /// Record a tool result and notify mods. The single path every tool
     /// outcome takes, including the ones blocked by a guard.
     fn finish_tool(&mut self, call: &ToolCall, outcome: tools::Outcome) {
+        let outcome = tools::Outcome {
+            body: self.secrets.redact(&outcome.body),
+            ..outcome
+        };
         if call.name.starts_with("glass.browser.")
             && outcome.exit_code == Some(0)
             && let Ok(result) = serde_json::from_str::<serde_json::Value>(&outcome.body)

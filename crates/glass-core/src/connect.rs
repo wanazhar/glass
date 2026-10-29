@@ -21,6 +21,10 @@ const MAX_EVENT_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Serialize, Deserialize)]
 struct Settings {
     port: u16,
+    #[serde(default)]
+    https_backend_port: u16,
+    #[serde(default)]
+    https_active: bool,
     https: u16,
     #[serde(default)]
     http: u16,
@@ -258,8 +262,30 @@ fn port_available(port: u16) -> bool {
         ),
     }
 }
+fn loopback_port_avoiding(excluded: &[u16]) -> Result<u16, String> {
+    for _ in 0..16 {
+        let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        if !excluded.contains(&port) {
+            return Ok(port);
+        }
+    }
+    Err("Could not allocate distinct local Connect listeners".into())
+}
 fn route(settings: &Settings) -> String {
     format!("http://127.0.0.1:{}", settings.port)
+}
+fn https_route(settings: &Settings) -> String {
+    if settings.https_backend_port == 0 {
+        route(settings)
+    } else {
+        format!("http://127.0.0.1:{}", settings.https_backend_port)
+    }
+}
+pub(crate) fn secret_transport_available() -> bool {
+    load_status().ok().flatten().is_some_and(|settings| {
+        !settings.local && settings.https_active && settings.https_backend_port > 0
+    })
 }
 fn web_url(settings: &Settings) -> String {
     if settings.http > 0 {
@@ -356,7 +382,12 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
                         continue;
                     }
                     let key = format!("{}:{}", s.host, port);
-                    if status["Web"][&key]["Handlers"]["/"]["Proxy"] == route(&s) {
+                    let expected_route = if protocol == "https" {
+                        https_route(&s)
+                    } else {
+                        route(&s)
+                    };
+                    if status["Web"][&key]["Handlers"]["/"]["Proxy"] == expected_route {
                         let out = Command::new("tailscale")
                             .args(["serve", &format!("--{protocol}={port}"), "off"])
                             .output()
@@ -438,8 +469,10 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
         let previous = load().ok().filter(|s| {
             !s.local
                 && s.host == host
-                && routes["Web"][format!("{}:{}", s.host, s.https)]["Handlers"]["/"]["Proxy"]
-                    == route(s)
+                && [route(s), https_route(s)].iter().any(|expected| {
+                    routes["Web"][format!("{}:{}", s.host, s.https)]["Handlers"]["/"]["Proxy"]
+                        == *expected
+                })
         });
         let https = previous
             .map(|s| s.https)
@@ -472,16 +505,18 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
     } else {
         (0, String::new())
     };
-    let port = TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| e.to_string())?
-        .local_addr()
-        .map_err(|e| e.to_string())?
-        .port();
+    let port = loopback_port_avoiding(&[])?;
     let mut random = [0u8; 32];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut random)
         .map_err(|_| "Secure random unavailable")?;
     let mut settings = Settings {
         port,
+        https_backend_port: if !local && https > 0 {
+            loopback_port_avoiding(&[port])?
+        } else {
+            0
+        },
+        https_active: false,
         https,
         http,
         http_host,
@@ -542,12 +577,17 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
             if port == 0 {
                 continue;
             }
+            let backend_route = if protocol == "https" {
+                https_route(&settings)
+            } else {
+                route(&settings)
+            };
             let out = Command::new("tailscale")
                 .args([
                     "serve",
                     "--bg",
                     &format!("--{protocol}={port}"),
-                    &route(&settings),
+                    &backend_route,
                 ])
                 .output()
                 .map_err(|e| e.to_string())?;
@@ -561,6 +601,10 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
                     "Tailscale {protocol} Serve could not start: {}",
                     String::from_utf8_lossy(&out.stderr)
                 ));
+            }
+            if protocol == "https" {
+                settings.https_active = true;
+                save(&settings)?;
             }
         }
     }
@@ -604,6 +648,35 @@ impl Bridge {
             .write_all(&bytes)
             .and_then(|_| stream.write_all(b"\n"))
             .map_err(|e| e.to_string())
+    }
+    fn send_secret_answer(&self, interaction_id: &str, secret: &str) -> Result<(), String> {
+        #[derive(serde::Serialize)]
+        struct SecretAnswer<'a> {
+            t: &'static str,
+            id: &'a str,
+            secret: &'a str,
+        }
+        let mut bytes = zeroize::Zeroizing::new(
+            serde_json::to_vec(&SecretAnswer {
+                t: "secret_answer",
+                id: interaction_id,
+                secret,
+            })
+            .map_err(|e| e.to_string())?,
+        );
+        if bytes.len() > MAX_BODY {
+            return Err("Secret submission exceeds the request limit".into());
+        }
+        let mut stream = self
+            .writer
+            .lock()
+            .map_err(|_| "Session bridge unavailable")?;
+        stream
+            .write_all(bytes.as_slice())
+            .and_then(|_| stream.write_all(b"\n"))
+            .map_err(|e| e.to_string())?;
+        zeroize::Zeroize::zeroize(&mut *bytes);
+        Ok(())
     }
     fn push(&self, value: Value) {
         let size = value.to_string().len();
@@ -859,11 +932,12 @@ fn bridge(app: &App, id: &str) -> Result<Arc<Bridge>, String> {
     map.insert(id.into(), b.clone());
     Ok(b)
 }
+#[derive(Clone)]
 struct Request {
     method: String,
     path: String,
     headers: HashMap<String, String>,
-    body: Vec<u8>,
+    body: zeroize::Zeroizing<Vec<u8>>,
 }
 fn request(stream: &mut TcpStream) -> Result<Request, String> {
     let mut header = Vec::new();
@@ -907,8 +981,10 @@ fn request(stream: &mut TcpStream) -> Result<Request, String> {
     if len > limit {
         return Err(format!("Input exceeds {} bytes", limit));
     }
-    let mut body = vec![0; len];
-    stream.read_exact(&mut body).map_err(|e| e.to_string())?;
+    let mut body = zeroize::Zeroizing::new(vec![0; len]);
+    stream
+        .read_exact(body.as_mut_slice())
+        .map_err(|e| e.to_string())?;
     Ok(Request {
         method,
         path,
@@ -993,6 +1069,36 @@ fn same_origin_desktop_mutation(settings: &Settings, r: &Request) -> bool {
         .any(|expected| {
             origin_authority(expected) == Some(host.as_str()) && expected == request_origin
         })
+}
+fn same_origin_https_mutation(settings: &Settings, r: &Request) -> bool {
+    if r.method != "POST" || settings.local {
+        return false;
+    }
+    let expected = https_url(settings);
+    let Some(authority) = origin_authority(&expected) else {
+        return false;
+    };
+    r.headers.get("content-type").is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
+    }) && r.headers.get("host").is_some_and(|host| host == authority)
+        && r.headers
+            .get("origin")
+            .is_some_and(|origin| origin == &expected)
+        && !r
+            .headers
+            .get("sec-fetch-site")
+            .is_some_and(|site| !matches!(site.as_str(), "same-origin" | "none"))
+}
+fn secret_submission_allowed(
+    https_ingress: bool,
+    transport_active: bool,
+    settings: &Settings,
+    r: &Request,
+) -> bool {
+    https_ingress && transport_active && same_origin_https_mutation(settings, r)
 }
 fn history(id: &str, before: usize) -> Result<Value, String> {
     history_path(&thread_path(id)?, before)
@@ -1761,14 +1867,23 @@ fn event_stream(mut stream: TcpStream, b: Arc<Bridge>, since: u64) -> std::io::R
         }
     }
 }
-fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
+fn handle(stream: TcpStream, app: Arc<App>, https_ingress: bool) -> Result<(), String> {
+    handle_with_transport(stream, app, https_ingress, secret_transport_available())
+}
+
+fn handle_with_transport(
+    mut stream: TcpStream,
+    app: Arc<App>,
+    https_ingress: bool,
+    transport_active: bool,
+) -> Result<(), String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|e| e.to_string())?;
     stream
         .set_write_timeout(Some(Duration::from_secs(5)))
         .map_err(|e| e.to_string())?;
-    let r = match request(&mut stream) {
+    let mut r = match request(&mut stream) {
         Ok(r) => r,
         Err(e) => {
             let _ = json_response(&mut stream, 400, json!({"error":e}));
@@ -1781,6 +1896,17 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
     let path = url.path();
+    if path == "/api/secret"
+        && !secret_submission_allowed(https_ingress, transport_active, &app.settings, &r)
+    {
+        zeroize::Zeroize::zeroize(&mut r.body);
+        return json_response(
+            &mut stream,
+            403,
+            json!({"error":"Secret entry requires the authenticated HTTPS Connect origin"}),
+        )
+        .map_err(|e| e.to_string());
+    }
     if path == "/api/local" && app.settings.local && r.method == "POST" {
         let expected = origin(&app.settings);
         let Some(expected_authority) = origin_authority(&expected) else {
@@ -1812,6 +1938,9 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
     }
     let is_asset = !path.starts_with("/api/");
     if (!is_asset || !app.settings.local) && !authorized(&app.settings, &r) {
+        if path == "/api/secret" {
+            zeroize::Zeroize::zeroize(&mut r.body);
+        }
         return json_response(
             &mut stream,
             403,
@@ -2244,6 +2373,65 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
             bridge(&app, id)?.send(message)?;
             Ok(json!({"sent":true,"note":"Session acknowledgment determines durable acceptance"}))
         }
+        ("POST", "/api/secret") => {
+            let raw_body = std::mem::take(&mut r.body);
+            let mut value: Value =
+                serde_json::from_slice(&raw_body).map_err(|_| "Invalid secret submission")?;
+            if value.as_object().is_none_or(|object| {
+                object
+                    .keys()
+                    .any(|key| !matches!(key.as_str(), "id" | "interactionId" | "secret"))
+            }) {
+                return Err("Secret submission contains unsupported fields".into());
+            }
+            let id = value["id"]
+                .as_str()
+                .filter(|id| !id.is_empty() && id.len() <= 128)
+                .ok_or("Missing thread")?
+                .to_owned();
+            let interaction_id = value["interactionId"]
+                .as_str()
+                .filter(|id| !id.is_empty() && id.len() <= 128)
+                .ok_or("Missing secret request")?
+                .to_owned();
+            let secret = match std::mem::replace(&mut value["secret"], Value::Null) {
+                Value::String(secret)
+                    if !secret.trim().is_empty()
+                        && secret.len() <= 4096
+                        && !secret.chars().any(char::is_control) =>
+                {
+                    zeroize::Zeroizing::new(secret)
+                }
+                _ => return Err("Secret must contain 1..=4096 bytes".into()),
+            };
+            let bridge = bridge(&app, &id)?;
+            let mut feed = bridge
+                .feed
+                .lock()
+                .map_err(|_| "Session state unavailable")?;
+            let pending = feed
+                .interaction
+                .as_ref()
+                .filter(|interaction| {
+                    interaction["id"] == interaction_id
+                        && interaction["request"]["kind"] == "secret"
+                })
+                .cloned()
+                .ok_or("That secret request is no longer active")?;
+            // Claim the pending request while holding the feed lock so two
+            // concurrent POSTs cannot submit two values for one interaction.
+            feed.interaction = None;
+            drop(feed);
+            if let Err(error) = bridge.send_secret_answer(&interaction_id, secret.as_str()) {
+                if let Ok(mut feed) = bridge.feed.lock()
+                    && feed.interaction.is_none()
+                {
+                    feed.interaction = Some(pending);
+                }
+                return Err(error);
+            }
+            Ok(json!({"sent":true}))
+        }
         _ => Err("Not found".into()),
     })();
     if path == "/api/events" && result.is_ok() {
@@ -2370,6 +2558,14 @@ fn resize_stream_frame(jpeg: &[u8], width: u32) -> Result<Vec<u8>, String> {
 fn gateway(cfg: crate::config::Config, settings: Settings) -> Result<(), String> {
     let listener = TcpListener::bind(("127.0.0.1", settings.port)).map_err(|e| e.to_string())?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let https_listener = if settings.https_backend_port > 0 {
+        let listener = TcpListener::bind(("127.0.0.1", settings.https_backend_port))
+            .map_err(|e| format!("HTTPS ingress listener: {e}"))?;
+        listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+        Some(listener)
+    } else {
+        None
+    };
     crate::desktop::arm_shutdown();
     let desktop = Arc::new(crate::desktop::Desktop::new(settings.workspace.clone()));
     let desktop_agent = desktop.clone();
@@ -2386,25 +2582,31 @@ fn gateway(cfg: crate::config::Config, settings: Settings) -> Result<(), String>
         clients: AtomicUsize::new(0),
     });
     while !crate::desktop::stopping() {
-        let stream = match listener.accept() {
-            Ok((stream, _)) => stream,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(30));
+        let mut accepted = false;
+        for (ingress, https_ingress) in std::iter::once((&listener, false))
+            .chain(https_listener.iter().map(|listener| (listener, true)))
+        {
+            let stream = match ingress.accept() {
+                Ok((stream, _)) => stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.to_string()),
+            };
+            accepted = true;
+            if app.clients.fetch_add(1, Ordering::SeqCst) >= 32 {
+                app.clients.fetch_sub(1, Ordering::SeqCst);
+                drop(stream);
                 continue;
             }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error.to_string()),
-        };
-        if app.clients.fetch_add(1, Ordering::SeqCst) >= 32 {
-            app.clients.fetch_sub(1, Ordering::SeqCst);
-            drop(stream);
-            continue;
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let _ = handle(stream, app.clone(), https_ingress);
+                app.clients.fetch_sub(1, Ordering::SeqCst);
+            });
         }
-        let app = app.clone();
-        std::thread::spawn(move || {
-            let _ = handle(stream, app.clone());
-            app.clients.fetch_sub(1, Ordering::SeqCst);
-        });
+        if !accepted {
+            std::thread::sleep(Duration::from_millis(30));
+        }
     }
     // HTTP and the private agent bridge retain Arc<App>/Arc<Desktop> while
     // their handlers unwind. Clear the owned processes before the gateway's
@@ -2437,6 +2639,8 @@ mod tests {
     fn settings() -> Settings {
         Settings {
             port: 8765,
+            https_backend_port: 8766,
+            https_active: true,
             https: 8443,
             http: 0,
             http_host: String::new(),
@@ -2450,6 +2654,180 @@ mod tests {
             assets: PathBuf::from("/tmp"),
             security: Value::Null,
         }
+    }
+
+    fn secret_test_app(settings: Settings) -> (Arc<App>, UnixStream) {
+        let (writer, reader) = UnixStream::pair().unwrap();
+        let interaction_id = "human-secret-test";
+        let bridge = Arc::new(Bridge {
+            epoch: 1,
+            writer: Mutex::new(writer),
+            feed: Mutex::new(Feed {
+                seq: 0,
+                bytes: 0,
+                events: VecDeque::new(),
+                snapshot: json!({"security":settings.security.clone()}),
+                active: true,
+                interaction: Some(json!({
+                    "t":"interaction",
+                    "id":interaction_id,
+                    "request":{"kind":"secret"}
+                })),
+                connected: true,
+                live: VecDeque::new(),
+                live_bytes: 0,
+                live_clipped: false,
+            }),
+            changed: Condvar::new(),
+        });
+        let app = Arc::new(App {
+            settings,
+            cfg: crate::config::Config::default(),
+            desktop: Arc::new(crate::desktop::Desktop::new(PathBuf::from("/tmp"))),
+            bridges: Mutex::new(HashMap::from([("test-thread".into(), bridge)])),
+            clients: AtomicUsize::new(0),
+        });
+        (app, reader)
+    }
+
+    fn post_secret(
+        app: Arc<App>,
+        https_ingress: bool,
+        transport_active: bool,
+        extra_headers: &[(&str, &str)],
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handler = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle_with_transport(stream, app, https_ingress, transport_active).unwrap();
+        });
+        let body = r#"{"id":"test-thread","interactionId":"human-secret-test","secret":"sentinel-secret-value"}"#;
+        let mut stream = TcpStream::connect(address).unwrap();
+        write!(
+            stream,
+            "POST /api/secret HTTP/1.1\r\nHost: host.tail.ts.net:8443\r\nOrigin: https://host.tail.ts.net:8443\r\nContent-Type: application/json\r\nTailscale-User-Login: owner@example.test\r\nContent-Length: {}\r\nConnection: close\r\n",
+            body.len()
+        )
+        .unwrap();
+        for (name, value) in extra_headers {
+            write!(stream, "{name}: {value}\r\n").unwrap();
+        }
+        stream.write_all(b"\r\n").unwrap();
+        stream.write_all(body.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        handler.join().unwrap();
+        response
+    }
+
+    #[test]
+    fn secret_http_handler_rejects_spoofed_https_but_accepts_designated_ingress_once() {
+        let settings = settings();
+        let (http_app, mut http_bridge) = secret_test_app(settings.clone());
+        let _ = http_bridge.set_read_timeout(Some(Duration::from_millis(50)));
+        let http_response = post_secret(http_app, false, true, &[("X-Forwarded-Proto", "https")]);
+        assert!(http_response.starts_with("HTTP/1.1 403"));
+        assert!(!http_response.contains("sentinel-secret-value"));
+        let mut rejected = [0; 1];
+        assert_eq!(http_bridge.read(&mut rejected).unwrap(), 0);
+
+        let (https_app, bridge_reader) = secret_test_app(settings);
+        let https_response = post_secret(https_app.clone(), true, true, &[]);
+        assert!(https_response.starts_with("HTTP/1.1 200"));
+        assert!(!https_response.contains("sentinel-secret-value"));
+        let mut forwarded_line = Vec::new();
+        BufReader::new(bridge_reader)
+            .read_until(b'\n', &mut forwarded_line)
+            .unwrap();
+        let forwarded: Value = serde_json::from_slice(&forwarded_line).unwrap();
+        assert!(
+            forwarded["t"] == "secret_answer"
+                && forwarded["id"] == "human-secret-test"
+                && forwarded["secret"] == "sentinel-secret-value",
+            "accepted secret was not forwarded in the expected private bridge message"
+        );
+        let replay_response = post_secret(https_app, true, true, &[]);
+        assert!(replay_response.starts_with("HTTP/1.1 400"));
+        assert!(!replay_response.contains("sentinel-secret-value"));
+    }
+    #[test]
+    fn secret_submission_requires_the_designated_https_ingress_and_exact_origin() {
+        let settings = settings();
+        assert_eq!(https_route(&settings), "http://127.0.0.1:8766");
+        assert_eq!(route(&settings), "http://127.0.0.1:8765");
+        let mut request = Request {
+            method: "POST".into(),
+            path: "/api/secret".into(),
+            headers: HashMap::from([
+                ("host".into(), "host.tail.ts.net:8443".into()),
+                ("origin".into(), "https://host.tail.ts.net:8443".into()),
+                ("content-type".into(), "application/json".into()),
+            ]),
+            body: zeroize::Zeroizing::new(Vec::new()),
+        };
+        assert!(same_origin_https_mutation(&settings, &request));
+        assert!(!same_origin_https_mutation(
+            &settings,
+            &Request {
+                headers: HashMap::from([
+                    ("host".into(), "100.64.0.1:8080".into()),
+                    ("origin".into(), "http://100.64.0.1:8080".into()),
+                    ("content-type".into(), "application/json".into()),
+                ]),
+                ..request.clone()
+            }
+        ));
+        request
+            .headers
+            .insert("origin".into(), "https://attacker.test".into());
+        assert!(!same_origin_https_mutation(&settings, &request));
+        assert!(secret_submission_allowed(
+            true,
+            true,
+            &settings,
+            &Request {
+                method: "POST".into(),
+                path: "/api/secret".into(),
+                headers: HashMap::from([
+                    ("host".into(), "host.tail.ts.net:8443".into()),
+                    ("origin".into(), "https://host.tail.ts.net:8443".into()),
+                    ("content-type".into(), "application/json".into()),
+                ]),
+                body: zeroize::Zeroizing::new(Vec::new()),
+            }
+        ));
+        assert!(!secret_submission_allowed(
+            false,
+            true,
+            &settings,
+            &Request {
+                method: "POST".into(),
+                path: "/api/secret".into(),
+                headers: HashMap::from([
+                    ("host".into(), "host.tail.ts.net:8443".into()),
+                    ("origin".into(), "https://host.tail.ts.net:8443".into()),
+                    ("content-type".into(), "application/json".into()),
+                    ("x-forwarded-proto".into(), "https".into()),
+                ]),
+                body: zeroize::Zeroizing::new(Vec::new()),
+            }
+        ));
+        let mut local = settings;
+        local.local = true;
+        assert!(!same_origin_https_mutation(
+            &local,
+            &Request {
+                method: "POST".into(),
+                path: "/api/secret".into(),
+                headers: HashMap::from([
+                    ("host".into(), "127.0.0.1:8765".into()),
+                    ("origin".into(), "http://127.0.0.1:8765".into()),
+                    ("content-type".into(), "application/json".into()),
+                ]),
+                body: zeroize::Zeroizing::new(Vec::new()),
+            }
+        ));
     }
     #[test]
     fn missing_connect_state_is_a_stopped_status_with_invocation_identity() {
@@ -2497,7 +2875,7 @@ mod tests {
                 ("host".into(), "host.tail.ts.net:8443".into()),
                 ("tailscale-user-login".into(), s.login.clone()),
             ]),
-            body: Vec::new(),
+            body: zeroize::Zeroizing::new(Vec::new()),
         };
         assert!(authorized(&s, &r));
         r.headers
@@ -2518,7 +2896,7 @@ mod tests {
                 ("host".into(), "host.tail.ts.net:8443".into()),
                 ("origin".into(), "https://host.tail.ts.net:8443".into()),
             ]),
-            body: Vec::new(),
+            body: zeroize::Zeroizing::new(Vec::new()),
         };
         assert!(same_origin_desktop_mutation(&s, &r));
         r.headers.remove("origin");

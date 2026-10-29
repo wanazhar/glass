@@ -1904,7 +1904,7 @@ function interaction() {
     if (!secureTransport) {
       status.textContent = "Open this workspace through its HTTPS link before entering a secret.";
     } else if (detail.secureSubmission !== true) {
-      status.textContent = "Secure submission is unavailable for this connection.";
+      status.textContent = "Remote secure submission is unavailable for this connection. Complete this request in the local GC terminal.";
     } else {
       status.textContent = "Your response is sent securely and is not added to chat history.";
     }

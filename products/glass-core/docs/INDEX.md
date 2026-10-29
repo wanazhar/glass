@@ -23,6 +23,8 @@ through `gc help` and `gc COMMAND --help`.
 | [Remote workspace](connect.md) | Tailscale, shared threads, same-host desktop, rich previews |
 | [Automation](automation.md) | Headless results, SSH, ACP, served sessions, schedules |
 
+The [Shared desktop section](connect.md#shared-desktop) includes [available desktop choices](connect.md#available-desktop-choices), [viewing and control](connect.md#viewing-and-control), [authorization and HTTP endpoints](connect.md#authorization-and-http), and [accessibility and agent tools](connect.md#accessibility-and-agent-tools).
+
 ## Detailed references
 
 - [Host runtime protocol](reference/runtime.md): drive GC from an editor or agent

@@ -18,9 +18,9 @@ web interface without switching between separate tools.
   Git views, project commands, diagnostics, and a resident agent.
 - **Keep work visible.** Human and agent changes appear in the same project
   workspace, with revisions, attribution, and review tools.
-- **Test web interfaces.** The browser workspace can inspect a page, perform
-  actions, and verify the result. Browser automation is part of the workspace
-  or can be installed on its own.
+- **Test web interfaces.** Browser tools use Glass's native runtime by default;
+  Chromium/CDP is an explicit option. Glass does not switch backends silently.
+  Browser automation is part of the workspace or can be installed on its own.
 
 Resident agents use the standalone `glass-core` engine by default. Glass owns
 project access and tool execution; Glass Core runs the model session. See the
@@ -51,10 +51,10 @@ glass
 
 Glass can inspect and work with a project without starting a browser. To use
 resident agents, install or configure the Glass Core engine as described in
-[Getting started](docs/getting-started.md). Glass Core's source, independent
-Cargo workspace, lockfile, and standalone installer live under
-[`products/glass-core`](products/glass-core/README.md). To automate a browser
-without the full workspace, install `glass-browser` instead.
+[Getting started](docs/getting-started.md). The `glass-core` Rust package is in
+the root Cargo workspace. Its product documentation, web assets, extensions,
+and source installer live under [`products/glass-core`](products/glass-core/README.md).
+To automate a browser without the full workspace, install `glass-browser` instead.
 
 ## Documentation
 

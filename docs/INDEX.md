@@ -6,7 +6,10 @@ every change in this tree is part of a published release. The
 were published. The [feature parity guide](feature-parity.md) records platform
 checks and their limits.
 
-Glass has two installable products and one browser implementation crate:
+The release evidence records `glass-dev` and `glass-browser` as the Glass
+`0.3.14` registry products. The root workspace also contains the `glass-core`
+resident engine and `glass-browser-core`, an internal browser implementation
+crate. Glass Core is installed from this checkout:
 
 ```text
 glass-dev (complete product)
@@ -14,6 +17,7 @@ glass-dev (complete product)
   └─ glass-browser    browser CLI and library
           │
           └─ glass-browser-core (native browser engine implementation)
+glass-core            resident agent engine · `glass-core` and `gc` commands
 ```
 
 Install `glass-dev` for the project workspace. Install `glass-browser` when
@@ -37,14 +41,9 @@ class, topic, canonical route, and heading anchors. Run the
 [documentation change check](../scripts/check-documentation-wiki.py) to see
 page, section, anchor, and body-only changes against a base commit.
 
-The [workspace implementation matrix](../BUG_HUNT_REPORT.md) tracks the
-current GC/Glass ownership and end-to-end evidence for the workspace changes
-under review, including the native media readiness evidence for issue #64 and
-bounded browser snapshot/TUI workflow and Core instruction/result artifact
-reads plus scoped production panic-safety, policy, parser input, and
-cross-platform CI dispositions for issue #65, with a bounded Core/Browser
-daemon interleaving pass. It preserves unresolved public-site and provider
-findings as open.
+The [workspace implementation matrix](../BUG_HUNT_REPORT.md) records
+ownership, implementation evidence, and open findings for the changes under
+review. It distinguishes local checks from public-site and provider results.
 The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
 
 ## Choose your path
@@ -68,6 +67,7 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
 | Understanding workspace integration authority | [Development Runtime](development-runtime.md) | [Customization governance](customization-governance.md), [Security](../SECURITY.md) |
 | Auditing skills, hooks, and tools | [Customization governance](customization-governance.md) | [Development Runtime](development-runtime.md), [Security](../SECURITY.md) |
 | Using Glass over SSH, Mosh, or an iPhone | [Mobile and remote](mobile-remote.md) | [Development Runtime](development-runtime.md) |
+| Sharing a same-host desktop with an agent | [Glass Core remote workspace](../products/glass-core/docs/connect.md#shared-desktop) | [Available desktop choices](../products/glass-core/docs/connect.md#available-desktop-choices), [viewing and control](../products/glass-core/docs/connect.md#viewing-and-control) |
 | Connecting an AI/MCP client | [MCP integration](mcp.md) | [Complete MCP tool catalog](mcp-tools.md), [policy](policy.md) |
 | Embedding Glass in Rust | [Rust SDK](rust-sdk.md) | [Examples](examples.md), [glass-browser docs.rs](https://docs.rs/glass-browser), [glass-dev docs.rs](https://docs.rs/glass-dev) |
 | Building a browser workflow | [Semantic observations](semantic-observation.md) | [Actions](actions.md), [workflows](workflows.md), [semantic execution](semantic-execution.md) |

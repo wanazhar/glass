@@ -1,6 +1,7 @@
 # Connection-aware browser presentation
 
-Status: Current 0.3.14 source behavior
+Status: Current source checkout (workspace version `0.3.14`). See the
+[release evidence](../release-evidence.md) for published scope.
 
 The source retains profile names from the 0.3.3 design as API labels; that
 historical naming does not make the design-era behavior part of the published

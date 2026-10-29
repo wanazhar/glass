@@ -1,7 +1,9 @@
 # Private development cockpit and mobile presentation
 
-Status: Current 0.3.14 source behavior (private cockpit API); the former card
-and capsule design is historical and is not an implementation contract.
+Status: Current private cockpit API in this source checkout (workspace version
+`0.3.14`). See the [release evidence](../release-evidence.md) for published
+scope. The former card and capsule design is historical, not an implementation
+contract.
 
 This document covers the Glass Dev private cockpit and how a remote/mobile
 operator may present the same development workspace. It does **not** define a

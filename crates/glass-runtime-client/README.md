@@ -5,7 +5,9 @@ It depends on serde_json and the standard library. It does not link GC's engine
 or terminal UI.
 
 Use a path dependency from a local checkout, or a Git dependency pinned to a
-reviewed glass-core commit. The executable is installed separately.
+reviewed glass-core commit. The executable is installed separately. In the
+example below, `gc` is the Glass Core alias for `glass-core`, not the separate
+GCN product's `gcn` command.
 
 ```rust,no_run
 use glass_runtime_client::{RuntimeClient, json};

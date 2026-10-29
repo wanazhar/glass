@@ -1,6 +1,7 @@
 # Browser connection controller and Remote View
 
-Status: Current 0.3.14 source behavior
+Status: Current source checkout (workspace version `0.3.14`). See the
+[release evidence](../release-evidence.md) for published scope.
 The [Glass Dev TUI guide](development-tui.md) covers recovery-sheet
 interaction and the [Development Runtime guide](../development-runtime.md)
 covers resident lifecycle and shutdown; this document defines connection

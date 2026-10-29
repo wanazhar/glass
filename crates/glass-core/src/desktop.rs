@@ -8,6 +8,7 @@ use base64::Engine;
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
+    fs::File,
     io::{BufRead, BufReader, Read, Write},
     os::unix::{
         fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
@@ -24,6 +25,7 @@ mod accessibility;
 mod capture;
 mod input;
 mod process;
+mod supervisor;
 use capture::Frames;
 
 const WIDTH: u32 = 1280;
@@ -32,7 +34,16 @@ const MAX_FRAME: usize = 4 * 1024 * 1024;
 const FRAME_STALE_AFTER: Duration = Duration::from_millis(1800);
 const LEASE_SOCKET: &str = "desktop-agent.sock";
 const AGENT_MESSAGE_MAX: u64 = 6 * 1024 * 1024;
+const DEFAULT_PROFILE_ID: &str = "default";
+const GNOME_XVFB_ACCEPTED: bool = false;
 static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn random_accessibility_revision() -> Result<u64, String> {
+    let mut bytes = [0u8; 8];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes)
+        .map_err(|_| "Secure random unavailable")?;
+    Ok((u64::from_be_bytes(bytes) & ((1u64 << 62) - 1)) | (1u64 << 62))
+}
 
 pub fn arm_shutdown() {
     unsafe extern "C" fn signal_shutdown(_: std::ffi::c_int) {
@@ -52,6 +63,16 @@ pub fn arm_shutdown() {
 
 pub fn stopping() -> bool {
     STOPPING.load(std::sync::atomic::Ordering::Acquire)
+}
+
+pub(crate) fn run_supervisor(
+    profile: &Path,
+    workspace: &Path,
+    environment: &str,
+) -> Result<(), String> {
+    let environment =
+        process::Environment::parse(environment).ok_or("environment must be gnome or xfce")?;
+    supervisor::run(profile, workspace, environment)
 }
 
 pub fn service_running() -> bool {
@@ -76,13 +97,21 @@ impl Lease {
 struct ManagedSession {
     id: String,
     display: String,
+    environment: process::Environment,
+    lifecycle: process::Lifecycle,
+    profile_id: Option<String>,
+    workspace: PathBuf,
+    owner: SessionOwner,
     auth_cookie: [u8; 16],
     directory: PathBuf,
-    xvfb: Child,
-    desktop: Child,
-    capture: Child,
+    xvfb: Option<Child>,
+    desktop: Option<Child>,
+    capture: Option<Child>,
     frames: Arc<Mutex<Frames>>,
     session_bus_address: String,
+    /// A process-wide lock keeps one Connect gateway authoritative for the
+    /// active desktop and its cached lease/input state.
+    _profile_lock: Option<File>,
     accessibility_revision: u64,
     accessibility_targets: HashMap<String, accessibility::Target>,
     lease: Lease,
@@ -92,12 +121,27 @@ struct ManagedSession {
     scroll_y_remainder: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionOwner {
+    Gateway,
+    Supervisor,
+    Attached,
+}
+
 impl Drop for ManagedSession {
     fn drop(&mut self) {
-        capture::stop_child(&mut self.capture);
-        capture::stop_child(&mut self.desktop);
-        capture::stop_child(&mut self.xvfb);
-        let _ = std::fs::remove_dir_all(&self.directory);
+        if let Some(capture) = self.capture.as_mut() {
+            capture::stop_child(capture);
+        }
+        if self.owner != SessionOwner::Attached {
+            if let Some(desktop) = self.desktop.as_mut() {
+                capture::stop_child(desktop);
+            }
+            if let Some(xvfb) = self.xvfb.as_mut() {
+                capture::stop_child(xvfb);
+            }
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
     }
 }
 
@@ -123,12 +167,17 @@ impl Desktop {
     }
 
     pub fn status(&self) -> Value {
+        let restore_error = self.restore_reusable_session().err();
+        let capabilities = self.capabilities();
         let session = self.session.lock().unwrap();
         let Some(session) = session.as_ref() else {
             return json!({
                 "available": false,
                 "sessionId": null,
                 "mode": null,
+                "environment": null,
+                "lifecycle": null,
+                "profileId": null,
                 "displayId": null,
                 "workspaceRoot": self.workspace,
                 "lease": "agent",
@@ -137,7 +186,8 @@ impl Desktop {
                 "frameSeq": null,
                 "frameAgeMs": null,
                 "frameTimeMs": null,
-                "error": null
+                "error": restore_error,
+                "capabilities": capabilities
             });
         };
         let frames = session.frames.lock().unwrap();
@@ -150,19 +200,128 @@ impl Desktop {
             "available": fresh,
             "sessionId": session.id,
             "mode": "managedVirtualSession",
+            "environment": session.environment.as_str(),
+            "lifecycle": session.lifecycle.as_str(),
+            "profileId": session.profile_id,
             "displayId": session.display,
-            "workspaceRoot": self.workspace,
+            "workspaceRoot": session.workspace,
             "lease": session.lease.as_str(),
             "width": WIDTH,
             "height": HEIGHT,
             "frameSeq": frames.current.as_ref().map(|frame| frame.seq),
             "frameAgeMs": age.map(|age| age.as_millis()),
             "frameTimeMs": frames.current.as_ref().map(|frame| frame.since_start_ms),
-            "error": if fresh { None } else { frames.error.as_deref().or(Some("Desktop frame source is stale")) }
+            "error": if !fresh {
+                frames.error.as_deref().or(Some("Desktop frame source is stale"))
+            } else {
+                restore_error.as_deref()
+            },
+            "capabilities": capabilities
         })
     }
 
+    fn capabilities(&self) -> Value {
+        let xfce_reason = process::environment_dependency_error(process::Environment::Xfce);
+        let gnome_reason = process::environment_dependency_error(process::Environment::Gnome)
+            .or_else(|| {
+                (!GNOME_XVFB_ACCEPTED).then_some(
+                    "GNOME has not passed isolated Xvfb desktop acceptance on this host".into(),
+                )
+            });
+        json!([
+            {
+                "environment":"gnome",
+                "lifecycle":"reusable",
+                "label":"Reusable GNOME workspace",
+                "available":gnome_reason.is_none(),
+                "reason":gnome_reason,
+                "profileId":DEFAULT_PROFILE_ID,
+                "profileExists":self.profile_dir().is_dir()
+            },
+            {
+                "environment":"xfce",
+                "lifecycle":"disposable",
+                "label":"Quick XFCE desktop",
+                "available":xfce_reason.is_none(),
+                "reason":xfce_reason,
+                "profileId":null,
+                "profileExists":false
+            }
+        ])
+    }
+
+    fn profile_dir(&self) -> PathBuf {
+        self.root.join("profiles").join(DEFAULT_PROFILE_ID)
+    }
+
+    fn lock_managed_profile(&self) -> Result<File, String> {
+        match std::fs::symlink_metadata(&self.root) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err("Desktop storage path must be a real directory".into());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir_all(&self.root)
+                    .map_err(|error| format!("Desktop storage: {error}"))?;
+            }
+            Err(error) => return Err(format!("Checking desktop storage: {error}")),
+        }
+        let metadata = std::fs::symlink_metadata(&self.root)
+            .map_err(|error| format!("Checking desktop storage: {error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err("Desktop storage path must be a real directory".into());
+        }
+        std::fs::set_permissions(&self.root, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("Desktop storage permissions: {error}"))?;
+        let directory = self.root.join("profile-locks");
+        match std::fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err("Desktop profile lock path must be a private directory".into());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&directory)
+                    .map_err(|error| format!("Desktop profile locks: {error}"))?;
+            }
+            Err(error) => return Err(format!("Checking desktop profile locks: {error}")),
+        }
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("Desktop profile lock permissions: {error}"))?;
+        let lock_path = directory.join(format!("{DEFAULT_PROFILE_ID}.lock"));
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        let lock = options
+            .open(&lock_path)
+            .map_err(|error| format!("Opening desktop profile lock: {error}"))?;
+        lock.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("Setting desktop profile lock permissions: {error}"))?;
+        fs2::FileExt::try_lock_exclusive(&lock)
+            .map_err(|_| "Another Connect gateway owns the managed desktop".to_owned())?;
+        Ok(lock)
+    }
+
     pub fn start(&self) -> Result<Value, String> {
+        self.start_environment(process::Environment::Xfce, process::Lifecycle::Disposable)
+    }
+
+    pub fn start_selected(&self, environment: &str, lifecycle: &str) -> Result<Value, String> {
+        let environment =
+            process::Environment::parse(environment).ok_or("environment must be gnome or xfce")?;
+        let lifecycle = process::Lifecycle::parse(lifecycle)
+            .ok_or("lifecycle must be reusable or disposable")?;
+        self.start_environment(environment, lifecycle)
+    }
+
+    fn start_environment(
+        &self,
+        environment: process::Environment,
+        lifecycle: process::Lifecycle,
+    ) -> Result<Value, String> {
         if stopping() {
             return Err("Connect desktop service is stopping".into());
         }
@@ -177,20 +336,207 @@ impl Desktop {
         if guard.is_some() {
             return Err("A managed desktop session is already running".into());
         }
-        let session = self.start_session()?;
+        let profile_lock = self.lock_managed_profile()?;
+        let session = self.start_session(environment, lifecycle, profile_lock)?;
         let id = session.id.clone();
         let display = session.display.clone();
+        let profile_id = session.profile_id.clone();
         *guard = Some(session);
         Ok(
-            json!({"started":true,"sessionId":id,"mode":"managedVirtualSession","displayId":display,"width":WIDTH,"height":HEIGHT}),
+            json!({"started":true,"sessionId":id,"mode":"managedVirtualSession","environment":environment.as_str(),"lifecycle":lifecycle.as_str(),"profileId":profile_id,"displayId":display,"width":WIDTH,"height":HEIGHT}),
         )
     }
 
-    fn start_session(&self) -> Result<ManagedSession, String> {
-        process::start_session(&self.workspace, &self.root)
+    fn start_session(
+        &self,
+        environment: process::Environment,
+        lifecycle: process::Lifecycle,
+        profile_lock: File,
+    ) -> Result<ManagedSession, String> {
+        if let Some(reason) = process::environment_dependency_error(environment) {
+            return Err(reason);
+        }
+        if environment == process::Environment::Gnome && !GNOME_XVFB_ACCEPTED {
+            return Err(
+                "GNOME has not passed isolated Xvfb desktop acceptance on this host".into(),
+            );
+        }
+        if lifecycle == process::Lifecycle::Disposable
+            && supervisor::status(&self.profile_dir())?.is_some()
+        {
+            return Err("Stop the reusable desktop before starting a quick desktop".into());
+        }
+        match lifecycle {
+            process::Lifecycle::Disposable => {
+                let mut session = process::start_session_with_environment(
+                    &self.workspace,
+                    &self.root,
+                    environment,
+                    lifecycle,
+                    None,
+                )?;
+                session._profile_lock = Some(profile_lock);
+                Ok(session)
+            }
+            process::Lifecycle::Reusable => {
+                let profile = self.profile_dir();
+                let workspace = profile.join("workspace");
+                let descriptor = supervisor::start_or_attach(&profile, &workspace, environment)?;
+                self.attach_reusable_session(&descriptor, profile_lock)
+            }
+        }
+    }
+
+    fn restore_reusable_session(&self) -> Result<(), String> {
+        let _control = self
+            .control
+            .lock()
+            .map_err(|_| "Desktop control unavailable")?;
+        {
+            let guard = self
+                .session
+                .lock()
+                .map_err(|_| "Desktop state unavailable")?;
+            if guard.is_some() {
+                return Ok(());
+            }
+        }
+        let profile = self.profile_dir();
+        let profile_lock = self.lock_managed_profile()?;
+        if let Some(descriptor) = supervisor::status(&profile)? {
+            let session = self.attach_reusable_session(&descriptor, profile_lock)?;
+            let mut guard = self
+                .session
+                .lock()
+                .map_err(|_| "Desktop state unavailable")?;
+            if guard.is_none() {
+                *guard = Some(session);
+            }
+        }
+        Ok(())
+    }
+
+    fn attach_reusable_session(
+        &self,
+        descriptor: &Value,
+        profile_lock: File,
+    ) -> Result<ManagedSession, String> {
+        let session_id = descriptor["sessionId"]
+            .as_str()
+            .ok_or("Reusable desktop session ID is unavailable")?
+            .to_owned();
+        let display = descriptor["displayId"]
+            .as_str()
+            .ok_or("Reusable desktop display is unavailable")?
+            .to_owned();
+        let directory = PathBuf::from(
+            descriptor["sessionDirectory"]
+                .as_str()
+                .ok_or("Reusable desktop session directory is unavailable")?,
+        );
+        if !directory.starts_with(
+            self.root
+                .join("profiles")
+                .join(DEFAULT_PROFILE_ID)
+                .join("sessions"),
+        ) {
+            return Err("Reusable desktop session directory is outside its profile".into());
+        }
+        let environment = descriptor["environment"]
+            .as_str()
+            .and_then(process::Environment::parse)
+            .ok_or("Reusable desktop environment is unavailable")?;
+        if descriptor["lifecycle"].as_str() != Some("reusable") {
+            return Err("Reusable desktop lifecycle is invalid".into());
+        }
+        let workspace = PathBuf::from(
+            descriptor["workspaceRoot"]
+                .as_str()
+                .ok_or("Reusable desktop workspace is unavailable")?,
+        );
+        let session_bus_address = descriptor["sessionBusAddress"]
+            .as_str()
+            .ok_or("Reusable desktop session bus is unavailable")?
+            .to_owned();
+        let cookie = descriptor["cookie"]
+            .as_str()
+            .ok_or("Reusable desktop Xauthority cookie is unavailable")?;
+        let auth_cookie = input::decode_cookie(cookie)?;
+        input::release_all(&display, &auth_cookie)
+            .map_err(|error| format!("Releasing stale desktop input state: {}", error.message()))?;
+        let frames = Arc::new(Mutex::new(Frames::default()));
+        let auth_file = directory.join("Xauthority");
+        let capture = process::start_capture(&display, &auth_file, &frames)?;
+        Ok(ManagedSession {
+            id: session_id,
+            display,
+            environment,
+            lifecycle: process::Lifecycle::Reusable,
+            profile_id: Some(DEFAULT_PROFILE_ID.to_owned()),
+            workspace,
+            owner: SessionOwner::Attached,
+            auth_cookie,
+            directory,
+            xvfb: None,
+            desktop: None,
+            capture: Some(capture),
+            frames,
+            session_bus_address,
+            _profile_lock: Some(profile_lock),
+            accessibility_revision: random_accessibility_revision()?,
+            accessibility_targets: HashMap::new(),
+            lease: if descriptor["lease"].as_str() == Some("human") {
+                Lease::Human
+            } else {
+                Lease::Agent
+            },
+            held_buttons: HashSet::new(),
+            held_keys: HashSet::new(),
+            scroll_x_remainder: 0.0,
+            scroll_y_remainder: 0.0,
+        })
+    }
+
+    pub fn delete_profile(&self, profile_id: &str) -> Result<Value, String> {
+        if profile_id != DEFAULT_PROFILE_ID {
+            return Err("Only the default reusable desktop profile can be deleted".into());
+        }
+        let _control = self
+            .control
+            .lock()
+            .map_err(|_| "Desktop control unavailable")?;
+        let guard = self
+            .session
+            .lock()
+            .map_err(|_| "Desktop state unavailable")?;
+        if guard
+            .as_ref()
+            .is_some_and(|session| session.profile_id.as_deref() == Some(DEFAULT_PROFILE_ID))
+        {
+            return Err("Stop the reusable desktop before deleting its saved profile".into());
+        }
+        let profile = self.profile_dir();
+        let _profile_lock = self.lock_managed_profile()?;
+        if supervisor::status(&profile)?.is_some() {
+            return Err("Stop the reusable desktop before deleting its saved profile".into());
+        }
+        match std::fs::symlink_metadata(&profile) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err("Reusable desktop profile path must not be a symlink".into());
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                std::fs::remove_dir_all(&profile)
+                    .map_err(|error| format!("Deleting reusable desktop profile: {error}"))?;
+            }
+            Ok(_) => return Err("Reusable desktop profile path is not a directory".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Checking reusable desktop profile: {error}")),
+        }
+        Ok(json!({"deleted":true,"profileId":DEFAULT_PROFILE_ID}))
     }
 
     pub fn stop(&self) -> Result<Value, String> {
+        self.restore_reusable_session()?;
         let _control = self
             .control
             .lock()
@@ -199,6 +545,12 @@ impl Desktop {
             .session
             .lock()
             .map_err(|_| "Desktop state unavailable")?;
+        if guard
+            .as_ref()
+            .is_some_and(|session| session.lifecycle == process::Lifecycle::Reusable)
+        {
+            supervisor::stop(&self.profile_dir())?;
+        }
         if guard.take().is_some() {
             Ok(json!({"stopped":true}))
         } else {
@@ -206,7 +558,31 @@ impl Desktop {
         }
     }
 
+    pub fn gateway_shutdown(&self) {
+        let Ok(_control) = self.control.lock() else {
+            return;
+        };
+        let Ok(mut guard) = self.session.lock() else {
+            return;
+        };
+        if let Some(session) = guard.as_mut()
+            && session.lifecycle == process::Lifecycle::Reusable
+        {
+            let _ = input::release_held(
+                &session.display,
+                &session.auth_cookie,
+                &session.held_buttons,
+                &session.held_keys,
+            );
+            session.held_buttons.clear();
+            session.held_keys.clear();
+            let _ = supervisor::write_lease(&self.profile_dir(), session.lease.as_str());
+        }
+        guard.take();
+    }
+
     pub fn set_lease(&self, action: &str) -> Result<Value, String> {
+        self.restore_reusable_session()?;
         let _control = self
             .control
             .lock()
@@ -253,10 +629,15 @@ impl Desktop {
             }
             _ => return Err("action must be take-control or return-to-agent".into()),
         }
+        if session.lifecycle == process::Lifecycle::Reusable {
+            supervisor::write_lease(&self.profile_dir(), session.lease.as_str())?;
+        }
         Ok(json!({"lease":session.lease.as_str()}))
     }
 
     pub fn input(&self, role: Lease, value: &Value) -> Result<Value, InputError> {
+        self.restore_reusable_session()
+            .map_err(|_| InputError::Unavailable)?;
         let _control = self.control.lock().map_err(|_| InputError::Unavailable)?;
         let mut guard = self.session.lock().map_err(|_| InputError::Unavailable)?;
         let session = guard.as_mut().ok_or(InputError::NoSession)?;
@@ -330,6 +711,7 @@ impl Desktop {
         expected_session_id: Option<&str>,
         query: Option<&str>,
     ) -> Result<Value, String> {
+        self.restore_reusable_session()?;
         let (session_id, session_bus_address, revision) = {
             let mut guard = self
                 .session
@@ -370,6 +752,7 @@ impl Desktop {
     }
 
     pub fn act_accessibility(&self, value: &Value) -> Result<Value, String> {
+        self.restore_reusable_session()?;
         let control = self
             .control
             .lock()
@@ -461,6 +844,7 @@ impl Desktop {
         after: u64,
         timeout: Duration,
     ) -> Result<Option<(u64, u64, Vec<u8>)>, String> {
+        self.restore_reusable_session()?;
         let (session_id, frame_state) = {
             let guard = self
                 .session
@@ -863,6 +1247,59 @@ mod tests {
     }
 
     #[test]
+    fn gnome_reusable_capability_stays_disabled_with_a_reason() {
+        let desktop = Desktop::new(std::env::temp_dir());
+        let status = desktop.status();
+        let gnome = status["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|capability| {
+                capability["environment"] == "gnome" && capability["lifecycle"] == "reusable"
+            })
+            .expect("status should describe the reusable GNOME option");
+
+        assert_eq!(gnome["available"], false);
+        assert!(
+            gnome["reason"]
+                .as_str()
+                .is_some_and(|reason| !reason.is_empty())
+        );
+    }
+
+    #[test]
+    fn profile_lock_rejects_symlinked_storage_before_writing() {
+        let root = std::env::temp_dir().join(format!(
+            "glass-desktop-lock-root-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = root.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let storage = root.join("desktop");
+        std::os::unix::fs::symlink(&outside, &storage).unwrap();
+        let mut desktop = Desktop::new(root.join("workspace"));
+        desktop.root = storage;
+
+        assert!(desktop.lock_managed_profile().is_err());
+        assert!(!outside.join("profile-locks").exists());
+        assert_eq!(
+            std::fs::symlink_metadata(&outside)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn unicode_text_rejects_held_shortcut_modifiers() {
         let mut held_keys = HashSet::new();
         assert!(!unicode_text_conflicts_with_held_modifiers(
@@ -892,6 +1329,109 @@ mod tests {
     fn generated_display_does_not_select_login_display() {
         let id = "00000000000000000000000000000000";
         assert!(process::choose_display(id) >= 100);
+    }
+
+    #[test]
+    fn reusable_xfce_session_survives_gateway_restart_and_deletes_explicitly() {
+        if std::env::var_os("GLASS_DESKTOP_REUSABLE_E2E").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        {
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "glass-desktop-reusable-e2e-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let configured_workspace = root.join("connect-workspace");
+        std::fs::create_dir_all(&configured_workspace).unwrap();
+        let desktop_root = root.join("desktop");
+        let profile = desktop_root.join("profiles/default");
+        let saved_home = profile.join("home");
+        let saved_workspace = profile.join("workspace");
+        let supervisor_profile = profile.clone();
+        let supervisor_workspace = saved_workspace.clone();
+        let supervisor = thread::spawn(move || {
+            supervisor::run(
+                &supervisor_profile,
+                &supervisor_workspace,
+                process::Environment::Xfce,
+            )
+        });
+        let startup_deadline = Instant::now() + Duration::from_secs(60);
+        let mut descriptor = None;
+        while Instant::now() < startup_deadline {
+            match supervisor::status(&profile) {
+                Ok(Some(value)) => {
+                    descriptor = Some(value);
+                    break;
+                }
+                Ok(None) => thread::sleep(Duration::from_millis(100)),
+                Err(error) => panic!("reusable XFCE supervisor status failed: {error}"),
+            }
+        }
+        let descriptor = descriptor.expect("reusable XFCE supervisor starts within 60 seconds");
+        let session_id = descriptor["sessionId"].as_str().unwrap().to_owned();
+
+        let mut gateway_a = Desktop::new(configured_workspace.clone());
+        gateway_a.root = desktop_root.clone();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut attached_a = Value::Null;
+        while Instant::now() < deadline {
+            let status = gateway_a.status();
+            if status["sessionId"] == session_id && status["available"] == true {
+                attached_a = status;
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(attached_a["sessionId"], session_id);
+        assert_eq!(attached_a["environment"], "xfce");
+        assert_eq!(attached_a["lifecycle"], "reusable");
+        std::fs::write(saved_home.join("restart-marker"), "kept").unwrap();
+        std::fs::write(saved_workspace.join("restart-marker"), "kept").unwrap();
+        gateway_a.set_lease("take-control").unwrap();
+
+        gateway_a.gateway_shutdown();
+        drop(gateway_a);
+
+        let mut gateway_b = Desktop::new(configured_workspace);
+        gateway_b.root = desktop_root;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut attached = Value::Null;
+        while Instant::now() < deadline {
+            let status = gateway_b.status();
+            if status["sessionId"] == session_id && status["available"] == true {
+                attached = status;
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(attached["sessionId"], session_id);
+        assert_eq!(attached["lease"], "human");
+        assert_eq!(attached["lifecycle"], "reusable");
+        assert_eq!(attached["profileId"], DEFAULT_PROFILE_ID);
+        assert_eq!(
+            attached["workspaceRoot"],
+            saved_workspace.to_string_lossy().as_ref()
+        );
+        assert!(saved_home.join("restart-marker").is_file());
+        assert!(saved_workspace.join("restart-marker").is_file());
+
+        assert_eq!(gateway_b.stop().unwrap()["stopped"], true);
+        assert!(supervisor.join().unwrap().is_ok());
+        assert!(saved_home.is_dir());
+        assert!(saved_workspace.join("restart-marker").is_file());
+        assert_eq!(
+            gateway_b.delete_profile(DEFAULT_PROFILE_ID).unwrap()["deleted"],
+            true
+        );
+        assert!(!profile.exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

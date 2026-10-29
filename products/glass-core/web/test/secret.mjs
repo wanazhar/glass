@@ -12,6 +12,10 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../dist/", import.meta.url));
 const secretRequests = [], chatRequests = [], streams = new Set();
+let ownerUnlocked = false;
+let bootstrapRequests = 0;
+const submissionCapability = "b".repeat(64);
+const ownerCapability = "a".repeat(64);
 const firstRequest = {
   kind: "secret",
   request: {
@@ -27,6 +31,12 @@ const emit = (events) => {
 };
 const handler = async (request, response) => {
   const url = new URL(request.url, "http://localhost"), path = url.pathname;
+  if (path.startsWith("/api/") && path !== "/api/local"
+      && request.headers["x-glass-owner-capability"] !== "c".repeat(64)) {
+    response.writeHead(403, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ error: "Open the private Connect owner link", ownerAuthRequired: true }));
+    return;
+  }
   if (path === "/api/events") {
     response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
     streams.add(response);
@@ -34,10 +44,20 @@ const handler = async (request, response) => {
     request.on("close", () => streams.delete(response));
     return;
   }
+  if (path === "/api/local") {
+    bootstrapRequests++;
+    let source = "";
+    for await (const chunk of request) source += chunk;
+    ownerUnlocked = JSON.parse(source).token === ownerCapability;
+    response.writeHead(ownerUnlocked ? 200 : 403, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(ownerUnlocked ? { secretCapability: submissionCapability, ownerCapability: "c".repeat(64) } : { error: "Invalid owner capability" }));
+    return;
+  }
   if (path === "/api/secret" || path === "/api/send") {
     let source = "";
     for await (const chunk of request) source += chunk;
     const body = JSON.parse(source);
+    if (path === "/api/secret") assert.equal(request.headers["x-glass-secret-capability"], submissionCapability);
     (path === "/api/secret" ? secretRequests : chatRequests).push(body);
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(path === "/api/secret" ? { sent: true } : {}));
@@ -45,7 +65,7 @@ const handler = async (request, response) => {
   }
   if (path.startsWith("/api/")) {
     let data = {};
-    if (path === "/api/status") data = { profile: "workspace-edit", workspace: "/tmp" };
+    if (path === "/api/status") data = { profile: "workspace-edit", workspace: "/tmp", secret_submission_unlocked: ownerUnlocked && request.headers["x-glass-secret-capability"] === submissionCapability };
     if (path === "/api/threads") data = { threads: [{ session: "fixture", title: "Secret request", workspace: "/tmp", workspace_assigned: true, workspace_available: true }], projects: [] };
     if (path === "/api/history") data = { records: [], before: 0 };
     response.writeHead(200, { "Content-Type": "application/json" });
@@ -76,7 +96,7 @@ try {
   const context = await browser.newContext({ ignoreHTTPSErrors: true, serviceWorkers: "block" });
   const page = await context.newPage(), errors = [];
   page.on("pageerror", error => errors.push(String(error)));
-  await page.goto(`https://localhost:${httpsServer.address().port}/?thread=fixture`);
+  await page.goto(`https://localhost:${httpsServer.address().port}/?thread=fixture#secret=${ownerCapability}`);
   const panel = page.locator("#interaction");
   await page.getByRole("heading", { name: "Secure information requested" }).waitFor();
   assert.equal(await page.getByRole("heading", { name: "Secure information requested" }).count(), 1);
@@ -131,6 +151,7 @@ try {
   await context.close();
 
   const httpContext = await browser.newContext({ serviceWorkers: "block" });
+  await httpContext.addInitScript(() => localStorage.setItem("gc-owner-capability-v1", "c".repeat(64)));
   const httpPage = await httpContext.newPage();
   await httpPage.goto(`http://127.0.0.1:${httpServer.address().port}/?thread=fixture`);
   await httpPage.getByRole("heading", { name: "Secure information requested" }).waitFor();
@@ -138,7 +159,69 @@ try {
   assert.equal(await httpPage.getByRole("button", { name: "Send securely" }).isDisabled(), true);
   assert.match(await httpPage.locator(".secret-status").textContent(), /HTTPS link/);
   assert.equal(secretRequests.length, 1, "HTTP pages must not submit secrets");
+  const bootstrapsBeforeHttp = bootstrapRequests;
+  await httpPage.goto(`http://127.0.0.1:${httpServer.address().port}/?thread=fixture#secret=${ownerCapability}`);
+  await httpPage.getByText("Private secret-entry links require HTTPS.").waitFor();
+  assert.equal(bootstrapRequests, bootstrapsBeforeHttp, "Secret unlock must not send its credential over HTTP");
+  assert.equal(new URL(httpPage.url()).hash, "");
   await httpContext.close();
+  ownerUnlocked = false;
+  const lockedContext = await browser.newContext({ ignoreHTTPSErrors: true, serviceWorkers: "block" });
+  await lockedContext.addInitScript(() => localStorage.setItem("gc-owner-capability-v1", "c".repeat(64)));
+  const lockedPage = await lockedContext.newPage();
+  const secureUrl = `https://localhost:${httpsServer.address().port}/?thread=fixture`;
+  await lockedPage.goto(secureUrl);
+  await lockedPage.getByRole("heading", { name: "Secure information requested" }).waitFor();
+  assert.equal(await lockedPage.getByRole("textbox", { name: "Secret value" }).isDisabled(), true);
+  assert.match(await lockedPage.locator(".secret-status").textContent(), /gc connect secret-link/);
+  await lockedPage.goto(`${secureUrl}#secret=${ownerCapability}`);
+  await lockedPage.waitForFunction(() => location.hash === "");
+  await lockedPage.waitForFunction(() => document.querySelector('#interaction input[type="password"]')?.disabled === false);
+  assert.equal(new URL(lockedPage.url()).hash, "");
+  assert.doesNotMatch(await lockedPage.locator("body").innerText(), new RegExp(ownerCapability));
+  await lockedContext.close();
+
+  const unlockContext = await browser.newContext({ ignoreHTTPSErrors: true, serviceWorkers: "block" });
+  const unlockPage = await unlockContext.newPage();
+  await unlockPage.goto(secureUrl);
+  const privateLink = unlockPage.getByRole("textbox", { name: "Private Connect link" });
+  await privateLink.waitFor();
+  await privateLink.fill(`https://other.example/#owner=${ownerCapability}`);
+  await unlockPage.getByRole("button", { name: "Unlock workspace", exact: true }).click();
+  await unlockPage.getByText("Use the private Connect link for this host and port.").waitFor();
+  assert.equal(await privateLink.inputValue(), "");
+  await privateLink.fill(`${secureUrl}#owner=${ownerCapability}`);
+  await Promise.all([
+    unlockPage.waitForNavigation(),
+    unlockPage.getByRole("button", { name: "Unlock workspace", exact: true }).click(),
+  ]);
+  await unlockPage.getByRole("heading", { name: "Secure information requested" }).waitFor();
+  assert.equal(new URL(unlockPage.url()).hash, "");
+  await unlockPage.reload();
+  await unlockPage.getByRole("heading", { name: "Secure information requested" }).waitFor();
+  assert.equal(await unlockPage.getByRole("textbox", { name: "Secret value" }).isDisabled(), true,
+    "Account access survives reload; secret submission proof must not");
+  const retained = await unlockPage.evaluate(() => ({
+    keys: Object.keys(localStorage), values: Object.values(localStorage), session: Object.values(sessionStorage),
+  }));
+  assert.ok(retained.values.includes("c".repeat(64)));
+  assert.ok(!retained.values.includes(submissionCapability) && !retained.session.includes(submissionCapability));
+  assert.ok(!retained.values.includes(firstSecret) && !retained.session.includes(firstSecret));
+  await unlockContext.close();
+
+  const localUnlockContext = await browser.newContext({ serviceWorkers: "block" });
+  const localUnlockPage = await localUnlockContext.newPage();
+  const localUrl = `http://127.0.0.1:${httpServer.address().port}/?thread=fixture`;
+  await localUnlockPage.goto(localUrl);
+  await localUnlockPage.getByRole("textbox", { name: "Private Connect link" }).fill(`${localUrl}#${ownerCapability}`);
+  await Promise.all([
+    localUnlockPage.waitForNavigation(),
+    localUnlockPage.getByRole("button", { name: "Unlock workspace", exact: true }).click(),
+  ]);
+  await localUnlockPage.getByRole("heading", { name: "Secure information requested" }).waitFor();
+  assert.equal(await localUnlockPage.getByRole("textbox", { name: "Secret value" }).isDisabled(), true);
+  assert.equal(new URL(localUnlockPage.url()).hash, "");
+  await localUnlockContext.close();
   await browser.close();
   console.log("PASS HTTPS-only secret card, dedicated submission, cancellation, clearing, and HTTP/unsupported gating");
 } finally {

@@ -1,3 +1,4 @@
+import { ownerFetch } from "./owner-auth.js";
 // Loaded only when the full-screen shared desktop surface is opened.
 export function desktopSurface({ api }) {
   const $ = (id) => document.getElementById(id);
@@ -327,7 +328,7 @@ export function desktopSurface({ api }) {
     let buffer = new Uint8Array(0);
     try {
       const streamPath = streamProfileWidth ? `/api/desktop/stream?width=${streamProfileWidth}` : "/api/desktop/stream";
-      const response = await fetch(streamPath, {
+      const response = await ownerFetch(streamPath, {
         credentials: "same-origin",
         cache: "no-store",
         signal: controller.signal,

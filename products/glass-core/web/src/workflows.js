@@ -1,3 +1,4 @@
+import { ownerFetch } from "./owner-auth.js";
 // Loaded only when a work surface is opened. Native actor remains the writer.
 export function workflows({
   api,
@@ -149,7 +150,7 @@ export function workflows({
           const timeout = setTimeout(() => uploadController?.abort(), 20000);
           let r, data;
           try {
-            r = await fetch(
+            r = await ownerFetch(
               "/api/upload?id=" +
                 encodeURIComponent(id) +
                 "&name=" +

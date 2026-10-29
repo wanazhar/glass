@@ -144,9 +144,9 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify(streamWidths));
     return;
   }
-  if (url.pathname === "/src/desktop.js") {
+  if (["/src/desktop.js", "/src/owner-auth.js"].includes(url.pathname)) {
     response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
-    response.end(await source("src/desktop.js"));
+    response.end(await source(url.pathname.slice(1)));
     return;
   }
   if (url.pathname === "/style.css") {

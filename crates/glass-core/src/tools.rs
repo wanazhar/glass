@@ -99,41 +99,49 @@ impl Outcome {
     }
 }
 
-/// Run `call` and capture its output.
-///
-/// Enforce the startup policy without inheriting another session's exceptions.
-pub fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
-    bash_cancellable(call, workspace, &std::sync::atomic::AtomicBool::new(false))
-}
-pub fn bash_cancellable(
-    call: &ToolCall,
-    workspace: &std::path::Path,
-    cancel: &std::sync::atomic::AtomicBool,
-) -> Outcome {
-    bash_with_approvals(
+#[cfg(test)]
+fn bash(call: &ToolCall, workspace: &std::path::Path) -> Outcome {
+    bash_owned_sensitive(
         call,
         workspace,
-        cancel,
+        &std::sync::atomic::AtomicBool::new(false),
         &crate::sandbox::SessionApprovals::default(),
+        None,
+        false,
     )
 }
 
-pub fn bash_with_approvals(
+#[cfg(test)]
+fn bash_with_approvals(
     call: &ToolCall,
     workspace: &std::path::Path,
     cancel: &std::sync::atomic::AtomicBool,
     approvals: &crate::sandbox::SessionApprovals,
 ) -> Outcome {
-    bash_owned(call, workspace, cancel, approvals, None)
+    bash_owned_sensitive(call, workspace, cancel, approvals, None, false)
 }
 
-pub fn bash_owned(
+/// Sessions holding secret redactors keep capture in memory only. Background
+/// jobs have their own durable logs and are unavailable in this mode.
+pub(crate) fn bash_owned_sensitive(
     call: &ToolCall,
     workspace: &std::path::Path,
     cancel: &std::sync::atomic::AtomicBool,
     approvals: &crate::sandbox::SessionApprovals,
     owner: Option<&str>,
+    sensitive_capture: bool,
 ) -> Outcome {
+    if sensitive_capture
+        && let Some(job) = call.arg_raw("job")
+        && !serde_json::from_str::<serde_json::Value>(&job)
+            .ok()
+            .and_then(|value| value["action"].as_str().map(str::to_owned))
+            .is_some_and(|action| matches!(action.as_str(), "poll" | "stop" | "list"))
+    {
+        return Outcome::err(
+            "Starting or feeding background jobs is unavailable while this session retains secrets; use a foreground command with bounded output",
+        );
+    }
     if call.arg_raw("job").is_some() && call.arg_raw("cwd").is_some() {
         return Outcome::err(
             "`cwd` is not supported for job control; use explicit paths in the command",
@@ -253,10 +261,12 @@ pub fn bash_owned(
     let capture_cutoff = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
     let done = capture_done.clone();
     let cutoff = capture_cutoff.clone();
-    let out_buf = std::thread::spawn(move || read_capped(&mut stdout, &done, &cutoff));
+    let out_buf =
+        std::thread::spawn(move || read_capped(&mut stdout, &done, &cutoff, sensitive_capture));
     let done = capture_done.clone();
     let cutoff = capture_cutoff.clone();
-    let err_buf = std::thread::spawn(move || read_capped(&mut stderr, &done, &cutoff));
+    let err_buf =
+        std::thread::spawn(move || read_capped(&mut stderr, &done, &cutoff, sensitive_capture));
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout);
     let mut timed_out = false;
@@ -422,6 +432,7 @@ fn read_capped(
     r: &mut Option<impl Read + AsRawFd>,
     done: &std::sync::atomic::AtomicBool,
     cutoff: &std::sync::atomic::AtomicU8,
+    sensitive_capture: bool,
 ) -> (String, Option<PathBuf>, bool) {
     let Some(reader) = r.as_mut() else {
         return (String::new(), None, false);
@@ -487,6 +498,11 @@ fn read_capped(
         // This chunk straddles the cap: fill the inline budget, spill the rest.
         head.extend_from_slice(&chunk[..room]);
         overflowed = true;
+        if sensitive_capture {
+            // Do not persist overflow or return a partially captured secret
+            // straddling the inline boundary. Continue draining the pipe.
+            continue;
+        }
         if spill.is_none() && !storage_failed {
             spill = open_spill();
             storage_failed = spill.is_none();
@@ -521,6 +537,15 @@ fn read_capped(
         }
     }
 
+    if sensitive_capture && overflowed {
+        use zeroize::Zeroize;
+        head.zeroize();
+        return (
+            "[output omitted: sensitive session exceeded the inline capture limit]".into(),
+            None,
+            true,
+        );
+    }
     let mut path = spill.map(|(mut f, p)| {
         let _ = f.flush();
         p
@@ -1547,6 +1572,7 @@ mod tests {
             &mut Some(reader),
             &std::sync::atomic::AtomicBool::new(false),
             &std::sync::atomic::AtomicU8::new(0),
+            false,
         );
         task.join().unwrap();
         assert!(truncated);
@@ -1554,6 +1580,68 @@ mod tests {
         let path = path.unwrap();
         assert_eq!(path.parent().unwrap(), crate::blobs::dir());
         assert_eq!(std::fs::read(&path).unwrap(), &data[MAX_OUTPUT_BYTES..]);
+    }
+
+    #[test]
+    fn sensitive_capture_drains_overflow_without_persisting_or_returning_partial_values() {
+        use std::os::unix::net::UnixStream;
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        let sentinel = b"capture-secret-sentinel";
+        let task = std::thread::spawn(move || {
+            writer.write_all(&vec![b'x'; MAX_OUTPUT_BYTES - 5]).unwrap();
+            writer.write_all(&sentinel[..5]).unwrap();
+            writer.write_all(&sentinel[5..]).unwrap();
+            writer.write_all(&vec![b'z'; 2 * MAX_OUTPUT_BYTES]).unwrap();
+        });
+        let (text, path, truncated) = read_capped(
+            &mut Some(reader),
+            &std::sync::atomic::AtomicBool::new(false),
+            &std::sync::atomic::AtomicU8::new(0),
+            true,
+        );
+        task.join().unwrap();
+        assert!(path.is_none());
+        assert!(truncated);
+        assert_eq!(
+            text,
+            "[output omitted: sensitive session exceeded the inline capture limit]"
+        );
+    }
+
+    #[test]
+    fn sensitive_capture_rejects_new_job_logs_but_allows_existing_job_control() {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let approvals = crate::sandbox::SessionApprovals::default();
+        for action in ["start", "input"] {
+            let result = bash_owned_sensitive(
+                &call(&serde_json::json!({"job":{"action":action,"id":999999}}).to_string()),
+                Path::new("."),
+                &cancel,
+                &approvals,
+                Some("sensitive-test"),
+                true,
+            );
+            assert!(
+                result
+                    .body
+                    .contains("Starting or feeding background jobs is unavailable")
+            );
+        }
+        for action in ["list", "stop", "poll"] {
+            let result = bash_owned_sensitive(
+                &call(&serde_json::json!({"job":{"action":action,"id":999999}}).to_string()),
+                Path::new("."),
+                &cancel,
+                &approvals,
+                Some("sensitive-test"),
+                true,
+            );
+            assert!(
+                !result
+                    .body
+                    .contains("Starting or feeding background jobs is unavailable")
+            );
+        }
     }
 
     #[test]

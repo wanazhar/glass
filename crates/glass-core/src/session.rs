@@ -775,6 +775,8 @@ pub fn configure_fsync(on: bool) {
 pub(crate) type CommitObserver = dyn Fn(&[Record]) -> std::io::Result<()>;
 
 pub struct Session {
+    /// In-memory only: preserve handles/redactors across Agent turns, never logs.
+    pub(crate) secrets: crate::secrets::SecretVault,
     pub id: String,
     pub path: PathBuf,
     file: Option<File>,
@@ -956,6 +958,7 @@ impl Session {
             state_revision: RefCell::new(revision),
             write_error: None,
             commit_observer: None,
+            secrets: crate::secrets::SecretVault::default(),
         })
     }
 
@@ -987,6 +990,7 @@ impl Session {
             state_revision: RefCell::new(revision),
             write_error: None,
             commit_observer: None,
+            secrets: crate::secrets::SecretVault::default(),
         })
     }
 
@@ -1111,6 +1115,7 @@ impl Session {
             state_revision: RefCell::new(revision),
             write_error: None,
             commit_observer: None,
+            secrets: crate::secrets::SecretVault::default(),
         };
         for repair in repairs {
             session.append(repair);
@@ -3072,6 +3077,7 @@ mod tests {
             state_revision: RefCell::new(state_receipts::revision_of(&[])),
             write_error: None,
             commit_observer: None,
+            secrets: crate::secrets::SecretVault::default(),
         };
         s.records = vec![
             Record::User("hi".into()),
@@ -4085,6 +4091,7 @@ mod tests {
             state_revision: RefCell::new(state_receipts::revision_of(&[])),
             write_error: None,
             commit_observer: None,
+            secrets: crate::secrets::SecretVault::default(),
         };
         s.records = vec![
             Record::User("q1".into()),

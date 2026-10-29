@@ -1,3 +1,4 @@
+import { ownerFetch, ownerEventSource, setOwnerCapability } from "./owner-auth.js";
 import { renderCommandData } from "./command-results.js";
 import { createToolActivity, setToolInput, finishToolActivity, startToolActivity, refreshToolTime, activitySnapshot, renderActivityConsole } from "./activity.js";
 import { marked } from "marked";
@@ -43,9 +44,13 @@ const view = {
   reasoningSources: [],
   directory: null,
   commandTransportReady: false,
+  secretUnlocked: false,
+  connectCommand: "gc connect",
 };
 const notifyAttention = attention($("#notifications"));
 let initialOpening = true;
+// This capability lives only in this tab; never store it in cookies or drafts.
+let secretCapability = null;
 const limits = { message: 262144, reasoning: 262144, preview: 1048576 };
 const text = (s, max = limits.message) => String(s ?? "").slice(0, max),
   escape = (s) =>
@@ -102,6 +107,9 @@ window.addEventListener("pagehide", () => {
   saveDraft();
   drafts.flush();
 });
+function connectCommand(value) {
+  return /^(?:gc|gcn|glass(?: core)?) connect$/.test(value || "") ? value : "gc connect";
+}
 async function api(path, data, signal, options = {}) {
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -113,9 +121,13 @@ async function api(path, data, signal, options = {}) {
     controller.abort();
   }, options.timeoutMs ?? 12000);
   try {
-    const r = await fetch("/api/" + path, {
+    const r = await ownerFetch("/api/" + path, {
       method: data === undefined ? "GET" : "POST",
-      headers: data === undefined ? {} : { "Content-Type": "application/json" },
+      headers: {
+        ...(data === undefined ? {} : { "Content-Type": "application/json" }),
+        ...(["secret", "status"].includes(path) && secretCapability && location.protocol === "https:"
+          ? { "X-Glass-Secret-Capability": secretCapability } : {}),
+      },
       body: data === undefined ? undefined : JSON.stringify(data),
       signal: controller.signal,
     });
@@ -125,7 +137,17 @@ async function api(path, data, signal, options = {}) {
     } catch {
       throw Error("Host connection unavailable");
     }
-    if (!r.ok) throw Error(value.error || "Request rejected");
+    if (!r.ok) {
+      const error = Error(value.error || "Request rejected");
+      error.ownerAuthRequired = value.ownerAuthRequired === true;
+      error.connectCommand = connectCommand(value.connectCommand);
+      if (error.ownerAuthRequired) {
+        secretCapability = null;
+        view.secretUnlocked = false;
+        clearSecretInteractionValue("Workspace access expired. Reopen its private Connect link.");
+      }
+      throw error;
+    }
     return value;
   } catch (error) {
     if (timedOut)
@@ -139,6 +161,18 @@ async function api(path, data, signal, options = {}) {
 async function send(message) {
   if (!view.id) throw Error("Choose a thread first");
   return api("send", { id: view.id, message });
+}
+async function loadOwnerImage(image, path) {
+  try {
+    const response = await ownerFetch(path);
+    if (!response.ok) throw Error("Image unavailable");
+    const blob = await response.blob();
+    if (!blob.type.startsWith("image/")) throw Error("Image unavailable");
+    const source = URL.createObjectURL(blob);
+    image.addEventListener("load", () => URL.revokeObjectURL(source), { once: true });
+    image.addEventListener("error", () => URL.revokeObjectURL(source), { once: true });
+    image.src = source;
+  } catch { image.dispatchEvent(new Event("error")); }
 }
 function connection(label, online = true) {
   $("#connection").className = "connection" + (online ? "" : " offline");
@@ -432,13 +466,14 @@ function prepareBlock(node, streaming, context) {
         let decoded;
         try { decoded = decodeURIComponent(src); } catch { decoded = src; }
         const path = !decoded.startsWith("/") && context?.base ? context.base + "/" + decoded : decoded;
-        img.src =
+        const imagePath =
           "/api/file?" +
           (context?.workspace
             ? "workspace=" + encodeURIComponent(context.workspace)
             : "id=" + encodeURIComponent(context?.id || view.id)) +
           "&path=" +
           encodeURIComponent(path);
+        loadOwnerImage(img, imagePath);
       } else {
         img.removeAttribute("src");
         img.alt = "External image · open its link to view";
@@ -796,7 +831,7 @@ function sharedImage(t) {
   image.decoding = "async";
   image.width = value.width;
   image.height = value.height;
-  image.src = "/api/file?id=" + encodeURIComponent(view.id) + "&path=" + encodeURIComponent(value.path);
+  loadOwnerImage(image, "/api/file?id=" + encodeURIComponent(view.id) + "&path=" + encodeURIComponent(value.path));
   image.onerror = () => {
     image.hidden = true;
     if (!figure.querySelector(".shared-image-error")) figure.append(el("p", "shared-image-error", "Image preview unavailable. Open the file to check its location and permissions."));
@@ -1476,7 +1511,7 @@ async function openThread(id, { resume = false } = {}) {
     refreshContext();
     if (generation !== view.generation) return;
     follow();
-    const source = new EventSource("/api/events?id=" + encodeURIComponent(id));
+    const source = ownerEventSource("/api/events?id=" + encodeURIComponent(id));
     view.source = source;
     let eventChain = Promise.resolve();
     let attached;
@@ -1870,7 +1905,7 @@ function interaction() {
   );
   if (r.kind === "secret") {
     const secureTransport = location.protocol === "https:";
-    const permitted = view.control && detail.secureSubmission === true && secureTransport;
+    const permitted = view.control && detail.secureSubmission === true && secureTransport && view.secretUnlocked;
     const purpose = el("p", "secret-purpose", text(detail.purpose, 1000));
     purpose.setAttribute("aria-label", "Why this information is needed");
     const destination = el("div", "secret-destination");
@@ -1905,6 +1940,8 @@ function interaction() {
       status.textContent = "Open this workspace through its HTTPS link before entering a secret.";
     } else if (detail.secureSubmission !== true) {
       status.textContent = "Remote secure submission is unavailable for this connection. Complete this request in the local GC terminal.";
+    } else if (!view.secretUnlocked) {
+      status.textContent = `Unlock secret entry using the private HTTPS link from ${view.connectCommand} secret-link on the host terminal.`;
     } else {
       status.textContent = "Your response is sent securely and is not added to chat history.";
     }
@@ -2803,7 +2840,7 @@ async function openFile(path, workspace, rawPath = false) {
     const query = workspace
       ? `workspace=${encodeURIComponent(workspace)}`
       : `id=${encodeURIComponent(view.id)}`;
-    const r = await fetch(
+    const r = await ownerFetch(
       `/api/file?${query}&path=${encodeURIComponent(path)}`,
       { signal: fileAbort.signal },
     );
@@ -2968,7 +3005,7 @@ function preview(
         );
       activate.disabled = true;
       try {
-        const response = await fetch(
+        const response = await ownerFetch(
           "/api/artifact?id=" + encodeURIComponent(view.id),
           {
             method: "POST",
@@ -3670,6 +3707,19 @@ async function openNativeCommand(command, initialArgs = "") {
         const download = el("a", "command-run", "Download Markdown");
         download.href = result.body.download;
         download.download = result.body.filename;
+        download.onclick = async (event) => {
+          event.preventDefault();
+          try {
+            const response = await ownerFetch(result.body.download);
+            if (!response.ok) throw Error("Export unavailable");
+            const source = URL.createObjectURL(await response.blob());
+            const link = el("a");
+            link.href = source;
+            link.download = result.body.filename;
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(source), 1000);
+          } catch (error) { notice(error.message, true); }
+        };
         body.prepend(download);
       }
     } catch (error) {
@@ -4144,18 +4194,30 @@ $("#commands").addEventListener("keydown", (e) => {
 });
 
 async function start() {
+  view.secretUnlocked = false;
+  clearSecretInteractionValue("Checking secure entry access…");
   try {
-    const secret = location.hash.slice(1);
+    const fragment = location.hash.slice(1);
+    const secretEntry = fragment.startsWith("secret=");
+    const secret = fragment.replace(/^(secret|owner)=/, "");
     if (secret) {
-      await api("local", { token: secret });
+      // Remove the capability before any asynchronous work or failure reporting.
       window.history.replaceState(
         null,
         "",
         location.pathname + location.search,
       );
+      if (secretEntry && location.protocol !== "https:") {
+        throw Error("Private secret-entry links require HTTPS.");
+      }
+      const unlocked = await api("local", { token: secret });
+      setOwnerCapability(unlocked.ownerCapability);
+      secretCapability = typeof unlocked.secretCapability === "string" ? unlocked.secretCapability : null;
     }
     // These reads are independent once the local token has been exchanged.
     const [status] = await Promise.all([api("status"), loadThreads()]);
+    view.secretUnlocked = status.secret_submission_unlocked === true;
+    view.connectCommand = connectCommand(status.connectCommand);
     view.hostWorkflows = status.web_workflows === 1;
     view.interactiveArtifacts = status.interactive_artifacts === 1;
     $("#host").textContent = location.hostname;
@@ -4178,9 +4240,12 @@ async function start() {
   } catch (e) {
     connection("Unavailable", false);
     notice(e.message, true);
-    return { ok: false, message: e.message };
+    return { ok: false, message: e.message, unlockRequired: e.ownerAuthRequired === true, connectCommand: e.connectCommand };
   }
 }
+window.addEventListener("hashchange", () => {
+  if (location.hash) start();
+});
 $("#connection").setAttribute("role", "button");
 $("#connection").tabIndex = 0;
 $("#connection").title = "Connection · reconnect";

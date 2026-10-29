@@ -33,13 +33,15 @@ retry.addEventListener("click", async () => {
   } catch { /* A restricted cache must not disable normal reload. */ }
   location.reload();
 });
-function failure(message) {
+function failure(message, unlockRequired = false, connectCommand = "gc connect") {
   if (complete) return;
   clearTimeout(watchdog);
   shell.hidden = true;
   shell.inert = true;
   launch.dataset.state = "error";
-  status.textContent = "Connection unavailable";
+  document.querySelector("#owner-unlock")?.remove();
+  document.querySelector(".launch-fallback").hidden = unlockRequired;
+  status.textContent = unlockRequired ? "Unlock this workspace" : "Connection unavailable";
   detail.textContent =
     navigator.onLine === false
       ? "Reconnect to your host, then try again."
@@ -47,7 +49,53 @@ function failure(message) {
           message ||
             "Glass could not open. Check your connection and try again.",
         ).slice(0, 240);
-  retry.hidden = false;
+  retry.hidden = unlockRequired;
+  if (unlockRequired) {
+    detail.textContent = `Run ${connectCommand} on the host and paste its private link. Your workspace stays locked until you authenticate.`;
+    const form = document.createElement("form");
+    form.id = "owner-unlock";
+    form.className = "launch-unlock";
+    const input = document.createElement("input");
+    input.type = "password";
+    input.autocomplete = "off";
+    input.autocapitalize = "off";
+    input.spellcheck = false;
+    input.required = true;
+    input.placeholder = "Private Connect link";
+    input.setAttribute("aria-label", "Private Connect link");
+    const button = document.createElement("button");
+    button.type = "submit";
+    button.textContent = "Unlock workspace";
+    const error = document.createElement("p");
+    error.className = "launch-detail";
+    error.setAttribute("role", "status");
+    form.append(input, button, error);
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      const value = input.value.trim();
+      input.value = "";
+      let reason = `Paste the complete private link printed by ${connectCommand}.`;
+      try {
+        const link = new URL(value);
+        const localLink = link.hostname === "127.0.0.1" && link.protocol === "http:" && /^[a-f0-9]{64}$/.test(link.hash.slice(1));
+        if (link.origin !== location.origin || (!/^(owner|secret)=[a-f0-9]{64}$/.test(link.hash.slice(1)) && !localLink)) {
+          reason = "Use the private Connect link for this host and port.";
+          throw Error();
+        }
+        if (link.hash.startsWith("#secret=") && link.protocol !== "https:") {
+          reason = "Private secret-entry links require HTTPS.";
+          throw Error();
+        }
+        history.replaceState(null, "", location.pathname + location.search + link.hash);
+        location.reload();
+      } catch {
+        error.textContent = reason;
+        input.focus();
+      }
+    };
+    retry.before(form);
+    input.focus();
+  }
 }
 const watchdog = setTimeout(() => {
   if (complete) return;
@@ -108,7 +156,7 @@ ensureStyles().then(ready => {
     .then(async (app) => {
       const result = await app.initialReady;
       if (result?.ok !== true) {
-        failure(result?.message);
+        failure(result?.message, result?.unlockRequired === true, result?.connectCommand);
         return;
       }
       clearTimeout(watchdog);

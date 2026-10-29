@@ -27,7 +27,9 @@ application needs neither Node nor a frontend build tool. Alternatively, run
 Binary distributions can provide the web assets separately; point that variable
 to their extracted directory.
 
-GC prints a private HTTPS (Hypertext Transfer Protocol Secure) URL. Open it in
+GC prints a private HTTPS (Hypertext Transfer Protocol Secure) URL with an
+owner credential in its fragment. Keep the full link private; ordinary status
+output omits the credential. Open it in
 Safari on your iPhone, then choose
 **Share → Add to Home Screen**. First-time Tailscale Serve setup may require
 enabling HTTPS in the tailnet. GC does not enable Funnel or publish a public URL.
@@ -220,27 +222,72 @@ loopback and uses a private link.
 In this checkout, secret requests use a separate interaction and never use the
 ordinary answer or chat endpoint. This flow is not part of published version
 `0.3.14`. The card shows the purpose and HTTPS destination the agent requested;
-entry is masked. Remote secret submission is currently disabled. Connect's
-Tailscale Serve route terminates TLS and forwards plain HTTP to a loopback TCP
-listener. The listener can check its port, `Host`, `Origin`, and Tailscale
-identity headers, but none proves that the request passed through the TLS
-terminator. Another local process can connect directly and forge those headers.
-Therefore Connect reports `secureSubmission: false`, omits the remote secret
-tools from the model request, and rejects `/api/secret` submissions on this
-transport. This remains disabled on single-user hosts as well; the local GC
-terminal prompt continues to work.
+entry is masked. Remote entry requires the HTTPS endpoint plus an independent
+owner capability. From the host terminal, run:
 
-Do not treat loopback access as proof of same-user access. The current TCP
-backend cannot distinguish the Connect owner's UID from another local UID.
-Any future remote secret ingress must provide authenticated proxy provenance
-or an OS-protected peer channel before it can be enabled. If a future design
-relies only on loopback and same-host trust, it must require an explicit
-single-user-host choice and stay disabled by default on shared or multi-user
-hosts. Opening the HTTPS Connect URL still encrypts the browser-to-Tailscale
-leg, but that alone does not enable remote secret submission.
+```sh
+gc connect secret-link
+```
 
-GC keeps the value in memory for up to five minutes and returns only a random
-`secretRef` to the agent. It is bound to that GC session, the named HTTPS
+Open that private HTTPS link in the same browser used for Connect. Its fragment
+contains a purpose- and HTTPS-origin-bound unlock token; the browser removes the fragment before making
+any asynchronous request and exchanges it for an origin-bound submission
+capability. The `secret=` fragment also lets the browser reject accidental HTTP use
+before sending the unlock credential. The tab keeps that capability only in memory and sends it in a
+dedicated header to the secret and status endpoints. It is not stored in
+cookies, local storage, or session storage; another HTTPS port on the same host
+does not receive it. The unlock token is not sent in a URL request,
+status output, chat, or event stream. Treat the link as a credential: anyone
+with it and access to the authenticated tailnet owner endpoint can unlock secret
+entry while that Connect instance is running. Do not share or paste it into chat.
+
+A tab with ordinary owner access can inspect requests but cannot submit a
+secret until unlocked. HTTP and `--local` browser routes cannot unlock or submit secrets;
+the local TUI masked prompt remains available. Refreshing or closing the tab
+requires reopening the private link to unlock entry. Restarting Connect rotates
+the owner capability and invalidates all derived submission capabilities.
+
+Tailscale Serve terminates TLS before forwarding to the HTTPS-designated
+loopback listener. Loopback, `Host`, `Origin`, and identity headers alone do not
+prove proxy provenance: other local users can forge them. Secret submission
+therefore also requires a capability derived from the independent random master token, stored only in
+the Connect owner's mode-0600 state file. A caller who only spoofs those headers
+cannot unlock or submit. The Connect owner, root, and same-user processes with
+access to that state remain trusted. All remote workspace APIs, including agent
+messages, file reads, desktop input, and event streams, require an independent
+owner access capability as well: otherwise another local user could use those
+APIs to read the secret-entry token. Only static application assets, the owner
+bootstrap, and separately token-scoped interactive artifacts are exceptions.
+
+Normal HTTPS or HTTP Connect links printed by `gc connect` carry the private
+ordinary-access unlock token in their fragment. After exchange, the browser keeps an
+origin-bound access capability in that origin's local storage so the workspace
+can reopen without exposing credentials in URLs or cookies;
+it sends that capability only in a same-origin API header and rejects
+redirects on authenticated fetches. This access
+capability is an account credential, distinct from values entered in the
+secret prompt. HTTP unlock provides ordinary workspace access but never
+provides a secret-submission capability. Ordinary-access unlock tokens cannot
+be exchanged for a secret capability, even at the HTTPS endpoint; only the
+separate `secret-link` token can do that. The raw master token is never sent to
+a remote browser. Ordinary workspace access still grants the account's existing
+agent and file authority, so protect those credentials as account access. Event streams, desktop frames, file
+previews, and downloads use authenticated fetches rather than credential-bearing
+URLs. Do not share private Connect links or use them outside the trusted tailnet.
+Stored account access lasts only for the running Connect instance: restarting
+Connect rotates its master token and invalidates saved capabilities. A rejected
+account capability is removed from browser storage. A new browser or home-screen
+app can paste the private link into the masked workspace-unlock screen. Secret
+submission proof and entered secret values are never stored in browser storage.
+
+GC returns only a random `secretRef` to the agent. Its authorization expires
+after five minutes; use and revocation invalidate it sooner. Exact-value
+redaction retains up to 32 submitted values, each at most 4096 bytes, only in
+the active in-memory session's zeroizing memory until that session closes, including
+across agent turns. Expired or revoked values cannot authorize requests. New
+secret requests are rejected when this retention bound is full; known
+redactors are never silently evicted. Neither values nor redactors survive
+process restart or closing and reopening a saved session. It is bound to that GC session, the named HTTPS
 request operation, and the exact HTTPS origin; it can be used once or revoked
 with `revoke_secret`. Closing the session discards its handles. The first
 consumer, `web_secret_request`, permits only GET or POST to a relative path on
@@ -433,6 +480,12 @@ stores a private `connect.json`, a process lock, and a small gateway log. A thre
 workers keep the same session, tool, and retention records as normal served GC.
 
 ## Development
+
+Run `python3 products/glass-core/scripts/smoke-secret-https.py --binary target/debug/glass-core`
+from the repository root to verify owner unlock, HTTP and forged-header denial,
+and non-echo through a real temporary TLS proxy and isolated Connect gateway.
+The test uses a temporary certificate, does not configure Tailscale, and does
+not contact a model provider or restart user services.
 
 ```sh
 npm run build:web

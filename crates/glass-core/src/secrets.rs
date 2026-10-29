@@ -149,6 +149,10 @@ pub(crate) struct SecretVault {
 }
 
 impl SecretVault {
+    pub(crate) fn has_redactors(&self) -> bool {
+        !self.entries.is_empty()
+    }
+
     pub(crate) fn issue_zeroizing(
         &mut self,
         scope: SecretScope,
@@ -289,7 +293,7 @@ impl SecretVault {
     /// Remove exact secret values before recording tool output or sending it
     /// to the provider. Handle expiry/revocation limits use, not redaction:
     /// values remain zeroizing and bounded until this session vault is dropped.
-    pub(crate) fn redact(&mut self, text: &str) -> String {
+    pub(crate) fn redact(&self, text: &str) -> String {
         let mut values = self
             .entries
             .values()

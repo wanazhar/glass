@@ -292,15 +292,79 @@ fn secret_transport_available_for(settings: &Settings) -> bool {
     !settings.local
         && settings.https_active
         && settings.https_backend_port > 0
-        && authenticated_https_proxy_provenance()
+        && settings.token.len() == 64
 }
-/// Tailscale Serve currently forwards HTTPS as ordinary HTTP to this
-/// loopback listener. Its identity headers and the request's Host/Origin can
-/// be forged by a direct local caller, so they do not prove proxy provenance.
-/// Keep remote secret submission disabled until the backend has an
-/// authenticated signal from the TLS terminator or an OS-protected channel.
-fn authenticated_https_proxy_provenance() -> bool {
-    false
+
+/// An independent owner capability, not proxy headers, authorizes secret entry.
+/// The random token is read only from the owner's private Connect state or an
+/// explicit fragment link, and exchanged for an origin-bound header capability.
+/// Cookies are deliberately avoided because they cross HTTPS port boundaries.
+fn bootstrap_token(settings: &Settings, purpose: &str, request_origin: &str) -> String {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, settings.token.as_bytes());
+    let message = format!("glass-connect-{purpose}-bootstrap-v1\0{request_origin}");
+    ring::hmac::sign(&key, message.as_bytes())
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn secret_submission_capability(settings: &Settings) -> String {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, settings.token.as_bytes());
+    let message = format!(
+        "glass-connect-secret-submission-v1\0{}",
+        https_url(settings)
+    );
+    ring::hmac::sign(&key, message.as_bytes())
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn capability_matches(expected: &str, value: &str) -> bool {
+    if value.len() != 64 {
+        return false;
+    }
+    let candidate_key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, value.as_bytes());
+    let candidate = ring::hmac::sign(&candidate_key, b"glass-connect-capability-proof-v1");
+    let expected_key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, expected.as_bytes());
+    ring::hmac::verify(
+        &expected_key,
+        b"glass-connect-capability-proof-v1",
+        candidate.as_ref(),
+    )
+    .is_ok()
+}
+
+fn secret_owner_authenticated(settings: &Settings, request: &Request) -> bool {
+    request
+        .headers
+        .get("x-glass-secret-capability")
+        .is_some_and(|value| capability_matches(&secret_submission_capability(settings), value))
+}
+
+fn access_link(settings: &Settings) -> String {
+    if settings.local {
+        web_url(settings)
+    } else {
+        format!(
+            "{}#owner={}",
+            web_url(settings),
+            bootstrap_token(settings, "owner", &web_url(settings))
+        )
+    }
+}
+
+fn secret_link(settings: &Settings) -> Result<String, String> {
+    if !secret_transport_available_for(settings) {
+        return Err("Start an HTTPS Connect endpoint before requesting a secret-entry link".into());
+    }
+    Ok(format!(
+        "{}#secret={}",
+        https_url(settings),
+        bootstrap_token(settings, "secret", &https_url(settings))
+    ))
 }
 fn web_url(settings: &Settings) -> String {
     if settings.http > 0 {
@@ -380,6 +444,14 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
     };
     match args.first().map(String::as_str) {
         Some("_serve") => return gateway(cfg, load()?),
+        Some("secret-link") => {
+            let settings = load()?;
+            if !alive(&settings) {
+                return Err("Connect is not running".into());
+            }
+            crate::cli_println!("{}", secret_link(&settings)?);
+            return Ok(());
+        }
         Some("status") => {
             crate::cli_println!(
                 "{}",
@@ -428,7 +500,7 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
         None | Some("--local" | "--http") => {}
         _ => {
             return Err(format!(
-                "usage: {} [--local | --http] | {} status | {} stop",
+                "usage: {} [--local | --http] | {} status | {} stop | secret-link",
                 crate::cli::connect_command(),
                 crate::cli::connect_command(),
                 crate::cli::connect_command()
@@ -452,7 +524,7 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
             "{}",
             ready_output(
                 crate::cli::connect_product_name(),
-                &web_url(&s),
+                &access_link(&s),
                 crate::cli::connect_command()
             )
         );
@@ -628,7 +700,7 @@ pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String
         "{}",
         ready_output(
             crate::cli::connect_product_name(),
-            &web_url(&settings),
+            &access_link(&settings),
             crate::cli::connect_command()
         )
     );
@@ -1057,7 +1129,7 @@ fn origin_authority(value: &str) -> Option<&str> {
     let (scheme, authority) = value.split_once("://")?;
     (!scheme.is_empty() && !authority.is_empty()).then_some(authority)
 }
-fn authorized(settings: &Settings, r: &Request) -> bool {
+fn proxy_authorized(settings: &Settings, r: &Request) -> bool {
     let candidates = [origin(settings), https_url(settings)];
     let Some(expected) = candidates.iter().find(|candidate| {
         let Some(authority) = origin_authority(candidate) else {
@@ -1086,6 +1158,60 @@ fn authorized(settings: &Settings, r: &Request) -> bool {
         r.headers.get("tailscale-user-login") == Some(&settings.login)
     }
 }
+fn owner_access_capability(settings: &Settings, request_origin: &str) -> String {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, settings.token.as_bytes());
+    let message = format!("glass-connect-owner-access-v1\0{request_origin}");
+    ring::hmac::sign(&key, message.as_bytes())
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn request_origin(settings: &Settings, request: &Request) -> Option<String> {
+    [origin(settings), https_url(settings)]
+        .into_iter()
+        .find(|expected| {
+            origin_authority(expected).is_some_and(|host| {
+                request
+                    .headers
+                    .get("host")
+                    .is_some_and(|value| value == host)
+            })
+        })
+}
+
+fn authorized(settings: &Settings, request: &Request) -> bool {
+    proxy_authorized(settings, request)
+        && (settings.local
+            || request_origin(settings, request).is_some_and(|origin| {
+                let expected = owner_access_capability(settings, &origin);
+                request
+                    .headers
+                    .get("x-glass-owner-capability")
+                    .is_some_and(|value| capability_matches(&expected, value))
+            }))
+}
+
+fn same_origin_owner_unlock(settings: &Settings, request: &Request, https_ingress: bool) -> bool {
+    if https_ingress {
+        return same_origin_https_mutation(settings, request);
+    }
+    let expected = origin(settings);
+    !settings.local
+        && settings.http > 0
+        && expected.starts_with("http://")
+        && request.method == "POST"
+        && request.headers.get("origin") == Some(&expected)
+        && same_origin_desktop_mutation(settings, request)
+        && request.headers.get("content-type").is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
+        })
+}
+
 fn same_origin_desktop_mutation(settings: &Settings, r: &Request) -> bool {
     if r.method != "POST" {
         return true;
@@ -1125,13 +1251,13 @@ fn same_origin_https_mutation(settings: &Settings, r: &Request) -> bool {
 fn secret_submission_allowed(
     https_ingress: bool,
     transport_active: bool,
-    proxy_provenance_verified: bool,
+    owner_capability_enabled: bool,
     settings: &Settings,
     r: &Request,
 ) -> bool {
     https_ingress
         && transport_active
-        && proxy_provenance_verified
+        && owner_capability_enabled
         && same_origin_https_mutation(settings, r)
 }
 fn history(id: &str, before: usize) -> Result<Value, String> {
@@ -1907,7 +2033,7 @@ fn handle(stream: TcpStream, app: Arc<App>, https_ingress: bool) -> Result<(), S
         app,
         https_ingress,
         secret_transport_available(),
-        authenticated_https_proxy_provenance(),
+        true,
     )
 }
 
@@ -1916,7 +2042,7 @@ fn handle_with_transport(
     app: Arc<App>,
     https_ingress: bool,
     transport_active: bool,
-    proxy_provenance_verified: bool,
+    owner_capability_enabled: bool,
 ) -> Result<(), String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -1941,7 +2067,7 @@ fn handle_with_transport(
         && !secret_submission_allowed(
             https_ingress,
             transport_active,
-            proxy_provenance_verified,
+            owner_capability_enabled && secret_owner_authenticated(&app.settings, &r),
             &app.settings,
             &r,
         )
@@ -1950,7 +2076,62 @@ fn handle_with_transport(
         return json_response(
             &mut stream,
             403,
-            json!({"error":"Remote secret submission is disabled because Connect cannot verify HTTPS proxy provenance"}),
+            json!({"error":"Secret entry requires HTTPS and the private owner secret-entry link"}),
+        )
+        .map_err(|e| e.to_string());
+    }
+    if path == "/api/local" && !app.settings.local && r.method == "POST" {
+        if (https_ingress && !transport_active)
+            || !same_origin_owner_unlock(&app.settings, &r, https_ingress)
+            || !proxy_authorized(&app.settings, &r)
+        {
+            return json_response(
+                &mut stream,
+                403,
+                json!({"error":"Secret unlock requires the authenticated HTTPS endpoint"}),
+            )
+            .map_err(|e| e.to_string());
+        }
+        let bootstrap_body = zeroize::Zeroizing::new(std::mem::take(&mut r.body));
+        let mut value: Value = serde_json::from_slice(&bootstrap_body)
+            .map_err(|_| "Invalid owner capability request")?;
+        drop(bootstrap_body);
+        let token = match value["token"].take() {
+            Value::String(token) => zeroize::Zeroizing::new(token),
+            _ => {
+                return json_response(
+                    &mut stream,
+                    403,
+                    json!({"error":"Invalid owner capability"}),
+                )
+                .map_err(|e| e.to_string());
+            }
+        };
+        let request_origin = request_origin(&app.settings, &r).ok_or("Origin rejected")?;
+        let secret_unlock = https_ingress
+            && capability_matches(
+                &bootstrap_token(&app.settings, "secret", &request_origin),
+                &token,
+            );
+        let access_unlock = capability_matches(
+            &bootstrap_token(&app.settings, "owner", &request_origin),
+            &token,
+        );
+        if !secret_unlock && !access_unlock {
+            return json_response(
+                &mut stream,
+                403,
+                json!({"error":"Invalid owner capability"}),
+            )
+            .map_err(|e| e.to_string());
+        }
+        return json_response(
+            &mut stream,
+            200,
+            json!({
+                "ownerCapability":owner_access_capability(&app.settings, &request_origin),
+                "secretCapability":if secret_unlock { Some(secret_submission_capability(&app.settings)) } else { None }
+            }),
         )
         .map_err(|e| e.to_string());
     }
@@ -1984,14 +2165,19 @@ fn handle_with_transport(
         .map_err(|e| e.to_string());
     }
     let is_asset = !path.starts_with("/api/");
-    if (!is_asset || !app.settings.local) && !authorized(&app.settings, &r) {
+    let scoped_artifact = path == "/api/artifact" && r.method == "GET";
+    if if is_asset || scoped_artifact {
+        !app.settings.local && !proxy_authorized(&app.settings, &r)
+    } else {
+        !authorized(&app.settings, &r)
+    } {
         if path == "/api/secret" {
             zeroize::Zeroize::zeroize(&mut r.body);
         }
         return json_response(
             &mut stream,
             403,
-            json!({"error":"Access is limited to this host's Tailscale owner"}),
+            json!({"error":"Open the private Connect owner link from the host terminal to authenticate this workspace","ownerAuthRequired":true,"connectCommand":crate::cli::connect_command()}),
         )
         .map_err(|e| e.to_string());
     }
@@ -2213,7 +2399,7 @@ fn handle_with_transport(
     }
     let result: Result<Value, String> = (|| match (r.method.as_str(), path) {
         ("GET", "/api/status") => Ok(
-            json!({"workspace":app.settings.workspace,"remote":!app.settings.local,"name":"Glass","web_workflows":1,"interactive_artifacts":1,"profile":crate::sandbox::permission_profile_label(),"security":app.settings.security}),
+            json!({"workspace":app.settings.workspace,"remote":!app.settings.local,"name":"Glass","web_workflows":1,"interactive_artifacts":1,"connectCommand":crate::cli::connect_command(),"secret_submission_unlocked":https_ingress && secret_owner_authenticated(&app.settings, &r),"profile":crate::sandbox::permission_profile_label(),"security":app.settings.security}),
         ),
         ("GET", "/api/commands") => Ok(json!({"commands":crate::web_commands::catalogue(None)})),
         ("POST", "/api/upgrade") => {
@@ -2708,7 +2894,7 @@ mod tests {
             http_host: String::new(),
             host: "host.tail.ts.net".into(),
             login: "owner@example.test".into(),
-            token: "secret".into(),
+            token: "a".repeat(64),
             pid: 0,
             stamp: String::new(),
             local: false,
@@ -2757,14 +2943,14 @@ mod tests {
         app: Arc<App>,
         https_ingress: bool,
         transport_active: bool,
-        proxy_provenance_verified: bool,
+        owner_capability_enabled: bool,
         extra_headers: &[(&str, &str)],
     ) -> String {
         post_secret_body(
             app,
             https_ingress,
             transport_active,
-            proxy_provenance_verified,
+            owner_capability_enabled,
             extra_headers,
             r#"{"id":"test-thread","interactionId":"human-secret-test","secret":"sentinel-secret-value"}"#,
         )
@@ -2774,10 +2960,12 @@ mod tests {
         app: Arc<App>,
         https_ingress: bool,
         transport_active: bool,
-        proxy_provenance_verified: bool,
+        owner_capability_enabled: bool,
         extra_headers: &[(&str, &str)],
         body: &str,
     ) -> String {
+        let owner_capability = secret_submission_capability(&app.settings);
+        let access_capability = owner_access_capability(&app.settings, &https_url(&app.settings));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let handler = std::thread::spawn(move || {
@@ -2787,7 +2975,7 @@ mod tests {
                 app,
                 https_ingress,
                 transport_active,
-                proxy_provenance_verified,
+                owner_capability_enabled,
             )
             .unwrap();
         });
@@ -2798,6 +2986,9 @@ mod tests {
             body.len()
         )
         .unwrap();
+        if owner_capability_enabled {
+            write!(stream, "X-Glass-Secret-Capability: {owner_capability}\r\nX-Glass-Owner-Capability: {access_capability}\r\n").unwrap();
+        }
         for (name, value) in extra_headers {
             write!(stream, "{name}: {value}\r\n").unwrap();
         }
@@ -2807,6 +2998,162 @@ mod tests {
         stream.read_to_string(&mut response).unwrap();
         handler.join().unwrap();
         response
+    }
+
+    fn owner_unlock_request(
+        app: Arc<App>,
+        https_ingress: bool,
+        token: &str,
+        headers: &str,
+    ) -> String {
+        let origin = https_url(&app.settings);
+        owner_unlock_request_at(app, https_ingress, token, headers, &origin)
+    }
+
+    fn owner_unlock_request_at(
+        app: Arc<App>,
+        https_ingress: bool,
+        token: &str,
+        headers: &str,
+        origin: &str,
+    ) -> String {
+        let authority = origin_authority(origin).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handler = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle_with_transport(stream, app, https_ingress, true, true).unwrap();
+        });
+        let mut stream = TcpStream::connect(address).unwrap();
+        let body = json!({"token":token}).to_string();
+        write!(stream, "POST /api/local HTTP/1.1\r\nHost: {authority}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        handler.join().unwrap();
+        response
+    }
+
+    #[test]
+    fn secret_owner_unlock_requires_token_https_and_tailnet_owner() {
+        let settings = settings();
+        let (app, _) = secret_test_app(settings.clone(), true);
+        let owner = "Tailscale-User-Login: owner@example.test\r\n";
+        let secret_token = bootstrap_token(&settings, "secret", &https_url(&settings));
+        let accepted = owner_unlock_request(app.clone(), true, &secret_token, owner);
+        assert!(accepted.starts_with("HTTP/1.1 200"));
+        assert!(!accepted.contains("Set-Cookie"));
+        let body: Value = serde_json::from_str(accepted.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            body["secretCapability"],
+            secret_submission_capability(&settings)
+        );
+        assert!(
+            !accepted
+                .split("\r\n\r\n")
+                .nth(1)
+                .unwrap()
+                .contains(&settings.token)
+        );
+        for (https, token, identity) in [
+            (false, secret_token.clone(), owner),
+            (true, "b".repeat(64), owner),
+            (
+                true,
+                secret_token.clone(),
+                "Tailscale-User-Login: stranger@example.test\r\n",
+            ),
+            (true, secret_token.clone(), ""),
+            (true, settings.token.clone(), owner),
+        ] {
+            let rejected = owner_unlock_request(app.clone(), https, &token, identity);
+            assert!(rejected.starts_with("HTTP/1.1 403"));
+            assert!(!rejected.contains("Set-Cookie"));
+            assert!(!rejected.contains(&settings.token));
+        }
+        let ordinary = owner_unlock_request(
+            app.clone(),
+            true,
+            &bootstrap_token(&settings, "owner", &https_url(&settings)),
+            owner,
+        );
+        let ordinary_body: Value =
+            serde_json::from_str(ordinary.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert!(ordinary_body["secretCapability"].is_null());
+        assert_eq!(
+            ordinary_body["ownerCapability"],
+            owner_access_capability(&settings, &https_url(&settings))
+        );
+        assert_eq!(
+            secret_link(&settings).unwrap(),
+            format!("https://host.tail.ts.net:8443#secret={}", secret_token)
+        );
+    }
+
+    #[test]
+    fn secret_http_owner_unlock_cannot_mint_https_secret_capability() {
+        let mut settings = settings();
+        settings.http = 8080;
+        settings.http_host = "100.64.0.1".into();
+        let http_origin = origin(&settings);
+        let http_token = bootstrap_token(&settings, "owner", &http_origin);
+        let (app, _) = secret_test_app(settings.clone(), true);
+        let identity = "Tailscale-User-Login: owner@example.test\r\n";
+        let response =
+            owner_unlock_request_at(app.clone(), false, &http_token, identity, &http_origin);
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let value: Value =
+            serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            value["ownerCapability"],
+            owner_access_capability(&settings, &http_origin)
+        );
+        assert!(value["secretCapability"].is_null());
+        let denied = owner_unlock_request(app, true, &http_token, identity);
+        assert!(denied.starts_with("HTTP/1.1 403"));
+        assert!(!denied.contains("secretCapability"));
+    }
+
+    #[test]
+    fn secret_owner_capability_is_independent_of_spoofable_proxy_headers() {
+        let settings = settings();
+        let mut request = Request {
+            method: "POST".into(),
+            path: "/api/secret".into(),
+            headers: HashMap::from([
+                ("host".into(), "host.tail.ts.net:8443".into()),
+                ("origin".into(), "https://host.tail.ts.net:8443".into()),
+                ("tailscale-user-login".into(), "owner@example.test".into()),
+                ("x-forwarded-proto".into(), "https".into()),
+            ]),
+            body: zeroize::Zeroizing::new(Vec::new()),
+        };
+        assert!(proxy_authorized(&settings, &request));
+        assert!(!authorized(&settings, &request));
+        assert!(!secret_owner_authenticated(&settings, &request));
+        request
+            .headers
+            .insert("x-glass-secret-capability".into(), "b".repeat(64));
+        assert!(!secret_owner_authenticated(&settings, &request));
+        request.headers.insert(
+            "x-glass-secret-capability".into(),
+            secret_submission_capability(&settings),
+        );
+        assert!(secret_owner_authenticated(&settings, &request));
+        request.headers.insert(
+            "x-glass-owner-capability".into(),
+            owner_access_capability(&settings, &https_url(&settings)),
+        );
+        assert!(authorized(&settings, &request));
+        let mut other_origin = settings.clone();
+        other_origin.https = 8444;
+        request
+            .headers
+            .insert("host".into(), "host.tail.ts.net:8444".into());
+        request
+            .headers
+            .insert("origin".into(), "https://host.tail.ts.net:8444".into());
+        assert!(!authorized(&other_origin, &request));
+        assert!(!secret_owner_authenticated(&other_origin, &request));
     }
 
     #[test]
@@ -2844,7 +3191,7 @@ mod tests {
         let mut forwarded = [0; 1];
         assert!(matches!(
             bridge_reader.read(&mut forwarded),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
         ));
     }
 
@@ -2869,7 +3216,9 @@ mod tests {
         let _ = unverified_bridge.set_read_timeout(Some(Duration::from_millis(50)));
         let unverified_response = post_secret(unverified_app, true, true, false, &[]);
         assert!(unverified_response.starts_with("HTTP/1.1 403"));
-        assert!(unverified_response.contains("cannot verify HTTPS proxy provenance"));
+        assert!(
+            unverified_response.contains("requires HTTPS and the private owner secret-entry link")
+        );
         assert!(!unverified_response.contains("sentinel-secret-value"));
         let mut rejected = [0; 1];
         assert_eq!(unverified_bridge.read(&mut rejected).unwrap(), 0);
@@ -2922,12 +3271,12 @@ mod tests {
         assert!(feed.secret_submission.is_none());
     }
     #[test]
-    fn secret_submission_requires_verified_https_provenance_and_exact_origin() {
+    fn secret_submission_requires_owner_capability_and_exact_https_origin() {
         let settings = settings();
         assert_eq!(https_route(&settings), "http://127.0.0.1:8766");
         assert_eq!(route(&settings), "http://127.0.0.1:8765");
         assert!(settings.https_active);
-        assert!(!secret_transport_available_for(&settings));
+        assert!(secret_transport_available_for(&settings));
         let mut request = Request {
             method: "POST".into(),
             path: "/api/secret".into(),
@@ -3068,6 +3417,11 @@ mod tests {
             ]),
             body: zeroize::Zeroizing::new(Vec::new()),
         };
+        assert!(!authorized(&s, &r));
+        r.headers.insert(
+            "x-glass-owner-capability".into(),
+            owner_access_capability(&s, &https_url(&s)),
+        );
         assert!(authorized(&s, &r));
         r.headers
             .insert("origin".into(), "https://evil.test".into());

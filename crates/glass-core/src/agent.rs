@@ -181,6 +181,7 @@ fn with_tool_bridge<R>(
     workspace: &std::path::Path,
     state: &mut State,
     call_id: &str,
+    secrets: &crate::secrets::SecretVault,
     f: impl FnOnce(&mut dyn FnMut(&str, &str) -> String) -> R,
 ) -> R {
     let workspace = workspace.to_path_buf();
@@ -192,7 +193,17 @@ fn with_tool_bridge<R>(
             arguments: args.to_string(),
         };
         match tool {
-            "bash" => tools::bash(&inner, &workspace).body,
+            "bash" => {
+                let outcome = tools::bash_owned_sensitive(
+                    &inner,
+                    &workspace,
+                    &std::sync::atomic::AtomicBool::new(false),
+                    &crate::sandbox::SessionApprovals::default(),
+                    None,
+                    secrets.has_redactors(),
+                );
+                secrets.redact(&outcome.body)
+            }
             "state" => state.apply(&inner).body,
             other => format!("error: extensions may only call bash or state, not `{other}`"),
         }
@@ -324,10 +335,6 @@ pub struct Agent<'a> {
     /// Headless/ACP agents leave this unset and never advertise elicitation support.
     input_keys: Option<&'a crate::input::KeyReader>,
     human: Option<HumanDecision<'a>>,
-    /// Session-only secret handles. Raw values are available only through the
-    /// narrowly scoped HTTPS request consumer and are redacted before results
-    /// are recorded or sent to the provider.
-    secrets: crate::secrets::SecretVault,
     approved_calls: std::collections::HashMap<String, String>,
     /// Cached system-prompt contribution from extensions.
     ext_prompt: String,
@@ -498,7 +505,6 @@ impl<'a> Agent<'a> {
             on_progress: None,
             input_keys: None,
             human: None,
-            secrets: crate::secrets::SecretVault::default(),
             approved_calls: std::collections::HashMap::new(),
             ext_prompt: String::new(),
             prefix_bytes: 0,
@@ -582,10 +588,9 @@ impl<'a> Agent<'a> {
         self.tool_set_for_connect(crate::desktop::service_running())
     }
 
-    /// A remote human callback is safe for secret entry only when Connect can
-    /// authenticate its HTTPS proxy ingress. The current loopback HTTP proxy
-    /// does not provide that proof. The terminal key reader remains a trusted
-    /// local prompt and is independent of Connect transport state.
+    /// Remote prompts require an active HTTPS endpoint; submitting a value also
+    /// requires the independent owner capability checked at Connect ingress.
+    /// The terminal key reader remains a trusted local prompt.
     fn secret_tools_enabled(&self) -> bool {
         if self.human.is_some() {
             crate::connect::secret_transport_available()
@@ -598,7 +603,7 @@ impl<'a> Agent<'a> {
         if self.read_only {
             "Secret tools are unavailable in read-only sessions"
         } else if self.human.is_some() {
-            "Remote secret requests are disabled because Connect cannot verify HTTPS proxy provenance"
+            "Remote secret requests require an active HTTPS Connect endpoint"
         } else {
             "Secret entry is available only in an interactive writable session"
         }
@@ -2099,6 +2104,7 @@ impl<'a> Agent<'a> {
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         let owner = self.session.id.clone();
+        let sensitive_capture = self.session.secrets.has_redactors();
         let (tx, rx) = std::sync::mpsc::channel();
         let approvals: std::collections::HashMap<_, _> = calls
             .iter()
@@ -2114,7 +2120,14 @@ impl<'a> Agent<'a> {
                 if worker_cancel.load(std::sync::atomic::Ordering::Acquire) {
                     return tools::Outcome::err("Cancelled before execution");
                 }
-                tools::bash_owned(inner, &workspace, &worker_cancel, approval, Some(&owner))
+                tools::bash_owned_sensitive(
+                    inner,
+                    &workspace,
+                    &worker_cancel,
+                    approval,
+                    Some(&owner),
+                    sensitive_capture,
+                )
             });
             let _ = tx.send(results);
         });
@@ -2259,7 +2272,7 @@ impl<'a> Agent<'a> {
                         return Err("No interactive human is connected to enter this secret".into());
                     };
                     let scope = request.scope(&self.session.id);
-                    let secret_ref = self.secrets.issue_zeroizing(scope, secret)?;
+                    let secret_ref = self.session.secrets.issue_zeroizing(scope, secret)?;
                     Ok(serde_json::json!({
                         "status":"provided",
                         "secretRef":secret_ref,
@@ -2306,7 +2319,10 @@ impl<'a> Agent<'a> {
                         .as_str()
                         .filter(|handle| handle.len() <= 96 && handle.starts_with("secret_"))
                         .ok_or_else(|| "Invalid secretRef".to_owned())?;
-                    Ok(serde_json::json!({"revoked":self.secrets.revoke(handle)}).to_string())
+                    Ok(
+                        serde_json::json!({"revoked":self.session.secrets.revoke(handle)})
+                            .to_string(),
+                    )
                 });
             self.finish_tool(
                 call,
@@ -2409,10 +2425,16 @@ impl<'a> Agent<'a> {
             body.push_str(&format!("\n{hint}"));
         }
         let before = self.state.clone();
-        with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
-            self.extensions
-                .rewrite_tool_result(&call.id, &call.name, &mut body, bridge)
-        });
+        with_tool_bridge(
+            self.workspace,
+            &mut *self.state,
+            &call.id,
+            &self.session.secrets,
+            |bridge| {
+                self.extensions
+                    .rewrite_tool_result(&call.id, &call.name, &mut body, bridge)
+            },
+        );
         if let Err(error) = self.persist_state_change(before) {
             body.push_str(&format!("\n{error}"));
         }
@@ -2537,18 +2559,20 @@ impl<'a> Agent<'a> {
         let flag = std::sync::Arc::clone(&done);
         let approvals = self.command_approvals(call);
         let owner = self.session.id.clone();
+        let sensitive_capture = self.session.secrets.has_redactors();
         std::thread::spawn(move || {
             let inner = ToolCall {
                 id: "worker".into(),
                 name: "bash".into(),
                 arguments: args,
             };
-            let _ = tx.send(tools::bash_owned(
+            let _ = tx.send(tools::bash_owned_sensitive(
                 &inner,
                 &workspace,
                 &worker_cancel,
                 &approvals,
                 Some(&owner),
+                sensitive_capture,
             ));
             flag.store(true, std::sync::atomic::Ordering::Release);
         });
@@ -2633,14 +2657,14 @@ impl<'a> Agent<'a> {
             Ok(parsed) => parsed,
             Err(error) => return self.finish_tool(call, tools::Outcome::err(error)),
         };
-        let (secret, destination) =
-            match self
-                .secrets
-                .take_web_request_secret(&handle, &self.session.id, &operation)
-            {
-                Ok(value) => value,
-                Err(error) => return self.finish_tool(call, tools::Outcome::err(error)),
-            };
+        let (secret, destination) = match self.session.secrets.take_web_request_secret(
+            &handle,
+            &self.session.id,
+            &operation,
+        ) {
+            Ok(value) => value,
+            Err(error) => return self.finish_tool(call, tools::Outcome::err(error)),
+        };
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(crate::web_tools::secret_request(
@@ -2730,6 +2754,7 @@ impl<'a> Agent<'a> {
         let keys = self.input_keys;
         let workspace = self.workspace;
         let owner = self.session.id.clone();
+        let sensitive_capture = self.session.secrets.has_redactors();
         let registry = &mut *self.extensions;
         let state = &mut *self.state;
         let session = &mut *self.session;
@@ -2762,12 +2787,13 @@ impl<'a> Agent<'a> {
                             name: "bash".into(),
                             arguments: arguments.to_owned(),
                         };
-                        return tools::bash_owned(
+                        return tools::bash_owned_sensitive(
                             &nested,
                             workspace,
                             &scope.cancel.shared_flag(),
                             &crate::sandbox::SessionApprovals::default(),
                             Some(&owner),
+                            sensitive_capture,
                         )
                         .body;
                     }
@@ -2853,10 +2879,16 @@ impl<'a> Agent<'a> {
             }
         });
         let before = self.state.clone();
-        with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
-            self.extensions
-                .rewrite_tool_result(&call.id, &call.name, &mut body, bridge)
-        });
+        with_tool_bridge(
+            self.workspace,
+            &mut *self.state,
+            &call.id,
+            &self.session.secrets,
+            |bridge| {
+                self.extensions
+                    .rewrite_tool_result(&call.id, &call.name, &mut body, bridge)
+            },
+        );
         if let Err(error) = self.persist_state_change(before) {
             body = error;
         }
@@ -2878,6 +2910,7 @@ impl<'a> Agent<'a> {
     fn apply_bash_result(&mut self, call: &ToolCall, outcome: tools::Outcome) {
         let state_before = self.state.clone();
         let mut outcome = outcome;
+        outcome.body = self.session.secrets.redact(&outcome.body);
         let command = call
             .arg_str("command")
             .or_else(|| {
@@ -2915,10 +2948,17 @@ impl<'a> Agent<'a> {
                 .observe_at(&command, &outcome.body, cwd, self.tool_call_index);
         }
 
-        let rewritten = with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
-            self.extensions
-                .rewrite_tool_result(&call.id, &call.name, &mut body, bridge)
-        });
+        body = self.session.secrets.redact(&body);
+        let rewritten = with_tool_bridge(
+            self.workspace,
+            &mut *self.state,
+            &call.id,
+            &self.session.secrets,
+            |bridge| {
+                self.extensions
+                    .rewrite_tool_result(&call.id, &call.name, &mut body, bridge)
+            },
+        );
         if let Err(error) = self.persist_state_change(state_before) {
             body.push_str(&format!("\n{error}"));
             outcome.exit_code = None;
@@ -2932,6 +2972,7 @@ impl<'a> Agent<'a> {
                 m.on_tool_result(call, &mut output);
             }
         }
+        output.body = self.session.secrets.redact(&output.body);
         self.session.append(Record::Bash {
             call_id: Some(call.id.clone()),
             command,
@@ -3167,12 +3208,13 @@ impl<'a> Agent<'a> {
                 self.emit(Progress::BlockedByGuard(&refusal));
                 return self.finish_tool(call, tools::Outcome::err(refusal));
             }
-            let r = tools::bash_owned(
+            let r = tools::bash_owned_sensitive(
                 call,
                 self.workspace,
                 &std::sync::atomic::AtomicBool::new(false),
                 &self.command_approvals(call),
                 Some(&self.session.id),
+                self.session.secrets.has_redactors(),
             );
 
             // Verification happens in apply_bash_result, which every bash
@@ -3260,24 +3302,30 @@ impl<'a> Agent<'a> {
             // generic error.
             let scope = crate::ext::CallScope::from_call(&call.id, self.turn_cancel.clone());
             let input_keys = self.input_keys;
-            let out = with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
-                if let Some(keys) = input_keys {
-                    let mut host_input = crate::input::mcp_input_callback(keys);
-                    self.extensions
-                        .run_tool_with_input_scoped(
-                            &scope,
-                            &call.name,
-                            &call.arguments,
-                            bridge,
-                            &mut host_input,
-                        )
-                        .describe(&call.name)
-                } else {
-                    self.extensions
-                        .run_tool_scoped(&scope, &call.name, &call.arguments, bridge)
-                        .describe(&call.name)
-                }
-            });
+            let out = with_tool_bridge(
+                self.workspace,
+                &mut *self.state,
+                &call.id,
+                &self.session.secrets,
+                |bridge| {
+                    if let Some(keys) = input_keys {
+                        let mut host_input = crate::input::mcp_input_callback(keys);
+                        self.extensions
+                            .run_tool_with_input_scoped(
+                                &scope,
+                                &call.name,
+                                &call.arguments,
+                                bridge,
+                                &mut host_input,
+                            )
+                            .describe(&call.name)
+                    } else {
+                        self.extensions
+                            .run_tool_scoped(&scope, &call.name, &call.arguments, bridge)
+                            .describe(&call.name)
+                    }
+                },
+            );
             outcome.body = out;
         } else {
             // A tool was declared but nothing answered: report that honestly
@@ -3286,10 +3334,17 @@ impl<'a> Agent<'a> {
         }
 
         let mut body = outcome.body;
-        let rewritten = with_tool_bridge(self.workspace, &mut *self.state, &call.id, |bridge| {
-            self.extensions
-                .rewrite_tool_result(&call.id, &call.name, &mut body, bridge)
-        });
+        body = self.session.secrets.redact(&body);
+        let rewritten = with_tool_bridge(
+            self.workspace,
+            &mut *self.state,
+            &call.id,
+            &self.session.secrets,
+            |bridge| {
+                self.extensions
+                    .rewrite_tool_result(&call.id, &call.name, &mut body, bridge)
+            },
+        );
         // A clear is a mutation too. Persist before acknowledging it, and
         // roll back the in-memory notes if the durable append fails.
         if let Err(error) = self.persist_state_change(state_before) {
@@ -3318,7 +3373,7 @@ impl<'a> Agent<'a> {
     /// outcome takes, including the ones blocked by a guard.
     fn finish_tool(&mut self, call: &ToolCall, outcome: tools::Outcome) {
         let outcome = tools::Outcome {
-            body: self.secrets.redact(&outcome.body),
+            body: self.session.secrets.redact(&outcome.body),
             ..outcome
         };
         if call.name.starts_with("glass.browser.")
@@ -3355,6 +3410,7 @@ impl<'a> Agent<'a> {
                 m.on_tool_result(call, &mut output);
             }
         }
+        output.body = self.session.secrets.redact(&output.body);
 
         self.emit(Progress::ToolEnd {
             call_id: &call.id,
@@ -5663,7 +5719,7 @@ mod recovery_tests {
         assert!(records.iter().any(|record| matches!(
             record,
             Record::ToolResult { name, body, .. }
-                if name == "request_secret" && body.contains("cannot verify HTTPS proxy provenance")
+                if name == "request_secret" && body.contains("require an active HTTPS Connect endpoint")
         )));
         assert!(!format!("{records:?}").contains("must-not-be-requested"));
         drop(agent);
@@ -5691,7 +5747,7 @@ mod recovery_tests {
             calls: Arc::new(AtomicUsize::new(0)),
             message: "unused",
         };
-        let mut agent = Agent::new(
+        let agent = Agent::new(
             &provider,
             &mut session,
             &mut state,
@@ -5705,11 +5761,12 @@ mod recovery_tests {
             }
         });
         let sentinel = "agent-secret-audit-sentinel";
-        agent
+        let handle = agent
+            .session
             .secrets
             .issue_zeroizing(
                 crate::secrets::SecretScope {
-                    session_id,
+                    session_id: session_id.clone(),
                     tool_name: "web_secret_request".into(),
                     operation: "create token".into(),
                     destination: "https://api.example.test".into(),
@@ -5717,6 +5774,30 @@ mod recovery_tests {
                 zeroize::Zeroizing::new(sentinel.to_owned()),
             )
             .unwrap();
+        drop(
+            agent
+                .session
+                .secrets
+                .take_web_request_secret(&handle, &session_id, "create token")
+                .unwrap(),
+        );
+        // Serve and the TUI reconstruct Agent on every user turn. The vault
+        // belongs to Session so redaction survives that reconstruction.
+        drop(agent);
+        let progress = observed.clone();
+        let mut agent = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &dir,
+        )
+        .with_progress(move |event| {
+            if let Progress::ToolEnd { output, .. } = event {
+                progress.borrow_mut().push(output.to_owned());
+            }
+        });
         let call = ToolCall {
             id: "secret-consumer".into(),
             name: "web_secret_request".into(),
@@ -5726,6 +5807,53 @@ mod recovery_tests {
             &call,
             tools::Outcome::err(format!("remote failure echoed {sentinel}")),
         );
+        std::fs::write(dir.join("audit-value.txt"), sentinel).unwrap();
+        let bridge_output = with_tool_bridge(
+            &dir,
+            &mut *agent.state,
+            "extension-bridge-secret",
+            &agent.session.secrets,
+            |bridge| {
+                bridge(
+                    "bash",
+                    &serde_json::json!({"command":"cat audit-value.txt"}).to_string(),
+                )
+            },
+        );
+        assert!(!bridge_output.contains(sentinel));
+        assert!(bridge_output.contains("[redacted secret]"));
+        std::fs::write(
+            dir.join("audit-large.txt"),
+            format!("{}{}", "x".repeat(tools::MAX_OUTPUT_BYTES - 5), sentinel),
+        )
+        .unwrap();
+        let bash_call = |id: &str, file: &str| ToolCall {
+            id: id.into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command":format!("cat {file}")}).to_string(),
+        };
+        agent.run_tool(&bash_call("inline-secret-echo", "audit-value.txt"));
+        agent.run_tool_pumped_or_inline(
+            &bash_call("pumped-secret-echo", "audit-value.txt"),
+            &mut no_pump,
+        );
+        agent.run_tool_batch(
+            &[
+                bash_call("parallel-secret-echo-a", "audit-value.txt"),
+                ToolCall {
+                    id: "state-between".into(),
+                    name: "state".into(),
+                    arguments: "{}".into(),
+                },
+                bash_call("parallel-secret-echo-b", "audit-value.txt"),
+            ],
+            &mut no_pump,
+        );
+        agent.run_tool(&bash_call("inline-secret-overflow", "audit-large.txt"));
+        agent.run_tool_pumped_or_inline(
+            &bash_call("pumped-secret-overflow", "audit-large.txt"),
+            &mut no_pump,
+        );
         assert!(
             !observed
                 .borrow()
@@ -5734,6 +5862,13 @@ mod recovery_tests {
         );
         let records = agent.session.history_records();
         assert!(!format!("{records:?}").contains(sentinel));
+        assert!(records.iter().any(|record| matches!(record, Record::ToolResult { body, .. } if body.contains("[redacted secret]"))));
+        assert!(records.iter().any(|record| matches!(record, Record::ToolResult { body, .. } if body.contains("output omitted: sensitive session"))));
+        assert!(
+            records
+                .iter()
+                .all(|record| !matches!(record, Record::Bash { spill: Some(_), .. }))
+        );
         let exported = crate::export::markdown(agent.session, false, &records);
         assert!(!exported.contains(sentinel));
         drop(agent);

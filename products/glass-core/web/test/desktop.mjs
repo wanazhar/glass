@@ -16,6 +16,8 @@ let savedProfileExists = true;
 let sessionEnvironment = null;
 let sessionLifecycle = null;
 let inputDelayMs = 0;
+let startDelayMs = 0;
+let statusFailuresDuringStart = 0;
 let streamResponse = null;
 let streamTimer = 0;
 let streamFrameDelayMs = 0;
@@ -50,6 +52,7 @@ const testModule = `
   const surface = desktopSurface({ api });
   document.querySelector("#desktop-toggle").addEventListener("click", () => surface.open());
   window.setDesktopHostReachable = (reachable) => fetch("/__test/host?reachable=" + reachable);
+  window.setDesktopStartDelay = (ms) => fetch("/__test/start-delay?ms=" + ms);
   window.setDesktopInputDelay = (ms) => fetch("/__test/input-delay?ms=" + ms);
   window.disconnectDesktopStream = () => fetch("/__test/stream-close");
   window.setStaleDesktopStream = (delayMs) => fetch("/__test/stream-stale?delayMs=" + delayMs);
@@ -92,6 +95,17 @@ const server = createServer(async (request, response) => {
     response.writeHead(204).end();
     return;
   }
+  if (url.pathname === "/__test/start-delay") {
+    startDelayMs = Math.max(0, Math.min(10_000, Number(url.searchParams.get("ms")) || 0));
+    statusFailuresDuringStart = 0;
+    response.writeHead(204).end();
+    return;
+  }
+  if (url.pathname === "/__test/status-failures") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ count: statusFailuresDuringStart }));
+    return;
+  }
   if (url.pathname === "/__test/stream-close") {
     clearInterval(streamTimer);
     streamTimer = 0;
@@ -131,6 +145,12 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (url.pathname === "/api/desktop/status") {
+    if (startDelayMs > 0) {
+      statusFailuresDuringStart += 1;
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "Host timed out. Tap the connection indicator to reconnect." }));
+      return;
+    }
     if (!hostReachable) {
       response.writeHead(503, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "Host timed out. Tap the connection indicator to reconnect." }));
@@ -184,6 +204,9 @@ const server = createServer(async (request, response) => {
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
     response.setHeader("content-type", "application/json");
     if (url.pathname === "/api/desktop/session" && body.action === "start") {
+      const delay = startDelayMs;
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+      startDelayMs = 0;
       session = `managed-${nextSession++}`;
       sessionEnvironment = body.environment;
       sessionLifecycle = body.lifecycle;
@@ -268,7 +291,13 @@ try {
   assert.equal(await page.locator("#desktop-preset-quick").isChecked(), true);
   assert.equal(await page.locator("#desktop-preset-reusable").evaluate((radio) => radio.disabled), true);
   assert.match(await page.locator("#desktop-reusable-note").textContent(), /no verified isolated GNOME session/);
+  await page.evaluate(() => window.setDesktopStartDelay(4_000));
   await page.locator("#desktop-start").click();
+  await page.getByText("Starting a quick desktop…").waitFor();
+  await page.waitForFunction(async () => (await (await fetch("/__test/status-failures")).json()).count > 0, null, { timeout: 5000 });
+  assert.equal(await page.locator("#desktop-status").textContent(), "Starting a quick desktop…", "status timeouts during a valid desktop start must not mark Connect offline");
+  assert.equal(await page.locator("#desktop-start").textContent(), "Starting…");
+  assert.equal(await page.locator("#desktop-start").isDisabled(), true);
   await page.getByText("View only · GC may control").waitFor();
   assert.deepEqual(sessionStartEnvironments, [{ environment: "xfce", lifecycle: "disposable" }]);
   await page.locator("#desktop-details > summary").click();

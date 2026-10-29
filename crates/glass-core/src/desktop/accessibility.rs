@@ -114,15 +114,53 @@ async fn observe_async(
     let roots_truncated = application_roots.len() > MAX_NODES;
     application_roots.truncate(MAX_NODES);
     let mut app_scoped_query = false;
+    let mut scoped_window_roots = Vec::<(ObjectRefOwned, String)>::new();
+    #[cfg(test)]
+    let mut application_root_names = Vec::new();
     if let Some(terms) = query_terms.as_deref() {
         let mut matching_roots = Vec::new();
         for object in &application_roots {
             let Ok(app) = object.as_accessible_proxy(&accessibility).await else {
                 continue;
             };
-            let root_name = app.name().await.unwrap_or_default().to_ascii_lowercase();
+            let application_name = app.name().await.unwrap_or_default();
+            let root_name = application_name.to_ascii_lowercase();
             if terms.iter().any(|term| root_name.contains(term)) {
+                #[cfg(test)]
+                application_root_names.push(if root_name.trim().is_empty() {
+                    "<empty>".to_owned()
+                } else {
+                    root_name.clone()
+                });
                 matching_roots.push(object.clone());
+                let owner_terms = window_title_terms(terms, &root_name);
+                if owner_terms.len() >= 2 {
+                    let children = app.get_children().await.unwrap_or_default();
+                    for child in children.into_iter().take(32) {
+                        let Ok(window) = child.as_accessible_proxy(&accessibility).await else {
+                            continue;
+                        };
+                        let (role, name, states) = tokio::join!(
+                            window.get_role_name(),
+                            window.name(),
+                            window.get_state(),
+                        );
+                        let role = role.unwrap_or_default().to_ascii_lowercase();
+                        let name = name.unwrap_or_default().to_ascii_lowercase();
+                        let states = states.unwrap_or_else(|_| StateSet::empty());
+                        if matches!(role.as_str(), "frame" | "window" | "dialog")
+                            && states.contains(State::Visible)
+                            && states.contains(State::Showing)
+                            && owner_terms
+                                .iter()
+                                .filter(|term| name.contains(term.as_str()))
+                                .count()
+                                >= 2
+                        {
+                            scoped_window_roots.push((child, application_name.clone()));
+                        }
+                    }
+                }
             }
         }
         if !matching_roots.is_empty() {
@@ -132,22 +170,43 @@ async fn observe_async(
     }
     let mut pending = VecDeque::new();
     let mut discovered = HashSet::new();
-    for object in application_roots {
-        if discovered.insert(object.clone()) {
-            pending.push_back((
-                object,
-                0usize,
-                None::<String>,
-                None::<Value>,
-                None::<ObjectRefOwned>,
-            ));
+    let mut scoped_application_names = Vec::new();
+    if !scoped_window_roots.is_empty() {
+        for (object, application_name) in scoped_window_roots {
+            if discovered.insert(object.clone()) {
+                if !scoped_application_names.contains(&application_name) {
+                    scoped_application_names.push(application_name.clone());
+                }
+                pending.push_back((
+                    object,
+                    1usize,
+                    Some(application_name),
+                    None::<Value>,
+                    None::<ObjectRefOwned>,
+                ));
+            }
+        }
+    } else {
+        for object in application_roots {
+            if discovered.insert(object.clone()) {
+                pending.push_back((
+                    object,
+                    0usize,
+                    None::<String>,
+                    None::<Value>,
+                    None::<ObjectRefOwned>,
+                ));
+            }
         }
     }
+    #[cfg(test)]
+    let owner_window_scoped = !discovered.is_empty()
+        && pending
+            .iter()
+            .all(|(_, depth, application, _, _)| *depth > 0 && application.is_some());
 
     let mut nodes = Vec::new();
-    let mut applications = Vec::new();
-    #[cfg(test)]
-    let mut application_root_names = Vec::new();
+    let mut applications = scoped_application_names;
     let mut focused_window = None;
     let mut active_window = None;
     let mut targets = HashMap::new();
@@ -316,10 +375,16 @@ async fn observe_async(
             focused_window = window.clone();
         }
         let mut skip_matched_target_subtree = false;
+        let pointer_fallback_candidate = is_pointer_fallback_candidate(
+            &role_lower,
+            &name,
+            interfaces.contains(Interface::Component),
+            visible,
+        );
         let focused_search_candidate = focused_search
             && window.is_some()
             && tree_visible
-            && (is_actionable || is_search_context_role(&role_lower));
+            && (is_actionable || pointer_fallback_candidate || is_search_context_role(&role_lower));
         if node_is_relevant(depth, is_window, visible, is_actionable) || focused_search_candidate {
             // An offscreen match can guide scrolling, but it must not authorize
             // an action until a fresh observation confirms it is showing.
@@ -344,6 +409,7 @@ async fn observe_async(
                 "owningWindow": if query.is_some() { window.clone() } else { None },
                 "states": state_names(states),
                 "actions": action_names,
+                "pointerFallback": pointer_fallback_candidate,
                 "pointerTarget": null,
                 "editable": supports_text && !is_password,
                 "value": null,
@@ -352,12 +418,15 @@ async fn observe_async(
             let matches_query = query_terms
                 .as_ref()
                 .is_none_or(|terms| query_matches(&node, terms));
-            let screen_target_value = if matches_query && query.is_some() && is_actionable {
+            let screen_target_value = if matches_query
+                && query.is_some()
+                && (is_actionable || pointer_fallback_candidate)
+            {
                 query_screen_target(&accessible).await
             } else {
                 None
             };
-            if query.is_some() && is_actionable {
+            if query.is_some() && (is_actionable || pointer_fallback_candidate) {
                 // For query results this reports measured screen-rectangle
                 // intersection, not merely AT-SPI's Visible state.
                 node["onscreen"] = json!(screen_target_value.is_some());
@@ -371,9 +440,14 @@ async fn observe_async(
             if matches_query && target_is_visible {
                 target_id = Some(accessibility_target_id(session_id, revision, visited));
                 node["targetId"] = json!(target_id);
-                if query.is_some() {
-                    node["pointerTarget"] = screen_target_value.clone().unwrap_or(Value::Null);
-                }
+            }
+            if matches_query
+                && query.is_some()
+                && visible
+                && screen_target_value.is_some()
+                && (target_id.is_some() || pointer_fallback_candidate)
+            {
+                node["pointerTarget"] = screen_target_value.clone().unwrap_or(Value::Null);
             }
             skip_matched_target_subtree = query.is_some()
                 && matches_query
@@ -413,7 +487,7 @@ async fn observe_async(
                 }
                 nodes.push(node);
             }
-            if matches_query && is_actionable {
+            if matches_query && (is_actionable || pointer_fallback_candidate) {
                 matched_actionable_count += 1;
             }
             if query.is_some() && matched_actionable_count >= 2 {
@@ -556,6 +630,12 @@ async fn observe_async(
         "queryAmbiguous": query_ambiguous,
         "nodes": nodes,
     });
+    #[cfg(test)]
+    let value = {
+        let mut value = value;
+        value["_testOwnerWindowScoped"] = json!(owner_window_scoped);
+        value
+    };
     Ok(Snapshot {
         value,
         targets,
@@ -588,8 +668,8 @@ fn withhold_unverified_query_tokens(
     for node in nodes {
         if node["targetId"].is_string() {
             node["targetId"] = Value::Null;
-            node["pointerTarget"] = Value::Null;
         }
+        node["pointerTarget"] = Value::Null;
     }
     targets.clear();
 }
@@ -676,6 +756,16 @@ fn query_matches(node: &Value, terms: &[String]) -> bool {
         .all(|term| haystack.contains(term))
 }
 
+fn window_title_terms(terms: &[String], application_name: &str) -> Vec<String> {
+    terms
+        .iter()
+        .filter(|term| {
+            term.len() >= 4 && !is_role_hint(term) && !application_name.contains(term.as_str())
+        })
+        .cloned()
+        .collect()
+}
+
 fn is_role_hint(term: &str) -> bool {
     matches!(
         term,
@@ -718,8 +808,21 @@ fn role_matches_hint(role: &str, hint: &str) -> bool {
 fn is_search_context_role(role: &str) -> bool {
     matches!(
         role,
-        "heading" | "paragraph" | "static" | "text" | "document web"
+        "heading" | "paragraph" | "static" | "text" | "label" | "document web"
     )
+}
+
+fn is_pointer_fallback_candidate(
+    role: &str,
+    name: &str,
+    has_component: bool,
+    visible: bool,
+) -> bool {
+    let label = name.to_ascii_lowercase();
+    role == "label"
+        && has_component
+        && visible
+        && ["toggle", "menu"].iter().any(|term| label.contains(term))
 }
 
 fn role_can_activate(role: &str) -> bool {
@@ -1149,9 +1252,10 @@ mod tests {
     use super::{
         MAX_DEPTH, MAX_SEARCH_DEPTH, RelationType, accessibility_target_id,
         display_accessible_name, focused_search_result_is_actionable, is_password_role,
-        node_is_relevant, owner_is_within_ancestor_limit, pointer_target_from_extents,
-        protect_text_value, query_matches, role_matches_hint, should_follow_related_object,
-        target_can_be_exposed, text_edit_is_supported, unverified_click_result, validate_query,
+        is_pointer_fallback_candidate, node_is_relevant, owner_is_within_ancestor_limit,
+        pointer_target_from_extents, protect_text_value, query_matches, role_matches_hint,
+        should_follow_related_object, target_can_be_exposed, text_edit_is_supported,
+        unverified_click_result, validate_query, window_title_terms,
         withhold_unverified_query_tokens,
     };
     use serde_json::json;
@@ -1233,6 +1337,25 @@ mod tests {
         assert!(nodes[0]["targetId"].is_null());
         assert!(nodes[0]["pointerTarget"].is_null());
         assert!(targets.is_empty());
+
+        for (ambiguous, truncated) in [(true, false), (false, true)] {
+            let mut pointer_fallback = vec![json!({
+                "targetId":null,
+                "pointerFallback":true,
+                "pointerTarget":{"x":0.25,"y":0.75}
+            })];
+            let mut targets = std::collections::HashMap::new();
+            withhold_unverified_query_tokens(
+                &mut pointer_fallback,
+                &mut targets,
+                true,
+                ambiguous,
+                truncated,
+            );
+            assert!(pointer_fallback[0]["targetId"].is_null());
+            assert!(pointer_fallback[0]["pointerTarget"].is_null());
+            assert!(targets.is_empty());
+        }
     }
 
     #[test]
@@ -1339,6 +1462,65 @@ mod tests {
                 "basis": "screen"
             }))
         );
+    }
+
+    #[test]
+    fn pointer_fallback_is_limited_to_visible_component_toggle_or_menu_labels() {
+        assert!(is_pointer_fallback_candidate(
+            "label",
+            "Toggle Table of Contents",
+            true,
+            true
+        ));
+        assert!(is_pointer_fallback_candidate(
+            "label",
+            "Main menu",
+            true,
+            true
+        ));
+        assert!(!is_pointer_fallback_candidate(
+            "label",
+            "Chapter title",
+            true,
+            true
+        ));
+        assert!(!is_pointer_fallback_candidate(
+            "label",
+            "Toggle Table of Contents",
+            false,
+            true
+        ));
+        assert!(!is_pointer_fallback_candidate(
+            "label",
+            "Toggle Table of Contents",
+            true,
+            false
+        ));
+        assert!(!is_pointer_fallback_candidate(
+            "text",
+            "Toggle Table of Contents",
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn owner_title_scope_ignores_application_and_role_terms() {
+        let terms =
+            validate_query("Chrome The Rust Programming Language Understanding Ownership link")
+                .unwrap();
+        let owner_terms = window_title_terms(&terms, "google chrome for testing");
+        assert_eq!(
+            owner_terms,
+            [
+                "rust",
+                "programming",
+                "language",
+                "understanding",
+                "ownership"
+            ]
+        );
+        assert!(window_title_terms(&["chrome".into(), "link".into()], "google chrome").is_empty());
     }
 
     #[test]

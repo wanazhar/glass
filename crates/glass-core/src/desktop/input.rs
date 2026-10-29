@@ -87,6 +87,42 @@ pub(super) fn inject(
             let key = key_name(key).ok_or(InputError::Invalid("key is not supported"))?;
             send_key(&loaded, xdisplay, key, pressed)?;
         }
+        "key-tap" => {
+            let key = value["key"]
+                .as_str()
+                .ok_or(InputError::Invalid("key must be a string"))?;
+            let key = key_name(key).ok_or(InputError::Invalid("key is not supported"))?;
+            tap_key(&loaded, xdisplay, key)?;
+        }
+        "key-chord" => {
+            let keys = value["keys"]
+                .as_array()
+                .ok_or(InputError::Invalid("keys must be an array"))?;
+            let names = validate_key_chord(keys)?;
+            let modifiers = &names[..names.len() - 1];
+            let target = names[names.len() - 1];
+            let mut pressed = Vec::new();
+            for modifier in modifiers {
+                if let Err(error) = send_key(&loaded, xdisplay, modifier, true) {
+                    for held in pressed.into_iter().rev() {
+                        let _ = send_key(&loaded, xdisplay, held, false);
+                    }
+                    return Err(error);
+                }
+                pressed.push(*modifier);
+            }
+            let target_result = tap_key(&loaded, xdisplay, target);
+            let mut release_error = None;
+            for modifier in pressed.into_iter().rev() {
+                if let Err(error) = send_key(&loaded, xdisplay, modifier, false) {
+                    release_error.get_or_insert(error);
+                }
+            }
+            target_result?;
+            if let Some(error) = release_error {
+                return Err(error);
+            }
+        }
         "text" => {
             let text = value["text"]
                 .as_str()
@@ -185,6 +221,78 @@ pub(super) fn release_held(
     Ok(())
 }
 
+/// Releases any XTest state left in the isolated server if its prior Gateway
+/// exited before it could persist/release its local held-key bookkeeping.
+pub(super) fn release_all(display: &str, cookie: &[u8; 16]) -> Result<(), InputError> {
+    let loaded = XTest::load()?;
+    let display_name = CString::new(display).map_err(|_| InputError::Invalid("Invalid display"))?;
+    let _auth_lock = AUTH_LOCK.lock().map_err(|_| InputError::Unavailable)?;
+    let xdisplay = unsafe { loaded.open_authorized_display(display_name.as_ptr(), cookie) };
+    if xdisplay.is_null() {
+        return Err(InputError::Display(
+            "Could not open the managed display".into(),
+        ));
+    }
+    let _close = DisplayGuard {
+        display: xdisplay,
+        close: loaded.close_display,
+    };
+
+    let mut keymap = [0 as c_char; 32];
+    if unsafe { (loaded.query_keymap)(xdisplay, keymap.as_mut_ptr()) } == 0 {
+        return Err(InputError::Display(
+            "Could not inspect managed display key state".into(),
+        ));
+    }
+    for keycode in 8..=255u16 {
+        let byte = keymap[(keycode / 8) as usize];
+        if byte & (1 << (keycode % 8)) != 0 {
+            unsafe {
+                (loaded.key)(xdisplay, keycode as c_uint, 0, 0);
+            }
+        }
+    }
+
+    let root = unsafe { (loaded.default_root_window)(xdisplay) };
+    let mut root_return = 0;
+    let mut child_return = 0;
+    let mut root_x = 0;
+    let mut root_y = 0;
+    let mut win_x = 0;
+    let mut win_y = 0;
+    let mut mask = 0;
+    if unsafe {
+        (loaded.query_pointer)(
+            xdisplay,
+            root,
+            &mut root_return,
+            &mut child_return,
+            &mut root_x,
+            &mut root_y,
+            &mut win_x,
+            &mut win_y,
+            &mut mask,
+        )
+    } == 0
+    {
+        return Err(InputError::Display(
+            "Could not inspect managed display pointer state".into(),
+        ));
+    }
+    for button in 1..=5u32 {
+        let button_mask = 1u32 << (7 + button);
+        if mask & button_mask != 0 {
+            unsafe {
+                (loaded.button)(xdisplay, button, 0, 0);
+            }
+        }
+    }
+    unsafe {
+        (loaded.flush)(xdisplay);
+    }
+    Ok(())
+}
+
 pub(super) fn coordinates(value: &Value) -> Result<(c_int, c_int), InputError> {
     let x = value
         .get("x")
@@ -207,6 +315,39 @@ pub(super) fn bounded_delta(delta: f64) -> i64 {
     delta.round().clamp(-20.0, 20.0) as i64
 }
 
+fn validate_key_chord(keys: &[Value]) -> Result<Vec<&str>, InputError> {
+    if !(2..=4).contains(&keys.len()) {
+        return Err(InputError::Invalid("key chord must contain 2 to 4 keys"));
+    }
+    let mut names = Vec::with_capacity(keys.len());
+    for (index, key) in keys.iter().enumerate() {
+        let key = key
+            .as_str()
+            .ok_or(InputError::Invalid("chord keys must be strings"))?;
+        let name = key_name(key).ok_or(InputError::Invalid("key is not supported"))?;
+        let modifier = matches!(key, "Control" | "Alt" | "Shift" | "Meta");
+        if modifier != (index + 1 < keys.len()) {
+            return Err(InputError::Invalid(
+                "key chord must list modifiers first and one non-modifier key last",
+            ));
+        }
+        if names.contains(&name) {
+            return Err(InputError::Invalid("key chord cannot repeat a key"));
+        }
+        names.push(name);
+    }
+    Ok(names)
+}
+
+fn tap_key(api: &XTest, display: *mut c_void, key: &str) -> Result<(), InputError> {
+    send_key(api, display, key, true)?;
+    if let Err(error) = send_key(api, display, key, false) {
+        let _ = send_key(api, display, key, false);
+        return Err(error);
+    }
+    Ok(())
+}
+
 fn key_name(key: &str) -> Option<&str> {
     Some(match key {
         "Enter" => "Return",
@@ -227,6 +368,18 @@ fn key_name(key: &str) -> Option<&str> {
         "Alt" => "Alt_L",
         "Meta" => "Super_L",
         "Space" => "space",
+        "F1" => "F1",
+        "F2" => "F2",
+        "F3" => "F3",
+        "F4" => "F4",
+        "F5" => "F5",
+        "F6" => "F6",
+        "F7" => "F7",
+        "F8" => "F8",
+        "F9" => "F9",
+        "F10" => "F10",
+        "F11" => "F11",
+        "F12" => "F12",
         _ if key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric() => key,
         _ => return None,
     })
@@ -457,6 +610,19 @@ struct XTest {
     motion: unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, c_ulong) -> c_int,
     button: unsafe extern "C" fn(*mut c_void, c_uint, c_int, c_ulong) -> c_int,
     key: unsafe extern "C" fn(*mut c_void, c_uint, c_int, c_ulong) -> c_int,
+    query_keymap: unsafe extern "C" fn(*mut c_void, *mut c_char) -> c_int,
+    default_root_window: unsafe extern "C" fn(*mut c_void) -> c_ulong,
+    query_pointer: unsafe extern "C" fn(
+        *mut c_void,
+        c_ulong,
+        *mut c_ulong,
+        *mut c_ulong,
+        *mut c_int,
+        *mut c_int,
+        *mut c_int,
+        *mut c_int,
+        *mut c_uint,
+    ) -> c_int,
 }
 
 impl XTest {
@@ -481,6 +647,9 @@ impl XTest {
                 motion: load_symbol(xtst, c"XTestFakeMotionEvent")?,
                 button: load_symbol(xtst, c"XTestFakeButtonEvent")?,
                 key: load_symbol(xtst, c"XTestFakeKeyEvent")?,
+                query_keymap: load_symbol(x11, c"XQueryKeymap")?,
+                default_root_window: load_symbol(x11, c"XDefaultRootWindow")?,
+                query_pointer: load_symbol(x11, c"XQueryPointer")?,
             })
         }
     }
@@ -551,6 +720,30 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn function_keys_are_supported_by_managed_input() {
+        assert_eq!(key_name("F2"), Some("F2"));
+        assert_eq!(key_name("F12"), Some("F12"));
+        assert_eq!(key_name("F13"), None);
+    }
+
+    #[test]
+    fn key_chords_require_supported_modifiers_then_one_key() {
+        assert_eq!(
+            validate_key_chord(&[json!("Alt"), json!("F2")]).unwrap(),
+            vec!["Alt_L", "F2"]
+        );
+        assert_eq!(
+            validate_key_chord(&[json!("Control"), json!("Shift"), json!("S")]).unwrap(),
+            vec!["Control_L", "Shift_L", "S"]
+        );
+        assert!(validate_key_chord(&[]).is_err());
+        assert!(validate_key_chord(&[json!("Alt")]).is_err());
+        assert!(validate_key_chord(&[json!("F2"), json!("Alt")]).is_err());
+        assert!(validate_key_chord(&[json!("Alt"), json!("Alt")]).is_err());
+        assert!(validate_key_chord(&[json!("Alt"), json!("Unknown")]).is_err());
+    }
+
+    #[test]
     fn pointer_click_accepts_supported_button_and_normalized_coordinates() {
         let value = json!({"button":"left","x":0.5,"y":0.25});
         assert_eq!(button_id(value["button"].as_str().unwrap()), Some(1));
@@ -576,5 +769,102 @@ mod tests {
     fn unicode_compose_uses_unpadded_lowercase_hex_codepoints() {
         assert_eq!(unicode_hex('é'), "e9");
         assert_eq!(unicode_hex('🐢'), "1f422");
+    }
+
+    #[test]
+    fn release_all_clears_pressed_xtest_keys_and_buttons() {
+        if std::env::var_os("GLASS_DESKTOP_RELEASE_ALL_E2E").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "glass-desktop-release-all-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let workspace = root.join("workspace");
+        let sessions = root.join("sessions");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session = match super::super::process::start_session_with_environment(
+            &workspace,
+            &sessions,
+            super::super::process::Environment::Xfce,
+            super::super::process::Lifecycle::Disposable,
+            None,
+        ) {
+            Ok(session) => session,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&root);
+                panic!("managed XFCE session did not start: {error}");
+            }
+        };
+        inject(
+            &session.display,
+            &session.auth_cookie,
+            "key",
+            &json!({"key":"a","pressed":true}),
+        )
+        .unwrap();
+        inject(
+            &session.display,
+            &session.auth_cookie,
+            "pointer-button",
+            &json!({"button":"left","pressed":true,"x":0.5,"y":0.5}),
+        )
+        .unwrap();
+        release_all(&session.display, &session.auth_cookie).unwrap();
+
+        let api = XTest::load().unwrap();
+        let display_name = CString::new(session.display.as_str()).unwrap();
+        let xdisplay =
+            unsafe { api.open_authorized_display(display_name.as_ptr(), &session.auth_cookie) };
+        assert!(!xdisplay.is_null());
+        let close = DisplayGuard {
+            display: xdisplay,
+            close: api.close_display,
+        };
+        let keycode =
+            unsafe { (api.keysym_to_keycode)(xdisplay, (api.string_to_keysym)(c"a".as_ptr())) };
+        let mut keymap = [0 as c_char; 32];
+        assert_ne!(
+            unsafe { (api.query_keymap)(xdisplay, keymap.as_mut_ptr()) },
+            0
+        );
+        let key_down = keymap[keycode as usize / 8] as u8 & (1 << (keycode % 8)) != 0;
+
+        let root_window = unsafe { (api.default_root_window)(xdisplay) };
+        let mut root_return = 0;
+        let mut child_return = 0;
+        let mut root_x = 0;
+        let mut root_y = 0;
+        let mut win_x = 0;
+        let mut win_y = 0;
+        let mut mask = 0;
+        assert_ne!(
+            unsafe {
+                (api.query_pointer)(
+                    xdisplay,
+                    root_window,
+                    &mut root_return,
+                    &mut child_return,
+                    &mut root_x,
+                    &mut root_y,
+                    &mut win_x,
+                    &mut win_y,
+                    &mut mask,
+                )
+            },
+            0
+        );
+        let button_down = mask & (1 << 8) != 0;
+        drop(close);
+        drop(session);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(!key_down, "release_all left an XTest key pressed");
+        assert!(!button_down, "release_all left an XTest button pressed");
     }
 }

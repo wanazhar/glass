@@ -302,6 +302,19 @@ fn assets() -> Result<PathBuf, String> {
     paths.into_iter().find(|p|p.join("app.js").is_file()&&p.join("index.html").is_file()).and_then(|p|p.canonicalize().ok()).ok_or("Web assets are missing. Install the GC web asset bundle, or build it with npm run build:web. Set GC_WEB_ASSETS to its directory.".into())
 }
 pub fn command(cfg: crate::config::Config, args: &[String]) -> Result<(), String> {
+    if args
+        .first()
+        .is_some_and(|argument| argument == "_desktop-supervisor")
+    {
+        if args.len() != 4 {
+            return Err("usage: connect _desktop-supervisor PROFILE WORKSPACE ENVIRONMENT".into());
+        }
+        return crate::desktop::run_supervisor(
+            PathBuf::from(&args[1]).as_path(),
+            PathBuf::from(&args[2]).as_path(),
+            &args[3],
+        );
+    }
     let lock_path = crate::config::data_dir().join("connect.lock");
     if !args.first().is_some_and(|s| s == "_serve") {
         std::fs::create_dir_all(crate::config::data_dir()).map_err(|e| e.to_string())?;
@@ -1953,7 +1966,14 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
         let result = (|| {
             let value: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
             match value["action"].as_str() {
-                Some("start") => app.desktop.start(),
+                Some("start") => match (value["environment"].as_str(), value["lifecycle"].as_str())
+                {
+                    (None, None) => app.desktop.start(),
+                    (Some(environment), Some(lifecycle)) => {
+                        app.desktop.start_selected(environment, lifecycle)
+                    }
+                    _ => Err("environment and lifecycle must be supplied together".into()),
+                },
                 Some("stop") => app.desktop.stop(),
                 _ => Err("action must be start or stop".into()),
             }
@@ -1962,6 +1982,29 @@ fn handle(mut stream: TcpStream, app: Arc<App>) -> Result<(), String> {
             Ok(value) => json_response(&mut stream, 200, value).map_err(|e| e.to_string()),
             Err(error) => {
                 json_response(&mut stream, 400, json!({"error":error})).map_err(|e| e.to_string())
+            }
+        };
+    }
+    if path == "/api/desktop/profile" && r.method == "POST" {
+        let result = (|| {
+            let value: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
+            if value["action"].as_str() != Some("delete") {
+                return Err("action must be delete".to_owned());
+            }
+            let profile_id = value["profileId"].as_str().ok_or("profileId is required")?;
+            app.desktop.delete_profile(profile_id)
+        })();
+        return match result {
+            Ok(value) => json_response(&mut stream, 200, value).map_err(|e| e.to_string()),
+            Err(error) => {
+                let status =
+                    if error == "Stop the reusable desktop before deleting its saved profile" {
+                        409
+                    } else {
+                        400
+                    };
+                json_response(&mut stream, status, json!({"error":error}))
+                    .map_err(|e| e.to_string())
             }
         };
     }
@@ -2366,7 +2409,7 @@ fn gateway(cfg: crate::config::Config, settings: Settings) -> Result<(), String>
     // HTTP and the private agent bridge retain Arc<App>/Arc<Desktop> while
     // their handlers unwind. Clear the owned processes before the gateway's
     // final references leave scope so Connect stop cannot orphan the desktop.
-    let _ = app.desktop.stop();
+    app.desktop.gateway_shutdown();
     let _ = desktop_agent_thread.join();
     Ok(())
 }

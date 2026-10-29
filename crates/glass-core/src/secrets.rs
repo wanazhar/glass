@@ -92,12 +92,15 @@ pub(crate) fn revoke_schema() -> (String, String, String) {
     )
 }
 
-pub(crate) fn prompt(request: &SecretRequest, keys: &crate::input::KeyReader) -> Option<String> {
+pub(crate) fn prompt(
+    request: &SecretRequest,
+    keys: &crate::input::KeyReader,
+) -> Option<Zeroizing<String>> {
     let label = format!(
         "{}\nDestination: {}\nTool: {} · {}",
         request.purpose, request.destination, request.tool_name, request.operation
     );
-    crate::modal::validated_field(keys, "Secret requested", &label, "", true, |value| {
+    crate::modal::validated_secret_field(keys, "Secret requested", &label, "", |value| {
         if value.trim().is_empty() || value.len() > MAX_SECRET_BYTES {
             Err(format!("Enter a value up to {MAX_SECRET_BYTES} bytes"))
         } else {
@@ -258,6 +261,11 @@ impl SecretVault {
     }
 
     pub(crate) fn revoke(&mut self, handle: &str) -> bool {
+        if self.entries.get(handle).is_some_and(|entry| entry.used) {
+            // Consumed entries are no longer resolvable, but must remain until
+            // expiry so finish_tool can scrub any echoed credential.
+            return false;
+        }
         self.entries.remove(handle).is_some()
     }
 
@@ -351,6 +359,24 @@ mod tests {
     }
 
     #[test]
+    fn tui_secret_prompt_accepts_pasted_value_through_masked_input() {
+        use glass_tui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let keys = crate::input::KeyReader::from_test_events([
+            Event::Paste("tui-secret-sentinel".into()),
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        ]);
+        let request = SecretRequest {
+            purpose: "Connect to staging".into(),
+            destination: "https://api.example.test".into(),
+            tool_name: WEB_SECRET_TOOL.into(),
+            operation: "create token".into(),
+        };
+        let value = prompt(&request, &keys);
+        assert!(value.as_ref().map(|value| value.as_str()) == Some("tui-secret-sentinel"));
+    }
+
+    #[test]
     fn secret_handle_is_random_scoped_and_single_use() {
         let now = Instant::now();
         let mut vault = SecretVault::default();
@@ -391,6 +417,11 @@ mod tests {
             .unwrap();
         assert_eq!(value.as_str(), "secret-sentinel");
         assert_eq!(destination, "https://api.example.test");
+        assert!(!vault.revoke(&handle));
+        assert_eq!(
+            vault.redact("echo secret-sentinel"),
+            "echo [redacted secret]"
+        );
         assert!(
             vault
                 .take_web_request_secret_at(&handle, "session-a", "create staging token", now,)

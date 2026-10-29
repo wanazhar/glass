@@ -535,28 +535,32 @@ fn human_decision(
                                     &mut message["secret"],
                                     Value::Null,
                                 ) {
-                                    Value::String(secret)
-                                        if !secret.trim().is_empty()
-                                            && secret.len() <= 4096
-                                            && !secret.chars().any(char::is_control) =>
-                                    {
-                                        zeroize::Zeroizing::new(secret)
-                                    }
+                                    Value::String(secret) => zeroize::Zeroizing::new(secret),
                                     _ => {
                                         send(
                                             &mut c.stream,
-                                            json!({"t":"error","message":"Secret entry is empty or exceeds the supported size"}),
+                                            json!({"t":"error","message":"Secret entry is empty or exceeds the supported size","secretRequestId":id}),
                                         );
                                         continue;
                                     }
                                 };
+                                if secret.trim().is_empty()
+                                    || secret.len() > 4096
+                                    || secret.chars().any(char::is_control)
+                                {
+                                    send(
+                                        &mut c.stream,
+                                        json!({"t":"error","message":"Secret entry is empty or exceeds the supported size"}),
+                                    );
+                                    continue;
+                                }
                                 if owner.get() != Some(c.id)
                                     || message["id"] != id
                                     || request_payload["kind"] != "secret"
                                 {
                                     send(
                                         &mut c.stream,
-                                        json!({"t":"error","message":"Secret request is no longer active"}),
+                                        json!({"t":"error","message":"Secret request is no longer active","secretRequestId":id}),
                                     );
                                     continue;
                                 }
@@ -2142,6 +2146,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn secret_decision_keeps_submission_out_of_broadcasts() {
+        let path = std::env::temp_dir().join(format!(
+            "gc-secret-decision-{}-{}.sock",
+            std::process::id(),
+            crate::loops::now()
+        ));
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (server_stream, peer) = UnixStream::pair().unwrap();
+        server_stream.set_nonblocking(true).unwrap();
+        peer.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        let mut peer_writer = peer.try_clone().unwrap();
+        let responder = std::thread::spawn(move || {
+            use std::io::BufRead;
+            let mut reader = std::io::BufReader::new(peer);
+            let mut interaction = String::new();
+            reader.read_line(&mut interaction).unwrap();
+            let id: Value = serde_json::from_str(&interaction).unwrap();
+            let message = json!({
+                "t":"secret_answer",
+                "id":id["id"],
+                "secret":"serve-secret-sentinel"
+            });
+            serde_json::to_writer(&mut peer_writer, &message).unwrap();
+            peer_writer.write_all(b"\n").unwrap();
+            let mut done = String::new();
+            reader.read_line(&mut done).unwrap();
+            format!("{interaction}{done}")
+        });
+        let clients = std::rc::Rc::new(std::cell::RefCell::new(vec![Client {
+            id: 17,
+            stream: server_stream,
+            buf: Vec::new(),
+            human: true,
+        }]));
+        let owner = std::rc::Rc::new(std::cell::Cell::new(Some(17)));
+        let request = json!({
+            "kind":"secret",
+            "request":{
+                "purpose":"Sign in to staging",
+                "destination":"https://api.example.test",
+                "tool":"web_secret_request",
+                "operation":"create token"
+            }
+        });
+        let sequence = std::cell::Cell::new(1);
+        let snapshot = json!({"session":"test"});
+        let live = std::cell::RefCell::new(VecDeque::new());
+        let result = human_decision(
+            &clients, &owner, &request, &listener, &sequence, &snapshot, &live,
+        )
+        .unwrap();
+        let secret =
+            zeroize::Zeroizing::new(result["secret"].as_str().unwrap_or_default().to_owned());
+        assert!(secret.as_str() == "serve-secret-sentinel");
+        let output = responder.join().unwrap();
+        assert!(!output.contains("serve-secret-sentinel"));
+        assert!(output.contains("interaction_done"));
+        drop(listener);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

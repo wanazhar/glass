@@ -60,6 +60,8 @@ export function desktopSurface({ api }) {
   let streamObjectUrl = null;
   let streamLoaded = false;
   let streamFailed = false;
+  let startPending = false;
+  let startAttempt = 0;
   let activePointer = null;
   let lastMoveAt = 0;
   let inputQueue = [];
@@ -431,7 +433,7 @@ export function desktopSurface({ api }) {
     retry.textContent = connectionError ? "Retry connection" : "Reconnect stream";
     const selectedCapability = capabilities.find((item) => `${item.environment}:${item.lifecycle}` === selectedPreset);
     start.textContent = selectedCapability?.lifecycle === "reusable" && selectedCapability.profileExists ? "Resume workspace" : selectedCapability?.lifecycle === "reusable" ? "Open workspace" : "Start quick desktop";
-    start.disabled = Boolean(connectionError) || !selectedCapability?.available;
+    start.disabled = startPending || Boolean(connectionError) || !selectedCapability?.available;
     deleteProfile.hidden = running || !capabilities.some((item) => item.environment === "gnome" && item.lifecycle === "reusable" && item.profileExists);
     deleteProfile.disabled = Boolean(connectionError);
     stop.disabled = Boolean(connectionError);
@@ -497,14 +499,19 @@ export function desktopSurface({ api }) {
 
   async function refresh() {
     if (!isOpen()) return;
+    const requestAttempt = startAttempt;
     try {
       const next = await api("desktop/status", undefined, requestController.signal);
-      if (isOpen()) {
+      if (isOpen() && requestAttempt === startAttempt && !startPending) {
         connectionError = null;
         render(next);
       }
     } catch (error) {
-      if (!isOpen()) return;
+      // Starting a managed desktop holds the backend control lock until the
+      // display and desktop are ready. Status requests made before or during
+      // that work can time out even though Connect is healthy. Do not let one
+      // of those responses overwrite the in-progress start state.
+      if (!isOpen() || requestAttempt !== startAttempt || startPending) return;
       connectionError = error.message || "Connect is temporarily unavailable.";
       if (!snapshot) {
         render({
@@ -529,6 +536,10 @@ export function desktopSurface({ api }) {
     clearTimeout(pollTimer);
     pollTimer = setTimeout(async () => {
       if (!isOpen() || generation !== pollGeneration) return;
+      if (startPending) {
+        schedulePoll(generation, 1800);
+        return;
+      }
       await refresh();
       schedulePoll(generation);
     }, delay ?? (pendingFrameTimings.length ? 100 : snapshot?.available ? 450 : 1800));
@@ -782,6 +793,7 @@ export function desktopSurface({ api }) {
   }
 
   async function startDesktop() {
+    const attempt = ++startAttempt;
     start.disabled = true;
     try {
       const selected = capabilities.find((item) => `${item.environment}:${item.lifecycle}` === selectedPreset);
@@ -789,13 +801,21 @@ export function desktopSurface({ api }) {
         setStatus(selected?.reason || "That desktop environment is unavailable.", true);
         return;
       }
+      startPending = true;
+      clearTimeout(pollTimer);
       setStatus(selected.lifecycle === "reusable" && selected.profileExists
         ? "Reopening your saved workspace…"
         : selected.lifecycle === "reusable" ? "Creating your reusable workspace…" : "Starting a quick desktop…");
+      start.textContent = "Starting…";
       await api("desktop/session", { action: "start", environment: selected.environment, lifecycle: selected.lifecycle }, requestController.signal, { timeoutMs: 60_000 });
+      if (!isOpen() || attempt !== startAttempt) return;
+      startPending = false;
+      startAttempt += 1;
       await refresh();
     } catch (error) {
-      if (!isOpen()) return;
+      if (!isOpen() || attempt !== startAttempt) return;
+      startPending = false;
+      startAttempt += 1;
       if (/timed out|connection unavailable/i.test(error.message || "")) {
         connectionError = error.message;
         await refresh();
@@ -806,7 +826,8 @@ export function desktopSurface({ api }) {
     } finally {
       if (isOpen()) {
         const selected = capabilities.find((item) => `${item.environment}:${item.lifecycle}` === selectedPreset);
-        start.disabled = Boolean(connectionError) || !selected?.available;
+        start.disabled = startPending || Boolean(connectionError) || !selected?.available;
+        schedulePoll(pollGeneration, connectionError ? 1800 : 250);
       }
     }
   }
@@ -849,6 +870,8 @@ export function desktopSurface({ api }) {
     clearTimeout(pollTimer);
     clearTimeout(moveTimer);
     pollGeneration += 1;
+    startAttempt += 1;
+    startPending = false;
     requestController?.abort();
     requestController = null;
     pendingMove = null;
@@ -879,6 +902,8 @@ export function desktopSurface({ api }) {
     $("desktop-details").open = false;
     requestController?.abort();
     requestController = new AbortController();
+    startAttempt += 1;
+    startPending = false;
     const generation = ++pollGeneration;
     streamFailed = false;
     snapshot = null;

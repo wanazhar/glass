@@ -283,9 +283,24 @@ fn https_route(settings: &Settings) -> String {
     }
 }
 pub(crate) fn secret_transport_available() -> bool {
-    load_status().ok().flatten().is_some_and(|settings| {
-        !settings.local && settings.https_active && settings.https_backend_port > 0
-    })
+    load_status()
+        .ok()
+        .flatten()
+        .is_some_and(|settings| secret_transport_available_for(&settings))
+}
+fn secret_transport_available_for(settings: &Settings) -> bool {
+    !settings.local
+        && settings.https_active
+        && settings.https_backend_port > 0
+        && authenticated_https_proxy_provenance()
+}
+/// Tailscale Serve currently forwards HTTPS as ordinary HTTP to this
+/// loopback listener. Its identity headers and the request's Host/Origin can
+/// be forged by a direct local caller, so they do not prove proxy provenance.
+/// Keep remote secret submission disabled until the backend has an
+/// authenticated signal from the TLS terminator or an OS-protected channel.
+fn authenticated_https_proxy_provenance() -> bool {
+    false
 }
 fn web_url(settings: &Settings) -> String {
     if settings.http > 0 {
@@ -1110,10 +1125,14 @@ fn same_origin_https_mutation(settings: &Settings, r: &Request) -> bool {
 fn secret_submission_allowed(
     https_ingress: bool,
     transport_active: bool,
+    proxy_provenance_verified: bool,
     settings: &Settings,
     r: &Request,
 ) -> bool {
-    https_ingress && transport_active && same_origin_https_mutation(settings, r)
+    https_ingress
+        && transport_active
+        && proxy_provenance_verified
+        && same_origin_https_mutation(settings, r)
 }
 fn history(id: &str, before: usize) -> Result<Value, String> {
     history_path(&thread_path(id)?, before)
@@ -1883,7 +1902,13 @@ fn event_stream(mut stream: TcpStream, b: Arc<Bridge>, since: u64) -> std::io::R
     }
 }
 fn handle(stream: TcpStream, app: Arc<App>, https_ingress: bool) -> Result<(), String> {
-    handle_with_transport(stream, app, https_ingress, secret_transport_available())
+    handle_with_transport(
+        stream,
+        app,
+        https_ingress,
+        secret_transport_available(),
+        authenticated_https_proxy_provenance(),
+    )
 }
 
 fn handle_with_transport(
@@ -1891,6 +1916,7 @@ fn handle_with_transport(
     app: Arc<App>,
     https_ingress: bool,
     transport_active: bool,
+    proxy_provenance_verified: bool,
 ) -> Result<(), String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -1912,13 +1938,19 @@ fn handle_with_transport(
         .collect();
     let path = url.path();
     if path == "/api/secret"
-        && !secret_submission_allowed(https_ingress, transport_active, &app.settings, &r)
+        && !secret_submission_allowed(
+            https_ingress,
+            transport_active,
+            proxy_provenance_verified,
+            &app.settings,
+            &r,
+        )
     {
         zeroize::Zeroize::zeroize(&mut r.body);
         return json_response(
             &mut stream,
             403,
-            json!({"error":"Secret entry requires the authenticated HTTPS Connect origin"}),
+            json!({"error":"Remote secret submission is disabled because Connect cannot verify HTTPS proxy provenance"}),
         )
         .map_err(|e| e.to_string());
     }
@@ -2725,12 +2757,14 @@ mod tests {
         app: Arc<App>,
         https_ingress: bool,
         transport_active: bool,
+        proxy_provenance_verified: bool,
         extra_headers: &[(&str, &str)],
     ) -> String {
         post_secret_body(
             app,
             https_ingress,
             transport_active,
+            proxy_provenance_verified,
             extra_headers,
             r#"{"id":"test-thread","interactionId":"human-secret-test","secret":"sentinel-secret-value"}"#,
         )
@@ -2740,6 +2774,7 @@ mod tests {
         app: Arc<App>,
         https_ingress: bool,
         transport_active: bool,
+        proxy_provenance_verified: bool,
         extra_headers: &[(&str, &str)],
         body: &str,
     ) -> String {
@@ -2747,7 +2782,14 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let handler = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            handle_with_transport(stream, app, https_ingress, transport_active).unwrap();
+            handle_with_transport(
+                stream,
+                app,
+                https_ingress,
+                transport_active,
+                proxy_provenance_verified,
+            )
+            .unwrap();
         });
         let mut stream = TcpStream::connect(address).unwrap();
         write!(
@@ -2776,7 +2818,7 @@ mod tests {
         for body in cases {
             let (app, mut bridge_reader) = secret_test_app(settings(), true);
             let _ = bridge_reader.set_read_timeout(Some(Duration::from_millis(50)));
-            let response = post_secret_body(app, true, true, &[], body);
+            let response = post_secret_body(app, true, true, true, &[], body);
             assert!(response.starts_with("HTTP/1.1 400"));
             assert!(!response.contains("rejected-secret-sentinel"));
             let mut forwarded = [0; 1];
@@ -2788,7 +2830,7 @@ mod tests {
     fn secret_submission_requires_the_current_control_lease_and_keeps_pending_request() {
         let (app, mut bridge_reader) = secret_test_app(settings(), false);
         let _ = bridge_reader.set_read_timeout(Some(Duration::from_millis(50)));
-        let response = post_secret(app.clone(), true, true, &[]);
+        let response = post_secret(app.clone(), true, true, true, &[]);
         assert!(response.starts_with("HTTP/1.1 400"));
         assert!(!response.contains("sentinel-secret-value"));
         let bridge = app.bridges.lock().unwrap()["test-thread"].clone();
@@ -2807,18 +2849,33 @@ mod tests {
     }
 
     #[test]
-    fn secret_http_handler_rejects_spoofed_https_but_accepts_designated_ingress_once() {
+    fn secret_http_handler_rejects_unverified_loopback_but_preserves_verified_handler_flow() {
         let settings = settings();
         let (http_app, mut http_bridge) = secret_test_app(settings.clone(), true);
         let _ = http_bridge.set_read_timeout(Some(Duration::from_millis(50)));
-        let http_response = post_secret(http_app, false, true, &[("X-Forwarded-Proto", "https")]);
+        let http_response = post_secret(
+            http_app,
+            false,
+            true,
+            false,
+            &[("X-Forwarded-Proto", "https")],
+        );
         assert!(http_response.starts_with("HTTP/1.1 403"));
         assert!(!http_response.contains("sentinel-secret-value"));
         let mut rejected = [0; 1];
         assert_eq!(http_bridge.read(&mut rejected).unwrap(), 0);
 
+        let (unverified_app, mut unverified_bridge) = secret_test_app(settings.clone(), true);
+        let _ = unverified_bridge.set_read_timeout(Some(Duration::from_millis(50)));
+        let unverified_response = post_secret(unverified_app, true, true, false, &[]);
+        assert!(unverified_response.starts_with("HTTP/1.1 403"));
+        assert!(unverified_response.contains("cannot verify HTTPS proxy provenance"));
+        assert!(!unverified_response.contains("sentinel-secret-value"));
+        let mut rejected = [0; 1];
+        assert_eq!(unverified_bridge.read(&mut rejected).unwrap(), 0);
+
         let (https_app, bridge_reader) = secret_test_app(settings, true);
-        let https_response = post_secret(https_app.clone(), true, true, &[]);
+        let https_response = post_secret(https_app.clone(), true, true, true, &[]);
         assert!(https_response.starts_with("HTTP/1.1 200"));
         assert!(!https_response.contains("sentinel-secret-value"));
         let bridge = https_app.bridges.lock().unwrap()["test-thread"].clone();
@@ -2841,7 +2898,7 @@ mod tests {
                 && forwarded["secret"] == "sentinel-secret-value",
             "accepted secret was not forwarded in the expected private bridge message"
         );
-        let replay_response = post_secret(https_app, true, true, &[]);
+        let replay_response = post_secret(https_app, true, true, true, &[]);
         assert!(replay_response.starts_with("HTTP/1.1 400"));
         assert!(!replay_response.contains("sentinel-secret-value"));
         bridge.push(json!({"t":"error","message":"unrelated validation error"}));
@@ -2865,10 +2922,12 @@ mod tests {
         assert!(feed.secret_submission.is_none());
     }
     #[test]
-    fn secret_submission_requires_the_designated_https_ingress_and_exact_origin() {
+    fn secret_submission_requires_verified_https_provenance_and_exact_origin() {
         let settings = settings();
         assert_eq!(https_route(&settings), "http://127.0.0.1:8766");
         assert_eq!(route(&settings), "http://127.0.0.1:8765");
+        assert!(settings.https_active);
+        assert!(!secret_transport_available_for(&settings));
         let mut request = Request {
             method: "POST".into(),
             path: "/api/secret".into(),
@@ -2898,6 +2957,7 @@ mod tests {
         assert!(secret_submission_allowed(
             true,
             true,
+            true,
             &settings,
             &Request {
                 method: "POST".into(),
@@ -2913,6 +2973,7 @@ mod tests {
         assert!(!secret_submission_allowed(
             false,
             true,
+            true,
             &settings,
             &Request {
                 method: "POST".into(),
@@ -2922,6 +2983,23 @@ mod tests {
                     ("origin".into(), "https://host.tail.ts.net:8443".into()),
                     ("content-type".into(), "application/json".into()),
                     ("x-forwarded-proto".into(), "https".into()),
+                ]),
+                body: zeroize::Zeroizing::new(Vec::new()),
+            }
+        ));
+        assert!(!secret_submission_allowed(
+            true,
+            true,
+            false,
+            &settings,
+            &Request {
+                method: "POST".into(),
+                path: "/api/secret".into(),
+                headers: HashMap::from([
+                    ("host".into(), "host.tail.ts.net:8443".into()),
+                    ("origin".into(), "https://host.tail.ts.net:8443".into()),
+                    ("content-type".into(), "application/json".into()),
+                    ("tailscale-user-login".into(), "owner@example.test".into()),
                 ]),
                 body: zeroize::Zeroizing::new(Vec::new()),
             }

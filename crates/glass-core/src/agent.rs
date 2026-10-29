@@ -582,6 +582,28 @@ impl<'a> Agent<'a> {
         self.tool_set_for_connect(crate::desktop::service_running())
     }
 
+    /// A remote human callback is safe for secret entry only when Connect can
+    /// authenticate its HTTPS proxy ingress. The current loopback HTTP proxy
+    /// does not provide that proof. The terminal key reader remains a trusted
+    /// local prompt and is independent of Connect transport state.
+    fn secret_tools_enabled(&self) -> bool {
+        if self.human.is_some() {
+            crate::connect::secret_transport_available()
+        } else {
+            self.input_keys.is_some()
+        }
+    }
+
+    fn secret_tools_unavailable_reason(&self) -> &'static str {
+        if self.read_only {
+            "Secret tools are unavailable in read-only sessions"
+        } else if self.human.is_some() {
+            "Remote secret requests are disabled because Connect cannot verify HTTPS proxy provenance"
+        } else {
+            "Secret entry is available only in an interactive writable session"
+        }
+    }
+
     fn tool_set_for_connect(
         &self,
         connect_desktop_available: bool,
@@ -602,6 +624,8 @@ impl<'a> Agent<'a> {
             }
             if self.input_keys.is_some() || self.human.is_some() {
                 tools.push(crate::questions::schema());
+            }
+            if self.secret_tools_enabled() {
                 tools.push(crate::secrets::request_schema());
                 tools.push(crate::secrets::revoke_schema());
                 tools.push(crate::web_tools::secret_request_schema());
@@ -2180,12 +2204,10 @@ impl<'a> Agent<'a> {
         }
         if call.name == "request_secret" {
             self.emit_tool_start(call);
-            if self.read_only || (self.input_keys.is_none() && self.human.is_none()) {
+            if self.read_only || !self.secret_tools_enabled() {
                 self.finish_tool(
                     call,
-                    tools::Outcome::err(
-                        "Secret entry is available only in an interactive writable session",
-                    ),
+                    tools::Outcome::err(self.secret_tools_unavailable_reason()),
                 );
                 return;
             }
@@ -2258,12 +2280,10 @@ impl<'a> Agent<'a> {
             return;
         }
         if call.name == "web_secret_request" {
-            if self.read_only {
+            if self.read_only || !self.secret_tools_enabled() {
                 self.finish_tool(
                     call,
-                    tools::Outcome::err(
-                        "HTTPS secret requests are unavailable in read-only sessions",
-                    ),
+                    tools::Outcome::err(self.secret_tools_unavailable_reason()),
                 );
                 return;
             }
@@ -2272,10 +2292,10 @@ impl<'a> Agent<'a> {
         }
         if call.name == "revoke_secret" {
             self.emit_tool_start(call);
-            if self.read_only {
+            if self.read_only || !self.secret_tools_enabled() {
                 self.finish_tool(
                     call,
-                    tools::Outcome::err("Secret handles are unavailable in read-only sessions"),
+                    tools::Outcome::err(self.secret_tools_unavailable_reason()),
                 );
                 return;
             }
@@ -5462,6 +5482,7 @@ mod recovery_tests {
     struct SecretPromptProvider {
         calls: Arc<AtomicUsize>,
         second_request: Arc<std::sync::Mutex<Option<String>>>,
+        first_tools: Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     impl Provider for SecretPromptProvider {
@@ -5474,6 +5495,11 @@ mod recovery_tests {
             request: &Request<'_>,
         ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
             if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                *self.first_tools.lock().unwrap() = request
+                    .tools
+                    .iter()
+                    .map(|(name, _, _)| name.clone())
+                    .collect();
                 return Ok(Box::new(
                     vec![
                         Event::ToolCall {
@@ -5514,9 +5540,11 @@ mod recovery_tests {
         let mods = Vec::new();
         let mut extensions = Registry::empty();
         let second_request = Arc::new(std::sync::Mutex::new(None));
+        let first_tools = Arc::new(std::sync::Mutex::new(Vec::new()));
         let provider = SecretPromptProvider {
             calls: Arc::new(AtomicUsize::new(0)),
             second_request: second_request.clone(),
+            first_tools: first_tools.clone(),
         };
         let keys = crate::input::KeyReader::from_test_events([
             TerminalEvent::Paste("tui-agent-secret-sentinel".into()),
@@ -5531,10 +5559,20 @@ mod recovery_tests {
             &dir,
         )
         .with_input_keys(&keys);
+        let local_tools = agent
+            .tool_set()
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect::<Vec<_>>();
+        assert!(local_tools.contains(&"request_secret".to_string()));
+        assert!(local_tools.contains(&"web_secret_request".to_string()));
         let (output, stop) = agent.run_turn(no_pump).unwrap();
         assert_eq!(stop, Stop::Finished);
         assert!(output.text.contains("Ready to continue"));
         let next_request = second_request.lock().unwrap().clone().unwrap_or_default();
+        let offered_tools = first_tools.lock().unwrap().clone();
+        assert!(offered_tools.contains(&"request_secret".to_string()));
+        assert!(offered_tools.contains(&"web_secret_request".to_string()));
         assert!(next_request.contains("secretRef"));
         assert!(!next_request.contains("tui-agent-secret-sentinel"));
         let records = agent.session.history_records();
@@ -5544,6 +5582,90 @@ mod recovery_tests {
             Record::ToolResult { name, body, .. }
                 if name == "request_secret" && body.contains("secretRef")
         )));
+        drop(agent);
+        drop(extensions);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unverified_remote_ingress_hides_and_rejects_secret_tools() {
+        let dir = std::env::temp_dir().join(format!(
+            "gc-remote-secret-gate-{}-{}",
+            std::process::id(),
+            crate::loops::now()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = Session::create(&dir).unwrap();
+        let mut state = State::new();
+        let mods = Vec::new();
+        let mut extensions = Registry::empty();
+        let second_request = Arc::new(std::sync::Mutex::new(None));
+        let first_tools = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let provider = SecretPromptProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            second_request,
+            first_tools: first_tools.clone(),
+        };
+        let human_calls = Arc::new(AtomicUsize::new(0));
+        let calls = human_calls.clone();
+        let mut agent = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &dir,
+        )
+        .with_human(move |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(serde_json::json!({"status":"answered","secret":"must-not-be-requested"}))
+        });
+        let offered_names = agent
+            .tool_set()
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect::<Vec<_>>();
+        assert!(!offered_names.contains(&"request_secret".to_string()));
+        assert!(!offered_names.contains(&"revoke_secret".to_string()));
+        assert!(!offered_names.contains(&"web_secret_request".to_string()));
+
+        let (output, stop) = agent.run_turn(no_pump).unwrap();
+        assert_eq!(stop, Stop::Finished);
+        assert!(output.text.contains("Ready to continue"));
+        assert_eq!(human_calls.load(Ordering::SeqCst), 0);
+        let offered_tools = first_tools.lock().unwrap().clone();
+        assert!(!offered_tools.contains(&"request_secret".to_string()));
+        assert!(!offered_tools.contains(&"revoke_secret".to_string()));
+        assert!(!offered_tools.contains(&"web_secret_request".to_string()));
+        assert!(
+            agent
+                .session
+                .history_records()
+                .iter()
+                .any(|record| matches!(
+                    record,
+                    Record::Meta(text) if text.contains("request_secret: unknown tool")
+                ))
+        );
+
+        // Exercise the runtime guard directly as well, so a stale call cannot
+        // open the human callback even if it bypasses schema validation.
+        let stale_call = ToolCall {
+            id: "stale-request-secret".into(),
+            name: "request_secret".into(),
+            arguments: r#"{"purpose":"Sign in to staging","destination":"https://api.example.test","tool":"web_secret_request","operation":"create token"}"#.into(),
+        };
+        let mut pump = no_pump;
+        agent.run_tool_pumped_or_inline(&stale_call, &mut pump);
+        assert_eq!(human_calls.load(Ordering::SeqCst), 0);
+        let records = agent.session.history_records();
+        assert!(records.iter().any(|record| matches!(
+            record,
+            Record::ToolResult { name, body, .. }
+                if name == "request_secret" && body.contains("cannot verify HTTPS proxy provenance")
+        )));
+        assert!(!format!("{records:?}").contains("must-not-be-requested"));
         drop(agent);
         drop(extensions);
         drop(session);

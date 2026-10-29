@@ -217,24 +217,27 @@ tailnet and do not expose it through a public reverse proxy. Use the HTTPS URL
 when encrypted transport is required. `gc connect --local` also stays on
 loopback and uses a private link.
 
-In the current checkout, secret requests use a separate interaction and never
-use the ordinary answer or chat endpoint. This flow is not part of published
-version `0.3.14`. The card shows the purpose and HTTPS destination the agent
-requested. Entry is masked. Connect accepts a browser-submitted value
-only through its HTTPS-designated loopback ingress, with the exact HTTPS `Host`
-and `Origin`, the existing Connect authentication, and a currently pending
-secret request. The HTTP route and `--local` route reject browser submissions;
-forwarded-protocol headers do not authorize them. These checks distinguish the
-HTTPS-designated listener from the ordinary HTTP listener, but they do not prove
-that a request arrived through a TLS connection: Tailscale Serve terminates TLS
-and forwards HTTP to loopback, and the backend cannot distinguish that proxy
-connection from a direct local TCP connection. A process running under another
-local user can connect to the loopback port and forge the expected HTTP origin
-and Tailscale identity headers. Treat the host's local users and processes as
-trusted when entering a secret remotely. Do not use remote secret entry on a
-shared or multi-user host; use the local GC terminal prompt instead. Open the
-HTTPS Connect URL before entering a secret so the browser-to-Tailscale leg is
-encrypted.
+In this checkout, secret requests use a separate interaction and never use the
+ordinary answer or chat endpoint. This flow is not part of published version
+`0.3.14`. The card shows the purpose and HTTPS destination the agent requested;
+entry is masked. Remote secret submission is currently disabled. Connect's
+Tailscale Serve route terminates TLS and forwards plain HTTP to a loopback TCP
+listener. The listener can check its port, `Host`, `Origin`, and Tailscale
+identity headers, but none proves that the request passed through the TLS
+terminator. Another local process can connect directly and forge those headers.
+Therefore Connect reports `secureSubmission: false`, omits the remote secret
+tools from the model request, and rejects `/api/secret` submissions on this
+transport. This remains disabled on single-user hosts as well; the local GC
+terminal prompt continues to work.
+
+Do not treat loopback access as proof of same-user access. The current TCP
+backend cannot distinguish the Connect owner's UID from another local UID.
+Any future remote secret ingress must provide authenticated proxy provenance
+or an OS-protected peer channel before it can be enabled. If a future design
+relies only on loopback and same-host trust, it must require an explicit
+single-user-host choice and stay disabled by default on shared or multi-user
+hosts. Opening the HTTPS Connect URL still encrypts the browser-to-Tailscale
+leg, but that alone does not enable remote secret submission.
 
 GC keeps the value in memory for up to five minutes and returns only a random
 `secretRef` to the agent. It is bound to that GC session, the named HTTPS

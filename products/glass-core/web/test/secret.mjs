@@ -106,7 +106,7 @@ try {
   await page.getByRole("heading", { name: "Secure information requested" }).waitFor();
   assert.equal(await page.getByRole("textbox", { name: "Secret value" }).isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Send securely" }).isDisabled(), true);
-  assert.match(await panel.textContent(), /Secure submission is unavailable/);
+  assert.match(await panel.textContent(), /Remote secure submission is unavailable for this connection\. Complete this request in the local GC terminal\./);
   const cancelResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/send");
   await page.getByRole("button", { name: "Cancel request" }).click();
   await cancelResponse;

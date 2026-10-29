@@ -636,6 +636,19 @@ pub struct KeyReader {
 }
 
 impl KeyReader {
+    #[cfg(test)]
+    pub(crate) fn from_test_events(events: impl IntoIterator<Item = Event>) -> Self {
+        let (tx, rx) = channel();
+        for event in events {
+            let _ = tx.send(event);
+        }
+        Self {
+            rx,
+            stop: Arc::new(AtomicBool::new(true)),
+            _handle: None,
+        }
+    }
+
     /// Spawn the reader. Should be called once, after raw mode is enabled.
     pub fn spawn() -> Self {
         let (tx, rx): (Sender<Event>, Receiver<Event>) = channel();

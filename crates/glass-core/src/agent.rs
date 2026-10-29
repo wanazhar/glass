@@ -2212,21 +2212,27 @@ impl<'a> Agent<'a> {
                                 "operation":&request.operation
                             }
                         }))?;
+                        let submitted_secret = match std::mem::replace(
+                            &mut response["secret"],
+                            serde_json::Value::Null,
+                        ) {
+                            serde_json::Value::String(secret) => {
+                                Some(zeroize::Zeroizing::new(secret))
+                            }
+                            _ => None,
+                        };
                         if response["status"] == "cancelled" {
                             return Ok(serde_json::json!({"status":"cancelled"}));
                         }
                         if response["status"] != "answered" {
                             return Err("Secret response was not accepted".into());
                         }
-                        match std::mem::replace(&mut response["secret"], serde_json::Value::Null) {
-                            serde_json::Value::String(secret) => zeroize::Zeroizing::new(secret),
-                            _ => return Err("Secret response was incomplete".into()),
-                        }
+                        submitted_secret.ok_or("Secret response was incomplete")?
                     } else if let Some(keys) = self.input_keys {
                         let Some(secret) = crate::secrets::prompt(&request, keys) else {
                             return Ok(serde_json::json!({"status":"cancelled"}));
                         };
-                        zeroize::Zeroizing::new(secret)
+                        secret
                     } else {
                         return Err("No interactive human is connected to enter this secret".into());
                     };
@@ -5446,10 +5452,84 @@ for line in sys.stdin:
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
+    use crate::ext::Registry;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn no_pump(_: &mut Option<String>) {}
+
+    #[test]
+    fn consumed_secret_is_redacted_before_progress_transcript_export_and_diagnostics() {
+        let dir = std::env::temp_dir().join(format!(
+            "gc-secret-redaction-{}-{}",
+            std::process::id(),
+            crate::loops::now()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = Session::create(&dir).unwrap();
+        let mut state = State::new();
+        let mods = Vec::new();
+        let mut extensions = Registry::empty();
+        let observed = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let progress = observed.clone();
+        let session_id = session.id.clone();
+        let provider = RefusesOnce {
+            calls: Arc::new(AtomicUsize::new(0)),
+            message: "unused",
+        };
+        let mut agent = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &dir,
+        )
+        .with_progress(move |event| {
+            if let Progress::ToolEnd { output, .. } = event {
+                progress.borrow_mut().push(output.to_owned());
+            }
+        });
+        let sentinel = "agent-secret-audit-sentinel";
+        agent
+            .secrets
+            .issue_zeroizing(
+                crate::secrets::SecretScope {
+                    session_id,
+                    tool_name: "web_secret_request".into(),
+                    operation: "create token".into(),
+                    destination: "https://api.example.test".into(),
+                },
+                zeroize::Zeroizing::new(sentinel.to_owned()),
+            )
+            .unwrap();
+        let call = ToolCall {
+            id: "secret-consumer".into(),
+            name: "web_secret_request".into(),
+            arguments: r#"{"secretRef":"opaque-handle"}"#.into(),
+        };
+        agent.finish_tool(
+            &call,
+            tools::Outcome::err(format!("remote failure echoed {sentinel}")),
+        );
+        assert!(
+            !observed
+                .borrow()
+                .iter()
+                .any(|output| output.contains(sentinel))
+        );
+        let records = agent.session.history_records();
+        assert!(!format!("{records:?}").contains(sentinel));
+        let exported = crate::export::markdown(agent.session, false, &records);
+        assert!(!exported.contains(sentinel));
+        drop(agent);
+        let diagnostics =
+            std::fs::read_to_string(dir.join(".glass/diagnostics.jsonl")).unwrap_or_default();
+        assert!(!diagnostics.contains(sentinel));
+        drop(extensions);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// Refuses the first request with the configured message, then answers.
     struct RefusesOnce {

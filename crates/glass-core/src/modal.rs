@@ -526,6 +526,31 @@ pub fn validated_field(
     secret: bool,
     validate: impl Fn(&str) -> Result<(), String>,
 ) -> Option<String> {
+    validated_field_inner(keys, title, label, initial, secret, validate)
+        .map(|value| value.to_string())
+}
+
+/// Collect a masked value and keep the accepted buffer zeroizing after the
+/// modal returns. Secret consumers should use this instead of converting the
+/// result of `validated_field` back into a sensitive wrapper.
+pub fn validated_secret_field(
+    keys: &KeyReader,
+    title: &str,
+    label: &str,
+    initial: &str,
+    validate: impl Fn(&str) -> Result<(), String>,
+) -> Option<Zeroizing<String>> {
+    validated_field_inner(keys, title, label, initial, true, validate)
+}
+
+fn validated_field_inner(
+    keys: &KeyReader,
+    title: &str,
+    label: &str,
+    initial: &str,
+    secret: bool,
+    validate: impl Fn(&str) -> Result<(), String>,
+) -> Option<Zeroizing<String>> {
     let screen = Screen::new();
     let mut editor = Editor::new();
     if secret {
@@ -597,7 +622,7 @@ pub fn validated_field(
                     } else {
                         validate(value)
                     } {
-                        Ok(()) => return Some(value.into()),
+                        Ok(()) => return Some(Zeroizing::new(value.to_owned())),
                         Err(e) => {
                             error = e;
                             editor.set_text(&s);

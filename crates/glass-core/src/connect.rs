@@ -626,6 +626,7 @@ struct Feed {
     snapshot: Value,
     active: bool,
     interaction: Option<Value>,
+    secret_submission: Option<String>,
     connected: bool,
     live: VecDeque<Value>,
     live_bytes: usize,
@@ -741,13 +742,26 @@ impl Bridge {
             Some("error") if value["settled"] == true => {
                 f.active = false;
                 f.interaction = None;
+                f.secret_submission = None;
+            }
+            Some("error")
+                if f.secret_submission.as_deref() == value["secretRequestId"].as_str() =>
+            {
+                f.secret_submission = None;
             }
             Some("command_done" | "done") => {
                 f.active = false;
                 f.interaction = None;
+                f.secret_submission = None;
             }
-            Some("interaction") => f.interaction = Some(value.clone()),
-            Some("interaction_done") => f.interaction = None,
+            Some("interaction") => {
+                f.interaction = Some(value.clone());
+                f.secret_submission = None;
+            }
+            Some("interaction_done") => {
+                f.interaction = None;
+                f.secret_submission = None;
+            }
             _ => {}
         }
         while !f.events.is_empty()
@@ -880,6 +894,7 @@ fn bridge(app: &App, id: &str) -> Result<Arc<Bridge>, String> {
             snapshot: Value::Null,
             active: false,
             interaction: None,
+            secret_submission: None,
             connected: true,
             live: VecDeque::new(),
             live_bytes: 0,
@@ -2377,10 +2392,20 @@ fn handle_with_transport(
             let raw_body = std::mem::take(&mut r.body);
             let mut value: Value =
                 serde_json::from_slice(&raw_body).map_err(|_| "Invalid secret submission")?;
+            // Move the submitted value out of serde_json's ordinary String
+            // storage before any validation can return early. The request
+            // bytes and this owned string are both zeroized on every path.
+            let secret = match value
+                .as_object_mut()
+                .and_then(|object| object.remove("secret"))
+            {
+                Some(Value::String(secret)) => zeroize::Zeroizing::new(secret),
+                _ => return Err("Secret must contain 1..=4096 bytes".into()),
+            };
             if value.as_object().is_none_or(|object| {
                 object
                     .keys()
-                    .any(|key| !matches!(key.as_str(), "id" | "interactionId" | "secret"))
+                    .any(|key| !matches!(key.as_str(), "id" | "interactionId"))
             }) {
                 return Err("Secret submission contains unsupported fields".into());
             }
@@ -2394,21 +2419,20 @@ fn handle_with_transport(
                 .filter(|id| !id.is_empty() && id.len() <= 128)
                 .ok_or("Missing secret request")?
                 .to_owned();
-            let secret = match std::mem::replace(&mut value["secret"], Value::Null) {
-                Value::String(secret)
-                    if !secret.trim().is_empty()
-                        && secret.len() <= 4096
-                        && !secret.chars().any(char::is_control) =>
-                {
-                    zeroize::Zeroizing::new(secret)
-                }
-                _ => return Err("Secret must contain 1..=4096 bytes".into()),
-            };
+            if secret.trim().is_empty()
+                || secret.len() > 4096
+                || secret.chars().any(char::is_control)
+            {
+                return Err("Secret must contain 1..=4096 bytes".into());
+            }
             let bridge = bridge(&app, &id)?;
             let mut feed = bridge
                 .feed
                 .lock()
                 .map_err(|_| "Session state unavailable")?;
+            if feed.snapshot["can_write"] != true {
+                return Err("Take control before entering a secret".into());
+            }
             let pending = feed
                 .interaction
                 .as_ref()
@@ -2416,17 +2440,23 @@ fn handle_with_transport(
                     interaction["id"] == interaction_id
                         && interaction["request"]["kind"] == "secret"
                 })
-                .cloned()
-                .ok_or("That secret request is no longer active")?;
-            // Claim the pending request while holding the feed lock so two
-            // concurrent POSTs cannot submit two values for one interaction.
-            feed.interaction = None;
+                .is_some();
+            if !pending {
+                return Err("That secret request is no longer active".into());
+            }
+            // Reserve the pending interaction while holding the feed lock.
+            // Keep it visible until the worker acknowledges acceptance so a
+            // failed or stale bridge write cannot silently discard the prompt.
+            if feed.secret_submission.as_deref() == Some(&interaction_id) {
+                return Err("Secret request submission is already being processed".into());
+            }
+            feed.secret_submission = Some(interaction_id.clone());
             drop(feed);
             if let Err(error) = bridge.send_secret_answer(&interaction_id, secret.as_str()) {
                 if let Ok(mut feed) = bridge.feed.lock()
-                    && feed.interaction.is_none()
+                    && feed.secret_submission.as_deref() == Some(&interaction_id)
                 {
-                    feed.interaction = Some(pending);
+                    feed.secret_submission = None;
                 }
                 return Err(error);
             }
@@ -2656,7 +2686,7 @@ mod tests {
         }
     }
 
-    fn secret_test_app(settings: Settings) -> (Arc<App>, UnixStream) {
+    fn secret_test_app(settings: Settings, can_write: bool) -> (Arc<App>, UnixStream) {
         let (writer, reader) = UnixStream::pair().unwrap();
         let interaction_id = "human-secret-test";
         let bridge = Arc::new(Bridge {
@@ -2666,13 +2696,14 @@ mod tests {
                 seq: 0,
                 bytes: 0,
                 events: VecDeque::new(),
-                snapshot: json!({"security":settings.security.clone()}),
+                snapshot: json!({"security":settings.security.clone(),"can_write":can_write}),
                 active: true,
                 interaction: Some(json!({
                     "t":"interaction",
                     "id":interaction_id,
                     "request":{"kind":"secret"}
                 })),
+                secret_submission: None,
                 connected: true,
                 live: VecDeque::new(),
                 live_bytes: 0,
@@ -2696,13 +2727,28 @@ mod tests {
         transport_active: bool,
         extra_headers: &[(&str, &str)],
     ) -> String {
+        post_secret_body(
+            app,
+            https_ingress,
+            transport_active,
+            extra_headers,
+            r#"{"id":"test-thread","interactionId":"human-secret-test","secret":"sentinel-secret-value"}"#,
+        )
+    }
+
+    fn post_secret_body(
+        app: Arc<App>,
+        https_ingress: bool,
+        transport_active: bool,
+        extra_headers: &[(&str, &str)],
+        body: &str,
+    ) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let handler = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             handle_with_transport(stream, app, https_ingress, transport_active).unwrap();
         });
-        let body = r#"{"id":"test-thread","interactionId":"human-secret-test","secret":"sentinel-secret-value"}"#;
         let mut stream = TcpStream::connect(address).unwrap();
         write!(
             stream,
@@ -2722,9 +2768,48 @@ mod tests {
     }
 
     #[test]
+    fn secret_rejection_does_not_echo_value_for_invalid_or_extra_fields() {
+        let cases = [
+            r#"{"id":"test-thread","interactionId":"human-secret-test","secret":"rejected-secret-sentinel","extra":true}"#,
+            r#"{"id":"test-thread","interactionId":"human-secret-test","secret":"","extra":"rejected-secret-sentinel"}"#,
+        ];
+        for body in cases {
+            let (app, mut bridge_reader) = secret_test_app(settings(), true);
+            let _ = bridge_reader.set_read_timeout(Some(Duration::from_millis(50)));
+            let response = post_secret_body(app, true, true, &[], body);
+            assert!(response.starts_with("HTTP/1.1 400"));
+            assert!(!response.contains("rejected-secret-sentinel"));
+            let mut forwarded = [0; 1];
+            assert_eq!(bridge_reader.read(&mut forwarded).unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn secret_submission_requires_the_current_control_lease_and_keeps_pending_request() {
+        let (app, mut bridge_reader) = secret_test_app(settings(), false);
+        let _ = bridge_reader.set_read_timeout(Some(Duration::from_millis(50)));
+        let response = post_secret(app.clone(), true, true, &[]);
+        assert!(response.starts_with("HTTP/1.1 400"));
+        assert!(!response.contains("sentinel-secret-value"));
+        let bridge = app.bridges.lock().unwrap()["test-thread"].clone();
+        let feed = bridge.feed.lock().unwrap();
+        assert_eq!(
+            feed.interaction.as_ref().unwrap()["id"],
+            "human-secret-test"
+        );
+        assert!(feed.secret_submission.is_none());
+        drop(feed);
+        let mut forwarded = [0; 1];
+        assert!(matches!(
+            bridge_reader.read(&mut forwarded),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+    }
+
+    #[test]
     fn secret_http_handler_rejects_spoofed_https_but_accepts_designated_ingress_once() {
         let settings = settings();
-        let (http_app, mut http_bridge) = secret_test_app(settings.clone());
+        let (http_app, mut http_bridge) = secret_test_app(settings.clone(), true);
         let _ = http_bridge.set_read_timeout(Some(Duration::from_millis(50)));
         let http_response = post_secret(http_app, false, true, &[("X-Forwarded-Proto", "https")]);
         assert!(http_response.starts_with("HTTP/1.1 403"));
@@ -2732,10 +2817,19 @@ mod tests {
         let mut rejected = [0; 1];
         assert_eq!(http_bridge.read(&mut rejected).unwrap(), 0);
 
-        let (https_app, bridge_reader) = secret_test_app(settings);
+        let (https_app, bridge_reader) = secret_test_app(settings, true);
         let https_response = post_secret(https_app.clone(), true, true, &[]);
         assert!(https_response.starts_with("HTTP/1.1 200"));
         assert!(!https_response.contains("sentinel-secret-value"));
+        let bridge = https_app.bridges.lock().unwrap()["test-thread"].clone();
+        {
+            let feed = bridge.feed.lock().unwrap();
+            assert_eq!(
+                feed.interaction.as_ref().unwrap()["id"],
+                "human-secret-test"
+            );
+            assert_eq!(feed.secret_submission.as_deref(), Some("human-secret-test"));
+        }
         let mut forwarded_line = Vec::new();
         BufReader::new(bridge_reader)
             .read_until(b'\n', &mut forwarded_line)
@@ -2750,6 +2844,25 @@ mod tests {
         let replay_response = post_secret(https_app, true, true, &[]);
         assert!(replay_response.starts_with("HTTP/1.1 400"));
         assert!(!replay_response.contains("sentinel-secret-value"));
+        bridge.push(json!({"t":"error","message":"unrelated validation error"}));
+        assert_eq!(
+            bridge.feed.lock().unwrap().secret_submission.as_deref(),
+            Some("human-secret-test")
+        );
+        bridge.push(json!({
+            "t":"error",
+            "message":"Secret request is no longer active",
+            "secretRequestId":"human-secret-test"
+        }));
+        {
+            let feed = bridge.feed.lock().unwrap();
+            assert!(feed.interaction.is_some());
+            assert!(feed.secret_submission.is_none());
+        }
+        bridge.push(json!({"t":"interaction_done","id":"human-secret-test"}));
+        let feed = bridge.feed.lock().unwrap();
+        assert!(feed.interaction.is_none());
+        assert!(feed.secret_submission.is_none());
     }
     #[test]
     fn secret_submission_requires_the_designated_https_ingress_and_exact_origin() {
@@ -3021,6 +3134,7 @@ mod regression {
                 snapshot: Value::Null,
                 active: false,
                 interaction: None,
+                secret_submission: None,
                 connected: true,
                 live: VecDeque::new(),
                 live_bytes: 0,

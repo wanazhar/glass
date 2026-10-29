@@ -7,6 +7,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::io::{self, Write};
+use zeroize::Zeroize;
 
 use crate::term;
 
@@ -31,6 +32,15 @@ pub struct Editor {
     /// vertical move uses the column the cursor is on.
     goal_col: Option<usize>,
     painted: std::cell::Cell<usize>,
+    sensitive: bool,
+}
+
+impl Drop for Editor {
+    fn drop(&mut self) {
+        if self.sensitive {
+            self.clear_sensitive_buffers();
+        }
+    }
 }
 
 impl Editor {
@@ -43,13 +53,39 @@ impl Editor {
             draft: String::new(),
             goal_col: None,
             painted: std::cell::Cell::new(0),
+            sensitive: false,
         }
     }
 
     /// Replace the recalled history, e.g. with prompts
     /// persisted from earlier sessions.
-    pub fn set_history(&mut self, history: Vec<String>) {
+    pub fn set_history(&mut self, mut history: Vec<String>) {
+        if self.sensitive {
+            for entry in &mut history {
+                entry.zeroize();
+            }
+            self.clear_sensitive_buffers();
+            return;
+        }
         self.history = history;
+        self.hist_idx = None;
+    }
+
+    /// Keep transient secret entry out of editor history and clear its buffers
+    /// when the editor is dropped.
+    pub fn set_sensitive(&mut self) {
+        self.sensitive = true;
+        self.clear_sensitive_buffers();
+    }
+
+    fn clear_sensitive_buffers(&mut self) {
+        self.buf.zeroize();
+        self.draft.zeroize();
+        for entry in &mut self.history {
+            entry.zeroize();
+        }
+        self.history.clear();
+        self.cursor = 0;
         self.hist_idx = None;
     }
 
@@ -62,6 +98,9 @@ impl Editor {
     }
 
     pub fn set_text(&mut self, text: &str) {
+        if self.sensitive {
+            self.buf.zeroize();
+        }
         self.buf = text.to_string();
         self.cursor = self.buf.len();
     }
@@ -79,10 +118,15 @@ impl Editor {
     }
 
     pub fn clear(&mut self) {
-        self.buf.clear();
+        if self.sensitive {
+            self.buf.zeroize();
+            self.draft.zeroize();
+        } else {
+            self.buf.clear();
+            self.draft.clear();
+        }
         self.cursor = 0;
         self.hist_idx = None;
-        self.draft.clear();
     }
 
     /// Consume a key. `Submit` means the caller should dispatch the turn.
@@ -100,7 +144,8 @@ impl Editor {
             KeyCode::Enter => {
                 let text = std::mem::take(&mut self.buf);
                 self.cursor = 0;
-                if !text.trim().is_empty()
+                if !self.sensitive
+                    && !text.trim().is_empty()
                     && (self.hist_idx.is_none()
                         || self.history.last().map(String::as_str) != Some(text.as_str()))
                 {
@@ -746,5 +791,15 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("last line"));
         assert!(!output.contains("\x1b[7;1H"));
+    }
+
+    #[test]
+    fn sensitive_editor_does_not_retain_submitted_text_in_history() {
+        let mut editor = Editor::new();
+        editor.set_sensitive();
+        editor.set_text("credential-sentinel");
+        let submitted = editor.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(submitted, Edit::Submit("credential-sentinel".into()));
+        assert!(editor.history.is_empty());
     }
 }

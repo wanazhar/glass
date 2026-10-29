@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use url::Url;
+use zeroize::Zeroizing;
 
 const SEARCH_ENDPOINT: &str = "https://mcp.exa.ai/mcp";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -15,9 +16,146 @@ const MAX_FETCH_BYTES: u64 = 512 * 1024;
 const DEFAULT_FETCH_CHARS: usize = 20_000;
 const MAX_FETCH_CHARS: usize = 60_000;
 const MAX_SEARCH_RESULTS: u64 = 25;
+const SECRET_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_SECRET_REQUEST_BYTES: usize = 16 * 1024;
+const MAX_SECRET_RESPONSE_BYTES: u64 = 16 * 1024;
 
 pub fn is_tool(name: &str) -> bool {
     matches!(name, "web_search" | "web_fetch")
+}
+
+pub(crate) fn secret_request_schema() -> (String, String, String) {
+    (
+        "web_secret_request".into(),
+        "Send one bounded HTTPS GET or POST to the exact origin authorized by a fresh secretRef. Supply the same operation string shown in the human approval and only a relative path. Core injects the secret as a Bearer token; never put credentials in the path, query, body, or any other tool argument. The secretRef is single-use. The response is bounded and redacted before it is returned.".into(),
+        json!({
+            "type":"object",
+            "additionalProperties":false,
+            "required":["secretRef","operation","method","path"],
+            "properties":{
+                "secretRef":{"type":"string","minLength":16,"maxLength":96},
+                "operation":{"type":"string","minLength":1,"maxLength":256},
+                "method":{"type":"string","enum":["GET","POST"]},
+                "path":{"type":"string","minLength":1,"maxLength":2048},
+                "body":{"type":"object"}
+            }
+        }).to_string(),
+    )
+}
+
+pub(crate) fn parse_secret_request(value: &Value) -> Result<(String, String, String), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "HTTPS secret request arguments must be an object".to_owned())?;
+    if object.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "secretRef" | "operation" | "method" | "path" | "body"
+        )
+    }) {
+        return Err("HTTPS secret request contains unsupported fields".into());
+    }
+    let string = |key: &str, max: usize| -> Result<String, String> {
+        let value = value
+            .get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{key} is required"))?;
+        if value.is_empty() || value.len() > max || value.chars().any(char::is_control) {
+            return Err(format!("{key} is invalid or exceeds its size limit"));
+        }
+        Ok(value.to_owned())
+    };
+    let handle = string("secretRef", 96)?;
+    if !handle.starts_with("secret_") {
+        return Err("secretRef is invalid".into());
+    }
+    let operation = string("operation", 256)?;
+    let method = string("method", 8)?;
+    if !matches!(method.as_str(), "GET" | "POST") {
+        return Err("Only HTTPS GET and POST are supported".into());
+    }
+    let path = string("path", 2048)?;
+    if !path.starts_with('/') || path.starts_with("//") || path.contains('#') {
+        return Err("path must be an absolute path on the authorized HTTPS origin".into());
+    }
+    let body = value.get("body").cloned().unwrap_or_else(|| json!({}));
+    if !body.is_object()
+        || serde_json::to_vec(&body).map_or(true, |bytes| bytes.len() > MAX_SECRET_REQUEST_BYTES)
+    {
+        return Err("body must be a JSON object no larger than 16 KiB".into());
+    }
+    Ok((handle, operation, method))
+}
+
+pub(crate) fn secret_request(
+    arguments: &Value,
+    secret: Zeroizing<String>,
+    authorized_origin: &str,
+) -> crate::tools::Outcome {
+    let result = (|| -> Result<String, String> {
+        let (handle, _, method) = parse_secret_request(arguments)?;
+        let _ = handle;
+        let path = arguments["path"].as_str().ok_or("path is required")?;
+        let url = validate_secret_request_url(authorized_origin, path)?;
+        let body = arguments.get("body").cloned().unwrap_or_else(|| json!({}));
+        let body_bytes = serde_json::to_vec(&body).map_err(|_| "Invalid JSON request body")?;
+        if method == "GET" && !body_bytes.is_empty() && body != json!({}) {
+            return Err("GET requests cannot include a body".into());
+        }
+        let agent = agent_with_timeout(SECRET_REQUEST_TIMEOUT);
+        let authorization = Zeroizing::new(format!("Bearer {}", secret.as_str()));
+        let mut response = if method == "GET" {
+            agent
+                .get(url.as_str())
+                .header("Authorization", authorization.as_str())
+                .header("Accept", "application/json, text/plain;q=0.9")
+                .call()
+        } else {
+            agent
+                .post(url.as_str())
+                .header("Authorization", authorization.as_str())
+                .header("Accept", "application/json, text/plain;q=0.9")
+                .header("Content-Type", "application/json")
+                .send(body_bytes.as_slice())
+        }
+        .map_err(|_| "HTTPS secret request failed; details were withheld".to_owned())?;
+        let status = response.status().as_u16();
+        let bytes = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_SECRET_RESPONSE_BYTES)
+            .read_to_vec()
+            .map_err(|_| "HTTPS secret response exceeded 16 KiB or could not be read")?;
+        Ok(format_secret_response(status, bytes, secret.as_str()))
+    })();
+    match result {
+        Ok(body) => crate::tools::Outcome::ok(body),
+        Err(error) => crate::tools::Outcome::err(error),
+    }
+}
+
+fn format_secret_response(status: u16, bytes: Vec<u8>, secret: &str) -> String {
+    let bytes = Zeroizing::new(bytes);
+    let body = Zeroizing::new(String::from_utf8_lossy(&bytes).into_owned());
+    let raw_output = Zeroizing::new(format!("HTTP {status}\n{}", body.as_str()));
+    raw_output.replace(secret, "[REDACTED]")
+}
+
+fn validate_secret_request_url(authorized_origin: &str, path: &str) -> Result<Url, String> {
+    if !path.starts_with('/') || path.starts_with("//") || path.contains('#') {
+        return Err("path must stay on the approved HTTPS origin".into());
+    }
+    let origin = Url::parse(authorized_origin).map_err(|_| "Authorized origin is invalid")?;
+    let url = origin.join(path).map_err(|_| "Request path is invalid")?;
+    if url.scheme() != "https"
+        || url.origin().ascii_serialization() != authorized_origin
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("Request must remain on the approved HTTPS origin".into());
+    }
+    Ok(url)
 }
 
 pub fn execute(call: &glass_mod_api::ToolCall) -> crate::tools::Outcome {
@@ -597,6 +735,54 @@ fn html_to_text(source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_request_is_pinned_to_approved_https_origin() {
+        let url =
+            validate_secret_request_url("https://api.example.test", "/v1/reports?format=json")
+                .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://api.example.test/v1/reports?format=json"
+        );
+        for path in [
+            "http://api.example.test/steal",
+            "//attacker.example/steal",
+            "https://attacker.example/steal",
+            "/v1/../steal#fragment",
+        ] {
+            assert!(validate_secret_request_url("https://api.example.test", path).is_err());
+        }
+    }
+
+    #[test]
+    fn secret_request_redacts_echoed_credentials_before_constructing_tool_output() {
+        let output = format_secret_response(
+            200,
+            b"received: sentinel-secret-value".to_vec(),
+            "sentinel-secret-value",
+        );
+        assert!(output.contains("[REDACTED]"));
+        assert!(!output.contains("sentinel-secret-value"));
+    }
+
+    #[test]
+    fn secret_request_arguments_reject_headers_and_oversized_bodies() {
+        let base = json!({
+            "secretRef":"secret_0123456789abcdef",
+            "operation":"create a report",
+            "method":"POST",
+            "path":"/v1/reports",
+            "body":{"title":"Summary"}
+        });
+        assert!(parse_secret_request(&base).is_ok());
+        let mut with_header = base.clone();
+        with_header["headers"] = json!({"X-Unsafe":"value"});
+        assert!(parse_secret_request(&with_header).is_err());
+        let mut oversized = base;
+        oversized["body"] = json!({"value":"x".repeat(MAX_SECRET_REQUEST_BYTES + 1)});
+        assert!(parse_secret_request(&oversized).is_err());
+    }
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::thread;

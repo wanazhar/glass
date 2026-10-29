@@ -209,6 +209,12 @@ struct Client {
     human: bool,
 }
 
+impl Drop for Client {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.buf);
+    }
+}
+
 impl Client {
     fn try_incoming(&mut self) -> Incoming {
         let mut chunk = [0u8; 4096];
@@ -231,8 +237,14 @@ impl Client {
         let Some(pos) = self.buf.iter().position(|b| *b == b'\n') else {
             return Incoming::Idle;
         };
-        let line: Vec<u8> = self.buf.drain(..=pos).collect();
-        match serde_json::from_slice::<Value>(&line[..line.len() - 1]) {
+        let old_len = self.buf.len();
+        let line_len = pos + 1;
+        let line = zeroize::Zeroizing::new(self.buf[..line_len].to_vec());
+        self.buf.copy_within(line_len..old_len, 0);
+        let remaining = old_len - line_len;
+        zeroize::Zeroize::zeroize(&mut self.buf[remaining..old_len]);
+        self.buf.truncate(remaining);
+        match serde_json::from_slice::<Value>(&line[..line_len - 1]) {
             Ok(value) if value.is_object() => Incoming::Message(value),
             _ => Incoming::Malformed,
         }
@@ -461,9 +473,14 @@ fn human_decision(
         std::process::id(),
         SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
+    let mut request_payload = request.clone();
+    if request_payload["kind"] == "secret" {
+        request_payload["request"]["secureSubmission"] =
+            json!(crate::connect::secret_transport_available());
+    }
     broadcast(
         clients,
-        json!({"t":"interaction","id":id,"request":request}),
+        json!({"t":"interaction","id":id,"request":request_payload}),
     );
     let started = std::time::Instant::now();
     loop {
@@ -489,12 +506,12 @@ fn human_decision(
                             break;
                         }
                         Incoming::Idle | Incoming::Malformed => break,
-                        Incoming::Message(message) => match message["t"].as_str() {
+                        Incoming::Message(mut message) => match message["t"].as_str() {
                             Some("attach") => {
                                 busy_attach(c, &message, owner, snapshot, &live.borrow());
                                 send(
                                     &mut c.stream,
-                                    json!({"t":"interaction","id":id,"request":request}),
+                                    json!({"t":"interaction","id":id,"request":request_payload}),
                                 );
                             }
                             Some("control") => {
@@ -510,10 +527,49 @@ fn human_decision(
                                 );
                                 send(
                                     &mut c.stream,
-                                    json!({"t":"interaction","id":id,"request":request}),
+                                    json!({"t":"interaction","id":id,"request":request_payload}),
                                 );
                             }
-                            Some("answer") if owner.get() == Some(c.id) && message["id"] == id => {
+                            Some("secret_answer") => {
+                                let secret = match std::mem::replace(
+                                    &mut message["secret"],
+                                    Value::Null,
+                                ) {
+                                    Value::String(secret)
+                                        if !secret.trim().is_empty()
+                                            && secret.len() <= 4096
+                                            && !secret.chars().any(char::is_control) =>
+                                    {
+                                        zeroize::Zeroizing::new(secret)
+                                    }
+                                    _ => {
+                                        send(
+                                            &mut c.stream,
+                                            json!({"t":"error","message":"Secret entry is empty or exceeds the supported size"}),
+                                        );
+                                        continue;
+                                    }
+                                };
+                                if owner.get() != Some(c.id)
+                                    || message["id"] != id
+                                    || request_payload["kind"] != "secret"
+                                {
+                                    send(
+                                        &mut c.stream,
+                                        json!({"t":"error","message":"Secret request is no longer active"}),
+                                    );
+                                    continue;
+                                }
+                                let result = json!({"status":"answered","secret":secret.as_str()});
+                                drop(slots);
+                                broadcast(clients, json!({"t":"interaction_done","id":id}));
+                                return Ok(result);
+                            }
+                            Some("answer")
+                                if owner.get() == Some(c.id)
+                                    && message["id"] == id
+                                    && request_payload["kind"] != "secret" =>
+                            {
                                 let result = message["answer"].clone();
                                 drop(slots);
                                 broadcast(clients, json!({"t":"interaction_done","id":id}));

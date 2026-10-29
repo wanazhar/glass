@@ -14,6 +14,7 @@ glass-mod-api.workspace = true
 crossterm = { version = "0.29", default-features = false, features = ["events"] }
 ratatui-core = "0.1"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+zeroize.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -27,6 +27,7 @@ homepage = "https://github.com/wanazhar/glass"
 [workspace.dependencies]
 glass-mod-api = { path = "crates/glass-mod-api", version = "0.3.14" }
 glass-tui = { path = "crates/glass-tui", version = "0.3.14" }
+zeroize = "1.9"
 
 # Keep the normal edit/build loop light. Use `--profile debugging` when full
 # workspace debug information is needed for an interactive debugger.

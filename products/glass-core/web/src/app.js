@@ -1159,6 +1159,7 @@ function event(m) {
       }
       view.control = Boolean(m.can_write);
       updateActivity(view.active ? "Working" : null);
+      if (view.interaction?.request?.kind === "secret") interaction();
       break;
     case "control":
       // Ownership updates need not repeat the runtime capabilities from replay.
@@ -1166,6 +1167,7 @@ function event(m) {
         view.workerWorkflows = m.web_workflows === 1;
       view.control = Boolean(m.can_write);
       updateActivity(view.active ? "Working" : null);
+      if (view.interaction?.request?.kind === "secret") interaction();
       if (!view.control)
         notice(
           "Another client owns input. Release control there, then take control here.",
@@ -1341,6 +1343,9 @@ function event(m) {
         commandRequests.delete(id);
       }
       connection("Disconnected", false);
+      clearSecretInteractionValue(
+        "Connection lost. Reconnect to continue; this request expires after 30 minutes.",
+      );
       notice(m.message, true);
       break;
     case "done":
@@ -1845,19 +1850,130 @@ $("#ownership").onclick = () =>
 function interaction() {
   const panel = $("#interaction"),
     m = view.interaction;
+  clearSecretInteractionValue();
   panel.replaceChildren();
   panel.classList.toggle("hidden", !m);
   if (!m) return;
   const r = m.request;
+  panel.classList.toggle("secret-interaction", r.kind === "secret");
+  const detail = r.request || {};
   panel.append(
     el(
       "h3",
       "",
       r.kind === "approval"
         ? "Approval required · turn paused"
+        : r.kind === "secret"
+          ? "Secure information requested"
         : "Your input is needed",
     ),
   );
+  if (r.kind === "secret") {
+    const secureTransport = location.protocol === "https:";
+    const permitted = view.control && detail.secureSubmission === true && secureTransport;
+    const purpose = el("p", "secret-purpose", text(detail.purpose, 1000));
+    purpose.setAttribute("aria-label", "Why this information is needed");
+    const destination = el("div", "secret-destination");
+    destination.append(
+      el("span", "secret-label", "Destination"),
+      el("code", "", text(detail.destination, 1000)),
+    );
+    panel.append(purpose, destination);
+    if (!view.control) {
+      panel.append(el("p", "secret-status", "Take control to enter or decline this request."));
+      return;
+    }
+
+    const form = el("form", "secret-form");
+    const label = el("label", "secret-label", "Secret value");
+    const input = el("input", "secret-value");
+    input.type = "password";
+    input.name = "secret";
+    input.autocomplete = "new-password";
+    input.autocapitalize = "off";
+    input.spellcheck = false;
+    input.required = true;
+    input.maxLength = 4096;
+    input.setAttribute("aria-label", "Secret value");
+    input.disabled = !permitted;
+    label.append(input);
+    form.append(label);
+
+    const status = el("p", "secret-status");
+    status.setAttribute("role", "status");
+    if (!secureTransport) {
+      status.textContent = "Open this workspace through its HTTPS link before entering a secret.";
+    } else if (detail.secureSubmission !== true) {
+      status.textContent = "Secure submission is unavailable for this connection.";
+    } else {
+      status.textContent = "Your response is sent securely and is not added to chat history.";
+    }
+    form.append(status);
+
+    let submitting = false;
+    const cancel = el("button", "quiet", "Cancel request");
+    cancel.type = "button";
+    const submit = el("button", "primary", "Send securely");
+    submit.type = "submit";
+    submit.disabled = !permitted;
+    const actions = el("div", "decision-actions");
+    actions.append(cancel, submit);
+    form.append(actions);
+
+    cancel.onclick = async () => {
+      if (submitting) return;
+      submitting = true;
+      input.value = "";
+      input.disabled = true;
+      cancel.disabled = true;
+      submit.disabled = true;
+      panel.setAttribute("aria-busy", "true");
+      try {
+        await send({ t: "cancel" });
+        status.textContent = "Request declined.";
+      } catch (error) {
+        status.textContent = "Could not cancel while disconnected. Reconnect and try again.";
+        input.disabled = !permitted;
+        submit.disabled = !permitted;
+        submitting = false;
+        cancel.disabled = false;
+      } finally {
+        panel.removeAttribute("aria-busy");
+      }
+    };
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      if (submitting || !permitted || !input.value) return;
+      submitting = true;
+      const secret = input.value;
+      input.value = "";
+      cancel.disabled = true;
+      submit.disabled = true;
+      input.disabled = true;
+      panel.setAttribute("aria-busy", "true");
+      try {
+        await api("secret", {
+          id: view.id,
+          interactionId: m.id,
+          secret,
+        });
+        status.textContent = "Secure response sent. Waiting for the request to finish.";
+      } catch (error) {
+        status.textContent = error.message || "The secure response was not accepted.";
+        submitting = false;
+        cancel.disabled = false;
+        submit.disabled = false;
+        input.disabled = false;
+        input.focus();
+      } finally {
+        // Do not retain the submitted value in the form after success or failure.
+        input.value = "";
+        panel.removeAttribute("aria-busy");
+      }
+    };
+    panel.append(form);
+    return;
+  }
   if (!view.control) {
     panel.append(el("p", "", "Take control to answer this request."));
     return;
@@ -1947,6 +2063,20 @@ function interaction() {
       submit({ status: "answered", answers });
     };
     panel.append(form);
+  }
+}
+function clearSecretInteractionValue(statusMessage) {
+  const panel = $("#interaction");
+  if (!panel) return;
+  const input = panel.querySelector('input[type="password"]');
+  if (!input) return;
+  input.value = "";
+  if (statusMessage) {
+    input.disabled = true;
+    const submit = panel.querySelector('button[type="submit"]');
+    if (submit) submit.disabled = true;
+    const status = panel.querySelector(".secret-status");
+    if (status) status.textContent = statusMessage;
   }
 }
 let reasoningLoading = null;

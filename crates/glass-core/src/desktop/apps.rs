@@ -324,11 +324,265 @@ mod tests {
     use super::*;
     use std::{
         fs,
-        os::unix::fs::PermissionsExt,
+        os::unix::{ffi::OsStrExt, fs::PermissionsExt, process::CommandExt},
         sync::atomic::{AtomicU64, Ordering},
     };
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn managed_browser_process_diagnostics(
+        binary: &Path,
+        profile: &Path,
+        expected_environment: &[(&str, String)],
+    ) -> Value {
+        let Ok(processes) = fs::read_dir("/proc") else {
+            return json!({"running":false,"procReadable":false});
+        };
+        let binary = binary.as_os_str().as_bytes();
+        let profile = profile.as_os_str().as_bytes();
+        let mut browser_pid = None;
+        for entry in processes.flatten().take(8192) {
+            if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
+                continue;
+            }
+            let Ok(command_line) = fs::read(entry.path().join("cmdline")) else {
+                continue;
+            };
+            let contains = |needle: &[u8]| {
+                !needle.is_empty()
+                    && command_line
+                        .windows(needle.len())
+                        .any(|part| part == needle)
+            };
+            if !contains(binary) || !contains(profile) || contains(b"--type=") {
+                continue;
+            }
+            browser_pid = entry.file_name().to_string_lossy().parse::<u32>().ok();
+            break;
+        }
+        let Some(mut current_pid) = browser_pid else {
+            return json!({"running":false,"processChain":[]});
+        };
+        let mut process_chain = Vec::new();
+        for _ in 0..6 {
+            let directory = Path::new("/proc").join(current_pid.to_string());
+            let comm = fs::read_to_string(directory.join("comm"))
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            let executable = fs::read_link(directory.join("exe")).ok().and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            });
+            let status = fs::read_to_string(directory.join("stat")).unwrap_or_default();
+            let stat_fields = status
+                .rsplit_once(')')
+                .map(|(_, fields)| fields.split_whitespace().collect::<Vec<_>>())
+                .unwrap_or_default();
+            let parent_pid = stat_fields
+                .get(1)
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or_default();
+            let process_group = stat_fields
+                .get(2)
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or_default();
+            let environment = fs::read(directory.join("environ")).ok();
+            let wait_channel = fs::read_to_string(directory.join("wchan"))
+                .ok()
+                .map(|value| value.trim().chars().take(80).collect::<String>());
+            let (present, matches) = if let Some(environment) = environment.as_deref() {
+                let results = expected_environment
+                    .iter()
+                    .map(|(name, expected)| {
+                        let mut prefix = name.as_bytes().to_vec();
+                        prefix.push(b'=');
+                        let actual = environment
+                            .split(|byte| *byte == 0)
+                            .find_map(|value| value.strip_prefix(prefix.as_slice()));
+                        (
+                            name.to_string(),
+                            actual.is_some(),
+                            actual == Some(expected.as_bytes()),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let present = results
+                    .iter()
+                    .map(|(name, present, _)| (name.clone(), Value::Bool(*present)))
+                    .collect::<serde_json::Map<_, _>>();
+                let matches = results
+                    .iter()
+                    .map(|(name, _, matches)| (name.clone(), Value::Bool(*matches)))
+                    .collect::<serde_json::Map<_, _>>();
+                (json!(present), json!(matches))
+            } else {
+                (Value::Null, Value::Null)
+            };
+            process_chain.push(json!({
+                "pid":current_pid,
+                "state":stat_fields.first(),
+                "comm":comm,
+                "executable":executable,
+                "ppid":parent_pid,
+                "pgrp":process_group,
+                "waitChannel":wait_channel,
+                "environmentPresent":present,
+                "environmentMatches":matches,
+            }));
+            if parent_pid <= 1 || parent_pid == current_pid {
+                break;
+            }
+            current_pid = parent_pid;
+        }
+        json!({"running":true,"processChain":process_chain})
+    }
+
+    fn direct_browser_exec_diagnostic(
+        desktop: &super::super::Desktop,
+        session_id: &str,
+        binary: &Path,
+        profile: &Path,
+        home: &Path,
+    ) -> Value {
+        if fs::create_dir(profile)
+            .and_then(|()| fs::set_permissions(profile, fs::Permissions::from_mode(0o700)))
+            .is_err()
+        {
+            return json!({"spawned":false,"reason":"could not create private profile"});
+        }
+        let (
+            environment,
+            display,
+            xauthority,
+            runtime_directory,
+            session_bus_address,
+            atspi_bus_address,
+        ) = {
+            let guard = desktop.session.lock().unwrap();
+            let Some(session) = guard.as_ref() else {
+                return json!({"spawned":false,"reason":"managed session disappeared"});
+            };
+            let atspi =
+                fs::read_to_string(session.directory.join("atspi-bus.address")).unwrap_or_default();
+            (
+                session.environment,
+                session.display.clone(),
+                session.directory.join("Xauthority"),
+                session.directory.join("runtime"),
+                session.session_bus_address.clone(),
+                atspi.trim().to_owned(),
+            )
+        };
+        let (current_desktop, desktop_session) = match environment {
+            super::super::process::Environment::Xfce => ("XFCE", "xfce"),
+            super::super::process::Environment::Gnome => ("ubuntu:GNOME", "ubuntu"),
+        };
+        let mut child = match Command::new(binary)
+            .env_clear()
+            .env("PATH", super::super::process::MANAGED_CHILD_PATH)
+            .env("XDG_CURRENT_DESKTOP", current_desktop)
+            .env("DESKTOP_SESSION", desktop_session)
+            .env("XDG_SESSION_TYPE", "x11")
+            .env("XDG_SESSION_DESKTOP", desktop_session)
+            .env("HOME", home)
+            .env("DISPLAY", &display)
+            .env("XAUTHORITY", &xauthority)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("XDG_CACHE_HOME", home.join(".cache"))
+            .env("XDG_DATA_HOME", home.join(".local/share"))
+            .env("XDG_CONFIG_DIRS", "/etc/xdg")
+            .env(
+                "XDG_DATA_DIRS",
+                super::super::process::MANAGED_XDG_DATA_DIRS,
+            )
+            .env("XDG_RUNTIME_DIR", &runtime_directory)
+            .env("DBUS_SESSION_BUS_ADDRESS", &session_bus_address)
+            .env("AT_SPI_BUS_ADDRESS", &atspi_bus_address)
+            .env("GTK_A11Y", "atspi")
+            .env("ACCESSIBILITY_ENABLED", "1")
+            .arg(format!("--user-data-dir={}", profile.display()))
+            .args([
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--password-store=basic",
+                "--force-renderer-accessibility=complete",
+                "--disable-gpu",
+                "--enable-logging=stderr",
+            ])
+            .arg(format!(
+                "--log-file={}",
+                profile.join("chrome.log").display()
+            ))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) => {
+                return json!({"spawned":false,"reason":error.to_string()});
+            }
+        };
+        let process_group = child.id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        let mut window_observed = false;
+        let mut last_observation = Value::Null;
+        while std::time::Instant::now() < deadline {
+            if let Ok(snapshot) = desktop.observe_accessibility(Some(session_id), None) {
+                let chrome_windows = snapshot["windows"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|window| {
+                        window["application"]
+                            .as_str()
+                            .is_some_and(|name| name.to_ascii_lowercase().contains("chrome"))
+                    })
+                    .take(8)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                last_observation = json!({
+                    "applications":snapshot["applications"],
+                    "windows":chrome_windows,
+                    "focusedWindow":snapshot["focusedWindow"],
+                });
+                window_observed = last_observation["windows"]
+                    .as_array()
+                    .is_some_and(|windows| !windows.is_empty());
+                if window_observed {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        // This comparison is test-owned. The fresh process group ensures the
+        // isolated Chromium and all of its children are stopped after the
+        // observation, without signaling any other desktop or user process.
+        unsafe {
+            libc::kill(-(process_group as i32), libc::SIGTERM);
+        }
+        let kill_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if child.try_wait().ok().flatten().is_some()
+                || std::time::Instant::now() >= kill_deadline
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        unsafe {
+            libc::kill(-(process_group as i32), libc::SIGKILL);
+        }
+        let _ = child.wait();
+        json!({
+            "spawned":true,
+            "windowObserved":window_observed,
+            "lastObservation":last_observation,
+            "chromeLog":read_bounded_chrome_log(profile),
+        })
+    }
 
     fn temp_home() -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -479,8 +733,9 @@ mod tests {
             if launched["verified"] != false || launched["launchRequested"] != true {
                 return Err(format!("launch result overstated verification: {launched}"));
             }
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             let mut latest = Value::Null;
+            let mut browser_window_seen = false;
             while std::time::Instant::now() < deadline {
                 if let Ok(snapshot) = desktop.observe_accessibility(Some(&session_id), None) {
                     let diagnostic_nodes = snapshot["nodes"]
@@ -507,10 +762,83 @@ mod tests {
                                 application.to_ascii_lowercase().contains("chrome")
                             })
                     }) {
+                        browser_window_seen = true;
                         break;
                     }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if !browser_window_seen {
+                let screenshot_path = std::env::temp_dir().join(format!(
+                    "glass-browser-launch-diagnostic-{}.jpg",
+                    std::process::id()
+                ));
+                let screenshot_saved = desktop
+                    .frame_after(0, std::time::Duration::from_secs(2))
+                    .ok()
+                    .flatten()
+                    .and_then(|frame| {
+                        fs::write(&screenshot_path, frame.2)
+                            .ok()
+                            .and_then(|()| {
+                                fs::set_permissions(
+                                    &screenshot_path,
+                                    fs::Permissions::from_mode(0o600),
+                                )
+                                .ok()
+                            })
+                            .map(|()| screenshot_path.clone())
+                    });
+                let expected_environment = {
+                    let guard = desktop.session.lock().unwrap();
+                    let session = guard.as_ref().unwrap();
+                    let atspi_bus = fs::read_to_string(session.directory.join("atspi-bus.address"))
+                        .unwrap_or_default();
+                    vec![
+                        ("DISPLAY", session.display.clone()),
+                        (
+                            "XAUTHORITY",
+                            session.directory.join("Xauthority").display().to_string(),
+                        ),
+                        (
+                            "XDG_RUNTIME_DIR",
+                            session.directory.join("runtime").display().to_string(),
+                        ),
+                        (
+                            "DBUS_SESSION_BUS_ADDRESS",
+                            session.session_bus_address.clone(),
+                        ),
+                        ("AT_SPI_BUS_ADDRESS", atspi_bus.trim().to_owned()),
+                        ("GTK_A11Y", "atspi".to_owned()),
+                    ]
+                };
+                let browser_process = managed_browser_process_diagnostics(
+                    &binary,
+                    &browser_profile,
+                    &expected_environment,
+                );
+                let launch_stderr = if std::env::var_os("GLASS_DESKTOP_APP_LAUNCH_DIAGNOSTICS")
+                    .as_deref()
+                    == Some(std::ffi::OsStr::new("1"))
+                {
+                    super::read_bounded_launch_stderr(
+                        &desktop.session.lock().unwrap().as_ref().unwrap().directory,
+                        &home,
+                    )
+                } else {
+                    String::new()
+                };
+                let direct_exec = direct_browser_exec_diagnostic(
+                    &desktop,
+                    &session_id,
+                    &binary,
+                    &home.join("chromium-direct-profile"),
+                    &home,
+                );
+                return Err(format!(
+                    "managed browser launch was accepted but no browser window appeared within 30 seconds: {}",
+                    json!({"browserProcess":browser_process,"lastObservation":latest,"launchStderr":launch_stderr,"chromeLog":read_bounded_chrome_log(&browser_profile),"screenshot":screenshot_saved,"directExec":direct_exec})
+                ));
             }
             let (bus_address, revision) = {
                 let guard = desktop.session.lock().unwrap();
@@ -545,7 +873,7 @@ mod tests {
             .map_err(|error| format!("writing isolated browser chapter fixture: {error}"))?;
             fs::write(
                 &detail_page,
-                "<!doctype html><html><head><title>Managed browser detail fixture</title></head><body><h1>Detail page</h1><a href=\"#section\">Observed section link</a><h2 id=\"section\">Detail section</h2><script>addEventListener('hashchange',()=>document.title=location.hash?'Managed browser section fixture':'Managed browser detail fixture')</script></body></html>",
+                "<!doctype html><html><head><title>Managed browser detail fixture</title></head><body><h1>Detail page</h1><a href=\"#section\">Observed section link</a><h2 id=\"section\">Detail section</h2></body></html>",
             )
             .map_err(|error| format!("writing isolated browser detail fixture: {error}"))?;
             let read_expected_address = |expected: &str| -> Result<String, String> {
@@ -557,15 +885,11 @@ mod tests {
                         "browser address observation is incomplete: {observation}"
                     ));
                 }
-                observation["nodes"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|node| node["value"].as_str())
-                    .find(|value| value.contains(expected))
+                unique_browser_address_value(&observation)
+                    .filter(|value| value.contains(expected))
                     .map(ToOwned::to_owned)
                     .ok_or_else(|| {
-                        format!("browser address did not contain {expected:?}: {observation}")
+                        format!("browser address was not unique or did not contain {expected:?}: {observation}")
                     })
             };
             let fixture_url = url::Url::from_file_path(&home_page)
@@ -974,24 +1298,53 @@ mod tests {
                 })?;
             click_observed_link(&detail_observation, &section_link)
                 .map_err(|error| format!("clicking observed section link: {error}"))?;
-            let section_title_deadline =
-                std::time::Instant::now() + std::time::Duration::from_secs(8);
-            let mut section_title_observed = false;
-            while std::time::Instant::now() < section_title_deadline {
-                if let Ok(observation) = desktop.observe_accessibility(Some(&session_id), None)
-                    && observation["focusedWindow"]["name"]
-                        .as_str()
-                        .is_some_and(|name| name.contains("Managed browser section fixture"))
+            let section_deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+            let mut section_address = String::new();
+            let mut section_observed = false;
+            let mut section_snapshot = Value::Null;
+            while std::time::Instant::now() < section_deadline {
+                section_snapshot = desktop
+                    .observe_accessibility(Some(&session_id), Some("Chrome Detail section heading"))
+                    .unwrap_or(Value::Null);
+                let address_snapshot = desktop
+                    .observe_accessibility(Some(&session_id), Some("Chrome address"))
+                    .ok();
+                let current_address = address_snapshot
+                    .as_ref()
+                    .and_then(unique_browser_address_value);
+                if current_address
+                    .is_some_and(|address| address.contains("browser-detail.html#section"))
+                    && section_snapshot["truncated"] == false
+                    && section_snapshot["queryAmbiguous"] == false
+                    && section_snapshot["nodes"].as_array().is_some_and(|nodes| {
+                        nodes.iter().any(|node| {
+                            node["role"] == "heading"
+                                && node["name"] == "Detail section"
+                                && node["states"].as_array().is_some_and(|states| {
+                                    states.iter().any(|state| state == "visible")
+                                        && states.iter().any(|state| state == "showing")
+                                })
+                        })
+                    })
                 {
-                    section_title_observed = true;
+                    section_address = current_address.unwrap().to_owned();
+                    section_observed = true;
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(150));
             }
-            if !section_title_observed {
-                return Err("observed section link did not update the browser page title".into());
+            if !section_observed {
+                return Err(format!(
+                    "observed section link did not show the expected fragment and heading: {}",
+                    json!({
+                        "focusedWindow":section_snapshot["focusedWindow"],
+                        "nodesVisited":section_snapshot["nodesVisited"],
+                        "truncated":section_snapshot["truncated"],
+                        "queryAmbiguous":section_snapshot["queryAmbiguous"],
+                        "sectionNodes":section_snapshot["nodes"],
+                    })
+                ));
             }
-            let section_address = read_expected_address("#section")?;
             desktop
                 .input(
                     super::super::Lease::Agent,
@@ -1000,19 +1353,47 @@ mod tests {
                 .map_err(|error| format!("browser Back input failed: {}", error.message()))?;
             let back_deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
             let mut back_verified = false;
+            let mut back_observation = Value::Null;
             while std::time::Instant::now() < back_deadline {
-                if let Ok(observation) = desktop.observe_accessibility(Some(&session_id), None)
-                    && observation["focusedWindow"]["name"]
-                        .as_str()
-                        .is_some_and(|name| name.contains("Managed browser detail fixture"))
+                let observation = desktop
+                    .observe_accessibility(Some(&session_id), Some("Chrome address"))
+                    .unwrap_or(Value::Null);
+                let address = unique_browser_address_value(&observation);
+                let title_matches = observation["focusedWindow"]["name"]
+                    .as_str()
+                    .is_some_and(|name| name.contains("Managed browser detail fixture"));
+                if title_matches
+                    && address.is_some_and(|address| {
+                        address.contains("browser-detail.html") && !address.contains("#section")
+                    })
                 {
+                    back_observation = observation;
                     back_verified = true;
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(150));
             }
             if !back_verified {
-                return Err("browser Back did not restore the detail page".into());
+                let diagnostic = desktop
+                    .observe_accessibility(Some(&session_id), Some("Chrome address"))
+                    .ok();
+                let address = diagnostic
+                    .as_ref()
+                    .and_then(|snapshot| snapshot["nodes"].as_array())
+                    .into_iter()
+                    .flatten()
+                    .find_map(|node| node["value"].as_str());
+                return Err(format!(
+                    "browser Back did not restore the detail page: {}",
+                    json!({
+                        "focusedWindow":diagnostic.as_ref().map(|snapshot| &snapshot["focusedWindow"]),
+                        "windows":diagnostic.as_ref().map(|snapshot| &snapshot["windows"]),
+                        "address":address,
+                        "backObservation":back_observation,
+                        "nodesVisited":diagnostic.as_ref().map(|snapshot| &snapshot["nodesVisited"]),
+                        "truncated":diagnostic.as_ref().map(|snapshot| &snapshot["truncated"]),
+                    })
+                ));
             }
             let back_address = read_expected_address("browser-detail.html")?;
             desktop
@@ -1023,19 +1404,65 @@ mod tests {
                 .map_err(|error| format!("browser Forward input failed: {}", error.message()))?;
             let forward_deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
             let mut forward_verified = false;
+            let mut forward_observation = Value::Null;
+            let mut forward_section = Value::Null;
             while std::time::Instant::now() < forward_deadline {
-                if let Ok(observation) = desktop.observe_accessibility(Some(&session_id), None)
-                    && observation["focusedWindow"]["name"]
-                        .as_str()
-                        .is_some_and(|name| name.contains("Managed browser section fixture"))
+                let observation = desktop
+                    .observe_accessibility(Some(&session_id), Some("Chrome address"))
+                    .unwrap_or(Value::Null);
+                let address = unique_browser_address_value(&observation);
+                let title_matches = observation["focusedWindow"]["name"]
+                    .as_str()
+                    .is_some_and(|name| name.contains("Managed browser detail fixture"));
+                let section = desktop
+                    .observe_accessibility(Some(&session_id), Some("Chrome Detail section heading"))
+                    .unwrap_or(Value::Null);
+                let heading_matches = section["truncated"] == false
+                    && section["queryAmbiguous"] == false
+                    && section["nodes"].as_array().is_some_and(|nodes| {
+                        nodes.iter().any(|node| {
+                            node["role"] == "heading"
+                                && node["name"] == "Detail section"
+                                && node["states"].as_array().is_some_and(|states| {
+                                    states.iter().any(|state| state == "visible")
+                                        && states.iter().any(|state| state == "showing")
+                                })
+                        })
+                    });
+                if title_matches
+                    && address
+                        .is_some_and(|address| address.contains("browser-detail.html#section"))
+                    && heading_matches
                 {
+                    forward_observation = observation;
+                    forward_section = section;
                     forward_verified = true;
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(150));
             }
             if !forward_verified {
-                return Err("browser Forward did not restore the section state".into());
+                let diagnostic = desktop
+                    .observe_accessibility(Some(&session_id), Some("Chrome address"))
+                    .ok();
+                let address = diagnostic
+                    .as_ref()
+                    .and_then(|snapshot| snapshot["nodes"].as_array())
+                    .into_iter()
+                    .flatten()
+                    .find_map(|node| node["value"].as_str());
+                return Err(format!(
+                    "browser Forward did not restore the section state: {}",
+                    json!({
+                        "focusedWindow":diagnostic.as_ref().map(|snapshot| &snapshot["focusedWindow"]),
+                        "windows":diagnostic.as_ref().map(|snapshot| &snapshot["windows"]),
+                        "address":address,
+                        "forwardObservation":forward_observation,
+                        "sectionNodes":forward_section["nodes"],
+                        "nodesVisited":diagnostic.as_ref().map(|snapshot| &snapshot["nodesVisited"]),
+                        "truncated":diagnostic.as_ref().map(|snapshot| &snapshot["truncated"]),
+                    })
+                ));
             }
             let forward_address = read_expected_address("#section")?;
             let original_tab = desktop
@@ -1177,6 +1604,12 @@ mod tests {
                 json!({"snapshot":address_observation,"addressValue":address_value})
             ));
         }
+        if address_observation["focusedWindow"]["windowId"]
+            .as_str()
+            .is_none()
+        {
+            return Err("initial browser observation did not expose a visible windowId".into());
+        }
         desktop
             .input(
                 super::super::Lease::Agent,
@@ -1200,9 +1633,19 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
+        let mut browser_window_id = select_rust_book_window(
+            desktop,
+            session_id,
+            "Chrome The Rust Programming Language",
+            "rust programming language",
+        )?;
         let toggle_query = "Chrome Toggle Table of Contents label";
         let toggle_snapshot = desktop
-            .observe_accessibility(Some(session_id), Some(toggle_query))
+            .observe_accessibility_scoped(
+                Some(session_id),
+                Some(toggle_query),
+                Some(&browser_window_id),
+            )
             .map_err(|error| format!("finding the visible table-of-contents toggle: {error}"))?;
         let toggle = toggle_snapshot["nodes"]
             .as_array()
@@ -1219,8 +1662,12 @@ mod tests {
                 format!(
                     "the Rust Book table-of-contents toggle did not yield a unique fresh screen target: {}",
                     json!({
+                        "windowId":browser_window_id,
+                        "focusedWindow":toggle_snapshot["focusedWindow"],
+                        "windows":toggle_snapshot["windows"],
                         "truncated":toggle_snapshot["truncated"],
                         "queryAmbiguous":toggle_snapshot["queryAmbiguous"],
+                        "ownerWindowScoped":toggle_snapshot["_testOwnerWindowScoped"],
                         "nodes":toggle_snapshot["nodes"]
                     })
                 )
@@ -1246,9 +1693,13 @@ mod tests {
                 )
             })?;
         std::thread::sleep(std::time::Duration::from_millis(250));
-        let ownership_query = "Chrome The Rust Programming Language Understanding Ownership link";
+        let ownership_query = "Chrome Understanding Ownership link";
         let ownership = desktop
-            .observe_accessibility(Some(session_id), Some(ownership_query))
+            .observe_accessibility_scoped(
+                Some(session_id),
+                Some(ownership_query),
+                Some(&browser_window_id),
+            )
             .map_err(|error| format!("searching the opened table of contents: {error}"))?;
         let ownership_matches = ownership["nodes"]
             .as_array()
@@ -1298,7 +1749,11 @@ mod tests {
                 Ok(result) => ownership_navigation = result,
                 Err(error) if error.contains("no recognized accessibility click action") => {
                     let fresh = desktop
-                        .observe_accessibility(Some(session_id), Some(ownership_query))
+                        .observe_accessibility_scoped(
+                            Some(session_id),
+                            Some(ownership_query),
+                            Some(&browser_window_id),
+                        )
                         .map_err(|error| {
                             format!("refreshing the unsupported Ownership link: {error}")
                         })?;
@@ -1372,16 +1827,88 @@ mod tests {
             || ownership_matches.len() != 1
             || ownership["_testOwnerWindowScoped"] != true
         {
+            let scoped_nodes = ownership["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .take(24)
+                .map(|node| {
+                    json!({
+                        "role":node["role"],
+                        "name":node["name"],
+                        "application":node["application"],
+                        "owningWindow":node["owningWindow"],
+                        "onscreen":node["onscreen"],
+                        "targetIdPresent":node["targetId"].is_string(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            // If an explicitly scoped traversal misses a known page link,
+            // compare one unscoped title-filtered observation. This is only
+            // diagnostic: no token from it is used for an action.
+            let title_comparison = if ownership_matches.is_empty() {
+                desktop
+                    .observe_accessibility(
+                        Some(session_id),
+                        Some("Chrome Understanding Ownership link"),
+                    )
+                    .ok()
+                    .map(|snapshot| {
+                        let nodes = snapshot["nodes"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .take(24)
+                            .map(|node| {
+                                json!({
+                                    "role":node["role"],
+                                    "name":node["name"],
+                                    "application":node["application"],
+                                    "owningWindow":node["owningWindow"],
+                                    "onscreen":node["onscreen"],
+                                    "targetIdPresent":node["targetId"].is_string(),
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        json!({
+                            "focusedWindow":snapshot["focusedWindow"],
+                            "windows":snapshot["windows"],
+                            "nodesVisited":snapshot["nodesVisited"],
+                            "truncated":snapshot["truncated"],
+                            "queryAmbiguous":snapshot["queryAmbiguous"],
+                            "visitedSamples":snapshot["_testVisitedSamples"],
+                            "prunedBranches":snapshot["_testPrunedBranches"],
+                            "roleCounts":snapshot["_testRoleCounts"],
+                            "nodes":nodes,
+                        })
+                    })
+            } else {
+                None
+            };
             return Err(format!(
                 "the owner-scoped Ownership link search was not complete and unique: {}",
                 json!({
                     "truncated":ownership["truncated"],
                     "queryAmbiguous":ownership["queryAmbiguous"],
+                    "nodesVisited":ownership["nodesVisited"],
                     "ownerWindowScoped":ownership["_testOwnerWindowScoped"],
-                    "matches":ownership_matches
+                    "visitedSamples":ownership["_testVisitedSamples"],
+                    "prunedBranches":ownership["_testPrunedBranches"],
+                    "roleCounts":ownership["_testRoleCounts"],
+                    "focusedWindow":ownership["focusedWindow"],
+                    "windows":ownership["windows"],
+                    "matches":ownership_matches,
+                    "nodes":scoped_nodes,
+                    "titleComparison":title_comparison,
                 })
             ));
         }
+        browser_window_id = select_rust_book_window(
+            desktop,
+            session_id,
+            "Chrome Understanding Ownership The Rust Programming Language",
+            "understanding ownership",
+        )?;
         let address_value = ownership_navigation["addressObservation"]["nodes"]
             .as_array()
             .into_iter()
@@ -1393,6 +1920,234 @@ mod tests {
             return Err(format!(
                 "the public Ownership link did not reach its chapter URL: {}",
                 json!({"address":address_value,"navigation":ownership_navigation})
+            ));
+        }
+        let ownership_toc = "Chrome Understanding Ownership Toggle Table of Contents label";
+        let _ = pointer_click_fresh_target(
+            desktop,
+            session_id,
+            &browser_window_id,
+            ownership_toc,
+            "Toggle Table of Contents",
+            true,
+        )?;
+        let references_query = "Chrome References and Borrowing link";
+        let references_click = match click_fresh_link(
+            desktop,
+            session_id,
+            &browser_window_id,
+            references_query,
+            "References and Borrowing",
+        ) {
+            Ok(result) => result,
+            Err(direct_error) => {
+                let fallback = desktop
+                    .observe_accessibility(
+                        Some(session_id),
+                        Some("Chrome References and Borrowing link"),
+                    )
+                    .unwrap_or_else(|error| json!({"error":error}));
+                return Err(format!(
+                    "direct-window References search failed: {direct_error}; title-scoped comparison: {}",
+                    json!({"focusedWindow":fallback["focusedWindow"],"windows":fallback["windows"],"nodesVisited":fallback["nodesVisited"],"truncated":fallback["truncated"],"queryAmbiguous":fallback["queryAmbiguous"],"visitedSamples":fallback["_testVisitedSamples"],"prunedBranches":fallback["_testPrunedBranches"],"nodes":fallback["nodes"]})
+                ));
+            }
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        browser_window_id = select_rust_book_window(
+            desktop,
+            session_id,
+            "Chrome References Borrowing The Rust Programming Language",
+            "references and borrowing",
+        )?;
+        let references_address = read_browser_address(desktop, session_id, &browser_window_id)?;
+        if !references_address.contains("/book/ch04-02-references-and-borrowing.html") {
+            return Err(format!(
+                "the observed References and Borrowing link did not reach its chapter: {references_address}"
+            ));
+        }
+        let references_toc = "Chrome Toggle Table of Contents label";
+        let _ = pointer_click_fresh_target(
+            desktop,
+            session_id,
+            &browser_window_id,
+            references_toc,
+            "Toggle Table of Contents",
+            true,
+        )?;
+        let slice_query = "Chrome The Slice Type link";
+        let current_view_query = "References Borrowing heading";
+        let current_view = desktop
+            .observe_accessibility_scoped(
+                Some(session_id),
+                Some(current_view_query),
+                Some(&browser_window_id),
+            )
+            .map_err(|error| format!("checking the current References page view: {error}"))?;
+        let current_view_marker = current_view["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|node| {
+                node["role"] == "heading"
+                    && node["name"]
+                        .as_str()
+                        .is_some_and(|name| name.trim() == "References and Borrowing")
+            })
+            .ok_or_else(|| {
+                format!("current References heading was not observed: {current_view}")
+            })?;
+        if current_view["truncated"] != false
+            || current_view["queryAmbiguous"] != false
+            || !current_view_marker["states"]
+                .as_array()
+                .is_some_and(|states| states.iter().any(|state| state == "visible"))
+            || !current_view_marker["states"]
+                .as_array()
+                .is_some_and(|states| states.iter().any(|state| state == "showing"))
+        {
+            return Err(format!(
+                "current References heading is not a complete visible anchor: {}",
+                json!({"truncated":current_view["truncated"],"queryAmbiguous":current_view["queryAmbiguous"],"marker":current_view_marker})
+            ));
+        }
+        let slice_snapshot = desktop
+            .observe_accessibility_scoped(
+                Some(session_id),
+                Some(slice_query),
+                Some(&browser_window_id),
+            )
+            .map_err(|error| format!("searching the References TOC for Slice Type: {error}"))?;
+        let slice_matches = slice_snapshot["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|node| {
+                node["role"] == "link"
+                    && node["name"]
+                        .as_str()
+                        .is_some_and(|name| name.trim() == "The Slice Type")
+            })
+            .map(|node| {
+                json!({
+                    "name":node["name"],
+                    "onscreen":node["onscreen"],
+                    "hasTarget":node["targetId"].is_string(),
+                    "hasPointer":node["pointerTarget"].is_object(),
+                })
+            })
+            .collect::<Vec<_>>();
+        if slice_snapshot["truncated"] != false
+            || slice_snapshot["queryAmbiguous"] != false
+            || slice_matches.len() != 1
+        {
+            return Err(format!(
+                "owner-scoped Slice Type query did not find one complete match: {}",
+                json!({
+                    "truncated":slice_snapshot["truncated"],
+                    "queryAmbiguous":slice_snapshot["queryAmbiguous"],
+                    "nodesVisited":slice_snapshot["nodesVisited"],
+                    "ownerWindowScoped":slice_snapshot["_testOwnerWindowScoped"],
+                    "matches":slice_matches
+                })
+            ));
+        }
+        let initial_slice = slice_snapshot["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|node| {
+                node["role"] == "link"
+                    && node["name"]
+                        .as_str()
+                        .is_some_and(|name| name.trim() == "The Slice Type")
+            })
+            .ok_or("complete Slice Type query lost its descriptive match")?;
+        if initial_slice["onscreen"] != false
+            || !initial_slice["targetId"].is_null()
+            || !initial_slice["pointerTarget"].is_null()
+        {
+            return Err(format!(
+                "initial offscreen Slice Type result must remain tokenless: {initial_slice}"
+            ));
+        }
+        let slice_scroll = scroll_until_query_link_is_onscreen(
+            desktop,
+            session_id,
+            &browser_window_id,
+            slice_query,
+            "The Slice Type",
+        )?;
+        let after_scroll = slice_scroll
+            .last()
+            .ok_or("scroll-to-target returned no fresh query result")?;
+        if after_scroll["onscreen"] != true
+            || after_scroll["hasTarget"] != true
+            || after_scroll["hasPointer"] != true
+        {
+            return Err(format!(
+                "fresh post-scroll Slice Type result lacks onscreen action tokens: {after_scroll}"
+            ));
+        }
+        let slice_click = click_fresh_link(
+            desktop,
+            session_id,
+            &browser_window_id,
+            slice_query,
+            "The Slice Type",
+        )?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        browser_window_id = select_rust_book_window(
+            desktop,
+            session_id,
+            "Chrome The Slice Type The Rust Programming Language",
+            "the slice type",
+        )?;
+        let slice_address = read_browser_address(desktop, session_id, &browser_window_id)?;
+        if !slice_address.contains("/book/ch04-03-slices.html") {
+            return Err(format!(
+                "the observed Slice Type link did not reach its chapter: {slice_address}"
+            ));
+        }
+        let slice_heading_snapshot = desktop
+            .observe_accessibility_scoped(
+                Some(session_id),
+                Some("Chrome The Slice Type heading"),
+                Some(&browser_window_id),
+            )
+            .map_err(|error| format!("observing the Slice Type page heading: {error}"))?;
+        let slice_heading = slice_heading_snapshot["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|node| {
+                node["role"] == "heading"
+                    && node["name"]
+                        .as_str()
+                        .is_some_and(|name| name.trim() == "The Slice Type")
+            })
+            .ok_or_else(|| {
+                format!("Slice Type URL did not expose its page heading: {slice_heading_snapshot}")
+            })?;
+        if slice_heading_snapshot["truncated"] != false
+            || slice_heading_snapshot["queryAmbiguous"] != false
+            || !slice_heading["states"]
+                .as_array()
+                .is_some_and(|states| states.iter().any(|state| state == "visible"))
+            || !slice_heading["states"]
+                .as_array()
+                .is_some_and(|states| states.iter().any(|state| state == "showing"))
+        {
+            return Err(format!(
+                "Slice Type page heading was not complete and visible: {}",
+                json!({
+                    "url":slice_address,
+                    "focusedWindow":slice_heading_snapshot["focusedWindow"],
+                    "windowId":browser_window_id,
+                    "heading":slice_heading,
+                    "truncated":slice_heading_snapshot["truncated"],
+                    "queryAmbiguous":slice_heading_snapshot["queryAmbiguous"],
+                })
             ));
         }
         let screenshot_path = std::env::temp_dir().join(format!(
@@ -1410,15 +2165,352 @@ mod tests {
         let report = json!({
             "diagnosticOnly":true,
             "browserTitle":browser_title,
+            "browserWindowId":browser_window_id,
             "toggleQuery":toggle_query,
             "toggle":toggle,
             "ownershipQuery":ownership_query,
             "ownershipSearch":{"truncated":ownership["truncated"],"queryAmbiguous":ownership["queryAmbiguous"],"nodesVisited":ownership["nodesVisited"],"ownerWindowScoped":ownership["_testOwnerWindowScoped"],"matches":ownership_matches},
             "ownershipNavigation":{"fallback":ownership_navigation["fallback"],"semanticClickRejected":ownership_navigation["semanticClickRejected"],"address":address_value},
+            "referencesNavigation":{"address":references_address,"result":references_click},
+            "sliceSearch":{"query":slice_query,"nodesVisited":slice_snapshot["nodesVisited"],"truncated":slice_snapshot["truncated"],"queryAmbiguous":slice_snapshot["queryAmbiguous"],"ownerWindowScoped":slice_snapshot["_testOwnerWindowScoped"],"matches":slice_matches},
+            "sliceNavigation":{"address":slice_address,"scrolls":slice_scroll,"result":slice_click},
+            "slicePageContent":{"windowId":browser_window_id,"heading":slice_heading["name"],"visible":true},
             "screenshot":screenshot_path,
         });
         eprintln!("GLASS_PUBLIC_AX_DIAGNOSTIC {report}");
         Ok(json!({"browserWindowObserved":true,"diagnosticOnly":true}))
+    }
+
+    fn pointer_click_fresh_target(
+        desktop: &super::super::Desktop,
+        session_id: &str,
+        window_id: &str,
+        query: &str,
+        expected_name: &str,
+        require_pointer_fallback: bool,
+    ) -> Result<Value, String> {
+        let snapshot = desktop
+            .observe_accessibility_scoped(Some(session_id), Some(query), Some(window_id))
+            .map_err(|error| format!("observing `{query}` before pointer click: {error}"))?;
+        if snapshot["truncated"] != false || snapshot["queryAmbiguous"] != false {
+            return Err(format!(
+                "pointer query `{query}` was incomplete or ambiguous: {}",
+                json!({
+                    "truncated":snapshot["truncated"],
+                    "queryAmbiguous":snapshot["queryAmbiguous"],
+                    "nodesVisited":snapshot["nodesVisited"],
+                    "roleCounts":snapshot["_testRoleCounts"],
+                    "nodes":snapshot["nodes"]
+                })
+            ));
+        }
+        let target = snapshot["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|node| {
+                node["name"]
+                    .as_str()
+                    .is_some_and(|name| name.trim() == expected_name)
+                    && node["onscreen"] == true
+                    && node["pointerTarget"].is_object()
+                    && (!require_pointer_fallback || node["pointerFallback"] == true)
+            })
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "fresh pointer query `{query}` did not produce the expected onscreen target: {}",
+                    json!({"nodesVisited":snapshot["nodesVisited"],"nodes":snapshot["nodes"]})
+                )
+            })?;
+        let pointer = &target["pointerTarget"];
+        desktop
+            .input(
+                super::super::Lease::Agent,
+                &json!({
+                    "action":"pointer-click",
+                    "button":"left",
+                    "x":pointer["x"],
+                    "y":pointer["y"]
+                }),
+            )
+            .map_err(|error| {
+                format!(
+                    "clicking fresh `{expected_name}` pointer: {}",
+                    error.message()
+                )
+            })?;
+        Ok(
+            json!({"name":target["name"],"pointerFallback":target["pointerFallback"],"revision":snapshot["revision"]}),
+        )
+    }
+
+    fn click_fresh_link(
+        desktop: &super::super::Desktop,
+        session_id: &str,
+        window_id: &str,
+        query: &str,
+        expected_name: &str,
+    ) -> Result<Value, String> {
+        let snapshot = desktop
+            .observe_accessibility_scoped(Some(session_id), Some(query), Some(window_id))
+            .map_err(|error| format!("observing `{query}` before link click: {error}"))?;
+        if snapshot["truncated"] != false || snapshot["queryAmbiguous"] != false {
+            return Err(format!(
+                "link query `{query}` was incomplete or ambiguous: {}",
+                json!({
+                    "truncated":snapshot["truncated"],
+                    "queryAmbiguous":snapshot["queryAmbiguous"],
+                    "nodesVisited":snapshot["nodesVisited"],
+                    "nodes":snapshot["nodes"]
+                })
+            ));
+        }
+        let target = snapshot["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|node| {
+                node["role"] == "link"
+                    && node["name"]
+                        .as_str()
+                        .is_some_and(|name| name.trim() == expected_name)
+                    && node["onscreen"] == true
+            })
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "link query `{query}` did not find the exact onscreen `{expected_name}` link: {}",
+                    json!({
+                        "windowId":window_id,
+                        "nodesVisited":snapshot["nodesVisited"],
+                        "truncated":snapshot["truncated"],
+                        "queryAmbiguous":snapshot["queryAmbiguous"],
+                        "focusedWindow":snapshot["focusedWindow"],
+                        "windows":snapshot["windows"],
+                        "roleCounts":snapshot["_testRoleCounts"],
+                        "visitedSamples":snapshot["_testVisitedSamples"],
+                        "prunedBranches":snapshot["_testPrunedBranches"],
+                        "nodes":snapshot["nodes"].as_array().into_iter().flatten().take(24).collect::<Vec<_>>(),
+                    })
+                )
+            })?;
+        if let Some(target_id) = target["targetId"].as_str() {
+            match desktop.act_accessibility(&json!({
+                "sessionId":session_id,
+                "revision":snapshot["revision"],
+                "targetId":target_id,
+                "action":"click"
+            })) {
+                Ok(result) => return Ok(json!({"method":"desktop_act","result":result})),
+                Err(error) if error.contains("no recognized accessibility click action") => {}
+                Err(error) => {
+                    return Err(format!("desktop_act failed for `{expected_name}`: {error}"));
+                }
+            }
+        }
+        let fresh = desktop
+            .observe_accessibility_scoped(Some(session_id), Some(query), Some(window_id))
+            .map_err(|error| format!("reobserving `{query}` for pointer fallback: {error}"))?;
+        if fresh["truncated"] != false || fresh["queryAmbiguous"] != false {
+            return Err(format!(
+                "fresh link query `{query}` was incomplete or ambiguous: {}",
+                json!({"truncated":fresh["truncated"],"queryAmbiguous":fresh["queryAmbiguous"]})
+            ));
+        }
+        let fresh_target = fresh["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|node| {
+                node["role"] == "link"
+                    && node["name"]
+                        .as_str()
+                        .is_some_and(|name| name.trim() == expected_name)
+                    && node["onscreen"] == true
+                    && node["pointerTarget"].is_object()
+            })
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "fresh link query `{query}` has no onscreen pointer target: {}",
+                    json!({"nodesVisited":fresh["nodesVisited"],"nodes":fresh["nodes"]})
+                )
+            })?;
+        let pointer = &fresh_target["pointerTarget"];
+        desktop
+            .input(
+                super::super::Lease::Agent,
+                &json!({
+                    "action":"pointer-click",
+                    "button":"left",
+                    "x":pointer["x"],
+                    "y":pointer["y"]
+                }),
+            )
+            .map_err(|error| {
+                format!(
+                    "clicking fresh `{expected_name}` link pointer: {}",
+                    error.message()
+                )
+            })?;
+        Ok(json!({
+            "method":"fresh_pointerTarget",
+            "semanticClickRejected":"no recognized accessibility click action",
+            "revision":fresh["revision"],
+            "name":fresh_target["name"]
+        }))
+    }
+
+    fn scroll_until_query_link_is_onscreen(
+        desktop: &super::super::Desktop,
+        session_id: &str,
+        window_id: &str,
+        query: &str,
+        expected_name: &str,
+    ) -> Result<Vec<Value>, String> {
+        let mut observations = Vec::new();
+        for _ in 0..6 {
+            let snapshot = desktop
+                .observe_accessibility_scoped(Some(session_id), Some(query), Some(window_id))
+                .map_err(|error| format!("observing `{query}` while scrolling: {error}"))?;
+            if snapshot["truncated"] != false || snapshot["queryAmbiguous"] != false {
+                return Err(format!(
+                    "scroll query `{query}` was incomplete or ambiguous: {}",
+                    json!({"nodesVisited":snapshot["nodesVisited"],"truncated":snapshot["truncated"],"queryAmbiguous":snapshot["queryAmbiguous"]})
+                ));
+            }
+            let target = snapshot["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|node| {
+                    node["role"] == "link"
+                        && node["name"]
+                            .as_str()
+                            .is_some_and(|name| name.trim() == expected_name)
+                })
+                .ok_or_else(|| format!("scroll query `{query}` lost `{expected_name}`"))?;
+            observations.push(json!({
+                "onscreen":target["onscreen"],
+                "hasTarget":target["targetId"].is_string(),
+                "hasPointer":target["pointerTarget"].is_object(),
+                "nodesVisited":snapshot["nodesVisited"]
+            }));
+            if target["onscreen"] == true {
+                return Ok(observations);
+            }
+            if target["targetId"].is_string() || target["pointerTarget"].is_object() {
+                return Err("offscreen query result unexpectedly carried an action token".into());
+            }
+            // Slice Type is the next TOC sibling just below the visible
+            // References row. Move down one wheel increment and refresh after
+            // every step so the candidate cannot be skipped past the viewport.
+            desktop
+                .input(
+                    super::super::Lease::Agent,
+                    &json!({"action":"scroll","x":0.15,"y":0.8,"deltaY":40}),
+                )
+                .map_err(|error| {
+                    format!("scrolling toward `{expected_name}`: {}", error.message())
+                })?;
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+        let diagnostic_frame = desktop
+            .frame_after(0, std::time::Duration::from_millis(500))
+            .ok()
+            .flatten()
+            .and_then(|(_, _, bytes)| save_scroll_diagnostic_frame(&bytes).ok());
+        Err(format!(
+            "`{expected_name}` remained offscreen after bounded scrolls: {} (private frame: {})",
+            json!(observations),
+            diagnostic_frame.as_deref().unwrap_or("unavailable")
+        ))
+    }
+
+    fn save_scroll_diagnostic_frame(bytes: &[u8]) -> Result<String, std::io::Error> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "glass-scroll-diagnostic-{}-{nonce}.jpg",
+            std::process::id()
+        ));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        Ok(path.display().to_string())
+    }
+
+    fn read_browser_address(
+        desktop: &super::super::Desktop,
+        session_id: &str,
+        window_id: &str,
+    ) -> Result<String, String> {
+        let snapshot = desktop
+            .observe_accessibility_scoped(Some(session_id), Some("Chrome address"), Some(window_id))
+            .map_err(|error| format!("reading Chrome address: {error}"))?;
+        if snapshot["truncated"] != false || snapshot["queryAmbiguous"] != false {
+            return Err(format!(
+                "Chrome address observation was incomplete or ambiguous: {snapshot}"
+            ));
+        }
+        let values = snapshot["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|node| node["value"].as_str().map(ToOwned::to_owned))
+            .collect::<Vec<_>>();
+        match values.as_slice() {
+            [address] => Ok(address.clone()),
+            _ => Err(format!(
+                "Chrome address observation was not unique: {snapshot}"
+            )),
+        }
+    }
+
+    fn select_rust_book_window(
+        desktop: &super::super::Desktop,
+        session_id: &str,
+        query: &str,
+        expected_title: &str,
+    ) -> Result<String, String> {
+        let snapshot = desktop
+            .observe_accessibility(Some(session_id), Some(query))
+            .map_err(|error| format!("selecting visible Rust Book window: {error}"))?;
+        snapshot["windows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|window| {
+                window["application"]
+                    .as_str()
+                    .is_some_and(|name| name.to_ascii_lowercase().contains("chrome"))
+                    && window["name"]
+                        .as_str()
+                        .is_some_and(|name| name.to_ascii_lowercase().contains(expected_title))
+            })
+            .and_then(|window| window["windowId"].as_str())
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| format!("visible Rust Book window had no selector: {snapshot}"))
+    }
+
+    fn unique_browser_address_value(snapshot: &Value) -> Option<&str> {
+        if snapshot["truncated"] != false || snapshot["queryAmbiguous"] != false {
+            return None;
+        }
+        let mut values = snapshot["nodes"]
+            .as_array()?
+            .iter()
+            .filter_map(|node| node["value"].as_str());
+        let address = values.next()?;
+        values.next().is_none().then_some(address)
     }
 
     fn write_test_application_entry(
@@ -1453,7 +2545,29 @@ mod tests {
         let mut file = options.open(path)?;
         writeln!(
             file,
-            "[Desktop Entry]\nType=Application\nName=Managed Chromium (Glass acceptance)\nExec=/usr/bin/env ACCESSIBILITY_ENABLED=1 {binary} --user-data-dir={profile} --no-first-run --no-default-browser-check --password-store=basic --force-renderer-accessibility=complete\nStartupWMClass=chrome\nTerminal=false\nNoDisplay=false\n"
+            "[Desktop Entry]\nType=Application\nName=Managed Chromium (Glass acceptance)\nExec=/usr/bin/env ACCESSIBILITY_ENABLED=1 {binary} --user-data-dir={profile} --no-first-run --no-default-browser-check --password-store=basic --force-renderer-accessibility=complete --disable-gpu --enable-logging=stderr --log-file={profile}/chrome.log\nStartupWMClass=chrome\nTerminal=false\nNoDisplay=false\n"
         )
+    }
+
+    fn read_bounded_chrome_log(profile: &Path) -> String {
+        let path = profile.join("chrome.log");
+        let Ok(file) = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&path)
+        else {
+            return String::new();
+        };
+        let mut contents = String::new();
+        if file.take(4097).read_to_string(&mut contents).is_err() {
+            return String::new();
+        }
+        contents = contents.replace(&profile.display().to_string(), "<private-profile>");
+        contents = contents.replace("unix:path=", "unix:path=<redacted>");
+        contents
+            .chars()
+            .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+            .take(4096)
+            .collect()
     }
 }

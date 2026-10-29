@@ -525,6 +525,11 @@ mod tests {
                     .map(|snapshot| snapshot.application_root_names)
                     .unwrap_or_default();
             latest["applicationRootNames"] = json!(application_root_names);
+            if std::env::var_os("GLASS_DESKTOP_PUBLIC_AX_DIAGNOSTIC").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+            {
+                return run_public_page_ax_diagnostic(&desktop, &session_id);
+            }
             let home_page = root.join("browser-home.html");
             let chapter_page = root.join("browser-chapter.html");
             let detail_page = root.join("browser-detail.html");
@@ -1123,14 +1128,297 @@ mod tests {
             eprintln!("managed app launch acceptance: {report}");
         }
         assert_eq!(report["browserWindowObserved"], true);
-        assert_eq!(
-            report["deepNavigationVerified"], true,
-            "navigation was not verified: {report}"
-        );
-        assert_eq!(
-            report["originalTabPreserved"], true,
-            "original tab was not preserved: {report}"
-        );
+        if std::env::var_os("GLASS_DESKTOP_PUBLIC_AX_DIAGNOSTIC").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        {
+            assert_eq!(
+                report["deepNavigationVerified"], true,
+                "navigation was not verified: {report}"
+            );
+            assert_eq!(
+                report["originalTabPreserved"], true,
+                "original tab was not preserved: {report}"
+            );
+        }
+    }
+
+    fn run_public_page_ax_diagnostic(
+        desktop: &super::super::Desktop,
+        session_id: &str,
+    ) -> Result<Value, String> {
+        desktop
+            .input(
+                super::super::Lease::Agent,
+                &json!({"action":"key-chord","keys":["Control","L"]}),
+            )
+            .map_err(|error| format!("focusing the browser address: {}", error.message()))?;
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        desktop
+            .input(
+                super::super::Lease::Agent,
+                &json!({"action":"text","text":"https://doc.rust-lang.org/book/"}),
+            )
+            .map_err(|error| format!("entering the public URL: {}", error.message()))?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let address_observation = desktop
+            .observe_accessibility(Some(session_id), Some("Chrome address"))
+            .map_err(|error| format!("checking the browser address field: {error}"))?;
+        let address_value = address_observation["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find_map(|node| node["value"].as_str().map(ToOwned::to_owned));
+        if !address_value
+            .as_deref()
+            .is_some_and(|value| value.contains("doc.rust-lang.org/book/"))
+        {
+            return Err(format!(
+                "the managed browser address field did not contain the requested public URL: {}",
+                json!({"snapshot":address_observation,"addressValue":address_value})
+            ));
+        }
+        desktop
+            .input(
+                super::super::Lease::Agent,
+                &json!({"action":"key-tap","key":"Enter"}),
+            )
+            .map_err(|error| format!("opening the public URL: {}", error.message()))?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut browser_title = String::new();
+        while std::time::Instant::now() < deadline {
+            if let Ok(snapshot) = desktop.observe_accessibility(Some(session_id), Some("Chrome"))
+                && let Some(title) = snapshot["focusedWindow"]["name"].as_str()
+            {
+                browser_title = title.to_owned();
+                if title
+                    .to_ascii_lowercase()
+                    .contains("the rust programming language")
+                {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let toggle_query = "Chrome Toggle Table of Contents label";
+        let toggle_snapshot = desktop
+            .observe_accessibility(Some(session_id), Some(toggle_query))
+            .map_err(|error| format!("finding the visible table-of-contents toggle: {error}"))?;
+        let toggle = toggle_snapshot["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|node| {
+                node["pointerFallback"] == true
+                    && node["onscreen"] == true
+                    && node["targetId"].is_null()
+                    && node["pointerTarget"].is_object()
+            })
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "the Rust Book table-of-contents toggle did not yield a unique fresh screen target: {}",
+                    json!({
+                        "truncated":toggle_snapshot["truncated"],
+                        "queryAmbiguous":toggle_snapshot["queryAmbiguous"],
+                        "nodes":toggle_snapshot["nodes"]
+                    })
+                )
+            })?;
+        if toggle_snapshot["truncated"] == true || toggle_snapshot["queryAmbiguous"] == true {
+            return Err("the table-of-contents toggle search was incomplete or ambiguous".into());
+        }
+        let pointer = &toggle["pointerTarget"];
+        desktop
+            .input(
+                super::super::Lease::Agent,
+                &json!({
+                    "action":"pointer-click",
+                    "button":"left",
+                    "x":pointer["x"],
+                    "y":pointer["y"]
+                }),
+            )
+            .map_err(|error| {
+                format!(
+                    "clicking the observed table-of-contents toggle: {}",
+                    error.message()
+                )
+            })?;
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let ownership_query = "Chrome The Rust Programming Language Understanding Ownership link";
+        let ownership = desktop
+            .observe_accessibility(Some(session_id), Some(ownership_query))
+            .map_err(|error| format!("searching the opened table of contents: {error}"))?;
+        let ownership_matches = ownership["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|node| {
+                node["role"] == "link"
+                    && node["name"]
+                        .as_str()
+                        .is_some_and(|name| name.trim() == "Understanding Ownership")
+            })
+            .map(|node| {
+                json!({
+                    "name":node["name"],
+                    "owningWindow":node["owningWindow"],
+                    "onscreen":node["onscreen"],
+                    "hasTarget":node["targetId"].is_string(),
+                    "hasPointer":node["pointerTarget"].is_object(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let ownership_link = ownership["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|node| {
+                node["role"] == "link"
+                    && node["name"]
+                        .as_str()
+                        .is_some_and(|name| name.trim() == "Understanding Ownership")
+                    && node["onscreen"] == true
+                    && node["targetId"].is_string()
+            })
+            .cloned();
+        let mut ownership_navigation = Value::Null;
+        if ownership["truncated"] == false
+            && ownership["queryAmbiguous"] == false
+            && let Some(link) = ownership_link.as_ref()
+        {
+            let semantic_result = desktop.act_accessibility(&json!({
+                "sessionId":session_id,
+                "revision":ownership["revision"],
+                "targetId":link["targetId"],
+                "action":"click"
+            }));
+            match semantic_result {
+                Ok(result) => ownership_navigation = result,
+                Err(error) if error.contains("no recognized accessibility click action") => {
+                    let fresh = desktop
+                        .observe_accessibility(Some(session_id), Some(ownership_query))
+                        .map_err(|error| {
+                            format!("refreshing the unsupported Ownership link: {error}")
+                        })?;
+                    let fresh_link = fresh["nodes"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .find(|node| {
+                                node["role"] == "link"
+                                    && node["name"].as_str().is_some_and(|name| {
+                                        name.trim() == "Understanding Ownership"
+                                    })
+                                    && node["onscreen"] == true
+                                    && node["pointerTarget"].is_object()
+                            })
+                            .cloned()
+                            .ok_or_else(|| {
+                                format!(
+                                    "fresh Ownership link search did not return a unique visible pointer target: {}",
+                                    json!({
+                                        "truncated":fresh["truncated"],
+                                        "queryAmbiguous":fresh["queryAmbiguous"],
+                                        "nodes":fresh["nodes"]
+                                    })
+                                )
+                            })?;
+                    if fresh["truncated"] == true || fresh["queryAmbiguous"] == true {
+                        return Err(
+                            "fresh Ownership link search was incomplete or ambiguous".into()
+                        );
+                    }
+                    let pointer = &fresh_link["pointerTarget"];
+                    desktop
+                        .input(
+                            super::super::Lease::Agent,
+                            &json!({
+                                "action":"pointer-click",
+                                "button":"left",
+                                "x":pointer["x"],
+                                "y":pointer["y"]
+                            }),
+                        )
+                        .map_err(|error| {
+                            format!(
+                                "clicking the freshly observed Ownership link: {}",
+                                error.message()
+                            )
+                        })?;
+                    ownership_navigation = json!({
+                        "semanticClickRejected":error,
+                        "fallback":"fresh scoped pointerTarget",
+                        "observedLink":fresh_link,
+                        "revision":fresh["revision"]
+                    });
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "following the freshly observed Ownership link: {error}"
+                    ));
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if let Ok(address_snapshot) =
+                desktop.observe_accessibility(Some(session_id), Some("Chrome address"))
+            {
+                ownership_navigation["addressObservation"] = address_snapshot;
+            }
+        }
+        if ownership["truncated"] != false
+            || ownership["queryAmbiguous"] != false
+            || ownership_matches.len() != 1
+            || ownership["_testOwnerWindowScoped"] != true
+        {
+            return Err(format!(
+                "the owner-scoped Ownership link search was not complete and unique: {}",
+                json!({
+                    "truncated":ownership["truncated"],
+                    "queryAmbiguous":ownership["queryAmbiguous"],
+                    "ownerWindowScoped":ownership["_testOwnerWindowScoped"],
+                    "matches":ownership_matches
+                })
+            ));
+        }
+        let address_value = ownership_navigation["addressObservation"]["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find_map(|node| node["value"].as_str());
+        if !address_value
+            .is_some_and(|address| address.contains("/book/ch04-00-understanding-ownership.html"))
+        {
+            return Err(format!(
+                "the public Ownership link did not reach its chapter URL: {}",
+                json!({"address":address_value,"navigation":ownership_navigation})
+            ));
+        }
+        let screenshot_path = std::env::temp_dir().join(format!(
+            "glass-public-rust-book-ax-{}.jpg",
+            std::process::id()
+        ));
+        let screenshot = desktop
+            .frame_after(0, std::time::Duration::from_secs(2))
+            .map_err(|error| format!("capturing isolated diagnostic frame: {error}"))?
+            .ok_or("isolated diagnostic frame was unavailable")?;
+        fs::write(&screenshot_path, screenshot.2)
+            .map_err(|error| format!("saving isolated diagnostic frame: {error}"))?;
+        fs::set_permissions(&screenshot_path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("protecting isolated diagnostic frame: {error}"))?;
+        let report = json!({
+            "diagnosticOnly":true,
+            "browserTitle":browser_title,
+            "toggleQuery":toggle_query,
+            "toggle":toggle,
+            "ownershipQuery":ownership_query,
+            "ownershipSearch":{"truncated":ownership["truncated"],"queryAmbiguous":ownership["queryAmbiguous"],"nodesVisited":ownership["nodesVisited"],"ownerWindowScoped":ownership["_testOwnerWindowScoped"],"matches":ownership_matches},
+            "ownershipNavigation":{"fallback":ownership_navigation["fallback"],"semanticClickRejected":ownership_navigation["semanticClickRejected"],"address":address_value},
+            "screenshot":screenshot_path,
+        });
+        eprintln!("GLASS_PUBLIC_AX_DIAGNOSTIC {report}");
+        Ok(json!({"browserWindowObserved":true,"diagnosticOnly":true}))
     }
 
     fn write_test_application_entry(

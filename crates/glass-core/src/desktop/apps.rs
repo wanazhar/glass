@@ -530,7 +530,7 @@ mod tests {
             let detail_page = root.join("browser-detail.html");
             fs::write(
                 &home_page,
-                "<!doctype html><html><head><title>Managed browser home fixture</title></head><body><h1>Home page</h1><a href=\"browser-chapter.html\">Observed chapter link</a></body></html>",
+                "<!doctype html><html><head><title>Managed browser home fixture</title></head><body><h1>Home page</h1><p>Visible introduction for the current viewport.</p><div style=\"height:5000px\"></div><a href=\"browser-chapter.html\">Observed chapter link</a></body></html>",
             )
             .map_err(|error| format!("writing isolated browser home fixture: {error}"))?;
             fs::write(
@@ -604,6 +604,32 @@ mod tests {
             let page_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
             let mut page_diagnostics = Value::Null;
             let mut home_link = None;
+            let initial_search = desktop
+                .observe_accessibility(Some(&session_id), Some("Chrome Observed chapter link link"))
+                .map_err(|error| format!("searching for the below-fold home link: {error}"))?;
+            let initial_matches = initial_search["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|node| node["role"] == "link" && node["name"] == "Observed chapter link")
+                .collect::<Vec<_>>();
+            if initial_matches.len() != 1
+                || initial_search["truncated"] != false
+                || initial_search["queryAmbiguous"] != false
+            {
+                return Err(format!(
+                    "below-fold link was not a unique complete search result: {initial_search}"
+                ));
+            }
+            let candidate = initial_matches[0];
+            if candidate["onscreen"] != false
+                || !candidate["targetId"].is_null()
+                || !candidate["pointerTarget"].is_null()
+            {
+                return Err(format!(
+                    "below-fold link received an action token before scrolling: {candidate}"
+                ));
+            }
             while std::time::Instant::now() < page_deadline {
                 if let Ok(observation) = desktop.observe_accessibility(
                     Some(&session_id),
@@ -623,6 +649,8 @@ mod tests {
                             node["role"] == "link"
                                 && node["name"] == "Observed chapter link"
                                 && node["targetId"].is_string()
+                                && node["onscreen"] == true
+                                && node["pointerTarget"].is_object()
                         })
                         .collect::<Vec<_>>();
                     if matches.len() == 1
@@ -633,6 +661,17 @@ mod tests {
                         break;
                     }
                 }
+                desktop
+                    .input(
+                        super::super::Lease::Agent,
+                        &json!({"action":"scroll","deltaY":800.0,"x":0.5,"y":0.5}),
+                    )
+                    .map_err(|error| {
+                        format!(
+                            "scrolling to the observed below-fold link: {}",
+                            error.message()
+                        )
+                    })?;
                 std::thread::sleep(std::time::Duration::from_millis(150));
             }
             let Some((home_observation, chapter_link)) = home_link else {

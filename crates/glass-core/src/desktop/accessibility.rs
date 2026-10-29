@@ -33,6 +33,7 @@ pub(super) struct Target {
     pub supports_focus: bool,
     pub supports_text: bool,
     pub is_password: bool,
+    pub screen_bound: bool,
 }
 
 pub(super) struct Snapshot {
@@ -169,6 +170,7 @@ async fn observe_async(
     let mut visited = 0usize;
     let mut truncated = roots_truncated;
     let mut query_ambiguous = false;
+    let mut matched_actionable_count = 0usize;
     let started = Instant::now();
     while let Some((object, depth, parent_application, parent_window, parent_window_object)) =
         pending.pop_front()
@@ -224,6 +226,7 @@ async fn observe_async(
         let supports_text =
             interfaces.contains(Interface::EditableText) && !states.contains(State::ReadOnly);
         let visible = states.contains(State::Visible) && states.contains(State::Showing);
+        let tree_visible = states.contains(State::Visible);
         let role_can_activate = role_can_activate(&role_lower);
         let query_needs_action_names = query_terms.as_ref().is_none_or(|terms| {
             terms
@@ -313,9 +316,14 @@ async fn observe_async(
             focused_window = window.clone();
         }
         let mut skip_matched_target_subtree = false;
-        if node_is_relevant(depth, is_window, visible, is_actionable) {
-            let target_id =
-                is_actionable.then(|| accessibility_target_id(session_id, revision, visited));
+        let focused_search_candidate = focused_search
+            && window.is_some()
+            && tree_visible
+            && (is_actionable || is_search_context_role(&role_lower));
+        if node_is_relevant(depth, is_window, visible, is_actionable) || focused_search_candidate {
+            // An offscreen match can guide scrolling, but it must not authorize
+            // an action until a fresh observation confirms it is showing.
+            let mut target_id = None;
             let exposes_text = interfaces.contains(Interface::Text)
                 && matches!(
                     role_lower.as_str(),
@@ -328,7 +336,7 @@ async fn observe_async(
                         | "paragraph"
                 );
             let mut node = json!({
-                "targetId": target_id,
+                "targetId": null,
                 "depth": depth,
                 "role": role,
                 "name": name,
@@ -344,12 +352,38 @@ async fn observe_async(
             let matches_query = query_terms
                 .as_ref()
                 .is_none_or(|terms| query_matches(&node, terms));
+            let screen_target_value = if matches_query && query.is_some() && is_actionable {
+                query_screen_target(&accessible).await
+            } else {
+                None
+            };
+            if query.is_some() && is_actionable {
+                // For query results this reports measured screen-rectangle
+                // intersection, not merely AT-SPI's Visible state.
+                node["onscreen"] = json!(screen_target_value.is_some());
+            }
+            let target_is_visible = target_can_be_exposed(
+                is_actionable,
+                visible,
+                query.is_some(),
+                screen_target_value.is_some(),
+            );
+            if matches_query && target_is_visible {
+                target_id = Some(accessibility_target_id(session_id, revision, visited));
+                node["targetId"] = json!(target_id);
+                if query.is_some() {
+                    node["pointerTarget"] = screen_target_value.clone().unwrap_or(Value::Null);
+                }
+            }
             skip_matched_target_subtree = query.is_some()
                 && matches_query
                 && target_id.is_some()
                 && (supports_text || role_can_activate);
             if matches_query {
-                if (supports_text || exposes_text) && (query.is_none() || app_scoped_query) {
+                if visible
+                    && (supports_text || exposes_text)
+                    && (query.is_none() || app_scoped_query)
+                {
                     let value = read_text_value(&accessible, MAX_VALUE_CHARS).await;
                     node["value"] = protect_text_value(value, is_password)
                         .map(Value::String)
@@ -373,18 +407,16 @@ async fn observe_async(
                             supports_focus,
                             supports_text,
                             is_password,
+                            screen_bound: query.is_some(),
                         },
                     );
                 }
                 nodes.push(node);
             }
-            if query.is_some()
-                && nodes
-                    .iter()
-                    .filter(|node| node["targetId"].is_string())
-                    .count()
-                    >= 2
-            {
+            if matches_query && is_actionable {
+                matched_actionable_count += 1;
+            }
+            if query.is_some() && matched_actionable_count >= 2 {
                 query_ambiguous = true;
                 truncated = !pending.is_empty();
                 break;
@@ -450,7 +482,9 @@ async fn observe_async(
         if depth < depth_budget
             && !skip_menu_subtree
             && !skip_matched_target_subtree
-            && (depth == 0 || visible)
+            && (depth == 0
+                || visible
+                || (focused_search && window.is_some() && !is_window && tree_visible))
         {
             let children = match prefetched_children {
                 Some(children) => children,
@@ -484,7 +518,7 @@ async fn observe_async(
                 }
             }
         } else if depth >= depth_budget
-            && visible
+            && (visible || (focused_search && window.is_some() && !is_window && tree_visible))
             && !skip_menu_subtree
             && !skip_matched_target_subtree
             && accessible.child_count().await.unwrap_or_default() > 0
@@ -495,34 +529,6 @@ async fn observe_async(
 
     let matched_targets = if let Some(terms) = query_terms.as_ref() {
         nodes.retain(|node| query_matches(node, terms));
-        // Resolve geometry only for filtered visible targets. Doing this
-        // inside the full tree walk adds a D-Bus call for every button and can
-        // hide later nodes under the observation budget.
-        for node in &mut nodes {
-            let Some(target_id) = node["targetId"].as_str() else {
-                continue;
-            };
-            let Some(target) = targets.get(target_id) else {
-                continue;
-            };
-            if !target.supports_click && !target.supports_focus
-                || (target.supports_click && !role_can_activate(&target.role.to_ascii_lowercase()))
-            {
-                continue;
-            }
-            let Ok(accessible) = target.object.as_accessible_proxy(&accessibility).await else {
-                continue;
-            };
-            let Ok(proxies) = accessible.proxies().await else {
-                continue;
-            };
-            let Ok(component) = proxies.component().await else {
-                continue;
-            };
-            if let Ok(extents) = component.get_extents(CoordType::Screen).await {
-                node["pointerTarget"] = pointer_target_from_extents(extents).unwrap_or(Value::Null);
-            }
-        }
         nodes
             .iter()
             .filter_map(|node| node["targetId"].as_str().map(ToOwned::to_owned))
@@ -656,6 +662,13 @@ fn query_matches(node: &Value, terms: &[String]) -> bool {
     if let Some(actions) = node["actions"].as_array() {
         fields.extend(actions.iter().filter_map(Value::as_str));
     }
+    if let Some(window) = node["owningWindow"].as_object() {
+        fields.extend(
+            ["role", "name", "application"]
+                .into_iter()
+                .filter_map(|key| window.get(key).and_then(Value::as_str)),
+        );
+    }
     let haystack = fields.join(" ").to_lowercase();
     terms
         .iter()
@@ -676,6 +689,8 @@ fn is_role_hint(term: &str) -> bool {
             | "text"
             | "window"
             | "dialog"
+            | "heading"
+            | "paragraph"
     )
 }
 
@@ -694,8 +709,17 @@ fn role_matches_hint(role: &str, hint: &str) -> bool {
         }
         "window" => matches!(role, "frame" | "window"),
         "dialog" => matches!(role, "dialog" | "alert" | "file chooser"),
+        "heading" => role == "heading",
+        "paragraph" => role == "paragraph",
         _ => true,
     }
+}
+
+fn is_search_context_role(role: &str) -> bool {
+    matches!(
+        role,
+        "heading" | "paragraph" | "static" | "text" | "document web"
+    )
 }
 
 fn role_can_activate(role: &str) -> bool {
@@ -718,6 +742,15 @@ fn role_can_activate(role: &str) -> bool {
 
 fn node_is_relevant(depth: usize, is_window: bool, visible: bool, actionable: bool) -> bool {
     depth == 0 || (visible && (is_window || actionable))
+}
+
+fn target_can_be_exposed(
+    actionable: bool,
+    visible: bool,
+    geometry_required: bool,
+    intersects_screen: bool,
+) -> bool {
+    actionable && visible && (!geometry_required || intersects_screen)
 }
 
 fn should_follow_related_object(
@@ -748,19 +781,32 @@ fn accessibility_target_id(session_id: &str, revision: u64, node_index: usize) -
 
 fn pointer_target_from_extents(extents: (i32, i32, i32, i32)) -> Option<Value> {
     let (x, y, width, height) = extents;
-    if x < 0 || y < 0 || width <= 0 || height <= 0 {
+    if width <= 0 || height <= 0 {
         return None;
     }
-    let center_x = x.checked_add(width / 2)?;
-    let center_y = y.checked_add(height / 2)?;
-    if center_x >= super::WIDTH as i32 || center_y >= super::HEIGHT as i32 {
+    let right = x.checked_add(width)?;
+    let bottom = y.checked_add(height)?;
+    let left = x.max(0);
+    let top = y.max(0);
+    let right = right.min(super::WIDTH as i32);
+    let bottom = bottom.min(super::HEIGHT as i32);
+    if right <= left || bottom <= top {
         return None;
     }
+    let center_x = left + (right - left) / 2;
+    let center_y = top + (bottom - top) / 2;
     Some(json!({
         "x": center_x as f64 / (super::WIDTH - 1) as f64,
         "y": center_y as f64 / (super::HEIGHT - 1) as f64,
         "basis": "screen"
     }))
+}
+
+async fn query_screen_target(accessible: &AccessibleProxy<'_>) -> Option<Value> {
+    let proxies = accessible.proxies().await.ok()?;
+    let component = proxies.component().await.ok()?;
+    let extents = component.get_extents(CoordType::Screen).await.ok()?;
+    pointer_target_from_extents(extents)
 }
 
 fn unverified_click_result(action_name: &str) -> Value {
@@ -898,6 +944,14 @@ async fn act_async(
         || !states.contains(State::Showing)
     {
         return Err("Accessibility target is not currently visible and sensitive".into());
+    }
+    if target.screen_bound
+        && (target.supports_click || target.supports_focus)
+        && query_screen_target(&accessible).await.is_none()
+    {
+        return Err(
+            "Accessibility target is outside the current screen; observe and scroll again".into(),
+        );
     }
 
     match action {
@@ -1097,7 +1151,7 @@ mod tests {
         display_accessible_name, focused_search_result_is_actionable, is_password_role,
         node_is_relevant, owner_is_within_ancestor_limit, pointer_target_from_extents,
         protect_text_value, query_matches, role_matches_hint, should_follow_related_object,
-        text_edit_is_supported, unverified_click_result, validate_query,
+        target_can_be_exposed, text_edit_is_supported, unverified_click_result, validate_query,
         withhold_unverified_query_tokens,
     };
     use serde_json::json;
@@ -1132,6 +1186,34 @@ mod tests {
         assert!(query_matches(
             &json!({"role":"entry","name":"Address and search bar"}),
             &["textbox".into(), "address".into()]
+        ));
+        let window_scoped_link = json!({
+            "role":"link",
+            "name":"Observed chapter link",
+            "application":"Google Chrome for Testing",
+            "owningWindow":{"role":"frame","name":"The Rust Programming Language","application":"Google Chrome for Testing"}
+        });
+        assert!(query_matches(
+            &window_scoped_link,
+            &[
+                "the rust programming language".into(),
+                "chapter".into(),
+                "link".into()
+            ]
+        ));
+        let other_window_link = json!({
+            "role":"link",
+            "name":"Observed chapter link",
+            "application":"Google Chrome for Testing",
+            "owningWindow":{"role":"frame","name":"Other browser window","application":"Google Chrome for Testing"}
+        });
+        assert!(!query_matches(
+            &other_window_link,
+            &[
+                "the rust programming language".into(),
+                "chapter".into(),
+                "link".into()
+            ]
         ));
     }
 
@@ -1239,9 +1321,33 @@ mod tests {
                 "basis": "screen"
             }))
         );
-        assert!(pointer_target_from_extents((-1, 10, 20, 20)).is_none());
+        assert_eq!(
+            pointer_target_from_extents((-10, 10, 20, 20)),
+            Some(json!({
+                "x": 5.0 / 1279.0,
+                "y": 20.0 / 799.0,
+                "basis": "screen"
+            }))
+        );
+        assert!(pointer_target_from_extents((-20, 10, 10, 20)).is_none());
         assert!(pointer_target_from_extents((10, 10, 0, 20)).is_none());
-        assert!(pointer_target_from_extents((1270, 10, 20, 20)).is_none());
+        assert_eq!(
+            pointer_target_from_extents((1270, 10, 20, 20)),
+            Some(json!({
+                "x": 1275.0 / 1279.0,
+                "y": 20.0 / 799.0,
+                "basis": "screen"
+            }))
+        );
+    }
+
+    #[test]
+    fn offscreen_and_unmeasured_controls_never_receive_action_tokens() {
+        assert!(target_can_be_exposed(true, true, false, false));
+        assert!(target_can_be_exposed(true, true, true, true));
+        assert!(!target_can_be_exposed(true, false, true, true));
+        assert!(!target_can_be_exposed(true, true, true, false));
+        assert!(!target_can_be_exposed(false, true, true, true));
     }
 
     #[test]

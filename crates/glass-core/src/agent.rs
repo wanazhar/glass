@@ -5453,10 +5453,102 @@ for line in sys.stdin:
 mod recovery_tests {
     use super::*;
     use crate::ext::Registry;
+    use crate::provider::Error;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn no_pump(_: &mut Option<String>) {}
+
+    struct SecretPromptProvider {
+        calls: Arc<AtomicUsize>,
+        second_request: Arc<std::sync::Mutex<Option<String>>>,
+    }
+
+    impl Provider for SecretPromptProvider {
+        fn id(&self) -> &str {
+            "secret-prompt-fixture"
+        }
+
+        fn stream(
+            &self,
+            request: &Request<'_>,
+        ) -> Result<Box<dyn Iterator<Item = Event> + '_>, Error> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(Box::new(
+                    vec![
+                        Event::ToolCall {
+                            id: "request-secret".into(),
+                            name: "request_secret".into(),
+                            arguments: r#"{"purpose":"Sign in to staging","destination":"https://api.example.test","tool":"web_secret_request","operation":"create token"}"#.into(),
+                        },
+                        Event::Done,
+                    ]
+                    .into_iter(),
+                ));
+            }
+            *self.second_request.lock().unwrap() = Some(format!("{:?}", request.messages));
+            Ok(Box::new(
+                vec![Event::Text("Ready to continue".into()), Event::Done].into_iter(),
+            ))
+        }
+
+        fn context_window(&self) -> u32 {
+            200_000
+        }
+    }
+
+    #[test]
+    fn tui_secret_request_exposes_only_a_scoped_reference_to_the_provider() {
+        use glass_tui::crossterm::event::{
+            Event as TerminalEvent, KeyCode, KeyEvent, KeyModifiers,
+        };
+
+        let dir = std::env::temp_dir().join(format!(
+            "gc-tui-secret-flow-{}-{}",
+            std::process::id(),
+            crate::loops::now()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = Session::create(&dir).unwrap();
+        let mut state = State::new();
+        let mods = Vec::new();
+        let mut extensions = Registry::empty();
+        let second_request = Arc::new(std::sync::Mutex::new(None));
+        let provider = SecretPromptProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            second_request: second_request.clone(),
+        };
+        let keys = crate::input::KeyReader::from_test_events([
+            TerminalEvent::Paste("tui-agent-secret-sentinel".into()),
+            TerminalEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        ]);
+        let mut agent = Agent::new(
+            &provider,
+            &mut session,
+            &mut state,
+            &mods,
+            &mut extensions,
+            &dir,
+        )
+        .with_input_keys(&keys);
+        let (output, stop) = agent.run_turn(no_pump).unwrap();
+        assert_eq!(stop, Stop::Finished);
+        assert!(output.text.contains("Ready to continue"));
+        let next_request = second_request.lock().unwrap().clone().unwrap_or_default();
+        assert!(next_request.contains("secretRef"));
+        assert!(!next_request.contains("tui-agent-secret-sentinel"));
+        let records = agent.session.history_records();
+        assert!(!format!("{records:?}").contains("tui-agent-secret-sentinel"));
+        assert!(records.iter().any(|record| matches!(
+            record,
+            Record::ToolResult { name, body, .. }
+                if name == "request_secret" && body.contains("secretRef")
+        )));
+        drop(agent);
+        drop(extensions);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn consumed_secret_is_redacted_before_progress_transcript_export_and_diagnostics() {

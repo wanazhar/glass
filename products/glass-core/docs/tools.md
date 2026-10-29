@@ -12,15 +12,84 @@ and discovers deeper workflows on demand. See the [checklist reference](referenc
 for batched operations, stable IDs, blockers and durable receipts. `/todo` opens
 the shared task modal; no extension is required.
 
-`web_search` uses Exa's hosted MCP search, and `web_fetch` reads an HTTP(S) page
-as bounded text. Both are native Core tools; their configuration, source
-handling and limits are in [Web search and fetch](web-tools.md).
+`web_search` uses Exa's hosted MCP search. `web_fetch` reads an HTTP
+(Hypertext Transfer Protocol) or HTTPS (Hypertext Transfer Protocol Secure)
+page as bounded text. Both are native Core tools. See
+[Web search and fetch](web-tools.md) for configuration, source handling, and
+limits.
 
-When GC Connect is running, agent sessions also receive `desktop_status`,
-`desktop_screenshot`, and `desktop_input`. They target the same isolated desktop
-shown in Connect. The human input lease blocks agent input until the human
-explicitly returns control; desktop tools are not added to standalone sessions.
-Pointer coordinates are normalized to `0..1`; scroll deltas use browser pixels.
+When Connect manages a desktop, the active GC agent receives desktop tools for
+that same session and display. These tools are not available in standalone GC
+sessions. The human viewer and agent share one input lease. Read-only status,
+screenshot, and accessibility observation remain available while the human has
+the lease. The agent cannot send input or launch applications until the human
+returns the lease.
+
+**Status: Local only.** These tools are in the current source checkout and are
+not part of published `0.3.14`. Check the installed binary before you expect
+them in an agent session.
+
+- `desktop_status` reads the current session ID, environment, lifecycle,
+  workspace root, display, frame age and timestamp, lease, and advertised
+  capabilities. It does not start or stop a desktop.
+- `desktop_screenshot` captures a fresh JPEG (Joint Photographic Experts Group)
+  frame. It writes a generated artifact under `.gc-artifacts/desktop` and
+  returns its workspace-relative path. Use `view_image` with that path. The
+  thread and desktop workspace roots must match. The tool retains at most eight
+  frames for the current session.
+- `desktop_observe` reads visible applications, the focused or active window,
+  and accessible controls through the session-private accessibility bus. It
+  returns a bounded tree with `sessionId`, `revision`, and target IDs where
+  safe. It does not fall back to the host accessibility bus.
+- `desktop_act` can click, focus, or replace text in one target from the latest
+  observation. Send that snapshot's `sessionId`, `revision`, and `targetId`.
+  The target must be visible and showing. Use `set_text` only when `editable` is
+  true. `set_text` accepts up to 512 UTF-8 bytes. The tool rejects stale IDs. A
+  successful click does not prove that the interface changed; inspect its fresh
+  observation or observe again.
+- `desktop_input` sends bounded raw pointer, keyboard, text, or scroll events
+  when an accessible action is unavailable. It is bound to the current Connect
+  session and does not take a `sessionId` argument. It is rejected while the
+  human holds the lease.
+- `desktop_launch_app` lists installed desktop entry IDs and launches one ID
+  from that list. Send the `sessionId` from `desktop_status` and the exact
+  `desktopEntryId` from the list. Launch does not accept a command line, URI
+  (Uniform Resource Identifier), or arguments. It requires the agent lease.
+  The result does not prove that the application opened; confirm the window
+  with `desktop_observe`.
+
+`desktop_observe` normally visits at most 160 nodes and 12 levels, with a
+three-second time budget. A multiword query that identifies an application can
+search up to 768 nodes and 16 levels, with an eight-second budget. A large or
+slow tree can still be truncated or time out. A query searches application
+names, control names, roles, and supported actions. It does not search editable
+text values. Text values are limited to 160 characters, and password values are
+withheld. An ambiguous or incomplete query does not return actionable target
+IDs or pointer coordinates. Refine the query or inspect a screenshot.
+
+For `desktop_input`, pointer `x` and `y` coordinates are normalized to `0..1`.
+`pointer-click` requires `x`, `y`, and a `button` of `left`, `middle`, or
+`right`. `pointer-button` requires a button and `pressed`; coordinates are
+optional. `pointer-move` requires coordinates. `scroll` requires coordinates
+and uses browser-pixel deltas, limited to 800 pixels per axis for each request.
+
+The input tool accepts at most 512 UTF-8 bytes of text per request. Newline and
+tab are allowed; other control characters are rejected. `key` sends a held-key
+down or up event and requires `pressed`. Use `key-tap` to press and release one
+key. Use `key-chord` to send two to four keys with supported modifiers first
+and one non-modifier key last. Modifier names are `Control`, `Alt`, `Shift`, and
+`Meta`; use `Control`, not `Ctrl`. For example, Control+L uses
+`keys:["Control","L"]`, and Alt+F2 uses `keys:["Alt","F2"]`.
+
+`key` and `key-tap` accept one ASCII letter or digit, or one of these exact key
+names: `Enter`, `Escape`, `Tab`, `BackSpace`, `Delete`, `Home`, `End`,
+`PageUp`, `PageDown`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`,
+`Space`, or `F1` through `F12`.
+
+Only status, screenshot, and observation tools are exposed to a read-only agent.
+Input, actions, and application launch require a writable agent and the agent
+input lease. The human changes the lease in Connect; the agent cannot take it
+implicitly. Closing or reconnecting the browser does not return the lease.
 
 The CLI and tool interfaces share implementation, confinement and file semantics.
 Schemas stay compact; performance checks cover startup, input, redraw and history.

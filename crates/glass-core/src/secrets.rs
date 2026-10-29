@@ -137,10 +137,12 @@ struct Entry {
     scope: SecretScope,
     expires_at: Instant,
     used: bool,
+    revoked: bool,
 }
 
 /// An in-memory vault owned by one GC session. References are random handles,
-/// not encoded or derived from the secret value.
+/// not encoded or derived from the secret value. Expired, revoked and consumed
+/// entries remain bounded redactors until vault drop; they never regain use.
 #[derive(Default)]
 pub(crate) struct SecretVault {
     entries: HashMap<String, Entry>,
@@ -171,7 +173,6 @@ impl SecretVault {
         value: Zeroizing<String>,
         now: Instant,
     ) -> Result<String, String> {
-        self.purge_at(now);
         if !valid_scope(&scope)
             || value.trim().is_empty()
             || value.len() > MAX_SECRET_BYTES
@@ -181,7 +182,7 @@ impl SecretVault {
         }
         if self.entries.len() >= MAX_ENTRIES {
             return Err(
-                "Too many unexpired secret requests; revoke an existing handle first".into(),
+                "Session secret limit reached; start a new session for additional secrets".into(),
             );
         }
         let handle = random_handle()?;
@@ -192,6 +193,7 @@ impl SecretVault {
                 scope,
                 expires_at: now + SECRET_TTL,
                 used: false,
+                revoked: false,
             },
         );
         Ok(handle)
@@ -216,11 +218,13 @@ impl SecretVault {
         operation: &str,
         now: Instant,
     ) -> Result<(Zeroizing<String>, String), String> {
-        self.purge_at(now);
         let entry = self
             .entries
             .get_mut(handle)
             .ok_or_else(|| "Secret handle is missing, expired, or revoked".to_owned())?;
+        if entry.revoked || now >= entry.expires_at {
+            return Err("Secret handle is missing, expired, or revoked".into());
+        }
         if entry.scope.session_id != session_id
             || entry.scope.tool_name != WEB_SECRET_TOOL
             || entry.scope.operation != operation
@@ -245,11 +249,13 @@ impl SecretVault {
         now: Instant,
         use_value: impl FnOnce(&str) -> T,
     ) -> Result<T, String> {
-        self.purge_at(now);
         let entry = self
             .entries
             .get_mut(handle)
             .ok_or_else(|| "Secret handle is missing, expired, or revoked".to_owned())?;
+        if entry.revoked || now >= entry.expires_at {
+            return Err("Secret handle is missing, expired, or revoked".into());
+        }
         if entry.scope != *scope {
             return Err("Secret handle is not authorized for this operation".into());
         }
@@ -261,34 +267,41 @@ impl SecretVault {
     }
 
     pub(crate) fn revoke(&mut self, handle: &str) -> bool {
-        if self.entries.get(handle).is_some_and(|entry| entry.used) {
-            // Consumed entries are no longer resolvable, but must remain until
-            // expiry so finish_tool can scrub any echoed credential.
+        let Some(entry) = self.entries.get_mut(handle) else {
+            return false;
+        };
+        if entry.used || entry.revoked || Instant::now() >= entry.expires_at {
             return false;
         }
-        self.entries.remove(handle).is_some()
+        entry.revoked = true;
+        true
     }
 
     #[cfg(test)]
     pub(crate) fn revoke_session(&mut self, session_id: &str) {
-        self.entries
-            .retain(|_, entry| entry.scope.session_id != session_id);
+        for entry in self.entries.values_mut() {
+            if entry.scope.session_id == session_id {
+                entry.revoked = true;
+            }
+        }
     }
 
-    /// Remove exact secret values from tool output before it is recorded or
-    /// sent to the provider. Used values remain available for redaction until
-    /// their short TTL ends, but can no longer be resolved.
+    /// Remove exact secret values before recording tool output or sending it
+    /// to the provider. Handle expiry/revocation limits use, not redaction:
+    /// values remain zeroizing and bounded until this session vault is dropped.
     pub(crate) fn redact(&mut self, text: &str) -> String {
-        self.purge_at(Instant::now());
-        self.entries
+        let mut values = self
+            .entries
             .values()
-            .fold(text.to_owned(), |output, entry| {
-                output.replace(entry.value.as_str(), "[redacted secret]")
-            })
-    }
-
-    fn purge_at(&mut self, now: Instant) {
-        self.entries.retain(|_, entry| entry.expires_at > now);
+            .map(|entry| entry.value.as_str())
+            .collect::<Vec<_>>();
+        values.sort_unstable_by(|left, right| {
+            right.len().cmp(&left.len()).then_with(|| left.cmp(right))
+        });
+        values.dedup();
+        values.into_iter().fold(text.to_owned(), |output, value| {
+            output.replace(value, "[redacted secret]")
+        })
     }
 }
 
@@ -515,6 +528,84 @@ mod tests {
         assert_eq!(
             vault.redact("server echoed secret-sentinel"),
             "server echoed [redacted secret]"
+        );
+    }
+
+    #[test]
+    fn expired_and_revoked_handles_remain_redacted_for_the_session() {
+        let now = Instant::now();
+        let mut vault = SecretVault::default();
+        let expired = vault
+            .issue_at(scope(), "expired-sentinel".into(), now - SECRET_TTL)
+            .unwrap();
+        let revoked = vault
+            .issue_at(scope(), "revoked-sentinel".into(), now)
+            .unwrap();
+        let consumed = vault
+            .issue_at(scope(), "consumed-sentinel".into(), now)
+            .unwrap();
+        drop(
+            vault
+                .take_web_request_secret_at(&consumed, "session-a", "create staging token", now)
+                .unwrap(),
+        );
+        assert!(vault.revoke(&revoked));
+        assert!(!vault.revoke(&revoked));
+        for handle in [&expired, &revoked, &consumed] {
+            assert!(
+                vault
+                    .take_web_request_secret_at(
+                        handle,
+                        "session-a",
+                        "create staging token",
+                        now + SECRET_TTL
+                    )
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            vault.redact("later echo: expired-sentinel revoked-sentinel consumed-sentinel"),
+            "later echo: [redacted secret] [redacted secret] [redacted secret]"
+        );
+    }
+
+    #[test]
+    fn session_redaction_limit_never_evicts_expired_or_revoked_values() {
+        let now = Instant::now();
+        let mut vault = SecretVault::default();
+        for index in 0..MAX_ENTRIES {
+            let handle = vault
+                .issue_at(scope(), format!("retained-{index:02}-sentinel"), now)
+                .unwrap();
+            assert!(vault.revoke(&handle));
+        }
+        assert!(
+            vault
+                .issue_at(scope(), "new-sentinel".into(), now + SECRET_TTL)
+                .is_err()
+        );
+        assert_eq!(vault.entries.len(), MAX_ENTRIES);
+        for index in 0..MAX_ENTRIES {
+            assert_eq!(
+                vault.redact(&format!("retained-{index:02}-sentinel")),
+                "[redacted secret]"
+            );
+        }
+    }
+
+    #[test]
+    fn overlapping_secret_values_redact_the_longest_value_first() {
+        let now = Instant::now();
+        let mut vault = SecretVault::default();
+        vault
+            .issue_at(scope(), "shared-prefix".into(), now)
+            .unwrap();
+        vault
+            .issue_at(scope(), "shared-prefix-sensitive-suffix".into(), now)
+            .unwrap();
+        assert_eq!(
+            vault.redact("shared-prefix-sensitive-suffix shared-prefix"),
+            "[redacted secret] [redacted secret]"
         );
     }
 }

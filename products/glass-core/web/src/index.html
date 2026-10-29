@@ -416,13 +416,24 @@
         <div class="desktop-workspace-brief"><span>Workspace</span><code id="desktop-workspace">—</code></div>
         <details id="desktop-details">
           <summary>Details</summary>
-          <div><span>Workspace root</span><code id="desktop-workspace-full">—</code><span>Resolution</span><strong id="desktop-resolution">—</strong><span>Managed desktop on this host · shared with GC desktop tools</span></div>
+          <div><span>Workspace</span><strong id="desktop-lifecycle-active">—</strong><span>Environment</span><strong id="desktop-environment-active">—</strong><span>Workspace root</span><code id="desktop-workspace-full">—</code><span>Resolution</span><strong id="desktop-resolution">—</strong><span>Managed separately on this host · shared with GC desktop tools</span><button type="button" id="desktop-profile-delete" class="quiet desktop-profile-delete" hidden>Delete saved workspace</button></div>
         </details>
       </section>
       <div class="desktop-controls" aria-label="Desktop controls">
         <span id="desktop-owner" class="desktop-owner" aria-live="polite">Checking…</span>
         <button type="button" id="desktop-take" class="primary">Take control</button>
         <button type="button" id="desktop-return" class="quiet">Return to agent</button>
+        <fieldset id="desktop-environment-picker" class="desktop-environment-picker" aria-describedby="desktop-environment-note">
+          <legend>Desktop workspace</legend>
+          <label class="desktop-preset-option" for="desktop-preset-quick">
+            <input id="desktop-preset-quick" type="radio" name="desktop-preset" value="xfce:disposable" checked>
+            <span><strong>Quick desktop</strong><small>XFCE · temporary</small></span>
+          </label>
+          <label class="desktop-preset-option" for="desktop-preset-reusable">
+            <input id="desktop-preset-reusable" type="radio" name="desktop-preset" value="gnome:reusable" disabled>
+            <span><strong>Reusable workspace</strong><small id="desktop-reusable-note">GNOME · keeps its profile</small></span>
+          </label>
+        </fieldset>
         <button type="button" id="desktop-start" class="primary">Start desktop</button>
         <button type="button" id="desktop-retry" class="quiet" hidden>Retry connection</button>
         <button type="button" id="desktop-keyboard-open" class="quiet" aria-label="Open keyboard">Keyboard</button>
@@ -435,6 +446,7 @@
         </details>
         <span id="desktop-status" role="status" aria-live="polite">Checking the host display…</span>
       </div>
+      <p id="desktop-environment-note" class="desktop-environment-note" hidden></p>
       <p id="desktop-lease-note" class="desktop-lease-note" hidden>Closing keeps your input lease until you return it; GC stays paused.</p>
       <div class="desktop-mobile-tools" aria-label="Touch controls">
         <div class="desktop-touch-modes" role="group" aria-label="Touch pointer mode">

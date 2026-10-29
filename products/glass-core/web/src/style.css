@@ -3240,7 +3240,7 @@ dialog.floating-palette {
   background: var(--surface);
   box-shadow: var(--shadow);
 }
-.desktop-session-brief details[open] > div > span:last-child { grid-column: 1 / -1; }
+.desktop-session-brief details[open] > div > span:last-of-type { grid-column: 1 / -1; }
 .desktop-session-brief details[open] > div > code { max-width: min(65vw, 520px); overflow-wrap: anywhere; white-space: normal; }
 .desktop-more > summary {
   display: inline-flex;
@@ -3283,6 +3283,46 @@ dialog.floating-palette {
 .desktop-controls button[hidden] { display: none; }
 .desktop-controls > .primary { padding: 8px 13px; }
 .desktop-owner { color: var(--text); font-size: 12px; font-weight: 550; }
+.desktop-environment-picker {
+  display: flex;
+  align-items: stretch;
+  gap: 5px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.desktop-environment-picker[hidden], .desktop-environment-note[hidden] { display: none; }
+.desktop-environment-picker legend { padding: 0 3px; color: var(--muted); font-size: 9px; }
+.desktop-preset-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--bg);
+  cursor: pointer;
+}
+.desktop-preset-option.selected { border-color: var(--accent); background: var(--accent-bg); }
+.desktop-preset-option.unavailable { cursor: not-allowed; opacity: .62; }
+.desktop-preset-option input { flex: 0 0 auto; margin: 0; accent-color: var(--accent); }
+.desktop-preset-option span { display: grid; gap: 1px; min-width: 0; }
+.desktop-preset-option strong { color: var(--text); font-size: 10px; font-weight: 600; line-height: 1.2; }
+.desktop-preset-option small { max-width: 170px; overflow: hidden; color: var(--muted); font-size: 9px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-preset-option:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.desktop-profile-delete { color: var(--red); }
+.desktop-profile-delete[hidden] { display: none; }
+.desktop-session-brief details[open] .desktop-profile-delete { grid-column: 1 / -1; justify-self: start; }
+.desktop-profile-delete:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+.desktop-environment-note {
+  flex: 0 0 auto;
+  margin: -5px 2px 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
 #desktop-status { flex: 1 1 180px; min-width: 140px; color: var(--muted); font-size: 11px; }
 #desktop-status[data-error="true"] { color: var(--red); }
 #desktop-retry { min-height: 34px; padding: 6px 10px; border-radius: 9px; }

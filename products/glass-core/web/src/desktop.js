@@ -12,6 +12,12 @@ export function desktopSurface({ api }) {
   const workspace = $("desktop-workspace");
   const workspaceFull = $("desktop-workspace-full");
   const resolution = $("desktop-resolution");
+  const environmentPicker = $("desktop-environment-picker");
+  const quickPreset = $("desktop-preset-quick");
+  const reusablePreset = $("desktop-preset-reusable");
+  const reusableNote = $("desktop-reusable-note");
+  const environmentNote = $("desktop-environment-note");
+  const activeEnvironment = $("desktop-environment-active");
   const status = $("desktop-status");
   const leaseNote = $("desktop-lease-note");
   const textInput = $("desktop-text");
@@ -30,6 +36,7 @@ export function desktopSurface({ api }) {
   const returnToAgent = $("desktop-return");
   const reconnect = $("desktop-reconnect");
   const start = $("desktop-start");
+  const deleteProfile = $("desktop-profile-delete");
   const stop = $("desktop-stop");
   const retry = $("desktop-retry");
   const more = $("desktop-more");
@@ -75,6 +82,62 @@ export function desktopSurface({ api }) {
   const touchPoints = new Map();
   const modifiers = { Control: false, Alt: false };
   const coarsePointer = window.matchMedia("(pointer: coarse)");
+  let capabilities = [{ environment: "xfce", lifecycle: "disposable", available: true, reason: null }];
+  let capabilitiesKnown = false;
+  let selectedPreset = "xfce:disposable";
+
+  function updatePresetNote() {
+    const selected = capabilities.find((item) => `${item.environment}:${item.lifecycle}` === selectedPreset);
+    const reusable = capabilities.find((item) => item.environment === "gnome" && item.lifecycle === "reusable");
+    if (!capabilitiesKnown) {
+      environmentNote.textContent = "Checking which desktop workspaces this host supports.";
+    } else if (reusable && !reusable.available) {
+      environmentNote.textContent = `Reusable workspace unavailable: ${reusable.reason || "GNOME is not supported on this host."}`;
+    } else if (!capabilities.some((item) => item.available)) {
+      environmentNote.textContent = capabilities.find((item) => item.reason)?.reason || "No managed desktop environment is currently available.";
+    } else if (!selected?.available) {
+      environmentNote.textContent = selected?.reason || "This workspace option is not available on this host.";
+    } else {
+      environmentNote.textContent = selected.lifecycle === "reusable"
+        ? "Your GNOME workspace keeps its files when you stop it."
+        : "A quick XFCE desktop is removed when you stop it.";
+    }
+  }
+
+  function renderPresets(next) {
+    const supplied = Array.isArray(next?.capabilities) ? next.capabilities : null;
+    if (supplied) capabilitiesKnown = true;
+    capabilities = (supplied || (capabilitiesKnown ? capabilities : [{ environment: "xfce", lifecycle: "disposable", available: true }]))
+      .filter((item) => ["xfce", "gnome"].includes(item?.environment)
+        && ["disposable", "reusable"].includes(item?.lifecycle))
+      .map((item) => ({
+        environment: item.environment,
+        lifecycle: item.lifecycle,
+        available: item.available === true,
+        reason: typeof item.reason === "string" ? item.reason : null,
+        profileExists: item.profileExists === true,
+      }));
+    const quick = capabilities.find((item) => item.environment === "xfce" && item.lifecycle === "disposable");
+    const reusable = capabilities.find((item) => item.environment === "gnome" && item.lifecycle === "reusable");
+    quickPreset.disabled = !quick?.available;
+    reusablePreset.disabled = !reusable?.available;
+    if (!capabilitiesKnown) reusableNote.textContent = "GNOME · checking host support";
+    else if (!reusable) reusableNote.textContent = "GNOME · not offered by this host";
+    else if (reusable.reason && !reusable.available) reusableNote.textContent = `GNOME · unavailable: ${reusable.reason}`;
+    else reusableNote.textContent = reusable.profileExists ? "GNOME · saved workspace" : "GNOME · keeps its profile";
+    if (!capabilities.some((item) => `${item.environment}:${item.lifecycle}` === selectedPreset && item.available)) {
+      selectedPreset = quick?.available ? "xfce:disposable" : reusable?.available ? "gnome:reusable" : "xfce:disposable";
+    }
+    quickPreset.checked = selectedPreset === "xfce:disposable";
+    reusablePreset.checked = selectedPreset === "gnome:reusable";
+    quickPreset.closest(".desktop-preset-option")?.classList.toggle("selected", quickPreset.checked);
+    reusablePreset.closest(".desktop-preset-option")?.classList.toggle("selected", reusablePreset.checked);
+    quickPreset.closest(".desktop-preset-option")?.classList.toggle("unavailable", quickPreset.disabled);
+    reusablePreset.closest(".desktop-preset-option")?.classList.toggle("unavailable", reusablePreset.disabled);
+    const selected = capabilities.find((item) => `${item.environment}:${item.lifecycle}` === selectedPreset);
+    environmentNote.hidden = capabilities.some((item) => item.available) && !selected?.reason && capabilities.every((item) => item.available);
+    updatePresetNote();
+  }
 
   const isOpen = () => dialog.open && requestController && !requestController.signal.aborted;
   const controlled = () => isOpen() && snapshot?.available && snapshot.lease === "human";
@@ -325,9 +388,11 @@ export function desktopSurface({ api }) {
 
   function render(next) {
     const priorFrameSeq = Number(snapshot?.frameSeq) || 0;
+    const wasRunning = Boolean(snapshot?.sessionId);
     snapshot = next;
     snapshotObservedAt = performance.now();
     const running = Boolean(next?.sessionId);
+    renderPresets(next);
     const available = Boolean(next?.available && running);
     const humanOwnsInput = next?.lease === "human";
     owner.textContent = humanOwnsInput
@@ -347,20 +412,28 @@ export function desktopSurface({ api }) {
       Number(next?.width) > 0 && Number(next?.height) > 0
         ? `${next.width} × ${next.height}`
         : "—";
+    activeEnvironment.textContent = next?.environment === "gnome" ? "GNOME" : next?.environment === "xfce" ? "XFCE" : "—";
+    $("desktop-lifecycle-active").textContent = next?.lifecycle === "reusable" ? "Reusable workspace" : next?.lifecycle === "disposable" ? "Quick desktop" : "—";
     leaseNote.hidden = !humanOwnsInput;
     take.hidden = !available || humanOwnsInput;
     returnToAgent.hidden = !humanOwnsInput;
     start.hidden = running;
+    environmentPicker.hidden = running;
+    environmentNote.hidden = running || !environmentNote.textContent;
     stop.hidden = !running || next?.mode !== "managedVirtualSession";
     reconnect.hidden = !running;
     more.hidden = !running;
-    if (!running) $("desktop-details").open = false;
+    if (!running && wasRunning) $("desktop-details").open = false;
     if (more.hidden && more.contains(document.activeElement)) {
       start.focus({ preventScroll: true });
     }
     retry.hidden = !(connectionError || (running && (!available || streamFailed)));
     retry.textContent = connectionError ? "Retry connection" : "Reconnect stream";
-    start.disabled = Boolean(connectionError);
+    const selectedCapability = capabilities.find((item) => `${item.environment}:${item.lifecycle}` === selectedPreset);
+    start.textContent = selectedCapability?.lifecycle === "reusable" && selectedCapability.profileExists ? "Resume workspace" : selectedCapability?.lifecycle === "reusable" ? "Open workspace" : "Start quick desktop";
+    start.disabled = Boolean(connectionError) || !selectedCapability?.available;
+    deleteProfile.hidden = running || !capabilities.some((item) => item.environment === "gnome" && item.lifecycle === "reusable" && item.profileExists);
+    deleteProfile.disabled = Boolean(connectionError);
     stop.disabled = Boolean(connectionError);
     take.disabled = Boolean(connectionError);
     returnToAgent.disabled = Boolean(connectionError);
@@ -382,7 +455,7 @@ export function desktopSurface({ api }) {
     if (!running) {
       placeholder.textContent = connectionError
         ? "Reconnect when the host is available."
-        : "No desktop is open. Start a desktop to see the workspace here.";
+        : "Choose a desktop workspace above to open it here.";
       placeholder.hidden = false;
       setStatus(connectionError ? "Host connection unavailable" : "Ready to start", Boolean(connectionError));
       setStream(false);
@@ -710,9 +783,16 @@ export function desktopSurface({ api }) {
 
   async function startDesktop() {
     start.disabled = true;
-    setStatus("Starting a managed desktop on this host…");
     try {
-      await api("desktop/session", { action: "start" }, requestController.signal, { timeoutMs: 30_000 });
+      const selected = capabilities.find((item) => `${item.environment}:${item.lifecycle}` === selectedPreset);
+      if (!selected?.available) {
+        setStatus(selected?.reason || "That desktop environment is unavailable.", true);
+        return;
+      }
+      setStatus(selected.lifecycle === "reusable" && selected.profileExists
+        ? "Reopening your saved workspace…"
+        : selected.lifecycle === "reusable" ? "Creating your reusable workspace…" : "Starting a quick desktop…");
+      await api("desktop/session", { action: "start", environment: selected.environment, lifecycle: selected.lifecycle }, requestController.signal, { timeoutMs: 60_000 });
       await refresh();
     } catch (error) {
       if (!isOpen()) return;
@@ -724,12 +804,35 @@ export function desktopSurface({ api }) {
         setStatus(error.message || "Could not start the managed desktop.", true);
       }
     } finally {
-      if (isOpen()) start.disabled = false;
+      if (isOpen()) {
+        const selected = capabilities.find((item) => `${item.environment}:${item.lifecycle}` === selectedPreset);
+        start.disabled = Boolean(connectionError) || !selected?.available;
+      }
+    }
+  }
+
+  async function deleteReusableProfile() {
+    const profile = capabilities.find((item) => item.environment === "gnome" && item.lifecycle === "reusable" && item.profileExists);
+    if (!profile || snapshot?.sessionId) return;
+    if (!window.confirm("Delete the saved GNOME workspace and its files? This cannot be undone.")) return;
+    deleteProfile.disabled = true;
+    setStatus("Deleting the saved workspace…");
+    try {
+      await api("desktop/profile", { action: "delete", profileId: "default" }, requestController.signal);
+      await refresh();
+    } catch (error) {
+      if (isOpen()) setStatus(error.message || "Could not delete the saved workspace.", true);
+    } finally {
+      if (isOpen()) deleteProfile.disabled = Boolean(connectionError);
     }
   }
 
   async function stopDesktop() {
-    if (!snapshot?.sessionId || !window.confirm("Stop the managed desktop for everyone using it?")) return;
+    if (!snapshot?.sessionId) return;
+    const confirmMessage = snapshot.lifecycle === "reusable"
+      ? "Stop this desktop? Your saved GNOME workspace and files will be kept."
+      : "Stop this quick desktop? Its temporary workspace will be removed.";
+    if (!window.confirm(confirmMessage)) return;
     stop.disabled = true;
     setStatus("Stopping the managed desktop…");
     try {
@@ -809,6 +912,17 @@ export function desktopSurface({ api }) {
     else void refresh();
   });
   start.addEventListener("click", () => void startDesktop());
+  for (const preset of [quickPreset, reusablePreset]) preset.addEventListener("change", () => {
+    if (!preset.checked) return;
+    selectedPreset = preset.value;
+    quickPreset.closest(".desktop-preset-option")?.classList.toggle("selected", quickPreset.checked);
+    reusablePreset.closest(".desktop-preset-option")?.classList.toggle("selected", reusablePreset.checked);
+    updatePresetNote();
+    const selected = capabilities.find((item) => `${item.environment}:${item.lifecycle}` === selectedPreset);
+    start.textContent = selected?.lifecycle === "reusable" && selected.profileExists ? "Resume workspace" : selected?.lifecycle === "reusable" ? "Open workspace" : "Start quick desktop";
+    start.disabled = Boolean(connectionError) || !selected?.available;
+  });
+  deleteProfile.addEventListener("click", () => void deleteReusableProfile());
   stop.addEventListener("click", () => {
     closeMoreAfterAction();
     void stopDesktop();

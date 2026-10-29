@@ -101,12 +101,20 @@ per draft. Storage failures are reported; saving a draft never submits it.
 
 The **Computer** workspace shows a desktop session on the same host as GC. It
 does not attach to the host's login screen or reuse a user's existing display.
-Choose **Start desktop** to create an isolated, managed Xvfb and XFCE session;
-GC reports the display ID and the workspace directory used to start it. The
-session runs at 1280 × 800 and streams fresh JPEG frames over the authenticated
-Connect origin. Audio is not included. If Xvfb, XFCE, Xauthority, or FFmpeg is
-unavailable, Connect reports the missing dependency and leaves the session
-stopped; it does not install packages or restart the host desktop.
+Managed virtual desktops are supported on Linux hosts only.
+Choose **Quick desktop** to create an isolated, disposable Xvfb and XFCE session;
+GC reports the display ID and workspace directory. The session runs at
+1280 × 800 and streams fresh JPEG frames over the authenticated Connect origin.
+Audio is not included. If Xvfb, XFCE, Xauthority, or FFmpeg is unavailable,
+Connect reports the missing dependency and leaves the session stopped; it does
+not install packages or restart the host desktop.
+
+**Reusable workspace** keeps its HOME and workspace files after Stop, and a
+Connect gateway restart reattaches to the same running desktop. Deleting the
+saved workspace is a separate action. The GNOME reusable option is disabled on
+this host until an isolated GNOME session passes frame, input, and accessibility
+acceptance; the current GNOME Xvfb smoke produced a blank display. No user login
+display is attached.
 
 Viewing is read-only until **Take control** is selected. That action transfers
 the session's single input lease to the human, and GC desktop input tools are
@@ -122,6 +130,28 @@ fingers to scroll, or long-press for right-click. **Direct touch** maps taps and
 drags to the desktop, supports long-press right-click, and allows pinch-to-zoom
 and panning around the enlarged view. The keyboard control sends text and offers
 desktop key shortcuts.
+
+In a local slow-link acceptance run on 2026-10-28, a 390 px phone viewport used
+480 px desktop frames over a simulated 1 Mbps connection with 250 ms round-trip
+latency. Pointer-move and scroll acknowledgements took 293 ms and 313 ms; the
+corresponding input-to-visible-frame times were 452 ms and 720 ms (two samples
+of each). The viewer showed a delayed frame while the link was shaped and
+returned to **Live** after bandwidth was restored. This is a recorded run, not a
+latency guarantee. It used the Core binary with SHA-256
+`5d80014bbbc8c4f28761c8064516831bce55c4b4aa924af755fb2c5adb1bcb43`.
+
+Managed desktop accessibility uses a session-private AT-SPI bus and is available
+for Linux XFCE sessions. It does not fall back to the host's accessibility bus.
+`desktop_observe` returns a bounded tree of at most 160 visited nodes and 12
+levels; large application windows can be marked truncated. A focused application
+query can make room for its controls. Text values are capped at 160 characters,
+password values are withheld, and actions require a current visible and showing
+target from the latest observation. Some applications do not register with the
+private accessibility bus; their controls then remain unavailable to semantic
+desktop actions. XFCE's D-Bus-activated panel receives the session-private
+AT-SPI address through that session's activation environment. The desktop does
+not fall back to the host accessibility bus when an application fails to
+register.
 
 Approvals pause the agent and show the exact operation and justification. Only
 the input owner can allow it once or deny it. Questions support choices, multiple

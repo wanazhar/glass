@@ -11,12 +11,17 @@ let lease = "agent";
 let nextSession = 1;
 let nextFrameSeq = 18;
 let hostReachable = true;
+let gnomeCapabilityAvailable = false;
+let savedProfileExists = true;
+let sessionEnvironment = null;
+let sessionLifecycle = null;
 let inputDelayMs = 0;
 let streamResponse = null;
 let streamTimer = 0;
 let streamFrameDelayMs = 0;
 const streamWidths = [];
 const actions = [];
+const sessionStartEnvironments = [];
 const input = [];
 async function waitForInput(predicate, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs;
@@ -77,6 +82,11 @@ const server = createServer(async (request, response) => {
     response.writeHead(204).end();
     return;
   }
+  if (url.pathname === "/__test/gnome") {
+    gnomeCapabilityAvailable = url.searchParams.get("available") === "true";
+    response.writeHead(204).end();
+    return;
+  }
   if (url.pathname === "/__test/input-delay") {
     inputDelayMs = Math.max(0, Math.min(1000, Number(url.searchParams.get("ms")) || 0));
     response.writeHead(204).end();
@@ -130,6 +140,12 @@ const server = createServer(async (request, response) => {
     const frameSeq = session ? nextFrameSeq++ : null;
     response.end(JSON.stringify({
       available: Boolean(session), sessionId: session, mode: session ? "managedVirtualSession" : null,
+      environment: session ? sessionEnvironment : null,
+      lifecycle: session ? sessionLifecycle : null,
+      capabilities: [
+        { environment: "xfce", lifecycle: "disposable", label: "Quick desktop", available: true, reason: null, profileExists: false },
+        { environment: "gnome", lifecycle: "reusable", label: "Reusable workspace", available: gnomeCapabilityAvailable, reason: gnomeCapabilityAvailable ? null : "This host has no verified isolated GNOME session.", profileExists: savedProfileExists },
+      ],
       displayId: session ? ":81" : null, workspaceRoot: "/work/glass", lease,
       width: session ? 1280 : null, height: session ? 800 : null,
       frameSeq, frameAgeMs: session ? 24 : null, frameTimeMs: session ? frameSeq * 100 : null, error: null,
@@ -169,15 +185,31 @@ const server = createServer(async (request, response) => {
     response.setHeader("content-type", "application/json");
     if (url.pathname === "/api/desktop/session" && body.action === "start") {
       session = `managed-${nextSession++}`;
+      sessionEnvironment = body.environment;
+      sessionLifecycle = body.lifecycle;
+      sessionStartEnvironments.push({ environment: body.environment, lifecycle: body.lifecycle });
       actions.push(body.action);
-      response.end(JSON.stringify({ started: true, sessionId: session, mode: "managedVirtualSession", displayId: ":81", width: 1280, height: 800 }));
+      response.end(JSON.stringify({ started: true, sessionId: session, mode: "managedVirtualSession", environment: body.environment, lifecycle: body.lifecycle, displayId: ":81", width: 1280, height: 800 }));
       return;
     }
     if (url.pathname === "/api/desktop/session" && body.action === "stop") {
       session = null;
+      sessionEnvironment = null;
+      sessionLifecycle = null;
       lease = "agent";
       actions.push(body.action);
       response.end(JSON.stringify({ stopped: true }));
+      return;
+    }
+    if (url.pathname === "/api/desktop/profile" && body.action === "delete" && body.profileId === "default") {
+      if (session) {
+        response.writeHead(409);
+        response.end(JSON.stringify({ error: "Stop the reusable desktop before deleting its saved profile" }));
+        return;
+      }
+      savedProfileExists = false;
+      actions.push("delete-profile");
+      response.end(JSON.stringify({ deleted: true, profileId: "default" }));
       return;
     }
     if (url.pathname === "/api/desktop/lease") {
@@ -233,9 +265,43 @@ try {
   await page.locator("#desktop-retry").click();
   await page.getByText("Ready to start").waitFor();
   assert.equal(await page.locator("#desktop-retry").isVisible(), false);
+  assert.equal(await page.locator("#desktop-preset-quick").isChecked(), true);
+  assert.equal(await page.locator("#desktop-preset-reusable").evaluate((radio) => radio.disabled), true);
+  assert.match(await page.locator("#desktop-reusable-note").textContent(), /no verified isolated GNOME session/);
   await page.locator("#desktop-start").click();
   await page.getByText("View only · GC may control").waitFor();
-  assert.equal(await page.evaluate(() => window.__desktopStartTimeout), 30_000);
+  assert.deepEqual(sessionStartEnvironments, [{ environment: "xfce", lifecycle: "disposable" }]);
+  await page.locator("#desktop-details > summary").click();
+  assert.equal(await page.locator("#desktop-environment-active").textContent(), "XFCE");
+  assert.equal(await page.locator("#desktop-lifecycle-active").textContent(), "Quick desktop");
+  await page.locator("#desktop-details > summary").click();
+  await page.locator("#desktop-more > summary").click();
+  page.once("dialog", (dialog) => {
+    assert.match(dialog.message(), /temporary workspace will be removed/);
+    dialog.accept();
+  });
+  await page.locator("#desktop-stop").click();
+  await page.getByText("Choose a desktop workspace above to open it here.").waitFor();
+  await page.evaluate(() => fetch("/__test/gnome?available=true"));
+  await page.evaluate(() => window.setDesktopHostReachable(false));
+  await page.waitForFunction(() => !document.querySelector("#desktop-retry").hidden);
+  await page.evaluate(() => window.setDesktopHostReachable(true));
+  await page.locator("#desktop-retry").click();
+  await page.getByText("Ready to start").waitFor();
+  assert.equal(await page.locator("#desktop-preset-reusable").evaluate((radio) => radio.disabled), false);
+  await page.locator("#desktop-preset-reusable").check();
+  assert.equal(await page.locator("#desktop-start").textContent(), "Resume workspace");
+  await page.locator("#desktop-start").click();
+  await page.getByText("View only · GC may control").waitFor();
+  assert.deepEqual(sessionStartEnvironments, [
+    { environment: "xfce", lifecycle: "disposable" },
+    { environment: "gnome", lifecycle: "reusable" },
+  ]);
+  await page.locator("#desktop-details > summary").click();
+  assert.equal(await page.locator("#desktop-environment-active").textContent(), "GNOME");
+  assert.equal(await page.locator("#desktop-lifecycle-active").textContent(), "Reusable workspace");
+  await page.locator("#desktop-details > summary").click();
+  assert.equal(await page.evaluate(() => window.__desktopStartTimeout), 60_000);
   await page.locator("#desktop-take").click();
   await page.getByText("You control · GC paused").waitFor();
   assert.equal(await page.locator("#desktop-return").isVisible(), true);
@@ -474,10 +540,23 @@ try {
   await page.locator("#desktop-view-reset").click();
   await page.locator("#desktop-trackpad").click();
   await page.locator("#desktop-more > summary").click();
-  page.once("dialog", (dialog) => dialog.accept());
+  page.once("dialog", (dialog) => {
+    assert.match(dialog.message(), /saved GNOME workspace and files will be kept/);
+    dialog.accept();
+  });
   await page.locator("#desktop-stop").click();
-  await page.getByText("No desktop is open. Start a desktop to see the workspace here.").waitFor();
-  assert.deepEqual(actions.filter((action) => action === "start" || action === "stop"), ["start", "stop"]);
+  await page.getByText("Choose a desktop workspace above to open it here.").waitFor();
+  assert.deepEqual(actions.filter((action) => action === "start" || action === "stop"), ["start", "stop", "start", "stop"]);
+  await page.locator("#desktop-details > summary").click();
+  assert.equal(await page.locator("#desktop-profile-delete").isVisible(), true);
+  page.once("dialog", (dialog) => {
+    assert.match(dialog.message(), /cannot be undone/);
+    dialog.accept();
+  });
+  await page.locator("#desktop-profile-delete").click();
+  await page.waitForFunction(() => document.querySelector("#desktop-profile-delete").hidden);
+  await page.locator("#desktop-details > summary").click();
+  assert(actions.includes("delete-profile"));
   assert.deepEqual(errors, []);
 } finally {
   await browser.close();

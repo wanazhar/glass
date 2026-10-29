@@ -1573,7 +1573,11 @@ mod tests {
             .take(512)
             .collect::<String>()
             .to_ascii_lowercase();
-        if error.contains("lease") || error.contains("session changed") {
+        if error.contains("query must contain") {
+            "invalid_query"
+        } else if error.contains("observation exceeded") {
+            "observation_timeout"
+        } else if error.contains("lease") || error.contains("session changed") {
             "session_or_lease_rejected"
         } else if error.contains("stale") || error.contains("revision") {
             "stale_observation"
@@ -2018,6 +2022,20 @@ mod tests {
     #[test]
     fn browser_model_error_categories_never_retain_error_text() {
         let canary = "private typed text CANARY-9841";
+        assert_eq!(
+            desktop_tool_error_category(
+                "desktop_observe",
+                &format!("query must contain 1–8 words: {canary}")
+            ),
+            "invalid_query"
+        );
+        assert_eq!(
+            desktop_tool_error_category(
+                "desktop_observe",
+                &format!("Accessibility observation exceeded its 12s limit: {canary}")
+            ),
+            "observation_timeout"
+        );
         assert_eq!(
             desktop_tool_error_category(
                 "desktop_act",

@@ -533,7 +533,7 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
         ));
         tools.push((
             "desktop_input".to_string(),
-            "Fallback for custom-drawn surfaces when desktop_observe exposes no suitable target. Sends one bounded raw input event to the current Connect desktop and is rejected while the human holds the control lease. It is already bound to this Connect session and does not accept a sessionId; desktop_act and desktop_launch_app do require the sessionId from the latest desktop_status/desktop_observe. Prefer desktop_act on accessible targets. Use `key-tap` to press and release one key; use `key-chord` with modifiers first and one key last. The exact modifier names are `Control`, `Alt`, `Shift`, and `Meta` (use `Control`, not `Ctrl`). Special key spellings include `Enter`, `Escape`, `Tab`, `BackSpace`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`, `Space`, and `F1` through `F12`; one ASCII letter or digit is also accepted. Examples: Control+L is `keys:[\"Control\",\"L\"]`; Alt+F2 is `keys:[\"Alt\",\"F2\"]`; Enter is `key:\"Enter\"`; Page Down is `key:\"PageDown\"`. `key` is a held-key down/up event and requires `pressed`. For raw pointer interaction, use one `pointer-click` with button and normalized x/y instead of separate down/up events. Pointer x/y use normalized 0..1 coordinates, scroll deltas use browser pixels, and text accepts up to 512 UTF-8 bytes with newline and tab allowed; other control characters are rejected.".to_string(),
+            "Fallback for custom-drawn surfaces when desktop_observe exposes no suitable target. Sends one bounded raw input event to the current Connect desktop and is rejected while the human holds the control lease. It is already bound to this Connect session and does not accept a sessionId; desktop_act and desktop_launch_app do require the sessionId from the latest desktop_status/desktop_observe. Prefer desktop_act on accessible targets. Use `key-tap` to press and release one key; use `key-chord` with modifiers first and one key last. The exact modifier names are `Control`, `Alt`, `Shift`, and `Meta` (use `Control`, not `Ctrl`). Special key spellings include `Enter`, `Escape`, `Tab`, `BackSpace`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`, `Space`, and `F1` through `F12`; one ASCII letter or digit is also accepted. Examples: Control+L is `keys:[\"Control\",\"L\"]`; Alt+F2 is `keys:[\"Alt\",\"F2\"]`; Enter is `key:\"Enter\"`; Page Down is `key:\"PageDown\"`. `key` is a held-key down/up event and requires `pressed`. For raw pointer interaction, use one `pointer-click` with button and normalized x/y instead of separate down/up events. Pointer x/y use normalized 0..1 coordinates. Both scroll and pointer-move require x and y; scrolling acts on the pane under that point, so use a freshly observed point inside the intended scrollable pane rather than assuming the page body. Scroll deltas use browser pixels, and text accepts up to 512 UTF-8 bytes with newline and tab allowed; other control characters are rejected.".to_string(),
             serde_json::json!({
                 "type":"object","additionalProperties":false,"required":["action"],
                 "properties":{
@@ -550,6 +550,7 @@ pub fn desktop_tool_schemas(include_input: bool) -> Vec<(String, String, String)
                 }
             ,"allOf":[
                 {"if":{"properties":{"action":{"const":"pointer-click"}}},"then":{"required":["x","y","button"]}},
+                {"if":{"properties":{"action":{"enum":["pointer-move","scroll"]}}},"then":{"required":["x","y"]}},
                 {"if":{"properties":{"action":{"const":"pointer-button"}}},"then":{"required":["button","pressed"]}}
                 ,{"if":{"properties":{"action":{"const":"key"}}},"then":{"required":["key","pressed"]}}
                 ,{"if":{"properties":{"action":{"const":"key-tap"}}},"then":{"required":["key"]}}
@@ -728,6 +729,20 @@ mod tests {
         );
         assert!(full[4].1.contains("[\"Alt\",\"F2\"]"));
         assert_eq!(input["properties"]["deltaX"]["maximum"], 800);
+        let coordinate_rule = input["allOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| {
+                rule["if"]["properties"]["action"]["enum"]
+                    == serde_json::json!(["pointer-move", "scroll"])
+            })
+            .expect("move and scroll must require the coordinates used by the input backend");
+        assert_eq!(
+            coordinate_rule["then"]["required"],
+            serde_json::json!(["x", "y"])
+        );
+        assert!(full[4].1.contains("pane under that point"));
         assert_eq!(full[5].0, "desktop_launch_app");
         assert!(full[5].1.contains("verified=false"));
         let launch: Value = serde_json::from_str(&full[5].2).unwrap();
